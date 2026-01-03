@@ -2,7 +2,7 @@
 ///
 /// Tests for /api/v1/sessions/* endpoints.
 
-use axum::http::{header, StatusCode};
+use axum::http::header;
 use serde_json::json;
 use serial_test::serial;
 use uuid::Uuid;

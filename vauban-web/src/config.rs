@@ -51,6 +51,7 @@ pub struct Config {
     pub jwt: JwtConfig,
     pub grpc: GrpcConfig,
     pub security: SecurityConfig,
+    pub logging: LoggingConfig,
 }
 
 /// Database configuration.
@@ -115,6 +116,39 @@ pub struct SecurityConfig {
     pub session_max_duration_secs: u64,
     pub session_idle_timeout_secs: u64,
     pub rate_limit_per_minute: u32,
+}
+
+/// Log format options.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LogFormat {
+    /// JSON format for SIEM integration.
+    Json,
+    /// Human-readable text format (default).
+    #[default]
+    Text,
+}
+
+impl LogFormat {
+    pub fn from_str(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "json" => Self::Json,
+            "text" | _ => Self::Text,
+        }
+    }
+
+    pub fn is_json(&self) -> bool {
+        matches!(self, Self::Json)
+    }
+}
+
+/// Logging configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoggingConfig {
+    /// Log level: debug, info, warn, error.
+    pub level: String,
+    /// Log format: json or text.
+    pub format: LogFormat,
 }
 
 impl Config {
@@ -232,6 +266,13 @@ impl Config {
                 .unwrap_or(100),
         };
 
+        let logging = LoggingConfig {
+            level: env::var("LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
+            format: LogFormat::from_str(
+                &env::var("LOG_FORMAT").unwrap_or_else(|_| "text".to_string()),
+            ),
+        };
+
         Ok(Config {
             environment,
             secret_key,
@@ -241,6 +282,7 @@ impl Config {
             jwt,
             grpc,
             security,
+            logging,
         })
     }
 }
@@ -312,6 +354,39 @@ mod tests {
             let parsed = Environment::from_str(str_val);
             assert_eq!(env, parsed);
         }
+    }
+
+    // ==================== LogFormat Tests ====================
+
+    #[test]
+    fn test_log_format_default() {
+        let format = LogFormat::default();
+        assert_eq!(format, LogFormat::Text);
+    }
+
+    #[test]
+    fn test_log_format_from_str_json() {
+        assert_eq!(LogFormat::from_str("json"), LogFormat::Json);
+        assert_eq!(LogFormat::from_str("JSON"), LogFormat::Json);
+    }
+
+    #[test]
+    fn test_log_format_from_str_text() {
+        assert_eq!(LogFormat::from_str("text"), LogFormat::Text);
+        assert_eq!(LogFormat::from_str("TEXT"), LogFormat::Text);
+    }
+
+    #[test]
+    fn test_log_format_from_str_unknown() {
+        // Unknown values default to Text
+        assert_eq!(LogFormat::from_str("unknown"), LogFormat::Text);
+        assert_eq!(LogFormat::from_str(""), LogFormat::Text);
+    }
+
+    #[test]
+    fn test_log_format_is_json() {
+        assert!(LogFormat::Json.is_json());
+        assert!(!LogFormat::Text.is_json());
     }
 
     // ==================== Config from_env Tests ====================

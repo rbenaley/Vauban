@@ -16,7 +16,7 @@ use tower_http::{
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use vauban_web::{
-    config::Config,
+    config::{Config, LogFormat},
     db::create_pool,
     cache::create_cache_client,
     error::AppError,
@@ -28,21 +28,31 @@ use vauban_web::{
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize tracing
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "vauban_web=info,tower_http=info".into()),
-        )
-        .with(tracing_subscriber::fmt::layer().json())
-        .init();
-
-    // Load configuration
+    // Load configuration first (needed for logging setup)
     let config = Config::from_env()
         .map_err(|e| {
             eprintln!("Failed to load configuration: {}", e);
             e
         })?;
+
+    // Initialize tracing based on configuration
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| format!("vauban_web={},tower_http=info", config.logging.level).into());
+
+    match config.logging.format {
+        LogFormat::Json => {
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(tracing_subscriber::fmt::layer().json())
+                .init();
+        }
+        LogFormat::Text => {
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(tracing_subscriber::fmt::layer())
+                .init();
+        }
+    }
 
     tracing::info!(
         environment = %config.environment.as_str(),

@@ -3,14 +3,12 @@
 /// Common utilities for integration tests.
 
 use axum::{
-    body::Body,
-    http::{header, HeaderValue, Request, StatusCode},
+    http::HeaderValue,
     Router,
 };
 use axum_test::TestServer;
 use diesel::prelude::*;
 use diesel::r2d2::{ConnectionManager, Pool};
-use std::sync::Arc;
 use tokio::sync::OnceCell;
 
 use vauban_web::{

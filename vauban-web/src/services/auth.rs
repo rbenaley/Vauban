@@ -258,6 +258,10 @@ mod tests {
                 session_idle_timeout_secs: 1800,
                 rate_limit_per_minute: 100,
             },
+            logging: crate::config::LoggingConfig {
+                level: "info".to_string(),
+                format: crate::config::LogFormat::Text,
+            },
         }
     }
 
@@ -467,12 +471,10 @@ mod tests {
     fn test_verify_totp_invalid_code() {
         let (secret, _) = AuthService::generate_totp_secret("testuser", "VAUBAN").unwrap();
 
-        // Try an obviously wrong code
-        let is_valid = AuthService::verify_totp(&secret, "000000");
-        // This might occasionally pass if 000000 is the actual code, but very unlikely
-        // For a robust test, we'd need to mock time
+        // Try an obviously wrong code (might occasionally pass if 000000 is the actual code)
+        let _is_valid = AuthService::verify_totp(&secret, "000000");
         
-        // Try a malformed code
+        // Try a malformed code - should always fail
         let is_valid_malformed = AuthService::verify_totp(&secret, "abcdef");
         assert!(!is_valid_malformed);
     }

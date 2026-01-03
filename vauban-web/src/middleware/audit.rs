@@ -7,7 +7,9 @@ use axum::{
     middleware::Next,
     response::Response,
 };
+use chrono::Utc;
 use tracing::{error, info, warn};
+use std::time::Instant;
 
 use crate::middleware::auth::AuthUser;
 
@@ -20,6 +22,29 @@ pub struct AuditLog {
     pub path: String,
     pub status_code: u16,
     pub event_type: String,
+    pub duration_ms: u64,
+    pub user_agent: Option<String>,
+    pub referer: Option<String>,
+    pub request_id: String,
+}
+
+/// Format log in Apache Combined Log extended format.
+/// Format: %h %l %u %t "%r" %>s %b "%{Referer}i" "%{User-Agent}i" %D %{X-Request-ID}o
+/// Example: 192.168.1.1 - john [04/Jan/2026:12:34:56 +0000] "GET /api/v1/users HTTP/1.1" 200 1234 "-" "Mozilla/5.0" 45ms req-abc123
+pub fn format_apache_combined(log: &AuditLog) -> String {
+    format!(
+        "{} - {} [{}] \"{} {} HTTP/1.1\" {} - \"{}\" \"{}\" {}ms {}",
+        log.ip_address.as_deref().unwrap_or("-"),
+        log.user_id.as_deref().unwrap_or("-"),
+        Utc::now().format("%d/%b/%Y:%H:%M:%S %z"),
+        log.method,
+        log.path,
+        log.status_code,
+        log.referer.as_deref().unwrap_or("-"),
+        log.user_agent.as_deref().unwrap_or("-"),
+        log.duration_ms,
+        log.request_id,
+    )
 }
 
 /// Audit middleware that logs requests.
@@ -27,8 +52,10 @@ pub async fn audit_middleware(
     request: Request,
     next: Next,
 ) -> Response {
+    let start = Instant::now();
     let method = request.method().clone();
     let path = request.uri().path().to_string();
+    
     let ip = request
         .headers()
         .get("x-forwarded-for")
@@ -41,10 +68,26 @@ pub async fn audit_middleware(
         })
         .map(|s| s.to_string());
 
+    let user_agent = request
+        .headers()
+        .get("user-agent")
+        .and_then(|h| h.to_str().ok())
+        .map(|s| s.to_string());
+
+    let referer = request
+        .headers()
+        .get("referer")
+        .and_then(|h| h.to_str().ok())
+        .map(|s| s.to_string());
+
+    // Generate request ID
+    let request_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
+
     let user = request.extensions().get::<AuthUser>().cloned();
 
     let response = next.run(request).await;
 
+    let duration_ms = start.elapsed().as_millis() as u64;
     let status_code = response.status().as_u16();
     let event_type = if status_code >= 400 {
         "error"
@@ -61,13 +104,32 @@ pub async fn audit_middleware(
         path,
         status_code,
         event_type: event_type.to_string(),
+        duration_ms,
+        user_agent,
+        referer,
+        request_id,
     };
 
+    // Log in Apache Combined format for text mode (structured logging for JSON mode)
+    let apache_log = format_apache_combined(&audit_log);
+    
     // Log based on severity
     match status_code {
-        500..=599 => error!(?audit_log, "Server error"),
-        400..=499 => warn!(?audit_log, "Client error"),
-        _ => info!(?audit_log, "Request processed"),
+        500..=599 => error!(
+            audit_log = ?audit_log,
+            apache_format = %apache_log,
+            "Server error"
+        ),
+        400..=499 => warn!(
+            audit_log = ?audit_log,
+            apache_format = %apache_log,
+            "Client error"
+        ),
+        _ => info!(
+            audit_log = ?audit_log,
+            apache_format = %apache_log,
+            "Request processed"
+        ),
     }
 
     response
@@ -98,6 +160,10 @@ mod tests {
             path: "/api/users".to_string(),
             status_code: 200,
             event_type: "success".to_string(),
+            duration_ms: 45,
+            user_agent: Some("Mozilla/5.0".to_string()),
+            referer: Some("https://example.com".to_string()),
+            request_id: "abc12345".to_string(),
         }
     }
 
@@ -134,6 +200,10 @@ mod tests {
             path: "/login".to_string(),
             status_code: 401,
             event_type: "error".to_string(),
+            duration_ms: 10,
+            user_agent: None,
+            referer: None,
+            request_id: "def67890".to_string(),
         };
 
         assert!(log.user_id.is_none());
@@ -149,6 +219,10 @@ mod tests {
             path: "/api/items/1".to_string(),
             status_code: 204,
             event_type: "success".to_string(),
+            duration_ms: 5,
+            user_agent: Some("curl/7.68.0".to_string()),
+            referer: None,
+            request_id: "ghi11223".to_string(),
         };
 
         assert!(log.ip_address.is_none());
@@ -236,6 +310,72 @@ mod tests {
     #[test]
     fn test_get_event_type_boundary_400() {
         assert_eq!(get_event_type(400), "error");
+    }
+
+    // ==================== Apache Combined Log Format Tests ====================
+
+    #[test]
+    fn test_format_apache_combined_full() {
+        let log = create_test_audit_log();
+        let formatted = format_apache_combined(&log);
+
+        // Verify the format contains expected parts
+        assert!(formatted.contains("192.168.1.1"));
+        assert!(formatted.contains("user-123"));
+        assert!(formatted.contains("GET /api/users HTTP/1.1"));
+        assert!(formatted.contains("200"));
+        assert!(formatted.contains("https://example.com"));
+        assert!(formatted.contains("Mozilla/5.0"));
+        assert!(formatted.contains("45ms"));
+        assert!(formatted.contains("abc12345"));
+    }
+
+    #[test]
+    fn test_format_apache_combined_anonymous() {
+        let log = AuditLog {
+            user_id: None,
+            ip_address: None,
+            method: "POST".to_string(),
+            path: "/login".to_string(),
+            status_code: 401,
+            event_type: "error".to_string(),
+            duration_ms: 10,
+            user_agent: None,
+            referer: None,
+            request_id: "xyz99999".to_string(),
+        };
+        let formatted = format_apache_combined(&log);
+
+        // Anonymous user and missing fields should show "-"
+        assert!(formatted.contains("- - -"));
+        assert!(formatted.contains("POST /login HTTP/1.1"));
+        assert!(formatted.contains("401"));
+        assert!(formatted.contains("\"-\" \"-\""));
+        assert!(formatted.contains("10ms"));
+    }
+
+    #[test]
+    fn test_format_apache_combined_partial() {
+        let log = AuditLog {
+            user_id: Some("admin".to_string()),
+            ip_address: Some("10.0.0.1".to_string()),
+            method: "PUT".to_string(),
+            path: "/api/settings".to_string(),
+            status_code: 200,
+            event_type: "success".to_string(),
+            duration_ms: 150,
+            user_agent: Some("curl/8.0".to_string()),
+            referer: None,
+            request_id: "req-abc".to_string(),
+        };
+        let formatted = format_apache_combined(&log);
+
+        assert!(formatted.contains("10.0.0.1"));
+        assert!(formatted.contains("admin"));
+        assert!(formatted.contains("PUT /api/settings HTTP/1.1"));
+        assert!(formatted.contains("\"-\""));  // No referer
+        assert!(formatted.contains("curl/8.0"));
+        assert!(formatted.contains("150ms"));
     }
 }
 
