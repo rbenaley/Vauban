@@ -1,7 +1,7 @@
 /// VAUBAN Web - Vault service client wrapper.
 
 use crate::config::Config;
-use crate::error::{AppError, AppResult};
+use crate::error::AppResult;
 use crate::grpc::VaultClient;
 
 /// Credential lookup parameters.

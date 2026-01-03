@@ -1,7 +1,7 @@
 /// VAUBAN Web - Dashboard home template.
 
 use askama::Template;
-use crate::templates::base::{BaseTemplate, UserContext, VaubanConfig, FlashMessage};
+use crate::templates::base::{UserContext, VaubanConfig, FlashMessage};
 
 
 /// Favorite asset for dashboard.

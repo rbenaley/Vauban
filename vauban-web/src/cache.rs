@@ -64,6 +64,7 @@ pub async fn create_cache_client(config: &Config) -> AppResult<CacheConnection> 
 }
 
 /// Cache operations trait for type safety.
+#[allow(async_fn_in_trait)]
 pub trait CacheOps {
     async fn get<T>(&self, key: &str) -> AppResult<Option<T>>
     where

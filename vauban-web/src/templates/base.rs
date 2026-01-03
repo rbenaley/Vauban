@@ -19,7 +19,7 @@ pub struct VaubanConfig {
     pub theme: String, // "light" or "dark"
 }
 
-use crate::templates::partials::{SidebarTemplate, HeaderTemplate, SidebarContentTemplate};
+use crate::templates::partials::SidebarContentTemplate;
 
 /// Base template that all pages extend.
 #[derive(Template)]
