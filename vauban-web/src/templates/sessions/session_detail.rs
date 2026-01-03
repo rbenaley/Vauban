@@ -94,3 +94,144 @@ pub struct SessionDetailTemplate {
     pub header_user: Option<crate::templates::base::UserContext>,
     pub session: SessionDetail,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_session_detail(status: &str, session_type: &str) -> SessionDetail {
+        SessionDetail {
+            id: 1,
+            uuid: "session-uuid".to_string(),
+            username: "testuser".to_string(),
+            user_uuid: "user-uuid".to_string(),
+            asset_name: "Test Server".to_string(),
+            asset_hostname: "test.example.com".to_string(),
+            asset_uuid: "asset-uuid".to_string(),
+            asset_type: "linux".to_string(),
+            session_type: session_type.to_string(),
+            status: status.to_string(),
+            credential_username: "admin".to_string(),
+            client_ip: "192.168.1.100".to_string(),
+            client_user_agent: Some("Mozilla/5.0".to_string()),
+            proxy_instance: Some("proxy-01".to_string()),
+            connected_at: Some("2026-01-03 10:00:00".to_string()),
+            disconnected_at: Some("2026-01-03 11:00:00".to_string()),
+            duration: Some("1h 0m".to_string()),
+            justification: Some("Maintenance".to_string()),
+            is_recorded: true,
+            recording_path: Some("/recordings/session.cast".to_string()),
+            bytes_sent: 10240,
+            bytes_received: 20480,
+            commands_count: 50,
+            created_at: "2026-01-03 09:50:00".to_string(),
+        }
+    }
+
+    // Tests for status_class()
+    #[test]
+    fn test_status_class_active() {
+        let detail = create_test_session_detail("active", "ssh");
+        assert!(detail.status_class().contains("green"));
+    }
+
+    #[test]
+    fn test_status_class_completed() {
+        let detail = create_test_session_detail("completed", "ssh");
+        assert!(detail.status_class().contains("blue"));
+    }
+
+    #[test]
+    fn test_status_class_failed() {
+        let detail = create_test_session_detail("failed", "ssh");
+        assert!(detail.status_class().contains("red"));
+    }
+
+    #[test]
+    fn test_status_class_pending() {
+        let detail = create_test_session_detail("pending", "ssh");
+        assert!(detail.status_class().contains("yellow"));
+    }
+
+    #[test]
+    fn test_status_class_unknown() {
+        let detail = create_test_session_detail("unknown", "ssh");
+        assert!(detail.status_class().contains("gray"));
+    }
+
+    // Tests for type_class()
+    #[test]
+    fn test_type_class_ssh() {
+        let detail = create_test_session_detail("active", "ssh");
+        assert!(detail.type_class().contains("green"));
+    }
+
+    #[test]
+    fn test_type_class_rdp() {
+        let detail = create_test_session_detail("active", "rdp");
+        assert!(detail.type_class().contains("blue"));
+    }
+
+    #[test]
+    fn test_type_class_vnc() {
+        let detail = create_test_session_detail("active", "vnc");
+        assert!(detail.type_class().contains("purple"));
+    }
+
+    #[test]
+    fn test_type_class_unknown() {
+        let detail = create_test_session_detail("active", "telnet");
+        assert!(detail.type_class().contains("gray"));
+    }
+
+    // Tests for format_bytes()
+    #[test]
+    fn test_format_bytes_bytes() {
+        assert_eq!(SessionDetail::format_bytes(500), "500 B");
+    }
+
+    #[test]
+    fn test_format_bytes_kilobytes() {
+        assert_eq!(SessionDetail::format_bytes(1024), "1.00 KB");
+        assert_eq!(SessionDetail::format_bytes(2048), "2.00 KB");
+    }
+
+    #[test]
+    fn test_format_bytes_megabytes() {
+        assert_eq!(SessionDetail::format_bytes(1048576), "1.00 MB");
+        assert_eq!(SessionDetail::format_bytes(5242880), "5.00 MB");
+    }
+
+    #[test]
+    fn test_format_bytes_gigabytes() {
+        assert_eq!(SessionDetail::format_bytes(1073741824), "1.00 GB");
+    }
+
+    // Tests for bytes_sent_display() and bytes_received_display()
+    #[test]
+    fn test_bytes_sent_display() {
+        let detail = create_test_session_detail("active", "ssh");
+        assert_eq!(detail.bytes_sent_display(), "10.00 KB");
+    }
+
+    #[test]
+    fn test_bytes_received_display() {
+        let detail = create_test_session_detail("active", "ssh");
+        assert_eq!(detail.bytes_received_display(), "20.00 KB");
+    }
+
+    // Tests for SessionDetail struct
+    #[test]
+    fn test_session_detail_creation() {
+        let detail = create_test_session_detail("active", "ssh");
+        assert_eq!(detail.id, 1);
+        assert!(detail.is_recorded);
+    }
+
+    #[test]
+    fn test_session_detail_clone() {
+        let detail = create_test_session_detail("completed", "rdp");
+        let cloned = detail.clone();
+        assert_eq!(detail.uuid, cloned.uuid);
+    }
+}

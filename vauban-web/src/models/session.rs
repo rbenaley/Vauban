@@ -4,9 +4,8 @@
 
 use chrono::{DateTime, Utc};
 use diesel::prelude::*;
-use diesel::sql_types::Inet;
+use ipnetwork::IpNetwork;
 use serde::{Deserialize, Serialize};
-use std::net::IpAddr;
 use uuid::Uuid;
 
 use crate::schema::proxy_sessions;
@@ -91,7 +90,8 @@ pub struct ProxySession {
     pub credential_username: String,
     pub session_type: String,
     pub status: String,
-    pub client_ip: String,
+    #[serde(skip_serializing)]
+    pub client_ip: IpNetwork,
     pub client_user_agent: Option<String>,
     pub proxy_instance: Option<String>,
     pub connected_at: Option<DateTime<Utc>>,
@@ -118,7 +118,7 @@ pub struct NewProxySession {
     pub credential_username: String,
     pub session_type: String,
     pub status: String,
-    pub client_ip: String,
+    pub client_ip: IpNetwork,
     pub client_user_agent: Option<String>,
     pub proxy_instance: Option<String>,
     pub justification: Option<String>,
@@ -161,5 +161,211 @@ pub struct CreateSessionRequest {
     pub credential_id: String,
     pub session_type: String,
     pub justification: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Duration;
+
+    /// Helper to create a test session
+    fn create_test_session() -> ProxySession {
+        ProxySession {
+            id: 1,
+            uuid: Uuid::new_v4(),
+            user_id: 1,
+            asset_id: 1,
+            credential_id: "cred-123".to_string(),
+            credential_username: "admin".to_string(),
+            session_type: "ssh".to_string(),
+            status: "active".to_string(),
+            client_ip: "192.168.1.10/32".parse().unwrap(),
+            client_user_agent: Some("Mozilla/5.0".to_string()),
+            proxy_instance: Some("proxy-01".to_string()),
+            connected_at: Some(Utc::now() - Duration::hours(1)),
+            disconnected_at: None,
+            justification: Some("Maintenance task".to_string()),
+            is_recorded: true,
+            recording_path: Some("/recordings/session-1.cast".to_string()),
+            bytes_sent: 1024,
+            bytes_received: 2048,
+            commands_count: 15,
+            metadata: serde_json::json!({}),
+            created_at: Utc::now() - Duration::hours(1),
+            updated_at: Utc::now(),
+        }
+    }
+
+    // ==================== SessionType Tests ====================
+
+    #[test]
+    fn test_session_type_from_str_ssh() {
+        assert_eq!(SessionType::from_str("ssh"), SessionType::Ssh);
+    }
+
+    #[test]
+    fn test_session_type_from_str_rdp() {
+        assert_eq!(SessionType::from_str("rdp"), SessionType::Rdp);
+    }
+
+    #[test]
+    fn test_session_type_from_str_vnc() {
+        assert_eq!(SessionType::from_str("vnc"), SessionType::Vnc);
+    }
+
+    #[test]
+    fn test_session_type_from_str_unknown() {
+        assert_eq!(SessionType::from_str("unknown"), SessionType::Ssh);
+        assert_eq!(SessionType::from_str(""), SessionType::Ssh);
+    }
+
+    #[test]
+    fn test_session_type_as_str() {
+        assert_eq!(SessionType::Ssh.as_str(), "ssh");
+        assert_eq!(SessionType::Rdp.as_str(), "rdp");
+        assert_eq!(SessionType::Vnc.as_str(), "vnc");
+    }
+
+    #[test]
+    fn test_session_type_roundtrip() {
+        for session_type in [SessionType::Ssh, SessionType::Rdp, SessionType::Vnc] {
+            let str_val = session_type.as_str();
+            let parsed = SessionType::from_str(str_val);
+            assert_eq!(session_type, parsed);
+        }
+    }
+
+    // ==================== SessionStatus Tests ====================
+
+    #[test]
+    fn test_session_status_from_str_pending() {
+        assert_eq!(SessionStatus::from_str("pending"), SessionStatus::Pending);
+    }
+
+    #[test]
+    fn test_session_status_from_str_connecting() {
+        assert_eq!(SessionStatus::from_str("connecting"), SessionStatus::Connecting);
+    }
+
+    #[test]
+    fn test_session_status_from_str_active() {
+        assert_eq!(SessionStatus::from_str("active"), SessionStatus::Active);
+    }
+
+    #[test]
+    fn test_session_status_from_str_disconnected() {
+        assert_eq!(SessionStatus::from_str("disconnected"), SessionStatus::Disconnected);
+    }
+
+    #[test]
+    fn test_session_status_from_str_terminated() {
+        assert_eq!(SessionStatus::from_str("terminated"), SessionStatus::Terminated);
+    }
+
+    #[test]
+    fn test_session_status_from_str_failed() {
+        assert_eq!(SessionStatus::from_str("failed"), SessionStatus::Failed);
+    }
+
+    #[test]
+    fn test_session_status_from_str_unknown() {
+        assert_eq!(SessionStatus::from_str("unknown"), SessionStatus::Pending);
+        assert_eq!(SessionStatus::from_str(""), SessionStatus::Pending);
+    }
+
+    #[test]
+    fn test_session_status_as_str() {
+        assert_eq!(SessionStatus::Pending.as_str(), "pending");
+        assert_eq!(SessionStatus::Connecting.as_str(), "connecting");
+        assert_eq!(SessionStatus::Active.as_str(), "active");
+        assert_eq!(SessionStatus::Disconnected.as_str(), "disconnected");
+        assert_eq!(SessionStatus::Terminated.as_str(), "terminated");
+        assert_eq!(SessionStatus::Failed.as_str(), "failed");
+    }
+
+    #[test]
+    fn test_session_status_roundtrip() {
+        for status in [
+            SessionStatus::Pending,
+            SessionStatus::Connecting,
+            SessionStatus::Active,
+            SessionStatus::Disconnected,
+            SessionStatus::Terminated,
+            SessionStatus::Failed,
+        ] {
+            let str_val = status.as_str();
+            let parsed = SessionStatus::from_str(str_val);
+            assert_eq!(status, parsed);
+        }
+    }
+
+    // ==================== ProxySession Method Tests ====================
+
+    #[test]
+    fn test_session_type_enum() {
+        let session = create_test_session();
+        assert_eq!(session.session_type_enum(), SessionType::Ssh);
+    }
+
+    #[test]
+    fn test_session_status_enum() {
+        let session = create_test_session();
+        assert_eq!(session.status_enum(), SessionStatus::Active);
+    }
+
+    #[test]
+    fn test_is_active_when_active() {
+        let session = create_test_session();
+        assert!(session.is_active());
+    }
+
+    #[test]
+    fn test_is_active_when_not_active() {
+        let mut session = create_test_session();
+        session.status = "disconnected".to_string();
+        assert!(!session.is_active());
+    }
+
+    #[test]
+    fn test_is_active_when_pending() {
+        let mut session = create_test_session();
+        session.status = "pending".to_string();
+        assert!(!session.is_active());
+    }
+
+    // ==================== Duration Tests ====================
+
+    #[test]
+    fn test_duration_with_connected_at() {
+        let session = create_test_session();
+        let duration = session.duration();
+        
+        assert!(duration.is_some());
+        // Duration should be approximately 1 hour (3600 seconds), give or take
+        let dur = duration.unwrap();
+        assert!(dur >= 3590 && dur <= 3610);
+    }
+
+    #[test]
+    fn test_duration_without_connected_at() {
+        let mut session = create_test_session();
+        session.connected_at = None;
+        
+        assert!(session.duration().is_none());
+    }
+
+    #[test]
+    fn test_duration_with_disconnected_at() {
+        let mut session = create_test_session();
+        let connect_time = Utc::now() - Duration::hours(2);
+        let disconnect_time = Utc::now() - Duration::hours(1);
+        
+        session.connected_at = Some(connect_time);
+        session.disconnected_at = Some(disconnect_time);
+        
+        let duration = session.duration().unwrap();
+        // Should be approximately 1 hour (3600 seconds)
+        assert!(duration >= 3590 && duration <= 3610);
+    }
 }
 

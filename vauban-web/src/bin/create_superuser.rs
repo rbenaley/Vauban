@@ -246,3 +246,168 @@ struct ExistsBool {
     exists: bool,
 }
 
+// ==================== Validation Functions ====================
+
+/// Validate username format and length.
+pub fn validate_username(username: &str) -> Result<(), String> {
+    if username.len() < 3 {
+        return Err("Username must be at least 3 characters.".to_string());
+    }
+    if username.len() > 150 {
+        return Err("Username must be at most 150 characters.".to_string());
+    }
+    // Check for valid characters (alphanumeric, underscore, dot, hyphen)
+    if !username.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == '-') {
+        return Err("Username can only contain letters, numbers, underscores, dots, and hyphens.".to_string());
+    }
+    Ok(())
+}
+
+/// Validate email format.
+pub fn validate_email(email: &str) -> Result<(), String> {
+    if !email.contains('@') || !email.contains('.') {
+        return Err("Please enter a valid email address.".to_string());
+    }
+    // Basic email format validation
+    let parts: Vec<&str> = email.split('@').collect();
+    if parts.len() != 2 {
+        return Err("Email must contain exactly one @ symbol.".to_string());
+    }
+    if parts[0].is_empty() || parts[1].is_empty() {
+        return Err("Email cannot be empty before or after @.".to_string());
+    }
+    if !parts[1].contains('.') {
+        return Err("Email domain must contain a dot.".to_string());
+    }
+    Ok(())
+}
+
+/// Validate password strength.
+pub fn validate_password(password: &str) -> Result<(), String> {
+    if password.len() < 12 {
+        return Err("Password must be at least 12 characters.".to_string());
+    }
+    Ok(())
+}
+
+/// Validate password confirmation.
+pub fn validate_password_match(password: &str, confirmation: &str) -> Result<(), String> {
+    if password != confirmation {
+        return Err("Passwords do not match.".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==================== Username Validation Tests ====================
+
+    #[test]
+    fn test_validate_username_valid() {
+        assert!(validate_username("validuser").is_ok());
+        assert!(validate_username("user_123").is_ok());
+        assert!(validate_username("user.name").is_ok());
+        assert!(validate_username("user-name").is_ok());
+    }
+
+    #[test]
+    fn test_validate_username_too_short() {
+        assert!(validate_username("ab").is_err());
+        assert!(validate_username("a").is_err());
+        assert!(validate_username("").is_err());
+    }
+
+    #[test]
+    fn test_validate_username_too_long() {
+        let long_name = "a".repeat(151);
+        assert!(validate_username(&long_name).is_err());
+    }
+
+    #[test]
+    fn test_validate_username_minimum_length() {
+        assert!(validate_username("abc").is_ok());
+    }
+
+    #[test]
+    fn test_validate_username_maximum_length() {
+        let max_name = "a".repeat(150);
+        assert!(validate_username(&max_name).is_ok());
+    }
+
+    #[test]
+    fn test_validate_username_invalid_chars() {
+        assert!(validate_username("user@name").is_err());
+        assert!(validate_username("user name").is_err());
+        assert!(validate_username("user!name").is_err());
+    }
+
+    // ==================== Email Validation Tests ====================
+
+    #[test]
+    fn test_validate_email_valid() {
+        assert!(validate_email("user@example.com").is_ok());
+        assert!(validate_email("test.user@domain.org").is_ok());
+        assert!(validate_email("admin@company.co.uk").is_ok());
+    }
+
+    #[test]
+    fn test_validate_email_missing_at() {
+        assert!(validate_email("userexample.com").is_err());
+    }
+
+    #[test]
+    fn test_validate_email_missing_dot() {
+        assert!(validate_email("user@example").is_err());
+    }
+
+    #[test]
+    fn test_validate_email_multiple_at() {
+        assert!(validate_email("user@@example.com").is_err());
+        assert!(validate_email("user@sub@example.com").is_err());
+    }
+
+    #[test]
+    fn test_validate_email_empty_parts() {
+        assert!(validate_email("@example.com").is_err());
+        assert!(validate_email("user@").is_err());
+    }
+
+    // ==================== Password Validation Tests ====================
+
+    #[test]
+    fn test_validate_password_valid() {
+        assert!(validate_password("securepassword123").is_ok());
+        assert!(validate_password("123456789012").is_ok());
+    }
+
+    #[test]
+    fn test_validate_password_too_short() {
+        assert!(validate_password("short").is_err());
+        assert!(validate_password("12345678901").is_err()); // 11 chars
+    }
+
+    #[test]
+    fn test_validate_password_minimum_length() {
+        assert!(validate_password("123456789012").is_ok()); // Exactly 12 chars
+    }
+
+    // ==================== Password Match Tests ====================
+
+    #[test]
+    fn test_validate_password_match_success() {
+        assert!(validate_password_match("password123!", "password123!").is_ok());
+    }
+
+    #[test]
+    fn test_validate_password_match_failure() {
+        assert!(validate_password_match("password123!", "password456!").is_err());
+    }
+
+    #[test]
+    fn test_validate_password_match_case_sensitive() {
+        assert!(validate_password_match("Password123", "password123").is_err());
+    }
+}
+

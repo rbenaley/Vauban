@@ -207,3 +207,307 @@ impl AuthService {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper to create a test config
+    fn create_test_config() -> Config {
+        Config {
+            environment: crate::config::Environment::Testing,
+            secret_key: "test-secret-key-for-testing-only-32chars".to_string(),
+            database: crate::config::DatabaseConfig {
+                url: "postgresql://test:test@localhost/test".to_string(),
+                max_connections: 5,
+                min_connections: 1,
+                connect_timeout_secs: 10,
+            },
+            cache: crate::config::CacheConfig {
+                enabled: false,
+                url: "redis://localhost:6379".to_string(),
+                default_ttl_secs: 3600,
+            },
+            server: crate::config::ServerConfig {
+                host: "127.0.0.1".to_string(),
+                port: 8000,
+                workers: None,
+            },
+            jwt: crate::config::JwtConfig {
+                access_token_lifetime_minutes: 15,
+                refresh_token_lifetime_days: 1,
+                algorithm: "HS256".to_string(),
+            },
+            grpc: crate::config::GrpcConfig {
+                rbac_url: "http://localhost:50052".to_string(),
+                vault_url: "http://localhost:50053".to_string(),
+                auth_url: "http://localhost:50051".to_string(),
+                proxy_ssh_url: "http://localhost:50054".to_string(),
+                proxy_rdp_url: "http://localhost:50055".to_string(),
+                audit_url: "http://localhost:50056".to_string(),
+                mtls: crate::config::MtlsConfig {
+                    enabled: false,
+                    ca_cert: None,
+                    client_cert: None,
+                    client_key: None,
+                },
+            },
+            security: crate::config::SecurityConfig {
+                password_min_length: 12,
+                max_failed_login_attempts: 5,
+                session_max_duration_secs: 28800,
+                session_idle_timeout_secs: 1800,
+                rate_limit_per_minute: 100,
+            },
+        }
+    }
+
+    // ==================== Password Hashing Tests ====================
+
+    #[test]
+    fn test_hash_password_generates_hash() {
+        let config = create_test_config();
+        let auth_service = AuthService::new(config).unwrap();
+
+        let password = "TestPassword123!";
+        let hash = auth_service.hash_password(password).unwrap();
+
+        // Hash should not be empty
+        assert!(!hash.is_empty());
+        // Hash should start with argon2 identifier
+        assert!(hash.starts_with("$argon2"));
+        // Hash should not equal the password
+        assert_ne!(hash, password);
+    }
+
+    #[test]
+    fn test_hash_password_generates_different_hashes() {
+        let config = create_test_config();
+        let auth_service = AuthService::new(config).unwrap();
+
+        let password = "TestPassword123!";
+        let hash1 = auth_service.hash_password(password).unwrap();
+        let hash2 = auth_service.hash_password(password).unwrap();
+
+        // Different salts should produce different hashes
+        assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_verify_password_valid() {
+        let config = create_test_config();
+        let auth_service = AuthService::new(config).unwrap();
+
+        let password = "TestPassword123!";
+        let hash = auth_service.hash_password(password).unwrap();
+
+        let is_valid = auth_service.verify_password(password, &hash).unwrap();
+        assert!(is_valid);
+    }
+
+    #[test]
+    fn test_verify_password_invalid() {
+        let config = create_test_config();
+        let auth_service = AuthService::new(config).unwrap();
+
+        let password = "TestPassword123!";
+        let wrong_password = "WrongPassword456!";
+        let hash = auth_service.hash_password(password).unwrap();
+
+        let is_valid = auth_service.verify_password(wrong_password, &hash).unwrap();
+        assert!(!is_valid);
+    }
+
+    #[test]
+    fn test_verify_password_malformed_hash() {
+        let config = create_test_config();
+        let auth_service = AuthService::new(config).unwrap();
+
+        let result = auth_service.verify_password("password", "not-a-valid-hash");
+        assert!(result.is_err());
+    }
+
+    // ==================== JWT Token Tests ====================
+
+    #[test]
+    fn test_generate_access_token_success() {
+        let config = create_test_config();
+        let auth_service = AuthService::new(config).unwrap();
+
+        let token = auth_service
+            .generate_access_token(
+                "550e8400-e29b-41d4-a716-446655440000",
+                "testuser",
+                true,
+                false,
+                false,
+            )
+            .unwrap();
+
+        // Token should not be empty
+        assert!(!token.is_empty());
+        // Token should have 3 parts (header.payload.signature)
+        assert_eq!(token.split('.').count(), 3);
+    }
+
+    #[test]
+    fn test_verify_token_valid() {
+        let config = create_test_config();
+        let auth_service = AuthService::new(config).unwrap();
+
+        let user_uuid = "550e8400-e29b-41d4-a716-446655440000";
+        let username = "testuser";
+
+        let token = auth_service
+            .generate_access_token(user_uuid, username, true, true, true)
+            .unwrap();
+
+        let claims = auth_service.verify_token(&token).unwrap();
+
+        assert_eq!(claims.sub, user_uuid);
+        assert_eq!(claims.username, username);
+        assert!(claims.mfa_verified);
+        assert!(claims.is_superuser);
+        assert!(claims.is_staff);
+    }
+
+    #[test]
+    fn test_verify_token_invalid() {
+        let config = create_test_config();
+        let auth_service = AuthService::new(config).unwrap();
+
+        let result = auth_service.verify_token("invalid.token.here");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_verify_token_wrong_secret() {
+        let config1 = create_test_config();
+        let auth_service1 = AuthService::new(config1).unwrap();
+
+        let token = auth_service1
+            .generate_access_token(
+                "550e8400-e29b-41d4-a716-446655440000",
+                "testuser",
+                true,
+                false,
+                false,
+            )
+            .unwrap();
+
+        // Create another service with a different secret
+        let mut config2 = create_test_config();
+        config2.secret_key = "different-secret-key-for-testing!".to_string();
+        let auth_service2 = AuthService::new(config2).unwrap();
+
+        let result = auth_service2.verify_token(&token);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_token_claims_correctness() {
+        let config = create_test_config();
+        let auth_service = AuthService::new(config).unwrap();
+
+        let token = auth_service
+            .generate_access_token(
+                "test-uuid",
+                "testuser",
+                false, // mfa_verified
+                true,  // is_superuser
+                false, // is_staff
+            )
+            .unwrap();
+
+        let claims = auth_service.verify_token(&token).unwrap();
+
+        assert_eq!(claims.sub, "test-uuid");
+        assert_eq!(claims.username, "testuser");
+        assert!(!claims.mfa_verified);
+        assert!(claims.is_superuser);
+        assert!(!claims.is_staff);
+        assert!(claims.exp > claims.iat);
+    }
+
+    // ==================== TOTP Tests ====================
+
+    #[test]
+    fn test_generate_totp_secret_success() {
+        let (secret, uri) = AuthService::generate_totp_secret("testuser", "VAUBAN").unwrap();
+
+        // Secret should not be empty
+        assert!(!secret.is_empty());
+        // URI should contain expected parts
+        assert!(uri.contains("otpauth://totp/"));
+        assert!(uri.contains("testuser"));
+        assert!(uri.contains("VAUBAN"));
+    }
+
+    #[test]
+    fn test_generate_totp_secret_different_users() {
+        let (secret1, _) = AuthService::generate_totp_secret("user1", "VAUBAN").unwrap();
+        let (secret2, _) = AuthService::generate_totp_secret("user2", "VAUBAN").unwrap();
+
+        // Different users should get different secrets
+        assert_ne!(secret1, secret2);
+    }
+
+    #[test]
+    fn test_verify_totp_valid_code() {
+        let (secret, _) = AuthService::generate_totp_secret("testuser", "VAUBAN").unwrap();
+
+        // Get the current valid code
+        let current_code = AuthService::get_current_totp(&secret).unwrap();
+
+        // Verify the current code
+        let is_valid = AuthService::verify_totp(&secret, &current_code);
+        assert!(is_valid);
+    }
+
+    #[test]
+    fn test_verify_totp_invalid_code() {
+        let (secret, _) = AuthService::generate_totp_secret("testuser", "VAUBAN").unwrap();
+
+        // Try an obviously wrong code
+        let is_valid = AuthService::verify_totp(&secret, "000000");
+        // This might occasionally pass if 000000 is the actual code, but very unlikely
+        // For a robust test, we'd need to mock time
+        
+        // Try a malformed code
+        let is_valid_malformed = AuthService::verify_totp(&secret, "abcdef");
+        assert!(!is_valid_malformed);
+    }
+
+    #[test]
+    fn test_verify_totp_invalid_secret() {
+        let is_valid = AuthService::verify_totp("not-a-valid-base32-secret!", "123456");
+        assert!(!is_valid);
+    }
+
+    #[test]
+    fn test_get_current_totp_returns_6_digits() {
+        let (secret, _) = AuthService::generate_totp_secret("testuser", "VAUBAN").unwrap();
+        let code = AuthService::get_current_totp(&secret).unwrap();
+
+        assert_eq!(code.len(), 6);
+        assert!(code.chars().all(|c| c.is_ascii_digit()));
+    }
+
+    #[test]
+    fn test_generate_totp_qr_code_success() {
+        let (secret, _) = AuthService::generate_totp_secret("testuser", "VAUBAN").unwrap();
+        let qr_code = AuthService::generate_totp_qr_code(&secret, "testuser", "VAUBAN").unwrap();
+
+        // QR code should be base64 encoded PNG
+        assert!(!qr_code.is_empty());
+    }
+
+    // ==================== AuthService Creation Tests ====================
+
+    #[test]
+    fn test_auth_service_new_success() {
+        let config = create_test_config();
+        let result = AuthService::new(config);
+        assert!(result.is_ok());
+    }
+}
+

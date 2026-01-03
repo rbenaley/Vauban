@@ -51,3 +51,88 @@ pub struct GroupDetailTemplate {
     pub header_user: Option<crate::templates::base::UserContext>,
     pub group: GroupDetail,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_group_member() -> GroupMember {
+        GroupMember {
+            uuid: "member-uuid".to_string(),
+            username: "testuser".to_string(),
+            email: "test@example.com".to_string(),
+            full_name: Some("Test User".to_string()),
+            is_active: true,
+        }
+    }
+
+    fn create_test_group_detail(source: &str) -> GroupDetail {
+        GroupDetail {
+            uuid: "group-uuid".to_string(),
+            name: "Test Group".to_string(),
+            description: Some("A test group".to_string()),
+            source: source.to_string(),
+            external_id: None,
+            created_at: "2026-01-01 00:00:00".to_string(),
+            updated_at: "2026-01-02 00:00:00".to_string(),
+            last_synced: None,
+            members: vec![create_test_group_member()],
+        }
+    }
+
+    // Tests for GroupMember
+    #[test]
+    fn test_group_member_creation() {
+        let member = create_test_group_member();
+        assert_eq!(member.username, "testuser");
+        assert!(member.is_active);
+    }
+
+    #[test]
+    fn test_group_member_clone() {
+        let member = create_test_group_member();
+        let cloned = member.clone();
+        assert_eq!(member.uuid, cloned.uuid);
+    }
+
+    // Tests for GroupDetail source_display()
+    #[test]
+    fn test_source_display_local() {
+        let group = create_test_group_detail("local");
+        assert_eq!(group.source_display(), "Local");
+    }
+
+    #[test]
+    fn test_source_display_ldap() {
+        let group = create_test_group_detail("ldap");
+        assert_eq!(group.source_display(), "LDAP");
+    }
+
+    #[test]
+    fn test_source_display_saml() {
+        let group = create_test_group_detail("saml");
+        assert_eq!(group.source_display(), "SAML");
+    }
+
+    #[test]
+    fn test_source_display_unknown() {
+        let group = create_test_group_detail("oauth");
+        assert_eq!(group.source_display(), "oauth");
+    }
+
+    // Tests for GroupDetail struct
+    #[test]
+    fn test_group_detail_creation() {
+        let group = create_test_group_detail("local");
+        assert_eq!(group.name, "Test Group");
+        assert_eq!(group.members.len(), 1);
+    }
+
+    #[test]
+    fn test_group_detail_clone() {
+        let group = create_test_group_detail("local");
+        let cloned = group.clone();
+        assert_eq!(group.uuid, cloned.uuid);
+        assert_eq!(group.members.len(), cloned.members.len());
+    }
+}

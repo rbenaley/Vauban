@@ -92,6 +92,81 @@ cargo build --release
 - `POST /api/v1/sessions` - Create session
 - `GET /api/v1/sessions/:uuid` - Get session
 
+## Testing
+
+The project includes comprehensive tests following Rust best practices.
+
+### Test Structure
+
+```
+tests/
+├── common/
+│   └── mod.rs           # Test utilities and fixtures
+├── auth_test.rs         # Authentication integration tests
+├── accounts_test.rs     # User management tests
+├── assets_test.rs       # Asset management tests
+├── sessions_test.rs     # Session management tests
+├── middleware_test.rs   # Middleware tests
+└── security/
+    ├── mod.rs
+    ├── auth_security.rs     # Authentication security tests
+    ├── access_control.rs    # Access control tests
+    └── input_validation.rs  # Input validation tests
+```
+
+### Setting Up Test Database
+
+1. Run the setup script:
+```bash
+chmod +x scripts/setup_test_db.sh
+./scripts/setup_test_db.sh
+```
+
+Or manually:
+```bash
+createdb vauban_test
+psql -c "CREATE USER vauban_test WITH PASSWORD 'vauban_test';"
+psql -c "GRANT ALL PRIVILEGES ON DATABASE vauban_test TO vauban_test;"
+diesel migration run --database-url postgresql://vauban_test:vauban_test@localhost/vauban_test
+```
+
+2. Set environment variables:
+```bash
+export DATABASE_URL=postgresql://vauban_test:vauban_test@localhost/vauban_test
+export SECRET_KEY=test-secret-key-for-testing-only-32chars
+```
+
+### Running Tests
+
+```bash
+# Run all tests
+cargo test
+
+# Run unit tests only
+cargo test --lib
+
+# Run integration tests only
+cargo test --test '*'
+
+# Run specific test file
+cargo test --test auth_test
+
+# Run tests with output
+cargo test -- --nocapture
+
+# Run tests sequentially (required for DB tests)
+cargo test -- --test-threads=1
+
+# Run security tests only
+cargo test --test security_test
+```
+
+### Test Coverage
+
+- **Unit Tests**: Services (auth, hash, JWT, TOTP), Models, Config, Error handling
+- **Integration Tests**: All API handlers, Database operations
+- **Security Tests**: Brute force protection, SQL injection, XSS prevention, Input validation
+
 ## Security
 
 This application follows strict security practices:

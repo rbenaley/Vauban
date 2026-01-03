@@ -73,6 +73,7 @@ serde_json = "1.0"
 
 # Utilities
 uuid = { version = "1.11", features = ["v4", "serde"] }
+ipnetwork = "0.21"
 chrono = { version = "0.4", features = ["serde"] }
 time = "0.3"
 bcrypt = "0.17"
@@ -96,6 +97,12 @@ axum-extra = { version = "0.12", features = ["cookie", "typed-header"] }
 [dev-dependencies]
 tokio-test = "0.4"
 mockall = "0.14"
+axum-test = "17"
+diesel_migrations = "2.2"
+tempfile = "3"
+serial_test = "3"
+once_cell = "1.19"
+insta = { version = "1.40", features = ["yaml"] }
 
 [[bin]]
 name = "seed_data"

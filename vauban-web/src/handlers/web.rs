@@ -2017,3 +2017,159 @@ pub async fn update_asset_group(
     // Redirect back to the group detail page
     Ok(axum::response::Redirect::to(&format!("/assets/groups/{}", group_uuid)))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==================== user_context_from_auth Tests ====================
+
+    fn create_test_auth_user() -> AuthUser {
+        AuthUser {
+            uuid: "test-uuid-123".to_string(),
+            username: "testuser".to_string(),
+            mfa_verified: true,
+            is_superuser: false,
+            is_staff: false,
+        }
+    }
+
+    #[test]
+    fn test_user_context_from_auth_basic() {
+        let auth = create_test_auth_user();
+        let ctx = user_context_from_auth(&auth);
+
+        assert_eq!(ctx.uuid, "test-uuid-123");
+        assert_eq!(ctx.username, "testuser");
+        assert_eq!(ctx.display_name, "testuser"); // Default to username
+        assert!(!ctx.is_superuser);
+        assert!(!ctx.is_staff);
+    }
+
+    #[test]
+    fn test_user_context_from_auth_superuser() {
+        let auth = AuthUser {
+            uuid: "admin-uuid".to_string(),
+            username: "admin".to_string(),
+            mfa_verified: true,
+            is_superuser: true,
+            is_staff: true,
+        };
+        let ctx = user_context_from_auth(&auth);
+
+        assert!(ctx.is_superuser);
+        assert!(ctx.is_staff);
+    }
+
+    #[test]
+    fn test_user_context_from_auth_staff_only() {
+        let auth = AuthUser {
+            uuid: "staff-uuid".to_string(),
+            username: "operator".to_string(),
+            mfa_verified: false,
+            is_superuser: false,
+            is_staff: true,
+        };
+        let ctx = user_context_from_auth(&auth);
+
+        assert!(!ctx.is_superuser);
+        assert!(ctx.is_staff);
+    }
+
+    #[test]
+    fn test_user_context_from_auth_preserves_uuid() {
+        let auth = AuthUser {
+            uuid: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            username: "user".to_string(),
+            mfa_verified: true,
+            is_superuser: false,
+            is_staff: false,
+        };
+        let ctx = user_context_from_auth(&auth);
+
+        assert_eq!(ctx.uuid, "550e8400-e29b-41d4-a716-446655440000");
+    }
+
+    // ==================== UpdateAssetGroupForm Tests ====================
+
+    #[test]
+    fn test_update_asset_group_form_deserialize_full() {
+        let json = r##"{"name": "Production Servers", "slug": "production-servers", "description": "All production servers", "color": "#ff5733", "icon": "server"}"##;
+
+        let form: UpdateAssetGroupForm = serde_json::from_str(json).unwrap();
+
+        assert_eq!(form.name, "Production Servers");
+        assert_eq!(form.slug, "production-servers");
+        assert_eq!(form.description, Some("All production servers".to_string()));
+        assert_eq!(form.color, "#ff5733");
+        assert_eq!(form.icon, "server");
+    }
+
+    #[test]
+    fn test_update_asset_group_form_deserialize_minimal() {
+        let json = r##"{"name": "Test", "slug": "test", "color": "#fff", "icon": "folder"}"##;
+
+        let form: UpdateAssetGroupForm = serde_json::from_str(json).unwrap();
+
+        assert_eq!(form.name, "Test");
+        assert_eq!(form.slug, "test");
+        assert!(form.description.is_none());
+        assert_eq!(form.color, "#fff");
+        assert_eq!(form.icon, "folder");
+    }
+
+    #[test]
+    fn test_update_asset_group_form_deserialize_with_null_description() {
+        let json = r##"{"name": "Group", "slug": "group", "description": null, "color": "#000", "icon": "box"}"##;
+
+        let form: UpdateAssetGroupForm = serde_json::from_str(json).unwrap();
+
+        assert!(form.description.is_none());
+    }
+
+    #[test]
+    fn test_update_asset_group_form_deserialize_special_chars() {
+        let json = r##"{"name": "Test's Group", "slug": "tests-group", "description": "Description with quotes", "color": "#123456", "icon": "database"}"##;
+
+        let form: UpdateAssetGroupForm = serde_json::from_str(json).unwrap();
+
+        assert_eq!(form.name, "Test's Group");
+        assert!(form.description.unwrap().contains("quotes"));
+    }
+
+    #[test]
+    fn test_update_asset_group_form_debug() {
+        let form = UpdateAssetGroupForm {
+            name: "Debug Test".to_string(),
+            slug: "debug-test".to_string(),
+            description: Some("Test description".to_string()),
+            color: "#abcdef".to_string(),
+            icon: "cloud".to_string(),
+        };
+
+        let debug_str = format!("{:?}", form);
+
+        assert!(debug_str.contains("UpdateAssetGroupForm"));
+        assert!(debug_str.contains("Debug Test"));
+    }
+
+    #[test]
+    fn test_update_asset_group_form_missing_required_field() {
+        // Missing 'icon' field
+        let json = r##"{"name": "Test", "slug": "test", "color": "#fff"}"##;
+
+        let result: Result<UpdateAssetGroupForm, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_update_asset_group_form_empty_strings() {
+        let json = r#"{"name": "", "slug": "", "color": "", "icon": ""}"#;
+
+        let form: UpdateAssetGroupForm = serde_json::from_str(json).unwrap();
+
+        // Empty strings are valid for deserialization (validation is separate)
+        assert_eq!(form.name, "");
+        assert_eq!(form.slug, "");
+    }
+}

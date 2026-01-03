@@ -50,7 +50,11 @@ pub async fn get_user(
     let user = users
         .filter(uuid.eq(user_uuid))
         .filter(is_deleted.eq(false))
-        .first::<User>(&mut conn)?;
+        .first::<User>(&mut conn)
+        .map_err(|e| match e {
+            diesel::result::Error::NotFound => AppError::NotFound("User not found".to_string()),
+            _ => AppError::Database(e),
+        })?;
 
     Ok(Json(user.to_dto()))
 }
@@ -126,7 +130,11 @@ pub async fn update_user(
 
     let user: User = diesel::update(users.filter(uuid.eq(user_uuid)))
         .set(&update_data)
-        .get_result(&mut conn)?;
+        .get_result(&mut conn)
+        .map_err(|e| match e {
+            diesel::result::Error::NotFound => AppError::NotFound("User not found".to_string()),
+            _ => AppError::Database(e),
+        })?;
 
     Ok(Json(user.to_dto()))
 }
@@ -137,5 +145,203 @@ pub struct ListUsersParams {
     pub search: Option<String>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
+}
+
+impl ListUsersParams {
+    /// Get limit with default value.
+    pub fn get_limit(&self) -> i64 {
+        self.limit.unwrap_or(50)
+    }
+
+    /// Get offset with default value.
+    pub fn get_offset(&self) -> i64 {
+        self.offset.unwrap_or(0)
+    }
+
+    /// Check if search term is provided.
+    pub fn has_search(&self) -> bool {
+        self.search.as_ref().map(|s| !s.is_empty()).unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::user::{CreateUserRequest, UpdateUserRequest};
+    use validator::Validate;
+
+    // ==================== ListUsersParams Tests ====================
+
+    #[test]
+    fn test_list_users_params_default_limit() {
+        let params = ListUsersParams {
+            search: None,
+            limit: None,
+            offset: None,
+        };
+
+        assert_eq!(params.get_limit(), 50);
+    }
+
+    #[test]
+    fn test_list_users_params_custom_limit() {
+        let params = ListUsersParams {
+            search: None,
+            limit: Some(100),
+            offset: None,
+        };
+
+        assert_eq!(params.get_limit(), 100);
+    }
+
+    #[test]
+    fn test_list_users_params_default_offset() {
+        let params = ListUsersParams {
+            search: None,
+            limit: None,
+            offset: None,
+        };
+
+        assert_eq!(params.get_offset(), 0);
+    }
+
+    #[test]
+    fn test_list_users_params_custom_offset() {
+        let params = ListUsersParams {
+            search: None,
+            limit: None,
+            offset: Some(25),
+        };
+
+        assert_eq!(params.get_offset(), 25);
+    }
+
+    #[test]
+    fn test_list_users_params_has_search_none() {
+        let params = ListUsersParams {
+            search: None,
+            limit: None,
+            offset: None,
+        };
+
+        assert!(!params.has_search());
+    }
+
+    #[test]
+    fn test_list_users_params_has_search_empty() {
+        let params = ListUsersParams {
+            search: Some("".to_string()),
+            limit: None,
+            offset: None,
+        };
+
+        assert!(!params.has_search());
+    }
+
+    #[test]
+    fn test_list_users_params_has_search_valid() {
+        let params = ListUsersParams {
+            search: Some("admin".to_string()),
+            limit: None,
+            offset: None,
+        };
+
+        assert!(params.has_search());
+    }
+
+    #[test]
+    fn test_list_users_params_debug() {
+        let params = ListUsersParams {
+            search: Some("test".to_string()),
+            limit: Some(10),
+            offset: Some(5),
+        };
+
+        let debug_str = format!("{:?}", params);
+
+        assert!(debug_str.contains("ListUsersParams"));
+        assert!(debug_str.contains("test"));
+        assert!(debug_str.contains("10"));
+        assert!(debug_str.contains("5"));
+    }
+
+    // ==================== CreateUserRequest Validation Tests ====================
+
+    #[test]
+    fn test_create_user_request_valid() {
+        let request = CreateUserRequest {
+            username: "newuser".to_string(),
+            email: "new@example.com".to_string(),
+            password: "securepassword123".to_string(),
+            first_name: Some("New".to_string()),
+            last_name: Some("User".to_string()),
+            phone: None,
+            is_staff: None,
+            is_superuser: None,
+        };
+
+        assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn test_create_user_request_invalid_email() {
+        let request = CreateUserRequest {
+            username: "newuser".to_string(),
+            email: "not-an-email".to_string(),
+            password: "securepassword123".to_string(),
+            first_name: None,
+            last_name: None,
+            phone: None,
+            is_staff: None,
+            is_superuser: None,
+        };
+
+        assert!(request.validate().is_err());
+    }
+
+    // ==================== UpdateUserRequest Validation Tests ====================
+
+    #[test]
+    fn test_update_user_request_valid() {
+        let request = UpdateUserRequest {
+            email: Some("updated@example.com".to_string()),
+            first_name: Some("Updated".to_string()),
+            last_name: Some("Name".to_string()),
+            phone: Some("+1234567890".to_string()),
+            is_active: Some(true),
+            preferences: None,
+        };
+
+        assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn test_update_user_request_invalid_email() {
+        let request = UpdateUserRequest {
+            email: Some("invalid".to_string()),
+            first_name: None,
+            last_name: None,
+            phone: None,
+            is_active: None,
+            preferences: None,
+        };
+
+        assert!(request.validate().is_err());
+    }
+
+    #[test]
+    fn test_update_user_request_empty() {
+        let request = UpdateUserRequest {
+            email: None,
+            first_name: None,
+            last_name: None,
+            phone: None,
+            is_active: None,
+            preferences: None,
+        };
+
+        // Empty update should be valid
+        assert!(request.validate().is_ok());
+    }
 }
 

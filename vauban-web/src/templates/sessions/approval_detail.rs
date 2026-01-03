@@ -51,3 +51,92 @@ pub struct ApprovalDetailTemplate {
     pub header_user: Option<crate::templates::base::UserContext>,
     pub approval: ApprovalDetail,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_approval_detail(status: &str) -> ApprovalDetail {
+        ApprovalDetail {
+            uuid: "approval-uuid".to_string(),
+            username: "testuser".to_string(),
+            user_email: "test@example.com".to_string(),
+            asset_name: "Test Server".to_string(),
+            asset_type: "linux".to_string(),
+            asset_hostname: "test.example.com".to_string(),
+            session_type: "ssh".to_string(),
+            status: status.to_string(),
+            justification: Some("Need access for maintenance".to_string()),
+            client_ip: "192.168.1.100".to_string(),
+            credential_username: "admin".to_string(),
+            created_at: "2026-01-03 10:00:00".to_string(),
+            is_recorded: true,
+        }
+    }
+
+    // Tests for status_class()
+    #[test]
+    fn test_status_class_pending() {
+        let detail = create_test_approval_detail("pending");
+        assert!(detail.status_class().contains("yellow"));
+    }
+
+    #[test]
+    fn test_status_class_approved() {
+        let detail = create_test_approval_detail("approved");
+        assert!(detail.status_class().contains("green"));
+    }
+
+    #[test]
+    fn test_status_class_rejected() {
+        let detail = create_test_approval_detail("rejected");
+        assert!(detail.status_class().contains("red"));
+    }
+
+    #[test]
+    fn test_status_class_expired() {
+        let detail = create_test_approval_detail("expired");
+        assert!(detail.status_class().contains("gray"));
+    }
+
+    #[test]
+    fn test_status_class_unknown() {
+        let detail = create_test_approval_detail("unknown");
+        assert!(detail.status_class().contains("gray"));
+    }
+
+    // Tests for is_pending()
+    #[test]
+    fn test_is_pending_true() {
+        let detail = create_test_approval_detail("pending");
+        assert!(detail.is_pending());
+    }
+
+    #[test]
+    fn test_is_pending_false() {
+        let detail = create_test_approval_detail("approved");
+        assert!(!detail.is_pending());
+    }
+
+    // Tests for ApprovalDetail struct
+    #[test]
+    fn test_approval_detail_creation() {
+        let detail = create_test_approval_detail("pending");
+        assert_eq!(detail.username, "testuser");
+        assert!(detail.is_recorded);
+    }
+
+    #[test]
+    fn test_approval_detail_without_justification() {
+        let mut detail = create_test_approval_detail("pending");
+        detail.justification = None;
+        assert!(detail.justification.is_none());
+    }
+
+    #[test]
+    fn test_approval_detail_clone() {
+        let detail = create_test_approval_detail("approved");
+        let cloned = detail.clone();
+        assert_eq!(detail.uuid, cloned.uuid);
+    }
+}

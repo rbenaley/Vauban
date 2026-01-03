@@ -615,3 +615,200 @@ struct ExistsResult {
     #[diesel(sql_type = diesel::sql_types::Bool)]
     exists: bool,
 }
+
+// ==================== Data Generation Functions ====================
+
+/// Generate a random asset name based on type.
+pub fn generate_asset_name(asset_type: &str, index: usize) -> String {
+    let prefixes = match asset_type {
+        "ssh" => ["web", "app", "db", "cache", "proxy", "monitor"],
+        "rdp" => ["desktop", "workstation", "terminal", "citrix", "admin", "dev"],
+        "vnc" => ["kvm", "console", "remote", "display", "graphic", "screen"],
+        _ => ["server", "host", "node", "instance", "vm", "container"],
+    };
+    
+    let prefix = prefixes[index % prefixes.len()];
+    format!("{}-{:03}", prefix, index + 1)
+}
+
+/// Generate a hostname from asset name.
+pub fn generate_hostname(asset_name: &str, domain: &str) -> String {
+    format!("{}.{}", asset_name.to_lowercase(), domain)
+}
+
+/// Generate a random IP address in a given range.
+pub fn generate_ip_address(base: &str, index: usize) -> String {
+    let parts: Vec<&str> = base.split('.').collect();
+    if parts.len() >= 3 {
+        format!("{}.{}.{}.{}", parts[0], parts[1], parts[2], (index % 254) + 1)
+    } else {
+        format!("10.0.0.{}", (index % 254) + 1)
+    }
+}
+
+/// Get default port for asset type.
+pub fn get_default_port(asset_type: &str) -> i32 {
+    match asset_type {
+        "ssh" => 22,
+        "rdp" => 3389,
+        "vnc" => 5900,
+        _ => 22,
+    }
+}
+
+/// Generate session status.
+pub fn generate_session_status(index: usize) -> &'static str {
+    match index % 5 {
+        0 => "active",
+        1 => "completed",
+        2 => "terminated",
+        3 => "error",
+        _ => "completed",
+    }
+}
+
+/// Generate approval status.
+pub fn generate_approval_status(index: usize) -> &'static str {
+    match index % 4 {
+        0 => "pending",
+        1 => "approved",
+        2 => "rejected",
+        _ => "pending",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==================== Asset Name Generation Tests ====================
+
+    #[test]
+    fn test_generate_asset_name_ssh() {
+        let name = generate_asset_name("ssh", 0);
+        assert!(name.starts_with("web-"));
+        assert!(name.ends_with("001"));
+    }
+
+    #[test]
+    fn test_generate_asset_name_rdp() {
+        let name = generate_asset_name("rdp", 0);
+        assert!(name.starts_with("desktop-"));
+    }
+
+    #[test]
+    fn test_generate_asset_name_vnc() {
+        let name = generate_asset_name("vnc", 0);
+        assert!(name.starts_with("kvm-"));
+    }
+
+    #[test]
+    fn test_generate_asset_name_cycles() {
+        // SSH has 6 prefixes, so index 6 should cycle back
+        let name1 = generate_asset_name("ssh", 0);
+        let name2 = generate_asset_name("ssh", 6);
+        
+        // Both should start with "web-"
+        assert!(name1.starts_with("web-"));
+        assert!(name2.starts_with("web-"));
+        
+        // But have different numbers
+        assert!(name1.ends_with("001"));
+        assert!(name2.ends_with("007"));
+    }
+
+    // ==================== Hostname Generation Tests ====================
+
+    #[test]
+    fn test_generate_hostname() {
+        let hostname = generate_hostname("web-001", "example.com");
+        assert_eq!(hostname, "web-001.example.com");
+    }
+
+    #[test]
+    fn test_generate_hostname_lowercase() {
+        let hostname = generate_hostname("WEB-001", "example.com");
+        assert_eq!(hostname, "web-001.example.com");
+    }
+
+    // ==================== IP Address Generation Tests ====================
+
+    #[test]
+    fn test_generate_ip_address() {
+        let ip = generate_ip_address("192.168.1.0", 0);
+        assert_eq!(ip, "192.168.1.1");
+    }
+
+    #[test]
+    fn test_generate_ip_address_increment() {
+        let ip1 = generate_ip_address("10.0.0.0", 0);
+        let ip2 = generate_ip_address("10.0.0.0", 1);
+        let ip3 = generate_ip_address("10.0.0.0", 2);
+        
+        assert_eq!(ip1, "10.0.0.1");
+        assert_eq!(ip2, "10.0.0.2");
+        assert_eq!(ip3, "10.0.0.3");
+    }
+
+    #[test]
+    fn test_generate_ip_address_wraps() {
+        // Index 254 should wrap to 1
+        let ip = generate_ip_address("10.0.0.0", 254);
+        assert_eq!(ip, "10.0.0.1");
+    }
+
+    // ==================== Default Port Tests ====================
+
+    #[test]
+    fn test_get_default_port_ssh() {
+        assert_eq!(get_default_port("ssh"), 22);
+    }
+
+    #[test]
+    fn test_get_default_port_rdp() {
+        assert_eq!(get_default_port("rdp"), 3389);
+    }
+
+    #[test]
+    fn test_get_default_port_vnc() {
+        assert_eq!(get_default_port("vnc"), 5900);
+    }
+
+    #[test]
+    fn test_get_default_port_unknown() {
+        assert_eq!(get_default_port("unknown"), 22);
+    }
+
+    // ==================== Session Status Tests ====================
+
+    #[test]
+    fn test_generate_session_status() {
+        assert_eq!(generate_session_status(0), "active");
+        assert_eq!(generate_session_status(1), "completed");
+        assert_eq!(generate_session_status(2), "terminated");
+        assert_eq!(generate_session_status(3), "error");
+        assert_eq!(generate_session_status(4), "completed");
+    }
+
+    #[test]
+    fn test_generate_session_status_cycles() {
+        assert_eq!(generate_session_status(5), "active");
+        assert_eq!(generate_session_status(10), "active");
+    }
+
+    // ==================== Approval Status Tests ====================
+
+    #[test]
+    fn test_generate_approval_status() {
+        assert_eq!(generate_approval_status(0), "pending");
+        assert_eq!(generate_approval_status(1), "approved");
+        assert_eq!(generate_approval_status(2), "rejected");
+        assert_eq!(generate_approval_status(3), "pending");
+    }
+
+    #[test]
+    fn test_generate_approval_status_cycles() {
+        assert_eq!(generate_approval_status(4), "pending");
+        assert_eq!(generate_approval_status(8), "pending");
+    }
+}

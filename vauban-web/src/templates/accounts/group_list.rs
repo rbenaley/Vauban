@@ -39,3 +39,67 @@ pub struct GroupListTemplate {
     pub groups: Vec<GroupListItem>,
     pub search: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_group_item(source: &str) -> GroupListItem {
+        GroupListItem {
+            uuid: "group-uuid".to_string(),
+            name: "Test Group".to_string(),
+            description: Some("A test group".to_string()),
+            source: source.to_string(),
+            member_count: 5,
+            created_at: "2026-01-01 00:00:00".to_string(),
+        }
+    }
+
+    // Tests for source_display()
+    #[test]
+    fn test_source_display_local() {
+        let item = create_test_group_item("local");
+        assert_eq!(item.source_display(), "Local");
+    }
+
+    #[test]
+    fn test_source_display_ldap() {
+        let item = create_test_group_item("ldap");
+        assert_eq!(item.source_display(), "LDAP");
+    }
+
+    #[test]
+    fn test_source_display_saml() {
+        let item = create_test_group_item("saml");
+        assert_eq!(item.source_display(), "SAML");
+    }
+
+    #[test]
+    fn test_source_display_unknown() {
+        let item = create_test_group_item("oidc");
+        assert_eq!(item.source_display(), "oidc");
+    }
+
+    // Tests for GroupListItem struct
+    #[test]
+    fn test_group_list_item_creation() {
+        let item = create_test_group_item("local");
+        assert_eq!(item.name, "Test Group");
+        assert_eq!(item.member_count, 5);
+    }
+
+    #[test]
+    fn test_group_list_item_without_description() {
+        let mut item = create_test_group_item("local");
+        item.description = None;
+        assert!(item.description.is_none());
+    }
+
+    #[test]
+    fn test_group_list_item_clone() {
+        let item = create_test_group_item("ldap");
+        let cloned = item.clone();
+        assert_eq!(item.uuid, cloned.uuid);
+        assert_eq!(item.member_count, cloned.member_count);
+    }
+}

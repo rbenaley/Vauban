@@ -4,6 +4,7 @@
 
 use chrono::{DateTime, Utc};
 use diesel::prelude::*;
+use ipnetwork::IpNetwork;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -82,7 +83,8 @@ pub struct Asset {
     pub uuid: Uuid,
     pub name: String,
     pub hostname: String,
-    pub ip_address: Option<String>,
+    #[serde(skip_serializing)]
+    pub ip_address: Option<IpNetwork>,
     pub port: i32,
     pub asset_type: String,
     pub status: String,
@@ -111,7 +113,7 @@ pub struct NewAsset {
     pub uuid: Uuid,
     pub name: String,
     pub hostname: String,
-    pub ip_address: Option<String>,
+    pub ip_address: Option<IpNetwork>,
     pub port: i32,
     pub asset_type: String,
     pub status: String,
@@ -197,5 +199,243 @@ pub struct UpdateAssetRequest {
     pub description: Option<String>,
     pub require_mfa: Option<bool>,
     pub require_justification: Option<bool>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper to create a test asset
+    fn create_test_asset() -> Asset {
+        Asset {
+            id: 1,
+            uuid: Uuid::new_v4(),
+            name: "Test Server".to_string(),
+            hostname: "test.example.com".to_string(),
+            ip_address: Some("192.168.1.100/32".parse().unwrap()),
+            port: 22,
+            asset_type: "ssh".to_string(),
+            status: "online".to_string(),
+            group_id: None,
+            description: Some("A test server".to_string()),
+            os_type: Some("Linux".to_string()),
+            os_version: Some("Ubuntu 22.04".to_string()),
+            connection_config: serde_json::json!({}),
+            default_credential_id: None,
+            require_mfa: false,
+            require_justification: false,
+            max_session_duration: 28800,
+            last_seen: None,
+            created_by_id: None,
+            updated_by_id: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            is_deleted: false,
+            deleted_at: None,
+        }
+    }
+
+    // ==================== AssetType Tests ====================
+
+    #[test]
+    fn test_asset_type_from_str_ssh() {
+        assert_eq!(AssetType::from_str("ssh"), AssetType::Ssh);
+    }
+
+    #[test]
+    fn test_asset_type_from_str_rdp() {
+        assert_eq!(AssetType::from_str("rdp"), AssetType::Rdp);
+    }
+
+    #[test]
+    fn test_asset_type_from_str_vnc() {
+        assert_eq!(AssetType::from_str("vnc"), AssetType::Vnc);
+    }
+
+    #[test]
+    fn test_asset_type_from_str_unknown() {
+        // Unknown values default to SSH
+        assert_eq!(AssetType::from_str("unknown"), AssetType::Ssh);
+        assert_eq!(AssetType::from_str(""), AssetType::Ssh);
+        assert_eq!(AssetType::from_str("SSH"), AssetType::Ssh); // Case sensitive, defaults to SSH
+    }
+
+    #[test]
+    fn test_asset_type_as_str() {
+        assert_eq!(AssetType::Ssh.as_str(), "ssh");
+        assert_eq!(AssetType::Rdp.as_str(), "rdp");
+        assert_eq!(AssetType::Vnc.as_str(), "vnc");
+    }
+
+    #[test]
+    fn test_asset_type_default_port_ssh() {
+        assert_eq!(AssetType::Ssh.default_port(), 22);
+    }
+
+    #[test]
+    fn test_asset_type_default_port_rdp() {
+        assert_eq!(AssetType::Rdp.default_port(), 3389);
+    }
+
+    #[test]
+    fn test_asset_type_default_port_vnc() {
+        assert_eq!(AssetType::Vnc.default_port(), 5900);
+    }
+
+    #[test]
+    fn test_asset_type_roundtrip() {
+        for asset_type in [AssetType::Ssh, AssetType::Rdp, AssetType::Vnc] {
+            let str_val = asset_type.as_str();
+            let parsed = AssetType::from_str(str_val);
+            assert_eq!(asset_type, parsed);
+        }
+    }
+
+    // ==================== AssetStatus Tests ====================
+
+    #[test]
+    fn test_asset_status_from_str_online() {
+        assert_eq!(AssetStatus::from_str("online"), AssetStatus::Online);
+    }
+
+    #[test]
+    fn test_asset_status_from_str_offline() {
+        assert_eq!(AssetStatus::from_str("offline"), AssetStatus::Offline);
+    }
+
+    #[test]
+    fn test_asset_status_from_str_maintenance() {
+        assert_eq!(AssetStatus::from_str("maintenance"), AssetStatus::Maintenance);
+    }
+
+    #[test]
+    fn test_asset_status_from_str_unknown() {
+        assert_eq!(AssetStatus::from_str("unknown"), AssetStatus::Unknown);
+        assert_eq!(AssetStatus::from_str("invalid"), AssetStatus::Unknown);
+        assert_eq!(AssetStatus::from_str(""), AssetStatus::Unknown);
+    }
+
+    #[test]
+    fn test_asset_status_as_str() {
+        assert_eq!(AssetStatus::Online.as_str(), "online");
+        assert_eq!(AssetStatus::Offline.as_str(), "offline");
+        assert_eq!(AssetStatus::Maintenance.as_str(), "maintenance");
+        assert_eq!(AssetStatus::Unknown.as_str(), "unknown");
+    }
+
+    #[test]
+    fn test_asset_status_roundtrip() {
+        for status in [AssetStatus::Online, AssetStatus::Offline, AssetStatus::Maintenance, AssetStatus::Unknown] {
+            let str_val = status.as_str();
+            let parsed = AssetStatus::from_str(str_val);
+            assert_eq!(status, parsed);
+        }
+    }
+
+    // ==================== Asset Method Tests ====================
+
+    #[test]
+    fn test_asset_type_enum() {
+        let asset = create_test_asset();
+        assert_eq!(asset.asset_type_enum(), AssetType::Ssh);
+    }
+
+    #[test]
+    fn test_asset_status_enum() {
+        let asset = create_test_asset();
+        assert_eq!(asset.status_enum(), AssetStatus::Online);
+    }
+
+    #[test]
+    fn test_asset_connection_string() {
+        let asset = create_test_asset();
+        assert_eq!(asset.connection_string(), "test.example.com:22");
+    }
+
+    #[test]
+    fn test_asset_connection_string_different_port() {
+        let mut asset = create_test_asset();
+        asset.port = 2222;
+        asset.hostname = "server.local".to_string();
+        assert_eq!(asset.connection_string(), "server.local:2222");
+    }
+
+    // ==================== Validation Tests ====================
+
+    #[test]
+    fn test_create_asset_request_validation_valid() {
+        use validator::Validate;
+
+        let request = CreateAssetRequest {
+            name: "My Server".to_string(),
+            hostname: "server.example.com".to_string(),
+            ip_address: Some("192.168.1.1".to_string()),
+            port: Some(22),
+            asset_type: "ssh".to_string(),
+            group_id: None,
+            description: None,
+            require_mfa: None,
+            require_justification: None,
+        };
+
+        assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn test_create_asset_request_validation_empty_name() {
+        use validator::Validate;
+
+        let request = CreateAssetRequest {
+            name: "".to_string(), // Empty name (min 1)
+            hostname: "server.example.com".to_string(),
+            ip_address: None,
+            port: None,
+            asset_type: "ssh".to_string(),
+            group_id: None,
+            description: None,
+            require_mfa: None,
+            require_justification: None,
+        };
+
+        assert!(request.validate().is_err());
+    }
+
+    #[test]
+    fn test_create_asset_request_validation_invalid_port() {
+        use validator::Validate;
+
+        let request = CreateAssetRequest {
+            name: "My Server".to_string(),
+            hostname: "server.example.com".to_string(),
+            ip_address: None,
+            port: Some(70000), // Invalid port (max 65535)
+            asset_type: "ssh".to_string(),
+            group_id: None,
+            description: None,
+            require_mfa: None,
+            require_justification: None,
+        };
+
+        assert!(request.validate().is_err());
+    }
+
+    #[test]
+    fn test_create_asset_request_validation_port_zero() {
+        use validator::Validate;
+
+        let request = CreateAssetRequest {
+            name: "My Server".to_string(),
+            hostname: "server.example.com".to_string(),
+            ip_address: None,
+            port: Some(0), // Invalid port (min 1)
+            asset_type: "ssh".to_string(),
+            group_id: None,
+            description: None,
+            require_mfa: None,
+            require_justification: None,
+        };
+
+        assert!(request.validate().is_err());
+    }
 }
 

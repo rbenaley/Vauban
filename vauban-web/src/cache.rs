@@ -187,3 +187,151 @@ impl CacheOps for MockCache {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::{Deserialize, Serialize};
+
+    // ==================== MockCache Tests ====================
+
+    #[test]
+    fn test_mock_cache_new() {
+        let cache = MockCache::new();
+        // Just verify it can be created
+        assert!(std::mem::size_of_val(&cache) == 0); // Zero-sized type
+    }
+
+    #[test]
+    fn test_mock_cache_clone() {
+        let cache = MockCache::new();
+        let cloned = cache.clone();
+        // Both should be identical ZSTs
+        assert!(std::mem::size_of_val(&cloned) == 0);
+    }
+
+    #[test]
+    fn test_mock_cache_debug() {
+        let cache = MockCache::new();
+        let debug_str = format!("{:?}", cache);
+        assert_eq!(debug_str, "MockCache");
+    }
+
+    // ==================== MockCache CacheOps Tests ====================
+
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+    struct TestData {
+        id: i32,
+        name: String,
+    }
+
+    #[tokio::test]
+    async fn test_mock_cache_get_returns_none() {
+        let cache = MockCache::new();
+        let result: Option<TestData> = cache.get("any_key").await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_mock_cache_get_with_different_keys() {
+        let cache = MockCache::new();
+        
+        let result1: Option<String> = cache.get("key1").await.unwrap();
+        let result2: Option<i32> = cache.get("key2").await.unwrap();
+        let result3: Option<TestData> = cache.get("key3").await.unwrap();
+        
+        assert!(result1.is_none());
+        assert!(result2.is_none());
+        assert!(result3.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_mock_cache_set_succeeds() {
+        let cache = MockCache::new();
+        let data = TestData { id: 1, name: "test".to_string() };
+        
+        let result = cache.set("test_key", &data, None).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_mock_cache_set_with_ttl_succeeds() {
+        let cache = MockCache::new();
+        let data = TestData { id: 1, name: "test".to_string() };
+        
+        let result = cache.set("test_key", &data, Some(3600)).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_mock_cache_delete_succeeds() {
+        let cache = MockCache::new();
+        
+        let result = cache.delete("any_key").await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_mock_cache_exists_returns_false() {
+        let cache = MockCache::new();
+        
+        let result = cache.exists("any_key").await.unwrap();
+        assert!(!result);
+    }
+
+    #[tokio::test]
+    async fn test_mock_cache_set_then_get_returns_none() {
+        // Mock cache doesn't actually store - this verifies behavior
+        let cache = MockCache::new();
+        let data = TestData { id: 42, name: "important".to_string() };
+        
+        cache.set("my_key", &data, None).await.unwrap();
+        let result: Option<TestData> = cache.get("my_key").await.unwrap();
+        
+        // Mock always returns None even after set
+        assert!(result.is_none());
+    }
+
+    // ==================== CacheConnection::Mock Tests ====================
+
+    #[tokio::test]
+    async fn test_cache_connection_mock_get() {
+        let conn = CacheConnection::Mock(Arc::new(MockCache::new()));
+        let result: Option<String> = conn.get("test").await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_cache_connection_mock_set() {
+        let conn = CacheConnection::Mock(Arc::new(MockCache::new()));
+        let result = conn.set("key", &"value", None).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_cache_connection_mock_delete() {
+        let conn = CacheConnection::Mock(Arc::new(MockCache::new()));
+        let result = conn.delete("key").await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_cache_connection_mock_exists() {
+        let conn = CacheConnection::Mock(Arc::new(MockCache::new()));
+        let result = conn.exists("key").await.unwrap();
+        assert!(!result);
+    }
+
+    #[tokio::test]
+    async fn test_cache_connection_clone() {
+        let conn = CacheConnection::Mock(Arc::new(MockCache::new()));
+        let cloned = conn.clone();
+        
+        // Both should work independently
+        let result1 = conn.exists("key").await.unwrap();
+        let result2 = cloned.exists("key").await.unwrap();
+        
+        assert!(!result1);
+        assert!(!result2);
+    }
+}
+

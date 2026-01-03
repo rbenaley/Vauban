@@ -97,3 +97,113 @@ impl IntoResponse for AppError {
 /// Result type alias for convenience.
 pub type AppResult<T> = Result<T, AppError>;
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==================== AppError Display Tests ====================
+
+    #[test]
+    fn test_app_error_display_auth() {
+        let error = AppError::Auth("Invalid credentials".to_string());
+        assert_eq!(error.to_string(), "Authentication error: Invalid credentials");
+    }
+
+    #[test]
+    fn test_app_error_display_authorization() {
+        let error = AppError::Authorization("Access denied".to_string());
+        assert_eq!(error.to_string(), "Authorization error: Access denied");
+    }
+
+    #[test]
+    fn test_app_error_display_validation() {
+        let error = AppError::Validation("Invalid input".to_string());
+        assert_eq!(error.to_string(), "Validation error: Invalid input");
+    }
+
+    #[test]
+    fn test_app_error_display_not_found() {
+        let error = AppError::NotFound("User not found".to_string());
+        assert_eq!(error.to_string(), "Not found: User not found");
+    }
+
+    #[test]
+    fn test_app_error_display_config() {
+        let error = AppError::Config("Missing SECRET_KEY".to_string());
+        assert_eq!(error.to_string(), "Configuration error: Missing SECRET_KEY");
+    }
+
+    // ==================== IntoResponse Tests ====================
+    // Note: We test status code only - body extraction requires additional dependencies.
+
+    #[test]
+    fn test_app_error_into_response_auth_status() {
+        let error = AppError::Auth("Invalid token".to_string());
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn test_app_error_into_response_authorization_status() {
+        let error = AppError::Authorization("Forbidden".to_string());
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn test_app_error_into_response_validation_status() {
+        let error = AppError::Validation("Invalid email".to_string());
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_app_error_into_response_not_found_status() {
+        let error = AppError::NotFound("Resource not found".to_string());
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn test_app_error_into_response_internal_status() {
+        let error = AppError::Internal(anyhow::anyhow!("Something went wrong"));
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn test_app_error_into_response_config_status() {
+        let error = AppError::Config("Bad config".to_string());
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    // ==================== Error From Trait Tests ====================
+
+    #[test]
+    fn test_app_error_from_anyhow() {
+        let anyhow_error = anyhow::anyhow!("Something failed");
+        let app_error: AppError = anyhow_error.into();
+        
+        match app_error {
+            AppError::Internal(_) => (), // Expected
+            _ => panic!("Expected Internal error"),
+        }
+    }
+
+    // ==================== AppResult Tests ====================
+
+    #[test]
+    fn test_app_result_ok() {
+        let result: AppResult<i32> = Ok(42);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 42);
+    }
+
+    #[test]
+    fn test_app_result_err() {
+        let result: AppResult<i32> = Err(AppError::NotFound("Not found".to_string()));
+        assert!(result.is_err());
+    }
+}
+
