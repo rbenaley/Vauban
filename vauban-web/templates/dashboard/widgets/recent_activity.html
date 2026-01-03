@@ -1,0 +1,35 @@
+<!-- Recent activity widget -->
+{% if !activities.is_empty() %}
+<ul role="list" class="divide-y divide-gray-200 dark:divide-gray-700">
+    {% for activity in activities %}
+    <li class="py-3">
+        <div class="flex items-center space-x-3">
+            <div class="flex-shrink-0">
+                <div class="h-8 w-8 rounded-full bg-vauban-100 dark:bg-vauban-900/50 flex items-center justify-center">
+                    <span class="text-vauban-600 dark:text-vauban-400 text-xs font-medium">
+                        {{ activity.user[..1].to_uppercase() }}
+                    </span>
+                </div>
+            </div>
+            <div class="min-w-0 flex-1">
+                <p class="text-sm text-gray-900 dark:text-white">
+                    <span class="font-medium">{{ activity.user }}</span>
+                    {{ activity.action }}
+                    {% if activity.asset.is_some() %}
+                    <span class="font-medium">{{ activity.asset.as_ref().unwrap() }}</span>
+                    {% endif %}
+                </p>
+                <p class="text-xs text-gray-500 dark:text-gray-400">
+                    {{ activity.timestamp.format("%H:%M") }}
+                </p>
+            </div>
+        </div>
+    </li>
+    {% endfor %}
+</ul>
+{% else %}
+<div class="text-center py-6">
+    <p class="text-sm text-gray-500 dark:text-gray-400">No recent activity</p>
+</div>
+{% endif %}
+

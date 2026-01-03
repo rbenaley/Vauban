@@ -1,0 +1,56 @@
+<!-- Active sessions widget -->
+{% if !sessions.is_empty() %}
+<ul role="list" class="divide-y divide-gray-200 dark:divide-gray-700">
+    {% for session in sessions %}
+    <li class="py-3 flex items-center justify-between">
+        <div class="flex items-center min-w-0">
+            <span class="relative flex h-3 w-3 mr-3">
+                <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                <span class="relative inline-flex rounded-full h-3 w-3 bg-green-500"></span>
+            </span>
+            <div class="min-w-0 flex-1">
+                <p class="text-sm font-medium text-gray-900 dark:text-white truncate">
+                    {{ session.asset_name }}
+                </p>
+                <p class="text-xs text-gray-500 dark:text-gray-400 truncate">
+                    {{ session.asset_hostname }} • {{ session.session_type|upper }}
+                </p>
+            </div>
+        </div>
+        <div class="ml-4 flex items-center space-x-2">
+            {% if session.duration_seconds.is_some() %}
+            <span class="text-xs text-gray-500 dark:text-gray-400">
+                {{ session.duration_seconds.as_ref().unwrap() }}s
+            </span>
+            {% endif %}
+            <a href="/sessions/{{ session.id }}"
+               class="text-vauban-600 hover:text-vauban-500">
+                <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25"/>
+                </svg>
+            </a>
+        </div>
+    </li>
+    {% endfor %}
+</ul>
+{% else %}
+<div class="text-center py-6">
+    <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0021 18V6a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 6v12a2.25 2.25 0 002.25 2.25z"/>
+    </svg>
+    <h3 class="mt-2 text-sm font-medium text-gray-900 dark:text-white">No active sessions</h3>
+    <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+        Start by connecting to a server.
+    </p>
+    <div class="mt-6">
+        <a href="/assets"
+           class="inline-flex items-center rounded-md bg-vauban-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500">
+            <svg class="-ml-0.5 mr-1.5 h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                <path d="M10.75 4.75a.75.75 0 00-1.5 0v4.5h-4.5a.75.75 0 000 1.5h4.5v4.5a.75.75 0 001.5 0v-4.5h4.5a.75.75 0 000-1.5h-4.5v-4.5z"/>
+            </svg>
+            Connect
+        </a>
+    </div>
+</div>
+{% endif %}
+

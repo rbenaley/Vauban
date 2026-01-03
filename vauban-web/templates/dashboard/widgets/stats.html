@@ -1,0 +1,34 @@
+<!-- Statistics widget -->
+<div class="bg-white dark:bg-gray-800 overflow-hidden shadow rounded-lg">
+    <div class="px-4 py-5 sm:p-6">
+        <dt class="text-sm font-medium text-gray-500 dark:text-gray-400 truncate">
+            Active sessions
+        </dt>
+        <dd class="mt-1 text-3xl font-semibold tracking-tight text-gray-900 dark:text-white">
+            {{ stats.active_sessions }}
+        </dd>
+    </div>
+</div>
+
+<div class="bg-white dark:bg-gray-800 overflow-hidden shadow rounded-lg">
+    <div class="px-4 py-5 sm:p-6">
+        <dt class="text-sm font-medium text-gray-500 dark:text-gray-400 truncate">
+            Sessions today
+        </dt>
+        <dd class="mt-1 text-3xl font-semibold tracking-tight text-gray-900 dark:text-white">
+            {{ stats.today_sessions }}
+        </dd>
+    </div>
+</div>
+
+<div class="bg-white dark:bg-gray-800 overflow-hidden shadow rounded-lg">
+    <div class="px-4 py-5 sm:p-6">
+        <dt class="text-sm font-medium text-gray-500 dark:text-gray-400 truncate">
+            Sessions this week
+        </dt>
+        <dd class="mt-1 text-3xl font-semibold tracking-tight text-gray-900 dark:text-white">
+            {{ stats.week_sessions }}
+        </dd>
+    </div>
+</div>
+

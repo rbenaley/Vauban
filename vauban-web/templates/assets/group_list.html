@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+
+{% block title %}Asset Groups - {{ vauban.brand_name }}{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <!-- Header -->
+    <div class="md:flex md:items-center md:justify-between">
+        <div class="min-w-0 flex-1">
+            <h2 class="text-2xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-3xl sm:tracking-tight">
+                Asset Groups
+            </h2>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                Organize your assets into logical groups
+            </p>
+        </div>
+        <div class="mt-4 flex md:ml-4 md:mt-0">
+            <a href="/assets/groups/new"
+               class="inline-flex items-center rounded-md bg-vauban-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-600">
+                <svg class="-ml-0.5 mr-1.5 h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                    <path d="M10.75 4.75a.75.75 0 00-1.5 0v4.5h-4.5a.75.75 0 000 1.5h4.5v4.5a.75.75 0 001.5 0v-4.5h4.5a.75.75 0 000-1.5h-4.5v-4.5z"/>
+                </svg>
+                New Group
+            </a>
+        </div>
+    </div>
+
+    <!-- Search -->
+    <div class="bg-white dark:bg-gray-800 shadow rounded-lg p-4">
+        <form method="get" class="flex gap-4">
+            <div class="flex-1">
+                <label for="search" class="sr-only">Search</label>
+                <input type="text" name="search" id="search" value="{{ search.as_deref().unwrap_or_default() }}"
+                       placeholder="Search groups..."
+                       class="block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
+            </div>
+            <button type="submit"
+                    class="rounded-md bg-vauban-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-600">
+                Search
+            </button>
+        </form>
+    </div>
+
+    <!-- Groups grid -->
+    {% if !groups.is_empty() %}
+    <div class="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+        {% for group in groups %}
+        <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden hover:shadow-lg transition-shadow">
+            <div class="p-6">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <span class="inline-flex h-12 w-12 items-center justify-center rounded-lg" style="background-color: {{ group.color }}20;">
+                            <svg class="h-6 w-6" style="color: {{ group.color }};" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"/>
+                            </svg>
+                        </span>
+                    </div>
+                    <div class="ml-4 flex-1">
+                        <h3 class="text-lg font-medium text-gray-900 dark:text-white">
+                            <a href="/assets/groups/{{ group.uuid }}" class="hover:text-vauban-600 dark:hover:text-vauban-400">
+                                {{ group.name }}
+                            </a>
+                        </h3>
+                        <p class="text-sm text-gray-500 dark:text-gray-400">{{ group.slug }}</p>
+                    </div>
+                </div>
+                {% if let Some(desc) = group.description.as_ref() %}
+                <p class="mt-4 text-sm text-gray-600 dark:text-gray-300 line-clamp-2">{{ desc }}</p>
+                {% endif %}
+                <div class="mt-4 flex items-center justify-between">
+                    <div class="flex items-center text-sm text-gray-500 dark:text-gray-400">
+                        <svg class="mr-1.5 h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"/>
+                        </svg>
+                        {{ group.asset_count }} asset{% if group.asset_count != 1 %}s{% endif %}
+                    </div>
+                    <a href="/assets/groups/{{ group.uuid }}"
+                       class="text-sm text-vauban-600 hover:text-vauban-900 dark:text-vauban-400 dark:hover:text-vauban-300">
+                        View →
+                    </a>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+        <div class="px-6 py-12 text-center">
+            <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/>
+            </svg>
+            <h3 class="mt-2 text-sm font-semibold text-gray-900 dark:text-white">No asset groups</h3>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                Get started by creating your first asset group.
+            </p>
+            <div class="mt-6">
+                <a href="/assets/groups/new"
+                   class="inline-flex items-center rounded-md bg-vauban-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-600">
+                    <svg class="-ml-0.5 mr-1.5 h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                        <path d="M10.75 4.75a.75.75 0 00-1.5 0v4.5h-4.5a.75.75 0 000 1.5h4.5v4.5a.75.75 0 001.5 0v-4.5h4.5a.75.75 0 000-1.5h-4.5v-4.5z"/>
+                    </svg>
+                    New Asset Group
+                </a>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

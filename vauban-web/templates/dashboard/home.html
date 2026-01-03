@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - {{ vauban.brand_name }}{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <!-- Header -->
+    <div class="md:flex md:items-center md:justify-between">
+        <div class="min-w-0 flex-1">
+            <h2 class="text-2xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-3xl sm:tracking-tight">
+                Dashboard
+            </h2>
+        </div>
+    </div>
+
+    <!-- Statistics -->
+    <div hx-get="/dashboard/widgets/stats"
+         hx-trigger="load, every 30s"
+         hx-swap="innerHTML"
+         class="grid grid-cols-1 gap-5 sm:grid-cols-3">
+        <!-- Skeleton loading -->
+        <div class="skeleton bg-white dark:bg-gray-800 overflow-hidden shadow rounded-lg h-24"></div>
+        <div class="skeleton bg-white dark:bg-gray-800 overflow-hidden shadow rounded-lg h-24"></div>
+        <div class="skeleton bg-white dark:bg-gray-800 overflow-hidden shadow rounded-lg h-24"></div>
+    </div>
+
+    <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <!-- Active sessions -->
+        <div class="bg-white dark:bg-gray-800 shadow rounded-lg">
+            <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
+                <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">
+                    Active sessions
+                </h3>
+            </div>
+            <div hx-get="/dashboard/widgets/active-sessions"
+                 hx-trigger="load, every 10s"
+                 hx-swap="innerHTML"
+                 class="px-4 py-5 sm:p-6">
+                <div class="skeleton h-32 rounded"></div>
+            </div>
+        </div>
+
+        <!-- Favorite servers -->
+        <div class="bg-white dark:bg-gray-800 shadow rounded-lg">
+            <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
+                <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">
+                    Favorite servers
+                </h3>
+            </div>
+            <div class="px-4 py-5 sm:p-6">
+                {% if !favorite_assets.is_empty() %}
+                <ul role="list" class="divide-y divide-gray-200 dark:divide-gray-700">
+                    {% for asset in favorite_assets %}
+                    <li class="py-3 flex items-center justify-between">
+                        <div class="flex items-center">
+                            <span class="inline-flex h-8 w-8 items-center justify-center rounded-full
+                                {% if asset.asset_type == "ssh" %}bg-green-100 text-green-600{% elif asset.asset_type == "rdp" %}bg-blue-100 text-blue-600{% else %}bg-purple-100 text-purple-600{% endif %}">
+                                {% if asset.asset_type == "ssh" %}
+                                <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0021 18V6a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 6v12a2.25 2.25 0 002.25 2.25z"/>
+                                </svg>
+                                {% else %}
+                                <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17.25v1.007a3 3 0 01-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0115 18.257V17.25m6-12V15a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 15V5.25m18 0A2.25 2.25 0 0018.75 3H5.25A2.25 2.25 0 003 5.25m18 0V12a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 12V5.25"/>
+                                </svg>
+                                {% endif %}
+                            </span>
+                            <div class="ml-3">
+                                <p class="text-sm font-medium text-gray-900 dark:text-white">{{ asset.name }}</p>
+                                <p class="text-xs text-gray-500 dark:text-gray-400">{{ asset.hostname }}</p>
+                            </div>
+                        </div>
+                        <a href="/assets/{{ asset.id }}/connect"
+                           class="text-vauban-600 hover:text-vauban-500 text-sm font-medium">
+                            Connect
+                        </a>
+                    </li>
+                    {% endfor %}
+                </ul>
+                {% else %}
+                <p class="text-sm text-gray-500 dark:text-gray-400 text-center py-4">
+                    No recent servers
+                </p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Recent activity -->
+    <div class="bg-white dark:bg-gray-800 shadow rounded-lg">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
+            <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">
+                Recent activity
+            </h3>
+        </div>
+        <div hx-get="/dashboard/widgets/recent-activity"
+             hx-trigger="load, every 30s"
+             hx-swap="innerHTML"
+             class="px-4 py-5 sm:p-6">
+            <div class="skeleton h-48 rounded"></div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
