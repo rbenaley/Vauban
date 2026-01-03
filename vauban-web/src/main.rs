@@ -2,24 +2,11 @@
 ///
 /// Rust web application using Axum, Diesel, and Askama.
 
-mod config;
-mod db;
-mod cache;
-mod error;
-mod middleware;
-mod handlers;
-mod models;
-mod services;
-mod grpc;
-mod schema;
-mod templates;
-
 use axum::{
     http::Method,
     routing::{get, post, put},
     Router,
 };
-use std::sync::Arc;
 use tower::ServiceBuilder;
 use tower_http::{
     cors::{Any, CorsLayer},
@@ -28,20 +15,16 @@ use tower_http::{
 };
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use config::Config;
-use db::{create_pool, DbPool};
-use cache::{create_cache_client, CacheConnection};
-use error::AppError;
-use services::auth::AuthService;
-
-/// Application state.
-#[derive(Clone)]
-pub struct AppState {
-    pub config: Config,
-    pub db_pool: DbPool,
-    pub cache: CacheConnection,
-    pub auth_service: AuthService,
-}
+use vauban_web::{
+    config::Config,
+    db::create_pool,
+    cache::create_cache_client,
+    error::AppError,
+    services::auth::AuthService,
+    handlers,
+    middleware,
+    AppState,
+};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

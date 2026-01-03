@@ -145,3 +145,117 @@ struct ExistsResult {
     #[diesel(sql_type = diesel::sql_types::Bool)]
     exists: bool,
 }
+
+// ==================== Validation Functions ====================
+
+/// Validate that username is not empty.
+pub fn validate_username_not_empty(username: &str) -> Result<(), String> {
+    if username.trim().is_empty() {
+        return Err("Username cannot be empty".to_string());
+    }
+    Ok(())
+}
+
+/// Validate password strength.
+pub fn validate_password_strength(password: &str) -> Result<(), String> {
+    if password.len() < 12 {
+        return Err("Password must be at least 12 characters".to_string());
+    }
+    Ok(())
+}
+
+/// Validate password confirmation matches.
+pub fn validate_password_confirmation(password: &str, confirmation: &str) -> Result<(), String> {
+    if password != confirmation {
+        return Err("Passwords do not match".to_string());
+    }
+    Ok(())
+}
+
+/// Escape SQL string to prevent injection.
+pub fn escape_sql_string(input: &str) -> String {
+    input.replace('\'', "''")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==================== Username Validation Tests ====================
+
+    #[test]
+    fn test_validate_username_not_empty_valid() {
+        assert!(validate_username_not_empty("admin").is_ok());
+        assert!(validate_username_not_empty("user123").is_ok());
+    }
+
+    #[test]
+    fn test_validate_username_not_empty_empty() {
+        assert!(validate_username_not_empty("").is_err());
+        assert!(validate_username_not_empty("   ").is_err());
+    }
+
+    #[test]
+    fn test_validate_username_not_empty_whitespace() {
+        assert!(validate_username_not_empty("\t").is_err());
+        assert!(validate_username_not_empty("\n").is_err());
+    }
+
+    // ==================== Password Strength Tests ====================
+
+    #[test]
+    fn test_validate_password_strength_valid() {
+        assert!(validate_password_strength("securepassword123").is_ok());
+        assert!(validate_password_strength("123456789012").is_ok());
+    }
+
+    #[test]
+    fn test_validate_password_strength_too_short() {
+        assert!(validate_password_strength("short").is_err());
+        assert!(validate_password_strength("12345678901").is_err());
+    }
+
+    #[test]
+    fn test_validate_password_strength_minimum() {
+        assert!(validate_password_strength("123456789012").is_ok()); // 12 chars
+    }
+
+    // ==================== Password Confirmation Tests ====================
+
+    #[test]
+    fn test_validate_password_confirmation_match() {
+        assert!(validate_password_confirmation("password123!", "password123!").is_ok());
+    }
+
+    #[test]
+    fn test_validate_password_confirmation_mismatch() {
+        assert!(validate_password_confirmation("password123!", "different").is_err());
+    }
+
+    #[test]
+    fn test_validate_password_confirmation_case_sensitive() {
+        assert!(validate_password_confirmation("Password", "password").is_err());
+    }
+
+    // ==================== SQL Escape Tests ====================
+
+    #[test]
+    fn test_escape_sql_string_no_quotes() {
+        assert_eq!(escape_sql_string("hello"), "hello");
+    }
+
+    #[test]
+    fn test_escape_sql_string_single_quote() {
+        assert_eq!(escape_sql_string("O'Brien"), "O''Brien");
+    }
+
+    #[test]
+    fn test_escape_sql_string_multiple_quotes() {
+        assert_eq!(escape_sql_string("It's John's"), "It''s John''s");
+    }
+
+    #[test]
+    fn test_escape_sql_string_empty() {
+        assert_eq!(escape_sql_string(""), "");
+    }
+}

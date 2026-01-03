@@ -59,3 +59,194 @@ pub struct UserListTemplate {
     pub search: Option<String>,
     pub status_filter: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_pagination(current: i32, total: i32) -> Pagination {
+        Pagination {
+            current_page: current,
+            total_pages: total,
+            total_items: total * 10,
+            items_per_page: 10,
+            has_previous: current > 1,
+            has_next: current < total,
+            start_index: (current - 1) * 10 + 1,
+            end_index: current * 10,
+        }
+    }
+
+    // Tests for page_range()
+    #[test]
+    fn test_page_range_first_page() {
+        let pagination = create_test_pagination(1, 10);
+        let range = pagination.page_range();
+        assert_eq!(range, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn test_page_range_last_page() {
+        let pagination = create_test_pagination(10, 10);
+        let range = pagination.page_range();
+        assert_eq!(range, vec![8, 9, 10]);
+    }
+
+    #[test]
+    fn test_page_range_middle_page() {
+        let pagination = create_test_pagination(5, 10);
+        let range = pagination.page_range();
+        assert_eq!(range, vec![3, 4, 5, 6, 7]);
+    }
+
+    #[test]
+    fn test_page_range_single_page() {
+        let pagination = create_test_pagination(1, 1);
+        let range = pagination.page_range();
+        assert_eq!(range, vec![1]);
+    }
+
+    #[test]
+    fn test_page_range_two_pages_first() {
+        let pagination = create_test_pagination(1, 2);
+        let range = pagination.page_range();
+        assert_eq!(range, vec![1, 2]);
+    }
+
+    #[test]
+    fn test_page_range_two_pages_second() {
+        let pagination = create_test_pagination(2, 2);
+        let range = pagination.page_range();
+        assert_eq!(range, vec![1, 2]);
+    }
+
+    #[test]
+    fn test_page_range_three_pages_middle() {
+        let pagination = create_test_pagination(2, 3);
+        let range = pagination.page_range();
+        assert_eq!(range, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn test_page_range_near_start() {
+        let pagination = create_test_pagination(2, 10);
+        let range = pagination.page_range();
+        assert_eq!(range, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn test_page_range_near_end() {
+        let pagination = create_test_pagination(9, 10);
+        let range = pagination.page_range();
+        assert_eq!(range, vec![7, 8, 9, 10]);
+    }
+
+    // Tests for Pagination struct
+    #[test]
+    fn test_pagination_creation() {
+        let pagination = create_test_pagination(3, 10);
+        assert_eq!(pagination.current_page, 3);
+        assert_eq!(pagination.total_pages, 10);
+        assert_eq!(pagination.items_per_page, 10);
+        assert!(pagination.has_previous);
+        assert!(pagination.has_next);
+    }
+
+    #[test]
+    fn test_pagination_first_page_no_previous() {
+        let pagination = create_test_pagination(1, 5);
+        assert!(!pagination.has_previous);
+        assert!(pagination.has_next);
+    }
+
+    #[test]
+    fn test_pagination_last_page_no_next() {
+        let pagination = create_test_pagination(5, 5);
+        assert!(pagination.has_previous);
+        assert!(!pagination.has_next);
+    }
+
+    #[test]
+    fn test_pagination_clone() {
+        let pagination = create_test_pagination(3, 10);
+        let cloned = pagination.clone();
+        assert_eq!(pagination.current_page, cloned.current_page);
+        assert_eq!(pagination.page_range(), cloned.page_range());
+    }
+
+    // Tests for UserListItem struct
+    #[test]
+    fn test_user_list_item_creation() {
+        let user = UserListItem {
+            uuid: "uuid-123".to_string(),
+            username: "testuser".to_string(),
+            email: "test@example.com".to_string(),
+            full_name: Some("Test User".to_string()),
+            auth_source: "local".to_string(),
+            mfa_enabled: true,
+            is_active: true,
+            is_staff: false,
+            is_superuser: false,
+            last_login: Some("2026-01-03 10:00:00".to_string()),
+        };
+        assert_eq!(user.username, "testuser");
+        assert!(user.mfa_enabled);
+        assert!(user.is_active);
+    }
+
+    #[test]
+    fn test_user_list_item_without_full_name() {
+        let user = UserListItem {
+            uuid: "uuid-456".to_string(),
+            username: "anotheruser".to_string(),
+            email: "another@example.com".to_string(),
+            full_name: None,
+            auth_source: "ldap".to_string(),
+            mfa_enabled: false,
+            is_active: true,
+            is_staff: true,
+            is_superuser: false,
+            last_login: None,
+        };
+        assert!(user.full_name.is_none());
+        assert!(user.last_login.is_none());
+        assert!(user.is_staff);
+    }
+
+    #[test]
+    fn test_user_list_item_superuser() {
+        let user = UserListItem {
+            uuid: "uuid-789".to_string(),
+            username: "admin".to_string(),
+            email: "admin@example.com".to_string(),
+            full_name: Some("Admin User".to_string()),
+            auth_source: "local".to_string(),
+            mfa_enabled: true,
+            is_active: true,
+            is_staff: true,
+            is_superuser: true,
+            last_login: Some("2026-01-03 09:00:00".to_string()),
+        };
+        assert!(user.is_superuser);
+        assert!(user.is_staff);
+    }
+
+    #[test]
+    fn test_user_list_item_clone() {
+        let user = UserListItem {
+            uuid: "uuid-clone".to_string(),
+            username: "cloneuser".to_string(),
+            email: "clone@example.com".to_string(),
+            full_name: None,
+            auth_source: "local".to_string(),
+            mfa_enabled: false,
+            is_active: false,
+            is_staff: false,
+            is_superuser: false,
+            last_login: None,
+        };
+        let cloned = user.clone();
+        assert_eq!(user.uuid, cloned.uuid);
+        assert_eq!(user.username, cloned.username);
+    }
+}

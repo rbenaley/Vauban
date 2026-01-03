@@ -40,3 +40,62 @@ pub struct ActiveListTemplate {
     pub header_user: Option<crate::templates::base::UserContext>,
     pub sessions: Vec<ActiveSessionItem>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_active_session_item(session_type: &str) -> ActiveSessionItem {
+        ActiveSessionItem {
+            uuid: "session-uuid".to_string(),
+            username: "testuser".to_string(),
+            asset_name: "Test Server".to_string(),
+            asset_hostname: "test.example.com".to_string(),
+            session_type: session_type.to_string(),
+            client_ip: "192.168.1.100".to_string(),
+            connected_at: "2026-01-03 10:00:00".to_string(),
+            duration: "1h 30m".to_string(),
+        }
+    }
+
+    // Tests for session_type_class()
+    #[test]
+    fn test_session_type_class_ssh() {
+        let item = create_test_active_session_item("ssh");
+        assert!(item.session_type_class().contains("green"));
+    }
+
+    #[test]
+    fn test_session_type_class_rdp() {
+        let item = create_test_active_session_item("rdp");
+        assert!(item.session_type_class().contains("blue"));
+    }
+
+    #[test]
+    fn test_session_type_class_vnc() {
+        let item = create_test_active_session_item("vnc");
+        assert!(item.session_type_class().contains("purple"));
+    }
+
+    #[test]
+    fn test_session_type_class_unknown() {
+        let item = create_test_active_session_item("telnet");
+        assert!(item.session_type_class().contains("gray"));
+    }
+
+    // Tests for ActiveSessionItem struct
+    #[test]
+    fn test_active_session_item_creation() {
+        let item = create_test_active_session_item("ssh");
+        assert_eq!(item.username, "testuser");
+        assert_eq!(item.asset_name, "Test Server");
+    }
+
+    #[test]
+    fn test_active_session_item_clone() {
+        let item = create_test_active_session_item("rdp");
+        let cloned = item.clone();
+        assert_eq!(item.uuid, cloned.uuid);
+        assert_eq!(item.duration, cloned.duration);
+    }
+}

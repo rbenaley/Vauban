@@ -117,3 +117,261 @@ impl BaseTemplate {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==================== FlashMessage Tests ====================
+
+    #[test]
+    fn test_flash_message_success() {
+        let msg = FlashMessage {
+            level: "success".to_string(),
+            message: "Operation completed".to_string(),
+        };
+
+        assert_eq!(msg.level, "success");
+        assert_eq!(msg.message, "Operation completed");
+    }
+
+    #[test]
+    fn test_flash_message_error() {
+        let msg = FlashMessage {
+            level: "error".to_string(),
+            message: "Something went wrong".to_string(),
+        };
+
+        assert_eq!(msg.level, "error");
+    }
+
+    #[test]
+    fn test_flash_message_clone() {
+        let msg = FlashMessage {
+            level: "warning".to_string(),
+            message: "Be careful".to_string(),
+        };
+        let cloned = msg.clone();
+
+        assert_eq!(msg.level, cloned.level);
+        assert_eq!(msg.message, cloned.message);
+    }
+
+    #[test]
+    fn test_flash_message_debug() {
+        let msg = FlashMessage {
+            level: "info".to_string(),
+            message: "FYI".to_string(),
+        };
+        let debug_str = format!("{:?}", msg);
+
+        assert!(debug_str.contains("FlashMessage"));
+        assert!(debug_str.contains("info"));
+    }
+
+    // ==================== VaubanConfig Tests ====================
+
+    #[test]
+    fn test_vauban_config_default() {
+        let config = VaubanConfig {
+            brand_name: "VAUBAN".to_string(),
+            brand_logo: None,
+            theme: "dark".to_string(),
+        };
+
+        assert_eq!(config.brand_name, "VAUBAN");
+        assert!(config.brand_logo.is_none());
+        assert_eq!(config.theme, "dark");
+    }
+
+    #[test]
+    fn test_vauban_config_with_logo() {
+        let config = VaubanConfig {
+            brand_name: "Custom Brand".to_string(),
+            brand_logo: Some("/static/logo.png".to_string()),
+            theme: "light".to_string(),
+        };
+
+        assert_eq!(config.brand_name, "Custom Brand");
+        assert_eq!(config.brand_logo, Some("/static/logo.png".to_string()));
+        assert_eq!(config.theme, "light");
+    }
+
+    #[test]
+    fn test_vauban_config_clone() {
+        let config = VaubanConfig {
+            brand_name: "Test".to_string(),
+            brand_logo: Some("logo.svg".to_string()),
+            theme: "dark".to_string(),
+        };
+        let cloned = config.clone();
+
+        assert_eq!(config.brand_name, cloned.brand_name);
+        assert_eq!(config.brand_logo, cloned.brand_logo);
+    }
+
+    // ==================== UserContext Tests ====================
+
+    fn create_test_user() -> UserContext {
+        UserContext {
+            uuid: "test-uuid-123".to_string(),
+            username: "testuser".to_string(),
+            display_name: "Test User".to_string(),
+            is_superuser: false,
+            is_staff: false,
+        }
+    }
+
+    #[test]
+    fn test_user_context_is_authenticated() {
+        let user = create_test_user();
+        assert!(user.is_authenticated());
+    }
+
+    #[test]
+    fn test_user_context_superuser() {
+        let user = UserContext {
+            uuid: "admin-uuid".to_string(),
+            username: "admin".to_string(),
+            display_name: "Administrator".to_string(),
+            is_superuser: true,
+            is_staff: true,
+        };
+
+        assert!(user.is_superuser);
+        assert!(user.is_staff);
+        assert!(user.is_authenticated());
+    }
+
+    #[test]
+    fn test_user_context_clone() {
+        let user = create_test_user();
+        let cloned = user.clone();
+
+        assert_eq!(user.uuid, cloned.uuid);
+        assert_eq!(user.username, cloned.username);
+        assert_eq!(user.display_name, cloned.display_name);
+    }
+
+    #[test]
+    fn test_user_context_debug() {
+        let user = create_test_user();
+        let debug_str = format!("{:?}", user);
+
+        assert!(debug_str.contains("UserContext"));
+        assert!(debug_str.contains("testuser"));
+    }
+
+    // ==================== BaseTemplate Tests ====================
+
+    #[test]
+    fn test_base_template_new_without_user() {
+        let base = BaseTemplate::new("Login".to_string(), None);
+
+        assert_eq!(base.title, "Login");
+        assert!(base.user.is_none());
+        assert!(base.sidebar_content.is_none());
+        assert!(base.header_user.is_none());
+        assert_eq!(base.vauban.brand_name, "VAUBAN");
+        assert_eq!(base.language_code, "en");
+    }
+
+    #[test]
+    fn test_base_template_new_with_user() {
+        let user = create_test_user();
+        let base = BaseTemplate::new("Dashboard".to_string(), Some(user));
+
+        assert_eq!(base.title, "Dashboard");
+        assert!(base.user.is_some());
+        assert!(base.sidebar_content.is_some());
+        assert!(base.header_user.is_some());
+    }
+
+    #[test]
+    fn test_base_template_with_messages() {
+        let base = BaseTemplate::new("Test".to_string(), None)
+            .with_messages(vec![
+                FlashMessage { level: "success".to_string(), message: "Done".to_string() },
+                FlashMessage { level: "error".to_string(), message: "Failed".to_string() },
+            ]);
+
+        assert_eq!(base.messages.len(), 2);
+        assert_eq!(base.messages[0].level, "success");
+        assert_eq!(base.messages[1].level, "error");
+    }
+
+    #[test]
+    fn test_base_template_with_current_path_dashboard() {
+        let user = create_test_user();
+        let base = BaseTemplate::new("Dashboard".to_string(), Some(user))
+            .with_current_path("/");
+
+        let sidebar = base.sidebar_content.unwrap();
+        assert!(sidebar.is_dashboard);
+        assert!(!sidebar.is_assets);
+        assert!(!sidebar.is_sessions);
+    }
+
+    #[test]
+    fn test_base_template_with_current_path_assets() {
+        let user = create_test_user();
+        let base = BaseTemplate::new("Assets".to_string(), Some(user))
+            .with_current_path("/assets");
+
+        let sidebar = base.sidebar_content.unwrap();
+        assert!(!sidebar.is_dashboard);
+        assert!(sidebar.is_assets);
+    }
+
+    #[test]
+    fn test_base_template_with_current_path_sessions() {
+        let user = create_test_user();
+        let base = BaseTemplate::new("Sessions".to_string(), Some(user))
+            .with_current_path("/sessions");
+
+        let sidebar = base.sidebar_content.unwrap();
+        assert!(sidebar.is_sessions);
+        assert!(!sidebar.is_recordings);
+    }
+
+    #[test]
+    fn test_base_template_with_current_path_recordings() {
+        let user = create_test_user();
+        let base = BaseTemplate::new("Recordings".to_string(), Some(user))
+            .with_current_path("/sessions/recordings");
+
+        let sidebar = base.sidebar_content.unwrap();
+        assert!(sidebar.is_recordings);
+    }
+
+    #[test]
+    fn test_base_template_superuser_can_view_all() {
+        let user = UserContext {
+            uuid: "admin".to_string(),
+            username: "admin".to_string(),
+            display_name: "Admin".to_string(),
+            is_superuser: true,
+            is_staff: true,
+        };
+        let base = BaseTemplate::new("Admin".to_string(), Some(user));
+
+        let sidebar = base.sidebar_content.unwrap();
+        assert!(sidebar.can_view_groups);
+        assert!(sidebar.can_view_access_rules);
+    }
+
+    #[test]
+    fn test_base_template_into_fields() {
+        let user = create_test_user();
+        let base = BaseTemplate::new("Test".to_string(), Some(user));
+        let (title, user_ctx, vauban, messages, lang, sidebar, header) = base.into_fields();
+
+        assert_eq!(title, "Test");
+        assert!(user_ctx.is_some());
+        assert_eq!(vauban.brand_name, "VAUBAN");
+        assert!(messages.is_empty());
+        assert_eq!(lang, "en");
+        assert!(sidebar.is_some());
+        assert!(header.is_some());
+    }
+}
+

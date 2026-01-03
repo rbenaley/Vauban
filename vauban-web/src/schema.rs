@@ -1,29 +1,21 @@
 // @generated automatically by Diesel CLI.
 
 diesel::table! {
-    users (id) {
+    asset_groups (id) {
         id -> Int4,
         uuid -> Uuid,
-        username -> Varchar,
-        email -> Varchar,
-        password_hash -> Varchar,
-        first_name -> Nullable<Varchar>,
-        last_name -> Nullable<Varchar>,
-        phone -> Nullable<Varchar>,
-        is_active -> Bool,
-        is_staff -> Bool,
-        is_superuser -> Bool,
-        is_service_account -> Bool,
-        mfa_enabled -> Bool,
-        mfa_enforced -> Bool,
-        mfa_secret -> Nullable<Varchar>,
-        preferences -> Jsonb,
-        last_login -> Nullable<Timestamptz>,
-        last_login_ip -> Nullable<Text>,
-        failed_login_attempts -> Int4,
-        locked_until -> Nullable<Timestamptz>,
-        auth_source -> Varchar,
-        external_id -> Nullable<Varchar>,
+        #[max_length = 100]
+        name -> Varchar,
+        #[max_length = 100]
+        slug -> Varchar,
+        description -> Nullable<Text>,
+        #[max_length = 7]
+        color -> Varchar,
+        #[max_length = 50]
+        icon -> Varchar,
+        parent_id -> Nullable<Int4>,
+        created_by_id -> Nullable<Int4>,
+        updated_by_id -> Nullable<Int4>,
         created_at -> Timestamptz,
         updated_at -> Timestamptz,
         is_deleted -> Bool,
@@ -32,42 +24,27 @@ diesel::table! {
 }
 
 diesel::table! {
-    vauban_groups (id) {
-        id -> Int4,
-        uuid -> Uuid,
-        name -> Varchar,
-        description -> Nullable<Text>,
-        source -> Varchar,
-        external_id -> Nullable<Varchar>,
-        parent_id -> Nullable<Int4>,
-        last_synced -> Nullable<Timestamptz>,
-        created_at -> Timestamptz,
-        updated_at -> Timestamptz,
-    }
-}
-
-diesel::table! {
-    user_groups (user_id, group_id) {
-        user_id -> Int4,
-        group_id -> Int4,
-    }
-}
-
-diesel::table! {
     assets (id) {
         id -> Int4,
         uuid -> Uuid,
+        #[max_length = 100]
         name -> Varchar,
+        #[max_length = 255]
         hostname -> Varchar,
-        ip_address -> Nullable<Text>,
+        ip_address -> Nullable<Inet>,
         port -> Int4,
+        #[max_length = 10]
         asset_type -> Varchar,
+        #[max_length = 15]
         status -> Varchar,
         group_id -> Nullable<Int4>,
         description -> Nullable<Text>,
+        #[max_length = 50]
         os_type -> Nullable<Varchar>,
+        #[max_length = 50]
         os_version -> Nullable<Varchar>,
         connection_config -> Jsonb,
+        #[max_length = 36]
         default_credential_id -> Nullable<Varchar>,
         require_mfa -> Bool,
         require_justification -> Bool,
@@ -83,41 +60,28 @@ diesel::table! {
 }
 
 diesel::table! {
-    asset_groups (id) {
-        id -> Int4,
-        uuid -> Uuid,
-        name -> Varchar,
-        slug -> Varchar,
-        description -> Nullable<Text>,
-        color -> Varchar,
-        icon -> Varchar,
-        parent_id -> Nullable<Int4>,
-        created_by_id -> Nullable<Int4>,
-        updated_by_id -> Nullable<Int4>,
-        created_at -> Timestamptz,
-        updated_at -> Timestamptz,
-        is_deleted -> Bool,
-        deleted_at -> Nullable<Timestamptz>,
-    }
-}
-
-diesel::table! {
     proxy_sessions (id) {
         id -> Int4,
         uuid -> Uuid,
         user_id -> Int4,
         asset_id -> Int4,
+        #[max_length = 36]
         credential_id -> Varchar,
+        #[max_length = 100]
         credential_username -> Varchar,
+        #[max_length = 10]
         session_type -> Varchar,
+        #[max_length = 15]
         status -> Varchar,
-        client_ip -> Text,
+        client_ip -> Inet,
         client_user_agent -> Nullable<Text>,
+        #[max_length = 100]
         proxy_instance -> Nullable<Varchar>,
         connected_at -> Nullable<Timestamptz>,
         disconnected_at -> Nullable<Timestamptz>,
         justification -> Nullable<Text>,
         is_recorded -> Bool,
+        #[max_length = 500]
         recording_path -> Nullable<Varchar>,
         bytes_sent -> Int8,
         bytes_received -> Int8,
@@ -128,18 +92,82 @@ diesel::table! {
     }
 }
 
-diesel::joinable!(proxy_sessions -> users (user_id));
-diesel::joinable!(proxy_sessions -> assets (asset_id));
+diesel::table! {
+    user_groups (user_id, group_id) {
+        user_id -> Int4,
+        group_id -> Int4,
+    }
+}
+
+diesel::table! {
+    users (id) {
+        id -> Int4,
+        uuid -> Uuid,
+        #[max_length = 150]
+        username -> Varchar,
+        #[max_length = 255]
+        email -> Varchar,
+        #[max_length = 255]
+        password_hash -> Varchar,
+        #[max_length = 150]
+        first_name -> Nullable<Varchar>,
+        #[max_length = 150]
+        last_name -> Nullable<Varchar>,
+        #[max_length = 20]
+        phone -> Nullable<Varchar>,
+        is_active -> Bool,
+        is_staff -> Bool,
+        is_superuser -> Bool,
+        is_service_account -> Bool,
+        mfa_enabled -> Bool,
+        mfa_enforced -> Bool,
+        #[max_length = 255]
+        mfa_secret -> Nullable<Varchar>,
+        preferences -> Jsonb,
+        last_login -> Nullable<Timestamptz>,
+        last_login_ip -> Nullable<Inet>,
+        failed_login_attempts -> Int4,
+        locked_until -> Nullable<Timestamptz>,
+        #[max_length = 10]
+        auth_source -> Varchar,
+        #[max_length = 255]
+        external_id -> Nullable<Varchar>,
+        created_at -> Timestamptz,
+        updated_at -> Timestamptz,
+        is_deleted -> Bool,
+        deleted_at -> Nullable<Timestamptz>,
+    }
+}
+
+diesel::table! {
+    vauban_groups (id) {
+        id -> Int4,
+        uuid -> Uuid,
+        #[max_length = 100]
+        name -> Varchar,
+        description -> Nullable<Text>,
+        #[max_length = 10]
+        source -> Varchar,
+        #[max_length = 255]
+        external_id -> Nullable<Varchar>,
+        parent_id -> Nullable<Int4>,
+        last_synced -> Nullable<Timestamptz>,
+        created_at -> Timestamptz,
+        updated_at -> Timestamptz,
+    }
+}
+
 diesel::joinable!(assets -> asset_groups (group_id));
+diesel::joinable!(proxy_sessions -> assets (asset_id));
+diesel::joinable!(proxy_sessions -> users (user_id));
 diesel::joinable!(user_groups -> users (user_id));
 diesel::joinable!(user_groups -> vauban_groups (group_id));
 
 diesel::allow_tables_to_appear_in_same_query!(
+    asset_groups,
+    assets,
+    proxy_sessions,
+    user_groups,
     users,
     vauban_groups,
-    user_groups,
-    assets,
-    asset_groups,
-    proxy_sessions,
 );
-

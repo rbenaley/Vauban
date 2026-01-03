@@ -245,3 +245,177 @@ impl Config {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+
+    // ==================== Environment Tests ====================
+
+    #[test]
+    fn test_environment_from_str_development() {
+        assert_eq!(Environment::from_str("development"), Environment::Development);
+        assert_eq!(Environment::from_str("dev"), Environment::Development);
+    }
+
+    #[test]
+    fn test_environment_from_str_testing() {
+        assert_eq!(Environment::from_str("testing"), Environment::Testing);
+        assert_eq!(Environment::from_str("test"), Environment::Testing);
+    }
+
+    #[test]
+    fn test_environment_from_str_production() {
+        assert_eq!(Environment::from_str("production"), Environment::Production);
+        assert_eq!(Environment::from_str("prod"), Environment::Production);
+    }
+
+    #[test]
+    fn test_environment_from_str_unknown() {
+        // Unknown values default to Development
+        assert_eq!(Environment::from_str("unknown"), Environment::Development);
+        assert_eq!(Environment::from_str(""), Environment::Development);
+    }
+
+    #[test]
+    fn test_environment_from_str_case_insensitive() {
+        assert_eq!(Environment::from_str("DEVELOPMENT"), Environment::Development);
+        assert_eq!(Environment::from_str("PRODUCTION"), Environment::Production);
+        assert_eq!(Environment::from_str("Testing"), Environment::Testing);
+    }
+
+    #[test]
+    fn test_environment_as_str() {
+        assert_eq!(Environment::Development.as_str(), "development");
+        assert_eq!(Environment::Testing.as_str(), "testing");
+        assert_eq!(Environment::Production.as_str(), "production");
+    }
+
+    #[test]
+    fn test_environment_is_development() {
+        assert!(Environment::Development.is_development());
+        assert!(!Environment::Testing.is_development());
+        assert!(!Environment::Production.is_development());
+    }
+
+    #[test]
+    fn test_environment_is_production() {
+        assert!(!Environment::Development.is_production());
+        assert!(!Environment::Testing.is_production());
+        assert!(Environment::Production.is_production());
+    }
+
+    #[test]
+    fn test_environment_roundtrip() {
+        for env in [Environment::Development, Environment::Testing, Environment::Production] {
+            let str_val = env.as_str();
+            let parsed = Environment::from_str(str_val);
+            assert_eq!(env, parsed);
+        }
+    }
+
+    // ==================== Config from_env Tests ====================
+
+    #[test]
+    #[serial]
+    #[ignore = "This test requires a clean environment without preset variables"]
+    fn test_config_from_env_missing_secret_key() {
+        // Clear SECRET_KEY to test error case
+        std::env::remove_var("SECRET_KEY");
+        std::env::remove_var("DATABASE_URL");
+        
+        let result = Config::from_env();
+        
+        // Should fail because SECRET_KEY is required
+        assert!(result.is_err());
+        if let Err(crate::error::AppError::Config(msg)) = result {
+            assert!(msg.contains("SECRET_KEY"));
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_config_from_env_with_secret_key() {
+        // Set required SECRET_KEY
+        std::env::set_var("SECRET_KEY", "test-secret-key-for-config-test!!");
+        std::env::set_var("ENVIRONMENT", "testing");
+        
+        let result = Config::from_env();
+        
+        // Should succeed
+        assert!(result.is_ok());
+        let config = result.unwrap();
+        assert_eq!(config.secret_key, "test-secret-key-for-config-test!!");
+        assert_eq!(config.environment, Environment::Testing);
+        
+        // Cleanup
+        std::env::remove_var("SECRET_KEY");
+        std::env::remove_var("ENVIRONMENT");
+    }
+
+    #[test]
+    #[serial]
+    fn test_config_default_values() {
+        std::env::set_var("SECRET_KEY", "test-secret-for-defaults-test!!!");
+        std::env::remove_var("DATABASE_URL");
+        std::env::remove_var("SERVER_PORT");
+        std::env::remove_var("PASSWORD_MIN_LENGTH");
+        std::env::remove_var("JWT_ACCESS_LIFETIME_MINUTES");
+        
+        let config = Config::from_env().unwrap();
+        
+        // Check default values
+        assert_eq!(config.server.port, 8000);
+        assert_eq!(config.security.password_min_length, 12);
+        assert_eq!(config.security.max_failed_login_attempts, 5);
+        assert_eq!(config.jwt.access_token_lifetime_minutes, 15);
+        
+        // Cleanup
+        std::env::remove_var("SECRET_KEY");
+    }
+
+    #[test]
+    #[serial]
+    fn test_config_custom_values() {
+        std::env::set_var("SECRET_KEY", "test-secret-for-custom-values-!");
+        std::env::set_var("SERVER_PORT", "9000");
+        std::env::set_var("PASSWORD_MIN_LENGTH", "16");
+        std::env::set_var("JWT_ACCESS_LIFETIME_MINUTES", "30");
+        
+        let config = Config::from_env().unwrap();
+        
+        assert_eq!(config.server.port, 9000);
+        assert_eq!(config.security.password_min_length, 16);
+        assert_eq!(config.jwt.access_token_lifetime_minutes, 30);
+        
+        // Cleanup
+        std::env::remove_var("SECRET_KEY");
+        std::env::remove_var("SERVER_PORT");
+        std::env::remove_var("PASSWORD_MIN_LENGTH");
+        std::env::remove_var("JWT_ACCESS_LIFETIME_MINUTES");
+    }
+
+    #[test]
+    #[serial]
+    #[ignore = "This test requires a clean environment without preset variables"]
+    fn test_config_cache_auto_detect() {
+        std::env::set_var("SECRET_KEY", "test-secret-for-cache-autodetect");
+        std::env::remove_var("CACHE_ENABLED");
+        std::env::remove_var("DATABASE_URL");
+        
+        // In development mode, cache should be disabled by default
+        std::env::set_var("ENVIRONMENT", "development");
+        let config = Config::from_env().unwrap();
+        assert!(!config.cache.enabled);
+        
+        // In production mode, cache should be enabled by default
+        std::env::set_var("ENVIRONMENT", "production");
+        let config = Config::from_env().unwrap();
+        assert!(config.cache.enabled);
+        
+        // Cleanup
+        std::env::remove_var("SECRET_KEY");
+        std::env::remove_var("ENVIRONMENT");
+    }
+}
+

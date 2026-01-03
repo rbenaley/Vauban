@@ -18,3 +18,49 @@ pub struct MfaSetupTemplate {
     pub qr_code_url: String,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_vauban_config() -> VaubanConfig {
+        VaubanConfig {
+            brand_name: "VAUBAN".to_string(),
+            brand_logo: None,
+            theme: "dark".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_mfa_setup_template_creation() {
+        let template = MfaSetupTemplate {
+            title: "MFA Setup".to_string(),
+            user: None,
+            vauban: create_test_vauban_config(),
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            secret: "JBSWY3DPEHPK3PXP".to_string(),
+            qr_code_url: "data:image/png;base64,test".to_string(),
+        };
+        assert_eq!(template.title, "MFA Setup");
+        assert_eq!(template.secret, "JBSWY3DPEHPK3PXP");
+    }
+
+    #[test]
+    fn test_mfa_setup_template_renders() {
+        let template = MfaSetupTemplate {
+            title: "MFA Setup".to_string(),
+            user: None,
+            vauban: create_test_vauban_config(),
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            secret: "ABCDEF".to_string(),
+            qr_code_url: "https://example.com/qr.png".to_string(),
+        };
+        let result = template.render();
+        assert!(result.is_ok());
+    }
+}

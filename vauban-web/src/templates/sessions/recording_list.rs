@@ -71,3 +71,147 @@ pub struct RecordingListTemplate {
     pub format_filter: Option<String>,
     pub asset_filter: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_recording_item(session_type: &str, duration: Option<i64>) -> RecordingListItem {
+        RecordingListItem {
+            id: 1,
+            session_id: 100,
+            asset_name: "Test Asset".to_string(),
+            session_type: session_type.to_string(),
+            credential_username: "testuser".to_string(),
+            connected_at: Some("2026-01-03 10:00:00".to_string()),
+            duration_seconds: duration,
+            recording_path: "/recordings/test.cast".to_string(),
+            status: "ready".to_string(),
+        }
+    }
+
+    // Tests for session_type_display()
+    #[test]
+    fn test_session_type_display_ssh() {
+        let item = create_test_recording_item("ssh", None);
+        assert_eq!(item.session_type_display(), "SSH");
+    }
+
+    #[test]
+    fn test_session_type_display_rdp() {
+        let item = create_test_recording_item("rdp", None);
+        assert_eq!(item.session_type_display(), "RDP");
+    }
+
+    #[test]
+    fn test_session_type_display_vnc() {
+        let item = create_test_recording_item("vnc", None);
+        assert_eq!(item.session_type_display(), "VNC");
+    }
+
+    #[test]
+    fn test_session_type_display_unknown() {
+        let item = create_test_recording_item("telnet", None);
+        assert_eq!(item.session_type_display(), "telnet");
+    }
+
+    // Tests for format()
+    #[test]
+    fn test_format_ssh() {
+        let item = create_test_recording_item("ssh", None);
+        assert_eq!(item.format(), "asciinema");
+    }
+
+    #[test]
+    fn test_format_rdp() {
+        let item = create_test_recording_item("rdp", None);
+        assert_eq!(item.format(), "guacamole");
+    }
+
+    #[test]
+    fn test_format_vnc() {
+        let item = create_test_recording_item("vnc", None);
+        assert_eq!(item.format(), "guacamole");
+    }
+
+    #[test]
+    fn test_format_unknown() {
+        let item = create_test_recording_item("telnet", None);
+        assert_eq!(item.format(), "raw");
+    }
+
+    // Tests for format_display()
+    #[test]
+    fn test_format_display_ssh() {
+        let item = create_test_recording_item("ssh", None);
+        assert_eq!(item.format_display(), "Asciinema");
+    }
+
+    #[test]
+    fn test_format_display_rdp() {
+        let item = create_test_recording_item("rdp", None);
+        assert_eq!(item.format_display(), "Guacamole");
+    }
+
+    #[test]
+    fn test_format_display_vnc() {
+        let item = create_test_recording_item("vnc", None);
+        assert_eq!(item.format_display(), "Guacamole");
+    }
+
+    #[test]
+    fn test_format_display_unknown() {
+        let item = create_test_recording_item("telnet", None);
+        assert_eq!(item.format_display(), "Raw");
+    }
+
+    // Tests for duration_display()
+    #[test]
+    fn test_duration_display_hours() {
+        let item = create_test_recording_item("ssh", Some(7265)); // 2h 1m 5s
+        assert_eq!(item.duration_display(), "2h 1m");
+    }
+
+    #[test]
+    fn test_duration_display_minutes() {
+        let item = create_test_recording_item("ssh", Some(185)); // 3m 5s
+        assert_eq!(item.duration_display(), "3m 5s");
+    }
+
+    #[test]
+    fn test_duration_display_seconds() {
+        let item = create_test_recording_item("ssh", Some(30));
+        assert_eq!(item.duration_display(), "30s");
+    }
+
+    #[test]
+    fn test_duration_display_none() {
+        let item = create_test_recording_item("ssh", None);
+        assert_eq!(item.duration_display(), "-");
+    }
+
+    #[test]
+    fn test_duration_display_zero() {
+        let item = create_test_recording_item("ssh", Some(0));
+        assert_eq!(item.duration_display(), "0s");
+    }
+
+    // Tests for RecordingListItem struct
+    #[test]
+    fn test_recording_list_item_creation() {
+        let item = create_test_recording_item("ssh", Some(100));
+        assert_eq!(item.id, 1);
+        assert_eq!(item.session_id, 100);
+        assert_eq!(item.asset_name, "Test Asset");
+        assert_eq!(item.status, "ready");
+    }
+
+    #[test]
+    fn test_recording_list_item_clone() {
+        let item = create_test_recording_item("rdp", Some(500));
+        let cloned = item.clone();
+        assert_eq!(item.id, cloned.id);
+        assert_eq!(item.session_type, cloned.session_type);
+        assert_eq!(item.recording_path, cloned.recording_path);
+    }
+}

@@ -73,3 +73,153 @@ pub struct SessionListTemplate {
     pub type_filter: Option<String>,
     pub asset_filter: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_session_item(session_type: &str, status: &str, duration: Option<i64>) -> SessionListItem {
+        SessionListItem {
+            id: 1,
+            uuid: "test-uuid".to_string(),
+            asset_name: "Test Asset".to_string(),
+            asset_hostname: "test.example.com".to_string(),
+            session_type: session_type.to_string(),
+            status: status.to_string(),
+            credential_username: "testuser".to_string(),
+            connected_at: Some("2026-01-03 10:00:00".to_string()),
+            duration_seconds: duration,
+            is_recorded: true,
+        }
+    }
+
+    // Tests for session_type_display()
+    #[test]
+    fn test_session_type_display_ssh() {
+        let item = create_test_session_item("ssh", "active", None);
+        assert_eq!(item.session_type_display(), "SSH");
+    }
+
+    #[test]
+    fn test_session_type_display_rdp() {
+        let item = create_test_session_item("rdp", "active", None);
+        assert_eq!(item.session_type_display(), "RDP");
+    }
+
+    #[test]
+    fn test_session_type_display_vnc() {
+        let item = create_test_session_item("vnc", "active", None);
+        assert_eq!(item.session_type_display(), "VNC");
+    }
+
+    #[test]
+    fn test_session_type_display_unknown() {
+        let item = create_test_session_item("telnet", "active", None);
+        assert_eq!(item.session_type_display(), "telnet");
+    }
+
+    // Tests for status_display()
+    #[test]
+    fn test_status_display_active() {
+        let item = create_test_session_item("ssh", "active", None);
+        assert_eq!(item.status_display(), "Active");
+    }
+
+    #[test]
+    fn test_status_display_disconnected() {
+        let item = create_test_session_item("ssh", "disconnected", None);
+        assert_eq!(item.status_display(), "Disconnected");
+    }
+
+    #[test]
+    fn test_status_display_completed() {
+        let item = create_test_session_item("ssh", "completed", None);
+        assert_eq!(item.status_display(), "Completed");
+    }
+
+    #[test]
+    fn test_status_display_terminated() {
+        let item = create_test_session_item("ssh", "terminated", None);
+        assert_eq!(item.status_display(), "Terminated");
+    }
+
+    #[test]
+    fn test_status_display_pending() {
+        let item = create_test_session_item("ssh", "pending", None);
+        assert_eq!(item.status_display(), "Pending");
+    }
+
+    #[test]
+    fn test_status_display_failed() {
+        let item = create_test_session_item("ssh", "failed", None);
+        assert_eq!(item.status_display(), "Failed");
+    }
+
+    #[test]
+    fn test_status_display_unknown() {
+        let item = create_test_session_item("ssh", "unknown_status", None);
+        assert_eq!(item.status_display(), "unknown_status");
+    }
+
+    // Tests for is_active()
+    #[test]
+    fn test_is_active_true() {
+        let item = create_test_session_item("ssh", "active", None);
+        assert!(item.is_active());
+    }
+
+    #[test]
+    fn test_is_active_false() {
+        let item = create_test_session_item("ssh", "completed", None);
+        assert!(!item.is_active());
+    }
+
+    // Tests for duration_display()
+    #[test]
+    fn test_duration_display_hours() {
+        let item = create_test_session_item("ssh", "active", Some(3661)); // 1h 1m 1s
+        assert_eq!(item.duration_display(), "1h 1m");
+    }
+
+    #[test]
+    fn test_duration_display_minutes() {
+        let item = create_test_session_item("ssh", "active", Some(125)); // 2m 5s
+        assert_eq!(item.duration_display(), "2m 5s");
+    }
+
+    #[test]
+    fn test_duration_display_seconds() {
+        let item = create_test_session_item("ssh", "active", Some(45));
+        assert_eq!(item.duration_display(), "45s");
+    }
+
+    #[test]
+    fn test_duration_display_none() {
+        let item = create_test_session_item("ssh", "active", None);
+        assert_eq!(item.duration_display(), "-");
+    }
+
+    #[test]
+    fn test_duration_display_zero() {
+        let item = create_test_session_item("ssh", "active", Some(0));
+        assert_eq!(item.duration_display(), "0s");
+    }
+
+    // Tests for SessionListItem struct
+    #[test]
+    fn test_session_list_item_creation() {
+        let item = create_test_session_item("ssh", "active", Some(100));
+        assert_eq!(item.id, 1);
+        assert_eq!(item.uuid, "test-uuid");
+        assert_eq!(item.asset_name, "Test Asset");
+        assert!(item.is_recorded);
+    }
+
+    #[test]
+    fn test_session_list_item_clone() {
+        let item = create_test_session_item("rdp", "completed", Some(500));
+        let cloned = item.clone();
+        assert_eq!(item.id, cloned.id);
+        assert_eq!(item.session_type, cloned.session_type);
+    }
+}

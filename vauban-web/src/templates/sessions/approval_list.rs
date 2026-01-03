@@ -64,3 +64,193 @@ pub struct ApprovalListTemplate {
     pub pagination: Option<Pagination>,
     pub status_filter: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_approval_item(status: &str, session_type: &str) -> ApprovalListItem {
+        ApprovalListItem {
+            uuid: "test-uuid-123".to_string(),
+            username: "testuser".to_string(),
+            asset_name: "Test Server".to_string(),
+            asset_type: "linux".to_string(),
+            session_type: session_type.to_string(),
+            justification: Some("Need access for maintenance".to_string()),
+            client_ip: "192.168.1.100".to_string(),
+            created_at: "2026-01-03 10:00:00".to_string(),
+            status: status.to_string(),
+        }
+    }
+
+    // Tests for status_class()
+    #[test]
+    fn test_status_class_pending() {
+        let item = create_test_approval_item("pending", "ssh");
+        assert!(item.status_class().contains("yellow"));
+    }
+
+    #[test]
+    fn test_status_class_approved() {
+        let item = create_test_approval_item("approved", "ssh");
+        assert!(item.status_class().contains("green"));
+    }
+
+    #[test]
+    fn test_status_class_rejected() {
+        let item = create_test_approval_item("rejected", "ssh");
+        assert!(item.status_class().contains("red"));
+    }
+
+    #[test]
+    fn test_status_class_expired() {
+        let item = create_test_approval_item("expired", "ssh");
+        assert!(item.status_class().contains("gray"));
+    }
+
+    #[test]
+    fn test_status_class_unknown() {
+        let item = create_test_approval_item("unknown_status", "ssh");
+        assert!(item.status_class().contains("gray"));
+    }
+
+    // Tests for session_icon()
+    #[test]
+    fn test_session_icon_ssh() {
+        let item = create_test_approval_item("pending", "ssh");
+        let icon = item.session_icon();
+        assert!(!icon.is_empty());
+        assert!(icon.contains("M8 9a3"));
+    }
+
+    #[test]
+    fn test_session_icon_rdp() {
+        let item = create_test_approval_item("pending", "rdp");
+        let icon = item.session_icon();
+        assert!(!icon.is_empty());
+        assert!(icon.contains("M3 4a1"));
+    }
+
+    #[test]
+    fn test_session_icon_vnc() {
+        let item = create_test_approval_item("pending", "vnc");
+        let icon = item.session_icon();
+        assert!(!icon.is_empty());
+        assert!(icon.contains("M9.504"));
+    }
+
+    #[test]
+    fn test_session_icon_unknown() {
+        let item = create_test_approval_item("pending", "telnet");
+        let icon = item.session_icon();
+        assert!(!icon.is_empty());
+        assert!(icon.contains("M10 18a8"));
+    }
+
+    // Tests for ApprovalListItem struct
+    #[test]
+    fn test_approval_list_item_creation() {
+        let item = create_test_approval_item("pending", "ssh");
+        assert_eq!(item.uuid, "test-uuid-123");
+        assert_eq!(item.username, "testuser");
+        assert_eq!(item.asset_name, "Test Server");
+        assert!(item.justification.is_some());
+    }
+
+    #[test]
+    fn test_approval_list_item_without_justification() {
+        let mut item = create_test_approval_item("pending", "ssh");
+        item.justification = None;
+        assert!(item.justification.is_none());
+    }
+
+    #[test]
+    fn test_approval_list_item_clone() {
+        let item = create_test_approval_item("approved", "rdp");
+        let cloned = item.clone();
+        assert_eq!(item.uuid, cloned.uuid);
+        assert_eq!(item.status, cloned.status);
+    }
+
+    // Tests for Pagination struct
+    #[test]
+    fn test_pagination_creation() {
+        let pagination = Pagination {
+            current_page: 1,
+            total_pages: 5,
+            total_items: 50,
+            has_previous: false,
+            has_next: true,
+        };
+        assert_eq!(pagination.current_page, 1);
+        assert_eq!(pagination.total_pages, 5);
+        assert!(!pagination.has_previous);
+        assert!(pagination.has_next);
+    }
+
+    #[test]
+    fn test_pagination_first_page() {
+        let pagination = Pagination {
+            current_page: 1,
+            total_pages: 10,
+            total_items: 100,
+            has_previous: false,
+            has_next: true,
+        };
+        assert!(!pagination.has_previous);
+        assert!(pagination.has_next);
+    }
+
+    #[test]
+    fn test_pagination_last_page() {
+        let pagination = Pagination {
+            current_page: 10,
+            total_pages: 10,
+            total_items: 100,
+            has_previous: true,
+            has_next: false,
+        };
+        assert!(pagination.has_previous);
+        assert!(!pagination.has_next);
+    }
+
+    #[test]
+    fn test_pagination_middle_page() {
+        let pagination = Pagination {
+            current_page: 5,
+            total_pages: 10,
+            total_items: 100,
+            has_previous: true,
+            has_next: true,
+        };
+        assert!(pagination.has_previous);
+        assert!(pagination.has_next);
+    }
+
+    #[test]
+    fn test_pagination_single_page() {
+        let pagination = Pagination {
+            current_page: 1,
+            total_pages: 1,
+            total_items: 5,
+            has_previous: false,
+            has_next: false,
+        };
+        assert!(!pagination.has_previous);
+        assert!(!pagination.has_next);
+    }
+
+    #[test]
+    fn test_pagination_clone() {
+        let pagination = Pagination {
+            current_page: 3,
+            total_pages: 10,
+            total_items: 100,
+            has_previous: true,
+            has_next: true,
+        };
+        let cloned = pagination.clone();
+        assert_eq!(pagination.current_page, cloned.current_page);
+        assert_eq!(pagination.total_pages, cloned.total_pages);
+    }
+}

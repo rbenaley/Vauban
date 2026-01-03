@@ -162,3 +162,158 @@ pub async fn require_mfa(
     Ok(next.run(request).await)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::Request as HttpRequest;
+
+    // ==================== AuthUser Tests ====================
+
+    fn create_test_user() -> AuthUser {
+        AuthUser {
+            uuid: "test-uuid-123".to_string(),
+            username: "testuser".to_string(),
+            mfa_verified: true,
+            is_superuser: false,
+            is_staff: true,
+        }
+    }
+
+    #[test]
+    fn test_auth_user_clone() {
+        let user = create_test_user();
+        let cloned = user.clone();
+
+        assert_eq!(user.uuid, cloned.uuid);
+        assert_eq!(user.username, cloned.username);
+        assert_eq!(user.mfa_verified, cloned.mfa_verified);
+        assert_eq!(user.is_superuser, cloned.is_superuser);
+        assert_eq!(user.is_staff, cloned.is_staff);
+    }
+
+    #[test]
+    fn test_auth_user_debug() {
+        let user = create_test_user();
+        let debug_str = format!("{:?}", user);
+
+        assert!(debug_str.contains("AuthUser"));
+        assert!(debug_str.contains("testuser"));
+    }
+
+    #[test]
+    fn test_auth_user_serialize() {
+        let user = create_test_user();
+        let json = serde_json::to_string(&user).unwrap();
+
+        assert!(json.contains("test-uuid-123"));
+        assert!(json.contains("testuser"));
+        assert!(json.contains("mfa_verified"));
+    }
+
+    #[test]
+    fn test_auth_user_deserialize() {
+        let json = r#"{
+            "uuid": "abc-123",
+            "username": "admin",
+            "mfa_verified": false,
+            "is_superuser": true,
+            "is_staff": true
+        }"#;
+
+        let user: AuthUser = serde_json::from_str(json).unwrap();
+
+        assert_eq!(user.uuid, "abc-123");
+        assert_eq!(user.username, "admin");
+        assert!(!user.mfa_verified);
+        assert!(user.is_superuser);
+        assert!(user.is_staff);
+    }
+
+    // ==================== OptionalAuthUser Tests ====================
+
+    #[test]
+    fn test_optional_auth_user_none() {
+        let opt = OptionalAuthUser(None);
+        assert!(opt.0.is_none());
+    }
+
+    #[test]
+    fn test_optional_auth_user_some() {
+        let user = create_test_user();
+        let opt = OptionalAuthUser(Some(user));
+
+        assert!(opt.0.is_some());
+        assert_eq!(opt.0.unwrap().username, "testuser");
+    }
+
+    // ==================== extract_token Tests ====================
+
+    #[test]
+    fn test_extract_token_from_bearer_header() {
+        let request = HttpRequest::builder()
+            .header("Authorization", "Bearer my-jwt-token-123")
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        let jar = CookieJar::new();
+        let result = extract_token(&jar, &request).unwrap();
+
+        assert_eq!(result, Some("my-jwt-token-123".to_string()));
+    }
+
+    #[test]
+    fn test_extract_token_bearer_case_sensitive() {
+        // "bearer" lowercase should not match
+        let request = HttpRequest::builder()
+            .header("Authorization", "bearer lowercase-token")
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        let jar = CookieJar::new();
+        let result = extract_token(&jar, &request).unwrap();
+
+        // Should not extract because it's "bearer" not "Bearer"
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_token_no_auth_returns_none() {
+        let request = HttpRequest::builder()
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        let jar = CookieJar::new();
+        let result = extract_token(&jar, &request).unwrap();
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_token_invalid_auth_scheme() {
+        let request = HttpRequest::builder()
+            .header("Authorization", "Basic dXNlcjpwYXNz")
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        let jar = CookieJar::new();
+        let result = extract_token(&jar, &request).unwrap();
+
+        // Basic auth should not be extracted
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_token_empty_bearer() {
+        let request = HttpRequest::builder()
+            .header("Authorization", "Bearer ")
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        let jar = CookieJar::new();
+        let result = extract_token(&jar, &request).unwrap();
+
+        // Should return empty string (the code after "Bearer ")
+        assert_eq!(result, Some("".to_string()));
+    }
+}
+

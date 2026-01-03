@@ -71,3 +71,117 @@ pub struct AssetDetailTemplate {
     pub header_user: Option<crate::templates::base::UserContext>,
     pub asset: AssetDetail,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_asset_detail(status: &str, asset_type: &str) -> AssetDetail {
+        AssetDetail {
+            uuid: "asset-uuid".to_string(),
+            name: "Test Server".to_string(),
+            hostname: "test.example.com".to_string(),
+            ip_address: Some("192.168.1.100".to_string()),
+            port: 22,
+            asset_type: asset_type.to_string(),
+            status: status.to_string(),
+            group_name: Some("Production".to_string()),
+            group_uuid: Some("group-uuid".to_string()),
+            description: Some("Test server description".to_string()),
+            os_type: Some("Linux".to_string()),
+            os_version: Some("Ubuntu 22.04".to_string()),
+            require_mfa: true,
+            require_justification: false,
+            max_session_duration: 7200,
+            last_seen: Some("2026-01-03 10:00:00".to_string()),
+            created_at: "2026-01-01 00:00:00".to_string(),
+            updated_at: "2026-01-02 00:00:00".to_string(),
+        }
+    }
+
+    // Tests for status_class()
+    #[test]
+    fn test_status_class_online() {
+        let asset = create_test_asset_detail("online", "ssh");
+        assert!(asset.status_class().contains("green"));
+    }
+
+    #[test]
+    fn test_status_class_offline() {
+        let asset = create_test_asset_detail("offline", "ssh");
+        assert!(asset.status_class().contains("red"));
+    }
+
+    #[test]
+    fn test_status_class_maintenance() {
+        let asset = create_test_asset_detail("maintenance", "ssh");
+        assert!(asset.status_class().contains("yellow"));
+    }
+
+    #[test]
+    fn test_status_class_unknown() {
+        let asset = create_test_asset_detail("unknown", "ssh");
+        assert!(asset.status_class().contains("gray"));
+    }
+
+    // Tests for type_class()
+    #[test]
+    fn test_type_class_ssh() {
+        let asset = create_test_asset_detail("online", "ssh");
+        assert!(asset.type_class().contains("green"));
+    }
+
+    #[test]
+    fn test_type_class_rdp() {
+        let asset = create_test_asset_detail("online", "rdp");
+        assert!(asset.type_class().contains("blue"));
+    }
+
+    #[test]
+    fn test_type_class_vnc() {
+        let asset = create_test_asset_detail("online", "vnc");
+        assert!(asset.type_class().contains("purple"));
+    }
+
+    #[test]
+    fn test_type_class_unknown() {
+        let asset = create_test_asset_detail("online", "telnet");
+        assert!(asset.type_class().contains("gray"));
+    }
+
+    // Tests for max_session_display()
+    #[test]
+    fn test_max_session_display_hours() {
+        let asset = create_test_asset_detail("online", "ssh");
+        assert_eq!(asset.max_session_display(), "2h 0m");
+    }
+
+    #[test]
+    fn test_max_session_display_minutes_only() {
+        let mut asset = create_test_asset_detail("online", "ssh");
+        asset.max_session_duration = 1800; // 30 minutes
+        assert_eq!(asset.max_session_display(), "30m");
+    }
+
+    #[test]
+    fn test_max_session_display_hours_and_minutes() {
+        let mut asset = create_test_asset_detail("online", "ssh");
+        asset.max_session_duration = 5400; // 1h 30m
+        assert_eq!(asset.max_session_display(), "1h 30m");
+    }
+
+    // Tests for AssetDetail struct
+    #[test]
+    fn test_asset_detail_creation() {
+        let asset = create_test_asset_detail("online", "ssh");
+        assert_eq!(asset.name, "Test Server");
+        assert!(asset.require_mfa);
+    }
+
+    #[test]
+    fn test_asset_detail_clone() {
+        let asset = create_test_asset_detail("online", "rdp");
+        let cloned = asset.clone();
+        assert_eq!(asset.uuid, cloned.uuid);
+    }
+}

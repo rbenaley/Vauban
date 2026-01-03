@@ -188,3 +188,184 @@ pub async fn setup_mfa(
     }))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==================== LoginRequest Tests ====================
+
+    #[test]
+    fn test_login_request_valid() {
+        let request = LoginRequest {
+            username: "validuser".to_string(),
+            password: "validpassword123".to_string(),
+            mfa_code: None,
+        };
+
+        assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn test_login_request_short_username() {
+        let request = LoginRequest {
+            username: "ab".to_string(), // Too short (min 3)
+            password: "validpassword123".to_string(),
+            mfa_code: None,
+        };
+
+        assert!(request.validate().is_err());
+    }
+
+    #[test]
+    fn test_login_request_short_password() {
+        let request = LoginRequest {
+            username: "validuser".to_string(),
+            password: "short".to_string(), // Too short (min 12)
+            mfa_code: None,
+        };
+
+        assert!(request.validate().is_err());
+    }
+
+    #[test]
+    fn test_login_request_with_mfa_code() {
+        let request = LoginRequest {
+            username: "validuser".to_string(),
+            password: "validpassword123".to_string(),
+            mfa_code: Some("123456".to_string()),
+        };
+
+        assert!(request.validate().is_ok());
+        assert!(request.mfa_code.is_some());
+    }
+
+    #[test]
+    fn test_login_request_username_minimum_length() {
+        let request = LoginRequest {
+            username: "abc".to_string(), // Exactly 3 chars
+            password: "validpassword123".to_string(),
+            mfa_code: None,
+        };
+
+        assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn test_login_request_password_minimum_length() {
+        let request = LoginRequest {
+            username: "validuser".to_string(),
+            password: "123456789012".to_string(), // Exactly 12 chars
+            mfa_code: None,
+        };
+
+        assert!(request.validate().is_ok());
+    }
+
+    // ==================== LoginResponse Tests ====================
+
+    #[test]
+    fn test_login_response_serialize() {
+        let user_dto = crate::models::user::UserDto {
+            uuid: ::uuid::Uuid::new_v4(),
+            username: "testuser".to_string(),
+            email: "test@example.com".to_string(),
+            first_name: Some("Test".to_string()),
+            last_name: Some("User".to_string()),
+            phone: None,
+            is_active: true,
+            is_staff: false,
+            is_superuser: false,
+            is_service_account: false,
+            mfa_enabled: false,
+            mfa_enforced: false,
+            preferences: serde_json::json!({}),
+            last_login: None,
+            last_login_ip: None,
+            auth_source: "local".to_string(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+
+        let response = LoginResponse {
+            access_token: "token123".to_string(),
+            refresh_token: "refresh456".to_string(),
+            user: user_dto,
+            mfa_required: false,
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+
+        assert!(json.contains("token123"));
+        assert!(json.contains("refresh456"));
+        assert!(json.contains("testuser"));
+        assert!(json.contains("mfa_required"));
+    }
+
+    #[test]
+    fn test_login_response_mfa_required() {
+        let user_dto = crate::models::user::UserDto {
+            uuid: ::uuid::Uuid::new_v4(),
+            username: "mfauser".to_string(),
+            email: "mfa@example.com".to_string(),
+            first_name: None,
+            last_name: None,
+            phone: None,
+            is_active: true,
+            is_staff: false,
+            is_superuser: false,
+            is_service_account: false,
+            mfa_enabled: true,
+            mfa_enforced: true,
+            preferences: serde_json::json!({}),
+            last_login: None,
+            last_login_ip: None,
+            auth_source: "local".to_string(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+
+        let response = LoginResponse {
+            access_token: String::new(),
+            refresh_token: String::new(),
+            user: user_dto,
+            mfa_required: true,
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed["mfa_required"], true);
+    }
+
+    // ==================== MfaSetupResponse Tests ====================
+
+    #[test]
+    fn test_mfa_setup_response_serialize() {
+        let response = MfaSetupResponse {
+            secret: "JBSWY3DPEHPK3PXP".to_string(),
+            qr_code_url: "otpauth://totp/VAUBAN:testuser".to_string(),
+            qr_code_base64: Some("base64data...".to_string()),
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+
+        assert!(json.contains("JBSWY3DPEHPK3PXP"));
+        assert!(json.contains("otpauth://"));
+        assert!(json.contains("qr_code_base64"));
+    }
+
+    #[test]
+    fn test_mfa_setup_response_without_qr_code() {
+        let response = MfaSetupResponse {
+            secret: "TESTSECRET".to_string(),
+            qr_code_url: "otpauth://totp/TEST:user".to_string(),
+            qr_code_base64: None,
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert!(parsed["qr_code_base64"].is_null());
+    }
+}
+
