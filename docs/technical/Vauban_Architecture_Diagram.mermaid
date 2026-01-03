@@ -1,0 +1,114 @@
+---
+title: Vauban - Microservices Architecture
+---
+flowchart TD
+    subgraph Clients["👥 CLIENTS"]
+        Browser["🌐 Browser"]
+        SSHClient["💻 SSH Client"]
+        RDPClient["🖥️ RDP Client"]
+    end
+
+    subgraph Ingress["🔒 INGRESS LAYER"]
+        LB["Load Balancer<br/>(TLS 1.3)"]
+    end
+
+    subgraph WebLayer["🦀 RUST WEB SERVICES"]
+        direction LR
+        Web["<b>vauban-web</b><br/>─────────────<br/>• Admin/User Interface<br/>• REST API<br/>• Real-time Dashboard<br/>• WebSockets"]
+        Auth["<b>vauban-auth</b><br/>─────────────<br/>• MFA (TOTP/HOTP)<br/>• SSO (OIDC/SAML)<br/>• LDAP/AD sync<br/>• JWT tokens"]
+    end
+
+    subgraph CoreServices["🦀 RUST CORE SERVICES"]
+        direction LR
+        RBAC["<b>vauban-rbac</b><br/>─────────────<br/>• Casbin Engine<br/>• Policy Decision<br/>• Auth Cache"]
+        Vault["<b>vauban-vault</b><br/>─────────────<br/>• Secrets Mgmt<br/>• Key Rotation<br/>• HSM Integration"]
+        Audit["<b>vauban-audit</b><br/>─────────────<br/>• WORM Storage<br/>• Session Replay<br/>• Real-time Alerts"]
+    end
+
+    subgraph ProxyServices["🦀 RUST PROXY SERVICES"]
+        direction LR
+        ProxySSH["<b>vauban-proxy-ssh</b><br/>─────────────<br/>• russh<br/>• Session Recording<br/>• Command Filtering<br/>• Key Injection"]
+        ProxyRDP["<b>vauban-proxy-rdp</b><br/>─────────────<br/>• IronRDP<br/>• Video Capture<br/>• NLA Support<br/>• Watermarking"]
+    end
+
+    subgraph Messaging["📨 MESSAGING"]
+        RobustMQ["RobustMQ"]
+    end
+
+    subgraph DataLayer["🏗️ DATA LAYER"]
+        direction LR
+        PG[("PostgreSQL 18+<br/>(TDE Encrypted)")]
+        Valkey[("Valkey<br/>(Sessions/Cache)")]
+        S3[("MinIO/S3<br/>(Recordings)")]
+    end
+
+    subgraph SecurityLayer["🔐 SECURITY LAYER"]
+        direction LR
+        HVault["HashiCorp Vault"]
+        StepCA["step-ca (PKI)"]
+    end
+
+    subgraph Targets["🎯 TARGET ASSETS"]
+        direction LR
+        LinuxServers["🐧 Linux"]
+        WindowsServers["🪟 Windows"]
+        NetworkDevices["📡 Network"]
+    end
+
+    %% Client connections
+    Clients --> LB
+
+    %% Load Balancer routing
+    LB --> Web
+    LB --> ProxySSH
+    LB --> ProxyRDP
+
+    %% Web layer connections
+    Web <-->|"gRPC/mTLS"| Auth
+    Web <-->|"gRPC/mTLS"| RBAC
+    Web --> PG
+    Web --> Valkey
+
+    %% Auth connections
+    Auth <-->|"gRPC/mTLS"| RBAC
+    Auth --> PG
+    Auth --> Valkey
+
+    %% Proxy connections
+    ProxySSH <-->|"gRPC/mTLS"| RBAC
+    ProxySSH <-->|"gRPC/mTLS"| Vault
+    ProxySSH -->|"Events"| RobustMQ
+    ProxySSH --> Targets
+
+    ProxyRDP <-->|"gRPC/mTLS"| RBAC
+    ProxyRDP <-->|"gRPC/mTLS"| Vault
+    ProxyRDP -->|"Events"| RobustMQ
+    ProxyRDP --> WindowsServers
+
+    %% Vault connections
+    Vault --> HVault
+    Vault --> StepCA
+
+    %% Audit connections
+    RobustMQ --> Audit
+    Audit --> S3
+    Audit --> PG
+
+    %% RBAC data
+    RBAC --> PG
+    RBAC --> Valkey
+
+    %% Styling
+    classDef rustWeb fill:#0d6efd,stroke:#0a58ca,color:#fff
+    classDef rust fill:#f74c00,stroke:#c23d00,color:#fff
+    classDef infra fill:#198754,stroke:#146c43,color:#fff
+    classDef client fill:#6c757d,stroke:#495057,color:#fff
+    classDef target fill:#ffc107,stroke:#cc9a06,color:#000
+    classDef messaging fill:#17a2b8,stroke:#138496,color:#fff
+
+    class Web,Auth rustWeb
+    class RBAC,ProxySSH,ProxyRDP,Vault,Audit rust
+    class PG,Valkey,S3,HVault,StepCA infra
+    class Browser,SSHClient,RDPClient client
+    class LinuxServers,WindowsServers,NetworkDevices target
+    class RobustMQ messaging
