@@ -2,12 +2,12 @@
 ///
 /// Tests for /api/auth/* endpoints.
 
-use axum::http::{header, StatusCode};
+use axum::http::header;
 use serde_json::json;
 use serial_test::serial;
 
 use crate::common::{TestApp, assertions::*, test_db};
-use crate::fixtures::{create_test_user, create_admin_user, create_mfa_user, unique_name};
+use crate::fixtures::{create_test_user, create_mfa_user, unique_name};
 
 /// Test successful login with valid credentials.
 #[tokio::test]

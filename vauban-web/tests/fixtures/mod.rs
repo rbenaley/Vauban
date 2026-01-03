@@ -4,11 +4,10 @@
 
 use diesel::prelude::*;
 use uuid::Uuid;
-use chrono::Utc;
 
 use vauban_web::models::user::{User, NewUser};
 use vauban_web::models::asset::{Asset, NewAsset};
-use vauban_web::schema::{users, assets, asset_groups, user_groups};
+use vauban_web::schema::{users, assets};
 use vauban_web::services::auth::AuthService;
 
 /// Test user data.
