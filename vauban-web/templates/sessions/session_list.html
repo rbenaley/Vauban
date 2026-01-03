@@ -1,0 +1,183 @@
+{% extends "base.html" %}
+
+{% block title %}Sessions - {{ vauban.brand_name }}{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <!-- Header -->
+    <div class="md:flex md:items-center md:justify-between">
+        <div class="min-w-0 flex-1">
+            <h2 class="text-2xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-3xl sm:tracking-tight">
+                Sessions
+            </h2>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                View and manage your connection sessions
+            </p>
+        </div>
+    </div>
+
+    <!-- Filters -->
+    <div class="bg-white dark:bg-gray-800 shadow rounded-lg p-4">
+        <form method="get" class="grid grid-cols-1 gap-4 sm:grid-cols-4">
+            <div>
+                <label for="status" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Status</label>
+                <select name="status" id="status"
+                        class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
+                    <option value="">All statuses</option>
+                    <option value="active" {% if status_filter.as_deref() == Some("active") %}selected{% endif %}>Active</option>
+                    <option value="disconnected" {% if status_filter.as_deref() == Some("disconnected") %}selected{% endif %}>Disconnected</option>
+                    <option value="completed" {% if status_filter.as_deref() == Some("completed") %}selected{% endif %}>Completed</option>
+                    <option value="terminated" {% if status_filter.as_deref() == Some("terminated") %}selected{% endif %}>Terminated</option>
+                    <option value="pending" {% if status_filter.as_deref() == Some("pending") %}selected{% endif %}>Pending</option>
+                </select>
+            </div>
+            <div>
+                <label for="type" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Type</label>
+                <select name="type" id="type"
+                        class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
+                    <option value="">All types</option>
+                    <option value="ssh" {% if type_filter.as_deref() == Some("ssh") %}selected{% endif %}>SSH</option>
+                    <option value="rdp" {% if type_filter.as_deref() == Some("rdp") %}selected{% endif %}>RDP</option>
+                    <option value="vnc" {% if type_filter.as_deref() == Some("vnc") %}selected{% endif %}>VNC</option>
+                </select>
+            </div>
+            <div>
+                <label for="asset" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Asset</label>
+                <input type="text" name="asset" id="asset" value="{{ asset_filter.as_deref().unwrap_or_default() }}"
+                       placeholder="Search by asset name"
+                       class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
+            </div>
+            <div class="flex items-end">
+                <button type="submit"
+                        class="w-full rounded-md bg-vauban-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-600">
+                    Filter
+                </button>
+            </div>
+        </form>
+    </div>
+
+    <!-- Sessions list -->
+    <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+        {% if !sessions.is_empty() %}
+        <ul role="list" class="divide-y divide-gray-200 dark:divide-gray-700">
+            {% for session in sessions %}
+            <li class="px-6 py-4 hover:bg-gray-50 dark:hover:bg-gray-700">
+                <div class="flex items-center justify-between">
+                    <div class="flex items-center space-x-4">
+                        <div class="flex-shrink-0">
+                            <span class="inline-flex h-10 w-10 items-center justify-center rounded-full
+                                {% if session.session_type == "ssh" %}bg-green-100 text-green-600 dark:bg-green-900/50 dark:text-green-400
+                                {% else if session.session_type == "rdp" %}bg-blue-100 text-blue-600 dark:bg-blue-900/50 dark:text-blue-400
+                                {% else %}bg-purple-100 text-purple-600 dark:bg-purple-900/50 dark:text-purple-400{% endif %}">
+                                {% if session.session_type == "ssh" %}
+                                <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0021 18V6a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 6v12a2.25 2.25 0 002.25 2.25z"/>
+                                </svg>
+                                {% else if session.session_type == "rdp" %}
+                                <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17.25v1.007a3 3 0 01-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0115 18.257V17.25m6-12V15a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 15V5.25m18 0A2.25 2.25 0 0018.75 3H5.25A2.25 2.25 0 003 5.25m18 0V12a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 12V5.25"/>
+                                </svg>
+                                {% else %}
+                                <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17.25v1.007a3 3 0 01-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0115 18.257V17.25m6-12V15a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 15V5.25m18 0A2.25 2.25 0 0018.75 3H5.25A2.25 2.25 0 003 5.25m18 0V12a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 12V5.25"/>
+                                </svg>
+                                {% endif %}
+                            </span>
+                        </div>
+                        <div class="flex-1 min-w-0">
+                            <div class="flex items-center">
+                                <p class="text-sm font-medium text-gray-900 dark:text-white truncate">
+                                    {{ session.asset_name }}
+                                </p>
+                                <span class="ml-2 inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium
+                                    {% if session.status == "active" %}bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300
+                                    {% else if session.status == "disconnected" %}bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300
+                                    {% else if session.status == "completed" %}bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-300
+                                    {% else if session.status == "terminated" %}bg-red-100 text-red-800 dark:bg-red-900/50 dark:text-red-300
+                                    {% else if session.status == "pending" %}bg-yellow-100 text-yellow-800 dark:bg-yellow-900/50 dark:text-yellow-300
+                                    {% else %}bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300{% endif %}">
+                                    {{ session.status_display() }}
+                                </span>
+                                {% if session.is_recorded %}
+                                <span class="ml-2 inline-flex items-center text-gray-400" title="Recorded">
+                                    <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.75 10.5l4.72-4.72a.75.75 0 011.28.53v11.38a.75.75 0 01-1.28.53l-4.72-4.72M4.5 18.75h9a2.25 2.25 0 002.25-2.25v-9a2.25 2.25 0 00-2.25-2.25h-9A2.25 2.25 0 002.25 7.5v9a2.25 2.25 0 002.25 2.25z"/>
+                                    </svg>
+                                </span>
+                                {% endif %}
+                            </div>
+                            <div class="mt-1 flex items-center text-sm text-gray-500 dark:text-gray-400">
+                                <span>{{ session.session_type_display() }}</span>
+                                <span class="mx-2">•</span>
+                                <span>{{ session.credential_username }}</span>
+                                {% if let Some(connected) = session.connected_at.as_ref() %}
+                                <span class="mx-2">•</span>
+                                <span>{{ connected }}</span>
+                                {% endif %}
+                                {% if session.duration_seconds.is_some() %}
+                                <span class="mx-2">•</span>
+                                <span>{{ session.duration_display() }}</span>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                        <a href="/sessions/{{ session.id }}"
+                           class="text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">
+                            View
+                        </a>
+                        {% if session.is_active() %}
+                        <button type="button"
+                                onclick="terminateSession({{ session.id }})"
+                                class="rounded-md bg-red-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-red-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-600">
+                            Terminate
+                        </button>
+                        {% endif %}
+                    </div>
+                </div>
+            </li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <div class="px-6 py-12 text-center">
+            <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17.25v1.007a3 3 0 01-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0115 18.257V17.25m6-12V15a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 15V5.25m18 0A2.25 2.25 0 0018.75 3H5.25A2.25 2.25 0 003 5.25m18 0V12a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 12V5.25"/>
+            </svg>
+            <h3 class="mt-2 text-sm font-semibold text-gray-900 dark:text-white">No sessions</h3>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                You don't have any connection sessions yet.
+            </p>
+            <div class="mt-6">
+                <a href="/assets"
+                   class="inline-flex items-center rounded-md bg-vauban-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-600">
+                    Browse Assets
+                </a>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<script>
+function terminateSession(sessionId) {
+    if (!confirm('Are you sure you want to terminate this session?')) {
+        return;
+    }
+    fetch(`/api/v1/sessions/${sessionId}/terminate`, {
+        method: 'POST',
+        credentials: 'include'
+    })
+    .then(response => {
+        if (response.ok) {
+            window.location.reload();
+        } else {
+            alert('Failed to terminate session');
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        alert('Failed to terminate session');
+    });
+}
+</script>
+{% endblock %}

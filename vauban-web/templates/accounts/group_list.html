@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+
+{% block title %}Groups - {{ vauban.brand_name }}{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <!-- Header -->
+    <div class="md:flex md:items-center md:justify-between">
+        <div class="min-w-0 flex-1">
+            <h2 class="text-2xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-3xl sm:tracking-tight">
+                Groups
+            </h2>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                Manage user groups and permissions
+            </p>
+        </div>
+        <div class="mt-4 flex md:ml-4 md:mt-0">
+            <a href="/accounts/groups/new"
+               class="ml-3 inline-flex items-center rounded-md bg-vauban-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-600">
+                <svg class="-ml-0.5 mr-1.5 h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                    <path d="M10.75 4.75a.75.75 0 00-1.5 0v4.5h-4.5a.75.75 0 000 1.5h4.5v4.5a.75.75 0 001.5 0v-4.5h4.5a.75.75 0 000-1.5h-4.5v-4.5z"/>
+                </svg>
+                New Group
+            </a>
+        </div>
+    </div>
+
+    <!-- Filters -->
+    <div class="bg-white dark:bg-gray-800 shadow rounded-lg p-4">
+        <form method="get" class="flex gap-4">
+            <div class="flex-1">
+                <label for="search" class="sr-only">Search</label>
+                <input type="text" name="search" id="search" value="{{ search.as_deref().unwrap_or_default() }}"
+                       placeholder="Search groups..."
+                       class="block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
+            </div>
+            <button type="submit"
+                    class="rounded-md bg-vauban-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-600">
+                Search
+            </button>
+        </form>
+    </div>
+
+    <!-- Groups list -->
+    <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+        {% if !groups.is_empty() %}
+        <ul role="list" class="divide-y divide-gray-200 dark:divide-gray-700">
+            {% for group in groups %}
+            <li class="px-6 py-4 hover:bg-gray-50 dark:hover:bg-gray-700">
+                <div class="flex items-center justify-between">
+                    <div class="flex items-center space-x-4">
+                        <div class="flex-shrink-0">
+                            <span class="inline-flex h-10 w-10 items-center justify-center rounded-full bg-vauban-100 dark:bg-vauban-900/50">
+                                <svg class="h-5 w-5 text-vauban-600 dark:text-vauban-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/>
+                                </svg>
+                            </span>
+                        </div>
+                        <div class="flex-1 min-w-0">
+                            <div class="flex items-center">
+                                <p class="text-sm font-medium text-gray-900 dark:text-white truncate">
+                                    {{ group.name }}
+                                </p>
+                                <span class="ml-2 inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium
+                                    {% if group.source == "local" %}bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-300
+                                    {% else if group.source == "ldap" %}bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300
+                                    {% else %}bg-purple-100 text-purple-800 dark:bg-purple-900/50 dark:text-purple-300{% endif %}">
+                                    {{ group.source_display() }}
+                                </span>
+                            </div>
+                            <div class="mt-1 flex items-center text-sm text-gray-500 dark:text-gray-400">
+                                {% if let Some(desc) = group.description.as_ref() %}
+                                <span class="truncate">{{ desc }}</span>
+                                <span class="mx-2">•</span>
+                                {% endif %}
+                                <span>{{ group.member_count }} member{% if group.member_count != 1 %}s{% endif %}</span>
+                                <span class="mx-2">•</span>
+                                <span>Created {{ group.created_at }}</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                        <a href="/accounts/groups/{{ group.uuid }}"
+                           class="text-sm text-vauban-600 hover:text-vauban-900 dark:text-vauban-400 dark:hover:text-vauban-300">
+                            View
+                        </a>
+                    </div>
+                </div>
+            </li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <div class="px-6 py-12 text-center">
+            <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/>
+            </svg>
+            <h3 class="mt-2 text-sm font-semibold text-gray-900 dark:text-white">No groups</h3>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                Get started by creating a new group.
+            </p>
+            <div class="mt-6">
+                <a href="/accounts/groups/new"
+                   class="inline-flex items-center rounded-md bg-vauban-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-600">
+                    <svg class="-ml-0.5 mr-1.5 h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                        <path d="M10.75 4.75a.75.75 0 00-1.5 0v4.5h-4.5a.75.75 0 000 1.5h4.5v4.5a.75.75 0 001.5 0v-4.5h4.5a.75.75 0 000-1.5h-4.5v-4.5z"/>
+                    </svg>
+                    New Group
+                </a>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

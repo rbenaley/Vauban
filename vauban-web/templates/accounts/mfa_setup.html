@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+
+{% block title %}MFA Setup - {{ vauban.brand_name }}{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <!-- Header -->
+    <div class="md:flex md:items-center md:justify-between">
+        <div class="min-w-0 flex-1">
+            <h2 class="text-2xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-3xl sm:tracking-tight">
+                Multi-Factor Authentication
+            </h2>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                Secure your account with two-factor authentication
+            </p>
+        </div>
+    </div>
+
+    <div class="bg-white dark:bg-gray-800 shadow rounded-lg">
+        <div class="px-6 py-5 border-b border-gray-200 dark:border-gray-700">
+            <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Setup MFA</h3>
+        </div>
+        <div class="px-6 py-5">
+            <div class="text-center">
+                <img src="{{ qr_code_url }}" alt="QR Code" class="mx-auto mb-4">
+                <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">
+                    Scan this QR code with your authenticator app
+                </p>
+                <div class="bg-gray-100 dark:bg-gray-700 rounded p-4 font-mono text-sm">
+                    {{ secret }}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
