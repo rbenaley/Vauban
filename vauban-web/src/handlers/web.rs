@@ -4,7 +4,6 @@
 
 use axum::{
     extract::{Query, State},
-    http::StatusCode,
     response::{Html, IntoResponse, Response},
 };
 use std::collections::HashMap;

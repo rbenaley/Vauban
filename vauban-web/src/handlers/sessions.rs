@@ -22,7 +22,7 @@ pub async fn list_sessions(
     Query(params): Query<ListSessionsParams>,
 ) -> AppResult<Json<Vec<ProxySession>>> {
     let mut conn = get_connection(&state.db_pool)?;
-    let mut query = proxy_sessions.into_boxed();
+    let query = proxy_sessions.into_boxed();
 
     // Filter by user if not admin
     // TODO: Check admin status
@@ -64,7 +64,7 @@ pub async fn get_session(
 /// Create session handler.
 pub async fn create_session(
     State(state): State<AppState>,
-    user: AuthUser,
+    _user: AuthUser,
     Json(request): Json<CreateSessionRequest>,
 ) -> AppResult<Json<ProxySession>> {
     validator::Validate::validate(&request).map_err(|e| {

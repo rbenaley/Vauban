@@ -47,6 +47,7 @@ impl GrpcClient {
 
 /// RBAC service client (placeholder - will be generated from proto).
 pub struct RbacClient {
+    #[allow(dead_code)]
     client: GrpcClient,
 }
 
@@ -71,6 +72,7 @@ impl RbacClient {
 
 /// Vault service client (placeholder - will be generated from proto).
 pub struct VaultClient {
+    #[allow(dead_code)]
     client: GrpcClient,
 }
 

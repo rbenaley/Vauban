@@ -4,7 +4,7 @@ use axum::{
     extract::{Path, Query, State},
     Json,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use ::uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
@@ -115,7 +115,7 @@ pub async fn update_user(
 
     let mut conn = get_connection(&state.db_pool)?;
 
-    use crate::schema::users::dsl::{users, uuid, updated_at};
+    use crate::schema::users::dsl::{users, uuid};
     use crate::models::user::UserUpdate;
     
     let update_data = UserUpdate {

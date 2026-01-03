@@ -4,7 +4,6 @@
 
 use axum::{
     extract::State,
-    http::StatusCode,
     response::{IntoResponse, Response},
     Json,
 };
@@ -14,7 +13,7 @@ use validator::Validate;
 
 use crate::error::{AppError, AppResult};
 use crate::middleware::auth::AuthUser;
-use crate::models::user::{User, NewUser, CreateUserRequest, UserDto};
+use crate::models::user::User;
 use crate::schema::users::dsl::*;
 use crate::services::auth::AuthService;
 use crate::AppState;
@@ -131,7 +130,7 @@ pub async fn login(
         .http_only(true)
         .secure(false) // Set to true in production with HTTPS
         .same_site(SameSite::Lax) // Changed to Lax for better compatibility
-        .finish();
+        .build();
 
     Ok((jar.add(cookie), Json(response)).into_response())
 }
@@ -146,7 +145,7 @@ pub async fn logout(jar: CookieJar) -> Response {
         .path("/")
         .http_only(true)
         .max_age(Duration::ZERO)
-        .finish();
+        .build();
 
     (jar.add(cookie), Redirect::to("/login")).into_response()
 }

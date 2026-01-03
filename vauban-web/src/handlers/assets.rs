@@ -62,7 +62,7 @@ pub async fn get_asset(
 /// Create asset handler.
 pub async fn create_asset(
     State(state): State<AppState>,
-    user: AuthUser,
+    _user: AuthUser,
     Json(request): Json<CreateAssetRequest>,
 ) -> AppResult<Json<Asset>> {
     validator::Validate::validate(&request).map_err(|e| {
