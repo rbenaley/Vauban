@@ -13,20 +13,18 @@
                 Authentication is required to access this application
             </p>
         </div>
-        <form class="mt-8 space-y-6" id="login-form" method="post" action="/api/auth/login">
-            <div id="error-message" class="hidden rounded-md bg-red-50 dark:bg-red-900/50 p-4">
-                <div class="flex">
-                    <div class="flex-shrink-0">
-                        <svg class="h-5 w-5 text-red-400" viewBox="0 0 20 20" fill="currentColor">
-                            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd" />
-                        </svg>
-                    </div>
-                    <div class="ml-3">
-                        <p class="text-sm font-medium text-red-800 dark:text-red-200" id="error-text"></p>
-                    </div>
-                </div>
-            </div>
+        <form class="mt-8 space-y-6" id="login-form"
+              hx-post="/api/auth/login"
+              hx-target="#login-result"
+              hx-swap="innerHTML"
+              hx-indicator="#loading-spinner"
+              hx-disabled-elt="button[type='submit']"
+              hx-ext="json-enc">
+            
+            <!-- Result area (errors, MFA prompt) -->
+            <div id="login-result"></div>
 
+            <!-- MFA section (hidden by default, revealed by server via hx-swap-oob) -->
             <div id="mfa-section" class="hidden space-y-4">
                 <div>
                     <label for="mfa_code" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
@@ -55,108 +53,23 @@
 
             <div>
                 <button type="submit"
-                        class="group relative w-full flex justify-center py-2 px-4 border border-transparent text-sm font-medium rounded-md text-white bg-vauban-600 hover:bg-vauban-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-vauban-500">
+                        class="group relative w-full flex justify-center py-2 px-4 border border-transparent text-sm font-medium rounded-md text-white bg-vauban-600 hover:bg-vauban-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-vauban-500 disabled:opacity-50 disabled:cursor-not-allowed">
                     <span class="absolute left-0 inset-y-0 flex items-center pl-3">
                         <svg class="h-5 w-5 text-vauban-500 group-hover:text-vauban-400" fill="currentColor" viewBox="0 0 20 20">
                             <path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd" />
                         </svg>
                     </span>
-                    Sign in
+                    <span class="button-text">Sign in</span>
+                    <span id="loading-spinner" class="htmx-indicator ml-2">
+                        <svg class="animate-spin h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                    </span>
                 </button>
             </div>
         </form>
     </div>
 </div>
-
-<script>
-document.addEventListener('DOMContentLoaded', function() {
-    const form = document.getElementById('login-form');
-    if (!form) {
-        console.error('Login form not found');
-        return;
-    }
-    
-    form.addEventListener('submit', async function(e) {
-        e.preventDefault();
-        
-        const errorDiv = document.getElementById('error-message');
-        const errorText = document.getElementById('error-text');
-        const mfaSection = document.getElementById('mfa-section');
-        const submitButton = form.querySelector('button[type="submit"]');
-        
-        // Disable button during request
-        submitButton.disabled = true;
-        submitButton.textContent = 'Signing in...';
-        
-        const formData = new FormData(e.target);
-        const data = {
-            username: formData.get('username'),
-            password: formData.get('password'),
-        };
-        
-        const mfaCode = formData.get('mfa_code');
-        // Only include MFA code if the section is visible and has a value
-        if (!mfaSection.classList.contains('hidden') && mfaCode && mfaCode.trim() !== '') {
-            data.mfa_code = mfaCode.trim();
-        }
-        
-        try {
-            console.log('Sending login request...', data);
-            const response = await fetch('/api/auth/login', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                credentials: 'include',
-                body: JSON.stringify(data),
-            });
-            
-            console.log('Response status:', response.status);
-            const contentType = response.headers.get('content-type');
-            let result;
-            
-            if (contentType && contentType.includes('application/json')) {
-                result = await response.json();
-            } else {
-                const text = await response.text();
-                console.error('Non-JSON response:', text);
-                errorDiv.classList.remove('hidden');
-                errorText.textContent = 'Invalid response from server';
-                submitButton.disabled = false;
-                submitButton.textContent = 'Sign in';
-                return;
-            }
-            
-            console.log('Response data:', result);
-            
-            if (!response.ok) {
-                errorDiv.classList.remove('hidden');
-                errorText.textContent = result.error || result.message || 'Login failed';
-                submitButton.disabled = false;
-                submitButton.textContent = 'Sign in';
-                return;
-            }
-            
-            if (result.mfa_required) {
-                mfaSection.classList.remove('hidden');
-                errorDiv.classList.add('hidden');
-                submitButton.disabled = false;
-                submitButton.textContent = 'Sign in';
-                return;
-            }
-            
-            // Success - redirect to dashboard
-            console.log('Login successful, redirecting...');
-            window.location.href = '/dashboard';
-        } catch (error) {
-            console.error('Login error:', error);
-            errorDiv.classList.remove('hidden');
-            errorText.textContent = 'Network error: ' + error.message;
-            submitButton.disabled = false;
-            submitButton.textContent = 'Sign in';
-        }
-    });
-});
-</script>
 {% endblock %}
 

@@ -83,10 +83,10 @@
                         <label for="color" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Color</label>
                         <div class="mt-1 flex items-center space-x-3">
                             <input type="color" name="color" id="color" value="{{ group.color }}"
+                                   oninput="this.nextElementSibling.value = this.value"
                                    class="h-10 w-14 rounded border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500">
                             <input type="text" value="{{ group.color }}" readonly
-                                   class="block w-24 rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm font-mono"
-                                   id="color-text">
+                                   class="block w-24 rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm font-mono">
                         </div>
                     </div>
                     <div>
@@ -119,12 +119,5 @@
         </div>
     </form>
 </div>
-
-<script>
-    // Sync color picker with text input
-    document.getElementById('color').addEventListener('input', function(e) {
-        document.getElementById('color-text').value = e.target.value;
-    });
-</script>
 {% endblock %}
 

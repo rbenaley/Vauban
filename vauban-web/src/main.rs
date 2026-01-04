@@ -198,6 +198,7 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
         .route("/api/v1/sessions", post(handlers::sessions::create_session))
         .route("/api/v1/sessions/{uuid}", get(handlers::sessions::get_session))
         .route("/api/v1/sessions/{uuid}", axum::routing::delete(|| async { "Not implemented" }))
+        .route("/api/v1/sessions/{id}/terminate", post(handlers::sessions::terminate_session))
         
         .layer(
             ServiceBuilder::new()

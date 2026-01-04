@@ -212,39 +212,10 @@
     </div>
 </div>
 
-<script>
-// Placeholder for recording playback functionality
-document.addEventListener('DOMContentLoaded', function() {
-    const playPauseBtn = document.getElementById('playPauseBtn');
-    const restartBtn = document.getElementById('restartBtn');
-    const speedSelect = document.getElementById('speedSelect');
-    const fullscreenBtn = document.getElementById('fullscreenBtn');
-    const progressBar = document.getElementById('progressBar');
-    const playerContainer = document.getElementById('playerContainer');
-
-    let isPlaying = false;
-
-    playPauseBtn?.addEventListener('click', function() {
-        isPlaying = !isPlaying;
-        // TODO: Implement actual playback control
-        console.log(isPlaying ? 'Playing...' : 'Paused');
-    });
-
-    restartBtn?.addEventListener('click', function() {
-        progressBar.value = 0;
-        // TODO: Implement restart
-        console.log('Restarting...');
-    });
-
-    speedSelect?.addEventListener('change', function() {
-        console.log('Speed changed to:', this.value);
-    });
-
-    fullscreenBtn?.addEventListener('click', function() {
-        if (playerContainer.requestFullscreen) {
-            playerContainer.requestFullscreen();
-        }
-    });
-});
-</script>
+{# TODO: Implement recording playback using WebSocket streaming.
+   The player controls (play/pause, restart, speed, fullscreen) will need:
+   - WebSocket connection to /ws/recording/{id} for streaming frames
+   - asciinema-player for SSH terminal recordings
+   - Video.js or similar for RDP/VNC screen recordings
+   Controls are currently non-functional placeholders. #}
 {% endblock %}

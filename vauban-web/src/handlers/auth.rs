@@ -4,7 +4,8 @@
 
 use axum::{
     extract::State,
-    response::{IntoResponse, Response},
+    http::{header::HeaderMap, HeaderValue},
+    response::{Html, IntoResponse, Response},
     Json,
 };
 use axum_extra::extract::CookieJar;
@@ -19,6 +20,11 @@ use crate::services::auth::AuthService;
 use crate::AppState;
 use crate::db::get_connection;
 use diesel::prelude::*;
+
+/// Check if request is from HTMX (has HX-Request header)
+fn is_htmx_request(headers: &HeaderMap) -> bool {
+    headers.get("HX-Request").is_some()
+}
 
 /// Login request.
 #[derive(Debug, Deserialize, Validate)]
@@ -40,28 +46,54 @@ pub struct LoginResponse {
 }
 
 /// Login handler.
+/// Supports both JSON API and HTMX requests.
+/// For HTMX: returns HTML fragments and HX-Redirect header on success.
+/// For JSON: returns LoginResponse as before.
 pub async fn login(
     State(state): State<AppState>,
+    headers: HeaderMap,
     jar: CookieJar,
     Json(request): Json<LoginRequest>,
 ) -> AppResult<Response> {
-    validator::Validate::validate(&request).map_err(|e| {
-        AppError::Validation(format!("Validation failed: {:?}", e))
-    })?;
+    let htmx = is_htmx_request(&headers);
+    
+    // Validation
+    if let Err(e) = validator::Validate::validate(&request) {
+        if htmx {
+            return Ok(Html(format!(
+                r#"<div id="login-result" class="rounded-md bg-red-50 dark:bg-red-900/50 p-4">
+                    <p class="text-sm font-medium text-red-800 dark:text-red-200">Validation error: {}</p>
+                </div>"#,
+                e
+            )).into_response());
+        }
+        return Err(AppError::Validation(format!("Validation failed: {:?}", e)));
+    }
 
     let mut conn = get_connection(&state.db_pool)?;
 
     // Find user by username
-    let user = users
+    let user = match users
         .filter(username.eq(&request.username))
         .filter(is_deleted.eq(false))
         .first::<User>(&mut conn)
         .optional()
         .map_err(|e| AppError::Database(e))?
-        .ok_or_else(|| AppError::Auth("Invalid credentials".to_string()))?;
+    {
+        Some(u) => u,
+        None => {
+            if htmx {
+                return Ok(Html(login_error_html("Invalid credentials")).into_response());
+            }
+            return Err(AppError::Auth("Invalid credentials".to_string()));
+        }
+    };
 
     // Check if account is locked
     if user.is_locked() {
+        if htmx {
+            return Ok(Html(login_error_html("Account is locked")).into_response());
+        }
         return Err(AppError::Auth("Account is locked".to_string()));
     }
 
@@ -73,6 +105,10 @@ pub async fn login(
             .set(failed_login_attempts.eq(failed_login_attempts + 1))
             .execute(&mut conn)
             .map_err(|e| AppError::Database(e))?;
+        
+        if htmx {
+            return Ok(Html(login_error_html("Invalid credentials")).into_response());
+        }
         return Err(AppError::Auth("Invalid credentials".to_string()));
     }
 
@@ -85,6 +121,10 @@ pub async fn login(
                 false
             }
         } else {
+            // MFA required - for HTMX, reveal MFA section
+            if htmx {
+                return Ok(Html(login_mfa_required_html()).into_response());
+            }
             return Ok(Json(LoginResponse {
                 access_token: String::new(),
                 refresh_token: String::new(),
@@ -96,6 +136,13 @@ pub async fn login(
     } else {
         true
     };
+
+    if user.mfa_enabled && !mfa_verified {
+        if htmx {
+            return Ok(Html(login_error_html("Invalid MFA code")).into_response());
+        }
+        return Err(AppError::Auth("Invalid MFA code".to_string()));
+    }
 
     // Generate tokens
     let access_token = state.auth_service.generate_access_token(
@@ -116,23 +163,69 @@ pub async fn login(
         .execute(&mut conn)
         .map_err(|e| AppError::Database(e))?;
 
-    let response = LoginResponse {
-        access_token: access_token.clone(),
-        refresh_token: String::new(), // TODO: Implement refresh tokens
-        user: user.to_dto(),
-        mfa_required: false,
-    };
-
     // Set cookie
     use axum_extra::extract::cookie::{Cookie, SameSite};
-    let cookie = Cookie::build(("access_token", access_token))
+    let cookie = Cookie::build(("access_token", access_token.clone()))
         .path("/")
         .http_only(true)
         .secure(false) // Set to true in production with HTTPS
         .same_site(SameSite::Lax) // Changed to Lax for better compatibility
         .build();
 
+    // For HTMX: return redirect header
+    if htmx {
+        let mut response = Html("").into_response();
+        response.headers_mut().insert(
+            "HX-Redirect",
+            HeaderValue::from_static("/dashboard"),
+        );
+        return Ok((jar.add(cookie), response).into_response());
+    }
+
+    // For JSON API
+    let response = LoginResponse {
+        access_token,
+        refresh_token: String::new(), // TODO: Implement refresh tokens
+        user: user.to_dto(),
+        mfa_required: false,
+    };
+
     Ok((jar.add(cookie), Json(response)).into_response())
+}
+
+/// Generate error HTML for HTMX login response.
+fn login_error_html(message: &str) -> String {
+    format!(
+        r#"<div id="login-result" class="rounded-md bg-red-50 dark:bg-red-900/50 p-4">
+            <div class="flex">
+                <div class="flex-shrink-0">
+                    <svg class="h-5 w-5 text-red-400" viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd" />
+                    </svg>
+                </div>
+                <div class="ml-3">
+                    <p class="text-sm font-medium text-red-800 dark:text-red-200">{}</p>
+                </div>
+            </div>
+        </div>"#,
+        message
+    )
+}
+
+/// Generate MFA required HTML for HTMX login response.
+fn login_mfa_required_html() -> String {
+    r#"<div id="login-result"></div>
+    <div id="mfa-section" hx-swap-oob="outerHTML:#mfa-section" class="space-y-4">
+        <div>
+            <label for="mfa_code" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                MFA Code
+            </label>
+            <input id="mfa_code" name="mfa_code" type="text"
+                   class="mt-1 appearance-none relative block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 placeholder-gray-500 dark:placeholder-gray-400 text-gray-900 dark:text-white rounded-md focus:outline-none focus:ring-vauban-500 focus:border-vauban-500 focus:z-10 sm:text-sm dark:bg-gray-700"
+                   placeholder="000000" autocomplete="one-time-code" autofocus>
+        </div>
+        <p class="text-sm text-gray-600 dark:text-gray-400">Enter the code from your authenticator app.</p>
+    </div>"#.to_string()
 }
 
 /// Logout handler.
