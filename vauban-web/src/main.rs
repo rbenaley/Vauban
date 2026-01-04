@@ -21,6 +21,8 @@ use vauban_web::{
     cache::create_cache_client,
     error::AppError,
     services::auth::AuthService,
+    services::broadcast::BroadcastService,
+    tasks::start_dashboard_tasks,
     handlers,
     middleware,
     AppState,
@@ -86,13 +88,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             e
         })?;
 
+    // Create broadcast service for WebSocket
+    let broadcast = BroadcastService::new();
+    tracing::info!("Broadcast service initialized");
+
     // Create application state
     let app_state = AppState {
         config: config.clone(),
-        db_pool,
+        db_pool: db_pool.clone(),
         cache,
         auth_service,
+        broadcast: broadcast.clone(),
     };
+
+    // Start background tasks for WebSocket updates
+    start_dashboard_tasks(broadcast, db_pool).await;
 
     // Build application
     let app = create_app(app_state).await?;
@@ -125,14 +135,16 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
         // Static files (served from static/ directory)
         .route("/static/{*path}", get(serve_static))
         
+        // WebSocket routes (real-time updates)
+        .route("/ws/dashboard", get(handlers::websocket::dashboard_ws))
+        .route("/ws/session/{id}", get(handlers::websocket::session_ws))
+        .route("/ws/notifications", get(handlers::websocket::notifications_ws))
+        
         // Web pages (HTML)
         .route("/login", get(handlers::web::login_page))
         .route("/", get(handlers::web::dashboard_home))
         .route("/dashboard", get(handlers::web::dashboard_home))
         .route("/dashboard/", get(handlers::web::dashboard_home))
-        .route("/dashboard/widgets/stats", get(handlers::web::dashboard_widget_stats))
-        .route("/dashboard/widgets/active-sessions", get(handlers::web::dashboard_widget_active_sessions))
-        .route("/dashboard/widgets/recent-activity", get(handlers::web::dashboard_widget_recent_activity))
         .route("/admin", get(handlers::web::dashboard_admin))
         
         // Accounts pages

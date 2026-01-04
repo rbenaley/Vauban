@@ -1,0 +1,255 @@
+/// VAUBAN Web - Dashboard update tasks.
+///
+/// Background tasks that push dashboard updates via WebSocket.
+
+use std::sync::Arc;
+use std::time::Duration;
+use askama::Template;
+use chrono::Utc;
+use diesel::prelude::*;
+use tokio::time::interval;
+use tracing::{debug, error, info};
+
+use crate::db::{DbPool, get_connection};
+use crate::services::broadcast::{BroadcastService, WsChannel, WsMessage};
+use crate::templates::dashboard::widgets::{
+    StatsWidget, StatsData,
+    ActiveSessionsWidget, ActiveSessionItem,
+    RecentActivityWidget, ActivityItem,
+};
+
+/// Interval for stats updates (30 seconds).
+const STATS_INTERVAL_SECS: u64 = 30;
+
+/// Interval for active sessions updates (10 seconds).
+const SESSIONS_INTERVAL_SECS: u64 = 10;
+
+/// Interval for recent activity updates (30 seconds).
+const ACTIVITY_INTERVAL_SECS: u64 = 30;
+
+/// Start all dashboard update tasks.
+pub async fn start_dashboard_tasks(broadcast: BroadcastService, db_pool: DbPool) {
+    let broadcast = Arc::new(broadcast);
+    let db_pool = Arc::new(db_pool);
+
+    // Spawn stats updater
+    let broadcast_clone = Arc::clone(&broadcast);
+    let db_clone = Arc::clone(&db_pool);
+    tokio::spawn(async move {
+        stats_updater(broadcast_clone, db_clone).await;
+    });
+
+    // Spawn active sessions updater
+    let broadcast_clone = Arc::clone(&broadcast);
+    let db_clone = Arc::clone(&db_pool);
+    tokio::spawn(async move {
+        sessions_updater(broadcast_clone, db_clone).await;
+    });
+
+    // Spawn recent activity updater
+    let broadcast_clone = Arc::clone(&broadcast);
+    let db_clone = Arc::clone(&db_pool);
+    tokio::spawn(async move {
+        activity_updater(broadcast_clone, db_clone).await;
+    });
+
+    info!("Dashboard background tasks started");
+}
+
+/// Task that pushes stats updates.
+async fn stats_updater(broadcast: Arc<BroadcastService>, db_pool: Arc<DbPool>) {
+    let mut ticker = interval(Duration::from_secs(STATS_INTERVAL_SECS));
+
+    loop {
+        ticker.tick().await;
+
+        match fetch_stats(&db_pool) {
+            Ok(stats) => {
+                let template = StatsWidget { stats };
+                match template.render() {
+                    Ok(html) => {
+                        let msg = WsMessage::new("ws-stats", html);
+                        if let Err(_) = broadcast.send(&WsChannel::DashboardStats, msg).await {
+                            debug!("No subscribers for stats channel");
+                        }
+                    }
+                    Err(e) => error!(error = %e, "Failed to render stats widget"),
+                }
+            }
+            Err(e) => error!(error = %e, "Failed to fetch stats"),
+        }
+    }
+}
+
+/// Task that pushes active sessions updates.
+async fn sessions_updater(broadcast: Arc<BroadcastService>, db_pool: Arc<DbPool>) {
+    let mut ticker = interval(Duration::from_secs(SESSIONS_INTERVAL_SECS));
+
+    loop {
+        ticker.tick().await;
+
+        match fetch_active_sessions(&db_pool) {
+            Ok(sessions) => {
+                let template = ActiveSessionsWidget { sessions };
+                match template.render() {
+                    Ok(html) => {
+                        let msg = WsMessage::new("ws-active-sessions", html);
+                        if let Err(_) = broadcast.send(&WsChannel::ActiveSessions, msg).await {
+                            debug!("No subscribers for sessions channel");
+                        }
+                    }
+                    Err(e) => error!(error = %e, "Failed to render sessions widget"),
+                }
+            }
+            Err(e) => error!(error = %e, "Failed to fetch active sessions"),
+        }
+    }
+}
+
+/// Task that pushes recent activity updates.
+async fn activity_updater(broadcast: Arc<BroadcastService>, db_pool: Arc<DbPool>) {
+    let mut ticker = interval(Duration::from_secs(ACTIVITY_INTERVAL_SECS));
+
+    loop {
+        ticker.tick().await;
+
+        match fetch_recent_activity(&db_pool) {
+            Ok(activities) => {
+                let template = RecentActivityWidget { activities };
+                match template.render() {
+                    Ok(html) => {
+                        let msg = WsMessage::new("ws-recent-activity", html);
+                        if let Err(_) = broadcast.send(&WsChannel::RecentActivity, msg).await {
+                            debug!("No subscribers for activity channel");
+                        }
+                    }
+                    Err(e) => error!(error = %e, "Failed to render activity widget"),
+                }
+            }
+            Err(e) => error!(error = %e, "Failed to fetch recent activity"),
+        }
+    }
+}
+
+/// Fetch dashboard statistics from database.
+fn fetch_stats(db_pool: &DbPool) -> Result<StatsData, String> {
+    let mut conn = get_connection(db_pool).map_err(|e| e.to_string())?;
+
+    // Count active sessions
+    use crate::schema::proxy_sessions::dsl::*;
+    let active_sessions_count: i64 = proxy_sessions
+        .filter(status.eq("active"))
+        .count()
+        .get_result(&mut conn)
+        .unwrap_or(0);
+
+    // Count today's sessions
+    let today_start = Utc::now().date_naive().and_hms_opt(0, 0, 0)
+        .map(|dt| dt.and_utc())
+        .unwrap_or_else(Utc::now);
+    
+    let today_sessions_count: i64 = proxy_sessions
+        .filter(created_at.ge(today_start))
+        .count()
+        .get_result(&mut conn)
+        .unwrap_or(0);
+
+    // Count this week's sessions
+    let week_start = Utc::now() - chrono::Duration::days(7);
+    let week_sessions_count: i64 = proxy_sessions
+        .filter(created_at.ge(week_start))
+        .count()
+        .get_result(&mut conn)
+        .unwrap_or(0);
+
+    Ok(StatsData {
+        active_sessions: active_sessions_count as i32,
+        today_sessions: today_sessions_count as i32,
+        week_sessions: week_sessions_count as i32,
+    })
+}
+
+/// Fetch active sessions from database.
+fn fetch_active_sessions(db_pool: &DbPool) -> Result<Vec<ActiveSessionItem>, String> {
+    let mut conn = get_connection(db_pool).map_err(|e| e.to_string())?;
+
+    use crate::schema::proxy_sessions::dsl::*;
+    use crate::models::session::ProxySession;
+
+    let sessions: Vec<ProxySession> = proxy_sessions
+        .filter(status.eq("active"))
+        .order(created_at.desc())
+        .limit(10)
+        .load(&mut conn)
+        .unwrap_or_default();
+
+    // Calculate duration for each session
+    let now = Utc::now();
+
+    Ok(sessions
+        .into_iter()
+        .map(|s| {
+            let duration = now.signed_duration_since(s.created_at).num_seconds();
+            ActiveSessionItem {
+                id: s.id,
+                asset_name: format!("Asset {}", s.asset_id),
+                asset_hostname: s.client_ip.to_string(),
+                session_type: s.session_type,
+                duration_seconds: Some(duration),
+            }
+        })
+        .collect())
+}
+
+/// Fetch recent activity from database.
+fn fetch_recent_activity(db_pool: &DbPool) -> Result<Vec<ActivityItem>, String> {
+    let mut conn = get_connection(db_pool).map_err(|e| e.to_string())?;
+
+    use crate::schema::proxy_sessions::dsl::*;
+    use crate::models::session::ProxySession;
+
+    let sessions: Vec<ProxySession> = proxy_sessions
+        .order(created_at.desc())
+        .limit(10)
+        .load(&mut conn)
+        .unwrap_or_default();
+
+    Ok(sessions
+        .into_iter()
+        .map(|s| {
+            let action_str = match s.session_type.as_str() {
+                "ssh" => "SSH session started",
+                "rdp" => "RDP session started",
+                "vnc" => "VNC session started",
+                _ => "Session started",
+            };
+            ActivityItem {
+                user: format!("User {}", s.user_id),
+                action: action_str.to_string(),
+                asset: Some(format!("Asset {}", s.asset_id)),
+                timestamp: s.created_at,
+            }
+        })
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_stats_interval() {
+        assert_eq!(STATS_INTERVAL_SECS, 30);
+    }
+
+    #[test]
+    fn test_sessions_interval() {
+        assert_eq!(SESSIONS_INTERVAL_SECS, 10);
+    }
+
+    #[test]
+    fn test_activity_interval() {
+        assert_eq!(ACTIVITY_INTERVAL_SECS, 30);
+    }
+}
+

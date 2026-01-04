@@ -12,12 +12,14 @@ pub mod models;
 pub mod services;
 pub mod grpc;
 pub mod schema;
+pub mod tasks;
 pub mod templates;
 
 use config::Config;
 use db::DbPool;
 use cache::CacheConnection;
 use services::auth::AuthService;
+use services::broadcast::BroadcastService;
 
 /// Application state.
 #[derive(Clone)]
@@ -26,6 +28,7 @@ pub struct AppState {
     pub db_pool: DbPool,
     pub cache: CacheConnection,
     pub auth_service: AuthService,
+    pub broadcast: BroadcastService,
 }
 
 #[cfg(test)]
