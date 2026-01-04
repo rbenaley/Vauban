@@ -2,6 +2,8 @@
 
 use axum::{
     extract::{Path, Query, State},
+    http::header::HeaderMap,
+    response::{Html, IntoResponse, Response},
     Json,
 };
 use serde::Deserialize;
@@ -14,6 +16,11 @@ use crate::schema::proxy_sessions::dsl::*;
 use crate::AppState;
 use crate::db::get_connection;
 use diesel::prelude::*;
+
+/// Check if request is from HTMX (has HX-Request header)
+fn is_htmx_request(headers: &HeaderMap) -> bool {
+    headers.get("HX-Request").is_some()
+}
 
 /// List sessions handler.
 pub async fn list_sessions(
@@ -140,6 +147,74 @@ impl ListSessionsParams {
     pub fn has_status_filter(&self) -> bool {
         self.status.is_some()
     }
+}
+
+/// Terminate a session.
+/// For HTMX requests: returns an HTML fragment showing the terminated session row.
+/// For JSON API: returns the updated session.
+pub async fn terminate_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    _user: AuthUser,
+    Path(session_id): Path<i32>,
+) -> AppResult<Response> {
+    let htmx = is_htmx_request(&headers);
+    let mut conn = get_connection(&state.db_pool)?;
+
+    // Update the session status to "terminated"
+    let updated_session = diesel::update(proxy_sessions.filter(id.eq(session_id)))
+        .set((
+            status.eq("terminated"),
+            disconnected_at.eq(chrono::Utc::now()),
+        ))
+        .get_result::<ProxySession>(&mut conn)
+        .map_err(|e| match e {
+            diesel::result::Error::NotFound => AppError::NotFound("Session not found".to_string()),
+            _ => AppError::Database(e),
+        })?;
+
+    if htmx {
+        // Return an updated HTML fragment for the session row
+        // Get asset and user names via join (simplified - in real app would do proper join)
+        let html = format!(
+            r#"<li class="px-6 py-4 hover:bg-gray-50 dark:hover:bg-gray-700">
+                <div class="flex items-center justify-between">
+                    <div class="flex items-center space-x-4">
+                        <div class="flex-shrink-0">
+                            <span class="inline-flex h-10 w-10 items-center justify-center rounded-full bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400">
+                                <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0021 18V6a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 6v12a2.25 2.25 0 002.25 2.25z"/>
+                                </svg>
+                            </span>
+                        </div>
+                        <div class="flex-1 min-w-0">
+                            <div class="flex items-center">
+                                <p class="text-sm font-medium text-gray-900 dark:text-white truncate">
+                                    Session #{session_id}
+                                </p>
+                                <span class="ml-2 inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-red-100 text-red-800 dark:bg-red-900/50 dark:text-red-300">
+                                    Terminated
+                                </span>
+                            </div>
+                            <div class="mt-1 flex items-center text-sm text-gray-500 dark:text-gray-400">
+                                <span>Session terminated</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                        <a href="/sessions/{session_id}"
+                           class="text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">
+                            View
+                        </a>
+                    </div>
+                </div>
+            </li>"#,
+            session_id = updated_session.id
+        );
+        return Ok(Html(html).into_response());
+    }
+
+    Ok(Json(updated_session).into_response())
 }
 
 #[cfg(test)]
