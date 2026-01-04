@@ -3,7 +3,8 @@
 {% block title %}Dashboard - {{ vauban.brand_name }}{% endblock %}
 
 {% block content %}
-<div class="space-y-6">
+<!-- WebSocket connection for real-time dashboard updates -->
+<div hx-ext="ws" ws-connect="/ws/dashboard" class="space-y-6">
     <!-- Header -->
     <div class="md:flex md:items-center md:justify-between">
         <div class="min-w-0 flex-1">
@@ -11,32 +12,31 @@
                 Dashboard
             </h2>
         </div>
+        <!-- WebSocket status indicator -->
+        <div class="flex items-center text-sm text-gray-500 dark:text-gray-400">
+            <span class="ws-status inline-flex h-2 w-2 rounded-full bg-green-400 mr-2"></span>
+            <span>Live</span>
+        </div>
     </div>
 
-    <!-- Statistics -->
-    <div hx-get="/dashboard/widgets/stats"
-         hx-trigger="load, every 30s"
-         hx-swap="innerHTML"
-         class="grid grid-cols-1 gap-5 sm:grid-cols-3">
-        <!-- Skeleton loading -->
-        <div class="skeleton bg-white dark:bg-gray-800 overflow-hidden shadow rounded-lg h-24"></div>
-        <div class="skeleton bg-white dark:bg-gray-800 overflow-hidden shadow rounded-lg h-24"></div>
-        <div class="skeleton bg-white dark:bg-gray-800 overflow-hidden shadow rounded-lg h-24"></div>
+    <!-- Statistics (updated via WebSocket) -->
+    <div id="ws-stats" class="grid grid-cols-1 gap-5 sm:grid-cols-3">
+        <!-- Initial skeleton loading - will be replaced by WebSocket -->
+        <div class="skeleton bg-white dark:bg-gray-800 overflow-hidden shadow rounded-lg h-24 animate-pulse"></div>
+        <div class="skeleton bg-white dark:bg-gray-800 overflow-hidden shadow rounded-lg h-24 animate-pulse"></div>
+        <div class="skeleton bg-white dark:bg-gray-800 overflow-hidden shadow rounded-lg h-24 animate-pulse"></div>
     </div>
 
     <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <!-- Active sessions -->
+        <!-- Active sessions (updated via WebSocket) -->
         <div class="bg-white dark:bg-gray-800 shadow rounded-lg">
             <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
                 <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">
                     Active sessions
                 </h3>
             </div>
-            <div hx-get="/dashboard/widgets/active-sessions"
-                 hx-trigger="load, every 10s"
-                 hx-swap="innerHTML"
-                 class="px-4 py-5 sm:p-6">
-                <div class="skeleton h-32 rounded"></div>
+            <div id="ws-active-sessions" class="px-4 py-5 sm:p-6">
+                <div class="skeleton h-32 rounded animate-pulse"></div>
             </div>
         </div>
 
@@ -86,20 +86,18 @@
         </div>
     </div>
 
-    <!-- Recent activity -->
+    <!-- Recent activity (updated via WebSocket) -->
     <div class="bg-white dark:bg-gray-800 shadow rounded-lg">
         <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
             <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">
                 Recent activity
             </h3>
         </div>
-        <div hx-get="/dashboard/widgets/recent-activity"
-             hx-trigger="load, every 30s"
-             hx-swap="innerHTML"
-             class="px-4 py-5 sm:p-6">
-            <div class="skeleton h-48 rounded"></div>
+        <div id="ws-recent-activity" class="px-4 py-5 sm:p-6">
+            <div class="skeleton h-48 rounded animate-pulse"></div>
         </div>
     </div>
-</div>
+
+</div> <!-- End of WebSocket container -->
 {% endblock %}
 

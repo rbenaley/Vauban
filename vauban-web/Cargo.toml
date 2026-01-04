@@ -10,7 +10,7 @@ default-run = "vauban-web"
 
 [dependencies]
 # Web framework
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["full"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "timeout", "trace", "compression-gzip", "compression-br"] }
@@ -93,6 +93,7 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 
 # WebSocket & Cookies
 axum-extra = { version = "0.12", features = ["cookie", "typed-header"] }
+futures-util = "0.3"
 
 [dev-dependencies]
 tokio-test = "0.4"
@@ -103,6 +104,7 @@ tempfile = "3"
 serial_test = "3"
 once_cell = "1.19"
 insta = { version = "1.40", features = ["yaml"] }
+tokio-tungstenite = "0.26"
 
 [[bin]]
 name = "seed_data"

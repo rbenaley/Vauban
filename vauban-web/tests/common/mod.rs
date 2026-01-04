@@ -16,6 +16,7 @@ use vauban_web::{
     db::DbPool,
     cache::CacheConnection,
     services::auth::AuthService,
+    services::broadcast::BroadcastService,
     AppState,
 };
 
@@ -61,12 +62,16 @@ impl TestApp {
         // Create cache (mock for tests)
         let cache = CacheConnection::Mock(std::sync::Arc::new(vauban_web::cache::MockCache::new()));
 
+        // Create broadcast service
+        let broadcast = BroadcastService::new();
+
         // Create app state
         let state = AppState {
             config: config.clone(),
             db_pool: db_pool.clone(),
             cache,
             auth_service: auth_service.clone(),
+            broadcast,
         };
 
         // Build router (we need to import the router builder from main)
@@ -114,6 +119,10 @@ fn build_test_router(state: AppState) -> Router {
     use vauban_web::middleware;
 
     Router::new()
+        // WebSocket routes
+        .route("/ws/dashboard", get(handlers::websocket::dashboard_ws))
+        .route("/ws/session/{id}", get(handlers::websocket::session_ws))
+        .route("/ws/notifications", get(handlers::websocket::notifications_ws))
         // Auth routes
         .route("/api/auth/login", post(handlers::auth::login))
         .route("/api/auth/logout", post(handlers::auth::logout))

@@ -11,6 +11,7 @@
 mod common;
 mod fixtures;
 mod api;
+mod ws;
 
 // Re-export for test modules
 pub use common::*;
