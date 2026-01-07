@@ -7,6 +7,9 @@ Cargo.lock
 .env
 .env.local
 
+# Local configuration (secrets)
+**/config/local.toml
+
 # IDE
 .idea/
 .vscode/

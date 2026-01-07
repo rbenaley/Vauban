@@ -28,41 +28,71 @@ Web interface and API for the VAUBAN security bastion platform, built with Rust 
 
 ## Configuration
 
-Copy `.env.example` to `.env` and configure:
+Configuration is managed through TOML files in the `config/` directory:
 
-```bash
-ENVIRONMENT=development
-SECRET_KEY=your-secret-key-here
-DATABASE_URL=postgresql://user:password@localhost/vauban
-
-# Cache (optional - set to false to disable, useful for development)
-CACHE_ENABLED=false
-CACHE_URL=redis://localhost:6379
-CACHE_TTL_SECS=3600
+```
+config/
+├── default.toml      # Default values for all environments
+├── development.toml  # Development environment overrides
+├── testing.toml      # Testing environment overrides
+├── production.toml   # Production environment overrides (template)
+└── local.toml        # Local overrides (not versioned, create manually)
 ```
 
-**Note**: If `CACHE_ENABLED=false` or if Valkey/Redis is unavailable, the application will automatically use a mock (no-op) cache that allows development without external dependencies.
+### Environment Selection
+
+Set the environment via `VAUBAN_ENVIRONMENT`:
+
+```bash
+export VAUBAN_ENVIRONMENT=development  # or: testing, production
+```
+
+### Secret Key
+
+For production, set the secret key via environment variable:
+
+```bash
+export VAUBAN_SECRET_KEY=`openssl rand -base64 32`
+```
+
+Or create a `config/local.toml` file (gitignored):
+
+```toml
+secret_key = "your-secure-random-key-here"
+```
+
+### Cache
+
+Cache can be disabled for development in the TOML config:
+
+```toml
+[cache]
+enabled = false
+```
+
+**Note**: If cache is disabled or Valkey/Redis is unavailable, the application automatically uses a mock (no-op) cache.
 
 ## Database Setup
 
-1. Prepare configuration
+1. Install Diesel CLI:
 ```bash
-echo "DATABASE_URL=postgresql://user:password@localhost/vauban" > .env
 cargo install diesel_cli --no-default-features --features postgres
 ```
 
 2. Create the database:
 ```bash
 createdb vauban
-psql -c "CREATE USER user WITH PASSWORD 'password';"
-psql -c "GRANT ALL PRIVILEGES ON DATABASE vauban TO user;"
-psql -U postgres -d vauban -c "GRANT ALL ON SCHEMA public TO user; ALTER SCHEMA public OWNER TO user;"
+psql -c "CREATE USER vauban WITH PASSWORD 'vauban';"
+psql -c "GRANT ALL PRIVILEGES ON DATABASE vauban TO vauban;"
+psql -U postgres -d vauban -c "GRANT ALL ON SCHEMA public TO vauban; ALTER SCHEMA public OWNER TO vauban;"
 ```
 
 3. Run migrations:
 ```bash
-diesel migration run
+diesel migration run --database-url postgresql://vauban:vauban@localhost/vauban
 ```
+
+**Note**: Database URL is configured in `config/default.toml`. Adjust credentials as needed.
 
 ## Running
 
@@ -140,11 +170,7 @@ psql -U postgres -d vauban_test -c "GRANT ALL ON SCHEMA public TO vauban_test; A
 diesel migration run --database-url postgresql://vauban_test:vauban_test@localhost/vauban_test
 ```
 
-2. Set environment variables:
-```bash
-export DATABASE_URL=postgresql://vauban_test:vauban_test@localhost/vauban_test
-export SECRET_KEY=test-secret-key-for-testing-only-32chars
-```
+**Note**: Test configuration is in `config/testing.toml`. No environment variables needed.
 
 ### Running Tests
 
