@@ -2,29 +2,25 @@
 ///
 /// Interactive CLI tool to reset a user's password.
 /// No secrets are stored in code - all input is provided interactively.
-
 use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
-use rand::rngs::OsRng;
-use diesel::prelude::*;
 use diesel::pg::PgConnection;
+use diesel::prelude::*;
+use rand::rngs::OsRng;
 use std::io::{self, Write};
+use vauban_web::config::Config;
 
 fn main() {
-    dotenv::dotenv().ok();
-
     println!("🔐 VAUBAN Password Reset Utility");
     println!("================================\n");
 
-    // Get database connection
-    let database_url = std::env::var("DATABASE_URL")
-        .expect("DATABASE_URL must be set in .env file");
+    // Load configuration from TOML files
+    let config = Config::load().expect("Failed to load configuration from config/*.toml");
 
-    let mut conn = PgConnection::establish(&database_url)
-        .expect("Failed to connect to database");
+    let mut conn =
+        PgConnection::establish(&config.database.url).expect("Failed to connect to database");
 
     // Prompt for username
-    let username = prompt("Enter username: ")
-        .expect("Failed to read username");
+    let username = prompt("Enter username: ").expect("Failed to read username");
 
     if username.trim().is_empty() {
         eprintln!("❌ Username cannot be empty");
@@ -46,8 +42,8 @@ fn main() {
     }
 
     // Prompt for new password
-    let password = prompt_password("Enter new password (min 12 chars): ")
-        .expect("Failed to read password");
+    let password =
+        prompt_password("Enter new password (min 12 chars): ").expect("Failed to read password");
 
     if password.len() < 12 {
         eprintln!("❌ Password must be at least 12 characters");
@@ -55,8 +51,8 @@ fn main() {
     }
 
     // Confirm password
-    let password_confirm = prompt_password("Confirm new password: ")
-        .expect("Failed to read password confirmation");
+    let password_confirm =
+        prompt_password("Confirm new password: ").expect("Failed to read password confirmation");
 
     if password != password_confirm {
         eprintln!("❌ Passwords do not match");
@@ -66,7 +62,8 @@ fn main() {
     // Hash the password
     let salt = SaltString::generate(&mut OsRng);
     let argon2 = Argon2::default();
-    let hash = argon2.hash_password(password.as_bytes(), &salt)
+    let hash = argon2
+        .hash_password(password.as_bytes(), &salt)
         .expect("Failed to hash password")
         .to_string();
 
@@ -80,7 +77,10 @@ fn main() {
     .expect("Failed to update password");
 
     if rows_affected > 0 {
-        println!("\n✅ Password for '{}' has been updated successfully", username.trim());
+        println!(
+            "\n✅ Password for '{}' has been updated successfully",
+            username.trim()
+        );
     } else {
         eprintln!("\n❌ Failed to update password");
         std::process::exit(1);
@@ -106,7 +106,7 @@ fn prompt_password(message: &str) -> io::Result<String> {
     #[cfg(unix)]
     {
         use std::os::unix::io::AsRawFd;
-        
+
         let stdin_fd = io::stdin().as_raw_fd();
         let mut termios = unsafe {
             let mut t: libc::termios = std::mem::zeroed();

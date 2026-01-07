@@ -1,11 +1,10 @@
 /// VAUBAN Web - Main application entry point.
 ///
 /// Rust web application using Axum, Diesel, and Askama.
-
 use axum::{
+    Router,
     http::Method,
     routing::{get, post, put},
-    Router,
 };
 use tower::ServiceBuilder;
 use tower_http::{
@@ -16,26 +15,24 @@ use tower_http::{
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use vauban_web::{
+    AppState,
+    cache::create_cache_client,
     config::{Config, LogFormat},
     db::create_pool,
-    cache::create_cache_client,
     error::AppError,
+    handlers, middleware,
     services::auth::AuthService,
     services::broadcast::BroadcastService,
     tasks::start_dashboard_tasks,
-    handlers,
-    middleware,
-    AppState,
 };
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Load configuration first (needed for logging setup)
-    let config = Config::from_env()
-        .map_err(|e| {
-            eprintln!("Failed to load configuration: {}", e);
-            e
-        })?;
+    // Load configuration from TOML files
+    let config = Config::load().map_err(|e| {
+        eprintln!("Failed to load configuration: {}", e);
+        e
+    })?;
 
     // Initialize tracing based on configuration
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
@@ -62,19 +59,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Create database pool
-    let db_pool = create_pool(&config)
-        .map_err(|e| {
-            eprintln!("Failed to create database pool: {}", e);
-            e
-        })?;
+    let db_pool = create_pool(&config).map_err(|e| {
+        eprintln!("Failed to create database pool: {}", e);
+        e
+    })?;
 
     // Create cache client (will use mock if disabled or unavailable)
-    let cache = create_cache_client(&config).await
-        .map_err(|e| {
-            eprintln!("Failed to create cache client: {}", e);
-            e
-        })?;
-    
+    let cache = create_cache_client(&config).await.map_err(|e| {
+        eprintln!("Failed to create cache client: {}", e);
+        e
+    })?;
+
     if config.cache.enabled {
         tracing::info!("Cache enabled and connected");
     } else {
@@ -82,11 +77,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Create auth service
-    let auth_service = AuthService::new(config.clone())
-        .map_err(|e| {
-            eprintln!("Failed to create auth service: {}", e);
-            e
-        })?;
+    let auth_service = AuthService::new(config.clone()).map_err(|e| {
+        eprintln!("Failed to create auth service: {}", e);
+        e
+    })?;
 
     // Create broadcast service for WebSocket
     let broadcast = BroadcastService::new();
@@ -121,7 +115,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn create_app(state: AppState) -> Result<Router, AppError> {
     let cors = CorsLayer::new()
         .allow_origin(Any)
-        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE, Method::PATCH, Method::OPTIONS])
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::PATCH,
+            Method::OPTIONS,
+        ])
         .allow_headers([
             axum::http::header::CONTENT_TYPE,
             axum::http::header::AUTHORIZATION,
@@ -131,82 +132,114 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
     let app = Router::new()
         // Health check
         .route("/health", get(health_check))
-        
         // Static files (served from static/ directory)
         .route("/static/{*path}", get(serve_static))
-        
         // WebSocket routes (real-time updates)
         .route("/ws/dashboard", get(handlers::websocket::dashboard_ws))
         .route("/ws/session/{id}", get(handlers::websocket::session_ws))
-        .route("/ws/notifications", get(handlers::websocket::notifications_ws))
-        
+        .route(
+            "/ws/notifications",
+            get(handlers::websocket::notifications_ws),
+        )
         // Web pages (HTML)
         .route("/login", get(handlers::web::login_page))
         .route("/", get(handlers::web::dashboard_home))
         .route("/dashboard", get(handlers::web::dashboard_home))
         .route("/dashboard/", get(handlers::web::dashboard_home))
         .route("/admin", get(handlers::web::dashboard_admin))
-        
         // Accounts pages
         .route("/accounts/users", get(handlers::web::user_list))
         .route("/accounts/users/{uuid}", get(handlers::web::user_detail))
         .route("/accounts/profile", get(handlers::web::profile))
         .route("/accounts/mfa", get(handlers::web::mfa_setup))
-        
         // Assets pages (specific routes before generic {id} route)
         .route("/assets", get(handlers::web::asset_list))
         .route("/assets/groups", get(handlers::web::asset_group_list))
-        .route("/assets/groups/{uuid}", get(handlers::web::asset_group_detail))
-        .route("/assets/groups/{uuid}/edit", get(handlers::web::asset_group_edit))
+        .route(
+            "/assets/groups/{uuid}",
+            get(handlers::web::asset_group_detail),
+        )
+        .route(
+            "/assets/groups/{uuid}/edit",
+            get(handlers::web::asset_group_edit),
+        )
         .route("/assets/access", get(handlers::web::access_rules_list))
         .route("/assets/{id}", get(handlers::web::asset_detail))
-        
         // Sessions pages
         .route("/sessions", get(handlers::web::session_list))
         .route("/sessions/recordings", get(handlers::web::recording_list))
-        .route("/sessions/recordings/{id}/play", get(handlers::web::recording_play))
+        .route(
+            "/sessions/recordings/{id}/play",
+            get(handlers::web::recording_play),
+        )
         .route("/sessions/{id}", get(handlers::web::session_detail))
         .route("/sessions/approvals", get(handlers::web::approval_list))
-        .route("/sessions/approvals/{uuid}", get(handlers::web::approval_detail))
+        .route(
+            "/sessions/approvals/{uuid}",
+            get(handlers::web::approval_detail),
+        )
         .route("/sessions/active", get(handlers::web::active_sessions))
-        
         // Groups pages (user groups)
         .route("/accounts/groups", get(handlers::web::group_list))
         .route("/accounts/groups/{uuid}", get(handlers::web::group_detail))
-        
         // Authentication routes
         .route("/api/auth/login", post(handlers::auth::login))
         .route("/api/auth/logout", post(handlers::auth::logout))
         .route("/api/auth/mfa/setup", post(handlers::auth::setup_mfa))
-        
         // API v1 routes
         .route("/api/v1/accounts", get(handlers::accounts::list_users))
         .route("/api/v1/accounts", post(handlers::accounts::create_user))
         .route("/api/v1/accounts/{uuid}", get(handlers::accounts::get_user))
-        .route("/api/v1/accounts/{uuid}", put(handlers::accounts::update_user))
-        .route("/api/v1/accounts/{uuid}", axum::routing::delete(|| async { "Not implemented" }))
-        
+        .route(
+            "/api/v1/accounts/{uuid}",
+            put(handlers::accounts::update_user),
+        )
+        .route(
+            "/api/v1/accounts/{uuid}",
+            axum::routing::delete(|| async { "Not implemented" }),
+        )
         .route("/api/v1/assets", get(handlers::assets::list_assets))
         .route("/api/v1/assets", post(handlers::assets::create_asset))
         .route("/api/v1/assets/{uuid}", get(handlers::assets::get_asset))
         .route("/api/v1/assets/{uuid}", put(handlers::assets::update_asset))
-        .route("/api/v1/assets/{uuid}", axum::routing::delete(|| async { "Not implemented" }))
+        .route(
+            "/api/v1/assets/{uuid}",
+            axum::routing::delete(|| async { "Not implemented" }),
+        )
         // Asset groups API
-        .route("/api/v1/assets/groups/{uuid}", post(handlers::web::update_asset_group))
-        
+        .route(
+            "/api/v1/assets/groups/{uuid}",
+            post(handlers::web::update_asset_group),
+        )
         .route("/api/v1/sessions", get(handlers::sessions::list_sessions))
         .route("/api/v1/sessions", post(handlers::sessions::create_session))
-        .route("/api/v1/sessions/{uuid}", get(handlers::sessions::get_session))
-        .route("/api/v1/sessions/{uuid}", axum::routing::delete(|| async { "Not implemented" }))
-        .route("/api/v1/sessions/{id}/terminate", post(handlers::sessions::terminate_session))
-        
+        .route(
+            "/api/v1/sessions/{uuid}",
+            get(handlers::sessions::get_session),
+        )
+        .route(
+            "/api/v1/sessions/{uuid}",
+            axum::routing::delete(|| async { "Not implemented" }),
+        )
+        .route(
+            "/api/v1/sessions/{id}/terminate",
+            post(handlers::sessions::terminate_session),
+        )
         .layer(
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())
-                .layer(TimeoutLayer::with_status_code(axum::http::StatusCode::REQUEST_TIMEOUT, std::time::Duration::from_secs(30)))
+                .layer(TimeoutLayer::with_status_code(
+                    axum::http::StatusCode::REQUEST_TIMEOUT,
+                    std::time::Duration::from_secs(30),
+                ))
                 .layer(cors)
-                .layer(axum::middleware::from_fn_with_state(state.auth_service.clone(), middleware::auth::auth_middleware))
-                .layer(axum::middleware::from_fn(middleware::audit::audit_middleware))
+                .layer(axum::middleware::from_fn_with_state(
+                    state.auth_service.clone(),
+                    middleware::auth::auth_middleware,
+                ))
+                .layer(axum::middleware::from_fn(
+                    middleware::audit::audit_middleware,
+                )),
         )
         .with_state(state);
 

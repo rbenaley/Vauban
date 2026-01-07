@@ -1,10 +1,9 @@
 /// VAUBAN Web - Broadcast service for WebSocket.
 ///
 /// Manages real-time updates to connected clients via channels.
-
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{RwLock, broadcast};
 use tracing::{debug, warn};
 
 /// Default channel capacity for broadcast channels.
@@ -125,7 +124,7 @@ impl BroadcastService {
 
         // Need to create - acquire write lock
         let mut channels = self.channels.write().await;
-        
+
         // Double-check after acquiring write lock
         if let Some(sender) = channels.get(channel) {
             return sender.clone();
@@ -161,7 +160,7 @@ impl BroadcastService {
     /// Send raw HTML to a channel.
     pub async fn send_raw(&self, channel_name: &str, html: String) -> Result<usize, ()> {
         let channels = self.channels.read().await;
-        
+
         if let Some(sender) = channels.get(channel_name) {
             match sender.send(html) {
                 Ok(count) => {
@@ -184,7 +183,7 @@ impl BroadcastService {
     pub async fn subscriber_count(&self, channel: &WsChannel) -> usize {
         let channel_name = channel.as_str();
         let channels = self.channels.read().await;
-        
+
         if let Some(sender) = channels.get(&channel_name) {
             sender.receiver_count()
         } else {
@@ -216,18 +215,39 @@ mod tests {
     #[test]
     fn test_ws_channel_as_str() {
         assert_eq!(WsChannel::DashboardStats.as_str(), "dashboard:stats");
-        assert_eq!(WsChannel::ActiveSessions.as_str(), "dashboard:active-sessions");
-        assert_eq!(WsChannel::RecentActivity.as_str(), "dashboard:recent-activity");
+        assert_eq!(
+            WsChannel::ActiveSessions.as_str(),
+            "dashboard:active-sessions"
+        );
+        assert_eq!(
+            WsChannel::RecentActivity.as_str(),
+            "dashboard:recent-activity"
+        );
         assert_eq!(WsChannel::Notifications.as_str(), "notifications");
-        assert_eq!(WsChannel::SessionLive("abc123".to_string()).as_str(), "session:abc123");
+        assert_eq!(
+            WsChannel::SessionLive("abc123".to_string()).as_str(),
+            "session:abc123"
+        );
     }
 
     #[test]
     fn test_ws_channel_from_str() {
-        assert_eq!(WsChannel::from_str("dashboard:stats"), Some(WsChannel::DashboardStats));
-        assert_eq!(WsChannel::from_str("dashboard:active-sessions"), Some(WsChannel::ActiveSessions));
-        assert_eq!(WsChannel::from_str("notifications"), Some(WsChannel::Notifications));
-        assert_eq!(WsChannel::from_str("session:xyz"), Some(WsChannel::SessionLive("xyz".to_string())));
+        assert_eq!(
+            WsChannel::from_str("dashboard:stats"),
+            Some(WsChannel::DashboardStats)
+        );
+        assert_eq!(
+            WsChannel::from_str("dashboard:active-sessions"),
+            Some(WsChannel::ActiveSessions)
+        );
+        assert_eq!(
+            WsChannel::from_str("notifications"),
+            Some(WsChannel::Notifications)
+        );
+        assert_eq!(
+            WsChannel::from_str("session:xyz"),
+            Some(WsChannel::SessionLive("xyz".to_string()))
+        );
         assert_eq!(WsChannel::from_str("invalid"), None);
     }
 
@@ -260,8 +280,7 @@ mod tests {
 
     #[test]
     fn test_ws_message_with_swap_mode() {
-        let msg = WsMessage::new("target", "<p>Test</p>".to_string())
-            .with_swap_mode("outerHTML");
+        let msg = WsMessage::new("target", "<p>Test</p>".to_string()).with_swap_mode("outerHTML");
         assert_eq!(msg.swap_mode, "outerHTML");
     }
 
@@ -269,7 +288,7 @@ mod tests {
     fn test_ws_message_to_htmx_html() {
         let msg = WsMessage::new("ws-stats", "<span>Active: 5</span>".to_string());
         let html = msg.to_htmx_html();
-        
+
         assert!(html.contains(r#"id="ws-stats""#));
         assert!(html.contains(r#"hx-swap-oob="innerHTML""#));
         assert!(html.contains("<span>Active: 5</span>"));
@@ -293,7 +312,7 @@ mod tests {
     async fn test_broadcast_subscribe_creates_channel() {
         let service = BroadcastService::new();
         let _receiver = service.subscribe(&WsChannel::DashboardStats).await;
-        
+
         // Channel should exist now
         let channels = service.channels.read().await;
         assert!(channels.contains_key("dashboard:stats"));
@@ -302,16 +321,16 @@ mod tests {
     #[tokio::test]
     async fn test_broadcast_send_and_receive() {
         let service = BroadcastService::new();
-        
+
         // Subscribe first
         let mut receiver = service.subscribe(&WsChannel::DashboardStats).await;
-        
+
         // Send a message
         let msg = WsMessage::new("ws-stats", "<p>Test</p>".to_string());
         let result = service.send(&WsChannel::DashboardStats, msg).await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 1); // 1 receiver
-        
+
         // Receive the message
         let received = receiver.recv().await.unwrap();
         assert!(received.contains("ws-stats"));
@@ -321,29 +340,38 @@ mod tests {
     #[tokio::test]
     async fn test_broadcast_subscriber_count() {
         let service = BroadcastService::new();
-        
-        assert_eq!(service.subscriber_count(&WsChannel::DashboardStats).await, 0);
-        
+
+        assert_eq!(
+            service.subscriber_count(&WsChannel::DashboardStats).await,
+            0
+        );
+
         let _r1 = service.subscribe(&WsChannel::DashboardStats).await;
-        assert_eq!(service.subscriber_count(&WsChannel::DashboardStats).await, 1);
-        
+        assert_eq!(
+            service.subscriber_count(&WsChannel::DashboardStats).await,
+            1
+        );
+
         let _r2 = service.subscribe(&WsChannel::DashboardStats).await;
-        assert_eq!(service.subscriber_count(&WsChannel::DashboardStats).await, 2);
+        assert_eq!(
+            service.subscriber_count(&WsChannel::DashboardStats).await,
+            2
+        );
     }
 
     #[tokio::test]
     async fn test_broadcast_remove_channel() {
         let service = BroadcastService::new();
-        
+
         let _receiver = service.subscribe(&WsChannel::Notifications).await;
-        
+
         {
             let channels = service.channels.read().await;
             assert!(channels.contains_key("notifications"));
         }
-        
+
         service.remove_channel(&WsChannel::Notifications).await;
-        
+
         {
             let channels = service.channels.read().await;
             assert!(!channels.contains_key("notifications"));
@@ -356,4 +384,3 @@ mod tests {
         assert_eq!(service.capacity, DEFAULT_CHANNEL_CAPACITY);
     }
 }
-

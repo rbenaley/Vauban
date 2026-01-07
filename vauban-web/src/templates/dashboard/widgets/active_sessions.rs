@@ -1,5 +1,4 @@
 /// VAUBAN Web - Active sessions widget template.
-
 use askama::Template;
 
 #[derive(Debug, Clone)]

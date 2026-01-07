@@ -1,8 +1,7 @@
-/// VAUBAN Web - User list template.
-
-use askama::Template;
-use crate::templates::base::{UserContext, VaubanConfig, FlashMessage};
+use crate::templates::base::{FlashMessage, UserContext, VaubanConfig};
 use crate::templates::partials::sidebar_content::SidebarContentTemplate;
+/// VAUBAN Web - User list template.
+use askama::Template;
 
 /// User item for list display.
 #[derive(Debug, Clone)]

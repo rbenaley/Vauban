@@ -1,0 +1,16 @@
+# VAUBAN Web - Configuration de développement
+# Surcharge les valeurs de default.toml pour l'environnement de développement.
+
+environment = "development"
+secret_key = "CHANGE-ME-IN-PRODUCTION-32-CHARS!"
+
+[logging]
+level = "debug"
+format = "text"
+
+[cache]
+enabled = false
+
+[grpc.mtls]
+enabled = false
+

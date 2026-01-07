@@ -1,7 +1,6 @@
 /// VAUBAN Web - Database connection pool setup.
 ///
 /// Uses Diesel with connection pooling for PostgreSQL.
-
 use diesel::pg::PgConnection;
 use diesel::r2d2::{ConnectionManager, Pool, PooledConnection};
 
@@ -14,9 +13,7 @@ pub type DbConnection = PooledConnection<ConnectionManager<PgConnection>>;
 
 /// Create a new database connection pool.
 pub fn create_pool(config: &Config) -> AppResult<DbPool> {
-    let manager = ConnectionManager::<PgConnection>::new(
-        config.database.url.as_str(),
-    );
+    let manager = ConnectionManager::<PgConnection>::new(config.database.url.as_str());
 
     Pool::builder()
         .max_size(config.database.max_connections)
@@ -30,11 +27,12 @@ pub fn create_pool(config: &Config) -> AppResult<DbPool> {
 
 /// Get a connection from the pool.
 pub fn get_connection(pool: &DbPool) -> AppResult<DbConnection> {
-    pool.get()
-        .map_err(|e| AppError::Database(diesel::result::Error::DatabaseError(
+    pool.get().map_err(|e| {
+        AppError::Database(diesel::result::Error::DatabaseError(
             diesel::result::DatabaseErrorKind::SerializationFailure,
             Box::new(e.to_string()),
-        )))
+        ))
+    })
 }
 
 #[cfg(test)]
@@ -76,7 +74,7 @@ mod tests {
     fn test_create_pool_error_is_config_error() {
         // Verify that pool creation errors are wrapped as Config errors
         let error = AppError::Config("Failed to create database pool: test".to_string());
-        
+
         match error {
             AppError::Config(msg) => {
                 assert!(msg.contains("Failed to create database pool"));
@@ -85,4 +83,3 @@ mod tests {
         }
     }
 }
-

@@ -1,5 +1,4 @@
 /// VAUBAN Web - Assets status widget template.
-
 use askama::Template;
 
 #[derive(Template)]

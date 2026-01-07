@@ -1,24 +1,23 @@
 /// VAUBAN Web - Authentication handlers.
 ///
 /// Login, logout, MFA setup and verification.
-
 use axum::{
-    extract::State,
-    http::{header::HeaderMap, HeaderValue},
-    response::{Html, IntoResponse, Response},
     Json,
+    extract::State,
+    http::{HeaderValue, header::HeaderMap},
+    response::{Html, IntoResponse, Response},
 };
 use axum_extra::extract::CookieJar;
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
+use crate::AppState;
+use crate::db::get_connection;
 use crate::error::{AppError, AppResult};
 use crate::middleware::auth::AuthUser;
 use crate::models::user::User;
 use crate::schema::users::dsl::*;
 use crate::services::auth::AuthService;
-use crate::AppState;
-use crate::db::get_connection;
 use diesel::prelude::*;
 
 /// Check if request is from HTMX (has HX-Request header)
@@ -56,7 +55,7 @@ pub async fn login(
     Json(request): Json<LoginRequest>,
 ) -> AppResult<Response> {
     let htmx = is_htmx_request(&headers);
-    
+
     // Validation
     if let Err(e) = validator::Validate::validate(&request) {
         if htmx {
@@ -98,14 +97,16 @@ pub async fn login(
     }
 
     // Verify password
-    let password_valid = state.auth_service.verify_password(&request.password, &user.password_hash)?;
+    let password_valid = state
+        .auth_service
+        .verify_password(&request.password, &user.password_hash)?;
     if !password_valid {
         // Increment failed attempts
         diesel::update(users.find(user.id))
             .set(failed_login_attempts.eq(failed_login_attempts + 1))
             .execute(&mut conn)
             .map_err(|e| AppError::Database(e))?;
-        
+
         if htmx {
             return Ok(Html(login_error_html("Invalid credentials")).into_response());
         }
@@ -175,10 +176,9 @@ pub async fn login(
     // For HTMX: return redirect header
     if htmx {
         let mut response = Html("").into_response();
-        response.headers_mut().insert(
-            "HX-Redirect",
-            HeaderValue::from_static("/dashboard"),
-        );
+        response
+            .headers_mut()
+            .insert("HX-Redirect", HeaderValue::from_static("/dashboard"));
         return Ok((jar.add(cookie), response).into_response());
     }
 
@@ -230,10 +230,10 @@ fn login_mfa_required_html() -> String {
 
 /// Logout handler.
 pub async fn logout(jar: CookieJar) -> Response {
+    use axum::response::Redirect;
     use axum_extra::extract::cookie::Cookie;
     use time::Duration;
-    use axum::response::Redirect;
-    
+
     let cookie = Cookie::build(("access_token", ""))
         .path("/")
         .http_only(true)
@@ -265,13 +265,12 @@ pub async fn setup_mfa(
     // Save secret to database
     let mut conn = get_connection(&state.db_pool)?;
     use ::uuid::Uuid as UuidType;
-    let user_uuid = UuidType::parse_str(&user.uuid).map_err(|_| {
-        AppError::Validation("Invalid user UUID".to_string())
-    })?;
+    let user_uuid = UuidType::parse_str(&user.uuid)
+        .map_err(|_| AppError::Validation("Invalid user UUID".to_string()))?;
     diesel::update(users.filter(uuid.eq(user_uuid)))
-    .set(mfa_secret.eq(Some(secret.clone())))
-    .execute(&mut conn)
-    .map_err(|e| AppError::Database(e))?;
+        .set(mfa_secret.eq(Some(secret.clone())))
+        .execute(&mut conn)
+        .map_err(|e| AppError::Database(e))?;
 
     Ok(Json(MfaSetupResponse {
         secret,
@@ -460,4 +459,3 @@ mod tests {
         assert!(parsed["qr_code_base64"].is_null());
     }
 }
-

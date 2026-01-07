@@ -1,5 +1,4 @@
 /// VAUBAN Web - Stats widget template.
-
 use askama::Template;
 
 #[derive(Debug, Clone)]

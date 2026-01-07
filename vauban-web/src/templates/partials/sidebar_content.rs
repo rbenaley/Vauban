@@ -1,5 +1,4 @@
 /// VAUBAN Web - Sidebar content data structure.
-
 use crate::templates::base::UserContext;
 
 /// Sidebar content data (not a template itself, used as data in includes).

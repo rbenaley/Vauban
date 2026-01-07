@@ -1,8 +1,6 @@
+use crate::templates::base::{FlashMessage, UserContext, VaubanConfig};
 /// VAUBAN Web - User detail template.
-
 use askama::Template;
-use crate::templates::base::{UserContext, VaubanConfig, FlashMessage};
-
 
 /// User detail information.
 #[derive(Debug, Clone)]
@@ -31,7 +29,8 @@ pub struct UserDetailTemplate {
     pub vauban: VaubanConfig,
     pub messages: Vec<FlashMessage>,
     pub language_code: String,
-    pub sidebar_content: Option<crate::templates::partials::sidebar_content::SidebarContentTemplate>,
+    pub sidebar_content:
+        Option<crate::templates::partials::sidebar_content::SidebarContentTemplate>,
     pub header_user: Option<crate::templates::base::UserContext>,
     pub user_detail: UserDetail,
 }
@@ -75,7 +74,7 @@ mod tests {
         detail.phone = None;
         detail.full_name = None;
         detail.last_login = None;
-        
+
         assert!(detail.first_name.is_none());
         assert!(detail.last_login.is_none());
     }
@@ -85,7 +84,7 @@ mod tests {
         let mut detail = create_test_user_detail();
         detail.is_superuser = true;
         detail.is_staff = true;
-        
+
         assert!(detail.is_superuser);
         assert!(detail.is_staff);
     }
@@ -98,4 +97,3 @@ mod tests {
         assert_eq!(detail.email, cloned.email);
     }
 }
-
