@@ -72,6 +72,83 @@ enabled = false
 
 **Note**: If cache is disabled or Valkey/Redis is unavailable, the application automatically uses a mock (no-op) cache.
 
+## TLS Configuration
+
+VAUBAN Web runs **exclusively over HTTPS** with TLS 1.3. HTTP is not supported.
+
+### Quick Start (Development)
+
+Generate self-signed certificates for local development:
+
+```bash
+./scripts/generate-dev-certs.sh
+```
+
+This creates:
+- `certs/dev-server.crt` - Self-signed certificate
+- `certs/dev-server.key` - Private key
+
+**Note**: Browsers will show a security warning for self-signed certificates. You can trust the certificate locally (see script output for instructions).
+
+### Configuration
+
+TLS is configured in the `[server.tls]` section of your TOML config:
+
+```toml
+[server]
+port = 8443
+
+[server.tls]
+cert_path = "certs/server.crt"
+key_path = "certs/server.key"
+# ca_chain_path = "certs/ca-chain.crt"  # Optional, for intermediate certs
+```
+
+### Let's Encrypt / Public CA
+
+For production with Let's Encrypt:
+
+```toml
+[server.tls]
+cert_path = "/etc/letsencrypt/live/example.com/fullchain.pem"
+key_path = "/etc/letsencrypt/live/example.com/privkey.pem"
+```
+
+### Enterprise PKI
+
+For certificates signed by an internal CA, include the certificate chain:
+
+```toml
+[server.tls]
+cert_path = "/etc/vauban/certs/server.crt"
+key_path = "/etc/vauban/certs/server.key"
+ca_chain_path = "/etc/vauban/certs/ca-chain.crt"
+```
+
+### Certificate Requirements
+
+- **Format**: PEM (base64 encoded)
+- **Key Types**: RSA (2048-bit minimum) or ECDSA (P-256, P-384)
+- **TLS Version**: 1.3 only (TLS 1.2 and below are rejected)
+- **Cipher Suites**: Only modern, secure cipher suites (managed by rustls)
+
+### Troubleshooting
+
+If the server fails to start:
+
+1. Verify certificate files exist and are readable
+2. Check that the private key matches the certificate
+3. Ensure files are in PEM format (not DER)
+
+```bash
+# Verify certificate
+openssl x509 -in certs/server.crt -noout -text
+
+# Verify key matches certificate
+openssl x509 -noout -modulus -in certs/server.crt | openssl md5
+openssl rsa -noout -modulus -in certs/server.key | openssl md5
+```
+
 ## Database Setup
 
 1. Install Diesel CLI:

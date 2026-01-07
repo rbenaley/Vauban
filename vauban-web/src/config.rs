@@ -86,6 +86,21 @@ pub struct ServerConfig {
     pub port: u16,
     #[serde(default)]
     pub workers: Option<usize>,
+    /// TLS configuration (required - HTTPS only).
+    pub tls: TlsConfig,
+}
+
+/// TLS configuration for HTTPS.
+/// VAUBAN Web runs exclusively over HTTPS with TLS 1.3.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TlsConfig {
+    /// Path to certificate file (PEM format).
+    pub cert_path: String,
+    /// Path to private key file (PEM format).
+    pub key_path: String,
+    /// Optional: Path to CA chain file for intermediate certificates.
+    #[serde(default)]
+    pub ca_chain_path: Option<String>,
 }
 
 /// JWT configuration.

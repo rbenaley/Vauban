@@ -1,11 +1,14 @@
 /// VAUBAN Web - Main application entry point.
 ///
 /// Rust web application using Axum, Diesel, and Askama.
+/// Runs exclusively over HTTPS with TLS 1.3.
 use axum::{
     Router,
     http::Method,
     routing::{get, post, put},
 };
+use axum_server::tls_rustls::RustlsConfig;
+use std::net::SocketAddr;
 use tower::ServiceBuilder;
 use tower_http::{
     cors::{Any, CorsLayer},
@@ -28,6 +31,12 @@ use vauban_web::{
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Install the default crypto provider for rustls (aws-lc-rs)
+    // This must be done before any TLS operations
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .expect("Failed to install rustls crypto provider");
+
     // Load configuration from TOML files
     let config = Config::load().map_err(|e| {
         eprintln!("Failed to load configuration: {}", e);
@@ -101,14 +110,94 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Build application
     let app = create_app(app_state).await?;
 
-    // Start server
-    let addr = format!("{}:{}", config.server.host, config.server.port);
-    tracing::info!(address = %addr, "Server listening");
+    // Load TLS configuration (HTTPS only, TLS 1.3)
+    let tls_config = load_tls_config(&config).await.map_err(|e| {
+        eprintln!("Failed to load TLS configuration: {}", e);
+        e
+    })?;
 
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
-    axum::serve(listener, app).await?;
+    // Start HTTPS server (HTTP is not supported)
+    let addr: SocketAddr = format!("{}:{}", config.server.host, config.server.port)
+        .parse()
+        .map_err(|e| format!("Invalid address: {}", e))?;
+    
+    tracing::info!(
+        address = %addr,
+        cert = %config.server.tls.cert_path,
+        "HTTPS server listening (TLS 1.3 only)"
+    );
+
+    axum_server::bind_rustls(addr, tls_config)
+        .serve(app.into_make_service())
+        .await?;
 
     Ok(())
+}
+
+/// Load TLS configuration from certificate files.
+/// Configures rustls for TLS 1.3 only (no TLS 1.2 or lower).
+async fn load_tls_config(config: &Config) -> Result<RustlsConfig, Box<dyn std::error::Error>> {
+    use rustls::ServerConfig;
+    use rustls_pemfile::{certs, private_key};
+    use std::fs::File;
+    use std::io::BufReader;
+
+    let cert_path = &config.server.tls.cert_path;
+    let key_path = &config.server.tls.key_path;
+
+    // Validate that certificate files exist
+    if !std::path::Path::new(cert_path).exists() {
+        return Err(format!(
+            "TLS certificate not found: {}. Run scripts/generate-dev-certs.sh for development.",
+            cert_path
+        ).into());
+    }
+    if !std::path::Path::new(key_path).exists() {
+        return Err(format!("TLS private key not found: {}", key_path).into());
+    }
+
+    // Load certificate chain
+    let cert_file = File::open(cert_path)?;
+    let mut cert_reader = BufReader::new(cert_file);
+    let cert_chain: Vec<_> = certs(&mut cert_reader)
+        .filter_map(|cert| cert.ok())
+        .collect();
+
+    if cert_chain.is_empty() {
+        return Err("No valid certificates found in certificate file".into());
+    }
+
+    // Load CA chain if provided (for intermediate certificates)
+    let mut full_chain = cert_chain;
+    if let Some(ca_path) = &config.server.tls.ca_chain_path {
+        if std::path::Path::new(ca_path).exists() {
+            let ca_file = File::open(ca_path)?;
+            let mut ca_reader = BufReader::new(ca_file);
+            let ca_certs: Vec<_> = certs(&mut ca_reader)
+                .filter_map(|cert| cert.ok())
+                .collect();
+            full_chain.extend(ca_certs);
+        }
+    }
+
+    // Load private key
+    let key_file = File::open(key_path)?;
+    let mut key_reader = BufReader::new(key_file);
+    let private_key = private_key(&mut key_reader)?
+        .ok_or("No valid private key found in key file")?;
+
+    // Build rustls config with TLS 1.3 ONLY
+    // Explicitly restrict to TLS 1.3 protocol version (no TLS 1.2 or lower)
+    let server_config = ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+        .with_no_client_auth()
+        .with_single_cert(full_chain, private_key)?;
+
+    tracing::debug!(
+        "TLS configured: TLS 1.3 only, {} cipher suites available",
+        server_config.crypto_provider().cipher_suites.len()
+    );
+
+    Ok(RustlsConfig::from_config(std::sync::Arc::new(server_config)))
 }
 
 /// Create Axum application.

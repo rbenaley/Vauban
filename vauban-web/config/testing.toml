@@ -17,3 +17,8 @@ enabled = false
 [grpc.mtls]
 enabled = false
 
+# Testing TLS certificates (use dev certs for tests)
+[server.tls]
+cert_path = "certs/dev-server.crt"
+key_path = "certs/dev-server.key"
+

@@ -10,7 +10,17 @@ environment = "production"
 
 [server]
 host = "0.0.0.0"
-port = 8000
+port = 8443
+
+# Production TLS certificates
+# For Let's Encrypt:
+#   cert_path = "/etc/letsencrypt/live/example.com/fullchain.pem"
+#   key_path = "/etc/letsencrypt/live/example.com/privkey.pem"
+# For Enterprise PKI, also set ca_chain_path for intermediate certs
+[server.tls]
+cert_path = "/etc/vauban/certs/server.crt"
+key_path = "/etc/vauban/certs/server.key"
+# ca_chain_path = "/etc/vauban/certs/ca-chain.crt"
 
 [database]
 max_connections = 20

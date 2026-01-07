@@ -14,3 +14,9 @@ enabled = false
 [grpc.mtls]
 enabled = false
 
+# Development TLS certificates (self-signed)
+# Generate with: ./scripts/generate-dev-certs.sh
+[server.tls]
+cert_path = "certs/dev-server.crt"
+key_path = "certs/dev-server.key"
+
