@@ -1,7 +1,6 @@
 /// VAUBAN Web - Session model.
 ///
 /// Proxy sessions for SSH/RDP/VNC connections.
-
 use chrono::{DateTime, Utc};
 use diesel::prelude::*;
 use ipnetwork::IpNetwork;
@@ -151,7 +150,6 @@ impl ProxySession {
             None
         }
     }
-
 }
 
 /// Session creation request.
@@ -244,7 +242,10 @@ mod tests {
 
     #[test]
     fn test_session_status_from_str_connecting() {
-        assert_eq!(SessionStatus::from_str("connecting"), SessionStatus::Connecting);
+        assert_eq!(
+            SessionStatus::from_str("connecting"),
+            SessionStatus::Connecting
+        );
     }
 
     #[test]
@@ -254,12 +255,18 @@ mod tests {
 
     #[test]
     fn test_session_status_from_str_disconnected() {
-        assert_eq!(SessionStatus::from_str("disconnected"), SessionStatus::Disconnected);
+        assert_eq!(
+            SessionStatus::from_str("disconnected"),
+            SessionStatus::Disconnected
+        );
     }
 
     #[test]
     fn test_session_status_from_str_terminated() {
-        assert_eq!(SessionStatus::from_str("terminated"), SessionStatus::Terminated);
+        assert_eq!(
+            SessionStatus::from_str("terminated"),
+            SessionStatus::Terminated
+        );
     }
 
     #[test]
@@ -339,7 +346,7 @@ mod tests {
     fn test_duration_with_connected_at() {
         let session = create_test_session();
         let duration = session.duration();
-        
+
         assert!(duration.is_some());
         // Duration should be approximately 1 hour (3600 seconds), give or take
         let dur = duration.unwrap();
@@ -350,7 +357,7 @@ mod tests {
     fn test_duration_without_connected_at() {
         let mut session = create_test_session();
         session.connected_at = None;
-        
+
         assert!(session.duration().is_none());
     }
 
@@ -359,13 +366,12 @@ mod tests {
         let mut session = create_test_session();
         let connect_time = Utc::now() - Duration::hours(2);
         let disconnect_time = Utc::now() - Duration::hours(1);
-        
+
         session.connected_at = Some(connect_time);
         session.disconnected_at = Some(disconnect_time);
-        
+
         let duration = session.duration().unwrap();
         // Should be approximately 1 hour (3600 seconds)
         assert!(duration >= 3590 && duration <= 3610);
     }
 }
-

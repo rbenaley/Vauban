@@ -2,14 +2,14 @@
 ///
 /// Interactive command to create the initial superuser account.
 /// Usage: cargo run --bin create_superuser
-
 use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
-use rand::rngs::OsRng;
-use diesel::prelude::*;
 use diesel::pg::PgConnection;
-use std::io::{self, Write};
+use diesel::prelude::*;
+use rand::rngs::OsRng;
 use rpassword::read_password;
+use std::io::{self, Write};
 use uuid::Uuid;
+use vauban_web::config::Config;
 
 mod schema {
     diesel::table! {
@@ -46,20 +46,18 @@ mod schema {
 }
 
 fn main() {
-    dotenv::dotenv().ok();
-
     println!("\n🔐 VAUBAN - Create Superuser");
     println!("============================\n");
 
-    let database_url = std::env::var("DATABASE_URL")
-        .expect("DATABASE_URL must be set");
+    // Load configuration from TOML files
+    let config = Config::load().expect("Failed to load configuration from config/*.toml");
 
-    let mut conn = PgConnection::establish(&database_url)
-        .expect("Failed to connect to database");
+    let mut conn =
+        PgConnection::establish(&config.database.url).expect("Failed to connect to database");
 
     // Check if any superuser already exists
     let existing_superuser: Option<i32> = diesel::sql_query(
-        "SELECT id FROM users WHERE is_superuser = true AND is_deleted = false LIMIT 1"
+        "SELECT id FROM users WHERE is_superuser = true AND is_deleted = false LIMIT 1",
     )
     .get_result::<ExistsResult>(&mut conn)
     .map(|r| Some(r.id))
@@ -69,9 +67,11 @@ fn main() {
         println!("⚠️  A superuser already exists in the database.");
         print!("Do you want to create another superuser? (y/N): ");
         io::stdout().flush().unwrap();
-        
+
         let mut confirm = String::new();
-        io::stdin().read_line(&mut confirm).expect("Failed to read input");
+        io::stdin()
+            .read_line(&mut confirm)
+            .expect("Failed to read input");
         if confirm.trim().to_lowercase() != "y" {
             println!("\n❌ Operation cancelled.");
             return;
@@ -84,9 +84,11 @@ fn main() {
         print!("Username: ");
         io::stdout().flush().unwrap();
         let mut input = String::new();
-        io::stdin().read_line(&mut input).expect("Failed to read username");
+        io::stdin()
+            .read_line(&mut input)
+            .expect("Failed to read username");
         let trimmed = input.trim().to_string();
-        
+
         if trimmed.len() < 3 {
             eprintln!("Username must be at least 3 characters.");
             continue;
@@ -95,7 +97,7 @@ fn main() {
             eprintln!("Username must be at most 150 characters.");
             continue;
         }
-        
+
         // Check if username already exists
         let exists: bool = diesel::sql_query(format!(
             "SELECT EXISTS(SELECT 1 FROM users WHERE username = '{}' AND is_deleted = false) as exists",
@@ -104,12 +106,15 @@ fn main() {
         .get_result::<ExistsBool>(&mut conn)
         .map(|r| r.exists)
         .unwrap_or(false);
-        
+
         if exists {
-            eprintln!("Username '{}' already exists. Please choose another.", trimmed);
+            eprintln!(
+                "Username '{}' already exists. Please choose another.",
+                trimmed
+            );
             continue;
         }
-        
+
         break trimmed;
     };
 
@@ -118,14 +123,16 @@ fn main() {
         print!("Email: ");
         io::stdout().flush().unwrap();
         let mut input = String::new();
-        io::stdin().read_line(&mut input).expect("Failed to read email");
+        io::stdin()
+            .read_line(&mut input)
+            .expect("Failed to read email");
         let trimmed = input.trim().to_string();
-        
+
         if !trimmed.contains('@') || !trimmed.contains('.') {
             eprintln!("Please enter a valid email address.");
             continue;
         }
-        
+
         // Check if email already exists
         let exists: bool = diesel::sql_query(format!(
             "SELECT EXISTS(SELECT 1 FROM users WHERE email = '{}' AND is_deleted = false) as exists",
@@ -134,12 +141,12 @@ fn main() {
         .get_result::<ExistsBool>(&mut conn)
         .map(|r| r.exists)
         .unwrap_or(false);
-        
+
         if exists {
             eprintln!("Email '{}' already exists. Please choose another.", trimmed);
             continue;
         }
-        
+
         break trimmed;
     };
 
@@ -147,17 +154,29 @@ fn main() {
     print!("First name (optional): ");
     io::stdout().flush().unwrap();
     let mut first_name_input = String::new();
-    io::stdin().read_line(&mut first_name_input).expect("Failed to read first name");
+    io::stdin()
+        .read_line(&mut first_name_input)
+        .expect("Failed to read first name");
     let first_name = first_name_input.trim();
-    let first_name = if first_name.is_empty() { None } else { Some(first_name.to_string()) };
+    let first_name = if first_name.is_empty() {
+        None
+    } else {
+        Some(first_name.to_string())
+    };
 
     // Prompt for last name (optional)
     print!("Last name (optional): ");
     io::stdout().flush().unwrap();
     let mut last_name_input = String::new();
-    io::stdin().read_line(&mut last_name_input).expect("Failed to read last name");
+    io::stdin()
+        .read_line(&mut last_name_input)
+        .expect("Failed to read last name");
     let last_name = last_name_input.trim();
-    let last_name = if last_name.is_empty() { None } else { Some(last_name.to_string()) };
+    let last_name = if last_name.is_empty() {
+        None
+    } else {
+        Some(last_name.to_string())
+    };
 
     // Prompt for password
     let password = loop {
@@ -185,17 +204,20 @@ fn main() {
     // Hash the password
     let salt = SaltString::generate(&mut OsRng);
     let argon2 = Argon2::default();
-    let password_hash = argon2.hash_password(password.as_bytes(), &salt)
+    let password_hash = argon2
+        .hash_password(password.as_bytes(), &salt)
         .expect("Failed to hash password")
         .to_string();
 
     // Create the superuser
     let user_uuid = Uuid::new_v4();
-    
-    let first_name_sql = first_name.as_ref()
+
+    let first_name_sql = first_name
+        .as_ref()
         .map(|n| format!("'{}'", n.replace('\'', "''")))
         .unwrap_or_else(|| "NULL".to_string());
-    let last_name_sql = last_name.as_ref()
+    let last_name_sql = last_name
+        .as_ref()
         .map(|n| format!("'{}'", n.replace('\'', "''")))
         .unwrap_or_else(|| "NULL".to_string());
 
@@ -222,10 +244,17 @@ fn main() {
             println!("\n   Username: {}", username);
             println!("   Email:    {}", email);
             if let Some(ref fn_) = first_name {
-                println!("   Name:     {} {}", fn_, last_name.as_deref().unwrap_or(""));
+                println!(
+                    "   Name:     {} {}",
+                    fn_,
+                    last_name.as_deref().unwrap_or("")
+                );
             }
             println!("   UUID:     {}", user_uuid);
-            println!("\nYou can now log in at http://localhost:8000/login");
+            println!(
+                "\nYou can now log in at http://{}:{}/login",
+                config.server.host, config.server.port
+            );
         }
         Err(e) => {
             eprintln!("\n❌ Failed to create superuser: {}", e);
@@ -257,8 +286,14 @@ pub fn validate_username(username: &str) -> Result<(), String> {
         return Err("Username must be at most 150 characters.".to_string());
     }
     // Check for valid characters (alphanumeric, underscore, dot, hyphen)
-    if !username.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == '-') {
-        return Err("Username can only contain letters, numbers, underscores, dots, and hyphens.".to_string());
+    if !username
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == '-')
+    {
+        return Err(
+            "Username can only contain letters, numbers, underscores, dots, and hyphens."
+                .to_string(),
+        );
     }
     Ok(())
 }
@@ -410,4 +445,3 @@ mod tests {
         assert!(validate_password_match("Password123", "password123").is_err());
     }
 }
-

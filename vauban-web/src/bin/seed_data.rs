@@ -1,5 +1,5 @@
 /// VAUBAN - Seed Data Generator
-/// 
+///
 /// Creates test data for development (idempotent):
 /// - 5 users (1 admin, 2 staff, 2 regular)
 /// - 30 assets (SSH, RDP, VNC)
@@ -7,15 +7,15 @@
 /// - 20 approval requests
 ///
 /// This script can be run multiple times without creating duplicates.
-
+use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
+use chrono::{Duration, Utc};
+use diesel::PgConnection;
 use diesel::prelude::*;
 use diesel::r2d2::{ConnectionManager, Pool};
-use diesel::PgConnection;
-use uuid::Uuid;
-use chrono::{Utc, Duration};
 use rand::Rng;
-use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
 use rand::rngs::OsRng;
+use uuid::Uuid;
+use vauban_web::config::Config;
 
 // Import schema
 mod schema {
@@ -23,17 +23,14 @@ mod schema {
 }
 
 fn main() {
-    dotenv::dotenv().ok();
-    
     println!("🚀 VAUBAN Seed Data Generator (Idempotent)");
     println!("==========================================\n");
 
-    // Get database URL
-    let database_url = std::env::var("DATABASE_URL")
-        .expect("DATABASE_URL must be set in .env file");
+    // Load configuration from TOML files
+    let config = Config::load().expect("Failed to load configuration from config/*.toml");
 
     // Create connection pool
-    let manager = ConnectionManager::<PgConnection>::new(&database_url);
+    let manager = ConnectionManager::<PgConnection>::new(&config.database.url);
     let pool = Pool::builder()
         .build(manager)
         .expect("Failed to create database pool");
@@ -54,35 +51,57 @@ fn main() {
     println!("   ✅ {} assets ready\n", asset_ids.len());
 
     // Check existing sessions count
-    let existing_sessions: i64 = diesel::sql_query(
-        "SELECT COUNT(*) as count FROM proxy_sessions WHERE status != 'pending'"
-    )
-    .get_result::<CountResult>(&mut conn)
-    .map(|r| r.count)
-    .unwrap_or(0);
+    let existing_sessions: i64 =
+        diesel::sql_query("SELECT COUNT(*) as count FROM proxy_sessions WHERE status != 'pending'")
+            .get_result::<CountResult>(&mut conn)
+            .map(|r| r.count)
+            .unwrap_or(0);
 
     if existing_sessions < 30 {
         println!("🔗 Creating sessions and recordings...");
-        let session_count = create_sessions(&mut conn, &user_ids, &asset_ids, 30 - existing_sessions as i32);
-        println!("   ✅ Created {} new sessions (total: {})\n", session_count, existing_sessions + session_count as i64);
+        let session_count = create_sessions(
+            &mut conn,
+            &user_ids,
+            &asset_ids,
+            30 - existing_sessions as i32,
+        );
+        println!(
+            "   ✅ Created {} new sessions (total: {})\n",
+            session_count,
+            existing_sessions + session_count as i64
+        );
     } else {
-        println!("🔗 Sessions already exist ({} found), skipping...\n", existing_sessions);
+        println!(
+            "🔗 Sessions already exist ({} found), skipping...\n",
+            existing_sessions
+        );
     }
 
     // Check existing approvals count
-    let existing_approvals: i64 = diesel::sql_query(
-        "SELECT COUNT(*) as count FROM proxy_sessions WHERE status = 'pending'"
-    )
-    .get_result::<CountResult>(&mut conn)
-    .map(|r| r.count)
-    .unwrap_or(0);
+    let existing_approvals: i64 =
+        diesel::sql_query("SELECT COUNT(*) as count FROM proxy_sessions WHERE status = 'pending'")
+            .get_result::<CountResult>(&mut conn)
+            .map(|r| r.count)
+            .unwrap_or(0);
 
     if existing_approvals < 20 {
         println!("📋 Creating approval requests...");
-        let approval_count = create_approval_requests(&mut conn, &user_ids, &asset_ids, 20 - existing_approvals as i32);
-        println!("   ✅ Created {} new approval requests (total: {})\n", approval_count, existing_approvals + approval_count as i64);
+        let approval_count = create_approval_requests(
+            &mut conn,
+            &user_ids,
+            &asset_ids,
+            20 - existing_approvals as i32,
+        );
+        println!(
+            "   ✅ Created {} new approval requests (total: {})\n",
+            approval_count,
+            existing_approvals + approval_count as i64
+        );
     } else {
-        println!("📋 Approval requests already exist ({} found), skipping...\n", existing_approvals);
+        println!(
+            "📋 Approval requests already exist ({} found), skipping...\n",
+            existing_approvals
+        );
     }
 
     // Create user groups
@@ -107,7 +126,8 @@ fn main() {
 fn hash_password(password: &str) -> String {
     let salt = SaltString::generate(&mut OsRng);
     let argon2 = Argon2::default();
-    argon2.hash_password(password.as_bytes(), &salt)
+    argon2
+        .hash_password(password.as_bytes(), &salt)
         .expect("Failed to hash password")
         .to_string()
 }
@@ -115,13 +135,41 @@ fn hash_password(password: &str) -> String {
 /// Create test users (idempotent).
 fn create_users(conn: &mut PgConnection) -> Vec<i32> {
     let mut user_ids = Vec::new();
-    
+
     // Define users: (username, email, first_name, last_name, is_staff, is_superuser)
     let users_data = vec![
-        ("admin", "admin@vauban.local", "System", "Administrator", true, true),
-        ("operator1", "operator1@vauban.local", "John", "Smith", true, false),
-        ("operator2", "operator2@vauban.local", "Jane", "Doe", true, false),
-        ("user1", "user1@vauban.local", "Alice", "Martin", false, false),
+        (
+            "admin",
+            "admin@vauban.local",
+            "System",
+            "Administrator",
+            true,
+            true,
+        ),
+        (
+            "operator1",
+            "operator1@vauban.local",
+            "John",
+            "Smith",
+            true,
+            false,
+        ),
+        (
+            "operator2",
+            "operator2@vauban.local",
+            "Jane",
+            "Doe",
+            true,
+            false,
+        ),
+        (
+            "user1",
+            "user1@vauban.local",
+            "Alice",
+            "Martin",
+            false,
+            false,
+        ),
         ("user2", "user2@vauban.local", "Bob", "Wilson", false, false),
     ];
 
@@ -141,7 +189,13 @@ fn create_users(conn: &mut PgConnection) -> Vec<i32> {
 
         if let Some(id) = existing {
             user_ids.push(id);
-            let role = if is_superuser { "admin" } else if is_staff { "staff" } else { "user" };
+            let role = if is_superuser {
+                "admin"
+            } else if is_staff {
+                "staff"
+            } else {
+                "user"
+            };
             println!("   - {} ({}) already exists", username, role);
             continue;
         }
@@ -159,7 +213,13 @@ fn create_users(conn: &mut PgConnection) -> Vec<i32> {
         match result {
             Ok(u) => {
                 user_ids.push(u.id);
-                let role = if is_superuser { "admin" } else if is_staff { "staff" } else { "user" };
+                let role = if is_superuser {
+                    "admin"
+                } else if is_staff {
+                    "staff"
+                } else {
+                    "user"
+                };
                 println!("   - {} ({}) created", username, role);
             }
             Err(e) => {
@@ -169,13 +229,12 @@ fn create_users(conn: &mut PgConnection) -> Vec<i32> {
     }
 
     // Also include existing 'mnemonic' user if present
-    let mnemonic_id: Option<i32> = diesel::sql_query(
-        "SELECT id FROM users WHERE username = 'mnemonic'"
-    )
-    .get_result::<UserId>(conn)
-    .optional()
-    .expect("Failed to query users")
-    .map(|u| u.id);
+    let mnemonic_id: Option<i32> =
+        diesel::sql_query("SELECT id FROM users WHERE username = 'mnemonic'")
+            .get_result::<UserId>(conn)
+            .optional()
+            .expect("Failed to query users")
+            .map(|u| u.id);
 
     if let Some(id) = mnemonic_id {
         if !user_ids.contains(&id) {
@@ -215,8 +274,12 @@ fn create_assets(conn: &mut PgConnection, admin_id: i32) -> Vec<i32> {
 
     for (i, (name, os, desc)) in linux_servers.iter().enumerate() {
         let ip = format!("10.0.{}.{}", (i / 50) + 1, (i % 254) + 1);
-        let status = if rng.gen_bool(0.85) { "online" } else { "offline" };
-        
+        let status = if rng.gen_bool(0.85) {
+            "online"
+        } else {
+            "offline"
+        };
+
         let result = diesel::sql_query(format!(
             "INSERT INTO assets (uuid, name, hostname, ip_address, port, asset_type, status, os_type, os_version, description, created_by_id, require_mfa, require_justification, connection_config)
              VALUES (uuid_generate_v4(), '{}', '{}.vauban.local', '{}', 22, 'ssh', '{}', 'linux', '{}', '{}', {}, {}, {}, '{{}}')
@@ -226,7 +289,7 @@ fn create_assets(conn: &mut PgConnection, admin_id: i32) -> Vec<i32> {
             rng.gen_bool(0.3), rng.gen_bool(0.2)
         ))
         .get_result::<AssetId>(conn);
-        
+
         if let Ok(asset) = result {
             asset_ids.push(asset.id);
             // Check if it was an insert or update
@@ -237,7 +300,7 @@ fn create_assets(conn: &mut PgConnection, admin_id: i32) -> Vec<i32> {
             .get_result::<ExistedCheck>(conn)
             .map(|r| r.existed)
             .unwrap_or(false);
-            
+
             if was_update {
                 existing_count += 1;
             } else {
@@ -263,8 +326,12 @@ fn create_assets(conn: &mut PgConnection, admin_id: i32) -> Vec<i32> {
 
     for (i, (name, os, desc)) in windows_servers.iter().enumerate() {
         let ip = format!("10.1.{}.{}", (i / 50) + 1, (i % 254) + 1);
-        let status = if rng.gen_bool(0.9) { "online" } else { "offline" };
-        
+        let status = if rng.gen_bool(0.9) {
+            "online"
+        } else {
+            "offline"
+        };
+
         let result = diesel::sql_query(format!(
             "INSERT INTO assets (uuid, name, hostname, ip_address, port, asset_type, status, os_type, os_version, description, created_by_id, require_mfa, require_justification, connection_config)
              VALUES (uuid_generate_v4(), '{}', '{}.vauban.local', '{}', 3389, 'rdp', '{}', 'windows', '{}', '{}', {}, {}, {}, '{{}}')
@@ -274,7 +341,7 @@ fn create_assets(conn: &mut PgConnection, admin_id: i32) -> Vec<i32> {
             rng.gen_bool(0.5), rng.gen_bool(0.4)
         ))
         .get_result::<AssetId>(conn);
-        
+
         if let Ok(asset) = result {
             asset_ids.push(asset.id);
             let was_update = diesel::sql_query(format!(
@@ -284,7 +351,7 @@ fn create_assets(conn: &mut PgConnection, admin_id: i32) -> Vec<i32> {
             .get_result::<ExistedCheck>(conn)
             .map(|r| r.existed)
             .unwrap_or(false);
-            
+
             if was_update {
                 existing_count += 1;
             } else {
@@ -305,8 +372,12 @@ fn create_assets(conn: &mut PgConnection, admin_id: i32) -> Vec<i32> {
 
     for (i, (name, os, desc)) in vnc_servers.iter().enumerate() {
         let ip = format!("10.2.{}.{}", (i / 50) + 1, (i % 254) + 1);
-        let status = if rng.gen_bool(0.95) { "online" } else { "maintenance" };
-        
+        let status = if rng.gen_bool(0.95) {
+            "online"
+        } else {
+            "maintenance"
+        };
+
         let result = diesel::sql_query(format!(
             "INSERT INTO assets (uuid, name, hostname, ip_address, port, asset_type, status, os_type, os_version, description, created_by_id, require_mfa, require_justification, connection_config)
              VALUES (uuid_generate_v4(), '{}', '{}.vauban.local', '{}', 5900, 'vnc', '{}', 'linux', '{}', '{}', {}, true, true, '{{}}')
@@ -315,7 +386,7 @@ fn create_assets(conn: &mut PgConnection, admin_id: i32) -> Vec<i32> {
             name, name, ip, status, os, desc, admin_id
         ))
         .get_result::<AssetId>(conn);
-        
+
         if let Ok(asset) = result {
             asset_ids.push(asset.id);
             let was_update = diesel::sql_query(format!(
@@ -325,7 +396,7 @@ fn create_assets(conn: &mut PgConnection, admin_id: i32) -> Vec<i32> {
             .get_result::<ExistedCheck>(conn)
             .map(|r| r.existed)
             .unwrap_or(false);
-            
+
             if was_update {
                 existing_count += 1;
             } else {
@@ -336,14 +407,22 @@ fn create_assets(conn: &mut PgConnection, admin_id: i32) -> Vec<i32> {
     }
 
     if existing_count > 0 {
-        println!("   ({} already existed, {} created)", existing_count, created_count);
+        println!(
+            "   ({} already existed, {} created)",
+            existing_count, created_count
+        );
     }
 
     asset_ids
 }
 
 /// Create test sessions.
-fn create_sessions(conn: &mut PgConnection, user_ids: &[i32], asset_ids: &[i32], count: i32) -> i32 {
+fn create_sessions(
+    conn: &mut PgConnection,
+    user_ids: &[i32],
+    asset_ids: &[i32],
+    count: i32,
+) -> i32 {
     let mut rng = rand::thread_rng();
     let mut created = 0;
 
@@ -354,8 +433,12 @@ fn create_sessions(conn: &mut PgConnection, user_ids: &[i32], asset_ids: &[i32],
     let statuses = vec!["active", "disconnected", "completed", "terminated"];
     let session_types = vec!["ssh", "rdp", "vnc"];
     let client_ips = vec![
-        "192.168.1.10", "192.168.1.25", "192.168.1.100",
-        "10.0.0.50", "172.16.0.15", "192.168.2.200"
+        "192.168.1.10",
+        "192.168.1.25",
+        "192.168.1.100",
+        "10.0.0.50",
+        "172.16.0.15",
+        "192.168.2.200",
     ];
 
     for i in 0..count {
@@ -368,10 +451,14 @@ fn create_sessions(conn: &mut PgConnection, user_ids: &[i32], asset_ids: &[i32],
         };
         let session_type = session_types[rng.gen_range(0..session_types.len())];
         let client_ip = client_ips[rng.gen_range(0..client_ips.len())];
-        
+
         let is_recorded = i >= 10;
         let recording_path = if is_recorded {
-            Some(format!("/recordings/{}/{}.cast", Utc::now().format("%Y/%m"), Uuid::new_v4()))
+            Some(format!(
+                "/recordings/{}/{}.cast",
+                Utc::now().format("%Y/%m"),
+                Uuid::new_v4()
+            ))
         } else {
             None
         };
@@ -388,7 +475,7 @@ fn create_sessions(conn: &mut PgConnection, user_ids: &[i32], asset_ids: &[i32],
              VALUES (uuid_generate_v4(), {}, {}, '{}', '{}', '{}', '{}', '{}', '{}', {}, {}, {}, {}, {}, {}, {}, '{{}}')
              RETURNING id",
             user_id, asset_id,
-            Uuid::new_v4(), 
+            Uuid::new_v4(),
             if session_type == "ssh" { "root" } else { "Administrator" },
             session_type, status, client_ip,
             connected_at.format("%Y-%m-%d %H:%M:%S%z"),
@@ -413,7 +500,12 @@ fn create_sessions(conn: &mut PgConnection, user_ids: &[i32], asset_ids: &[i32],
 }
 
 /// Create approval requests.
-fn create_approval_requests(conn: &mut PgConnection, user_ids: &[i32], asset_ids: &[i32], count: i32) -> i32 {
+fn create_approval_requests(
+    conn: &mut PgConnection,
+    user_ids: &[i32],
+    asset_ids: &[i32],
+    count: i32,
+) -> i32 {
     let mut rng = rand::thread_rng();
     let mut created = 0;
 
@@ -436,8 +528,11 @@ fn create_approval_requests(conn: &mut PgConnection, user_ids: &[i32], asset_ids
 
     let session_types = vec!["ssh", "rdp"];
     let client_ips = vec![
-        "192.168.1.50", "192.168.1.75", "192.168.1.150",
-        "10.0.0.100", "172.16.0.30"
+        "192.168.1.50",
+        "192.168.1.75",
+        "192.168.1.150",
+        "10.0.0.100",
+        "172.16.0.30",
     ];
 
     for i in 0..count {
@@ -460,7 +555,11 @@ fn create_approval_requests(conn: &mut PgConnection, user_ids: &[i32], asset_ids
 
         if result.is_ok() {
             created += 1;
-            println!("   - Approval #{}: {}", i + 1, &justification[..50.min(justification.len())]);
+            println!(
+                "   - Approval #{}: {}",
+                i + 1,
+                &justification[..50.min(justification.len())]
+            );
         }
     }
 
@@ -473,11 +572,27 @@ fn create_groups(conn: &mut PgConnection) -> i32 {
 
     // Define groups: (name, description, source)
     let groups_data = vec![
-        ("Administrators", "Full system administrators with all permissions", "local"),
-        ("Operators", "System operators with limited administrative access", "local"),
+        (
+            "Administrators",
+            "Full system administrators with all permissions",
+            "local",
+        ),
+        (
+            "Operators",
+            "System operators with limited administrative access",
+            "local",
+        ),
         ("Developers", "Development team members", "local"),
-        ("Auditors", "Security auditors with read-only access to logs and recordings", "local"),
-        ("Support", "Support team with access to user management", "local"),
+        (
+            "Auditors",
+            "Security auditors with read-only access to logs and recordings",
+            "local",
+        ),
+        (
+            "Support",
+            "Support team with access to user management",
+            "local",
+        ),
     ];
 
     for (name, description, source) in groups_data {
@@ -531,11 +646,41 @@ fn create_asset_groups(conn: &mut PgConnection) -> i32 {
 
     // Define asset groups: (name, slug, description, color, icon)
     let groups_data = vec![
-        ("Production Servers", "production", "Production environment servers", "#EF4444", "server"),
-        ("Development Servers", "development", "Development and testing servers", "#3B82F6", "code"),
-        ("Database Servers", "databases", "Database servers (PostgreSQL, MySQL, etc.)", "#8B5CF6", "database"),
-        ("Network Devices", "network", "Routers, switches, and network equipment", "#10B981", "wifi"),
-        ("Windows Workstations", "workstations", "Windows workstations for remote access", "#F59E0B", "desktop"),
+        (
+            "Production Servers",
+            "production",
+            "Production environment servers",
+            "#EF4444",
+            "server",
+        ),
+        (
+            "Development Servers",
+            "development",
+            "Development and testing servers",
+            "#3B82F6",
+            "code",
+        ),
+        (
+            "Database Servers",
+            "databases",
+            "Database servers (PostgreSQL, MySQL, etc.)",
+            "#8B5CF6",
+            "database",
+        ),
+        (
+            "Network Devices",
+            "network",
+            "Routers, switches, and network equipment",
+            "#10B981",
+            "wifi",
+        ),
+        (
+            "Windows Workstations",
+            "workstations",
+            "Windows workstations for remote access",
+            "#F59E0B",
+            "desktop",
+        ),
     ];
 
     for (name, slug, description, color, icon) in groups_data {
@@ -622,11 +767,18 @@ struct ExistsResult {
 pub fn generate_asset_name(asset_type: &str, index: usize) -> String {
     let prefixes = match asset_type {
         "ssh" => ["web", "app", "db", "cache", "proxy", "monitor"],
-        "rdp" => ["desktop", "workstation", "terminal", "citrix", "admin", "dev"],
+        "rdp" => [
+            "desktop",
+            "workstation",
+            "terminal",
+            "citrix",
+            "admin",
+            "dev",
+        ],
         "vnc" => ["kvm", "console", "remote", "display", "graphic", "screen"],
         _ => ["server", "host", "node", "instance", "vm", "container"],
     };
-    
+
     let prefix = prefixes[index % prefixes.len()];
     format!("{}-{:03}", prefix, index + 1)
 }
@@ -640,7 +792,13 @@ pub fn generate_hostname(asset_name: &str, domain: &str) -> String {
 pub fn generate_ip_address(base: &str, index: usize) -> String {
     let parts: Vec<&str> = base.split('.').collect();
     if parts.len() >= 3 {
-        format!("{}.{}.{}.{}", parts[0], parts[1], parts[2], (index % 254) + 1)
+        format!(
+            "{}.{}.{}.{}",
+            parts[0],
+            parts[1],
+            parts[2],
+            (index % 254) + 1
+        )
     } else {
         format!("10.0.0.{}", (index % 254) + 1)
     }
@@ -707,11 +865,11 @@ mod tests {
         // SSH has 6 prefixes, so index 6 should cycle back
         let name1 = generate_asset_name("ssh", 0);
         let name2 = generate_asset_name("ssh", 6);
-        
+
         // Both should start with "web-"
         assert!(name1.starts_with("web-"));
         assert!(name2.starts_with("web-"));
-        
+
         // But have different numbers
         assert!(name1.ends_with("001"));
         assert!(name2.ends_with("007"));
@@ -744,7 +902,7 @@ mod tests {
         let ip1 = generate_ip_address("10.0.0.0", 0);
         let ip2 = generate_ip_address("10.0.0.0", 1);
         let ip3 = generate_ip_address("10.0.0.0", 2);
-        
+
         assert_eq!(ip1, "10.0.0.1");
         assert_eq!(ip2, "10.0.0.2");
         assert_eq!(ip3, "10.0.0.3");

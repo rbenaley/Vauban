@@ -1,23 +1,19 @@
 /// VAUBAN Web - Test infrastructure.
 ///
 /// Common utilities for integration tests.
-
-use axum::{
-    http::HeaderValue,
-    Router,
-};
+use axum::{Router, http::HeaderValue};
 use axum_test::TestServer;
 use diesel::prelude::*;
 use diesel::r2d2::{ConnectionManager, Pool};
 use tokio::sync::OnceCell;
 
 use vauban_web::{
-    config::Config,
-    db::DbPool,
+    AppState,
     cache::CacheConnection,
+    config::{Config, Environment},
+    db::DbPool,
     services::auth::AuthService,
     services::broadcast::BroadcastService,
-    AppState,
 };
 
 /// Test application wrapper.
@@ -34,32 +30,28 @@ static TEST_APP: OnceCell<TestApp> = OnceCell::const_new();
 impl TestApp {
     /// Create a new test application.
     pub async fn spawn() -> &'static TestApp {
-        TEST_APP.get_or_init(|| async {
-            Self::create().await
-        }).await
+        TEST_APP
+            .get_or_init(|| async { Self::create().await })
+            .await
     }
 
     /// Create test app (internal).
     async fn create() -> Self {
-        // Load test configuration
-        std::env::set_var("DATABASE_URL", "postgresql://vauban_test:vauban_test@localhost/vauban_test");
-        std::env::set_var("SECRET_KEY", "test-secret-key-for-integration-tests-32chars!");
-        std::env::set_var("CACHE_TYPE", "mock");
+        // Load test configuration from config/testing.toml
+        let config = Config::load_with_environment("config", Environment::Testing)
+            .expect("Failed to load test config from config/testing.toml");
 
-        let config = Config::from_env().expect("Failed to load test config");
-        
         // Create database pool
         let manager = ConnectionManager::<diesel::PgConnection>::new(&config.database.url);
         let db_pool = Pool::builder()
-            .max_size(5)
+            .max_size(config.database.max_connections)
             .build(manager)
             .expect("Failed to create test database pool");
 
         // Create auth service
-        let auth_service = AuthService::new(config.clone())
-            .expect("Failed to create auth service");
+        let auth_service = AuthService::new(config.clone()).expect("Failed to create auth service");
 
-        // Create cache (mock for tests)
+        // Create cache (mock for tests since cache.enabled = false in testing.toml)
         let cache = CacheConnection::Mock(std::sync::Arc::new(vauban_web::cache::MockCache::new()));
 
         // Create broadcast service
@@ -74,7 +66,7 @@ impl TestApp {
             broadcast,
         };
 
-        // Build router (we need to import the router builder from main)
+        // Build router
         let app = build_test_router(state);
 
         // Create test server
@@ -107,7 +99,9 @@ impl TestApp {
     }
 
     /// Get a database connection.
-    pub fn get_conn(&self) -> diesel::r2d2::PooledConnection<ConnectionManager<diesel::PgConnection>> {
+    pub fn get_conn(
+        &self,
+    ) -> diesel::r2d2::PooledConnection<ConnectionManager<diesel::PgConnection>> {
         self.db_pool.get().expect("Failed to get DB connection")
     }
 }
@@ -122,7 +116,10 @@ fn build_test_router(state: AppState) -> Router {
         // WebSocket routes
         .route("/ws/dashboard", get(handlers::websocket::dashboard_ws))
         .route("/ws/session/{id}", get(handlers::websocket::session_ws))
-        .route("/ws/notifications", get(handlers::websocket::notifications_ws))
+        .route(
+            "/ws/notifications",
+            get(handlers::websocket::notifications_ws),
+        )
         // Auth routes
         .route("/api/auth/login", post(handlers::auth::login))
         .route("/api/auth/logout", post(handlers::auth::logout))
@@ -131,18 +128,27 @@ fn build_test_router(state: AppState) -> Router {
         .route("/api/v1/accounts", get(handlers::accounts::list_users))
         .route("/api/v1/accounts", post(handlers::accounts::create_user))
         .route("/api/v1/accounts/{uuid}", get(handlers::accounts::get_user))
-        .route("/api/v1/accounts/{uuid}", put(handlers::accounts::update_user))
+        .route(
+            "/api/v1/accounts/{uuid}",
+            put(handlers::accounts::update_user),
+        )
         // Assets routes
         .route("/api/v1/assets", get(handlers::assets::list_assets))
         .route("/api/v1/assets", post(handlers::assets::create_asset))
         .route("/api/v1/assets/{uuid}", get(handlers::assets::get_asset))
         .route("/api/v1/assets/{uuid}", put(handlers::assets::update_asset))
         // Asset groups routes
-        .route("/api/v1/assets/groups/{uuid}", post(handlers::web::update_asset_group))
+        .route(
+            "/api/v1/assets/groups/{uuid}",
+            post(handlers::web::update_asset_group),
+        )
         // Sessions routes
         .route("/api/v1/sessions", get(handlers::sessions::list_sessions))
         .route("/api/v1/sessions", post(handlers::sessions::create_session))
-        .route("/api/v1/sessions/{uuid}", get(handlers::sessions::get_session))
+        .route(
+            "/api/v1/sessions/{uuid}",
+            get(handlers::sessions::get_session),
+        )
         // Health check
         .route("/health", get(|| async { "OK" }))
         // Add auth middleware
@@ -161,13 +167,25 @@ pub mod test_db {
     /// Clean up test data (run before/after tests).
     pub fn cleanup(conn: &mut diesel::PgConnection) {
         // Delete in reverse order of foreign key dependencies
-        sql_query("DELETE FROM session_recordings").execute(conn).ok();
+        sql_query("DELETE FROM session_recordings")
+            .execute(conn)
+            .ok();
         sql_query("DELETE FROM proxy_sessions").execute(conn).ok();
-        sql_query("DELETE FROM approval_requests").execute(conn).ok();
-        sql_query("DELETE FROM assets WHERE name LIKE 'test-%'").execute(conn).ok();
-        sql_query("DELETE FROM asset_groups WHERE name LIKE 'test-%'").execute(conn).ok();
-        sql_query("DELETE FROM user_groups WHERE name LIKE 'test-%'").execute(conn).ok();
-        sql_query("DELETE FROM users WHERE username LIKE 'test_%'").execute(conn).ok();
+        sql_query("DELETE FROM approval_requests")
+            .execute(conn)
+            .ok();
+        sql_query("DELETE FROM assets WHERE name LIKE 'test-%'")
+            .execute(conn)
+            .ok();
+        sql_query("DELETE FROM asset_groups WHERE name LIKE 'test-%'")
+            .execute(conn)
+            .ok();
+        sql_query("DELETE FROM user_groups WHERE name LIKE 'test-%'")
+            .execute(conn)
+            .ok();
+        sql_query("DELETE FROM users WHERE username LIKE 'test_%'")
+            .execute(conn)
+            .ok();
     }
 }
 
@@ -212,4 +230,3 @@ pub mod assertions {
         );
     }
 }
-

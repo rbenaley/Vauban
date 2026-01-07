@@ -1,0 +1,19 @@
+# VAUBAN Web - Configuration de test
+# Surcharge les valeurs de default.toml pour les tests.
+
+environment = "testing"
+secret_key = "test-secret-key-for-integration-tests!"
+
+[database]
+url = "postgresql://vauban_test:vauban_test@localhost/vauban_test"
+
+[logging]
+level = "warn"
+format = "text"
+
+[cache]
+enabled = false
+
+[grpc.mtls]
+enabled = false
+

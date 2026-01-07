@@ -1,7 +1,6 @@
 /// VAUBAN Web - gRPC clients with mTLS support.
 ///
 /// Clients for communicating with Rust microservices.
-
 use std::time::Duration;
 use tonic::transport::{Channel, Endpoint};
 use tracing::warn;
@@ -16,10 +15,7 @@ pub struct GrpcClient {
 
 impl GrpcClient {
     /// Create a new gRPC client with optional mTLS.
-    pub async fn new(
-        url: &str,
-        mtls: &MtlsConfig,
-    ) -> AppResult<Self> {
+    pub async fn new(url: &str, mtls: &MtlsConfig) -> AppResult<Self> {
         let endpoint = Endpoint::from_shared(url.to_string())
             .map_err(|e| AppError::Config(format!("Invalid gRPC URL: {}", e)))?
             .timeout(Duration::from_secs(10))
@@ -31,10 +27,9 @@ impl GrpcClient {
             warn!("mTLS is enabled but not yet fully implemented - using insecure connection");
         }
 
-        let channel = endpoint
-            .connect()
-            .await
-            .map_err(|e| AppError::Grpc(tonic::Status::internal(format!("Connection failed: {}", e))))?;
+        let channel = endpoint.connect().await.map_err(|e| {
+            AppError::Grpc(tonic::Status::internal(format!("Connection failed: {}", e)))
+        })?;
 
         Ok(Self { channel })
     }
@@ -162,24 +157,21 @@ mod tests {
 
     #[test]
     fn test_grpc_connection_config_with_timeout() {
-        let config = GrpcConnectionConfig::new("http://localhost:50051")
-            .with_timeout(30);
+        let config = GrpcConnectionConfig::new("http://localhost:50051").with_timeout(30);
 
         assert_eq!(config.timeout_secs, 30);
     }
 
     #[test]
     fn test_grpc_connection_config_with_connect_timeout() {
-        let config = GrpcConnectionConfig::new("http://localhost:50051")
-            .with_connect_timeout(15);
+        let config = GrpcConnectionConfig::new("http://localhost:50051").with_connect_timeout(15);
 
         assert_eq!(config.connect_timeout_secs, 15);
     }
 
     #[test]
     fn test_grpc_connection_config_with_mtls() {
-        let config = GrpcConnectionConfig::new("https://secure.example.com:50051")
-            .with_mtls();
+        let config = GrpcConnectionConfig::new("https://secure.example.com:50051").with_mtls();
 
         assert!(config.mtls_enabled);
     }
@@ -223,16 +215,14 @@ mod tests {
 
     #[test]
     fn test_grpc_connection_config_timeout_duration() {
-        let config = GrpcConnectionConfig::new("http://localhost:50051")
-            .with_timeout(30);
+        let config = GrpcConnectionConfig::new("http://localhost:50051").with_timeout(30);
 
         assert_eq!(config.timeout(), Duration::from_secs(30));
     }
 
     #[test]
     fn test_grpc_connection_config_connect_timeout_duration() {
-        let config = GrpcConnectionConfig::new("http://localhost:50051")
-            .with_connect_timeout(15);
+        let config = GrpcConnectionConfig::new("http://localhost:50051").with_connect_timeout(15);
 
         assert_eq!(config.connect_timeout(), Duration::from_secs(15));
     }
@@ -258,4 +248,3 @@ mod tests {
         assert!(debug_str.contains("localhost"));
     }
 }
-

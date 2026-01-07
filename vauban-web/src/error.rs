@@ -1,11 +1,10 @@
 /// VAUBAN Web - Custom error types.
 ///
 /// All errors use `thiserror` for proper error handling without `unwrap()`.
-
 use axum::{
+    Json,
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
 };
 use serde_json::json;
 use thiserror::Error;
@@ -64,10 +63,7 @@ impl IntoResponse for AppError {
             }
             AppError::Grpc(e) => {
                 tracing::error!("gRPC error: {}", e);
-                (
-                    StatusCode::BAD_GATEWAY,
-                    "Service unavailable".to_string(),
-                )
+                (StatusCode::BAD_GATEWAY, "Service unavailable".to_string())
             }
             AppError::Cache(e) => {
                 tracing::warn!("Cache error: {}", e);
@@ -106,7 +102,10 @@ mod tests {
     #[test]
     fn test_app_error_display_auth() {
         let error = AppError::Auth("Invalid credentials".to_string());
-        assert_eq!(error.to_string(), "Authentication error: Invalid credentials");
+        assert_eq!(
+            error.to_string(),
+            "Authentication error: Invalid credentials"
+        );
     }
 
     #[test]
@@ -184,7 +183,7 @@ mod tests {
     fn test_app_error_from_anyhow() {
         let anyhow_error = anyhow::anyhow!("Something failed");
         let app_error: AppError = anyhow_error.into();
-        
+
         match app_error {
             AppError::Internal(_) => (), // Expected
             _ => panic!("Expected Internal error"),
@@ -206,4 +205,3 @@ mod tests {
         assert!(result.is_err());
     }
 }
-

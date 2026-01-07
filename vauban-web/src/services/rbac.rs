@@ -1,5 +1,4 @@
 /// VAUBAN Web - RBAC service client wrapper.
-
 use crate::config::Config;
 use crate::error::AppResult;
 use crate::grpc::RbacClient;
@@ -104,4 +103,3 @@ mod tests {
         }
     }
 }
-

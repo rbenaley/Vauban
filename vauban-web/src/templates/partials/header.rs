@@ -1,5 +1,4 @@
 /// VAUBAN Web - Header data structure.
-
 use crate::templates::base::UserContext;
 
 /// Header data (not a template itself, used as data in includes).
@@ -35,7 +34,7 @@ mod tests {
         let mut user = create_test_user_context();
         user.is_superuser = true;
         user.is_staff = true;
-        
+
         let template = HeaderTemplate { user };
         assert!(template.user.is_superuser);
         assert!(template.user.is_staff);

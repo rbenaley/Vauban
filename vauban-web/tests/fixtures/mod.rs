@@ -1,13 +1,12 @@
 /// VAUBAN Web - Test fixtures.
 ///
 /// Factory functions for creating test data.
-
 use diesel::prelude::*;
 use uuid::Uuid;
 
-use vauban_web::models::user::{User, NewUser};
 use vauban_web::models::asset::{Asset, NewAsset};
-use vauban_web::schema::{users, assets};
+use vauban_web::models::user::{NewUser, User};
+use vauban_web::schema::{assets, users};
 use vauban_web::services::auth::AuthService;
 
 /// Test user data.
@@ -231,10 +230,10 @@ pub fn create_test_rdp_asset(conn: &mut PgConnection, name: &str) -> TestAsset {
 /// Create a test asset group.
 pub fn create_test_asset_group(conn: &mut PgConnection, group_name: &str) -> Uuid {
     use vauban_web::schema::asset_groups::dsl;
-    
+
     let group_uuid = Uuid::new_v4();
     let group_slug = group_name.to_lowercase().replace(" ", "-");
-    
+
     diesel::insert_into(dsl::asset_groups)
         .values((
             dsl::uuid.eq(group_uuid),
@@ -251,6 +250,9 @@ pub fn create_test_asset_group(conn: &mut PgConnection, group_name: &str) -> Uui
 
 /// Generate unique test name with timestamp.
 pub fn unique_name(prefix: &str) -> String {
-    format!("{}_{}", prefix, Uuid::new_v4().to_string().split('-').next().unwrap())
+    format!(
+        "{}_{}",
+        prefix,
+        Uuid::new_v4().to_string().split('-').next().unwrap()
+    )
 }
-

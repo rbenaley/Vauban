@@ -1,18 +1,17 @@
+use ::uuid::Uuid;
 /// VAUBAN Web - Asset management handlers.
-
 use axum::{
-    extract::{Path, Query, State},
     Json,
+    extract::{Path, Query, State},
 };
 use serde::Deserialize;
-use ::uuid::Uuid;
 
-use crate::error::{AppError, AppResult};
-use crate::middleware::auth::AuthUser;
-use crate::models::asset::{Asset, CreateAssetRequest, UpdateAssetRequest, NewAsset};
-use crate::schema::assets::dsl::*;
 use crate::AppState;
 use crate::db::get_connection;
+use crate::error::{AppError, AppResult};
+use crate::middleware::auth::AuthUser;
+use crate::models::asset::{Asset, CreateAssetRequest, NewAsset, UpdateAssetRequest};
+use crate::schema::assets::dsl::*;
 use diesel::prelude::*;
 
 /// List assets handler.
@@ -65,20 +64,19 @@ pub async fn create_asset(
     _user: AuthUser,
     Json(request): Json<CreateAssetRequest>,
 ) -> AppResult<Json<Asset>> {
-    validator::Validate::validate(&request).map_err(|e| {
-        AppError::Validation(format!("Validation failed: {:?}", e))
-    })?;
+    validator::Validate::validate(&request)
+        .map_err(|e| AppError::Validation(format!("Validation failed: {:?}", e)))?;
 
     let mut conn = get_connection(&state.db_pool)?;
 
     let asset_type_enum = crate::models::asset::AssetType::from_str(&request.asset_type);
     let default_port = request.port.unwrap_or(asset_type_enum.default_port());
-    
+
     // Validate and convert IP address format if provided
     let ip_addr_network = if let Some(ref ip_str) = request.ip_address {
-        let ip_addr: std::net::IpAddr = ip_str.parse().map_err(|_| {
-            AppError::Validation("Invalid IP address format".to_string())
-        })?;
+        let ip_addr: std::net::IpAddr = ip_str
+            .parse()
+            .map_err(|_| AppError::Validation("Invalid IP address format".to_string()))?;
         Some(ipnetwork::IpNetwork::from(ip_addr))
     } else {
         None
@@ -101,7 +99,7 @@ pub async fn create_asset(
         require_mfa: request.require_mfa.unwrap_or(false),
         require_justification: request.require_justification.unwrap_or(false),
         max_session_duration: 28800, // 8 hours
-        created_by_id: None, // TODO: Get from user
+        created_by_id: None,         // TODO: Get from user
     };
 
     let asset: Asset = diesel::insert_into(assets)
@@ -118,20 +116,23 @@ pub async fn update_asset(
     Path(asset_uuid): Path<Uuid>,
     Json(request): Json<UpdateAssetRequest>,
 ) -> AppResult<Json<Asset>> {
-    validator::Validate::validate(&request).map_err(|e| {
-        AppError::Validation(format!("Validation failed: {:?}", e))
-    })?;
+    validator::Validate::validate(&request)
+        .map_err(|e| AppError::Validation(format!("Validation failed: {:?}", e)))?;
 
     let mut conn = get_connection(&state.db_pool)?;
 
-    use crate::schema::assets::dsl::{assets, uuid, name as name_col, hostname as hostname_col, port as port_col, status as status_col, updated_at};
+    use crate::schema::assets::dsl::{
+        assets, hostname as hostname_col, name as name_col, port as port_col, status as status_col,
+        updated_at, uuid,
+    };
     use chrono::Utc;
-    
+
     // First, get the existing asset
-    let existing: Asset = assets.filter(uuid.eq(asset_uuid))
+    let existing: Asset = assets
+        .filter(uuid.eq(asset_uuid))
         .first(&mut conn)
         .map_err(|_| AppError::NotFound("Asset not found".to_string()))?;
-    
+
     // Build update with provided values or keep existing
     let asset: Asset = diesel::update(assets.filter(uuid.eq(asset_uuid)))
         .set((
@@ -169,9 +170,9 @@ impl ListAssetsParams {
 
 /// Validate IP address format.
 pub fn validate_ip_address(ip_str: &str) -> Result<std::net::IpAddr, AppError> {
-    ip_str.parse().map_err(|_| {
-        AppError::Validation("Invalid IP address format".to_string())
-    })
+    ip_str
+        .parse()
+        .map_err(|_| AppError::Validation("Invalid IP address format".to_string()))
 }
 
 /// Convert IP address to IpNetwork.
@@ -398,4 +399,3 @@ mod tests {
         assert!(request.validate().is_err());
     }
 }
-

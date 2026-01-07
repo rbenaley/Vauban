@@ -1,13 +1,12 @@
 /// VAUBAN Web - Authentication service.
 ///
 /// Handles password hashing, JWT tokens, and MFA (TOTP).
-
 use argon2::{
-    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Argon2,
+    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
 };
 use chrono::{Duration, Utc};
-use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use serde::{Deserialize, Serialize};
 use totp_rs::{Algorithm, Secret, TOTP};
 
@@ -116,18 +115,20 @@ impl AuthService {
     /// The provisioning_uri can be used to generate a QR code for authenticator apps.
     pub fn generate_totp_secret(username: &str, issuer: &str) -> AppResult<(String, String)> {
         let secret = Secret::generate_secret();
-        let secret_bytes = secret.to_bytes()
-            .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to generate TOTP secret: {:?}", e)))?;
+        let secret_bytes = secret.to_bytes().map_err(|e| {
+            AppError::Internal(anyhow::anyhow!("Failed to generate TOTP secret: {:?}", e))
+        })?;
 
         let totp = TOTP::new(
             Algorithm::SHA1,
-            6,      // 6 digits
-            1,      // 1 step tolerance (±30 seconds)
-            30,     // 30 second step
+            6,  // 6 digits
+            1,  // 1 step tolerance (±30 seconds)
+            30, // 30 second step
             secret_bytes,
             Some(issuer.to_string()),
             username.to_string(),
-        ).map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to create TOTP: {:?}", e)))?;
+        )
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to create TOTP: {:?}", e)))?;
 
         let base32_secret = secret.to_encoded().to_string();
         let provisioning_uri = totp.get_url();
@@ -141,7 +142,8 @@ impl AuthService {
     #[allow(dead_code)]
     pub fn generate_totp_qr_code(secret: &str, username: &str, issuer: &str) -> AppResult<String> {
         let secret_obj = Secret::Encoded(secret.to_string());
-        let secret_bytes = secret_obj.to_bytes()
+        let secret_bytes = secret_obj
+            .to_bytes()
             .map_err(|e| AppError::Internal(anyhow::anyhow!("Invalid TOTP secret: {:?}", e)))?;
 
         let totp = TOTP::new(
@@ -152,11 +154,13 @@ impl AuthService {
             secret_bytes,
             Some(issuer.to_string()),
             username.to_string(),
-        ).map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to create TOTP: {:?}", e)))?;
+        )
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to create TOTP: {:?}", e)))?;
 
         // Generate QR code as base64 PNG
-        let qr_code = totp.get_qr_base64()
-            .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to generate QR code: {:?}", e)))?;
+        let qr_code = totp.get_qr_base64().map_err(|e| {
+            AppError::Internal(anyhow::anyhow!("Failed to generate QR code: {:?}", e))
+        })?;
 
         Ok(qr_code)
     }
@@ -174,11 +178,11 @@ impl AuthService {
         let totp = match TOTP::new(
             Algorithm::SHA1,
             6,
-            1,  // 1 step tolerance
+            1, // 1 step tolerance
             30,
             secret_bytes,
-            None,               // issuer not needed for verification
-            String::new(),      // account_name not needed for verification
+            None,          // issuer not needed for verification
+            String::new(), // account_name not needed for verification
         ) {
             Ok(t) => t,
             Err(_) => return false,
@@ -193,15 +197,7 @@ impl AuthService {
         let secret_obj = Secret::Encoded(secret.to_string());
         let secret_bytes = secret_obj.to_bytes().ok()?;
 
-        let totp = TOTP::new(
-            Algorithm::SHA1,
-            6,
-            1,
-            30,
-            secret_bytes,
-            None,
-            String::new(),
-        ).ok()?;
+        let totp = TOTP::new(Algorithm::SHA1, 6, 1, 30, secret_bytes, None, String::new()).ok()?;
 
         Some(totp.generate_current().ok()?)
     }
@@ -211,65 +207,17 @@ impl AuthService {
 mod tests {
     use super::*;
 
-    /// Helper to create a test config
-    fn create_test_config() -> Config {
-        Config {
-            environment: crate::config::Environment::Testing,
-            secret_key: "test-secret-key-for-testing-only-32chars".to_string(),
-            database: crate::config::DatabaseConfig {
-                url: "postgresql://test:test@localhost/test".to_string(),
-                max_connections: 5,
-                min_connections: 1,
-                connect_timeout_secs: 10,
-            },
-            cache: crate::config::CacheConfig {
-                enabled: false,
-                url: "redis://localhost:6379".to_string(),
-                default_ttl_secs: 3600,
-            },
-            server: crate::config::ServerConfig {
-                host: "127.0.0.1".to_string(),
-                port: 8000,
-                workers: None,
-            },
-            jwt: crate::config::JwtConfig {
-                access_token_lifetime_minutes: 15,
-                refresh_token_lifetime_days: 1,
-                algorithm: "HS256".to_string(),
-            },
-            grpc: crate::config::GrpcConfig {
-                rbac_url: "http://localhost:50052".to_string(),
-                vault_url: "http://localhost:50053".to_string(),
-                auth_url: "http://localhost:50051".to_string(),
-                proxy_ssh_url: "http://localhost:50054".to_string(),
-                proxy_rdp_url: "http://localhost:50055".to_string(),
-                audit_url: "http://localhost:50056".to_string(),
-                mtls: crate::config::MtlsConfig {
-                    enabled: false,
-                    ca_cert: None,
-                    client_cert: None,
-                    client_key: None,
-                },
-            },
-            security: crate::config::SecurityConfig {
-                password_min_length: 12,
-                max_failed_login_attempts: 5,
-                session_max_duration_secs: 28800,
-                session_idle_timeout_secs: 1800,
-                rate_limit_per_minute: 100,
-            },
-            logging: crate::config::LoggingConfig {
-                level: "info".to_string(),
-                format: crate::config::LogFormat::Text,
-            },
-        }
+    /// Helper to load test config from TOML files.
+    fn load_test_config() -> Config {
+        Config::load_with_environment("config", crate::config::Environment::Testing)
+            .expect("Failed to load test config from config/testing.toml")
     }
 
     // ==================== Password Hashing Tests ====================
 
     #[test]
     fn test_hash_password_generates_hash() {
-        let config = create_test_config();
+        let config = load_test_config();
         let auth_service = AuthService::new(config).unwrap();
 
         let password = "TestPassword123!";
@@ -285,7 +233,7 @@ mod tests {
 
     #[test]
     fn test_hash_password_generates_different_hashes() {
-        let config = create_test_config();
+        let config = load_test_config();
         let auth_service = AuthService::new(config).unwrap();
 
         let password = "TestPassword123!";
@@ -298,7 +246,7 @@ mod tests {
 
     #[test]
     fn test_verify_password_valid() {
-        let config = create_test_config();
+        let config = load_test_config();
         let auth_service = AuthService::new(config).unwrap();
 
         let password = "TestPassword123!";
@@ -310,7 +258,7 @@ mod tests {
 
     #[test]
     fn test_verify_password_invalid() {
-        let config = create_test_config();
+        let config = load_test_config();
         let auth_service = AuthService::new(config).unwrap();
 
         let password = "TestPassword123!";
@@ -323,7 +271,7 @@ mod tests {
 
     #[test]
     fn test_verify_password_malformed_hash() {
-        let config = create_test_config();
+        let config = load_test_config();
         let auth_service = AuthService::new(config).unwrap();
 
         let result = auth_service.verify_password("password", "not-a-valid-hash");
@@ -334,7 +282,7 @@ mod tests {
 
     #[test]
     fn test_generate_access_token_success() {
-        let config = create_test_config();
+        let config = load_test_config();
         let auth_service = AuthService::new(config).unwrap();
 
         let token = auth_service
@@ -355,7 +303,7 @@ mod tests {
 
     #[test]
     fn test_verify_token_valid() {
-        let config = create_test_config();
+        let config = load_test_config();
         let auth_service = AuthService::new(config).unwrap();
 
         let user_uuid = "550e8400-e29b-41d4-a716-446655440000";
@@ -376,7 +324,7 @@ mod tests {
 
     #[test]
     fn test_verify_token_invalid() {
-        let config = create_test_config();
+        let config = load_test_config();
         let auth_service = AuthService::new(config).unwrap();
 
         let result = auth_service.verify_token("invalid.token.here");
@@ -385,7 +333,7 @@ mod tests {
 
     #[test]
     fn test_verify_token_wrong_secret() {
-        let config1 = create_test_config();
+        let config1 = load_test_config();
         let auth_service1 = AuthService::new(config1).unwrap();
 
         let token = auth_service1
@@ -399,7 +347,7 @@ mod tests {
             .unwrap();
 
         // Create another service with a different secret
-        let mut config2 = create_test_config();
+        let mut config2 = load_test_config();
         config2.secret_key = "different-secret-key-for-testing!".to_string();
         let auth_service2 = AuthService::new(config2).unwrap();
 
@@ -409,7 +357,7 @@ mod tests {
 
     #[test]
     fn test_token_claims_correctness() {
-        let config = create_test_config();
+        let config = load_test_config();
         let auth_service = AuthService::new(config).unwrap();
 
         let token = auth_service
@@ -473,7 +421,7 @@ mod tests {
 
         // Try an obviously wrong code (might occasionally pass if 000000 is the actual code)
         let _is_valid = AuthService::verify_totp(&secret, "000000");
-        
+
         // Try a malformed code - should always fail
         let is_valid_malformed = AuthService::verify_totp(&secret, "abcdef");
         assert!(!is_valid_malformed);
@@ -507,9 +455,8 @@ mod tests {
 
     #[test]
     fn test_auth_service_new_success() {
-        let config = create_test_config();
+        let config = load_test_config();
         let result = AuthService::new(config);
         assert!(result.is_ok());
     }
 }
-

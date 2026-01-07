@@ -1,7 +1,6 @@
 /// VAUBAN Web - Asset model.
 ///
 /// Assets represent servers/resources accessible via SSH, RDP, or VNC.
-
 use chrono::{DateTime, Utc};
 use diesel::prelude::*;
 use ipnetwork::IpNetwork;
@@ -165,7 +164,6 @@ impl Asset {
     pub fn connection_string(&self) -> String {
         format!("{}:{}", self.hostname, self.port)
     }
-    
 }
 
 /// Asset creation request.
@@ -305,7 +303,10 @@ mod tests {
 
     #[test]
     fn test_asset_status_from_str_maintenance() {
-        assert_eq!(AssetStatus::from_str("maintenance"), AssetStatus::Maintenance);
+        assert_eq!(
+            AssetStatus::from_str("maintenance"),
+            AssetStatus::Maintenance
+        );
     }
 
     #[test]
@@ -325,7 +326,12 @@ mod tests {
 
     #[test]
     fn test_asset_status_roundtrip() {
-        for status in [AssetStatus::Online, AssetStatus::Offline, AssetStatus::Maintenance, AssetStatus::Unknown] {
+        for status in [
+            AssetStatus::Online,
+            AssetStatus::Offline,
+            AssetStatus::Maintenance,
+            AssetStatus::Unknown,
+        ] {
             let str_val = status.as_str();
             let parsed = AssetStatus::from_str(str_val);
             assert_eq!(status, parsed);
@@ -438,4 +444,3 @@ mod tests {
         assert!(request.validate().is_err());
     }
 }
-

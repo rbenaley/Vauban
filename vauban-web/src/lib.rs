@@ -1,23 +1,22 @@
+pub mod cache;
 /// VAUBAN Web - Library crate exposing all modules.
 ///
 /// This file makes modules available for integration tests.
-
 pub mod config;
 pub mod db;
-pub mod cache;
 pub mod error;
-pub mod middleware;
-pub mod handlers;
-pub mod models;
-pub mod services;
 pub mod grpc;
+pub mod handlers;
+pub mod middleware;
+pub mod models;
 pub mod schema;
+pub mod services;
 pub mod tasks;
 pub mod templates;
 
+use cache::CacheConnection;
 use config::Config;
 use db::DbPool;
-use cache::CacheConnection;
 use services::auth::AuthService;
 use services::broadcast::BroadcastService;
 
@@ -111,7 +110,7 @@ mod tests {
             let _cache: &CacheConnection = &state.cache;
             let _auth: &AuthService = &state.auth_service;
         }
-        
+
         // The function above won't be called, but it ensures types are correct
         let _ = check_types;
     }

@@ -1,0 +1,37 @@
+# VAUBAN Web - Configuration de production
+# Surcharge les valeurs de default.toml pour l'environnement de production.
+#
+# IMPORTANT: Ce fichier est un template. En production :
+# - Définissez secret_key via une variable d'environnement VAUBAN_SECRET_KEY
+# - Ou utilisez un fichier local.toml (non versionné) pour les secrets
+
+environment = "production"
+# secret_key doit être défini via VAUBAN_SECRET_KEY ou local.toml
+
+[server]
+host = "0.0.0.0"
+port = 8000
+
+[database]
+max_connections = 20
+min_connections = 5
+connect_timeout_secs = 5
+
+[cache]
+enabled = true
+default_ttl_secs = 7200
+
+[logging]
+level = "info"
+format = "json"
+
+[security]
+password_min_length = 14
+max_failed_login_attempts = 3
+session_max_duration_secs = 14400   # 4 heures
+session_idle_timeout_secs = 900     # 15 minutes
+rate_limit_per_minute = 60
+
+[grpc.mtls]
+enabled = true
+

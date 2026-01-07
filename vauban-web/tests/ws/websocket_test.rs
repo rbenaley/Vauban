@@ -1,7 +1,6 @@
 /// VAUBAN Web - WebSocket Integration Tests.
 ///
 /// Tests for WebSocket endpoints: /ws/dashboard, /ws/session/{id}, /ws/notifications.
-
 use axum::http::header;
 use serial_test::serial;
 
@@ -15,12 +14,17 @@ use crate::fixtures::{create_admin_user, unique_name};
 #[serial]
 async fn test_dashboard_ws_connection() {
     let app = TestApp::spawn().await;
-    let admin = create_admin_user(&mut app.get_conn(), &app.auth_service, &unique_name("wsadmin"));
+    let admin = create_admin_user(
+        &mut app.get_conn(),
+        &app.auth_service,
+        &unique_name("wsadmin"),
+    );
     test_db::cleanup(&mut app.get_conn());
 
     // Note: axum-test doesn't support WebSocket directly,
     // so we test via the HTTP upgrade request
-    let response = app.server
+    let response = app
+        .server
         .get("/ws/dashboard")
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .add_header(header::UPGRADE, "websocket")
@@ -47,7 +51,8 @@ async fn test_dashboard_ws_requires_auth() {
     test_db::cleanup(&mut app.get_conn());
 
     // Try to connect without authentication
-    let response = app.server
+    let response = app
+        .server
         .get("/ws/dashboard")
         .add_header(header::UPGRADE, "websocket")
         .add_header(header::CONNECTION, "Upgrade")
@@ -71,10 +76,15 @@ async fn test_dashboard_ws_requires_auth() {
 #[serial]
 async fn test_session_ws_endpoint_exists() {
     let app = TestApp::spawn().await;
-    let admin = create_admin_user(&mut app.get_conn(), &app.auth_service, &unique_name("wssession"));
+    let admin = create_admin_user(
+        &mut app.get_conn(),
+        &app.auth_service,
+        &unique_name("wssession"),
+    );
     test_db::cleanup(&mut app.get_conn());
 
-    let response = app.server
+    let response = app
+        .server
         .get("/ws/session/test-session-id")
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .add_header(header::UPGRADE, "websocket")
@@ -98,7 +108,8 @@ async fn test_session_ws_requires_auth() {
     let app = TestApp::spawn().await;
     test_db::cleanup(&mut app.get_conn());
 
-    let response = app.server
+    let response = app
+        .server
         .get("/ws/session/test-session-id")
         .add_header(header::UPGRADE, "websocket")
         .add_header(header::CONNECTION, "Upgrade")
@@ -121,10 +132,15 @@ async fn test_session_ws_requires_auth() {
 #[serial]
 async fn test_notifications_ws_endpoint_exists() {
     let app = TestApp::spawn().await;
-    let admin = create_admin_user(&mut app.get_conn(), &app.auth_service, &unique_name("wsnotif"));
+    let admin = create_admin_user(
+        &mut app.get_conn(),
+        &app.auth_service,
+        &unique_name("wsnotif"),
+    );
     test_db::cleanup(&mut app.get_conn());
 
-    let response = app.server
+    let response = app
+        .server
         .get("/ws/notifications")
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .add_header(header::UPGRADE, "websocket")
@@ -148,7 +164,8 @@ async fn test_notifications_ws_requires_auth() {
     let app = TestApp::spawn().await;
     test_db::cleanup(&mut app.get_conn());
 
-    let response = app.server
+    let response = app
+        .server
         .get("/ws/notifications")
         .add_header(header::UPGRADE, "websocket")
         .add_header(header::CONNECTION, "Upgrade")
@@ -180,14 +197,14 @@ async fn test_broadcast_service_send_receive() {
     // Send a message
     let msg = WsMessage::new("ws-stats", "<p>Test stats</p>".to_string());
     let result = broadcast.send(&WsChannel::DashboardStats, msg).await;
-    
+
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), 1); // 1 subscriber
 
     // Receive the message
     let received = receiver.recv().await;
     assert!(received.is_ok());
-    
+
     let html = received.unwrap();
     assert!(html.contains("ws-stats"));
     assert!(html.contains("Test stats"));
@@ -214,7 +231,7 @@ async fn test_broadcast_multiple_subscribers() {
     // Send a message
     let msg = WsMessage::new("ws-sessions", "<div>Session data</div>".to_string());
     let result = broadcast.send(&WsChannel::ActiveSessions, msg).await;
-    
+
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), 3); // 3 subscribers
 
@@ -251,11 +268,10 @@ async fn test_ws_message_htmx_format() {
 async fn test_ws_message_custom_swap_mode() {
     use vauban_web::services::broadcast::WsMessage;
 
-    let msg = WsMessage::new("target", "<p>New</p>".to_string())
-        .with_swap_mode("outerHTML");
-    
+    let msg = WsMessage::new("target", "<p>New</p>".to_string()).with_swap_mode("outerHTML");
+
     let html = msg.to_htmx_html();
-    
+
     assert!(html.contains(r#"hx-swap-oob="outerHTML""#));
 }
 
@@ -267,8 +283,14 @@ async fn test_ws_channel_string_conversion() {
 
     // Test as_str
     assert_eq!(WsChannel::DashboardStats.as_str(), "dashboard:stats");
-    assert_eq!(WsChannel::ActiveSessions.as_str(), "dashboard:active-sessions");
-    assert_eq!(WsChannel::RecentActivity.as_str(), "dashboard:recent-activity");
+    assert_eq!(
+        WsChannel::ActiveSessions.as_str(),
+        "dashboard:active-sessions"
+    );
+    assert_eq!(
+        WsChannel::RecentActivity.as_str(),
+        "dashboard:recent-activity"
+    );
     assert_eq!(WsChannel::Notifications.as_str(), "notifications");
     assert_eq!(
         WsChannel::SessionLive("abc123".to_string()).as_str(),
@@ -291,8 +313,8 @@ async fn test_ws_channel_string_conversion() {
 #[tokio::test]
 #[serial]
 async fn test_broadcast_channel_isolation() {
+    use tokio::time::{Duration, timeout};
     use vauban_web::services::broadcast::{BroadcastService, WsChannel, WsMessage};
-    use tokio::time::{timeout, Duration};
 
     let broadcast = BroadcastService::new();
 
@@ -302,7 +324,10 @@ async fn test_broadcast_channel_isolation() {
 
     // Send to stats channel only
     let msg = WsMessage::new("stats", "Stats data".to_string());
-    broadcast.send(&WsChannel::DashboardStats, msg).await.unwrap();
+    broadcast
+        .send(&WsChannel::DashboardStats, msg)
+        .await
+        .unwrap();
 
     // Stats receiver should get the message
     let stats_result = timeout(Duration::from_millis(100), stats_rx.recv()).await;
@@ -313,4 +338,3 @@ async fn test_broadcast_channel_isolation() {
     let sessions_result = timeout(Duration::from_millis(100), sessions_rx.recv()).await;
     assert!(sessions_result.is_err()); // Timeout = no message received
 }
-

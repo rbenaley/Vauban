@@ -1,8 +1,6 @@
+use crate::templates::base::{FlashMessage, UserContext, VaubanConfig};
 /// VAUBAN Web - Login template.
-
 use askama::Template;
-use crate::templates::base::{UserContext, VaubanConfig, FlashMessage};
-
 
 #[derive(Template)]
 #[template(path = "accounts/login.html")]
@@ -12,7 +10,8 @@ pub struct LoginTemplate {
     pub vauban: VaubanConfig,
     pub messages: Vec<FlashMessage>,
     pub language_code: String,
-    pub sidebar_content: Option<crate::templates::partials::sidebar_content::SidebarContentTemplate>,
+    pub sidebar_content:
+        Option<crate::templates::partials::sidebar_content::SidebarContentTemplate>,
     pub header_user: Option<crate::templates::base::UserContext>,
 }
 
@@ -50,9 +49,10 @@ mod tests {
             title: "Login".to_string(),
             user: None,
             vauban: create_test_vauban_config(),
-            messages: vec![
-                FlashMessage { level: "error".to_string(), message: "Invalid credentials".to_string() },
-            ],
+            messages: vec![FlashMessage {
+                level: "error".to_string(),
+                message: "Invalid credentials".to_string(),
+            }],
             language_code: "en".to_string(),
             sidebar_content: None,
             header_user: None,
@@ -80,4 +80,3 @@ mod tests {
         assert!(html.contains("Login"));
     }
 }
-

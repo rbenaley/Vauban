@@ -1,7 +1,6 @@
 /// VAUBAN Web - Base template.
 ///
 /// Base template struct for Askama that wraps all page templates.
-
 use askama::Template;
 
 /// Flash message for displaying notifications.
@@ -31,7 +30,7 @@ pub struct BaseTemplate {
     pub messages: Vec<FlashMessage>,
     pub language_code: String,
     pub sidebar_content: Option<SidebarContentTemplate>, // Sidebar content for include
-    pub header_user: Option<UserContext>, // Header user for include
+    pub header_user: Option<UserContext>,                // Header user for include
 }
 
 /// User context for templates (simplified from AuthUser).
@@ -97,7 +96,9 @@ impl BaseTemplate {
                 user: user.clone(),
                 is_dashboard: path == "/",
                 is_assets: path.starts_with("/assets") && !path.contains("/access"),
-                is_sessions: path.contains("/sessions") && !path.contains("/recordings") && !path.contains("/approvals"),
+                is_sessions: path.contains("/sessions")
+                    && !path.contains("/recordings")
+                    && !path.contains("/approvals"),
                 is_recordings: path.contains("/recordings"),
                 is_users: path.contains("/users") && !path.contains("/groups"),
                 is_groups: path.contains("/groups"),
@@ -112,8 +113,26 @@ impl BaseTemplate {
     }
 
     /// Decompose BaseTemplate into individual fields for child templates.
-    pub fn into_fields(self) -> (String, Option<UserContext>, VaubanConfig, Vec<FlashMessage>, String, Option<SidebarContentTemplate>, Option<UserContext>) {
-        (self.title, self.user, self.vauban, self.messages, self.language_code, self.sidebar_content, self.header_user)
+    pub fn into_fields(
+        self,
+    ) -> (
+        String,
+        Option<UserContext>,
+        VaubanConfig,
+        Vec<FlashMessage>,
+        String,
+        Option<SidebarContentTemplate>,
+        Option<UserContext>,
+    ) {
+        (
+            self.title,
+            self.user,
+            self.vauban,
+            self.messages,
+            self.language_code,
+            self.sidebar_content,
+            self.header_user,
+        )
     }
 }
 
@@ -288,11 +307,16 @@ mod tests {
 
     #[test]
     fn test_base_template_with_messages() {
-        let base = BaseTemplate::new("Test".to_string(), None)
-            .with_messages(vec![
-                FlashMessage { level: "success".to_string(), message: "Done".to_string() },
-                FlashMessage { level: "error".to_string(), message: "Failed".to_string() },
-            ]);
+        let base = BaseTemplate::new("Test".to_string(), None).with_messages(vec![
+            FlashMessage {
+                level: "success".to_string(),
+                message: "Done".to_string(),
+            },
+            FlashMessage {
+                level: "error".to_string(),
+                message: "Failed".to_string(),
+            },
+        ]);
 
         assert_eq!(base.messages.len(), 2);
         assert_eq!(base.messages[0].level, "success");
@@ -302,8 +326,7 @@ mod tests {
     #[test]
     fn test_base_template_with_current_path_dashboard() {
         let user = create_test_user();
-        let base = BaseTemplate::new("Dashboard".to_string(), Some(user))
-            .with_current_path("/");
+        let base = BaseTemplate::new("Dashboard".to_string(), Some(user)).with_current_path("/");
 
         let sidebar = base.sidebar_content.unwrap();
         assert!(sidebar.is_dashboard);
@@ -314,8 +337,7 @@ mod tests {
     #[test]
     fn test_base_template_with_current_path_assets() {
         let user = create_test_user();
-        let base = BaseTemplate::new("Assets".to_string(), Some(user))
-            .with_current_path("/assets");
+        let base = BaseTemplate::new("Assets".to_string(), Some(user)).with_current_path("/assets");
 
         let sidebar = base.sidebar_content.unwrap();
         assert!(!sidebar.is_dashboard);
@@ -325,8 +347,8 @@ mod tests {
     #[test]
     fn test_base_template_with_current_path_sessions() {
         let user = create_test_user();
-        let base = BaseTemplate::new("Sessions".to_string(), Some(user))
-            .with_current_path("/sessions");
+        let base =
+            BaseTemplate::new("Sessions".to_string(), Some(user)).with_current_path("/sessions");
 
         let sidebar = base.sidebar_content.unwrap();
         assert!(sidebar.is_sessions);
@@ -374,4 +396,3 @@ mod tests {
         assert!(header.is_some());
     }
 }
-

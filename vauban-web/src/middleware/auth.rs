@@ -1,7 +1,6 @@
 /// VAUBAN Web - Authentication middleware.
 ///
 /// Extracts and validates JWT tokens from requests.
-
 use axum::{
     extract::{FromRequestParts, Request, State},
     http::request::Parts,
@@ -145,7 +144,9 @@ pub async fn require_mfa(
     let claims = auth_service.verify_token(&token)?;
 
     if !claims.mfa_verified {
-        return Err(AppError::Authorization("MFA verification required".to_string()));
+        return Err(AppError::Authorization(
+            "MFA verification required".to_string(),
+        ));
     }
 
     let user = AuthUser {
@@ -316,4 +317,3 @@ mod tests {
         assert_eq!(result, Some("".to_string()));
     }
 }
-

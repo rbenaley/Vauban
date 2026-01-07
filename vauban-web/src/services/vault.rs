@@ -1,5 +1,4 @@
 /// VAUBAN Web - Vault service client wrapper.
-
 use crate::config::Config;
 use crate::error::AppResult;
 use crate::grpc::VaultClient;
@@ -77,8 +76,7 @@ mod tests {
 
     #[test]
     fn test_credential_lookup_with_type() {
-        let lookup = CredentialLookup::for_asset("asset-456")
-            .with_type("ssh_key");
+        let lookup = CredentialLookup::for_asset("asset-456").with_type("ssh_key");
 
         assert_eq!(lookup.asset_id, Some("asset-456".to_string()));
         assert_eq!(lookup.credential_type, Some("ssh_key".to_string()));
@@ -86,8 +84,7 @@ mod tests {
 
     #[test]
     fn test_credential_lookup_clone() {
-        let lookup = CredentialLookup::for_asset("asset-789")
-            .with_type("password");
+        let lookup = CredentialLookup::for_asset("asset-789").with_type("password");
         let cloned = lookup.clone();
 
         assert_eq!(lookup.asset_id, cloned.asset_id);
@@ -96,8 +93,7 @@ mod tests {
 
     #[test]
     fn test_credential_lookup_debug() {
-        let lookup = CredentialLookup::for_asset("server-01")
-            .with_type("certificate");
+        let lookup = CredentialLookup::for_asset("server-01").with_type("certificate");
         let debug_str = format!("{:?}", lookup);
 
         assert!(debug_str.contains("CredentialLookup"));
@@ -107,8 +103,7 @@ mod tests {
 
     #[test]
     fn test_credential_lookup_chain_methods() {
-        let lookup = CredentialLookup::all()
-            .with_type("api_key");
+        let lookup = CredentialLookup::all().with_type("api_key");
 
         assert!(lookup.asset_id.is_none());
         assert_eq!(lookup.credential_type, Some("api_key".to_string()));
@@ -124,4 +119,3 @@ mod tests {
         }
     }
 }
-

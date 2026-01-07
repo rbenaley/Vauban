@@ -1,20 +1,19 @@
+use ::uuid::Uuid;
 /// VAUBAN Web - Session management handlers.
-
 use axum::{
+    Json,
     extract::{Path, Query, State},
     http::header::HeaderMap,
     response::{Html, IntoResponse, Response},
-    Json,
 };
 use serde::Deserialize;
-use ::uuid::Uuid;
 
-use crate::error::{AppError, AppResult};
-use crate::middleware::auth::AuthUser;
-use crate::models::session::{CreateSessionRequest, ProxySession, NewProxySession};
-use crate::schema::proxy_sessions::dsl::*;
 use crate::AppState;
 use crate::db::get_connection;
+use crate::error::{AppError, AppResult};
+use crate::middleware::auth::AuthUser;
+use crate::models::session::{CreateSessionRequest, NewProxySession, ProxySession};
+use crate::schema::proxy_sessions::dsl::*;
 use diesel::prelude::*;
 
 /// Check if request is from HTMX (has HX-Request header)
@@ -35,9 +34,8 @@ pub async fn list_sessions(
     // TODO: Check admin status
     if params.user_id.is_none() {
         use ::uuid::Uuid as UuidType;
-        let _user_uuid: UuidType = UuidType::parse_str(&user.uuid).map_err(|_| {
-            crate::error::AppError::Validation("Invalid user UUID".to_string())
-        })?;
+        let _user_uuid: UuidType = UuidType::parse_str(&user.uuid)
+            .map_err(|_| crate::error::AppError::Validation("Invalid user UUID".to_string()))?;
         // TODO: Join with users table to filter by UUID
     }
 
@@ -74,9 +72,8 @@ pub async fn create_session(
     _user: AuthUser,
     Json(request): Json<CreateSessionRequest>,
 ) -> AppResult<Json<ProxySession>> {
-    validator::Validate::validate(&request).map_err(|e| {
-        AppError::Validation(format!("Validation failed: {:?}", e))
-    })?;
+    validator::Validate::validate(&request)
+        .map_err(|e| AppError::Validation(format!("Validation failed: {:?}", e)))?;
 
     let mut conn = get_connection(&state.db_pool)?;
 
@@ -85,13 +82,14 @@ pub async fn create_session(
     // TODO: Call proxy service to establish connection
 
     // TODO: Get real client IP from request headers
-    let client_ip_network: ipnetwork::IpNetwork = "127.0.0.1".parse::<std::net::IpAddr>()
+    let client_ip_network: ipnetwork::IpNetwork = "127.0.0.1"
+        .parse::<std::net::IpAddr>()
         .map(ipnetwork::IpNetwork::from)
         .unwrap();
 
     let new_session = NewProxySession {
         uuid: Uuid::new_v4(),
-        user_id: 0, // TODO: Get from user UUID
+        user_id: 0,  // TODO: Get from user UUID
         asset_id: 0, // TODO: Get from asset UUID
         credential_id: request.credential_id,
         credential_username: String::new(), // TODO: Get from vault
@@ -375,4 +373,3 @@ mod tests {
         }
     }
 }
-

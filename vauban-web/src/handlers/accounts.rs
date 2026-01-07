@@ -1,18 +1,17 @@
+use ::uuid::Uuid;
 /// VAUBAN Web - Account management handlers.
-
 use axum::{
-    extract::{Path, Query, State},
     Json,
+    extract::{Path, Query, State},
 };
 use serde::Deserialize;
-use ::uuid::Uuid;
 
-use crate::error::{AppError, AppResult};
-use crate::middleware::auth::AuthUser;
-use crate::models::user::{CreateUserRequest, UpdateUserRequest, User, UserDto, NewUser};
-use crate::schema::users::dsl::*;
 use crate::AppState;
 use crate::db::get_connection;
+use crate::error::{AppError, AppResult};
+use crate::middleware::auth::AuthUser;
+use crate::models::user::{CreateUserRequest, NewUser, UpdateUserRequest, User, UserDto};
+use crate::schema::users::dsl::*;
 use diesel::prelude::*;
 
 /// List users handler.
@@ -65,9 +64,8 @@ pub async fn create_user(
     _user: AuthUser,
     Json(request): Json<CreateUserRequest>,
 ) -> AppResult<Json<UserDto>> {
-    validator::Validate::validate(&request).map_err(|e| {
-        AppError::Validation(format!("Validation failed: {:?}", e))
-    })?;
+    validator::Validate::validate(&request)
+        .map_err(|e| AppError::Validation(format!("Validation failed: {:?}", e)))?;
 
     let mut conn = get_connection(&state.db_pool)?;
 
@@ -109,15 +107,14 @@ pub async fn update_user(
     Path(user_uuid): Path<Uuid>,
     Json(request): Json<UpdateUserRequest>,
 ) -> AppResult<Json<UserDto>> {
-    validator::Validate::validate(&request).map_err(|e| {
-        AppError::Validation(format!("Validation failed: {:?}", e))
-    })?;
+    validator::Validate::validate(&request)
+        .map_err(|e| AppError::Validation(format!("Validation failed: {:?}", e)))?;
 
     let mut conn = get_connection(&state.db_pool)?;
 
-    use crate::schema::users::dsl::{users, uuid};
     use crate::models::user::UserUpdate;
-    
+    use crate::schema::users::dsl::{users, uuid};
+
     let update_data = UserUpdate {
         email: request.email,
         first_name: request.first_name,
@@ -344,4 +341,3 @@ mod tests {
         assert!(request.validate().is_ok());
     }
 }
-

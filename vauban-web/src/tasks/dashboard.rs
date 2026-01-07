@@ -1,21 +1,19 @@
-/// VAUBAN Web - Dashboard update tasks.
-///
-/// Background tasks that push dashboard updates via WebSocket.
-
-use std::sync::Arc;
-use std::time::Duration;
 use askama::Template;
 use chrono::Utc;
 use diesel::prelude::*;
+/// VAUBAN Web - Dashboard update tasks.
+///
+/// Background tasks that push dashboard updates via WebSocket.
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::time::interval;
 use tracing::{debug, error, info};
 
 use crate::db::{DbPool, get_connection};
 use crate::services::broadcast::{BroadcastService, WsChannel, WsMessage};
 use crate::templates::dashboard::widgets::{
-    StatsWidget, StatsData,
-    ActiveSessionsWidget, ActiveSessionItem,
-    RecentActivityWidget, ActivityItem,
+    ActiveSessionItem, ActiveSessionsWidget, ActivityItem, RecentActivityWidget, StatsData,
+    StatsWidget,
 };
 
 /// Interval for stats updates (30 seconds).
@@ -144,10 +142,12 @@ fn fetch_stats(db_pool: &DbPool) -> Result<StatsData, String> {
         .unwrap_or(0);
 
     // Count today's sessions
-    let today_start = Utc::now().date_naive().and_hms_opt(0, 0, 0)
+    let today_start = Utc::now()
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
         .map(|dt| dt.and_utc())
         .unwrap_or_else(Utc::now);
-    
+
     let today_sessions_count: i64 = proxy_sessions
         .filter(created_at.ge(today_start))
         .count()
@@ -173,8 +173,8 @@ fn fetch_stats(db_pool: &DbPool) -> Result<StatsData, String> {
 fn fetch_active_sessions(db_pool: &DbPool) -> Result<Vec<ActiveSessionItem>, String> {
     let mut conn = get_connection(db_pool).map_err(|e| e.to_string())?;
 
-    use crate::schema::proxy_sessions::dsl::*;
     use crate::models::session::ProxySession;
+    use crate::schema::proxy_sessions::dsl::*;
 
     let sessions: Vec<ProxySession> = proxy_sessions
         .filter(status.eq("active"))
@@ -205,8 +205,8 @@ fn fetch_active_sessions(db_pool: &DbPool) -> Result<Vec<ActiveSessionItem>, Str
 fn fetch_recent_activity(db_pool: &DbPool) -> Result<Vec<ActivityItem>, String> {
     let mut conn = get_connection(db_pool).map_err(|e| e.to_string())?;
 
-    use crate::schema::proxy_sessions::dsl::*;
     use crate::models::session::ProxySession;
+    use crate::schema::proxy_sessions::dsl::*;
 
     let sessions: Vec<ProxySession> = proxy_sessions
         .order(created_at.desc())
@@ -252,4 +252,3 @@ mod tests {
         assert_eq!(ACTIVITY_INTERVAL_SECS, 30);
     }
 }
-

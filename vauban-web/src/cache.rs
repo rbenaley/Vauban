@@ -1,10 +1,9 @@
+use redis::AsyncCommands;
 /// VAUBAN Web - Cache (Valkey/Redis) connection.
 ///
 /// Provides Redis client for caching and session storage.
 /// Supports a no-op mock cache when cache is disabled.
-
 use redis::Client;
-use redis::AsyncCommands;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::warn;
@@ -38,21 +37,19 @@ pub async fn create_cache_client(config: &Config) -> AppResult<CacheConnection> 
 
     // Try to create Redis connection
     match Client::open(config.cache.url.as_str()) {
-        Ok(client) => {
-            match client.get_multiplexed_async_connection().await {
-                Ok(manager) => {
-                    tracing::info!("Cache enabled - connected to Redis/Valkey");
-                    Ok(CacheConnection::Redis(Arc::new(Mutex::new(manager))))
-                }
-                Err(e) => {
-                    warn!(
-                        error = %e,
-                        "Failed to connect to Redis/Valkey - falling back to mock cache"
-                    );
-                    Ok(CacheConnection::Mock(Arc::new(MockCache::new())))
-                }
+        Ok(client) => match client.get_multiplexed_async_connection().await {
+            Ok(manager) => {
+                tracing::info!("Cache enabled - connected to Redis/Valkey");
+                Ok(CacheConnection::Redis(Arc::new(Mutex::new(manager))))
             }
-        }
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    "Failed to connect to Redis/Valkey - falling back to mock cache"
+                );
+                Ok(CacheConnection::Mock(Arc::new(MockCache::new())))
+            }
+        },
         Err(e) => {
             warn!(
                 error = %e,
@@ -87,13 +84,13 @@ impl CacheOps for CacheConnection {
         match self {
             CacheConnection::Redis(conn) => {
                 let mut conn = conn.lock().await;
-                let value: Option<String> = conn.get(key).await
-                    .map_err(|e| AppError::Cache(e))?;
+                let value: Option<String> = conn.get(key).await.map_err(|e| AppError::Cache(e))?;
 
                 match value {
                     Some(v) => {
-                        let deserialized: T = serde_json::from_str(&v)
-                            .map_err(|e| AppError::Internal(anyhow::anyhow!("Deserialization error: {}", e)))?;
+                        let deserialized: T = serde_json::from_str(&v).map_err(|e| {
+                            AppError::Internal(anyhow::anyhow!("Deserialization error: {}", e))
+                        })?;
                         Ok(Some(deserialized))
                     }
                     None => Ok(None),
@@ -113,14 +110,19 @@ impl CacheOps for CacheConnection {
         match self {
             CacheConnection::Redis(conn) => {
                 let mut conn = conn.lock().await;
-                let serialized = serde_json::to_string(value)
-                    .map_err(|e| AppError::Internal(anyhow::anyhow!("Serialization error: {}", e)))?;
+                let serialized = serde_json::to_string(value).map_err(|e| {
+                    AppError::Internal(anyhow::anyhow!("Serialization error: {}", e))
+                })?;
 
                 if let Some(ttl) = ttl_secs {
-                    let _: () = conn.set_ex(key, &serialized, ttl as u64).await
+                    let _: () = conn
+                        .set_ex(key, &serialized, ttl as u64)
+                        .await
                         .map_err(|e| AppError::Cache(e))?;
                 } else {
-                    let _: () = conn.set(key, &serialized).await
+                    let _: () = conn
+                        .set(key, &serialized)
+                        .await
                         .map_err(|e| AppError::Cache(e))?;
                 }
 
@@ -137,8 +139,7 @@ impl CacheOps for CacheConnection {
         match self {
             CacheConnection::Redis(conn) => {
                 let mut conn = conn.lock().await;
-                let _: () = conn.del(key).await
-                    .map_err(|e| AppError::Cache(e))?;
+                let _: () = conn.del(key).await.map_err(|e| AppError::Cache(e))?;
                 Ok(())
             }
             CacheConnection::Mock(_) => {
@@ -152,8 +153,7 @@ impl CacheOps for CacheConnection {
         match self {
             CacheConnection::Redis(conn) => {
                 let mut conn = conn.lock().await;
-                let result: bool = conn.exists(key).await
-                    .map_err(|e| AppError::Cache(e))?;
+                let result: bool = conn.exists(key).await.map_err(|e| AppError::Cache(e))?;
                 Ok(result)
             }
             CacheConnection::Mock(_) => {
@@ -235,11 +235,11 @@ mod tests {
     #[tokio::test]
     async fn test_mock_cache_get_with_different_keys() {
         let cache = MockCache::new();
-        
+
         let result1: Option<String> = cache.get("key1").await.unwrap();
         let result2: Option<i32> = cache.get("key2").await.unwrap();
         let result3: Option<TestData> = cache.get("key3").await.unwrap();
-        
+
         assert!(result1.is_none());
         assert!(result2.is_none());
         assert!(result3.is_none());
@@ -248,8 +248,11 @@ mod tests {
     #[tokio::test]
     async fn test_mock_cache_set_succeeds() {
         let cache = MockCache::new();
-        let data = TestData { id: 1, name: "test".to_string() };
-        
+        let data = TestData {
+            id: 1,
+            name: "test".to_string(),
+        };
+
         let result = cache.set("test_key", &data, None).await;
         assert!(result.is_ok());
     }
@@ -257,8 +260,11 @@ mod tests {
     #[tokio::test]
     async fn test_mock_cache_set_with_ttl_succeeds() {
         let cache = MockCache::new();
-        let data = TestData { id: 1, name: "test".to_string() };
-        
+        let data = TestData {
+            id: 1,
+            name: "test".to_string(),
+        };
+
         let result = cache.set("test_key", &data, Some(3600)).await;
         assert!(result.is_ok());
     }
@@ -266,7 +272,7 @@ mod tests {
     #[tokio::test]
     async fn test_mock_cache_delete_succeeds() {
         let cache = MockCache::new();
-        
+
         let result = cache.delete("any_key").await;
         assert!(result.is_ok());
     }
@@ -274,7 +280,7 @@ mod tests {
     #[tokio::test]
     async fn test_mock_cache_exists_returns_false() {
         let cache = MockCache::new();
-        
+
         let result = cache.exists("any_key").await.unwrap();
         assert!(!result);
     }
@@ -283,11 +289,14 @@ mod tests {
     async fn test_mock_cache_set_then_get_returns_none() {
         // Mock cache doesn't actually store - this verifies behavior
         let cache = MockCache::new();
-        let data = TestData { id: 42, name: "important".to_string() };
-        
+        let data = TestData {
+            id: 42,
+            name: "important".to_string(),
+        };
+
         cache.set("my_key", &data, None).await.unwrap();
         let result: Option<TestData> = cache.get("my_key").await.unwrap();
-        
+
         // Mock always returns None even after set
         assert!(result.is_none());
     }
@@ -326,13 +335,12 @@ mod tests {
     async fn test_cache_connection_clone() {
         let conn = CacheConnection::Mock(Arc::new(MockCache::new()));
         let cloned = conn.clone();
-        
+
         // Both should work independently
         let result1 = conn.exists("key").await.unwrap();
         let result2 = cloned.exists("key").await.unwrap();
-        
+
         assert!(!result1);
         assert!(!result2);
     }
 }
-

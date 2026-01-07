@@ -1,7 +1,6 @@
+use crate::templates::base::{FlashMessage, UserContext, VaubanConfig};
 /// VAUBAN Web - Asset detail template.
-
 use askama::Template;
-use crate::templates::base::{UserContext, VaubanConfig, FlashMessage};
 
 /// Asset detail data.
 #[derive(Debug, Clone)]
@@ -32,7 +31,9 @@ impl AssetDetail {
         match self.status.as_str() {
             "online" => "bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300",
             "offline" => "bg-red-100 text-red-800 dark:bg-red-900/50 dark:text-red-300",
-            "maintenance" => "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/50 dark:text-yellow-300",
+            "maintenance" => {
+                "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/50 dark:text-yellow-300"
+            }
             _ => "bg-gray-100 text-gray-800 dark:bg-gray-900/50 dark:text-gray-300",
         }
     }
@@ -67,7 +68,8 @@ pub struct AssetDetailTemplate {
     pub vauban: VaubanConfig,
     pub messages: Vec<FlashMessage>,
     pub language_code: String,
-    pub sidebar_content: Option<crate::templates::partials::sidebar_content::SidebarContentTemplate>,
+    pub sidebar_content:
+        Option<crate::templates::partials::sidebar_content::SidebarContentTemplate>,
     pub header_user: Option<crate::templates::base::UserContext>,
     pub asset: AssetDetail,
 }

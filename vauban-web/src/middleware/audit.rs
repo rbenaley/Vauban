@@ -1,15 +1,10 @@
 /// VAUBAN Web - Audit logging middleware.
 ///
 /// Logs security events and user actions.
-
-use axum::{
-    extract::Request,
-    middleware::Next,
-    response::Response,
-};
+use axum::{extract::Request, middleware::Next, response::Response};
 use chrono::Utc;
-use tracing::{error, info, warn};
 use std::time::Instant;
+use tracing::{error, info, warn};
 
 use crate::middleware::auth::AuthUser;
 
@@ -48,14 +43,11 @@ pub fn format_apache_combined(log: &AuditLog) -> String {
 }
 
 /// Audit middleware that logs requests.
-pub async fn audit_middleware(
-    request: Request,
-    next: Next,
-) -> Response {
+pub async fn audit_middleware(request: Request, next: Next) -> Response {
     let start = Instant::now();
     let method = request.method().clone();
     let path = request.uri().path().to_string();
-    
+
     let ip = request
         .headers()
         .get("x-forwarded-for")
@@ -112,7 +104,7 @@ pub async fn audit_middleware(
 
     // Log in Apache Combined format for text mode (structured logging for JSON mode)
     let apache_log = format_apache_combined(&audit_log);
-    
+
     // Log based on severity
     match status_code {
         500..=599 => error!(
@@ -373,9 +365,8 @@ mod tests {
         assert!(formatted.contains("10.0.0.1"));
         assert!(formatted.contains("admin"));
         assert!(formatted.contains("PUT /api/settings HTTP/1.1"));
-        assert!(formatted.contains("\"-\""));  // No referer
+        assert!(formatted.contains("\"-\"")); // No referer
         assert!(formatted.contains("curl/8.0"));
         assert!(formatted.contains("150ms"));
     }
 }
-

@@ -1,5 +1,4 @@
 /// VAUBAN Web - Recent activity widget template.
-
 use askama::Template;
 use chrono::{DateTime, Utc};
 

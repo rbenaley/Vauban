@@ -1,5 +1,4 @@
 /// VAUBAN Web - Sidebar data structure.
-
 use crate::templates::partials::sidebar_content::SidebarContentTemplate;
 
 /// Sidebar data (not a template itself, used as data in includes).
@@ -54,8 +53,10 @@ mod tests {
         content.user.is_staff = true;
         content.can_view_groups = true;
         content.can_view_access_rules = true;
-        
-        let template = SidebarTemplate { sidebar_content: content };
+
+        let template = SidebarTemplate {
+            sidebar_content: content,
+        };
         assert!(template.sidebar_content.user.is_superuser);
         assert!(template.sidebar_content.can_view_groups);
     }
@@ -66,6 +67,9 @@ mod tests {
             sidebar_content: create_test_sidebar_content(),
         };
         let cloned = template.clone();
-        assert_eq!(template.sidebar_content.user.uuid, cloned.sidebar_content.user.uuid);
+        assert_eq!(
+            template.sidebar_content.user.uuid,
+            cloned.sidebar_content.user.uuid
+        );
     }
 }

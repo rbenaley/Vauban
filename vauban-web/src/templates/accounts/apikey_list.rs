@@ -1,8 +1,6 @@
+use crate::templates::base::{FlashMessage, UserContext, VaubanConfig};
 /// VAUBAN Web - API key list template.
-
 use askama::Template;
-use crate::templates::base::{UserContext, VaubanConfig, FlashMessage};
-
 
 #[derive(Template)]
 #[template(path = "accounts/apikey_list.html")]
@@ -12,7 +10,8 @@ pub struct ApikeyListTemplate {
     pub vauban: VaubanConfig,
     pub messages: Vec<FlashMessage>,
     pub language_code: String,
-    pub sidebar_content: Option<crate::templates::partials::sidebar_content::SidebarContentTemplate>,
+    pub sidebar_content:
+        Option<crate::templates::partials::sidebar_content::SidebarContentTemplate>,
     pub header_user: Option<crate::templates::base::UserContext>,
 }
 
@@ -49,9 +48,10 @@ mod tests {
             title: "API Keys".to_string(),
             user: None,
             vauban: create_test_vauban_config(),
-            messages: vec![
-                FlashMessage { level: "success".to_string(), message: "Key created".to_string() },
-            ],
+            messages: vec![FlashMessage {
+                level: "success".to_string(),
+                message: "Key created".to_string(),
+            }],
             language_code: "en".to_string(),
             sidebar_content: None,
             header_user: None,

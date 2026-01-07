@@ -1,8 +1,6 @@
+use crate::templates::base::{FlashMessage, UserContext, VaubanConfig};
 /// VAUBAN Web - Dashboard home template.
-
 use askama::Template;
-use crate::templates::base::{UserContext, VaubanConfig, FlashMessage};
-
 
 /// Favorite asset for dashboard.
 #[derive(Debug, Clone)]
@@ -22,7 +20,8 @@ pub struct HomeTemplate {
     pub vauban: VaubanConfig,
     pub messages: Vec<FlashMessage>,
     pub language_code: String,
-    pub sidebar_content: Option<crate::templates::partials::sidebar_content::SidebarContentTemplate>,
+    pub sidebar_content:
+        Option<crate::templates::partials::sidebar_content::SidebarContentTemplate>,
     pub header_user: Option<crate::templates::base::UserContext>,
     // Page-specific fields
     pub favorite_assets: Vec<FavoriteAsset>,
@@ -137,8 +136,18 @@ mod tests {
             sidebar_content: None,
             header_user: Some(create_test_user()),
             favorite_assets: vec![
-                FavoriteAsset { id: 1, name: "Server 1".to_string(), hostname: "s1.local".to_string(), asset_type: "ssh".to_string() },
-                FavoriteAsset { id: 2, name: "Server 2".to_string(), hostname: "s2.local".to_string(), asset_type: "rdp".to_string() },
+                FavoriteAsset {
+                    id: 1,
+                    name: "Server 1".to_string(),
+                    hostname: "s1.local".to_string(),
+                    asset_type: "ssh".to_string(),
+                },
+                FavoriteAsset {
+                    id: 2,
+                    name: "Server 2".to_string(),
+                    hostname: "s2.local".to_string(),
+                    asset_type: "rdp".to_string(),
+                },
             ],
         };
 
@@ -162,4 +171,3 @@ mod tests {
         assert!(result.is_ok());
     }
 }
-

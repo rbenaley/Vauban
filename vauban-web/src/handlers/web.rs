@@ -1,37 +1,37 @@
 /// VAUBAN Web - Web page handlers.
 ///
 /// Handlers for serving HTML pages using Askama templates.
-
 use axum::{
     extract::{Query, State},
     response::{Html, IntoResponse, Response},
 };
-use std::collections::HashMap;
 use diesel::prelude::*;
+use std::collections::HashMap;
 
+use crate::AppState;
 use crate::db::get_connection;
 use crate::error::AppError;
 use crate::middleware::auth::{AuthUser, OptionalAuthUser};
-use crate::templates::base::{BaseTemplate, UserContext};
-use askama::Template;
-use crate::templates::dashboard::{HomeTemplate, AdminTemplate};
-use crate::templates::dashboard::widgets::{StatsWidget, ActiveSessionsWidget, RecentActivityWidget};
+use crate::schema::{assets, proxy_sessions};
 use crate::templates::accounts::{
-    LoginTemplate, UserListTemplate, UserDetailTemplate, ProfileTemplate, MfaSetupTemplate,
-    GroupListTemplate, GroupDetailTemplate,
-};
-use crate::templates::assets::{
-    AssetListTemplate, AssetDetailTemplate,
-    AssetGroupListTemplate, AssetGroupDetailTemplate, AssetGroupEditTemplate,
-    AccessListTemplate,
+    GroupDetailTemplate, GroupListTemplate, LoginTemplate, MfaSetupTemplate, ProfileTemplate,
+    UserDetailTemplate, UserListTemplate,
 };
 use crate::templates::assets::asset_list::AssetListItem;
-use crate::templates::sessions::{
-    SessionListTemplate as WebSessionListTemplate,
-    RecordingListTemplate, ApprovalListTemplate, ApprovalDetailTemplate, ActiveListTemplate,
+use crate::templates::assets::{
+    AccessListTemplate, AssetDetailTemplate, AssetGroupDetailTemplate, AssetGroupEditTemplate,
+    AssetGroupListTemplate, AssetListTemplate,
 };
-use crate::schema::{assets, proxy_sessions};
-use crate::AppState;
+use crate::templates::base::{BaseTemplate, UserContext};
+use crate::templates::dashboard::widgets::{
+    ActiveSessionsWidget, RecentActivityWidget, StatsWidget,
+};
+use crate::templates::dashboard::{AdminTemplate, HomeTemplate};
+use crate::templates::sessions::{
+    ActiveListTemplate, ApprovalDetailTemplate, ApprovalListTemplate, RecordingListTemplate,
+    SessionListTemplate as WebSessionListTemplate,
+};
+use askama::Template;
 
 /// Helper to convert AuthUser to UserContext for templates.
 fn user_context_from_auth(auth_user: &AuthUser) -> UserContext {
@@ -45,12 +45,11 @@ fn user_context_from_auth(auth_user: &AuthUser) -> UserContext {
 }
 
 /// Login page.
-pub async fn login_page(
-    State(_state): State<AppState>,
-) -> Result<impl IntoResponse, AppError> {
+pub async fn login_page(State(_state): State<AppState>) -> Result<impl IntoResponse, AppError> {
     let base = BaseTemplate::new("Login".to_string(), None);
-    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) = base.into_fields();
-    
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        base.into_fields();
+
     let template = LoginTemplate {
         title,
         user: user_ctx,
@@ -60,8 +59,9 @@ pub async fn login_page(
         sidebar_content,
         header_user,
     };
-    
-    let html = template.render()
+
+    let html = template
+        .render()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
     Ok(Html(html))
 }
@@ -80,10 +80,10 @@ pub async fn dashboard_home(
     };
 
     let user = Some(user_context_from_auth(&auth_user));
-    let base = BaseTemplate::new("Dashboard".to_string(), user.clone())
-        .with_current_path("/");
-    
-    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) = base.into_fields();
+    let base = BaseTemplate::new("Dashboard".to_string(), user.clone()).with_current_path("/");
+
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        base.into_fields();
     let template = HomeTemplate {
         title,
         user: user_ctx,
@@ -94,8 +94,9 @@ pub async fn dashboard_home(
         header_user,
         favorite_assets: Vec::new(), // TODO: Load from database
     };
-    
-    let html = template.render()
+
+    let html = template
+        .render()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
     Ok(Html(html).into_response())
 }
@@ -106,10 +107,11 @@ pub async fn dashboard_admin(
     auth_user: AuthUser,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
-    let base = BaseTemplate::new("Admin Dashboard".to_string(), user.clone())
-        .with_current_path("/admin");
-    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) = base.into_fields();
-    
+    let base =
+        BaseTemplate::new("Admin Dashboard".to_string(), user.clone()).with_current_path("/admin");
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        base.into_fields();
+
     let template = AdminTemplate {
         title,
         user: user_ctx,
@@ -119,8 +121,9 @@ pub async fn dashboard_admin(
         sidebar_content,
         header_user,
     };
-    
-    let html = template.render()
+
+    let html = template
+        .render()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
     Ok(Html(html))
 }
@@ -135,9 +138,10 @@ pub async fn user_list(
     use crate::templates::accounts::user_list::UserListItem;
 
     let user = Some(user_context_from_auth(&auth_user));
-    let base = BaseTemplate::new("Users".to_string(), user.clone())
-        .with_current_path("/accounts/users");
-    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) = base.into_fields();
+    let base =
+        BaseTemplate::new("Users".to_string(), user.clone()).with_current_path("/accounts/users");
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        base.into_fields();
 
     // Load users from database
     let mut conn = get_connection(&state.db_pool)?;
@@ -153,10 +157,11 @@ pub async fn user_list(
         if !search.is_empty() {
             let pattern = format!("%{}%", search);
             query = query.filter(
-                users::username.ilike(pattern.clone())
+                users::username
+                    .ilike(pattern.clone())
                     .or(users::email.ilike(pattern.clone()))
                     .or(users::first_name.ilike(pattern.clone()))
-                    .or(users::last_name.ilike(pattern))
+                    .or(users::last_name.ilike(pattern)),
             );
         }
     }
@@ -169,7 +174,19 @@ pub async fn user_list(
         }
     }
 
-    let db_users: Vec<(uuid::Uuid, String, String, Option<String>, Option<String>, String, bool, bool, bool, bool, Option<chrono::DateTime<chrono::Utc>>)> = query
+    let db_users: Vec<(
+        uuid::Uuid,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        String,
+        bool,
+        bool,
+        bool,
+        bool,
+        Option<chrono::DateTime<chrono::Utc>>,
+    )> = query
         .select((
             users::uuid,
             users::username,
@@ -189,28 +206,42 @@ pub async fn user_list(
 
     let user_items: Vec<UserListItem> = db_users
         .into_iter()
-        .map(|(user_uuid, username, email, first_name, last_name, auth_source, mfa_enabled, is_active, is_staff, is_superuser, last_login)| {
-            let full_name = match (first_name, last_name) {
-                (Some(f), Some(l)) => Some(format!("{} {}", f, l)),
-                (Some(f), None) => Some(f),
-                (None, Some(l)) => Some(l),
-                (None, None) => None,
-            };
-            UserListItem {
-                uuid: user_uuid.to_string(),
+        .map(
+            |(
+                user_uuid,
                 username,
                 email,
-                full_name,
+                first_name,
+                last_name,
                 auth_source,
                 mfa_enabled,
                 is_active,
                 is_staff,
                 is_superuser,
-                last_login: last_login.map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
-            }
-        })
+                last_login,
+            )| {
+                let full_name = match (first_name, last_name) {
+                    (Some(f), Some(l)) => Some(format!("{} {}", f, l)),
+                    (Some(f), None) => Some(f),
+                    (None, Some(l)) => Some(l),
+                    (None, None) => None,
+                };
+                UserListItem {
+                    uuid: user_uuid.to_string(),
+                    username,
+                    email,
+                    full_name,
+                    auth_source,
+                    mfa_enabled,
+                    is_active,
+                    is_staff,
+                    is_superuser,
+                    last_login: last_login.map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
+                }
+            },
+        )
         .collect();
-    
+
     let template = UserListTemplate {
         title,
         user: user_ctx,
@@ -224,8 +255,9 @@ pub async fn user_list(
         search: search_filter,
         status_filter,
     };
-    
-    let html = template.render()
+
+    let html = template
+        .render()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
     Ok(Html(html))
 }
@@ -240,8 +272,8 @@ pub async fn user_detail(
     use crate::templates::accounts::user_detail::UserDetail;
 
     let user = Some(user_context_from_auth(&auth_user));
-    let base = BaseTemplate::new("User Details".to_string(), user)
-        .with_current_path("/accounts/users");
+    let base =
+        BaseTemplate::new("User Details".to_string(), user).with_current_path("/accounts/users");
 
     // Load user from database
     let mut conn = get_connection(&state.db_pool)?;
@@ -249,7 +281,21 @@ pub async fn user_detail(
     let parsed_uuid = uuid::Uuid::parse_str(&user_uuid)
         .map_err(|_| AppError::NotFound("Invalid UUID".to_string()))?;
 
-    let db_user: Option<(uuid::Uuid, String, String, Option<String>, Option<String>, Option<String>, String, bool, bool, bool, bool, Option<chrono::DateTime<chrono::Utc>>, chrono::DateTime<chrono::Utc>)> = users::table
+    let db_user: Option<(
+        uuid::Uuid,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        String,
+        bool,
+        bool,
+        bool,
+        bool,
+        Option<chrono::DateTime<chrono::Utc>>,
+        chrono::DateTime<chrono::Utc>,
+    )> = users::table
         .filter(users::uuid.eq(parsed_uuid))
         .filter(users::is_deleted.eq(false))
         .select((
@@ -272,7 +318,21 @@ pub async fn user_detail(
 
     let db_user = db_user.ok_or_else(|| AppError::NotFound("User not found".to_string()))?;
 
-    let (uuid, username, email, first_name, last_name, phone, auth_source, mfa_enabled, is_active, is_staff, is_superuser, last_login, created_at) = db_user;
+    let (
+        uuid,
+        username,
+        email,
+        first_name,
+        last_name,
+        phone,
+        auth_source,
+        mfa_enabled,
+        is_active,
+        is_staff,
+        is_superuser,
+        last_login,
+        created_at,
+    ) = db_user;
 
     let full_name = match (&first_name, &last_name) {
         (Some(f), Some(l)) => Some(format!("{} {}", f, l)),
@@ -297,8 +357,9 @@ pub async fn user_detail(
         last_login: last_login.map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
         created_at: created_at.format("%b %d, %Y").to_string(),
     };
-    
-    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) = base.into_fields();
+
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        base.into_fields();
     let template = UserDetailTemplate {
         title,
         user: user_ctx,
@@ -309,8 +370,9 @@ pub async fn user_detail(
         header_user,
         user_detail,
     };
-    
-    let html = template.render()
+
+    let html = template
+        .render()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
     Ok(Html(html))
 }
@@ -323,8 +385,9 @@ pub async fn profile(
     let user = Some(user_context_from_auth(&auth_user));
     let base = BaseTemplate::new("My Profile".to_string(), user.clone())
         .with_current_path("/accounts/profile");
-    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) = base.into_fields();
-    
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        base.into_fields();
+
     let template = ProfileTemplate {
         title,
         user: user_ctx,
@@ -334,8 +397,9 @@ pub async fn profile(
         sidebar_content,
         header_user,
     };
-    
-    let html = template.render()
+
+    let html = template
+        .render()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
     Ok(Html(html))
 }
@@ -346,10 +410,11 @@ pub async fn mfa_setup(
     auth_user: AuthUser,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
-    let base = BaseTemplate::new("MFA Setup".to_string(), user.clone())
-        .with_current_path("/accounts/mfa");
-    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) = base.into_fields();
-    
+    let base =
+        BaseTemplate::new("MFA Setup".to_string(), user.clone()).with_current_path("/accounts/mfa");
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        base.into_fields();
+
     // TODO: Generate secret and QR code
     let template = MfaSetupTemplate {
         title,
@@ -362,8 +427,9 @@ pub async fn mfa_setup(
         secret: "SECRET123456".to_string(),
         qr_code_url: "/static/qr.png".to_string(),
     };
-    
-    let html = template.render()
+
+    let html = template
+        .render()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
     Ok(Html(html))
 }
@@ -375,13 +441,13 @@ pub async fn asset_list(
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
-    let base = BaseTemplate::new("Assets".to_string(), user.clone())
-        .with_current_path("/assets");
-    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) = base.into_fields();
+    let base = BaseTemplate::new("Assets".to_string(), user.clone()).with_current_path("/assets");
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        base.into_fields();
 
     // Load assets from database
     let mut conn = get_connection(&state.db_pool)?;
-    
+
     let search_filter = params.get("search").cloned();
     let type_filter = params.get("type").cloned();
     let status_filter = params.get("status").cloned();
@@ -394,8 +460,9 @@ pub async fn asset_list(
         if !search.is_empty() {
             let pattern = format!("%{}%", search);
             query = query.filter(
-                assets::name.ilike(pattern.clone())
-                    .or(assets::hostname.ilike(pattern))
+                assets::name
+                    .ilike(pattern.clone())
+                    .or(assets::hostname.ilike(pattern)),
             );
         }
     }
@@ -413,24 +480,33 @@ pub async fn asset_list(
     }
 
     let db_assets: Vec<(i32, String, String, i32, String, String)> = query
-        .select((assets::id, assets::name, assets::hostname, assets::port, assets::asset_type, assets::status))
+        .select((
+            assets::id,
+            assets::name,
+            assets::hostname,
+            assets::port,
+            assets::asset_type,
+            assets::status,
+        ))
         .order(assets::name.asc())
         .limit(50)
         .load(&mut conn)?;
 
     let asset_items: Vec<AssetListItem> = db_assets
         .into_iter()
-        .map(|(id, name, hostname, port, asset_type, status)| AssetListItem {
-            id,
-            name,
-            hostname,
-            port,
-            asset_type,
-            status,
-            group_name: None,
-        })
+        .map(
+            |(id, name, hostname, port, asset_type, status)| AssetListItem {
+                id,
+                name,
+                hostname,
+                port,
+                asset_type,
+                status,
+                group_name: None,
+            },
+        )
         .collect();
-    
+
     let template = AssetListTemplate {
         title,
         user: user_ctx,
@@ -455,8 +531,9 @@ pub async fn asset_list(
             ("maintenance".to_string(), "Maintenance".to_string()),
         ],
     };
-    
-    let html = template.render()
+
+    let html = template
+        .render()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
     Ok(Html(html))
 }
@@ -468,7 +545,7 @@ pub async fn asset_detail(
     axum::extract::Path(id): axum::extract::Path<i32>,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
-    
+
     let mut conn = get_connection(&state.db_pool)?;
 
     // Query asset details with optional group info
@@ -504,15 +581,18 @@ pub async fn asset_detail(
         require_mfa: asset_data.require_mfa,
         require_justification: asset_data.require_justification,
         max_session_duration: asset_data.max_session_duration,
-        last_seen: asset_data.last_seen.map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
+        last_seen: asset_data
+            .last_seen
+            .map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
         created_at: asset_data.created_at.format("%b %d, %Y %H:%M").to_string(),
         updated_at: asset_data.updated_at.format("%b %d, %Y %H:%M").to_string(),
     };
 
     let base = BaseTemplate::new(format!("{} - Asset", asset_data.name), user.clone())
         .with_current_path("/assets");
-    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) = base.into_fields();
-    
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        base.into_fields();
+
     let template = AssetDetailTemplate {
         title,
         user: user_ctx,
@@ -523,8 +603,9 @@ pub async fn asset_detail(
         header_user,
         asset,
     };
-    
-    let html = template.render()
+
+    let html = template
+        .render()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
     Ok(Html(html))
 }
@@ -576,7 +657,7 @@ pub async fn dashboard_widget_stats(
     OptionalAuthUser(_auth_user): OptionalAuthUser,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::templates::dashboard::widgets::StatsData;
-    use chrono::{Utc, Duration};
+    use chrono::{Duration, Utc};
 
     let mut conn = get_connection(&state.db_pool)?;
 
@@ -607,8 +688,9 @@ pub async fn dashboard_widget_stats(
             week_sessions: week_sessions as i32,
         },
     };
-    
-    let html = template.render()
+
+    let html = template
+        .render()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
     Ok(Html(html))
 }
@@ -623,37 +705,41 @@ pub async fn dashboard_widget_active_sessions(
     let mut conn = get_connection(&state.db_pool)?;
 
     // Load active sessions with asset info
-    let active_sessions: Vec<(i32, String, String, String, chrono::DateTime<chrono::Utc>)> = proxy_sessions::table
-        .inner_join(assets::table)
-        .filter(proxy_sessions::status.eq("active"))
-        .select((
-            proxy_sessions::id,
-            assets::name,
-            assets::hostname,
-            proxy_sessions::session_type,
-            proxy_sessions::created_at,
-        ))
-        .order(proxy_sessions::created_at.desc())
-        .limit(5)
-        .load(&mut conn)?;
+    let active_sessions: Vec<(i32, String, String, String, chrono::DateTime<chrono::Utc>)> =
+        proxy_sessions::table
+            .inner_join(assets::table)
+            .filter(proxy_sessions::status.eq("active"))
+            .select((
+                proxy_sessions::id,
+                assets::name,
+                assets::hostname,
+                proxy_sessions::session_type,
+                proxy_sessions::created_at,
+            ))
+            .order(proxy_sessions::created_at.desc())
+            .limit(5)
+            .load(&mut conn)?;
 
     let sessions: Vec<ActiveSessionItem> = active_sessions
         .into_iter()
-        .map(|(id, asset_name, asset_hostname, session_type, started_at)| {
-            let duration = chrono::Utc::now().signed_duration_since(started_at);
-            ActiveSessionItem {
-                id,
-                asset_name,
-                asset_hostname,
-                session_type,
-                duration_seconds: Some(duration.num_seconds()),
-            }
-        })
+        .map(
+            |(id, asset_name, asset_hostname, session_type, started_at)| {
+                let duration = chrono::Utc::now().signed_duration_since(started_at);
+                ActiveSessionItem {
+                    id,
+                    asset_name,
+                    asset_hostname,
+                    session_type,
+                    duration_seconds: Some(duration.num_seconds()),
+                }
+            },
+        )
         .collect();
 
     let template = ActiveSessionsWidget { sessions };
-    
-    let html = template.render()
+
+    let html = template
+        .render()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
     Ok(Html(html))
 }
@@ -667,8 +753,9 @@ pub async fn dashboard_widget_recent_activity(
     let template = RecentActivityWidget {
         activities: Vec::<ActivityItem>::new(), // TODO: Load from database
     };
-    
-    let html = template.render()
+
+    let html = template
+        .render()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
     Ok(Html(html))
 }
@@ -682,9 +769,10 @@ pub async fn session_list(
     use crate::templates::sessions::session_list::SessionListItem;
 
     let user = Some(user_context_from_auth(&auth_user));
-    let base = BaseTemplate::new("Sessions".to_string(), user.clone())
-        .with_current_path("/sessions");
-    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) = base.into_fields();
+    let base =
+        BaseTemplate::new("Sessions".to_string(), user.clone()).with_current_path("/sessions");
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        base.into_fields();
 
     // Load sessions from database
     let mut conn = get_connection(&state.db_pool)?;
@@ -693,9 +781,7 @@ pub async fn session_list(
     let type_filter = params.get("type").cloned();
     let asset_filter = params.get("asset").cloned();
 
-    let mut query = proxy_sessions::table
-        .inner_join(assets::table)
-        .into_boxed();
+    let mut query = proxy_sessions::table.inner_join(assets::table).into_boxed();
 
     // Exclude pending approval requests
     query = query.filter(proxy_sessions::status.ne("pending"));
@@ -719,7 +805,18 @@ pub async fn session_list(
         }
     }
 
-    let db_sessions: Vec<(i32, uuid::Uuid, String, String, String, String, String, Option<chrono::DateTime<chrono::Utc>>, Option<chrono::DateTime<chrono::Utc>>, bool)> = query
+    let db_sessions: Vec<(
+        i32,
+        uuid::Uuid,
+        String,
+        String,
+        String,
+        String,
+        String,
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<chrono::DateTime<chrono::Utc>>,
+        bool,
+    )> = query
         .select((
             proxy_sessions::id,
             proxy_sessions::uuid,
@@ -738,27 +835,46 @@ pub async fn session_list(
 
     let sessions: Vec<SessionListItem> = db_sessions
         .into_iter()
-        .map(|(id, uuid, asset_name, asset_hostname, session_type, status, credential_username, connected_at, disconnected_at, is_recorded)| {
-            let duration_seconds = match (connected_at, disconnected_at) {
-                (Some(start), Some(end)) => Some(end.signed_duration_since(start).num_seconds()),
-                (Some(start), None) if status == "active" => Some(chrono::Utc::now().signed_duration_since(start).num_seconds()),
-                _ => None,
-            };
-            SessionListItem {
+        .map(
+            |(
                 id,
-                uuid: uuid.to_string(),
+                uuid,
                 asset_name,
                 asset_hostname,
                 session_type,
                 status,
                 credential_username,
-                connected_at: connected_at.map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
-                duration_seconds,
+                connected_at,
+                disconnected_at,
                 is_recorded,
-            }
-        })
+            )| {
+                let duration_seconds = match (connected_at, disconnected_at) {
+                    (Some(start), Some(end)) => {
+                        Some(end.signed_duration_since(start).num_seconds())
+                    }
+                    (Some(start), None) if status == "active" => Some(
+                        chrono::Utc::now()
+                            .signed_duration_since(start)
+                            .num_seconds(),
+                    ),
+                    _ => None,
+                };
+                SessionListItem {
+                    id,
+                    uuid: uuid.to_string(),
+                    asset_name,
+                    asset_hostname,
+                    session_type,
+                    status,
+                    credential_username,
+                    connected_at: connected_at.map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
+                    duration_seconds,
+                    is_recorded,
+                }
+            },
+        )
         .collect();
-    
+
     let template = WebSessionListTemplate {
         title,
         user: user_ctx,
@@ -772,8 +888,9 @@ pub async fn session_list(
         type_filter,
         asset_filter,
     };
-    
-    let html = template.render()
+
+    let html = template
+        .render()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
     Ok(Html(html))
 }
@@ -855,8 +972,12 @@ pub async fn session_detail(
         client_ip: session_data.client_ip,
         client_user_agent: session_data.client_user_agent,
         proxy_instance: session_data.proxy_instance,
-        connected_at: session_data.connected_at.map(|dt| dt.format("%b %d, %Y %H:%M:%S").to_string()),
-        disconnected_at: session_data.disconnected_at.map(|dt| dt.format("%b %d, %Y %H:%M:%S").to_string()),
+        connected_at: session_data
+            .connected_at
+            .map(|dt| dt.format("%b %d, %Y %H:%M:%S").to_string()),
+        disconnected_at: session_data
+            .disconnected_at
+            .map(|dt| dt.format("%b %d, %Y %H:%M:%S").to_string()),
         duration,
         justification: session_data.justification,
         is_recorded: session_data.is_recorded,
@@ -864,12 +985,16 @@ pub async fn session_detail(
         bytes_sent: session_data.bytes_sent,
         bytes_received: session_data.bytes_received,
         commands_count: session_data.commands_count,
-        created_at: session_data.created_at.format("%b %d, %Y %H:%M:%S").to_string(),
+        created_at: session_data
+            .created_at
+            .format("%b %d, %Y %H:%M:%S")
+            .to_string(),
     };
 
-    let base = BaseTemplate::new(format!("Session #{}", id), user.clone())
-        .with_current_path("/sessions");
-    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) = base.into_fields();
+    let base =
+        BaseTemplate::new(format!("Session #{}", id), user.clone()).with_current_path("/sessions");
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        base.into_fields();
 
     let template = crate::templates::sessions::session_detail::SessionDetailTemplate {
         title,
@@ -882,7 +1007,8 @@ pub async fn session_detail(
         session,
     };
 
-    let html = template.render()
+    let html = template
+        .render()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
     Ok(Html(html))
 }
@@ -949,7 +1075,8 @@ pub async fn recording_list(
     let user = Some(user_context_from_auth(&auth_user));
     let base = BaseTemplate::new("Recordings".to_string(), user.clone())
         .with_current_path("/sessions/recordings");
-    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) = base.into_fields();
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        base.into_fields();
 
     // Load recordings from database (sessions with is_recorded = true)
     let mut conn = get_connection(&state.db_pool)?;
@@ -976,7 +1103,15 @@ pub async fn recording_list(
         }
     }
 
-    let db_recordings: Vec<(i32, String, String, String, Option<chrono::DateTime<chrono::Utc>>, Option<chrono::DateTime<chrono::Utc>>, Option<String>)> = query
+    let db_recordings: Vec<(
+        i32,
+        String,
+        String,
+        String,
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<String>,
+    )> = query
         .select((
             proxy_sessions::id,
             assets::name,
@@ -992,25 +1127,37 @@ pub async fn recording_list(
 
     let recordings: Vec<RecordingListItem> = db_recordings
         .into_iter()
-        .map(|(id, asset_name, session_type, credential_username, connected_at, disconnected_at, recording_path)| {
-            let duration_seconds = match (connected_at, disconnected_at) {
-                (Some(start), Some(end)) => Some(end.signed_duration_since(start).num_seconds()),
-                _ => None,
-            };
-            RecordingListItem {
+        .map(
+            |(
                 id,
-                session_id: id,
                 asset_name,
                 session_type,
                 credential_username,
-                connected_at: connected_at.map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
-                duration_seconds,
-                recording_path: recording_path.unwrap_or_default(),
-                status: "ready".to_string(),
-            }
-        })
+                connected_at,
+                disconnected_at,
+                recording_path,
+            )| {
+                let duration_seconds = match (connected_at, disconnected_at) {
+                    (Some(start), Some(end)) => {
+                        Some(end.signed_duration_since(start).num_seconds())
+                    }
+                    _ => None,
+                };
+                RecordingListItem {
+                    id,
+                    session_id: id,
+                    asset_name,
+                    session_type,
+                    credential_username,
+                    connected_at: connected_at.map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
+                    duration_seconds,
+                    recording_path: recording_path.unwrap_or_default(),
+                    status: "ready".to_string(),
+                }
+            },
+        )
         .collect();
-    
+
     let template = RecordingListTemplate {
         title,
         user: user_ctx,
@@ -1023,8 +1170,9 @@ pub async fn recording_list(
         format_filter,
         asset_filter,
     };
-    
-    let html = template.render()
+
+    let html = template
+        .render()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
     Ok(Html(html))
 }
@@ -1080,8 +1228,12 @@ pub async fn recording_play(
         asset_name: recording_data.asset_name,
         asset_hostname: recording_data.asset_hostname,
         session_type: recording_data.session_type,
-        connected_at: recording_data.connected_at.map(|dt| dt.format("%b %d, %Y %H:%M:%S").to_string()),
-        disconnected_at: recording_data.disconnected_at.map(|dt| dt.format("%b %d, %Y %H:%M:%S").to_string()),
+        connected_at: recording_data
+            .connected_at
+            .map(|dt| dt.format("%b %d, %Y %H:%M:%S").to_string()),
+        disconnected_at: recording_data
+            .disconnected_at
+            .map(|dt| dt.format("%b %d, %Y %H:%M:%S").to_string()),
         duration,
         recording_path: recording_data.recording_path,
         bytes_sent: recording_data.bytes_sent,
@@ -1089,9 +1241,13 @@ pub async fn recording_play(
         commands_count: recording_data.commands_count,
     };
 
-    let base = BaseTemplate::new(format!("Play Recording - {}", recording.asset_name), user.clone())
-        .with_current_path("/sessions/recordings");
-    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) = base.into_fields();
+    let base = BaseTemplate::new(
+        format!("Play Recording - {}", recording.asset_name),
+        user.clone(),
+    )
+    .with_current_path("/sessions/recordings");
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        base.into_fields();
 
     let template = crate::templates::sessions::recording_play::RecordingPlayTemplate {
         title,
@@ -1104,7 +1260,8 @@ pub async fn recording_play(
         recording,
     };
 
-    let html = template.render()
+    let html = template
+        .render()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
     Ok(Html(html))
 }
@@ -1147,11 +1304,15 @@ pub async fn approval_list(
     let user = Some(user_context_from_auth(&auth_user));
     let base = BaseTemplate::new("Approvals".to_string(), user.clone())
         .with_current_path("/sessions/approvals");
-    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) = base.into_fields();
-    
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        base.into_fields();
+
     let mut conn = get_connection(&state.db_pool)?;
     let status_filter = params.get("status").cloned();
-    let page = params.get("page").and_then(|s| s.parse::<i32>().ok()).unwrap_or(1);
+    let page = params
+        .get("page")
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(1);
     let items_per_page = 20;
 
     // Build query with optional status filter
@@ -1188,20 +1349,23 @@ pub async fn approval_list(
     .load(&mut conn)
     .map_err(|e| AppError::Database(e))?;
 
-    let approvals: Vec<crate::templates::sessions::approval_list::ApprovalListItem> = approvals_data
-        .into_iter()
-        .map(|a| crate::templates::sessions::approval_list::ApprovalListItem {
-            uuid: a.uuid.to_string(),
-            username: a.username,
-            asset_name: a.asset_name,
-            asset_type: a.asset_type,
-            session_type: a.session_type,
-            justification: a.justification,
-            client_ip: a.client_ip,
-            created_at: a.created_at.format("%b %d, %Y %H:%M").to_string(),
-            status: a.status,
-        })
-        .collect();
+    let approvals: Vec<crate::templates::sessions::approval_list::ApprovalListItem> =
+        approvals_data
+            .into_iter()
+            .map(
+                |a| crate::templates::sessions::approval_list::ApprovalListItem {
+                    uuid: a.uuid.to_string(),
+                    username: a.username,
+                    asset_name: a.asset_name,
+                    asset_type: a.asset_type,
+                    session_type: a.session_type,
+                    justification: a.justification,
+                    client_ip: a.client_ip,
+                    created_at: a.created_at.format("%b %d, %Y %H:%M").to_string(),
+                    status: a.status,
+                },
+            )
+            .collect();
 
     let pagination = if total_pages > 1 {
         Some(crate::templates::sessions::approval_list::Pagination {
@@ -1227,8 +1391,9 @@ pub async fn approval_list(
         pagination,
         status_filter,
     };
-    
-    let html = template.render()
+
+    let html = template
+        .render()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
     Ok(Html(html))
 }
@@ -1270,7 +1435,7 @@ pub async fn approval_detail(
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
-    
+
     let mut conn = get_connection(&state.db_pool)?;
     let approval_uuid = ::uuid::Uuid::parse_str(&uuid_str)
         .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
@@ -1304,14 +1469,18 @@ pub async fn approval_detail(
         justification: approval_data.justification,
         client_ip: approval_data.client_ip,
         credential_username: approval_data.credential_username,
-        created_at: approval_data.created_at.format("%b %d, %Y %H:%M").to_string(),
+        created_at: approval_data
+            .created_at
+            .format("%b %d, %Y %H:%M")
+            .to_string(),
         is_recorded: approval_data.is_recorded,
     };
 
     let base = BaseTemplate::new("Approval Request".to_string(), user.clone())
         .with_current_path("/sessions/approvals");
-    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) = base.into_fields();
-    
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        base.into_fields();
+
     let template = ApprovalDetailTemplate {
         title,
         user: user_ctx,
@@ -1322,8 +1491,9 @@ pub async fn approval_detail(
         header_user,
         approval,
     };
-    
-    let html = template.render()
+
+    let html = template
+        .render()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
     Ok(Html(html))
 }
@@ -1367,8 +1537,9 @@ pub async fn active_sessions(
     let user = Some(user_context_from_auth(&auth_user));
     let base = BaseTemplate::new("Active Sessions".to_string(), user.clone())
         .with_current_path("/sessions/active");
-    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) = base.into_fields();
-    
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        base.into_fields();
+
     let mut conn = get_connection(&state.db_pool)?;
 
     // Query active sessions with joins
@@ -1379,7 +1550,7 @@ pub async fn active_sessions(
          INNER JOIN users u ON u.id = ps.user_id
          INNER JOIN assets a ON a.id = ps.asset_id
          WHERE ps.status = 'active' AND ps.connected_at IS NOT NULL
-         ORDER BY ps.connected_at DESC"
+         ORDER BY ps.connected_at DESC",
     )
     .load(&mut conn)
     .map_err(|e| AppError::Database(e))?;
@@ -1392,7 +1563,11 @@ pub async fn active_sessions(
             let duration_str = if duration.num_hours() > 0 {
                 format!("{}h {}m", duration.num_hours(), duration.num_minutes() % 60)
             } else if duration.num_minutes() > 0 {
-                format!("{}m {}s", duration.num_minutes(), duration.num_seconds() % 60)
+                format!(
+                    "{}m {}s",
+                    duration.num_minutes(),
+                    duration.num_seconds() % 60
+                )
             } else {
                 format!("{}s", duration.num_seconds())
             };
@@ -1420,8 +1595,9 @@ pub async fn active_sessions(
         header_user,
         sessions,
     };
-    
-    let html = template.render()
+
+    let html = template
+        .render()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
     Ok(Html(html))
 }
@@ -1452,15 +1628,22 @@ pub async fn group_list(
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
-    let base = BaseTemplate::new("Groups".to_string(), user.clone())
-        .with_current_path("/accounts/groups");
-    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) = base.into_fields();
-    
+    let base =
+        BaseTemplate::new("Groups".to_string(), user.clone()).with_current_path("/accounts/groups");
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        base.into_fields();
+
     let mut conn = get_connection(&state.db_pool)?;
     let search_filter = params.get("search").cloned();
 
     // Query groups with member count
-    let groups_data: Vec<(::uuid::Uuid, String, Option<String>, String, chrono::DateTime<chrono::Utc>)> = if let Some(ref s) = search_filter {
+    let groups_data: Vec<(
+        ::uuid::Uuid,
+        String,
+        Option<String>,
+        String,
+        chrono::DateTime<chrono::Utc>,
+    )> = if let Some(ref s) = search_filter {
         diesel::sql_query(format!(
             "SELECT g.uuid, g.name, g.description, g.source, g.created_at
              FROM vauban_groups g
@@ -1478,7 +1661,7 @@ pub async fn group_list(
         diesel::sql_query(
             "SELECT g.uuid, g.name, g.description, g.source, g.created_at
              FROM vauban_groups g
-             ORDER BY g.name ASC"
+             ORDER BY g.name ASC",
         )
         .load::<GroupQueryResult>(&mut conn)
         .map_err(|e| AppError::Database(e))?
@@ -1512,7 +1695,7 @@ pub async fn group_list(
             }
         })
         .collect();
-    
+
     let template = GroupListTemplate {
         title,
         user: user_ctx,
@@ -1524,8 +1707,9 @@ pub async fn group_list(
         groups: group_items,
         search: search_filter,
     };
-    
-    let html = template.render()
+
+    let html = template
+        .render()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
     Ok(Html(html))
 }
@@ -1559,7 +1743,7 @@ pub async fn group_detail(
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
-    
+
     let mut conn = get_connection(&state.db_pool)?;
     let group_uuid = ::uuid::Uuid::parse_str(&uuid_str)
         .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
@@ -1625,14 +1809,17 @@ pub async fn group_detail(
         external_id: group_extra.external_id,
         created_at: group_data.created_at.format("%b %d, %Y %H:%M").to_string(),
         updated_at: group_extra.updated_at.format("%b %d, %Y %H:%M").to_string(),
-        last_synced: group_extra.last_synced.map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
+        last_synced: group_extra
+            .last_synced
+            .map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
         members,
     };
 
     let base = BaseTemplate::new(format!("{} - Group", group_data.name), user.clone())
         .with_current_path("/accounts/groups");
-    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) = base.into_fields();
-    
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        base.into_fields();
+
     let template = GroupDetailTemplate {
         title,
         user: user_ctx,
@@ -1643,8 +1830,9 @@ pub async fn group_detail(
         header_user,
         group,
     };
-    
-    let html = template.render()
+
+    let html = template
+        .render()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
     Ok(Html(html))
 }
@@ -1685,8 +1873,9 @@ pub async fn access_rules_list(
     let user = Some(user_context_from_auth(&auth_user));
     let base = BaseTemplate::new("Access Rules".to_string(), user.clone())
         .with_current_path("/assets/access");
-    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) = base.into_fields();
-    
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        base.into_fields();
+
     let template = AccessListTemplate {
         title,
         user: user_ctx,
@@ -1696,8 +1885,9 @@ pub async fn access_rules_list(
         sidebar_content,
         header_user,
     };
-    
-    let html = template.render()
+
+    let html = template
+        .render()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
     Ok(Html(html))
 }
@@ -1711,8 +1901,9 @@ pub async fn asset_group_list(
     let user = Some(user_context_from_auth(&auth_user));
     let base = BaseTemplate::new("Asset Groups".to_string(), user.clone())
         .with_current_path("/assets/groups");
-    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) = base.into_fields();
-    
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        base.into_fields();
+
     let mut conn = get_connection(&state.db_pool)?;
     let search_filter = params.get("search").cloned();
 
@@ -1766,8 +1957,9 @@ pub async fn asset_group_list(
         groups,
         search: search_filter,
     };
-    
-    let html = template.render()
+
+    let html = template
+        .render()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
     Ok(Html(html))
 }
@@ -1800,7 +1992,7 @@ pub async fn asset_group_detail(
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
-    
+
     let mut conn = get_connection(&state.db_pool)?;
     let group_uuid = ::uuid::Uuid::parse_str(&uuid_str)
         .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
@@ -1854,8 +2046,9 @@ pub async fn asset_group_detail(
 
     let base = BaseTemplate::new(format!("{} - Asset Group", group_data.name), user.clone())
         .with_current_path("/assets/groups");
-    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) = base.into_fields();
-    
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        base.into_fields();
+
     let template = AssetGroupDetailTemplate {
         title,
         user: user_ctx,
@@ -1866,8 +2059,9 @@ pub async fn asset_group_detail(
         header_user,
         group,
     };
-    
-    let html = template.render()
+
+    let html = template
+        .render()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
     Ok(Html(html))
 }
@@ -1915,7 +2109,7 @@ pub async fn asset_group_edit(
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
-    
+
     let mut conn = get_connection(&state.db_pool)?;
     let group_uuid = ::uuid::Uuid::parse_str(&uuid_str)
         .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
@@ -1941,10 +2135,14 @@ pub async fn asset_group_edit(
         icon: group_data.icon,
     };
 
-    let base = BaseTemplate::new(format!("Edit {} - Asset Group", group_data.name), user.clone())
-        .with_current_path("/assets/groups");
-    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) = base.into_fields();
-    
+    let base = BaseTemplate::new(
+        format!("Edit {} - Asset Group", group_data.name),
+        user.clone(),
+    )
+    .with_current_path("/assets/groups");
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        base.into_fields();
+
     let template = AssetGroupEditTemplate {
         title,
         user: user_ctx,
@@ -1955,8 +2153,9 @@ pub async fn asset_group_edit(
         header_user,
         group,
     };
-    
-    let html = template.render()
+
+    let html = template
+        .render()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
     Ok(Html(html))
 }
@@ -2014,7 +2213,10 @@ pub async fn update_asset_group(
     .map_err(|e| AppError::Database(e))?;
 
     // Redirect back to the group detail page
-    Ok(axum::response::Redirect::to(&format!("/assets/groups/{}", group_uuid)))
+    Ok(axum::response::Redirect::to(&format!(
+        "/assets/groups/{}",
+        group_uuid
+    )))
 }
 
 #[cfg(test)]

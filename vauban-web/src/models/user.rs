@@ -1,7 +1,6 @@
 /// VAUBAN Web - User model.
 ///
 /// User model with MFA support, authentication tracking, and RBAC integration.
-
 use chrono::{DateTime, Utc};
 use diesel::prelude::*;
 use ipnetwork::IpNetwork;
@@ -181,7 +180,6 @@ impl User {
     pub fn auth_source_enum(&self) -> AuthSource {
         AuthSource::from_str(&self.auth_source)
     }
-
 }
 
 /// User creation request.
@@ -292,7 +290,12 @@ mod tests {
 
     #[test]
     fn test_auth_source_roundtrip() {
-        for source in [AuthSource::Local, AuthSource::Ldap, AuthSource::Oidc, AuthSource::Saml] {
+        for source in [
+            AuthSource::Local,
+            AuthSource::Ldap,
+            AuthSource::Oidc,
+            AuthSource::Saml,
+        ] {
             let str_val = source.as_str();
             let parsed = AuthSource::from_str(str_val);
             assert_eq!(source, parsed);
@@ -476,4 +479,3 @@ mod tests {
         assert!(request.validate().is_err());
     }
 }
-

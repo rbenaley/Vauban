@@ -1,7 +1,6 @@
+use crate::templates::base::{FlashMessage, UserContext, VaubanConfig};
 /// VAUBAN Web - Asset list template.
-
 use askama::Template;
-use crate::templates::base::{UserContext, VaubanConfig, FlashMessage};
 
 use crate::templates::accounts::user_list::Pagination;
 
@@ -13,7 +12,7 @@ pub struct AssetListItem {
     pub hostname: String,
     pub port: i32,
     pub asset_type: String, // "ssh", "rdp", "vnc"
-    pub status: String, // "online", "offline", "maintenance"
+    pub status: String,     // "online", "offline", "maintenance"
     pub group_name: Option<String>,
 }
 
@@ -25,7 +24,8 @@ pub struct AssetListTemplate {
     pub vauban: VaubanConfig,
     pub messages: Vec<FlashMessage>,
     pub language_code: String,
-    pub sidebar_content: Option<crate::templates::partials::sidebar_content::SidebarContentTemplate>,
+    pub sidebar_content:
+        Option<crate::templates::partials::sidebar_content::SidebarContentTemplate>,
     pub header_user: Option<crate::templates::base::UserContext>,
     pub assets: Vec<AssetListItem>,
     pub pagination: Option<Pagination>,
@@ -76,10 +76,19 @@ mod tests {
 
     #[test]
     fn test_asset_list_item_types() {
-        let ssh = AssetListItem { asset_type: "ssh".to_string(), ..create_test_asset_item() };
-        let rdp = AssetListItem { asset_type: "rdp".to_string(), ..create_test_asset_item() };
-        let vnc = AssetListItem { asset_type: "vnc".to_string(), ..create_test_asset_item() };
-        
+        let ssh = AssetListItem {
+            asset_type: "ssh".to_string(),
+            ..create_test_asset_item()
+        };
+        let rdp = AssetListItem {
+            asset_type: "rdp".to_string(),
+            ..create_test_asset_item()
+        };
+        let vnc = AssetListItem {
+            asset_type: "vnc".to_string(),
+            ..create_test_asset_item()
+        };
+
         assert_eq!(ssh.asset_type, "ssh");
         assert_eq!(rdp.asset_type, "rdp");
         assert_eq!(vnc.asset_type, "vnc");
@@ -87,10 +96,19 @@ mod tests {
 
     #[test]
     fn test_asset_list_item_statuses() {
-        let online = AssetListItem { status: "online".to_string(), ..create_test_asset_item() };
-        let offline = AssetListItem { status: "offline".to_string(), ..create_test_asset_item() };
-        let maint = AssetListItem { status: "maintenance".to_string(), ..create_test_asset_item() };
-        
+        let online = AssetListItem {
+            status: "online".to_string(),
+            ..create_test_asset_item()
+        };
+        let offline = AssetListItem {
+            status: "offline".to_string(),
+            ..create_test_asset_item()
+        };
+        let maint = AssetListItem {
+            status: "maintenance".to_string(),
+            ..create_test_asset_item()
+        };
+
         assert_eq!(online.status, "online");
         assert_eq!(offline.status, "offline");
         assert_eq!(maint.status, "maintenance");

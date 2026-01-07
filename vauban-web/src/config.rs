@@ -1,13 +1,20 @@
 /// VAUBAN Web - Configuration management.
 ///
-/// Supports multiple environments: development, testing, production.
-
+/// Charge la configuration depuis des fichiers TOML avec support multi-environnement.
+/// Ordre de chargement :
+/// 1. config/default.toml - valeurs par défaut
+/// 2. config/{environment}.toml - valeurs spécifiques à l'environnement
+/// 3. config/local.toml - surcharges locales (non versionné)
+/// 4. Variables d'environnement préfixées VAUBAN_ (pour les secrets uniquement)
+use config::{Config as ConfigBuilder, ConfigError, File};
 use serde::{Deserialize, Serialize};
-use std::env;
+use std::path::Path;
 
 /// Application environment.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
 pub enum Environment {
+    #[default]
     Development,
     Testing,
     Production,
@@ -41,6 +48,7 @@ impl Environment {
 }
 
 /// Application configuration.
+/// Toutes les valeurs doivent être définies dans les fichiers TOML.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub environment: Environment,
@@ -76,6 +84,7 @@ pub struct CacheConfig {
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
+    #[serde(default)]
     pub workers: Option<usize>,
 }
 
@@ -103,8 +112,11 @@ pub struct GrpcConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MtlsConfig {
     pub enabled: bool,
+    #[serde(default)]
     pub ca_cert: Option<String>,
+    #[serde(default)]
     pub client_cert: Option<String>,
+    #[serde(default)]
     pub client_key: Option<String>,
 }
 
@@ -133,7 +145,7 @@ impl LogFormat {
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "json" => Self::Json,
-            "text" | _ => Self::Text,
+            _ => Self::Text,
         }
     }
 
@@ -152,151 +164,166 @@ pub struct LoggingConfig {
 }
 
 impl Config {
-    /// Load configuration from environment variables.
+    /// Load configuration from TOML files.
+    ///
+    /// Charge la configuration dans l'ordre suivant :
+    /// 1. config/default.toml
+    /// 2. config/{environment}.toml (development, testing, production)
+    /// 3. config/local.toml (optionnel, pour les surcharges locales)
+    /// 4. Variable d'environnement VAUBAN_SECRET_KEY (pour le secret uniquement)
+    pub fn load() -> Result<Self, crate::error::AppError> {
+        Self::load_from_path("config")
+    }
+
+    /// Load configuration from a specific directory path.
+    pub fn load_from_path<P: AsRef<Path>>(config_path: P) -> Result<Self, crate::error::AppError> {
+        let config_path = config_path.as_ref();
+
+        // Détermine l'environnement depuis VAUBAN_ENVIRONMENT ou default.toml
+        let environment = std::env::var("VAUBAN_ENVIRONMENT")
+            .map(|e| Environment::from_str(&e))
+            .unwrap_or(Environment::Development);
+
+        Self::load_with_environment(config_path, environment)
+    }
+
+    /// Load configuration with a specific environment.
+    pub fn load_with_environment<P: AsRef<Path>>(
+        config_path: P,
+        environment: Environment,
+    ) -> Result<Self, crate::error::AppError> {
+        let config_path = config_path.as_ref();
+
+        let mut builder = ConfigBuilder::builder();
+
+        // 1. Charge default.toml (requis)
+        let default_path = config_path.join("default.toml");
+        if !default_path.exists() {
+            return Err(crate::error::AppError::Config(format!(
+                "Configuration file not found: {}",
+                default_path.display()
+            )));
+        }
+        builder = builder.add_source(File::from(default_path));
+
+        // 2. Charge {environment}.toml
+        let env_path = config_path.join(format!("{}.toml", environment.as_str()));
+        if env_path.exists() {
+            builder = builder.add_source(File::from(env_path));
+        }
+
+        // 3. Charge local.toml (optionnel, non versionné)
+        let local_path = config_path.join("local.toml");
+        if local_path.exists() {
+            builder = builder.add_source(File::from(local_path));
+        }
+
+        // 4. Surcharge secret_key depuis VAUBAN_SECRET_KEY si défini
+        if let Ok(secret) = std::env::var("VAUBAN_SECRET_KEY") {
+            builder = builder.set_override("secret_key", secret).map_err(|e| {
+                crate::error::AppError::Config(format!("Failed to set secret_key: {}", e))
+            })?;
+        }
+
+        // Construit la configuration
+        let settings = builder.build().map_err(|e| Self::config_error(e))?;
+
+        // Désérialise en Config
+        let mut config: Config = settings
+            .try_deserialize()
+            .map_err(|e| Self::config_error(e))?;
+
+        // Force l'environnement au cas où il n'est pas dans le fichier
+        config.environment = environment;
+
+        // Valide que secret_key est défini
+        if config.secret_key.is_empty() {
+            return Err(crate::error::AppError::Config(
+                "secret_key is required. Set it in config/{environment}.toml, config/local.toml, \
+                 or via VAUBAN_SECRET_KEY environment variable."
+                    .to_string(),
+            ));
+        }
+
+        Ok(config)
+    }
+
+    /// Load configuration directly from a TOML string.
+    /// Useful for testing.
+    pub fn from_toml(toml_content: &str) -> Result<Self, crate::error::AppError> {
+        let settings = ConfigBuilder::builder()
+            .add_source(config::File::from_str(
+                toml_content,
+                config::FileFormat::Toml,
+            ))
+            .build()
+            .map_err(|e| Self::config_error(e))?;
+
+        settings
+            .try_deserialize()
+            .map_err(|e| Self::config_error(e))
+    }
+
+    /// Load configuration from multiple TOML strings (base + overlay).
+    /// Useful for testing with base configuration + test-specific overrides.
+    pub fn from_toml_with_overlay(
+        base_toml: &str,
+        overlay_toml: &str,
+    ) -> Result<Self, crate::error::AppError> {
+        let settings = ConfigBuilder::builder()
+            .add_source(config::File::from_str(base_toml, config::FileFormat::Toml))
+            .add_source(config::File::from_str(
+                overlay_toml,
+                config::FileFormat::Toml,
+            ))
+            .build()
+            .map_err(|e| Self::config_error(e))?;
+
+        settings
+            .try_deserialize()
+            .map_err(|e| Self::config_error(e))
+    }
+
+    fn config_error(e: ConfigError) -> crate::error::AppError {
+        crate::error::AppError::Config(format!("Configuration error: {}", e))
+    }
+
+    /// Legacy method for backward compatibility.
+    /// Préfère `Config::load()` pour les nouvelles utilisations.
+    #[deprecated(since = "0.2.0", note = "Use Config::load() instead")]
     pub fn from_env() -> Result<Self, crate::error::AppError> {
-        dotenv::dotenv().ok(); // Ignore if .env doesn't exist
+        Self::load()
+    }
+}
 
-        let environment = Environment::from_str(
-            &env::var("ENVIRONMENT").unwrap_or_else(|_| "development".to_string()),
-        );
+/// Test configuration module.
+/// Provides test fixtures loaded from config files.
+#[cfg(test)]
+pub mod test_fixtures {
+    /// Base configuration TOML for tests (mirrors config/default.toml).
+    /// This is loaded from the actual config file at test time.
+    pub fn base_config() -> &'static str {
+        include_str!("../config/default.toml")
+    }
 
-        let secret_key = env::var("SECRET_KEY")
-            .map_err(|_| crate::error::AppError::Config("SECRET_KEY not set".to_string()))?;
-
-        let database = DatabaseConfig {
-            url: env::var("DATABASE_URL").unwrap_or_else(|_| {
-                "postgresql://vauban:vauban@localhost/vauban".to_string()
-            }),
-            max_connections: env::var("DATABASE_MAX_CONNECTIONS")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(10),
-            min_connections: env::var("DATABASE_MIN_CONNECTIONS")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(2),
-            connect_timeout_secs: env::var("DATABASE_CONNECT_TIMEOUT")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(10),
-        };
-
-        let cache = CacheConfig {
-            enabled: env::var("CACHE_ENABLED")
-                .map(|v| v == "true")
-                .unwrap_or_else(|_| {
-                    // Auto-detect: enable in production, disable in development/testing
-                    environment.is_production()
-                }),
-            url: env::var("CACHE_URL")
-                .unwrap_or_else(|_| "redis://localhost:6379".to_string()),
-            default_ttl_secs: env::var("CACHE_TTL_SECS")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(3600),
-        };
-
-        let server = ServerConfig {
-            host: env::var("SERVER_HOST").unwrap_or_else(|_| "0.0.0.0".to_string()),
-            port: env::var("SERVER_PORT")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(8000),
-            workers: env::var("SERVER_WORKERS")
-                .ok()
-                .and_then(|s| s.parse().ok()),
-        };
-
-        let jwt = JwtConfig {
-            access_token_lifetime_minutes: env::var("JWT_ACCESS_LIFETIME_MINUTES")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(15),
-            refresh_token_lifetime_days: env::var("JWT_REFRESH_LIFETIME_DAYS")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(1),
-            algorithm: env::var("JWT_ALGORITHM").unwrap_or_else(|_| "HS256".to_string()),
-        };
-
-        let grpc = GrpcConfig {
-            rbac_url: env::var("GRPC_RBAC_URL")
-                .unwrap_or_else(|_| "http://localhost:50052".to_string()),
-            vault_url: env::var("GRPC_VAULT_URL")
-                .unwrap_or_else(|_| "http://localhost:50053".to_string()),
-            auth_url: env::var("GRPC_AUTH_URL")
-                .unwrap_or_else(|_| "http://localhost:50051".to_string()),
-            proxy_ssh_url: env::var("GRPC_PROXY_SSH_URL")
-                .unwrap_or_else(|_| "http://localhost:50054".to_string()),
-            proxy_rdp_url: env::var("GRPC_PROXY_RDP_URL")
-                .unwrap_or_else(|_| "http://localhost:50055".to_string()),
-            audit_url: env::var("GRPC_AUDIT_URL")
-                .unwrap_or_else(|_| "http://localhost:50056".to_string()),
-            mtls: MtlsConfig {
-                enabled: environment.is_production()
-                    && env::var("MTLS_ENABLED")
-                        .map(|v| v == "true")
-                        .unwrap_or(false),
-                ca_cert: env::var("MTLS_CA_CERT").ok(),
-                client_cert: env::var("MTLS_CLIENT_CERT").ok(),
-                client_key: env::var("MTLS_CLIENT_KEY").ok(),
-            },
-        };
-
-        let security = SecurityConfig {
-            password_min_length: env::var("PASSWORD_MIN_LENGTH")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(12),
-            max_failed_login_attempts: env::var("MAX_FAILED_LOGIN_ATTEMPTS")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(5),
-            session_max_duration_secs: env::var("SESSION_MAX_DURATION_SECS")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(28800), // 8 hours
-            session_idle_timeout_secs: env::var("SESSION_IDLE_TIMEOUT_SECS")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(1800), // 30 minutes
-            rate_limit_per_minute: env::var("RATE_LIMIT_PER_MINUTE")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(100),
-        };
-
-        let logging = LoggingConfig {
-            level: env::var("LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
-            format: LogFormat::from_str(
-                &env::var("LOG_FORMAT").unwrap_or_else(|_| "text".to_string()),
-            ),
-        };
-
-        Ok(Config {
-            environment,
-            secret_key,
-            database,
-            cache,
-            server,
-            jwt,
-            grpc,
-            security,
-            logging,
-        })
+    /// Testing environment configuration.
+    pub fn testing_config() -> &'static str {
+        include_str!("../config/testing.toml")
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serial_test::serial;
 
     // ==================== Environment Tests ====================
 
     #[test]
     fn test_environment_from_str_development() {
-        assert_eq!(Environment::from_str("development"), Environment::Development);
+        assert_eq!(
+            Environment::from_str("development"),
+            Environment::Development
+        );
         assert_eq!(Environment::from_str("dev"), Environment::Development);
     }
 
@@ -321,7 +348,10 @@ mod tests {
 
     #[test]
     fn test_environment_from_str_case_insensitive() {
-        assert_eq!(Environment::from_str("DEVELOPMENT"), Environment::Development);
+        assert_eq!(
+            Environment::from_str("DEVELOPMENT"),
+            Environment::Development
+        );
         assert_eq!(Environment::from_str("PRODUCTION"), Environment::Production);
         assert_eq!(Environment::from_str("Testing"), Environment::Testing);
     }
@@ -349,7 +379,11 @@ mod tests {
 
     #[test]
     fn test_environment_roundtrip() {
-        for env in [Environment::Development, Environment::Testing, Environment::Production] {
+        for env in [
+            Environment::Development,
+            Environment::Testing,
+            Environment::Production,
+        ] {
             let str_val = env.as_str();
             let parsed = Environment::from_str(str_val);
             assert_eq!(env, parsed);
@@ -389,108 +423,98 @@ mod tests {
         assert!(!LogFormat::Text.is_json());
     }
 
-    // ==================== Config from_env Tests ====================
+    // ==================== Config Loading Tests ====================
 
     #[test]
-    #[serial]
-    #[ignore = "This test requires a clean environment without preset variables"]
-    fn test_config_from_env_missing_secret_key() {
-        // Clear SECRET_KEY to test error case
-        std::env::remove_var("SECRET_KEY");
-        std::env::remove_var("DATABASE_URL");
-        
-        let result = Config::from_env();
-        
-        // Should fail because SECRET_KEY is required
-        assert!(result.is_err());
-        if let Err(crate::error::AppError::Config(msg)) = result {
-            assert!(msg.contains("SECRET_KEY"));
-        }
-    }
+    fn test_config_load_from_config_dir() {
+        // Load configuration from config/ directory
+        let config = Config::load_with_environment("config", Environment::Testing)
+            .expect("Should load testing config");
 
-    #[test]
-    #[serial]
-    fn test_config_from_env_with_secret_key() {
-        // Set required SECRET_KEY
-        std::env::set_var("SECRET_KEY", "test-secret-key-for-config-test!!");
-        std::env::set_var("ENVIRONMENT", "testing");
-        
-        let result = Config::from_env();
-        
-        // Should succeed
-        assert!(result.is_ok());
-        let config = result.unwrap();
-        assert_eq!(config.secret_key, "test-secret-key-for-config-test!!");
         assert_eq!(config.environment, Environment::Testing);
-        
-        // Cleanup
-        std::env::remove_var("SECRET_KEY");
-        std::env::remove_var("ENVIRONMENT");
+        assert!(!config.secret_key.is_empty());
     }
 
     #[test]
-    #[serial]
-    fn test_config_default_values() {
-        std::env::set_var("SECRET_KEY", "test-secret-for-defaults-test!!!");
-        std::env::remove_var("DATABASE_URL");
-        std::env::remove_var("SERVER_PORT");
-        std::env::remove_var("PASSWORD_MIN_LENGTH");
-        std::env::remove_var("JWT_ACCESS_LIFETIME_MINUTES");
-        
-        let config = Config::from_env().unwrap();
-        
-        // Check default values
-        assert_eq!(config.server.port, 8000);
-        assert_eq!(config.security.password_min_length, 12);
-        assert_eq!(config.security.max_failed_login_attempts, 5);
-        assert_eq!(config.jwt.access_token_lifetime_minutes, 15);
-        
-        // Cleanup
-        std::env::remove_var("SECRET_KEY");
+    fn test_config_from_toml_with_overlay() {
+        let base = test_fixtures::base_config();
+        let overlay = test_fixtures::testing_config();
+
+        let config =
+            Config::from_toml_with_overlay(base, overlay).expect("Should load config with overlay");
+
+        assert_eq!(config.environment, Environment::Testing);
     }
 
     #[test]
-    #[serial]
-    fn test_config_custom_values() {
-        std::env::set_var("SECRET_KEY", "test-secret-for-custom-values-!");
-        std::env::set_var("SERVER_PORT", "9000");
-        std::env::set_var("PASSWORD_MIN_LENGTH", "16");
-        std::env::set_var("JWT_ACCESS_LIFETIME_MINUTES", "30");
-        
-        let config = Config::from_env().unwrap();
-        
-        assert_eq!(config.server.port, 9000);
-        assert_eq!(config.security.password_min_length, 16);
-        assert_eq!(config.jwt.access_token_lifetime_minutes, 30);
-        
-        // Cleanup
-        std::env::remove_var("SECRET_KEY");
-        std::env::remove_var("SERVER_PORT");
-        std::env::remove_var("PASSWORD_MIN_LENGTH");
-        std::env::remove_var("JWT_ACCESS_LIFETIME_MINUTES");
+    fn test_config_from_toml_missing_required_fields() {
+        let incomplete_toml = r#"
+            environment = "testing"
+            # Missing secret_key and other required fields
+        "#;
+
+        let result = Config::from_toml(incomplete_toml);
+        assert!(result.is_err());
     }
 
     #[test]
-    #[serial]
-    #[ignore = "This test requires a clean environment without preset variables"]
-    fn test_config_cache_auto_detect() {
-        std::env::set_var("SECRET_KEY", "test-secret-for-cache-autodetect");
-        std::env::remove_var("CACHE_ENABLED");
-        std::env::remove_var("DATABASE_URL");
-        
-        // In development mode, cache should be disabled by default
-        std::env::set_var("ENVIRONMENT", "development");
-        let config = Config::from_env().unwrap();
+    fn test_config_values_from_testing_toml() {
+        let config = Config::load_with_environment("config", Environment::Testing)
+            .expect("Should load testing config");
+
+        // Values should come from config/testing.toml
+        assert_eq!(config.logging.level, "warn");
         assert!(!config.cache.enabled);
-        
-        // In production mode, cache should be enabled by default
-        std::env::set_var("ENVIRONMENT", "production");
-        let config = Config::from_env().unwrap();
-        assert!(config.cache.enabled);
-        
-        // Cleanup
-        std::env::remove_var("SECRET_KEY");
-        std::env::remove_var("ENVIRONMENT");
+    }
+
+    #[test]
+    fn test_config_values_from_default_toml() {
+        let config = Config::load_with_environment("config", Environment::Development)
+            .expect("Should load development config");
+
+        // Server values should come from config/default.toml (or development.toml)
+        assert!(config.server.port > 0);
+        assert!(!config.server.host.is_empty());
+    }
+
+    #[test]
+    fn test_config_database_values() {
+        let config = Config::load_with_environment("config", Environment::Testing)
+            .expect("Should load testing config");
+
+        // Database URL should be set
+        assert!(!config.database.url.is_empty());
+        assert!(config.database.max_connections > 0);
+    }
+
+    #[test]
+    fn test_config_grpc_values() {
+        let config = Config::load_with_environment("config", Environment::Testing)
+            .expect("Should load testing config");
+
+        // gRPC URLs should be set
+        assert!(!config.grpc.rbac_url.is_empty());
+        assert!(!config.grpc.vault_url.is_empty());
+        assert!(!config.grpc.auth_url.is_empty());
+    }
+
+    #[test]
+    fn test_config_security_values() {
+        let config = Config::load_with_environment("config", Environment::Testing)
+            .expect("Should load testing config");
+
+        // Security values should be reasonable
+        assert!(config.security.password_min_length >= 8);
+        assert!(config.security.max_failed_login_attempts > 0);
+    }
+
+    #[test]
+    fn test_config_jwt_values() {
+        let config = Config::load_with_environment("config", Environment::Testing)
+            .expect("Should load testing config");
+
+        // JWT values should be set
+        assert!(config.jwt.access_token_lifetime_minutes > 0);
+        assert!(!config.jwt.algorithm.is_empty());
     }
 }
-

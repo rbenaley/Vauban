@@ -1,24 +1,23 @@
-/// VAUBAN Web - WebSocket handlers.
-///
-/// Handles WebSocket connections for real-time updates.
-
-use std::time::Duration;
 use askama::Template;
 use axum::{
     extract::{
-        ws::{Message, WebSocket, WebSocketUpgrade},
         Path, State,
+        ws::{Message, WebSocket, WebSocketUpgrade},
     },
     response::IntoResponse,
 };
 use futures_util::{SinkExt, StreamExt};
+/// VAUBAN Web - WebSocket handlers.
+///
+/// Handles WebSocket connections for real-time updates.
+use std::time::Duration;
 use tokio::time::interval;
 use tracing::{debug, error, info, warn};
 
+use crate::AppState;
 use crate::db::get_connection;
 use crate::middleware::auth::AuthUser;
 use crate::services::broadcast::WsChannel;
-use crate::AppState;
 
 /// Ping interval to keep WebSocket connection alive.
 const PING_INTERVAL_SECS: u64 = 30;
@@ -92,7 +91,7 @@ async fn handle_dashboard_socket(socket: WebSocket, state: AppState, user: AuthU
                     _ => {}
                 }
             }
-            
+
             // Send periodic ping to keep connection alive
             _ = ping_interval.tick() => {
                 if sender.send(Message::Ping(vec![].into())).await.is_err() {
@@ -102,7 +101,7 @@ async fn handle_dashboard_socket(socket: WebSocket, state: AppState, user: AuthU
                     debug!(user = %user.username, "Sent WS ping");
                 }
             }
-            
+
             // Stats channel updates
             result = stats_rx.recv() => {
                 if let Ok(html) = result {
@@ -111,7 +110,7 @@ async fn handle_dashboard_socket(socket: WebSocket, state: AppState, user: AuthU
                     }
                 }
             }
-            
+
             // Active sessions channel updates
             result = sessions_rx.recv() => {
                 if let Ok(html) = result {
@@ -120,7 +119,7 @@ async fn handle_dashboard_socket(socket: WebSocket, state: AppState, user: AuthU
                     }
                 }
             }
-            
+
             // Recent activity channel updates
             result = activity_rx.recv() => {
                 if let Ok(html) = result {
@@ -129,7 +128,7 @@ async fn handle_dashboard_socket(socket: WebSocket, state: AppState, user: AuthU
                     }
                 }
             }
-            
+
             // Notifications channel updates
             result = notifications_rx.recv() => {
                 if let Ok(html) = result {
@@ -155,7 +154,7 @@ async fn send_initial_dashboard_data(
 ) -> Result<(), String> {
     use crate::services::broadcast::WsMessage;
     use crate::templates::dashboard::widgets::{
-        StatsWidget, ActiveSessionsWidget, RecentActivityWidget,
+        ActiveSessionsWidget, RecentActivityWidget, StatsWidget,
     };
 
     // Fetch and send stats
@@ -163,7 +162,9 @@ async fn send_initial_dashboard_data(
     let stats_widget = StatsWidget { stats };
     if let Ok(html) = stats_widget.render() {
         let msg = WsMessage::new("ws-stats", html);
-        sender.send(Message::Text(msg.to_htmx_html().into())).await
+        sender
+            .send(Message::Text(msg.to_htmx_html().into()))
+            .await
             .map_err(|e| e.to_string())?;
     }
 
@@ -172,7 +173,9 @@ async fn send_initial_dashboard_data(
     let sessions_widget = ActiveSessionsWidget { sessions };
     if let Ok(html) = sessions_widget.render() {
         let msg = WsMessage::new("ws-active-sessions", html);
-        sender.send(Message::Text(msg.to_htmx_html().into())).await
+        sender
+            .send(Message::Text(msg.to_htmx_html().into()))
+            .await
             .map_err(|e| e.to_string())?;
     }
 
@@ -181,7 +184,9 @@ async fn send_initial_dashboard_data(
     let activity_widget = RecentActivityWidget { activities };
     if let Ok(html) = activity_widget.render() {
         let msg = WsMessage::new("ws-recent-activity", html);
-        sender.send(Message::Text(msg.to_htmx_html().into())).await
+        sender
+            .send(Message::Text(msg.to_htmx_html().into()))
+            .await
             .map_err(|e| e.to_string())?;
     }
 
@@ -189,25 +194,29 @@ async fn send_initial_dashboard_data(
 }
 
 /// Fetch initial stats data.
-fn fetch_initial_stats(state: &AppState) -> Result<crate::templates::dashboard::widgets::StatsData, String> {
-    use diesel::prelude::*;
-    use chrono::Utc;
+fn fetch_initial_stats(
+    state: &AppState,
+) -> Result<crate::templates::dashboard::widgets::StatsData, String> {
     use crate::templates::dashboard::widgets::StatsData;
+    use chrono::Utc;
+    use diesel::prelude::*;
 
     let mut conn = get_connection(&state.db_pool).map_err(|e| e.to_string())?;
 
     use crate::schema::proxy_sessions::dsl::*;
-    
+
     let active_count: i64 = proxy_sessions
         .filter(status.eq("active"))
         .count()
         .get_result(&mut conn)
         .unwrap_or(0);
 
-    let today_start = Utc::now().date_naive().and_hms_opt(0, 0, 0)
+    let today_start = Utc::now()
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
         .map(|dt| dt.and_utc())
         .unwrap_or_else(Utc::now);
-    
+
     let today_count: i64 = proxy_sessions
         .filter(created_at.ge(today_start))
         .count()
@@ -229,16 +238,18 @@ fn fetch_initial_stats(state: &AppState) -> Result<crate::templates::dashboard::
 }
 
 /// Fetch initial active sessions.
-fn fetch_initial_sessions(state: &AppState) -> Result<Vec<crate::templates::dashboard::widgets::ActiveSessionItem>, String> {
-    use diesel::prelude::*;
-    use chrono::Utc;
-    use crate::templates::dashboard::widgets::ActiveSessionItem;
+fn fetch_initial_sessions(
+    state: &AppState,
+) -> Result<Vec<crate::templates::dashboard::widgets::ActiveSessionItem>, String> {
     use crate::models::session::ProxySession;
+    use crate::templates::dashboard::widgets::ActiveSessionItem;
+    use chrono::Utc;
+    use diesel::prelude::*;
 
     let mut conn = get_connection(&state.db_pool).map_err(|e| e.to_string())?;
 
     use crate::schema::proxy_sessions::dsl::*;
-    
+
     let sessions: Vec<ProxySession> = proxy_sessions
         .filter(status.eq("active"))
         .order(created_at.desc())
@@ -263,15 +274,17 @@ fn fetch_initial_sessions(state: &AppState) -> Result<Vec<crate::templates::dash
 }
 
 /// Fetch initial recent activity.
-fn fetch_initial_activity(state: &AppState) -> Result<Vec<crate::templates::dashboard::widgets::ActivityItem>, String> {
-    use diesel::prelude::*;
-    use crate::templates::dashboard::widgets::ActivityItem;
+fn fetch_initial_activity(
+    state: &AppState,
+) -> Result<Vec<crate::templates::dashboard::widgets::ActivityItem>, String> {
     use crate::models::session::ProxySession;
+    use crate::templates::dashboard::widgets::ActivityItem;
+    use diesel::prelude::*;
 
     let mut conn = get_connection(&state.db_pool).map_err(|e| e.to_string())?;
 
     use crate::schema::proxy_sessions::dsl::*;
-    
+
     let sessions: Vec<ProxySession> = proxy_sessions
         .order(created_at.desc())
         .limit(10)
@@ -307,8 +320,8 @@ pub async fn session_ws(
     user: AuthUser,
 ) -> impl IntoResponse {
     info!(
-        user = %user.username, 
-        session_id = %session_id, 
+        user = %user.username,
+        session_id = %session_id,
         "Session WebSocket connection requested"
     );
     ws.on_upgrade(move |socket| handle_session_socket(socket, state, session_id, user))
@@ -328,7 +341,7 @@ async fn handle_session_socket(
     let mut session_rx = state.broadcast.subscribe(&channel).await;
 
     info!(
-        user = %user.username, 
+        user = %user.username,
         session_id = %session_id,
         "Session WebSocket connected"
     );
@@ -464,4 +477,3 @@ mod tests {
         assert_eq!(channel.as_str(), "dashboard:stats");
     }
 }
-

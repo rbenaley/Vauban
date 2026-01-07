@@ -1,7 +1,6 @@
+use crate::templates::base::{FlashMessage, UserContext, VaubanConfig};
 /// VAUBAN Web - Session list template.
-
 use askama::Template;
-use crate::templates::base::{UserContext, VaubanConfig, FlashMessage};
 
 /// Session item for list display.
 #[derive(Debug, Clone)]
@@ -28,7 +27,7 @@ impl SessionListItem {
             _ => &self.session_type,
         }
     }
-    
+
     /// Get display name for status.
     pub fn status_display(&self) -> &str {
         match self.status.as_str() {
@@ -66,7 +65,8 @@ pub struct SessionListTemplate {
     pub vauban: VaubanConfig,
     pub messages: Vec<FlashMessage>,
     pub language_code: String,
-    pub sidebar_content: Option<crate::templates::partials::sidebar_content::SidebarContentTemplate>,
+    pub sidebar_content:
+        Option<crate::templates::partials::sidebar_content::SidebarContentTemplate>,
     pub header_user: Option<crate::templates::base::UserContext>,
     pub sessions: Vec<SessionListItem>,
     pub status_filter: Option<String>,
@@ -78,7 +78,11 @@ pub struct SessionListTemplate {
 mod tests {
     use super::*;
 
-    fn create_test_session_item(session_type: &str, status: &str, duration: Option<i64>) -> SessionListItem {
+    fn create_test_session_item(
+        session_type: &str,
+        status: &str,
+        duration: Option<i64>,
+    ) -> SessionListItem {
         SessionListItem {
             id: 1,
             uuid: "test-uuid".to_string(),
