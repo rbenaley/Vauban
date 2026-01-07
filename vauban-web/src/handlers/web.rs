@@ -548,47 +548,73 @@ pub async fn asset_detail(
 
     let mut conn = get_connection(&state.db_pool)?;
 
-    // Query asset details with optional group info
-    let asset_data: AssetQueryDetailResult = diesel::sql_query(format!(
-        "SELECT a.uuid, a.name, a.hostname, a.ip_address, a.port, a.asset_type, a.status,
-                g.name as group_name, g.uuid::text as group_uuid,
-                a.description, a.os_type, a.os_version, a.require_mfa, a.require_justification,
-                a.max_session_duration, a.last_seen, a.created_at, a.updated_at
-         FROM assets a
-         LEFT JOIN asset_groups g ON g.id = a.group_id
-         WHERE a.id = {} AND a.is_deleted = false",
-        id
-    ))
-    .get_result(&mut conn)
-    .map_err(|e| match e {
-        diesel::result::Error::NotFound => AppError::NotFound("Asset not found".to_string()),
-        _ => AppError::Database(e),
-    })?;
-
-    let asset = crate::templates::assets::asset_detail::AssetDetail {
-        uuid: asset_data.uuid.to_string(),
-        name: asset_data.name.clone(),
-        hostname: asset_data.hostname,
-        ip_address: asset_data.ip_address,
-        port: asset_data.port,
-        asset_type: asset_data.asset_type,
-        status: asset_data.status,
-        group_name: asset_data.group_name,
-        group_uuid: asset_data.group_uuid,
-        description: asset_data.description,
-        os_type: asset_data.os_type,
-        os_version: asset_data.os_version,
-        require_mfa: asset_data.require_mfa,
-        require_justification: asset_data.require_justification,
-        max_session_duration: asset_data.max_session_duration,
-        last_seen: asset_data
-            .last_seen
-            .map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
-        created_at: asset_data.created_at.format("%b %d, %Y %H:%M").to_string(),
-        updated_at: asset_data.updated_at.format("%b %d, %Y %H:%M").to_string(),
+    // Query asset details with optional group info - migrated to Diesel DSL
+    use crate::schema::assets::dsl as a;
+    use crate::schema::asset_groups::dsl as ag;
+    
+    // First get the asset
+    let asset_row: (
+        ::uuid::Uuid, String, String, Option<ipnetwork::IpNetwork>, i32, String, String,
+        Option<i32>, Option<String>, Option<String>, Option<String>, bool, bool, i32,
+        Option<chrono::DateTime<chrono::Utc>>, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>
+    ) = a::assets
+        .filter(a::id.eq(id))
+        .filter(a::is_deleted.eq(false))
+        .select((
+            a::uuid, a::name, a::hostname, a::ip_address, a::port, a::asset_type, a::status,
+            a::group_id, a::description, a::os_type, a::os_version, a::require_mfa, a::require_justification,
+            a::max_session_duration, a::last_seen, a::created_at, a::updated_at
+        ))
+        .first(&mut conn)
+        .map_err(|e| match e {
+            diesel::result::Error::NotFound => AppError::NotFound("Asset not found".to_string()),
+            _ => AppError::Database(e),
+        })?;
+    
+    let (
+        asset_uuid, asset_name, asset_hostname, asset_ip, asset_port, asset_type_val, asset_status,
+        asset_group_id, asset_description, asset_os_type, asset_os_version, 
+        asset_require_mfa, asset_require_justification, asset_max_session_duration,
+        asset_last_seen, asset_created_at, asset_updated_at
+    ) = asset_row;
+    
+    // Get group info if group_id is set
+    let (group_name, group_uuid): (Option<String>, Option<String>) = if let Some(gid) = asset_group_id {
+        ag::asset_groups
+            .filter(ag::id.eq(gid))
+            .select((ag::name, ag::uuid))
+            .first::<(String, ::uuid::Uuid)>(&mut conn)
+            .optional()
+            .map_err(|e| AppError::Database(e))?
+            .map(|(n, u)| (Some(n), Some(u.to_string())))
+            .unwrap_or((None, None))
+    } else {
+        (None, None)
     };
 
-    let base = BaseTemplate::new(format!("{} - Asset", asset_data.name), user.clone())
+    let asset = crate::templates::assets::asset_detail::AssetDetail {
+        uuid: asset_uuid.to_string(),
+        name: asset_name.clone(),
+        hostname: asset_hostname,
+        ip_address: asset_ip.map(|ip| ip.to_string()),
+        port: asset_port,
+        asset_type: asset_type_val,
+        status: asset_status,
+        group_name,
+        group_uuid,
+        description: asset_description,
+        os_type: asset_os_type,
+        os_version: asset_os_version,
+        require_mfa: asset_require_mfa,
+        require_justification: asset_require_justification,
+        max_session_duration: asset_max_session_duration,
+        last_seen: asset_last_seen
+            .map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
+        created_at: asset_created_at.format("%b %d, %Y %H:%M").to_string(),
+        updated_at: asset_updated_at.format("%b %d, %Y %H:%M").to_string(),
+    };
+
+    let base = BaseTemplate::new(format!("{} - Asset", asset_name), user.clone())
         .with_current_path("/assets");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         base.into_fields();
@@ -610,46 +636,7 @@ pub async fn asset_detail(
     Ok(Html(html))
 }
 
-/// Helper struct for asset detail query results.
-#[derive(diesel::QueryableByName)]
-struct AssetQueryDetailResult {
-    #[diesel(sql_type = diesel::sql_types::Uuid)]
-    uuid: ::uuid::Uuid,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    name: String,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    hostname: String,
-    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
-    ip_address: Option<String>,
-    #[diesel(sql_type = diesel::sql_types::Int4)]
-    port: i32,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    asset_type: String,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    status: String,
-    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Varchar>)]
-    group_name: Option<String>,
-    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
-    group_uuid: Option<String>,
-    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
-    description: Option<String>,
-    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Varchar>)]
-    os_type: Option<String>,
-    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Varchar>)]
-    os_version: Option<String>,
-    #[diesel(sql_type = diesel::sql_types::Bool)]
-    require_mfa: bool,
-    #[diesel(sql_type = diesel::sql_types::Bool)]
-    require_justification: bool,
-    #[diesel(sql_type = diesel::sql_types::Int4)]
-    max_session_duration: i32,
-    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Timestamptz>)]
-    last_seen: Option<chrono::DateTime<chrono::Utc>>,
-    #[diesel(sql_type = diesel::sql_types::Timestamptz)]
-    created_at: chrono::DateTime<chrono::Utc>,
-    #[diesel(sql_type = diesel::sql_types::Timestamptz)]
-    updated_at: chrono::DateTime<chrono::Utc>,
-}
+// NOTE: AssetQueryDetailResult removed - migrated to Diesel DSL tuple query
 
 /// Dashboard stats widget.
 pub async fn dashboard_widget_stats(
@@ -906,7 +893,11 @@ pub async fn session_detail(
     let user = Some(user_context_from_auth(&auth_user));
     let mut conn = get_connection(&state.db_pool)?;
 
-    // Query session details with user and asset info
+    // NOTE: Raw SQL required - complex triple JOIN with PostgreSQL ::text casts
+    // Cannot be migrated to Diesel DSL due to:
+    // 1. uuid::text casts for string representation
+    // 2. inet::text cast for client_ip
+    // 3. Triple JOIN (proxy_sessions -> users -> assets)
     let session_data: SessionQueryDetailResult = diesel::sql_query(format!(
         "SELECT ps.id, ps.uuid, u.username, u.uuid::text as user_uuid,
                 a.name as asset_name, a.hostname as asset_hostname, a.uuid::text as asset_uuid, a.asset_type,
@@ -1188,7 +1179,7 @@ pub async fn recording_play(
     let user = Some(user_context_from_auth(&auth_user));
     let mut conn = get_connection(&state.db_pool)?;
 
-    // Query session/recording details
+    // NOTE: Raw SQL required - triple JOIN with PostgreSQL-specific features
     let recording_data: RecordingQueryResult = diesel::sql_query(format!(
         "SELECT ps.id, ps.uuid, u.username, a.name as asset_name, a.hostname as asset_hostname,
                 ps.session_type, ps.connected_at, ps.disconnected_at, ps.recording_path,
@@ -1322,7 +1313,7 @@ pub async fn approval_list(
         String::new()
     };
 
-    // Count total items
+    // NOTE: Raw SQL - uses dynamic WHERE clause from status_clause variable
     let total_items: i64 = diesel::sql_query(format!(
         "SELECT COUNT(*) as count FROM proxy_sessions ps WHERE ps.justification IS NOT NULL {}",
         status_clause
@@ -1334,7 +1325,7 @@ pub async fn approval_list(
     let total_pages = ((total_items as f64) / (items_per_page as f64)).ceil() as i32;
     let offset = (page - 1) * items_per_page;
 
-    // Query approvals with joins
+    // NOTE: Raw SQL required - triple JOIN with inet::text cast and dynamic WHERE
     let approvals_data: Vec<ApprovalQueryResult> = diesel::sql_query(format!(
         "SELECT ps.uuid, u.username, a.hostname as asset_name, a.asset_type, ps.session_type, 
                 ps.justification, ps.client_ip::text as client_ip, ps.created_at, ps.status
@@ -1440,7 +1431,7 @@ pub async fn approval_detail(
     let approval_uuid = ::uuid::Uuid::parse_str(&uuid_str)
         .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
 
-    // Query approval details with joins
+    // NOTE: Raw SQL required - triple JOIN with inet::text cast
     let approval_data: ApprovalDetailResult = diesel::sql_query(format!(
         "SELECT ps.uuid, u.username, u.email as user_email, a.name as asset_name, a.asset_type, 
                 a.hostname as asset_hostname, ps.session_type, ps.status, ps.justification, 
@@ -1542,7 +1533,7 @@ pub async fn active_sessions(
 
     let mut conn = get_connection(&state.db_pool)?;
 
-    // Query active sessions with joins
+    // NOTE: Raw SQL required - triple JOIN with inet::text cast
     let sessions_data: Vec<ActiveSessionQueryResult> = diesel::sql_query(
         "SELECT ps.uuid, u.username, a.name as asset_name, a.hostname as asset_hostname, 
                 ps.session_type, ps.client_ip::text as client_ip, ps.connected_at
@@ -1637,6 +1628,10 @@ pub async fn group_list(
     let search_filter = params.get("search").cloned();
 
     // Query groups with member count
+    // Groups list query - migrated to Diesel DSL
+    use crate::schema::vauban_groups::dsl::*;
+    use diesel::dsl::sql;
+    
     let groups_data: Vec<(
         ::uuid::Uuid,
         String,
@@ -1644,54 +1639,48 @@ pub async fn group_list(
         String,
         chrono::DateTime<chrono::Utc>,
     )> = if let Some(ref s) = search_filter {
-        diesel::sql_query(format!(
-            "SELECT g.uuid, g.name, g.description, g.source, g.created_at
-             FROM vauban_groups g
-             WHERE g.name ILIKE '%{}%' OR g.description ILIKE '%{}%'
-             ORDER BY g.name ASC",
-            s.replace('\'', "''"),
-            s.replace('\'', "''")
-        ))
-        .load::<GroupQueryResult>(&mut conn)
-        .map_err(|e| AppError::Database(e))?
-        .into_iter()
-        .map(|r| (r.uuid, r.name, r.description, r.source, r.created_at))
-        .collect()
+        // NOTE: ILIKE requires raw SQL fragment for OR condition on nullable column
+        let pattern = format!("%{}%", s);
+        vauban_groups
+            .filter(
+                sql::<diesel::sql_types::Bool>(&format!(
+                    "name ILIKE '{}' OR description ILIKE '{}'",
+                    pattern.replace('\'', "''"),
+                    pattern.replace('\'', "''")
+                ))
+            )
+            .order(name.asc())
+            .select((uuid, name, description, source, created_at))
+            .load::<(::uuid::Uuid, String, Option<String>, String, chrono::DateTime<chrono::Utc>)>(&mut conn)
+            .map_err(|e| AppError::Database(e))?
     } else {
-        diesel::sql_query(
-            "SELECT g.uuid, g.name, g.description, g.source, g.created_at
-             FROM vauban_groups g
-             ORDER BY g.name ASC",
-        )
-        .load::<GroupQueryResult>(&mut conn)
-        .map_err(|e| AppError::Database(e))?
-        .into_iter()
-        .map(|r| (r.uuid, r.name, r.description, r.source, r.created_at))
-        .collect()
+        vauban_groups
+            .order(name.asc())
+            .select((uuid, name, description, source, created_at))
+            .load::<(::uuid::Uuid, String, Option<String>, String, chrono::DateTime<chrono::Utc>)>(&mut conn)
+            .map_err(|e| AppError::Database(e))?
     };
 
-    // Get member counts
+    // Get member counts - migrated to Diesel DSL
+    use crate::schema::user_groups::dsl::{user_groups, group_id as ug_group_id};
     let group_items: Vec<crate::templates::accounts::group_list::GroupListItem> = groups_data
         .into_iter()
-        .map(|(uuid, name, description, source, created_at)| {
-            // Get member count for this group
-            let member_count: i64 = diesel::sql_query(format!(
-                "SELECT COUNT(*) as count FROM user_groups ug
-                 INNER JOIN vauban_groups g ON g.id = ug.group_id
-                 WHERE g.uuid = '{}'",
-                uuid
-            ))
-            .get_result::<CountResult>(&mut conn)
-            .map(|r| r.count)
-            .unwrap_or(0);
+        .map(|(group_uuid, group_name, group_description, group_source, group_created_at)| {
+            // Get member count for this group using JOIN
+            let member_count: i64 = user_groups
+                .inner_join(vauban_groups.on(id.eq(ug_group_id)))
+                .filter(uuid.eq(group_uuid))
+                .count()
+                .get_result(&mut conn)
+                .unwrap_or(0);
 
             crate::templates::accounts::group_list::GroupListItem {
-                uuid: uuid.to_string(),
-                name,
-                description,
-                source,
+                uuid: group_uuid.to_string(),
+                name: group_name,
+                description: group_description,
+                source: group_source,
                 member_count,
-                created_at: created_at.format("%b %d, %Y").to_string(),
+                created_at: group_created_at.format("%b %d, %Y").to_string(),
             }
         })
         .collect();
@@ -1714,27 +1703,7 @@ pub async fn group_list(
     Ok(Html(html))
 }
 
-/// Helper struct for group query results.
-#[derive(diesel::QueryableByName)]
-struct GroupQueryResult {
-    #[diesel(sql_type = diesel::sql_types::Uuid)]
-    uuid: ::uuid::Uuid,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    name: String,
-    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
-    description: Option<String>,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    source: String,
-    #[diesel(sql_type = diesel::sql_types::Timestamptz)]
-    created_at: chrono::DateTime<chrono::Utc>,
-}
-
-/// Helper struct for count results.
-#[derive(diesel::QueryableByName)]
-struct CountResult {
-    #[diesel(sql_type = diesel::sql_types::Int8)]
-    count: i64,
-}
+// NOTE: GroupQueryResult and CountResult removed - migrated to Diesel DSL
 
 /// Group detail page.
 pub async fn group_detail(
@@ -1748,74 +1717,72 @@ pub async fn group_detail(
     let group_uuid = ::uuid::Uuid::parse_str(&uuid_str)
         .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
 
-    // Query group details
-    let group_data: GroupQueryResult = diesel::sql_query(format!(
-        "SELECT uuid, name, description, source, created_at
-         FROM vauban_groups WHERE uuid = '{}'",
-        group_uuid
-    ))
-    .get_result(&mut conn)
-    .map_err(|e| match e {
-        diesel::result::Error::NotFound => AppError::NotFound("Group not found".to_string()),
-        _ => AppError::Database(e),
-    })?;
+    // Query group details - migrated to Diesel DSL (combined into single query)
+    use crate::schema::vauban_groups::dsl as vg;
+    let group_row: (
+        ::uuid::Uuid, String, Option<String>, String, chrono::DateTime<chrono::Utc>,
+        Option<String>, chrono::DateTime<chrono::Utc>, Option<chrono::DateTime<chrono::Utc>>
+    ) = vg::vauban_groups
+        .filter(vg::uuid.eq(group_uuid))
+        .select((
+            vg::uuid, vg::name, vg::description, vg::source, vg::created_at,
+            vg::external_id, vg::updated_at, vg::last_synced
+        ))
+        .first(&mut conn)
+        .map_err(|e| match e {
+            diesel::result::Error::NotFound => AppError::NotFound("Group not found".to_string()),
+            _ => AppError::Database(e),
+        })?;
+    
+    // Unpack the combined result
+    let (g_uuid, g_name, g_description, g_source, g_created_at, g_external_id, g_updated_at, g_last_synced) = group_row;
 
-    // Get additional fields with a second query
-    let group_extra: GroupExtraResult = diesel::sql_query(format!(
-        "SELECT external_id, updated_at, last_synced
-         FROM vauban_groups WHERE uuid = '{}'",
-        group_uuid
-    ))
-    .get_result(&mut conn)
-    .map_err(|e| AppError::Database(e))?;
-
-    // Query group members
-    let members_data: Vec<GroupMemberResult> = diesel::sql_query(format!(
-        "SELECT u.uuid, u.username, u.email, u.first_name, u.last_name, u.is_active
-         FROM users u
-         INNER JOIN user_groups ug ON ug.user_id = u.id
-         INNER JOIN vauban_groups g ON g.id = ug.group_id
-         WHERE g.uuid = '{}' AND u.is_deleted = false
-         ORDER BY u.username",
-        group_uuid
-    ))
-    .load(&mut conn)
-    .map_err(|e| AppError::Database(e))?;
+    // Query group members - migrated to Diesel DSL with JOINs
+    use crate::schema::users::dsl as u;
+    use crate::schema::user_groups::dsl as ug;
+    let members_data: Vec<(::uuid::Uuid, String, String, Option<String>, Option<String>, bool)> = u::users
+        .inner_join(ug::user_groups.on(ug::user_id.eq(u::id)))
+        .inner_join(vg::vauban_groups.on(vg::id.eq(ug::group_id)))
+        .filter(vg::uuid.eq(group_uuid))
+        .filter(u::is_deleted.eq(false))
+        .order(u::username.asc())
+        .select((u::uuid, u::username, u::email, u::first_name, u::last_name, u::is_active))
+        .load(&mut conn)
+        .map_err(|e| AppError::Database(e))?;
 
     let members: Vec<crate::templates::accounts::group_detail::GroupMember> = members_data
         .into_iter()
-        .map(|m| {
-            let full_name = match (m.first_name, m.last_name) {
+        .map(|(m_uuid, m_username, m_email, m_first_name, m_last_name, m_is_active)| {
+            let full_name = match (m_first_name, m_last_name) {
                 (Some(f), Some(l)) => Some(format!("{} {}", f, l)),
                 (Some(f), None) => Some(f),
                 (None, Some(l)) => Some(l),
                 (None, None) => None,
             };
             crate::templates::accounts::group_detail::GroupMember {
-                uuid: m.uuid.to_string(),
-                username: m.username,
-                email: m.email,
+                uuid: m_uuid.to_string(),
+                username: m_username,
+                email: m_email,
                 full_name,
-                is_active: m.is_active,
+                is_active: m_is_active,
             }
         })
         .collect();
 
     let group = crate::templates::accounts::group_detail::GroupDetail {
-        uuid: group_data.uuid.to_string(),
-        name: group_data.name.clone(),
-        description: group_data.description,
-        source: group_data.source,
-        external_id: group_extra.external_id,
-        created_at: group_data.created_at.format("%b %d, %Y %H:%M").to_string(),
-        updated_at: group_extra.updated_at.format("%b %d, %Y %H:%M").to_string(),
-        last_synced: group_extra
-            .last_synced
+        uuid: g_uuid.to_string(),
+        name: g_name.clone(),
+        description: g_description,
+        source: g_source,
+        external_id: g_external_id,
+        created_at: g_created_at.format("%b %d, %Y %H:%M").to_string(),
+        updated_at: g_updated_at.format("%b %d, %Y %H:%M").to_string(),
+        last_synced: g_last_synced
             .map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
         members,
     };
 
-    let base = BaseTemplate::new(format!("{} - Group", group_data.name), user.clone())
+    let base = BaseTemplate::new(format!("{} - Group", g_name), user.clone())
         .with_current_path("/accounts/groups");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         base.into_fields();
@@ -1837,33 +1804,7 @@ pub async fn group_detail(
     Ok(Html(html))
 }
 
-/// Helper struct for group extra fields.
-#[derive(diesel::QueryableByName)]
-struct GroupExtraResult {
-    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Varchar>)]
-    external_id: Option<String>,
-    #[diesel(sql_type = diesel::sql_types::Timestamptz)]
-    updated_at: chrono::DateTime<chrono::Utc>,
-    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Timestamptz>)]
-    last_synced: Option<chrono::DateTime<chrono::Utc>>,
-}
-
-/// Helper struct for group member query results.
-#[derive(diesel::QueryableByName)]
-struct GroupMemberResult {
-    #[diesel(sql_type = diesel::sql_types::Uuid)]
-    uuid: ::uuid::Uuid,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    username: String,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    email: String,
-    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Varchar>)]
-    first_name: Option<String>,
-    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Varchar>)]
-    last_name: Option<String>,
-    #[diesel(sql_type = diesel::sql_types::Bool)]
-    is_active: bool,
-}
+// NOTE: GroupExtraResult and GroupMemberResult removed - migrated to Diesel DSL
 
 /// Access rules list page.
 pub async fn access_rules_list(
@@ -1907,7 +1848,7 @@ pub async fn asset_group_list(
     let mut conn = get_connection(&state.db_pool)?;
     let search_filter = params.get("search").cloned();
 
-    // Query asset groups
+    // NOTE: Raw SQL required - subquery in SELECT (asset_count) not supported by Diesel DSL
     let groups_data: Vec<AssetGroupQueryResult> = if let Some(ref s) = search_filter {
         diesel::sql_query(format!(
             "SELECT g.uuid, g.name, g.slug, g.description, g.color, g.icon, g.created_at,
@@ -1997,7 +1938,7 @@ pub async fn asset_group_detail(
     let group_uuid = ::uuid::Uuid::parse_str(&uuid_str)
         .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
 
-    // Query group details
+    // NOTE: Raw SQL - simple query but kept for consistency with related code
     let group_data: AssetGroupDetailResult = diesel::sql_query(format!(
         "SELECT uuid, name, slug, description, color, icon, created_at, updated_at
          FROM asset_groups WHERE uuid = '{}' AND is_deleted = false",
@@ -2009,7 +1950,7 @@ pub async fn asset_group_detail(
         _ => AppError::Database(e),
     })?;
 
-    // Query assets in this group
+    // NOTE: Raw SQL - kept for consistency with asset_group_detail page
     let assets_data: Vec<GroupAssetResult> = diesel::sql_query(format!(
         "SELECT a.uuid, a.name, a.hostname, a.asset_type, a.status
          FROM assets a
@@ -2114,7 +2055,7 @@ pub async fn asset_group_edit(
     let group_uuid = ::uuid::Uuid::parse_str(&uuid_str)
         .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
 
-    // Query group details for editing
+    // NOTE: Raw SQL - kept for consistency with asset_group pages
     let group_data: AssetGroupEditResult = diesel::sql_query(format!(
         "SELECT uuid, name, slug, description, color, icon
          FROM asset_groups WHERE uuid = '{}' AND is_deleted = false",
@@ -2198,7 +2139,7 @@ pub async fn update_asset_group(
     let group_uuid = ::uuid::Uuid::parse_str(&uuid_str)
         .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
 
-    // Update the group
+    // NOTE: Raw SQL - UPDATE with NOW() PostgreSQL function
     diesel::sql_query(format!(
         "UPDATE asset_groups SET name = '{}', slug = '{}', description = {}, color = '{}', icon = '{}', updated_at = NOW()
          WHERE uuid = '{}' AND is_deleted = false",

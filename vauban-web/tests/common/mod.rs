@@ -149,6 +149,18 @@ fn build_test_router(state: AppState) -> Router {
             "/api/v1/sessions/{uuid}",
             get(handlers::sessions::get_session),
         )
+        // Web pages (HTML) - for testing raw SQL queries
+        .route("/sessions/{id}", get(handlers::web::session_detail))
+        .route("/sessions/recordings/{id}/play", get(handlers::web::recording_play))
+        .route("/sessions/approvals", get(handlers::web::approval_list))
+        .route("/sessions/approvals/{uuid}", get(handlers::web::approval_detail))
+        .route("/sessions/active", get(handlers::web::active_sessions))
+        .route("/assets/{id}", get(handlers::web::asset_detail))
+        .route("/assets/groups", get(handlers::web::asset_group_list))
+        .route("/assets/groups/{uuid}", get(handlers::web::asset_group_detail))
+        .route("/assets/groups/{uuid}/edit", get(handlers::web::asset_group_edit))
+        .route("/accounts/groups", get(handlers::web::group_list))
+        .route("/accounts/groups/{uuid}", get(handlers::web::group_detail))
         // Health check
         .route("/health", get(|| async { "OK" }))
         // Add auth middleware

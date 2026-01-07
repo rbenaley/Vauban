@@ -51,11 +51,12 @@ fn main() {
     println!("   ✅ {} assets ready\n", asset_ids.len());
 
     // Check existing sessions count
-    let existing_sessions: i64 =
-        diesel::sql_query("SELECT COUNT(*) as count FROM proxy_sessions WHERE status != 'pending'")
-            .get_result::<CountResult>(&mut conn)
-            .map(|r| r.count)
-            .unwrap_or(0);
+    use schema::proxy_sessions::dsl::{proxy_sessions, status};
+    let existing_sessions: i64 = proxy_sessions
+        .filter(status.ne("pending"))
+        .count()
+        .get_result(&mut conn)
+        .unwrap_or(0);
 
     if existing_sessions < 30 {
         println!("🔗 Creating sessions and recordings...");
@@ -78,11 +79,11 @@ fn main() {
     }
 
     // Check existing approvals count
-    let existing_approvals: i64 =
-        diesel::sql_query("SELECT COUNT(*) as count FROM proxy_sessions WHERE status = 'pending'")
-            .get_result::<CountResult>(&mut conn)
-            .map(|r| r.count)
-            .unwrap_or(0);
+    let existing_approvals: i64 = proxy_sessions
+        .filter(status.eq("pending"))
+        .count()
+        .get_result(&mut conn)
+        .unwrap_or(0);
 
     if existing_approvals < 20 {
         println!("📋 Creating approval requests...");
@@ -178,14 +179,13 @@ fn create_users(conn: &mut PgConnection) -> Vec<i32> {
 
     for (username, email, first_name, last_name, is_staff, is_superuser) in users_data {
         // Check if user already exists
-        let existing: Option<i32> = diesel::sql_query(format!(
-            "SELECT id FROM users WHERE username = '{}' OR email = '{}'",
-            username, email
-        ))
-        .get_result::<UserId>(conn)
-        .optional()
-        .expect("Failed to query users")
-        .map(|u| u.id);
+        use schema::users::dsl::{users, username as user_username, email as user_email, id as user_id};
+        let existing: Option<i32> = users
+            .filter(user_username.eq(username).or(user_email.eq(email)))
+            .select(user_id)
+            .first(conn)
+            .optional()
+            .expect("Failed to query users");
 
         if let Some(id) = existing {
             user_ids.push(id);
@@ -200,7 +200,7 @@ fn create_users(conn: &mut PgConnection) -> Vec<i32> {
             continue;
         }
 
-        // Create new user
+        // NOTE: Raw SQL required - uses uuid_generate_v4() and ON CONFLICT (UPSERT)
         let result = diesel::sql_query(format!(
             "INSERT INTO users (uuid, username, email, password_hash, first_name, last_name, is_active, is_staff, is_superuser, auth_source, preferences)
              VALUES (uuid_generate_v4(), '{}', '{}', '{}', '{}', '{}', true, {}, {}, 'local', '{{}}')
@@ -229,12 +229,13 @@ fn create_users(conn: &mut PgConnection) -> Vec<i32> {
     }
 
     // Also include existing 'mnemonic' user if present
-    let mnemonic_id: Option<i32> =
-        diesel::sql_query("SELECT id FROM users WHERE username = 'mnemonic'")
-            .get_result::<UserId>(conn)
-            .optional()
-            .expect("Failed to query users")
-            .map(|u| u.id);
+    use schema::users::dsl::{users, username as user_username, id as user_id};
+    let mnemonic_id: Option<i32> = users
+        .filter(user_username.eq("mnemonic"))
+        .select(user_id)
+        .first(conn)
+        .optional()
+        .expect("Failed to query users");
 
     if let Some(id) = mnemonic_id {
         if !user_ids.contains(&id) {
@@ -247,6 +248,8 @@ fn create_users(conn: &mut PgConnection) -> Vec<i32> {
 }
 
 /// Create test assets (idempotent).
+/// NOTE: Uses raw SQL for INSERT with uuid_generate_v4(), ON CONFLICT (UPSERT),
+/// and NOW() - INTERVAL which cannot be expressed in Diesel DSL.
 fn create_assets(conn: &mut PgConnection, admin_id: i32) -> Vec<i32> {
     let mut rng = rand::thread_rng();
     let mut asset_ids = Vec::new();
@@ -417,6 +420,7 @@ fn create_assets(conn: &mut PgConnection, admin_id: i32) -> Vec<i32> {
 }
 
 /// Create test sessions.
+/// NOTE: Uses raw SQL for INSERT with uuid_generate_v4() and complex date formatting.
 fn create_sessions(
     conn: &mut PgConnection,
     user_ids: &[i32],
@@ -500,6 +504,7 @@ fn create_sessions(
 }
 
 /// Create approval requests.
+/// NOTE: Uses raw SQL for INSERT with uuid_generate_v4().
 fn create_approval_requests(
     conn: &mut PgConnection,
     user_ids: &[i32],
@@ -567,6 +572,8 @@ fn create_approval_requests(
 }
 
 /// Create user groups (idempotent).
+/// NOTE: Uses raw SQL for INSERT with uuid_generate_v4() and ON CONFLICT.
+/// EXISTS check has been migrated to Diesel DSL.
 fn create_groups(conn: &mut PgConnection) -> i32 {
     let mut count = 0;
 
@@ -597,12 +604,12 @@ fn create_groups(conn: &mut PgConnection) -> i32 {
 
     for (name, description, source) in groups_data {
         // Check if group already exists
-        let existing: bool = diesel::sql_query(format!(
-            "SELECT EXISTS(SELECT 1 FROM vauban_groups WHERE name = '{}') as exists",
-            name.replace('\'', "''")
+        use diesel::dsl::exists;
+        use schema::vauban_groups::dsl::{vauban_groups, name as group_name};
+        let existing: bool = diesel::select(exists(
+            vauban_groups.filter(group_name.eq(name))
         ))
-        .get_result::<ExistsResult>(conn)
-        .map(|r| r.exists)
+        .get_result(conn)
         .unwrap_or(false);
 
         if existing {
@@ -641,6 +648,7 @@ fn create_groups(conn: &mut PgConnection) -> i32 {
 }
 
 /// Create asset groups (idempotent).
+/// NOTE: Uses raw SQL for INSERT with uuid_generate_v4() and ON CONFLICT.
 fn create_asset_groups(conn: &mut PgConnection) -> i32 {
     let mut count = 0;
 
@@ -685,12 +693,12 @@ fn create_asset_groups(conn: &mut PgConnection) -> i32 {
 
     for (name, slug, description, color, icon) in groups_data {
         // Check if group already exists
-        let existing: bool = diesel::sql_query(format!(
-            "SELECT EXISTS(SELECT 1 FROM asset_groups WHERE slug = '{}' AND is_deleted = false) as exists",
-            slug
+        use diesel::dsl::exists;
+        use schema::asset_groups::dsl::{asset_groups, slug as group_slug, is_deleted};
+        let existing: bool = diesel::select(exists(
+            asset_groups.filter(group_slug.eq(slug)).filter(is_deleted.eq(false))
         ))
-        .get_result::<ExistsResult>(conn)
-        .map(|r| r.exists)
+        .get_result(conn)
         .unwrap_or(false);
 
         if existing {
@@ -743,22 +751,12 @@ struct UserId {
     id: i32,
 }
 
-#[derive(QueryableByName)]
-struct CountResult {
-    #[diesel(sql_type = diesel::sql_types::Int8)]
-    count: i64,
-}
+// NOTE: CountResult and ExistsResult removed - migrated to Diesel DSL
 
 #[derive(QueryableByName)]
 struct ExistedCheck {
     #[diesel(sql_type = diesel::sql_types::Bool)]
     existed: bool,
-}
-
-#[derive(QueryableByName)]
-struct ExistsResult {
-    #[diesel(sql_type = diesel::sql_types::Bool)]
-    exists: bool,
 }
 
 // ==================== Data Generation Functions ====================
