@@ -5,8 +5,14 @@
 
 [server]
 host = "0.0.0.0"
-port = 8000
+port = 8443
 # workers = 4  # Optional, left to Tokio by default
+
+# TLS configuration (required - HTTPS only, TLS 1.3)
+[server.tls]
+cert_path = "certs/server.crt"
+key_path = "certs/server.key"
+# ca_chain_path = "certs/ca-chain.crt"  # Optional, for intermediate certificates
 
 [database]
 url = "postgresql://vauban:vauban@localhost/vauban"
