@@ -228,9 +228,12 @@ impl Config {
         }
 
         // 3. Load local.toml (optional, not versioned)
-        let local_path = config_path.join("local.toml");
-        if local_path.exists() {
-            builder = builder.add_source(File::from(local_path));
+        // Skip local.toml in testing environment to avoid overriding test database URL
+        if environment != Environment::Testing {
+            let local_path = config_path.join("local.toml");
+            if local_path.exists() {
+                builder = builder.add_source(File::from(local_path));
+            }
         }
 
         // 4. Override secret_key from VAUBAN_SECRET_KEY if set
