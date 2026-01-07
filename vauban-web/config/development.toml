@@ -1,5 +1,5 @@
-# VAUBAN Web - Configuration de développement
-# Surcharge les valeurs de default.toml pour l'environnement de développement.
+# VAUBAN Web - Development configuration
+# Overrides default.toml values for the development environment.
 
 environment = "development"
 secret_key = "CHANGE-ME-IN-PRODUCTION-32-CHARS!"

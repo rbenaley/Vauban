@@ -1,11 +1,11 @@
 /// VAUBAN Web - Configuration management.
 ///
-/// Charge la configuration depuis des fichiers TOML avec support multi-environnement.
-/// Ordre de chargement :
-/// 1. config/default.toml - valeurs par défaut
-/// 2. config/{environment}.toml - valeurs spécifiques à l'environnement
-/// 3. config/local.toml - surcharges locales (non versionné)
-/// 4. Variables d'environnement préfixées VAUBAN_ (pour les secrets uniquement)
+/// Loads configuration from TOML files with multi-environment support.
+/// Loading order:
+/// 1. config/default.toml - default values
+/// 2. config/{environment}.toml - environment-specific values
+/// 3. config/local.toml - local overrides (not versioned)
+/// 4. Environment variables prefixed with VAUBAN_ (for secrets only)
 use config::{Config as ConfigBuilder, ConfigError, File};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -48,7 +48,7 @@ impl Environment {
 }
 
 /// Application configuration.
-/// Toutes les valeurs doivent être définies dans les fichiers TOML.
+/// All values must be defined in TOML files.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub environment: Environment,
@@ -166,11 +166,11 @@ pub struct LoggingConfig {
 impl Config {
     /// Load configuration from TOML files.
     ///
-    /// Charge la configuration dans l'ordre suivant :
+    /// Loads configuration in the following order:
     /// 1. config/default.toml
     /// 2. config/{environment}.toml (development, testing, production)
-    /// 3. config/local.toml (optionnel, pour les surcharges locales)
-    /// 4. Variable d'environnement VAUBAN_SECRET_KEY (pour le secret uniquement)
+    /// 3. config/local.toml (optional, for local overrides)
+    /// 4. VAUBAN_SECRET_KEY environment variable (for secrets only)
     pub fn load() -> Result<Self, crate::error::AppError> {
         Self::load_from_path("config")
     }
@@ -179,7 +179,7 @@ impl Config {
     pub fn load_from_path<P: AsRef<Path>>(config_path: P) -> Result<Self, crate::error::AppError> {
         let config_path = config_path.as_ref();
 
-        // Détermine l'environnement depuis VAUBAN_ENVIRONMENT ou default.toml
+        // Determine environment from VAUBAN_ENVIRONMENT or default.toml
         let environment = std::env::var("VAUBAN_ENVIRONMENT")
             .map(|e| Environment::from_str(&e))
             .unwrap_or(Environment::Development);
@@ -196,7 +196,7 @@ impl Config {
 
         let mut builder = ConfigBuilder::builder();
 
-        // 1. Charge default.toml (requis)
+        // 1. Load default.toml (required)
         let default_path = config_path.join("default.toml");
         if !default_path.exists() {
             return Err(crate::error::AppError::Config(format!(
@@ -206,37 +206,37 @@ impl Config {
         }
         builder = builder.add_source(File::from(default_path));
 
-        // 2. Charge {environment}.toml
+        // 2. Load {environment}.toml
         let env_path = config_path.join(format!("{}.toml", environment.as_str()));
         if env_path.exists() {
             builder = builder.add_source(File::from(env_path));
         }
 
-        // 3. Charge local.toml (optionnel, non versionné)
+        // 3. Load local.toml (optional, not versioned)
         let local_path = config_path.join("local.toml");
         if local_path.exists() {
             builder = builder.add_source(File::from(local_path));
         }
 
-        // 4. Surcharge secret_key depuis VAUBAN_SECRET_KEY si défini
+        // 4. Override secret_key from VAUBAN_SECRET_KEY if set
         if let Ok(secret) = std::env::var("VAUBAN_SECRET_KEY") {
             builder = builder.set_override("secret_key", secret).map_err(|e| {
                 crate::error::AppError::Config(format!("Failed to set secret_key: {}", e))
             })?;
         }
 
-        // Construit la configuration
+        // Build configuration
         let settings = builder.build().map_err(|e| Self::config_error(e))?;
 
-        // Désérialise en Config
+        // Deserialize into Config
         let mut config: Config = settings
             .try_deserialize()
             .map_err(|e| Self::config_error(e))?;
 
-        // Force l'environnement au cas où il n'est pas dans le fichier
+        // Force environment in case it's not in the file
         config.environment = environment;
 
-        // Valide que secret_key est défini
+        // Validate that secret_key is set
         if config.secret_key.is_empty() {
             return Err(crate::error::AppError::Config(
                 "secret_key is required. Set it in config/{environment}.toml, config/local.toml, \
@@ -289,7 +289,7 @@ impl Config {
     }
 
     /// Legacy method for backward compatibility.
-    /// Préfère `Config::load()` pour les nouvelles utilisations.
+    /// Prefer `Config::load()` for new uses.
     #[deprecated(since = "0.2.0", note = "Use Config::load() instead")]
     pub fn from_env() -> Result<Self, crate::error::AppError> {
         Self::load()

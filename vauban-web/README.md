@@ -47,16 +47,16 @@ CACHE_TTL_SECS=3600
 
 1. Prepare configuration
 ```bash
-echo "DATABASE_URL=postgresql://vauban:vauban@localhost/vauban" > .env
+echo "DATABASE_URL=postgresql://user:password@localhost/vauban" > .env
 cargo install diesel_cli --no-default-features --features postgres
 ```
 
 2. Create the database:
 ```bash
 createdb vauban
-psql -c "CREATE USER vauban WITH PASSWORD 'vauban';"
-psql -c "GRANT ALL PRIVILEGES ON DATABASE vauban TO vauban;"
-psql -U postgres -d vauban -c "GRANT ALL ON SCHEMA public TO vauban; ALTER SCHEMA public OWNER TO vauban;"
+psql -c "CREATE USER user WITH PASSWORD 'password';"
+psql -c "GRANT ALL PRIVILEGES ON DATABASE vauban TO user;"
+psql -U postgres -d vauban -c "GRANT ALL ON SCHEMA public TO user; ALTER SCHEMA public OWNER TO user;"
 ```
 
 3. Run migrations:
