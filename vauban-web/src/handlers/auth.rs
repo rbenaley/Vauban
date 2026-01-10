@@ -55,12 +55,12 @@ pub struct LoginResponse {
 /// For JSON: returns LoginResponse as before.
 pub async fn login(
     State(state): State<AppState>,
+    client_addr: crate::middleware::ClientAddr,
     headers: HeaderMap,
     jar: CookieJar,
     Json(request): Json<LoginRequest>,
 ) -> AppResult<Response> {
-    // Default client address for when ConnectInfo is not available (tests)
-    let client_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let client_addr = client_addr.addr();
     let htmx = is_htmx_request(&headers);
 
     // Validation
