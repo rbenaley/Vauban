@@ -12,10 +12,11 @@ use crate::AppState;
 use crate::db::get_connection;
 use crate::error::AppError;
 use crate::middleware::auth::{AuthUser, OptionalAuthUser};
-use crate::schema::{assets, proxy_sessions};
+use crate::schema::{api_keys, assets, auth_sessions, proxy_sessions};
 use crate::templates::accounts::{
-    GroupDetailTemplate, GroupListTemplate, LoginTemplate, MfaSetupTemplate, ProfileTemplate,
-    UserDetailTemplate, UserListTemplate,
+    ApiKeyItem, ApikeyListTemplate, AuthSessionItem, GroupDetailTemplate, GroupListTemplate,
+    LoginTemplate, MfaSetupTemplate, ProfileTemplate,
+    SessionListTemplate as AccountSessionListTemplate, UserDetailTemplate, UserListTemplate,
 };
 use crate::templates::assets::asset_list::AssetListItem;
 use crate::templates::assets::{
@@ -432,6 +433,315 @@ pub async fn mfa_setup(
         .render()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
     Ok(Html(html))
+}
+
+/// User sessions list page (web sessions, not proxy sessions).
+pub async fn user_sessions(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+) -> Result<impl IntoResponse, AppError> {
+    use crate::models::AuthSession;
+
+    let user = Some(user_context_from_auth(&auth_user));
+    let base = BaseTemplate::new("My Sessions".to_string(), user.clone())
+        .with_current_path("/accounts/sessions");
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        base.into_fields();
+
+    // Load user sessions from database
+    let mut conn = get_connection(&state.db_pool)?;
+    let user_id: i32 = auth_user
+        .uuid
+        .parse::<uuid::Uuid>()
+        .ok()
+        .and_then(|uuid| {
+            use crate::schema::users;
+            users::table
+                .filter(users::uuid.eq(uuid))
+                .select(users::id)
+                .first::<i32>(&mut conn)
+                .ok()
+        })
+        .unwrap_or(0);
+
+    let db_sessions: Vec<AuthSession> = auth_sessions::table
+        .filter(auth_sessions::user_id.eq(user_id))
+        .filter(auth_sessions::expires_at.gt(chrono::Utc::now()))
+        .order(auth_sessions::created_at.desc())
+        .load(&mut conn)
+        .unwrap_or_default();
+
+    let sessions: Vec<AuthSessionItem> = db_sessions
+        .into_iter()
+        .map(|s| {
+            let device_info = s.device_info.clone().unwrap_or_else(|| {
+                AuthSession::parse_device_info(s.user_agent.as_deref().unwrap_or(""))
+            });
+            AuthSessionItem {
+                uuid: s.uuid,
+                ip_address: s.ip_address.ip().to_string(),
+                device_info,
+                last_activity: s.last_activity,
+                created_at: s.created_at,
+                is_current: s.is_current,
+                is_expired: s.is_expired(),
+            }
+        })
+        .collect();
+
+    let template = AccountSessionListTemplate {
+        title,
+        user: user_ctx,
+        vauban,
+        messages,
+        language_code,
+        sidebar_content,
+        header_user,
+        sessions,
+    };
+
+    let html = template
+        .render()
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
+    Ok(Html(html))
+}
+
+/// API keys list page.
+pub async fn api_keys(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+) -> Result<impl IntoResponse, AppError> {
+    use crate::models::ApiKey;
+
+    let user = Some(user_context_from_auth(&auth_user));
+    let base = BaseTemplate::new("API Keys".to_string(), user.clone())
+        .with_current_path("/accounts/apikeys");
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        base.into_fields();
+
+    // Load user API keys from database
+    let mut conn = get_connection(&state.db_pool)?;
+    let user_id: i32 = auth_user
+        .uuid
+        .parse::<uuid::Uuid>()
+        .ok()
+        .and_then(|uuid| {
+            use crate::schema::users;
+            users::table
+                .filter(users::uuid.eq(uuid))
+                .select(users::id)
+                .first::<i32>(&mut conn)
+                .ok()
+        })
+        .unwrap_or(0);
+
+    let db_keys: Vec<ApiKey> = api_keys::table
+        .filter(api_keys::user_id.eq(user_id))
+        .order(api_keys::created_at.desc())
+        .load(&mut conn)
+        .unwrap_or_default();
+
+    let api_keys_list: Vec<ApiKeyItem> = db_keys
+        .into_iter()
+        .map(|k| {
+            let scopes = k.scopes_vec();
+            ApiKeyItem {
+                uuid: k.uuid,
+                name: k.name,
+                key_prefix: k.key_prefix,
+                scopes,
+                last_used_at: k.last_used_at,
+                expires_at: k.expires_at,
+                is_active: k.is_active,
+                created_at: k.created_at,
+            }
+        })
+        .collect();
+
+    let template = ApikeyListTemplate {
+        title,
+        user: user_ctx,
+        vauban,
+        messages,
+        language_code,
+        sidebar_content,
+        header_user,
+        api_keys: api_keys_list,
+    };
+
+    let html = template
+        .render()
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
+    Ok(Html(html))
+}
+
+/// Revoke an auth session.
+pub async fn revoke_session(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    axum::extract::Path(session_uuid): axum::extract::Path<uuid::Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    let mut conn = get_connection(&state.db_pool)?;
+
+    // Get user ID
+    let user_id: i32 = auth_user
+        .uuid
+        .parse::<uuid::Uuid>()
+        .ok()
+        .and_then(|uuid| {
+            use crate::schema::users;
+            users::table
+                .filter(users::uuid.eq(uuid))
+                .select(users::id)
+                .first::<i32>(&mut conn)
+                .ok()
+        })
+        .unwrap_or(0);
+
+    // Delete the session (only if it belongs to the user)
+    diesel::delete(
+        auth_sessions::table
+            .filter(auth_sessions::uuid.eq(session_uuid))
+            .filter(auth_sessions::user_id.eq(user_id)),
+    )
+    .execute(&mut conn)
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to revoke session: {}", e)))?;
+
+    // Return empty response (HTMX will remove the element)
+    Ok(Html(""))
+}
+
+/// Revoke an API key.
+pub async fn revoke_api_key(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    axum::extract::Path(key_uuid): axum::extract::Path<uuid::Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    let mut conn = get_connection(&state.db_pool)?;
+
+    // Get user ID
+    let user_id: i32 = auth_user
+        .uuid
+        .parse::<uuid::Uuid>()
+        .ok()
+        .and_then(|uuid| {
+            use crate::schema::users;
+            users::table
+                .filter(users::uuid.eq(uuid))
+                .select(users::id)
+                .first::<i32>(&mut conn)
+                .ok()
+        })
+        .unwrap_or(0);
+
+    // Mark the key as inactive (soft delete)
+    diesel::update(
+        api_keys::table
+            .filter(api_keys::uuid.eq(key_uuid))
+            .filter(api_keys::user_id.eq(user_id)),
+    )
+    .set(api_keys::is_active.eq(false))
+    .execute(&mut conn)
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to revoke API key: {}", e)))?;
+
+    // Return updated row HTML
+    Ok(Html(r#"<tr class="opacity-50"><td colspan="6" class="px-6 py-4 text-center text-sm text-gray-500 dark:text-gray-400">API key revoked</td></tr>"#))
+}
+
+/// Create API key form (returns modal HTML).
+pub async fn create_api_key_form(
+    State(_state): State<AppState>,
+    _auth_user: AuthUser,
+) -> Result<impl IntoResponse, AppError> {
+    use crate::templates::accounts::ApikeyCreateFormTemplate;
+
+    let template = ApikeyCreateFormTemplate {};
+    let html = template
+        .render()
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
+    Ok(Html(html))
+}
+
+/// Create a new API key.
+pub async fn create_api_key(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    axum::extract::Form(form): axum::extract::Form<CreateApiKeyForm>,
+) -> Result<impl IntoResponse, AppError> {
+    use crate::models::{ApiKey, NewApiKey};
+    use crate::templates::accounts::ApikeyCreatedTemplate;
+
+    let mut conn = get_connection(&state.db_pool)?;
+
+    // Get user ID
+    let user_id: i32 = auth_user
+        .uuid
+        .parse::<uuid::Uuid>()
+        .ok()
+        .and_then(|uuid| {
+            use crate::schema::users;
+            users::table
+                .filter(users::uuid.eq(uuid))
+                .select(users::id)
+                .first::<i32>(&mut conn)
+                .ok()
+        })
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("User not found")))?;
+
+    // Generate the API key
+    let (_prefix, full_key, hash) = ApiKey::generate_key();
+
+    // Parse scopes
+    let scopes: Vec<String> = form.scopes.clone().unwrap_or_else(|| vec!["read".to_string()]);
+    let scopes_json = serde_json::to_value(&scopes)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to serialize scopes: {}", e)))?;
+
+    // Calculate expiration
+    let expires_at = form.expires_in_days.and_then(|days| {
+        if days > 0 {
+            Some(chrono::Utc::now() + chrono::Duration::days(days))
+        } else {
+            None
+        }
+    });
+
+    // Get prefix from full key
+    let key_prefix = full_key.chars().take(8).collect::<String>();
+
+    // Insert the key
+    let new_key = NewApiKey {
+        uuid: uuid::Uuid::new_v4(),
+        user_id,
+        name: form.name.clone(),
+        key_prefix,
+        key_hash: hash,
+        scopes: scopes_json,
+        expires_at,
+    };
+
+    diesel::insert_into(api_keys::table)
+        .values(&new_key)
+        .execute(&mut conn)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to create API key: {}", e)))?;
+
+    // Return success message with the key (only shown once)
+    let template = ApikeyCreatedTemplate {
+        name: form.name.clone(),
+        key: full_key,
+    };
+    let html = template
+        .render()
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
+
+    Ok(Html(html))
+}
+
+/// Form data for creating an API key.
+#[derive(Debug, serde::Deserialize)]
+pub struct CreateApiKeyForm {
+    pub name: String,
+    pub scopes: Option<Vec<String>>,
+    pub expires_in_days: Option<i64>,
 }
 
 /// Asset list page.

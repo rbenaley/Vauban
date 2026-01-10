@@ -9,12 +9,157 @@
             <h2 class="text-2xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-3xl sm:tracking-tight">
                 API Keys
             </h2>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                Manage API keys for programmatic access to VAUBAN
+            </p>
+        </div>
+        <div class="mt-4 flex md:ml-4 md:mt-0">
+            <button type="button"
+                    hx-get="/accounts/apikeys/create"
+                    hx-target="#create-key-modal"
+                    hx-swap="innerHTML"
+                    class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 dark:focus:ring-offset-gray-900">
+                <svg class="-ml-1 mr-2 h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                    <path fill-rule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clip-rule="evenodd" />
+                </svg>
+                Create API Key
+            </button>
         </div>
     </div>
 
+    <div id="create-key-modal"></div>
+
+    {% if api_keys.is_empty() %}
     <div class="bg-white dark:bg-gray-800 shadow rounded-lg p-6">
-        <p class="text-gray-500 dark:text-gray-400">API keys list content</p>
+        <div class="text-center py-8">
+            <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
+            </svg>
+            <h3 class="mt-2 text-sm font-medium text-gray-900 dark:text-white">No API keys</h3>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                Create an API key to access VAUBAN programmatically.
+            </p>
+        </div>
+    </div>
+    {% else %}
+    <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+        <table class="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+            <thead class="bg-gray-50 dark:bg-gray-900">
+                <tr>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                        Name
+                    </th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                        Key
+                    </th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                        Scopes
+                    </th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                        Last Used
+                    </th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                        Expires
+                    </th>
+                    <th scope="col" class="relative px-6 py-3">
+                        <span class="sr-only">Actions</span>
+                    </th>
+                </tr>
+            </thead>
+            <tbody class="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
+                {% for key in api_keys %}
+                <tr id="api-key-{{ key.uuid }}" class="{% if !key.is_active || key.is_expired() %}opacity-50{% endif %}">
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <div class="flex items-center">
+                            <div class="flex-shrink-0 h-8 w-8">
+                                <span class="inline-flex items-center justify-center h-8 w-8 rounded-full {% if key.is_active && !key.is_expired() %}bg-green-100 dark:bg-green-900{% else %}bg-gray-100 dark:bg-gray-700{% endif %}">
+                                    <svg class="h-4 w-4 {% if key.is_active && !key.is_expired() %}text-green-600 dark:text-green-400{% else %}text-gray-600 dark:text-gray-400{% endif %}" fill="currentColor" viewBox="0 0 20 20">
+                                        <path fill-rule="evenodd" d="M18 8a6 6 0 01-7.743 5.743L10 14l-1 1-1 1H6v2H2v-4l4.257-4.257A6 6 0 1118 8zm-6-4a1 1 0 100 2 2 2 0 012 2 1 1 0 102 0 4 4 0 00-4-4z" clip-rule="evenodd" />
+                                    </svg>
+                                </span>
+                            </div>
+                            <div class="ml-4">
+                                <div class="text-sm font-medium text-gray-900 dark:text-white">
+                                    {{ key.name }}
+                                </div>
+                                <div class="text-xs text-gray-500 dark:text-gray-400">
+                                    Created {{ key.created_at.format("%b %d, %Y") }}
+                                </div>
+                            </div>
+                        </div>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <code class="px-2 py-1 text-sm font-mono bg-gray-100 dark:bg-gray-700 rounded text-gray-600 dark:text-gray-300">
+                            {{ key.key_prefix }}••••••••
+                        </code>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <div class="flex flex-wrap gap-1">
+                            {% for scope in key.scopes %}
+                            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium
+                                {% if scope == "admin" %}
+                                bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200
+                                {% elif scope == "write" %}
+                                bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200
+                                {% else %}
+                                bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200
+                                {% endif %}">
+                                {{ scope }}
+                            </span>
+                            {% endfor %}
+                        </div>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
+                        {{ key.last_used_display() }}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm">
+                        {% if key.is_expired() %}
+                        <span class="text-red-600 dark:text-red-400">Expired</span>
+                        {% else %}
+                        <span class="text-gray-500 dark:text-gray-400">{{ key.expires_display() }}</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                        {% if key.is_active %}
+                        <form hx-post="/accounts/apikeys/{{ key.uuid }}/revoke"
+                              hx-confirm="Are you sure you want to revoke this API key? This action cannot be undone."
+                              hx-target="#api-key-{{ key.uuid }}"
+                              hx-swap="outerHTML">
+                            <button type="submit"
+                                    class="text-red-600 hover:text-red-900 dark:text-red-400 dark:hover:text-red-300">
+                                Revoke
+                            </button>
+                        </form>
+                        {% else %}
+                        <span class="text-gray-400 dark:text-gray-600">Revoked</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+
+    <div class="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
+        <div class="flex">
+            <div class="flex-shrink-0">
+                <svg class="h-5 w-5 text-blue-400" viewBox="0 0 20 20" fill="currentColor">
+                    <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd" />
+                </svg>
+            </div>
+            <div class="ml-3">
+                <h3 class="text-sm font-medium text-blue-800 dark:text-blue-200">API Key Security</h3>
+                <div class="mt-2 text-sm text-blue-700 dark:text-blue-300">
+                    <ul class="list-disc pl-5 space-y-1">
+                        <li>API keys are only shown once when created. Store them securely.</li>
+                        <li>Use the minimum required scopes for each key.</li>
+                        <li>Revoke unused keys regularly.</li>
+                        <li>Never share API keys or commit them to version control.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
     </div>
 </div>
 {% endblock %}
-
