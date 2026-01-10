@@ -161,6 +161,21 @@ fn build_test_router(state: AppState) -> Router {
         .route("/assets/groups/{uuid}/edit", get(handlers::web::asset_group_edit))
         .route("/accounts/groups", get(handlers::web::group_list))
         .route("/accounts/groups/{uuid}", get(handlers::web::group_detail))
+        // Account pages (sessions and API keys)
+        .route("/accounts/sessions", get(handlers::web::user_sessions))
+        .route(
+            "/accounts/sessions/{uuid}/revoke",
+            post(handlers::web::revoke_session),
+        )
+        .route("/accounts/apikeys", get(handlers::web::api_keys))
+        .route(
+            "/accounts/apikeys/create",
+            get(handlers::web::create_api_key_form).post(handlers::web::create_api_key),
+        )
+        .route(
+            "/accounts/apikeys/{uuid}/revoke",
+            post(handlers::web::revoke_api_key),
+        )
         // Health check
         .route("/health", get(|| async { "OK" }))
         // Add auth middleware

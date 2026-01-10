@@ -460,3 +460,95 @@ pub fn create_test_asset_in_group(
     
     result.id
 }
+
+// =============================================================================
+// Auth Sessions and API Keys fixtures
+// =============================================================================
+
+/// Create a test auth session and return session_uuid.
+pub fn create_test_auth_session(
+    conn: &mut PgConnection,
+    user_id: i32,
+    is_current: bool,
+) -> Uuid {
+    use chrono::{Duration, Utc};
+    use vauban_web::models::NewAuthSession;
+    use vauban_web::schema::auth_sessions;
+
+    let session_uuid = Uuid::new_v4();
+    let ip: ipnetwork::IpNetwork = "127.0.0.1".parse().unwrap();
+    let token_hash = format!("hash_{}_{}", user_id, if is_current { "current" } else { "other" });
+
+    let new_session = NewAuthSession {
+        uuid: session_uuid,
+        user_id,
+        token_hash,
+        ip_address: ip,
+        user_agent: Some("Mozilla/5.0 Test".to_string()),
+        device_info: Some("Test Browser".to_string()),
+        expires_at: Utc::now() + Duration::hours(24),
+        is_current,
+    };
+
+    diesel::insert_into(auth_sessions::table)
+        .values(&new_session)
+        .execute(conn)
+        .expect("Failed to create auth session");
+
+    session_uuid
+}
+
+/// Create a test API key and return key_uuid.
+pub fn create_test_api_key(
+    conn: &mut PgConnection,
+    user_id: i32,
+    name: &str,
+    is_active: bool,
+) -> Uuid {
+    use vauban_web::schema::api_keys;
+
+    let key_uuid = Uuid::new_v4();
+
+    diesel::insert_into(api_keys::table)
+        .values((
+            api_keys::uuid.eq(key_uuid),
+            api_keys::user_id.eq(user_id),
+            api_keys::name.eq(name),
+            api_keys::key_prefix.eq("vbn_test"),
+            api_keys::key_hash.eq(format!("hash_{}", name)),
+            api_keys::scopes.eq(serde_json::json!(["read"])),
+            api_keys::is_active.eq(is_active),
+        ))
+        .execute(conn)
+        .expect("Failed to create API key");
+
+    key_uuid
+}
+
+/// Create an expired test API key and return key_uuid.
+pub fn create_expired_api_key(
+    conn: &mut PgConnection,
+    user_id: i32,
+    name: &str,
+) -> Uuid {
+    use chrono::{Duration, Utc};
+    use vauban_web::schema::api_keys;
+
+    let key_uuid = Uuid::new_v4();
+
+    diesel::insert_into(api_keys::table)
+        .values((
+            api_keys::uuid.eq(key_uuid),
+            api_keys::user_id.eq(user_id),
+            api_keys::name.eq(name),
+            api_keys::key_prefix.eq("vbn_exp"),
+            api_keys::key_hash.eq(format!("hash_exp_{}", name)),
+            api_keys::scopes.eq(serde_json::json!(["read"])),
+            api_keys::is_active.eq(true),
+            api_keys::expires_at.eq(Utc::now() - Duration::days(1)),
+        ))
+        .execute(conn)
+        .expect("Failed to create expired API key");
+
+    key_uuid
+}

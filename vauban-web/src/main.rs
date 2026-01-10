@@ -241,6 +241,20 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
         .route("/accounts/users/{uuid}", get(handlers::web::user_detail))
         .route("/accounts/profile", get(handlers::web::profile))
         .route("/accounts/mfa", get(handlers::web::mfa_setup))
+        .route("/accounts/sessions", get(handlers::web::user_sessions))
+        .route(
+            "/accounts/sessions/{uuid}/revoke",
+            post(handlers::web::revoke_session),
+        )
+        .route("/accounts/apikeys", get(handlers::web::api_keys))
+        .route(
+            "/accounts/apikeys/create",
+            get(handlers::web::create_api_key_form).post(handlers::web::create_api_key),
+        )
+        .route(
+            "/accounts/apikeys/{uuid}/revoke",
+            post(handlers::web::revoke_api_key),
+        )
         // Assets pages (specific routes before generic {id} route)
         .route("/assets", get(handlers::web::asset_list))
         .route("/assets/groups", get(handlers::web::asset_group_list))

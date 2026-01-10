@@ -1,6 +1,26 @@
 // @generated automatically by Diesel CLI.
 
 diesel::table! {
+    api_keys (id) {
+        id -> Int4,
+        uuid -> Uuid,
+        user_id -> Int4,
+        #[max_length = 100]
+        name -> Varchar,
+        #[max_length = 8]
+        key_prefix -> Varchar,
+        #[max_length = 64]
+        key_hash -> Varchar,
+        scopes -> Jsonb,
+        last_used_at -> Nullable<Timestamptz>,
+        last_used_ip -> Nullable<Inet>,
+        expires_at -> Nullable<Timestamptz>,
+        is_active -> Bool,
+        created_at -> Timestamptz,
+    }
+}
+
+diesel::table! {
     asset_groups (id) {
         id -> Int4,
         uuid -> Uuid,
@@ -56,6 +76,24 @@ diesel::table! {
         updated_at -> Timestamptz,
         is_deleted -> Bool,
         deleted_at -> Nullable<Timestamptz>,
+    }
+}
+
+diesel::table! {
+    auth_sessions (id) {
+        id -> Int4,
+        uuid -> Uuid,
+        user_id -> Int4,
+        #[max_length = 64]
+        token_hash -> Varchar,
+        ip_address -> Inet,
+        user_agent -> Nullable<Text>,
+        #[max_length = 255]
+        device_info -> Nullable<Varchar>,
+        last_activity -> Timestamptz,
+        expires_at -> Timestamptz,
+        is_current -> Bool,
+        created_at -> Timestamptz,
     }
 }
 
@@ -157,15 +195,19 @@ diesel::table! {
     }
 }
 
+diesel::joinable!(api_keys -> users (user_id));
 diesel::joinable!(assets -> asset_groups (group_id));
+diesel::joinable!(auth_sessions -> users (user_id));
 diesel::joinable!(proxy_sessions -> assets (asset_id));
 diesel::joinable!(proxy_sessions -> users (user_id));
 diesel::joinable!(user_groups -> users (user_id));
 diesel::joinable!(user_groups -> vauban_groups (group_id));
 
 diesel::allow_tables_to_appear_in_same_query!(
+    api_keys,
     asset_groups,
     assets,
+    auth_sessions,
     proxy_sessions,
     user_groups,
     users,
