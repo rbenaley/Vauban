@@ -58,6 +58,9 @@ impl TestApp {
         // Create broadcast service
         let broadcast = BroadcastService::new();
 
+        // Create user connection registry
+        let user_connections = vauban_web::services::connections::UserConnectionRegistry::new();
+
         // Create app state
         let state = AppState {
             config: config.clone(),
@@ -65,6 +68,7 @@ impl TestApp {
             cache,
             auth_service: auth_service.clone(),
             broadcast: broadcast.clone(),
+            user_connections,
         };
 
         // Build router

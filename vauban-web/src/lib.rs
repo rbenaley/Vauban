@@ -19,6 +19,7 @@ use config::Config;
 use db::DbPool;
 use services::auth::AuthService;
 use services::broadcast::BroadcastService;
+use services::connections::UserConnectionRegistry;
 
 /// Application state.
 #[derive(Clone)]
@@ -28,6 +29,8 @@ pub struct AppState {
     pub cache: CacheConnection,
     pub auth_service: AuthService,
     pub broadcast: BroadcastService,
+    /// Registry for WebSocket connections with personalized context.
+    pub user_connections: UserConnectionRegistry,
 }
 
 #[cfg(test)]
