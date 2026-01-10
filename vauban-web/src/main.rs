@@ -26,7 +26,7 @@ use vauban_web::{
     handlers, middleware,
     services::auth::AuthService,
     services::broadcast::BroadcastService,
-    tasks::start_dashboard_tasks,
+    tasks::{start_cleanup_tasks, start_dashboard_tasks},
 };
 
 #[tokio::main]
@@ -105,7 +105,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Start background tasks for WebSocket updates
-    start_dashboard_tasks(broadcast, db_pool).await;
+    start_dashboard_tasks(broadcast, db_pool.clone()).await;
+
+    // Start cleanup tasks for expired sessions and API keys
+    start_cleanup_tasks(db_pool).await;
 
     // Build application
     let app = create_app(app_state).await?;
