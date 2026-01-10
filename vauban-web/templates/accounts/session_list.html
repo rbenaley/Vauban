@@ -30,7 +30,11 @@
     {% else %}
     <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden"
          hx-ext="ws"
-         ws-connect="/ws/notifications">
+         ws-connect="/ws/notifications"
+         hx-get="/accounts/sessions/list"
+         hx-trigger="sessions-updated from:body"
+         hx-target="#sessions-list"
+         hx-swap="innerHTML">
         <ul role="list" class="divide-y divide-gray-200 dark:divide-gray-700" id="sessions-list">
             {% for session in sessions %}
             <li id="session-row-{{ session.uuid }}" class="px-6 py-4">
