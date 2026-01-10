@@ -61,15 +61,6 @@ pub struct SessionListTemplate {
     pub sessions: Vec<AuthSessionItem>,
 }
 
-/// Partial template for the sessions list (HTMX fragment).
-/// Used for real-time updates via WebSocket to ensure each client
-/// gets a personalized "Current session" indicator.
-#[derive(Template)]
-#[template(path = "accounts/session_list_partial.html")]
-pub struct SessionListPartialTemplate {
-    pub sessions: Vec<AuthSessionItem>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,110 +141,5 @@ mod tests {
     fn test_auth_session_item_last_activity_display() {
         let session = create_test_session();
         assert_eq!(session.last_activity_display(), "Just now");
-    }
-
-    // ==================== SessionListPartialTemplate Tests ====================
-
-    #[test]
-    fn test_session_list_partial_template_empty() {
-        let template = SessionListPartialTemplate {
-            sessions: Vec::new(),
-        };
-        let result = template.render();
-        assert!(result.is_ok());
-        let html = result.unwrap();
-        assert!(html.contains("No active sessions"));
-    }
-
-    #[test]
-    fn test_session_list_partial_template_with_sessions() {
-        let template = SessionListPartialTemplate {
-            sessions: vec![create_test_session()],
-        };
-        let result = template.render();
-        assert!(result.is_ok());
-        let html = result.unwrap();
-        assert!(html.contains("Chrome on macOS"));
-        assert!(html.contains("192.168.1.1"));
-    }
-
-    #[test]
-    fn test_session_list_partial_template_current_session() {
-        let current_session = AuthSessionItem {
-            uuid: Uuid::new_v4(),
-            ip_address: "10.0.0.1".to_string(),
-            device_info: "Safari on macOS".to_string(),
-            last_activity: Utc::now(),
-            created_at: Utc::now(),
-            is_current: true,
-            is_expired: false,
-        };
-        let template = SessionListPartialTemplate {
-            sessions: vec![current_session],
-        };
-        let result = template.render();
-        assert!(result.is_ok());
-        let html = result.unwrap();
-        assert!(html.contains("Current session"));
-        assert!(html.contains("This device"));
-        // Should NOT have a revoke button for current session
-        assert!(!html.contains("Revoke</button>") || html.contains("This device"));
-    }
-
-    #[test]
-    fn test_session_list_partial_template_other_session() {
-        let other_session = AuthSessionItem {
-            uuid: Uuid::new_v4(),
-            ip_address: "192.168.1.100".to_string(),
-            device_info: "Firefox on Windows".to_string(),
-            last_activity: Utc::now(),
-            created_at: Utc::now(),
-            is_current: false,
-            is_expired: false,
-        };
-        let template = SessionListPartialTemplate {
-            sessions: vec![other_session],
-        };
-        let result = template.render();
-        assert!(result.is_ok());
-        let html = result.unwrap();
-        assert!(html.contains("Firefox on Windows"));
-        // Should NOT have "Current session" badge
-        assert!(!html.contains("Current session"));
-        // Should have revoke button
-        assert!(html.contains("Revoke"));
-    }
-
-    #[test]
-    fn test_session_list_partial_template_mixed_sessions() {
-        let current_session = AuthSessionItem {
-            uuid: Uuid::new_v4(),
-            ip_address: "10.0.0.1".to_string(),
-            device_info: "Safari on macOS".to_string(),
-            last_activity: Utc::now(),
-            created_at: Utc::now(),
-            is_current: true,
-            is_expired: false,
-        };
-        let other_session = AuthSessionItem {
-            uuid: Uuid::new_v4(),
-            ip_address: "192.168.1.100".to_string(),
-            device_info: "Chrome on iPhone".to_string(),
-            last_activity: Utc::now(),
-            created_at: Utc::now(),
-            is_current: false,
-            is_expired: false,
-        };
-        let template = SessionListPartialTemplate {
-            sessions: vec![current_session, other_session],
-        };
-        let result = template.render();
-        assert!(result.is_ok());
-        let html = result.unwrap();
-        // Should have both sessions
-        assert!(html.contains("Safari on macOS"));
-        assert!(html.contains("Chrome on iPhone"));
-        // Should have exactly one "Current session" badge
-        assert!(html.matches("Current session").count() == 1);
     }
 }

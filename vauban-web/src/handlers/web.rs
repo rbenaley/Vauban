@@ -532,80 +532,6 @@ pub async fn user_sessions(
     Ok(Html(html))
 }
 
-/// User sessions list fragment (HTMX partial).
-/// Returns just the sessions list HTML without the full page wrapper.
-/// This allows each client to get a personalized "Current session" indicator.
-pub async fn user_sessions_list(
-    State(state): State<AppState>,
-    jar: axum_extra::extract::CookieJar,
-    auth_user: AuthUser,
-) -> Result<impl IntoResponse, AppError> {
-    use crate::models::AuthSession;
-    use sha3::{Digest, Sha3_256};
-
-    let mut conn = get_connection(&state.db_pool)?;
-
-    // Get current token hash to identify the real current session
-    let current_token_hash = jar
-        .get("access_token")
-        .map(|cookie| {
-            let mut hasher = Sha3_256::new();
-            hasher.update(cookie.value().as_bytes());
-            format!("{:x}", hasher.finalize())
-        });
-
-    let user_id: i32 = auth_user
-        .uuid
-        .parse::<uuid::Uuid>()
-        .ok()
-        .and_then(|uuid| {
-            use crate::schema::users;
-            users::table
-                .filter(users::uuid.eq(uuid))
-                .select(users::id)
-                .first::<i32>(&mut conn)
-                .ok()
-        })
-        .unwrap_or(0);
-
-    let db_sessions: Vec<AuthSession> = auth_sessions::table
-        .filter(auth_sessions::user_id.eq(user_id))
-        .filter(auth_sessions::expires_at.gt(chrono::Utc::now()))
-        .order(auth_sessions::created_at.desc())
-        .load(&mut conn)
-        .unwrap_or_default();
-
-    // Build sessions with correct current session detection
-    let sessions: Vec<AuthSessionItem> = db_sessions
-        .into_iter()
-        .map(|s| {
-            let device_info = s.device_info.clone().unwrap_or_else(|| {
-                AuthSession::parse_device_info(s.user_agent.as_deref().unwrap_or(""))
-            });
-            let is_current = current_token_hash
-                .as_ref()
-                .map(|hash| hash == &s.token_hash)
-                .unwrap_or(false);
-            AuthSessionItem {
-                uuid: s.uuid,
-                ip_address: s.ip_address.ip().to_string(),
-                device_info,
-                last_activity: s.last_activity,
-                created_at: s.created_at,
-                is_current,
-                is_expired: s.is_expired(),
-            }
-        })
-        .collect();
-
-    // Render just the list items (partial template)
-    let template = crate::templates::accounts::SessionListPartialTemplate { sessions };
-    let html = template
-        .render()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
-    Ok(Html(html))
-}
-
 /// API keys list page.
 pub async fn api_keys(
     State(state): State<AppState>,
@@ -718,20 +644,96 @@ pub async fn revoke_session(
     Ok(Html(""))
 }
 
-/// Broadcast a refresh signal to WebSocket clients for user sessions.
+/// Broadcast updated sessions list to WebSocket clients.
 /// Called when a session is created or revoked.
-/// Instead of sending pre-rendered HTML (which can't identify the current session per client),
-/// we send a trigger that causes each client to reload their sessions list via HTTP.
-pub async fn broadcast_sessions_update(state: &AppState, user_uuid: &str, _user_id: i32) {
-    use crate::services::broadcast::WsChannel;
+pub async fn broadcast_sessions_update(state: &AppState, user_uuid: &str, user_id: i32) {
+    use crate::models::AuthSession;
+    use crate::services::broadcast::{WsChannel, WsMessage};
 
-    // Send a refresh trigger via WebSocket.
-    // The client-side HTMX will react to this by making a GET request to /accounts/sessions/list,
-    // which will return personalized HTML with the correct "Current session" for each client.
-    let refresh_html = r##"<div id="sessions-refresh-trigger" hx-get="/accounts/sessions/list" hx-trigger="load" hx-target="#sessions-list" hx-swap="innerHTML"></div>"##;
+    // Load current sessions
+    let sessions_html = match get_connection(&state.db_pool) {
+        Ok(mut conn) => {
+            let db_sessions: Vec<AuthSession> = auth_sessions::table
+                .filter(auth_sessions::user_id.eq(user_id))
+                .filter(auth_sessions::expires_at.gt(chrono::Utc::now()))
+                .order(auth_sessions::created_at.desc())
+                .load(&mut conn)
+                .unwrap_or_default();
 
+            // Build HTML for the sessions list
+            let mut html = String::new();
+            for s in db_sessions {
+                let device_info = s.device_info.clone().unwrap_or_else(|| {
+                    AuthSession::parse_device_info(s.user_agent.as_deref().unwrap_or(""))
+                });
+                let is_current = s.is_current;
+                let ip = s.ip_address.ip().to_string();
+                let uuid = s.uuid;
+
+                let icon_class = if is_current {
+                    "bg-green-100 dark:bg-green-900"
+                } else {
+                    "bg-gray-100 dark:bg-gray-700"
+                };
+                let icon_color = if is_current {
+                    "text-green-600 dark:text-green-400"
+                } else {
+                    "text-gray-600 dark:text-gray-400"
+                };
+
+                let current_badge = if is_current {
+                    r#"<span class="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200">Current session</span>"#
+                } else {
+                    ""
+                };
+
+                let action_html = if is_current {
+                    r#"<span class="text-xs text-gray-400 dark:text-gray-500">This device</span>"#.to_string()
+                } else {
+                    format!(
+                        r#"<form hx-post="/accounts/sessions/{}/revoke" hx-confirm="Are you sure you want to revoke this session?" hx-target="closest li" hx-swap="outerHTML">
+                            <button type="submit" class="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded text-red-700 bg-red-100 hover:bg-red-200 dark:text-red-200 dark:bg-red-900 dark:hover:bg-red-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500">Revoke</button>
+                        </form>"#,
+                        uuid
+                    )
+                };
+
+                html.push_str(&format!(
+                    r#"<li id="session-row-{}" class="px-6 py-4">
+                        <div class="flex items-center justify-between">
+                            <div class="flex items-center min-w-0 gap-x-4">
+                                <div class="flex-shrink-0">
+                                    <span class="inline-flex items-center justify-center h-10 w-10 rounded-full {}">
+                                        <svg class="h-5 w-5 {}" fill="currentColor" viewBox="0 0 20 20">
+                                            <path fill-rule="evenodd" d="M3 5a2 2 0 012-2h10a2 2 0 012 2v8a2 2 0 01-2 2h-2.22l.123.489.804.804A1 1 0 0113 18H7a1 1 0 01-.707-1.707l.804-.804L7.22 15H5a2 2 0 01-2-2V5zm5.771 7H5V5h10v7H8.771z" clip-rule="evenodd" />
+                                        </svg>
+                                    </span>
+                                </div>
+                                <div class="min-w-0 flex-1">
+                                    <p class="text-sm font-medium text-gray-900 dark:text-white truncate">{}{}</p>
+                                    <p class="text-sm text-gray-500 dark:text-gray-400">IP: {}</p>
+                                </div>
+                            </div>
+                            <div class="flex-shrink-0">{}</div>
+                        </div>
+                    </li>"#,
+                    uuid, icon_class, icon_color, device_info, current_badge, ip, action_html
+                ));
+            }
+
+            if html.is_empty() {
+                html = r#"<li class="px-6 py-8 text-center text-gray-500 dark:text-gray-400">No active sessions</li>"#.to_string();
+            }
+
+            html
+        }
+        Err(_) => return,
+    };
+
+    // Send via WebSocket
     let channel = WsChannel::UserAuthSessions(user_uuid.to_string());
-    state.broadcast.send_raw(&channel.as_str(), refresh_html.to_string()).await.ok();
+    let message = WsMessage::new("sessions-list", sessions_html);
+    state.broadcast.send(&channel, message).await.ok();
 }
 
 /// Revoke an API key.
