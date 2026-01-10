@@ -28,10 +28,12 @@
         </div>
     </div>
     {% else %}
-    <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
-        <ul role="list" class="divide-y divide-gray-200 dark:divide-gray-700">
+    <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden"
+         hx-ext="ws"
+         ws-connect="/ws/notifications">
+        <ul role="list" class="divide-y divide-gray-200 dark:divide-gray-700" id="sessions-list">
             {% for session in sessions %}
-            <li class="px-6 py-4">
+            <li id="session-row-{{ session.uuid }}" class="px-6 py-4">
                 <div class="flex items-center justify-between">
                     <div class="flex items-center min-w-0 gap-x-4">
                         <div class="flex-shrink-0">

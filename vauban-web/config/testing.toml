@@ -6,6 +6,7 @@ secret_key = "test-secret-key-for-integration-tests!"
 
 [database]
 url = "postgresql://vauban_test:vauban_test@localhost/vauban_test"
+max_connections = 30
 
 [logging]
 level = "warn"

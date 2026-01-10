@@ -8,17 +8,21 @@ use axum::{
     response::{Html, IntoResponse, Response},
 };
 use axum_extra::extract::CookieJar;
+use chrono::{Duration, Utc};
+use diesel::prelude::*;
+use ipnetwork::IpNetwork;
 use serde::{Deserialize, Serialize};
+use sha3::{Digest, Sha3_256};
 use validator::Validate;
 
 use crate::AppState;
 use crate::db::get_connection;
 use crate::error::{AppError, AppResult};
 use crate::middleware::auth::AuthUser;
+use crate::models::auth_session::{AuthSession, NewAuthSession};
 use crate::models::user::User;
-use crate::schema::users::dsl::*;
+use crate::schema::{auth_sessions, users::dsl::*};
 use crate::services::auth::AuthService;
-use diesel::prelude::*;
 
 /// Check if request is from HTMX (has HX-Request header)
 fn is_htmx_request(headers: &HeaderMap) -> bool {
@@ -164,6 +168,58 @@ pub async fn login(
         .execute(&mut conn)
         .map_err(|e| AppError::Database(e))?;
 
+    // Create auth session record for session management
+    let token_hash = hash_token(&access_token);
+    let client_ip = extract_client_ip(&headers);
+    let user_agent_str = headers
+        .get("User-Agent")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let device_info = user_agent_str
+        .as_ref()
+        .map(|ua| AuthSession::parse_device_info(ua));
+
+    // Mark any existing "current" sessions as not current
+    diesel::update(
+        auth_sessions::table
+            .filter(auth_sessions::user_id.eq(user.id))
+            .filter(auth_sessions::is_current.eq(true)),
+    )
+    .set(auth_sessions::is_current.eq(false))
+    .execute(&mut conn)
+    .ok(); // Ignore errors - not critical
+
+    // Insert new session
+    let new_session = NewAuthSession {
+        uuid: ::uuid::Uuid::new_v4(),
+        user_id: user.id,
+        token_hash,
+        ip_address: client_ip,
+        user_agent: user_agent_str,
+        device_info,
+        expires_at: Utc::now() + Duration::minutes(state.auth_service.access_token_lifetime_minutes() as i64),
+        is_current: true,
+    };
+
+    let session_created = diesel::insert_into(auth_sessions::table)
+        .values(&new_session)
+        .execute(&mut conn)
+        .map_err(|e| {
+            tracing::warn!("Failed to create auth session: {}", e);
+            e
+        })
+        .is_ok();
+
+    // Broadcast session update to all connected WebSocket clients for this user
+    if session_created {
+        crate::handlers::web::broadcast_sessions_update(
+            &state,
+            &user.uuid.to_string(),
+            user.id,
+        )
+        .await;
+    }
+
     // Set cookie
     use axum_extra::extract::cookie::{Cookie, SameSite};
     let cookie = Cookie::build(("access_token", access_token.clone()))
@@ -228,16 +284,83 @@ fn login_mfa_required_html() -> String {
     </div>"#.to_string()
 }
 
+/// Hash a token using SHA3-256 for secure storage.
+fn hash_token(token: &str) -> String {
+    let mut hasher = Sha3_256::new();
+    hasher.update(token.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+/// Extract client IP from headers (X-Forwarded-For, X-Real-IP) or fallback.
+fn extract_client_ip(headers: &HeaderMap) -> IpNetwork {
+    // Try X-Forwarded-For first (comma-separated list, first is original client)
+    if let Some(xff) = headers.get("X-Forwarded-For") {
+        if let Ok(xff_str) = xff.to_str() {
+            if let Some(first_ip) = xff_str.split(',').next() {
+                if let Ok(ip) = first_ip.trim().parse::<std::net::IpAddr>() {
+                    return IpNetwork::from(ip);
+                }
+            }
+        }
+    }
+
+    // Try X-Real-IP
+    if let Some(real_ip) = headers.get("X-Real-IP") {
+        if let Ok(ip_str) = real_ip.to_str() {
+            if let Ok(ip) = ip_str.parse::<std::net::IpAddr>() {
+                return IpNetwork::from(ip);
+            }
+        }
+    }
+
+    // Fallback to localhost
+    IpNetwork::from(std::net::IpAddr::from([127, 0, 0, 1]))
+}
+
 /// Logout handler.
-pub async fn logout(jar: CookieJar) -> Response {
+/// Invalidates the current session in the database and clears the cookie.
+pub async fn logout(State(state): State<AppState>, jar: CookieJar) -> Response {
     use axum::response::Redirect;
     use axum_extra::extract::cookie::Cookie;
-    use time::Duration;
+    use time::Duration as TimeDuration;
+
+    // Try to invalidate session in database and broadcast update
+    if let Some(token_cookie) = jar.get("access_token") {
+        let token_hash = hash_token(token_cookie.value());
+        if let Ok(mut conn) = get_connection(&state.db_pool) {
+            // First, get the user info from the session before deleting
+            let user_info: Option<(i32, ::uuid::Uuid)> = auth_sessions::table
+                .inner_join(crate::schema::users::table)
+                .filter(auth_sessions::token_hash.eq(&token_hash))
+                .select((crate::schema::users::id, crate::schema::users::uuid))
+                .first(&mut conn)
+                .ok();
+
+            // Delete session by token hash
+            let deleted = diesel::delete(
+                auth_sessions::table.filter(auth_sessions::token_hash.eq(&token_hash)),
+            )
+            .execute(&mut conn)
+            .unwrap_or(0);
+
+            // Broadcast session update to other connected clients
+            if deleted > 0 {
+                if let Some((user_id, user_uuid_val)) = user_info {
+                    crate::handlers::web::broadcast_sessions_update(
+                        &state,
+                        &user_uuid_val.to_string(),
+                        user_id,
+                    )
+                    .await;
+                }
+            }
+        }
+    }
 
     let cookie = Cookie::build(("access_token", ""))
         .path("/")
         .http_only(true)
-        .max_age(Duration::ZERO)
+        .max_age(TimeDuration::ZERO)
         .build();
 
     (jar.add(cookie), Redirect::to("/login")).into_response()

@@ -49,6 +49,11 @@ impl AuthService {
         })
     }
 
+    /// Get access token lifetime in minutes.
+    pub fn access_token_lifetime_minutes(&self) -> u64 {
+        self.config.jwt.access_token_lifetime_minutes
+    }
+
     /// Hash password using Argon2id.
     pub fn hash_password(&self, password: &str) -> AppResult<String> {
         let salt = SaltString::generate(&mut OsRng);

@@ -1,6 +1,7 @@
 /// VAUBAN Web - Authentication middleware.
 ///
 /// Extracts and validates JWT tokens from requests.
+/// Sessions are validated against the database to support revocation.
 use axum::{
     extract::{FromRequestParts, Request, State},
     http::request::Parts,
@@ -8,10 +9,15 @@ use axum::{
     response::Response,
 };
 use axum_extra::extract::CookieJar;
+use diesel::prelude::*;
 use serde::{Deserialize, Serialize};
+use sha3::{Digest, Sha3_256};
 
+use crate::db::get_connection;
 use crate::error::AppError;
+use crate::schema::auth_sessions;
 use crate::services::auth::AuthService;
+use crate::AppState;
 
 /// Authenticated user context.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,8 +61,9 @@ where
 }
 
 /// Extract authenticated user from request.
+/// Validates JWT token and verifies session exists in database (for revocation support).
 pub async fn auth_middleware(
-    State(auth_service): State<AuthService>,
+    State(state): State<AppState>,
     jar: CookieJar,
     mut request: Request,
     next: Next,
@@ -65,16 +72,21 @@ pub async fn auth_middleware(
     let token = extract_token(&jar, &request)?;
 
     if let Some(token) = token {
-        match auth_service.verify_token(&token) {
+        match state.auth_service.verify_token(&token) {
             Ok(claims) => {
-                let user = AuthUser {
-                    uuid: claims.sub,
-                    username: claims.username,
-                    mfa_verified: claims.mfa_verified,
-                    is_superuser: claims.is_superuser,
-                    is_staff: claims.is_staff,
-                };
-                request.extensions_mut().insert(user);
+                // Verify session exists in database (supports revocation)
+                if verify_session_exists(&state, &token) {
+                    let user = AuthUser {
+                        uuid: claims.sub,
+                        username: claims.username,
+                        mfa_verified: claims.mfa_verified,
+                        is_superuser: claims.is_superuser,
+                        is_staff: claims.is_staff,
+                    };
+                    request.extensions_mut().insert(user);
+                } else {
+                    tracing::debug!("Session not found in database (revoked or expired)");
+                }
             }
             Err(e) => {
                 // Log the error but don't fail - just continue without authentication
@@ -85,6 +97,31 @@ pub async fn auth_middleware(
     }
 
     Ok(next.run(request).await)
+}
+
+/// Verify that the session exists in the database.
+/// Returns false if the session has been revoked or doesn't exist.
+fn verify_session_exists(state: &AppState, token: &str) -> bool {
+    // Hash the token
+    let mut hasher = Sha3_256::new();
+    hasher.update(token.as_bytes());
+    let token_hash = format!("{:x}", hasher.finalize());
+
+    // Check database
+    if let Ok(mut conn) = get_connection(&state.db_pool) {
+        let exists: Result<i64, _> = auth_sessions::table
+            .filter(auth_sessions::token_hash.eq(&token_hash))
+            .filter(auth_sessions::expires_at.gt(chrono::Utc::now()))
+            .count()
+            .get_result(&mut conn);
+
+        matches!(exists, Ok(count) if count > 0)
+    } else {
+        // If database is unavailable, fail open for availability
+        // In high-security environments, consider failing closed instead
+        tracing::warn!("Database unavailable for session verification, allowing token");
+        true
+    }
 }
 
 /// Extract token from Authorization header or cookie.

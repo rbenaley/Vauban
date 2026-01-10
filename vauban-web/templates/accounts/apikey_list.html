@@ -42,7 +42,9 @@
         </div>
     </div>
     {% else %}
-    <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+    <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden"
+         hx-ext="ws"
+         ws-connect="/ws/notifications">
         <table class="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
             <thead class="bg-gray-50 dark:bg-gray-900">
                 <tr>

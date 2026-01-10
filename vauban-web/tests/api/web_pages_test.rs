@@ -11,7 +11,18 @@ use crate::fixtures::{
     create_test_vauban_group, create_test_asset_in_group, unique_name,
 };
 use axum::http::header::COOKIE;
+use diesel::prelude::*;
 use uuid::Uuid;
+
+/// Helper to get user UUID from user_id.
+fn get_user_uuid(conn: &mut diesel::PgConnection, user_id: i32) -> Uuid {
+    use vauban_web::schema::users;
+    users::table
+        .filter(users::id.eq(user_id))
+        .select(users::uuid)
+        .first(conn)
+        .expect("User should exist")
+}
 
 // =============================================================================
 // Session Detail Page Tests (triple JOIN with ::text casts)
@@ -22,14 +33,15 @@ async fn test_session_detail_page_loads() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn();
 
-    // Create test data
+    // Create test data with proper user UUID
     let user_id = create_simple_user(&mut conn, "test_session_page");
+    let user_uuid = get_user_uuid(&mut conn, user_id);
     let asset_id = create_simple_ssh_asset(&mut conn, "test-session-page-asset", user_id);
     let session_id = create_test_session(&mut conn, user_id, asset_id, "ssh", "active");
 
     // Generate auth token
     let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
+        &user_uuid.to_string(),
         "test_session_page",
         true,
         true,
@@ -84,11 +96,12 @@ async fn test_recording_play_page_with_recorded_session() {
 
     // Create test data with recorded session
     let user_id = create_simple_user(&mut conn, "test_recording_page");
+    let user_uuid = get_user_uuid(&mut conn, user_id);
     let asset_id = create_simple_ssh_asset(&mut conn, "test-recording-asset", user_id);
     let session_id = create_recorded_session(&mut conn, user_id, asset_id);
 
     let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
+        &user_uuid.to_string(),
         "test_recording_page",
         true,
         true,
@@ -220,11 +233,12 @@ async fn test_approval_detail_page_loads() {
 
     // Create test data with justification (approval request)
     let user_id = create_simple_user(&mut conn, "test_approval_detail");
+    let user_uuid = get_user_uuid(&mut conn, user_id);
     let asset_id = create_simple_ssh_asset(&mut conn, "test-approval-asset", user_id);
     let session_uuid = create_approval_request(&mut conn, user_id, asset_id);
 
     let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
+        &user_uuid.to_string(),
         "test_approval_detail",
         true,
         true,
@@ -301,11 +315,12 @@ async fn test_active_sessions_with_data() {
 
     // Create an active session
     let user_id = create_simple_user(&mut conn, "test_active_data");
+    let user_uuid = get_user_uuid(&mut conn, user_id);
     let asset_id = create_simple_ssh_asset(&mut conn, "test-active-asset", user_id);
     let _session_id = create_test_session(&mut conn, user_id, asset_id, "ssh", "active");
 
     let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
+        &user_uuid.to_string(),
         "test_active_data",
         true,
         true,
@@ -504,10 +519,11 @@ async fn test_asset_detail_page_loads() {
     let mut conn = app.get_conn();
 
     let user_id = create_simple_user(&mut conn, "test_asset_detail_page");
+    let user_uuid = get_user_uuid(&mut conn, user_id);
     let asset_id = create_simple_ssh_asset(&mut conn, "test-asset-detail", user_id);
 
     let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
+        &user_uuid.to_string(),
         "test_asset_detail_page",
         true,
         true,

@@ -22,6 +22,10 @@ pub enum WsChannel {
     Notifications,
     /// Live session updates for a specific session.
     SessionLive(String),
+    /// User auth sessions list updates (for /accounts/sessions page).
+    UserAuthSessions(String),
+    /// User API keys list updates (for /accounts/apikeys page).
+    UserApiKeys(String),
 }
 
 impl WsChannel {
@@ -33,6 +37,8 @@ impl WsChannel {
             WsChannel::RecentActivity => "dashboard:recent-activity".to_string(),
             WsChannel::Notifications => "notifications".to_string(),
             WsChannel::SessionLive(id) => format!("session:{}", id),
+            WsChannel::UserAuthSessions(user_id) => format!("user:{}:auth-sessions", user_id),
+            WsChannel::UserApiKeys(user_id) => format!("user:{}:api-keys", user_id),
         }
     }
 
@@ -46,6 +52,14 @@ impl WsChannel {
             s if s.starts_with("session:") => {
                 let id = s.strip_prefix("session:")?.to_string();
                 Some(WsChannel::SessionLive(id))
+            }
+            s if s.starts_with("user:") && s.ends_with(":auth-sessions") => {
+                let user_id = s.strip_prefix("user:")?.strip_suffix(":auth-sessions")?.to_string();
+                Some(WsChannel::UserAuthSessions(user_id))
+            }
+            s if s.starts_with("user:") && s.ends_with(":api-keys") => {
+                let user_id = s.strip_prefix("user:")?.strip_suffix(":api-keys")?.to_string();
+                Some(WsChannel::UserApiKeys(user_id))
             }
             _ => None,
         }
