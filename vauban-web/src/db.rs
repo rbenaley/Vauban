@@ -82,4 +82,34 @@ mod tests {
             _ => panic!("Expected Config error"),
         }
     }
+
+    // ==================== Additional Error Mapping Tests ====================
+
+    #[test]
+    fn test_database_error_serialization_failure() {
+        let error = diesel::result::Error::DatabaseError(
+            diesel::result::DatabaseErrorKind::SerializationFailure,
+            Box::new("Connection pool timeout".to_string()),
+        );
+
+        match error {
+            diesel::result::Error::DatabaseError(kind, _) => {
+                assert!(matches!(kind, diesel::result::DatabaseErrorKind::SerializationFailure));
+            }
+            _ => panic!("Expected DatabaseError"),
+        }
+    }
+
+    #[test]
+    fn test_config_error_message_format() {
+        let msg = format!("Failed to create database pool: {}", "connection refused");
+        let error = AppError::Config(msg.clone());
+
+        if let AppError::Config(inner) = error {
+            assert!(inner.contains("connection refused"));
+            assert!(inner.starts_with("Failed to create database pool:"));
+        } else {
+            panic!("Expected Config error");
+        }
+    }
 }

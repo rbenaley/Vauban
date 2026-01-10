@@ -549,6 +549,8 @@ async fn handle_notifications_socket(
 mod tests {
     use super::*;
 
+    // ==================== WsChannel Tests ====================
+
     #[test]
     fn test_ws_channel_session_live() {
         let channel = WsChannel::SessionLive("test-123".to_string());
@@ -559,5 +561,42 @@ mod tests {
     fn test_ws_channel_dashboard_stats() {
         let channel = WsChannel::DashboardStats;
         assert_eq!(channel.as_str(), "dashboard:stats");
+    }
+
+    #[test]
+    fn test_ws_channel_active_sessions() {
+        let channel = WsChannel::ActiveSessions;
+        assert_eq!(channel.as_str(), "dashboard:active-sessions");
+    }
+
+    #[test]
+    fn test_ws_channel_recent_activity() {
+        let channel = WsChannel::RecentActivity;
+        assert_eq!(channel.as_str(), "dashboard:recent-activity");
+    }
+
+    #[test]
+    fn test_ws_channel_notifications() {
+        let channel = WsChannel::Notifications;
+        assert_eq!(channel.as_str(), "notifications");
+    }
+
+    #[test]
+    fn test_ws_channel_user_auth_sessions() {
+        let channel = WsChannel::UserAuthSessions("user-uuid-123".to_string());
+        assert_eq!(channel.as_str(), "user:user-uuid-123:auth-sessions");
+    }
+
+    #[test]
+    fn test_ws_channel_user_api_keys() {
+        let channel = WsChannel::UserApiKeys("user-uuid-456".to_string());
+        assert_eq!(channel.as_str(), "user:user-uuid-456:api-keys");
+    }
+
+    // ==================== PING_INTERVAL Tests ====================
+
+    #[test]
+    fn test_ping_interval_value() {
+        assert_eq!(PING_INTERVAL_SECS, 30);
     }
 }

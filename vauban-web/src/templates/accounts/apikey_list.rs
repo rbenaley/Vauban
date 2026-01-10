@@ -200,4 +200,109 @@ mod tests {
         let key = create_test_api_key();
         assert!(!key.is_expired());
     }
+
+    // ==================== Edge Cases ====================
+
+    #[test]
+    fn test_api_key_item_expired_key() {
+        use chrono::Duration;
+        let key = ApiKeyItem {
+            uuid: Uuid::new_v4(),
+            name: "Expired Key".to_string(),
+            key_prefix: "vbn_expired".to_string(),
+            scopes: vec![],
+            last_used_at: Some(Utc::now() - Duration::days(30)),
+            expires_at: Some(Utc::now() - Duration::hours(1)),
+            is_active: true,
+            created_at: Utc::now() - Duration::days(90),
+        };
+
+        assert!(key.is_expired());
+    }
+
+    #[test]
+    fn test_api_key_item_inactive_key() {
+        let key = ApiKeyItem {
+            uuid: Uuid::new_v4(),
+            name: "Inactive Key".to_string(),
+            key_prefix: "vbn_inactive".to_string(),
+            scopes: vec!["read".to_string()],
+            last_used_at: None,
+            expires_at: None,
+            is_active: false,
+            created_at: Utc::now(),
+        };
+
+        assert!(!key.is_active);
+    }
+
+    #[test]
+    fn test_api_key_item_empty_scopes() {
+        let key = ApiKeyItem {
+            uuid: Uuid::new_v4(),
+            name: "No Scopes".to_string(),
+            key_prefix: "vbn_none".to_string(),
+            scopes: vec![],
+            last_used_at: None,
+            expires_at: None,
+            is_active: true,
+            created_at: Utc::now(),
+        };
+
+        assert_eq!(key.scopes_display(), "");
+    }
+
+    #[test]
+    fn test_api_key_item_many_scopes() {
+        let key = ApiKeyItem {
+            uuid: Uuid::new_v4(),
+            name: "Many Scopes".to_string(),
+            key_prefix: "vbn_many".to_string(),
+            scopes: vec![
+                "read".to_string(),
+                "write".to_string(),
+                "delete".to_string(),
+                "admin".to_string(),
+            ],
+            last_used_at: None,
+            expires_at: None,
+            is_active: true,
+            created_at: Utc::now(),
+        };
+
+        assert_eq!(key.scopes_display(), "read, write, delete, admin");
+    }
+
+    #[test]
+    fn test_api_key_item_unicode_name() {
+        let key = ApiKeyItem {
+            uuid: Uuid::new_v4(),
+            name: "密钥 🔑".to_string(),
+            key_prefix: "vbn_unicode".to_string(),
+            scopes: vec![],
+            last_used_at: None,
+            expires_at: None,
+            is_active: true,
+            created_at: Utc::now(),
+        };
+
+        assert_eq!(key.name, "密钥 🔑");
+    }
+
+    #[test]
+    fn test_api_key_item_long_name() {
+        let long_name = "A".repeat(200);
+        let key = ApiKeyItem {
+            uuid: Uuid::new_v4(),
+            name: long_name.clone(),
+            key_prefix: "vbn_long".to_string(),
+            scopes: vec![],
+            last_used_at: None,
+            expires_at: None,
+            is_active: true,
+            created_at: Utc::now(),
+        };
+
+        assert_eq!(key.name.len(), 200);
+    }
 }

@@ -353,4 +353,93 @@ mod tests {
         // Should return empty string (the code after "Bearer ")
         assert_eq!(result, Some("".to_string()));
     }
+
+    // ==================== Additional AuthUser Tests ====================
+
+    #[test]
+    fn test_auth_user_superuser_flag() {
+        let user = AuthUser {
+            uuid: "admin-uuid".to_string(),
+            username: "admin".to_string(),
+            mfa_verified: true,
+            is_superuser: true,
+            is_staff: true,
+        };
+
+        assert!(user.is_superuser);
+        assert!(user.is_staff);
+    }
+
+    #[test]
+    fn test_auth_user_regular_user() {
+        let user = AuthUser {
+            uuid: "regular-uuid".to_string(),
+            username: "regular".to_string(),
+            mfa_verified: false,
+            is_superuser: false,
+            is_staff: false,
+        };
+
+        assert!(!user.is_superuser);
+        assert!(!user.is_staff);
+        assert!(!user.mfa_verified);
+    }
+
+    #[test]
+    fn test_auth_user_empty_fields() {
+        let user = AuthUser {
+            uuid: "".to_string(),
+            username: "".to_string(),
+            mfa_verified: false,
+            is_superuser: false,
+            is_staff: false,
+        };
+
+        assert_eq!(user.uuid, "");
+        assert_eq!(user.username, "");
+    }
+
+    #[test]
+    fn test_auth_user_unicode_username() {
+        let user = AuthUser {
+            uuid: "uuid".to_string(),
+            username: "用户名".to_string(),
+            mfa_verified: false,
+            is_superuser: false,
+            is_staff: false,
+        };
+
+        assert_eq!(user.username, "用户名");
+    }
+
+    // ==================== OptionalAuthUser Additional Tests ====================
+
+    #[test]
+    fn test_optional_auth_user_unwrap_or_default() {
+        let opt = OptionalAuthUser(None);
+        let user = opt.0.unwrap_or(AuthUser {
+            uuid: "default".to_string(),
+            username: "anonymous".to_string(),
+            mfa_verified: false,
+            is_superuser: false,
+            is_staff: false,
+        });
+
+        assert_eq!(user.username, "anonymous");
+    }
+
+    #[test]
+    fn test_optional_auth_user_is_some() {
+        let user = create_test_user();
+        let opt = OptionalAuthUser(Some(user));
+
+        assert!(opt.0.is_some());
+    }
+
+    #[test]
+    fn test_optional_auth_user_is_none() {
+        let opt = OptionalAuthUser(None);
+
+        assert!(opt.0.is_none());
+    }
 }
