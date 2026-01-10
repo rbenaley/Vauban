@@ -6,7 +6,9 @@ use axum::{
     },
     response::IntoResponse,
 };
+use axum_extra::extract::CookieJar;
 use futures_util::{SinkExt, StreamExt};
+use sha3::{Digest, Sha3_256};
 /// VAUBAN Web - WebSocket handlers.
 ///
 /// Handles WebSocket connections for real-time updates.
@@ -412,32 +414,58 @@ async fn handle_session_socket(
 /// Notifications WebSocket handler.
 ///
 /// Establishes a WebSocket connection for user notifications only.
+/// Extracts the access_token cookie to compute token_hash for personalized messages.
 pub async fn notifications_ws(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
+    jar: CookieJar,
     user: AuthUser,
 ) -> impl IntoResponse {
     info!(user = %user.username, "Notifications WebSocket connection requested");
-    ws.on_upgrade(move |socket| handle_notifications_socket(socket, state, user))
+
+    // Compute token_hash from access_token cookie for personalized session identification
+    let token_hash = jar
+        .get("access_token")
+        .map(|cookie| {
+            let mut hasher = Sha3_256::new();
+            hasher.update(cookie.value().as_bytes());
+            format!("{:x}", hasher.finalize())
+        })
+        .unwrap_or_default();
+
+    ws.on_upgrade(move |socket| handle_notifications_socket(socket, state, user, token_hash))
 }
 
 /// Handle notifications WebSocket connection.
 /// Subscribes to user-specific channels for auth sessions and API keys updates.
-async fn handle_notifications_socket(socket: WebSocket, state: AppState, user: AuthUser) {
+/// Also registers with UserConnectionRegistry for personalized session updates.
+async fn handle_notifications_socket(
+    socket: WebSocket,
+    state: AppState,
+    user: AuthUser,
+    token_hash: String,
+) {
     let (mut sender, mut receiver) = socket.split();
 
-    // Subscribe to all relevant channels for this user
-    let mut notifications_rx = state.broadcast.subscribe(&WsChannel::Notifications).await;
-    let mut auth_sessions_rx = state
-        .broadcast
-        .subscribe(&WsChannel::UserAuthSessions(user.uuid.clone()))
+    // Register this connection for personalized auth session updates
+    let (connection_id, mut personalized_rx) = state
+        .user_connections
+        .register(&user.uuid, token_hash)
         .await;
+
+    // Subscribe to broadcast channels for other updates
+    let mut notifications_rx = state.broadcast.subscribe(&WsChannel::Notifications).await;
     let mut api_keys_rx = state
         .broadcast
         .subscribe(&WsChannel::UserApiKeys(user.uuid.clone()))
         .await;
 
-    info!(user = %user.username, user_uuid = %user.uuid, "Notifications WebSocket connected");
+    info!(
+        user = %user.username,
+        user_uuid = %user.uuid,
+        connection_id = %connection_id,
+        "Notifications WebSocket connected with personalized session support"
+    );
 
     // Create ping interval to keep connection alive
     let mut ping_interval = interval(Duration::from_secs(PING_INTERVAL_SECS));
@@ -480,13 +508,11 @@ async fn handle_notifications_socket(socket: WebSocket, state: AppState, user: A
                 }
             }
 
-            // User auth sessions channel (for /accounts/sessions page)
-            result = auth_sessions_rx.recv() => {
-                if let Ok(html) = result {
-                    debug!(user = %user.username, "Sending auth sessions update");
-                    if sender.send(Message::Text(html.into())).await.is_err() {
-                        should_close = true;
-                    }
+            // Personalized auth sessions updates (from UserConnectionRegistry)
+            Some(html) = personalized_rx.recv() => {
+                debug!(user = %user.username, "Sending personalized auth sessions update");
+                if sender.send(Message::Text(html.into())).await.is_err() {
+                    should_close = true;
                 }
             }
 
@@ -506,7 +532,17 @@ async fn handle_notifications_socket(socket: WebSocket, state: AppState, user: A
         }
     }
 
-    info!(user = %user.username, "Notifications WebSocket disconnected");
+    // Unregister this connection
+    state
+        .user_connections
+        .unregister(&user.uuid, connection_id)
+        .await;
+
+    info!(
+        user = %user.username,
+        connection_id = %connection_id,
+        "Notifications WebSocket disconnected"
+    );
 }
 
 #[cfg(test)]

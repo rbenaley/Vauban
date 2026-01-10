@@ -646,94 +646,112 @@ pub async fn revoke_session(
 
 /// Broadcast updated sessions list to WebSocket clients.
 /// Called when a session is created or revoked.
+/// Uses UserConnectionRegistry to send personalized HTML to each client,
+/// ensuring each client sees the correct "Current session" indicator.
+/// Also sends via the standard broadcast channel for backwards compatibility.
 pub async fn broadcast_sessions_update(state: &AppState, user_uuid: &str, user_id: i32) {
     use crate::models::AuthSession;
     use crate::services::broadcast::{WsChannel, WsMessage};
 
-    // Load current sessions
-    let sessions_html = match get_connection(&state.db_pool) {
-        Ok(mut conn) => {
-            let db_sessions: Vec<AuthSession> = auth_sessions::table
-                .filter(auth_sessions::user_id.eq(user_id))
-                .filter(auth_sessions::expires_at.gt(chrono::Utc::now()))
-                .order(auth_sessions::created_at.desc())
-                .load(&mut conn)
-                .unwrap_or_default();
-
-            // Build HTML for the sessions list
-            let mut html = String::new();
-            for s in db_sessions {
-                let device_info = s.device_info.clone().unwrap_or_else(|| {
-                    AuthSession::parse_device_info(s.user_agent.as_deref().unwrap_or(""))
-                });
-                let is_current = s.is_current;
-                let ip = s.ip_address.ip().to_string();
-                let uuid = s.uuid;
-
-                let icon_class = if is_current {
-                    "bg-green-100 dark:bg-green-900"
-                } else {
-                    "bg-gray-100 dark:bg-gray-700"
-                };
-                let icon_color = if is_current {
-                    "text-green-600 dark:text-green-400"
-                } else {
-                    "text-gray-600 dark:text-gray-400"
-                };
-
-                let current_badge = if is_current {
-                    r#"<span class="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200">Current session</span>"#
-                } else {
-                    ""
-                };
-
-                let action_html = if is_current {
-                    r#"<span class="text-xs text-gray-400 dark:text-gray-500">This device</span>"#.to_string()
-                } else {
-                    format!(
-                        r#"<form hx-post="/accounts/sessions/{}/revoke" hx-confirm="Are you sure you want to revoke this session?" hx-target="closest li" hx-swap="outerHTML">
-                            <button type="submit" class="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded text-red-700 bg-red-100 hover:bg-red-200 dark:text-red-200 dark:bg-red-900 dark:hover:bg-red-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500">Revoke</button>
-                        </form>"#,
-                        uuid
-                    )
-                };
-
-                html.push_str(&format!(
-                    r#"<li id="session-row-{}" class="px-6 py-4">
-                        <div class="flex items-center justify-between">
-                            <div class="flex items-center min-w-0 gap-x-4">
-                                <div class="flex-shrink-0">
-                                    <span class="inline-flex items-center justify-center h-10 w-10 rounded-full {}">
-                                        <svg class="h-5 w-5 {}" fill="currentColor" viewBox="0 0 20 20">
-                                            <path fill-rule="evenodd" d="M3 5a2 2 0 012-2h10a2 2 0 012 2v8a2 2 0 01-2 2h-2.22l.123.489.804.804A1 1 0 0113 18H7a1 1 0 01-.707-1.707l.804-.804L7.22 15H5a2 2 0 01-2-2V5zm5.771 7H5V5h10v7H8.771z" clip-rule="evenodd" />
-                                        </svg>
-                                    </span>
-                                </div>
-                                <div class="min-w-0 flex-1">
-                                    <p class="text-sm font-medium text-gray-900 dark:text-white truncate">{}{}</p>
-                                    <p class="text-sm text-gray-500 dark:text-gray-400">IP: {}</p>
-                                </div>
-                            </div>
-                            <div class="flex-shrink-0">{}</div>
-                        </div>
-                    </li>"#,
-                    uuid, icon_class, icon_color, device_info, current_badge, ip, action_html
-                ));
-            }
-
-            if html.is_empty() {
-                html = r#"<li class="px-6 py-8 text-center text-gray-500 dark:text-gray-400">No active sessions</li>"#.to_string();
-            }
-
-            html
-        }
+    // Load current sessions from database
+    let db_sessions: Vec<AuthSession> = match get_connection(&state.db_pool) {
+        Ok(mut conn) => auth_sessions::table
+            .filter(auth_sessions::user_id.eq(user_id))
+            .filter(auth_sessions::expires_at.gt(chrono::Utc::now()))
+            .order(auth_sessions::created_at.desc())
+            .load(&mut conn)
+            .unwrap_or_default(),
         Err(_) => return,
     };
 
-    // Send via WebSocket
+    // Send personalized HTML to each connected client via UserConnectionRegistry
+    state
+        .user_connections
+        .send_personalized(user_uuid, |client_token_hash| {
+            let sessions_html = build_sessions_html(&db_sessions, client_token_hash);
+            let message = WsMessage::new("sessions-list", sessions_html);
+            message.to_htmx_html()
+        })
+        .await;
+
+    // Also send via standard broadcast channel (for backwards compatibility and tests)
+    // This uses an empty token_hash, so no session will be marked as "current"
+    let generic_html = build_sessions_html(&db_sessions, "");
     let channel = WsChannel::UserAuthSessions(user_uuid.to_string());
-    let message = WsMessage::new("sessions-list", sessions_html);
+    let message = WsMessage::new("sessions-list", generic_html);
     state.broadcast.send(&channel, message).await.ok();
+}
+
+/// Build HTML for the sessions list, personalized for the client's token_hash.
+fn build_sessions_html(sessions: &[crate::models::AuthSession], client_token_hash: &str) -> String {
+    use crate::models::AuthSession;
+
+    if sessions.is_empty() {
+        return r#"<li class="px-6 py-8 text-center text-gray-500 dark:text-gray-400">No active sessions</li>"#.to_string();
+    }
+
+    let mut html = String::new();
+    for s in sessions {
+        let device_info = s.device_info.clone().unwrap_or_else(|| {
+            AuthSession::parse_device_info(s.user_agent.as_deref().unwrap_or(""))
+        });
+        // Determine if this is the current session by comparing token hashes
+        let is_current = !client_token_hash.is_empty() && client_token_hash == s.token_hash;
+        let ip = s.ip_address.ip().to_string();
+        let uuid = s.uuid;
+
+        let icon_class = if is_current {
+            "bg-green-100 dark:bg-green-900"
+        } else {
+            "bg-gray-100 dark:bg-gray-700"
+        };
+        let icon_color = if is_current {
+            "text-green-600 dark:text-green-400"
+        } else {
+            "text-gray-600 dark:text-gray-400"
+        };
+
+        let current_badge = if is_current {
+            r#"<span class="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200">Current session</span>"#
+        } else {
+            ""
+        };
+
+        let action_html = if is_current {
+            r#"<span class="text-xs text-gray-400 dark:text-gray-500">This device</span>"#.to_string()
+        } else {
+            format!(
+                r#"<form hx-post="/accounts/sessions/{}/revoke" hx-confirm="Are you sure you want to revoke this session?" hx-target="closest li" hx-swap="outerHTML">
+                    <button type="submit" class="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded text-red-700 bg-red-100 hover:bg-red-200 dark:text-red-200 dark:bg-red-900 dark:hover:bg-red-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500">Revoke</button>
+                </form>"#,
+                uuid
+            )
+        };
+
+        html.push_str(&format!(
+            r#"<li id="session-row-{}" class="px-6 py-4">
+                <div class="flex items-center justify-between">
+                    <div class="flex items-center min-w-0 gap-x-4">
+                        <div class="flex-shrink-0">
+                            <span class="inline-flex items-center justify-center h-10 w-10 rounded-full {}">
+                                <svg class="h-5 w-5 {}" fill="currentColor" viewBox="0 0 20 20">
+                                    <path fill-rule="evenodd" d="M3 5a2 2 0 012-2h10a2 2 0 012 2v8a2 2 0 01-2 2h-2.22l.123.489.804.804A1 1 0 0113 18H7a1 1 0 01-.707-1.707l.804-.804L7.22 15H5a2 2 0 01-2-2V5zm5.771 7H5V5h10v7H8.771z" clip-rule="evenodd" />
+                                </svg>
+                            </span>
+                        </div>
+                        <div class="min-w-0 flex-1">
+                            <p class="text-sm font-medium text-gray-900 dark:text-white truncate">{}{}</p>
+                            <p class="text-sm text-gray-500 dark:text-gray-400">IP: {}</p>
+                        </div>
+                    </div>
+                    <div class="flex-shrink-0">{}</div>
+                </div>
+            </li>"#,
+            uuid, icon_class, icon_color, device_info, current_badge, ip, action_html
+        ));
+    }
+
+    html
 }
 
 /// Revoke an API key.
@@ -2766,5 +2784,93 @@ mod tests {
         // Empty strings are valid for deserialization (validation is separate)
         assert_eq!(form.name, "");
         assert_eq!(form.slug, "");
+    }
+
+    // ==================== build_sessions_html Tests ====================
+
+    #[test]
+    fn test_build_sessions_html_empty() {
+        let html = super::build_sessions_html(&[], "some-token-hash");
+        assert!(html.contains("No active sessions"));
+    }
+
+    #[test]
+    fn test_build_sessions_html_current_session_detection() {
+        use crate::models::AuthSession;
+        use chrono::{Duration, Utc};
+        use ipnetwork::IpNetwork;
+        use uuid::Uuid;
+
+        let session = AuthSession {
+            id: 1,
+            uuid: Uuid::new_v4(),
+            user_id: 1,
+            token_hash: "matching-hash".to_string(),
+            ip_address: "192.168.1.1".parse::<IpNetwork>().unwrap(),
+            user_agent: Some("Chrome on macOS".to_string()),
+            device_info: Some("Chrome on macOS".to_string()),
+            is_current: false, // DB flag doesn't matter
+            last_activity: Utc::now(),
+            created_at: Utc::now(),
+            expires_at: Utc::now() + Duration::hours(1),
+        };
+
+        // When client token_hash matches, should show "Current session"
+        let html = super::build_sessions_html(&[session.clone()], "matching-hash");
+        assert!(html.contains("Current session"));
+        assert!(html.contains("This device"));
+
+        // When client token_hash doesn't match, should NOT show "Current session"
+        let html = super::build_sessions_html(&[session], "different-hash");
+        assert!(!html.contains("Current session"));
+        assert!(html.contains("Revoke"));
+    }
+
+    #[test]
+    fn test_build_sessions_html_multiple_sessions() {
+        use crate::models::AuthSession;
+        use chrono::{Duration, Utc};
+        use ipnetwork::IpNetwork;
+        use uuid::Uuid;
+
+        let sessions = vec![
+            AuthSession {
+                id: 1,
+                uuid: Uuid::new_v4(),
+                user_id: 1,
+                token_hash: "hash-a".to_string(),
+                ip_address: "192.168.1.1".parse::<IpNetwork>().unwrap(),
+                user_agent: Some("Safari on macOS".to_string()),
+                device_info: Some("Safari on macOS".to_string()),
+                is_current: false,
+                last_activity: Utc::now(),
+                created_at: Utc::now(),
+                expires_at: Utc::now() + Duration::hours(1),
+            },
+            AuthSession {
+                id: 2,
+                uuid: Uuid::new_v4(),
+                user_id: 1,
+                token_hash: "hash-b".to_string(),
+                ip_address: "10.0.0.1".parse::<IpNetwork>().unwrap(),
+                user_agent: Some("Chrome on iPhone".to_string()),
+                device_info: Some("Chrome on iPhone".to_string()),
+                is_current: false,
+                last_activity: Utc::now(),
+                created_at: Utc::now(),
+                expires_at: Utc::now() + Duration::hours(1),
+            },
+        ];
+
+        // Client with hash-a should see Safari as current
+        let html = super::build_sessions_html(&sessions, "hash-a");
+        assert!(html.contains("Safari on macOS"));
+        assert!(html.contains("Chrome on iPhone"));
+        // Only one "Current session" badge
+        assert_eq!(html.matches("Current session").count(), 1);
+
+        // Client with hash-b should see iPhone as current
+        let html = super::build_sessions_html(&sessions, "hash-b");
+        assert_eq!(html.matches("Current session").count(), 1);
     }
 }

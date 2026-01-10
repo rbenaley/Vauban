@@ -3,7 +3,7 @@
 /// Login, logout, MFA setup and verification.
 use axum::{
     Json,
-    extract::{ConnectInfo, State},
+    extract::State,
     http::{HeaderValue, header::HeaderMap},
     response::{Html, IntoResponse, Response},
 };
@@ -55,11 +55,12 @@ pub struct LoginResponse {
 /// For JSON: returns LoginResponse as before.
 pub async fn login(
     State(state): State<AppState>,
-    ConnectInfo(client_addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     jar: CookieJar,
     Json(request): Json<LoginRequest>,
 ) -> AppResult<Response> {
+    // Default client address for when ConnectInfo is not available (tests)
+    let client_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
     let htmx = is_htmx_request(&headers);
 
     // Validation

@@ -95,6 +95,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let broadcast = BroadcastService::new();
     tracing::info!("Broadcast service initialized");
 
+    // Create user connection registry for personalized WebSocket messages
+    let user_connections = vauban_web::services::connections::UserConnectionRegistry::new();
+    tracing::info!("User connection registry initialized");
+
     // Create application state
     let app_state = AppState {
         config: config.clone(),
@@ -102,6 +106,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cache,
         auth_service,
         broadcast: broadcast.clone(),
+        user_connections,
     };
 
     // Start background tasks for WebSocket updates
