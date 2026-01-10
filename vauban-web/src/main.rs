@@ -245,7 +245,6 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
         .route("/accounts/profile", get(handlers::web::profile))
         .route("/accounts/mfa", get(handlers::web::mfa_setup))
         .route("/accounts/sessions", get(handlers::web::user_sessions))
-        .route("/accounts/sessions/list", get(handlers::web::user_sessions_list))
         .route(
             "/accounts/sessions/{uuid}/revoke",
             post(handlers::web::revoke_session),
