@@ -438,9 +438,11 @@ pub async fn mfa_setup(
 /// User sessions list page (web sessions, not proxy sessions).
 pub async fn user_sessions(
     State(state): State<AppState>,
+    jar: axum_extra::extract::CookieJar,
     auth_user: AuthUser,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::models::AuthSession;
+    use sha3::{Digest, Sha3_256};
 
     let user = Some(user_context_from_auth(&auth_user));
     let base = BaseTemplate::new("My Sessions".to_string(), user.clone())
@@ -450,6 +452,15 @@ pub async fn user_sessions(
 
     // Load user sessions from database
     let mut conn = get_connection(&state.db_pool)?;
+    
+    // Get current token hash to identify the real current session
+    let current_token_hash = jar
+        .get("access_token")
+        .map(|cookie| {
+            let mut hasher = Sha3_256::new();
+            hasher.update(cookie.value().as_bytes());
+            format!("{:x}", hasher.finalize())
+        });
     
     // Debug: log auth_user UUID
     tracing::debug!(auth_uuid = %auth_user.uuid, "Loading sessions for user");
@@ -487,13 +498,18 @@ pub async fn user_sessions(
             let device_info = s.device_info.clone().unwrap_or_else(|| {
                 AuthSession::parse_device_info(s.user_agent.as_deref().unwrap_or(""))
             });
+            // Determine if this is the current session by comparing token hashes
+            let is_current = current_token_hash
+                .as_ref()
+                .map(|hash| hash == &s.token_hash)
+                .unwrap_or(false);
             AuthSessionItem {
                 uuid: s.uuid,
                 ip_address: s.ip_address.ip().to_string(),
                 device_info,
                 last_activity: s.last_activity,
                 created_at: s.created_at,
-                is_current: s.is_current,
+                is_current,
                 is_expired: s.is_expired(),
             }
         })
