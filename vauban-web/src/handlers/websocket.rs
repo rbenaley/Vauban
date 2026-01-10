@@ -422,42 +422,90 @@ pub async fn notifications_ws(
 }
 
 /// Handle notifications WebSocket connection.
+/// Subscribes to user-specific channels for auth sessions and API keys updates.
 async fn handle_notifications_socket(socket: WebSocket, state: AppState, user: AuthUser) {
     let (mut sender, mut receiver) = socket.split();
 
-    // Subscribe to notifications channel
+    // Subscribe to all relevant channels for this user
     let mut notifications_rx = state.broadcast.subscribe(&WsChannel::Notifications).await;
+    let mut auth_sessions_rx = state
+        .broadcast
+        .subscribe(&WsChannel::UserAuthSessions(user.uuid.clone()))
+        .await;
+    let mut api_keys_rx = state
+        .broadcast
+        .subscribe(&WsChannel::UserApiKeys(user.uuid.clone()))
+        .await;
 
-    info!(user = %user.username, "Notifications WebSocket connected");
+    info!(user = %user.username, user_uuid = %user.uuid, "Notifications WebSocket connected");
 
-    // Handle incoming messages
-    let user_clone = user.clone();
-    let incoming_task = tokio::spawn(async move {
-        while let Some(msg) = receiver.next().await {
-            match msg {
-                Ok(Message::Close(_)) => break,
-                Err(_) => break,
-                _ => {}
-            }
-        }
-        debug!(user = %user_clone.username, "Notifications incoming handler done");
-    });
+    // Create ping interval to keep connection alive
+    let mut ping_interval = interval(Duration::from_secs(PING_INTERVAL_SECS));
+    let mut should_close = false;
 
-    // Forward notifications to client
     loop {
-        match notifications_rx.recv().await {
-            Ok(html) => {
-                if sender.send(Message::Text(html.into())).await.is_err() {
-                    break;
+        tokio::select! {
+            // Handle incoming messages from client
+            msg = receiver.next() => {
+                match msg {
+                    Some(Ok(Message::Close(_))) => {
+                        debug!(user = %user.username, "Client requested close");
+                        should_close = true;
+                    }
+                    Some(Err(e)) => {
+                        error!(user = %user.username, error = %e, "WebSocket error");
+                        should_close = true;
+                    }
+                    None => {
+                        debug!(user = %user.username, "WebSocket stream ended");
+                        should_close = true;
+                    }
+                    _ => {}
                 }
             }
-            Err(e) => {
-                warn!(error = %e, "Notifications channel lagged");
+
+            // Send periodic ping to keep connection alive
+            _ = ping_interval.tick() => {
+                if sender.send(Message::Ping(vec![].into())).await.is_err() {
+                    should_close = true;
+                }
             }
+
+            // General notifications channel
+            result = notifications_rx.recv() => {
+                if let Ok(html) = result {
+                    if sender.send(Message::Text(html.into())).await.is_err() {
+                        should_close = true;
+                    }
+                }
+            }
+
+            // User auth sessions channel (for /accounts/sessions page)
+            result = auth_sessions_rx.recv() => {
+                if let Ok(html) = result {
+                    debug!(user = %user.username, "Sending auth sessions update");
+                    if sender.send(Message::Text(html.into())).await.is_err() {
+                        should_close = true;
+                    }
+                }
+            }
+
+            // User API keys channel (for /accounts/apikeys page)
+            result = api_keys_rx.recv() => {
+                if let Ok(html) = result {
+                    debug!(user = %user.username, "Sending API keys update");
+                    if sender.send(Message::Text(html.into())).await.is_err() {
+                        should_close = true;
+                    }
+                }
+            }
+        }
+
+        if should_close {
+            break;
         }
     }
 
-    incoming_task.abort();
     info!(user = %user.username, "Notifications WebSocket disconnected");
 }
 

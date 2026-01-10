@@ -1,13 +1,41 @@
 /// VAUBAN Web - Test fixtures.
 ///
 /// Factory functions for creating test data.
+use chrono::{Duration, Utc};
 use diesel::prelude::*;
+use sha3::{Digest, Sha3_256};
 use uuid::Uuid;
 
 use vauban_web::models::asset::{Asset, NewAsset};
+use vauban_web::models::auth_session::NewAuthSession;
 use vauban_web::models::user::{NewUser, User};
-use vauban_web::schema::{assets, users};
+use vauban_web::schema::{assets, auth_sessions, users};
 use vauban_web::services::auth::AuthService;
+
+/// Helper to create an auth session for a token in the database.
+fn create_session_for_token(conn: &mut PgConnection, user_id: i32, token: &str) {
+    // Hash the token using SHA3-256
+    let mut hasher = Sha3_256::new();
+    hasher.update(token.as_bytes());
+    let token_hash = format!("{:x}", hasher.finalize());
+
+    let ip: ipnetwork::IpNetwork = "127.0.0.1".parse().unwrap();
+    let new_session = NewAuthSession {
+        uuid: Uuid::new_v4(),
+        user_id,
+        token_hash,
+        ip_address: ip,
+        user_agent: Some("Test Client".to_string()),
+        device_info: Some("Test".to_string()),
+        expires_at: Utc::now() + Duration::hours(24),
+        is_current: true,
+    };
+
+    diesel::insert_into(auth_sessions::table)
+        .values(&new_session)
+        .execute(conn)
+        .ok();
+}
 
 /// Test user data.
 pub struct TestUser {
@@ -55,6 +83,9 @@ pub fn create_test_user(
         .generate_access_token(&user.uuid.to_string(), &user.username, true, false, false)
         .unwrap();
 
+    // Create session in database for middleware validation
+    create_session_for_token(conn, user.id, &token);
+
     TestUser {
         user,
         password: password.to_string(),
@@ -100,6 +131,9 @@ pub fn create_admin_user(
     let token = auth_service
         .generate_access_token(&user.uuid.to_string(), &user.username, true, true, true)
         .unwrap();
+
+    // Create session in database for middleware validation
+    create_session_for_token(conn, user.id, &token);
 
     TestUser {
         user,
@@ -148,6 +182,9 @@ pub fn create_mfa_user(
     let token = auth_service
         .generate_access_token(&user.uuid.to_string(), &user.username, false, false, false)
         .unwrap();
+
+    // Create session in database for middleware validation
+    create_session_for_token(conn, user.id, &token);
 
     TestUser {
         user,
@@ -551,4 +588,83 @@ pub fn create_expired_api_key(
         .expect("Failed to create expired API key");
 
     key_uuid
+}
+
+/// Create an auth session with a specific token hash (for testing revocation).
+/// Returns the session UUID.
+pub fn create_auth_session_with_token(
+    conn: &mut PgConnection,
+    user_id: i32,
+    token: &str,
+    is_current: bool,
+) -> Uuid {
+    use chrono::{Duration, Utc};
+    use sha3::{Digest, Sha3_256};
+    use vauban_web::models::NewAuthSession;
+    use vauban_web::schema::auth_sessions;
+
+    let session_uuid = Uuid::new_v4();
+    let ip: ipnetwork::IpNetwork = "127.0.0.1".parse().unwrap();
+
+    // Hash the token using SHA3-256 (same as production code)
+    let mut hasher = Sha3_256::new();
+    hasher.update(token.as_bytes());
+    let token_hash = format!("{:x}", hasher.finalize());
+
+    let new_session = NewAuthSession {
+        uuid: session_uuid,
+        user_id,
+        token_hash,
+        ip_address: ip,
+        user_agent: Some("Mozilla/5.0 Test".to_string()),
+        device_info: Some("Test Browser".to_string()),
+        expires_at: Utc::now() + Duration::hours(24),
+        is_current,
+    };
+
+    diesel::insert_into(auth_sessions::table)
+        .values(&new_session)
+        .execute(conn)
+        .expect("Failed to create auth session with token");
+
+    session_uuid
+}
+
+/// Create an expired auth session with a specific token hash.
+/// Returns the session UUID.
+pub fn create_expired_auth_session(
+    conn: &mut PgConnection,
+    user_id: i32,
+    token: &str,
+) -> Uuid {
+    use chrono::{Duration, Utc};
+    use sha3::{Digest, Sha3_256};
+    use vauban_web::models::NewAuthSession;
+    use vauban_web::schema::auth_sessions;
+
+    let session_uuid = Uuid::new_v4();
+    let ip: ipnetwork::IpNetwork = "127.0.0.1".parse().unwrap();
+
+    // Hash the token using SHA3-256
+    let mut hasher = Sha3_256::new();
+    hasher.update(token.as_bytes());
+    let token_hash = format!("{:x}", hasher.finalize());
+
+    let new_session = NewAuthSession {
+        uuid: session_uuid,
+        user_id,
+        token_hash,
+        ip_address: ip,
+        user_agent: Some("Mozilla/5.0 Expired Test".to_string()),
+        device_info: Some("Expired Browser".to_string()),
+        expires_at: Utc::now() - Duration::hours(1), // Expired 1 hour ago
+        is_current: false,
+    };
+
+    diesel::insert_into(auth_sessions::table)
+        .values(&new_session)
+        .execute(conn)
+        .expect("Failed to create expired auth session");
+
+    session_uuid
 }

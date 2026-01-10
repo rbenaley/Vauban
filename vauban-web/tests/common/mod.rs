@@ -22,6 +22,7 @@ pub struct TestApp {
     pub db_pool: DbPool,
     pub auth_service: AuthService,
     pub config: Config,
+    pub broadcast: BroadcastService,
 }
 
 /// Global test app instance (lazy initialization).
@@ -63,7 +64,7 @@ impl TestApp {
             db_pool: db_pool.clone(),
             cache,
             auth_service: auth_service.clone(),
-            broadcast,
+            broadcast: broadcast.clone(),
         };
 
         // Build router
@@ -77,6 +78,7 @@ impl TestApp {
             db_pool,
             auth_service,
             config,
+            broadcast,
         }
     }
 
@@ -85,7 +87,8 @@ impl TestApp {
         HeaderValue::from_str(&format!("Bearer {}", token)).unwrap()
     }
 
-    /// Generate a valid JWT for a test user.
+    /// Generate a valid JWT for a test user and create a session in database.
+    /// This is required because the middleware now validates sessions exist in DB.
     pub fn generate_test_token(
         &self,
         user_uuid: &str,
@@ -93,9 +96,72 @@ impl TestApp {
         is_superuser: bool,
         is_staff: bool,
     ) -> String {
-        self.auth_service
+        use chrono::{Duration, Utc};
+        use diesel::prelude::*;
+        use sha3::{Digest, Sha3_256};
+        use vauban_web::models::NewAuthSession;
+        use vauban_web::schema::{auth_sessions, users};
+
+        let token = self.auth_service
             .generate_access_token(user_uuid, username, true, is_superuser, is_staff)
-            .expect("Failed to generate test token")
+            .expect("Failed to generate test token");
+
+        // Create session in database for this token
+        let mut conn = self.get_conn();
+
+        // Try to find user by UUID or username, or create one
+        let user_id: i32 = if let Ok(uuid_val) = uuid::Uuid::parse_str(user_uuid) {
+            users::table
+                .filter(users::uuid.eq(uuid_val))
+                .select(users::id)
+                .first(&mut conn)
+                .unwrap_or_else(|_| {
+                    // User doesn't exist, create minimal user
+                    diesel::insert_into(users::table)
+                        .values((
+                            users::uuid.eq(uuid_val),
+                            users::username.eq(username),
+                            users::email.eq(format!("{}@test.local", username)),
+                            users::password_hash.eq("test_hash"),
+                            users::is_active.eq(true),
+                            users::is_staff.eq(is_staff),
+                            users::is_superuser.eq(is_superuser),
+                            users::auth_source.eq("local"),
+                            users::preferences.eq(serde_json::json!({})),
+                        ))
+                        .returning(users::id)
+                        .get_result(&mut conn)
+                        .unwrap_or(1)
+                })
+        } else {
+            // No valid UUID, use placeholder ID
+            1
+        };
+
+        // Hash the token using SHA3-256
+        let mut hasher = Sha3_256::new();
+        hasher.update(token.as_bytes());
+        let token_hash = format!("{:x}", hasher.finalize());
+
+        let ip: ipnetwork::IpNetwork = "127.0.0.1".parse().unwrap();
+        let new_session = NewAuthSession {
+            uuid: uuid::Uuid::new_v4(),
+            user_id,
+            token_hash,
+            ip_address: ip,
+            user_agent: Some("Test Client".to_string()),
+            device_info: Some("Test".to_string()),
+            expires_at: Utc::now() + Duration::hours(24),
+            is_current: true,
+        };
+
+        // Insert session (ignore errors if duplicate)
+        diesel::insert_into(auth_sessions::table)
+            .values(&new_session)
+            .execute(&mut conn)
+            .ok();
+
+        token
     }
 
     /// Get a database connection.
@@ -180,7 +246,7 @@ fn build_test_router(state: AppState) -> Router {
         .route("/health", get(|| async { "OK" }))
         // Add auth middleware
         .layer(axum::middleware::from_fn_with_state(
-            state.auth_service.clone(),
+            state.clone(),
             middleware::auth::auth_middleware,
         ))
         .with_state(state)

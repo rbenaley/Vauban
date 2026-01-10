@@ -337,7 +337,7 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
                 ))
                 .layer(cors)
                 .layer(axum::middleware::from_fn_with_state(
-                    state.auth_service.clone(),
+                    state.clone(),
                     middleware::auth::auth_middleware,
                 ))
                 .layer(axum::middleware::from_fn(
