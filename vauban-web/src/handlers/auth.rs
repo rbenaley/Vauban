@@ -3,7 +3,7 @@
 /// Login, logout, MFA setup and verification.
 use axum::{
     Json,
-    extract::State,
+    extract::{ConnectInfo, State},
     http::{HeaderValue, header::HeaderMap},
     response::{Html, IntoResponse, Response},
 };
@@ -13,6 +13,7 @@ use diesel::prelude::*;
 use ipnetwork::IpNetwork;
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_256};
+use std::net::SocketAddr;
 use validator::Validate;
 
 use crate::AppState;
@@ -54,6 +55,7 @@ pub struct LoginResponse {
 /// For JSON: returns LoginResponse as before.
 pub async fn login(
     State(state): State<AppState>,
+    ConnectInfo(client_addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     jar: CookieJar,
     Json(request): Json<LoginRequest>,
@@ -170,7 +172,7 @@ pub async fn login(
 
     // Create auth session record for session management
     let token_hash = hash_token(&access_token);
-    let client_ip = extract_client_ip(&headers);
+    let client_ip = extract_client_ip(&headers, client_addr);
     let user_agent_str = headers
         .get("User-Agent")
         .and_then(|v| v.to_str().ok())
@@ -291,8 +293,8 @@ fn hash_token(token: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-/// Extract client IP from headers (X-Forwarded-For, X-Real-IP) or fallback.
-fn extract_client_ip(headers: &HeaderMap) -> IpNetwork {
+/// Extract client IP from headers (X-Forwarded-For, X-Real-IP) or connection address.
+fn extract_client_ip(headers: &HeaderMap, connect_addr: SocketAddr) -> IpNetwork {
     // Try X-Forwarded-For first (comma-separated list, first is original client)
     if let Some(xff) = headers.get("X-Forwarded-For") {
         if let Ok(xff_str) = xff.to_str() {
@@ -313,8 +315,8 @@ fn extract_client_ip(headers: &HeaderMap) -> IpNetwork {
         }
     }
 
-    // Fallback to localhost
-    IpNetwork::from(std::net::IpAddr::from([127, 0, 0, 1]))
+    // Fallback to the actual TCP connection address
+    IpNetwork::from(connect_addr.ip())
 }
 
 /// Logout handler.
@@ -580,5 +582,133 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
 
         assert!(parsed["qr_code_base64"].is_null());
+    }
+
+    // ==================== extract_client_ip Tests ====================
+
+    #[test]
+    fn test_extract_client_ip_from_x_forwarded_for() {
+        let mut headers = HeaderMap::new();
+        headers.insert("X-Forwarded-For", "203.0.113.50, 70.41.3.18, 150.172.238.178".parse().unwrap());
+        
+        let fallback_addr: SocketAddr = "192.168.1.1:12345".parse().unwrap();
+        let ip = extract_client_ip(&headers, fallback_addr);
+        
+        // Should return the first IP in X-Forwarded-For (the original client)
+        assert_eq!(ip.ip().to_string(), "203.0.113.50");
+    }
+
+    #[test]
+    fn test_extract_client_ip_from_x_forwarded_for_single() {
+        let mut headers = HeaderMap::new();
+        headers.insert("X-Forwarded-For", "8.8.8.8".parse().unwrap());
+        
+        let fallback_addr: SocketAddr = "192.168.1.1:12345".parse().unwrap();
+        let ip = extract_client_ip(&headers, fallback_addr);
+        
+        assert_eq!(ip.ip().to_string(), "8.8.8.8");
+    }
+
+    #[test]
+    fn test_extract_client_ip_from_x_real_ip() {
+        let mut headers = HeaderMap::new();
+        headers.insert("X-Real-IP", "1.2.3.4".parse().unwrap());
+        
+        let fallback_addr: SocketAddr = "192.168.1.1:12345".parse().unwrap();
+        let ip = extract_client_ip(&headers, fallback_addr);
+        
+        assert_eq!(ip.ip().to_string(), "1.2.3.4");
+    }
+
+    #[test]
+    fn test_extract_client_ip_x_forwarded_for_takes_priority() {
+        let mut headers = HeaderMap::new();
+        headers.insert("X-Forwarded-For", "203.0.113.50".parse().unwrap());
+        headers.insert("X-Real-IP", "1.2.3.4".parse().unwrap());
+        
+        let fallback_addr: SocketAddr = "192.168.1.1:12345".parse().unwrap();
+        let ip = extract_client_ip(&headers, fallback_addr);
+        
+        // X-Forwarded-For should take priority
+        assert_eq!(ip.ip().to_string(), "203.0.113.50");
+    }
+
+    #[test]
+    fn test_extract_client_ip_fallback_to_connect_addr() {
+        let headers = HeaderMap::new(); // No proxy headers
+        
+        let fallback_addr: SocketAddr = "85.123.45.67:54321".parse().unwrap();
+        let ip = extract_client_ip(&headers, fallback_addr);
+        
+        // Should use the TCP connection address
+        assert_eq!(ip.ip().to_string(), "85.123.45.67");
+    }
+
+    #[test]
+    fn test_extract_client_ip_ipv6() {
+        let mut headers = HeaderMap::new();
+        headers.insert("X-Forwarded-For", "2001:db8::1".parse().unwrap());
+        
+        let fallback_addr: SocketAddr = "[::1]:12345".parse().unwrap();
+        let ip = extract_client_ip(&headers, fallback_addr);
+        
+        assert_eq!(ip.ip().to_string(), "2001:db8::1");
+    }
+
+    #[test]
+    fn test_extract_client_ip_fallback_ipv6() {
+        let headers = HeaderMap::new();
+        
+        let fallback_addr: SocketAddr = "[2001:db8::abcd]:443".parse().unwrap();
+        let ip = extract_client_ip(&headers, fallback_addr);
+        
+        assert_eq!(ip.ip().to_string(), "2001:db8::abcd");
+    }
+
+    #[test]
+    fn test_extract_client_ip_invalid_x_forwarded_for() {
+        let mut headers = HeaderMap::new();
+        headers.insert("X-Forwarded-For", "not-an-ip-address".parse().unwrap());
+        
+        let fallback_addr: SocketAddr = "10.0.0.1:8080".parse().unwrap();
+        let ip = extract_client_ip(&headers, fallback_addr);
+        
+        // Should fallback to connection address when header is invalid
+        assert_eq!(ip.ip().to_string(), "10.0.0.1");
+    }
+
+    // ==================== hash_token Tests ====================
+
+    #[test]
+    fn test_hash_token_deterministic() {
+        let token = "my-secret-jwt-token";
+        let hash1 = hash_token(token);
+        let hash2 = hash_token(token);
+        
+        assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_hash_token_different_inputs() {
+        let hash1 = hash_token("token-a");
+        let hash2 = hash_token("token-b");
+        
+        assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_hash_token_length() {
+        let hash = hash_token("any-token");
+        
+        // SHA3-256 produces a 64-character hex string
+        assert_eq!(hash.len(), 64);
+    }
+
+    #[test]
+    fn test_hash_token_hex_format() {
+        let hash = hash_token("test-token");
+        
+        // Should only contain hex characters
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
     }
 }
