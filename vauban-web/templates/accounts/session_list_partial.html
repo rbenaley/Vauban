@@ -1,0 +1,56 @@
+{% for session in sessions %}
+<li id="session-row-{{ session.uuid }}" class="px-6 py-4">
+    <div class="flex items-center justify-between">
+        <div class="flex items-center min-w-0 gap-x-4">
+            <div class="flex-shrink-0">
+                {% if session.is_current %}
+                <span class="inline-flex items-center justify-center h-10 w-10 rounded-full bg-green-100 dark:bg-green-900">
+                    <svg class="h-5 w-5 text-green-600 dark:text-green-400" fill="currentColor" viewBox="0 0 20 20">
+                        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
+                    </svg>
+                </span>
+                {% else %}
+                <span class="inline-flex items-center justify-center h-10 w-10 rounded-full bg-gray-100 dark:bg-gray-700">
+                    <svg class="h-5 w-5 text-gray-600 dark:text-gray-400" fill="currentColor" viewBox="0 0 20 20">
+                        <path fill-rule="evenodd" d="M3 5a2 2 0 012-2h10a2 2 0 012 2v8a2 2 0 01-2 2h-2.22l.123.489.804.804A1 1 0 0113 18H7a1 1 0 01-.707-1.707l.804-.804L7.22 15H5a2 2 0 01-2-2V5zm5.771 7H5V5h10v7H8.771z" clip-rule="evenodd" />
+                    </svg>
+                </span>
+                {% endif %}
+            </div>
+            <div class="min-w-0 flex-1">
+                <p class="text-sm font-medium text-gray-900 dark:text-white truncate">
+                    {{ session.device_info }}
+                    {% if session.is_current %}
+                    <span class="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200">
+                        Current session
+                    </span>
+                    {% endif %}
+                </p>
+                <p class="text-sm text-gray-500 dark:text-gray-400">
+                    IP: {{ session.ip_address }}
+                </p>
+                <p class="text-xs text-gray-400 dark:text-gray-500">
+                    Started {{ session.age_display() }} &middot; Last active {{ session.last_activity_display() }}
+                </p>
+            </div>
+        </div>
+        <div class="flex-shrink-0">
+            {% if session.is_current %}
+            <span class="text-xs text-gray-400 dark:text-gray-500">This device</span>
+            {% else %}
+            <form hx-post="/accounts/sessions/{{ session.uuid }}/revoke"
+                  hx-confirm="Are you sure you want to revoke this session?"
+                  hx-target="closest li"
+                  hx-swap="outerHTML">
+                <button type="submit"
+                        class="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded text-red-700 bg-red-100 hover:bg-red-200 dark:text-red-200 dark:bg-red-900 dark:hover:bg-red-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500">
+                    Revoke
+                </button>
+            </form>
+            {% endif %}
+        </div>
+    </div>
+</li>
+{% else %}
+<li class="px-6 py-8 text-center text-gray-500 dark:text-gray-400">No active sessions</li>
+{% endfor %}

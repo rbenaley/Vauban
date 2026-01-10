@@ -19,6 +19,6 @@ pub use group_list::GroupListTemplate;
 pub use login::LoginTemplate;
 pub use mfa_setup::MfaSetupTemplate;
 pub use profile::ProfileTemplate;
-pub use session_list::{AuthSessionItem, SessionListTemplate};
+pub use session_list::{AuthSessionItem, SessionListPartialTemplate, SessionListTemplate};
 pub use user_detail::{UserDetail, UserDetailTemplate};
 pub use user_list::{Pagination, UserListTemplate};
