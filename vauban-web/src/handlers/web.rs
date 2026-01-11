@@ -16,7 +16,7 @@ use crate::middleware::auth::{AuthUser, OptionalAuthUser, WebAuthUser};
 use crate::schema::{api_keys, assets, auth_sessions, proxy_sessions};
 use crate::templates::accounts::{
     ApiKeyItem, ApikeyListTemplate, AuthSessionItem, GroupDetailTemplate, GroupListTemplate,
-    LoginTemplate, MfaSetupTemplate, ProfileTemplate,
+    LoginTemplate, MfaSetupTemplate, ProfileDetail, ProfileSession, ProfileTemplate,
     SessionListTemplate as AccountSessionListTemplate, UserDetailTemplate, UserListTemplate,
 };
 use crate::templates::assets::asset_list::AssetListItem;
@@ -381,9 +381,102 @@ pub async fn user_detail(
 
 /// User profile page.
 pub async fn profile(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
+    jar: axum_extra::extract::CookieJar,
     auth_user: WebAuthUser,
 ) -> Result<impl IntoResponse, AppError> {
+    use crate::models::auth_session::AuthSession;
+    use crate::models::user::User;
+    use crate::schema::users;
+    use sha3::{Digest, Sha3_256};
+
+    let mut conn = get_connection(&state.db_pool)?;
+
+    // Parse the UUID from the auth user
+    let user_uuid = uuid::Uuid::parse_str(&auth_user.uuid)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Invalid UUID: {}", e)))?;
+
+    // Fetch the full user data from the database
+    let db_user: User = users::table
+        .filter(users::uuid.eq(user_uuid))
+        .filter(users::is_deleted.eq(false))
+        .first(&mut conn)
+        .map_err(|e| match e {
+            diesel::result::Error::NotFound => {
+                AppError::NotFound("User not found".to_string())
+            }
+            _ => AppError::Database(e),
+        })?;
+
+    // Build full name
+    let full_name = match (&db_user.first_name, &db_user.last_name) {
+        (Some(first), Some(last)) => Some(format!("{} {}", first, last)),
+        (Some(first), None) => Some(first.clone()),
+        (None, Some(last)) => Some(last.clone()),
+        (None, None) => None,
+    };
+
+    // Build profile detail
+    let profile = ProfileDetail {
+        uuid: db_user.uuid.to_string(),
+        username: db_user.username.clone(),
+        email: db_user.email.clone(),
+        first_name: db_user.first_name.clone(),
+        last_name: db_user.last_name.clone(),
+        phone: db_user.phone.clone(),
+        full_name,
+        is_active: db_user.is_active,
+        is_staff: db_user.is_staff,
+        is_superuser: db_user.is_superuser,
+        mfa_enabled: db_user.mfa_enabled,
+        mfa_enforced: db_user.mfa_enforced,
+        auth_source: db_user.auth_source.clone(),
+        last_login: db_user
+            .last_login
+            .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string()),
+        created_at: db_user.created_at.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+        updated_at: db_user.updated_at.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+    };
+
+    // Get the current token hash from cookie for session detection
+    let current_token_hash = jar
+        .get("auth_token")
+        .map(|c| c.value().to_string())
+        .map(|token| {
+            let mut hasher = Sha3_256::new();
+            hasher.update(token.as_bytes());
+            hex::encode(hasher.finalize())
+        });
+
+    // Fetch active sessions for the user
+    let db_sessions: Vec<AuthSession> = auth_sessions::table
+        .filter(auth_sessions::user_id.eq(db_user.id))
+        .filter(auth_sessions::expires_at.gt(chrono::Utc::now()))
+        .order(auth_sessions::created_at.desc())
+        .load(&mut conn)
+        .unwrap_or_default();
+
+    let sessions: Vec<ProfileSession> = db_sessions
+        .into_iter()
+        .map(|s| {
+            let device_info = s.device_info.clone().unwrap_or_else(|| {
+                AuthSession::parse_device_info(s.user_agent.as_deref().unwrap_or(""))
+            });
+            let is_current = current_token_hash
+                .as_ref()
+                .map(|hash| hash == &s.token_hash)
+                .unwrap_or(false);
+            ProfileSession {
+                uuid: s.uuid.to_string(),
+                ip_address: s.ip_address.ip().to_string(),
+                device_info,
+                last_activity: s.last_activity,
+                created_at: s.created_at,
+                is_current,
+            }
+        })
+        .collect();
+
     let user = Some(user_context_from_auth(&auth_user));
     let base = BaseTemplate::new("My Profile".to_string(), user.clone())
         .with_current_path("/accounts/profile");
@@ -398,6 +491,9 @@ pub async fn profile(
         language_code,
         sidebar_content,
         header_user,
+        profile,
+        sessions,
+        current_session_token: current_token_hash,
     };
 
     let html = template

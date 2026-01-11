@@ -1,6 +1,7 @@
-/// VAUBAN Web - Integration tests for account pages (sessions and API keys).
+/// VAUBAN Web - Integration tests for account pages (profile, sessions and API keys).
 ///
 /// Tests for:
+/// - /accounts/profile - User's profile page
 /// - /accounts/sessions - User's active login sessions
 /// - /accounts/sessions/{uuid}/revoke - Revoke a session
 /// - /accounts/apikeys - User's API keys
@@ -24,6 +25,394 @@ fn get_user_uuid(conn: &mut diesel::PgConnection, user_id: i32) -> Uuid {
         .select(users::uuid)
         .first(conn)
         .expect("User should exist")
+}
+
+// =============================================================================
+// User Profile Page Tests
+// =============================================================================
+
+#[tokio::test]
+async fn test_profile_page_loads() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+    
+    // Create user in database
+    let username = unique_name("profile_page_user");
+    let user_id = create_simple_user(&mut conn, &username);
+    let user_uuid = get_user_uuid(&mut conn, user_id);
+    
+    // Generate auth token
+    let token = app.generate_test_token(
+        &user_uuid.to_string(),
+        &username,
+        true,
+        true,
+    );
+
+    // Request profile page
+    let response = app
+        .server
+        .get("/accounts/profile")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert_eq!(status, 200, "Profile page should load successfully, got {}", status);
+    
+    let body = response.text();
+    assert!(body.contains("My Profile"), "Page should contain 'My Profile' title");
+}
+
+#[tokio::test]
+async fn test_profile_page_requires_auth() {
+    let app = TestApp::spawn().await;
+
+    // Request without auth token
+    let response = app.server.get("/accounts/profile").await;
+
+    // Web pages should redirect to login (303 See Other)
+    let status = response.status_code().as_u16();
+    assert_eq!(
+        status, 303,
+        "Profile page without auth should redirect to login (303), got {}",
+        status
+    );
+
+    // Verify redirect location
+    let location = response.headers().get("location");
+    assert!(location.is_some(), "Redirect should have Location header");
+    assert_eq!(
+        location.unwrap().to_str().unwrap(),
+        "/login",
+        "Should redirect to /login"
+    );
+}
+
+#[tokio::test]
+async fn test_profile_page_displays_user_info() {
+    use vauban_web::schema::users;
+
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+    
+    // Create user with specific details
+    let username = unique_name("profile_display_user");
+    let email = format!("{}@test.local", username);
+    
+    // Create user with first/last name
+    let user_uuid = Uuid::new_v4();
+    let password_hash = app.auth_service.hash_password("test_password_123!")
+        .expect("Password hashing should succeed");
+    
+    diesel::insert_into(users::table)
+        .values((
+            users::uuid.eq(user_uuid),
+            users::username.eq(&username),
+            users::email.eq(&email),
+            users::password_hash.eq(&password_hash),
+            users::first_name.eq("John"),
+            users::last_name.eq("Doe"),
+            users::is_active.eq(true),
+            users::is_staff.eq(true),
+            users::is_superuser.eq(false),
+            users::auth_source.eq("local"),
+            users::preferences.eq(serde_json::json!({})),
+        ))
+        .execute(&mut conn)
+        .expect("User creation should succeed");
+
+    let token = app.generate_test_token(
+        &user_uuid.to_string(),
+        &username,
+        true,
+        true,
+    );
+
+    let response = app
+        .server
+        .get("/accounts/profile")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert_eq!(status, 200, "Profile page should load");
+    
+    let body = response.text();
+    
+    // Check that user information is displayed
+    assert!(body.contains(&username), "Profile should show username");
+    assert!(body.contains(&email), "Profile should show email");
+    assert!(body.contains("John"), "Profile should show first name");
+    assert!(body.contains("Doe"), "Profile should show last name");
+    assert!(body.contains("John Doe"), "Profile should show full name");
+    assert!(body.contains("Staff"), "Profile should show staff badge");
+}
+
+#[tokio::test]
+async fn test_profile_page_shows_mfa_status() {
+    use vauban_web::schema::users;
+
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+    
+    // Create user with MFA enabled
+    let username = unique_name("profile_mfa_user");
+    let user_uuid = Uuid::new_v4();
+    let password_hash = app.auth_service.hash_password("test_password_123!")
+        .expect("Password hashing should succeed");
+    
+    diesel::insert_into(users::table)
+        .values((
+            users::uuid.eq(user_uuid),
+            users::username.eq(&username),
+            users::email.eq(format!("{}@test.local", username)),
+            users::password_hash.eq(&password_hash),
+            users::is_active.eq(true),
+            users::is_staff.eq(false),
+            users::is_superuser.eq(false),
+            users::mfa_enabled.eq(true),
+            users::auth_source.eq("local"),
+            users::preferences.eq(serde_json::json!({})),
+        ))
+        .execute(&mut conn)
+        .expect("User creation should succeed");
+
+    let token = app.generate_test_token(
+        &user_uuid.to_string(),
+        &username,
+        true,
+        true,
+    );
+
+    let response = app
+        .server
+        .get("/accounts/profile")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert_eq!(status, 200, "Profile page should load");
+    
+    let body = response.text();
+    
+    // Check MFA status is shown
+    assert!(
+        body.contains("Two-Factor Authentication") || body.contains("MFA"),
+        "Profile should show MFA section"
+    );
+    assert!(body.contains("Active") || body.contains("Enabled"), "Profile should show MFA is enabled");
+}
+
+#[tokio::test]
+async fn test_profile_page_shows_active_sessions() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+    
+    // Create user
+    let username = unique_name("profile_sessions_user");
+    let user_id = create_simple_user(&mut conn, &username);
+    let user_uuid = get_user_uuid(&mut conn, user_id);
+    
+    // Create some sessions
+    let _session1 = create_test_auth_session(&mut conn, user_id, true);
+    let _session2 = create_test_auth_session(&mut conn, user_id, false);
+
+    let token = app.generate_test_token(
+        &user_uuid.to_string(),
+        &username,
+        true,
+        true,
+    );
+
+    let response = app
+        .server
+        .get("/accounts/profile")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert_eq!(status, 200, "Profile page should load");
+    
+    let body = response.text();
+    
+    // Check sessions section is displayed
+    assert!(
+        body.contains("Active Sessions"),
+        "Profile should have Active Sessions section"
+    );
+}
+
+#[tokio::test]
+async fn test_profile_page_shows_superuser_badge() {
+    use vauban_web::schema::users;
+
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+    
+    // Create superuser
+    let username = unique_name("profile_superuser");
+    let user_uuid = Uuid::new_v4();
+    let password_hash = app.auth_service.hash_password("test_password_123!")
+        .expect("Password hashing should succeed");
+    
+    diesel::insert_into(users::table)
+        .values((
+            users::uuid.eq(user_uuid),
+            users::username.eq(&username),
+            users::email.eq(format!("{}@test.local", username)),
+            users::password_hash.eq(&password_hash),
+            users::is_active.eq(true),
+            users::is_staff.eq(true),
+            users::is_superuser.eq(true),
+            users::auth_source.eq("local"),
+            users::preferences.eq(serde_json::json!({})),
+        ))
+        .execute(&mut conn)
+        .expect("User creation should succeed");
+
+    let token = app.generate_test_token(
+        &user_uuid.to_string(),
+        &username,
+        true,
+        true,
+    );
+
+    let response = app
+        .server
+        .get("/accounts/profile")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert_eq!(status, 200, "Profile page should load");
+    
+    let body = response.text();
+    
+    // Check admin badge is shown
+    assert!(body.contains("Admin"), "Profile should show Admin badge for superuser");
+    assert!(body.contains("Staff"), "Profile should show Staff badge");
+}
+
+#[tokio::test]
+async fn test_profile_page_shows_auth_source() {
+    use vauban_web::schema::users;
+
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+    
+    // Create user with LDAP auth source
+    let username = unique_name("profile_ldap_user");
+    let user_uuid = Uuid::new_v4();
+    let password_hash = app.auth_service.hash_password("test_password_123!")
+        .expect("Password hashing should succeed");
+    
+    diesel::insert_into(users::table)
+        .values((
+            users::uuid.eq(user_uuid),
+            users::username.eq(&username),
+            users::email.eq(format!("{}@test.local", username)),
+            users::password_hash.eq(&password_hash),
+            users::is_active.eq(true),
+            users::is_staff.eq(false),
+            users::is_superuser.eq(false),
+            users::auth_source.eq("ldap"),
+            users::preferences.eq(serde_json::json!({})),
+        ))
+        .execute(&mut conn)
+        .expect("User creation should succeed");
+
+    let token = app.generate_test_token(
+        &user_uuid.to_string(),
+        &username,
+        true,
+        true,
+    );
+
+    let response = app
+        .server
+        .get("/accounts/profile")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert_eq!(status, 200, "Profile page should load");
+    
+    let body = response.text();
+    
+    // Check auth source is displayed
+    assert!(body.contains("LDAP"), "Profile should show LDAP auth source");
+    // For LDAP users, password change should not be shown or should indicate external management
+    assert!(
+        body.contains("managed by") || !body.contains("Change Password") || body.contains("LDAP"),
+        "Profile should indicate password is managed externally for LDAP users"
+    );
+}
+
+#[tokio::test]
+async fn test_profile_page_shows_quick_actions() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+    
+    let username = unique_name("profile_actions_user");
+    let user_id = create_simple_user(&mut conn, &username);
+    let user_uuid = get_user_uuid(&mut conn, user_id);
+
+    let token = app.generate_test_token(
+        &user_uuid.to_string(),
+        &username,
+        true,
+        true,
+    );
+
+    let response = app
+        .server
+        .get("/accounts/profile")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert_eq!(status, 200, "Profile page should load");
+    
+    let body = response.text();
+    
+    // Check quick actions section
+    assert!(body.contains("Quick Actions"), "Profile should have Quick Actions section");
+    assert!(body.contains("API Keys"), "Profile should have link to API Keys");
+    assert!(body.contains("Manage Sessions") || body.contains("/accounts/sessions"), "Profile should have link to sessions");
+}
+
+#[tokio::test]
+async fn test_profile_page_displays_uuid() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+    
+    let username = unique_name("profile_uuid_user");
+    let user_id = create_simple_user(&mut conn, &username);
+    let user_uuid = get_user_uuid(&mut conn, user_id);
+
+    let token = app.generate_test_token(
+        &user_uuid.to_string(),
+        &username,
+        true,
+        true,
+    );
+
+    let response = app
+        .server
+        .get("/accounts/profile")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert_eq!(status, 200, "Profile page should load");
+    
+    let body = response.text();
+    
+    // Check UUID is displayed
+    assert!(
+        body.contains(&user_uuid.to_string()),
+        "Profile should display user UUID"
+    );
 }
 
 // =============================================================================
