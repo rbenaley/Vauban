@@ -12,6 +12,7 @@ use chrono::{Duration, Utc};
 use diesel::PgConnection;
 use diesel::prelude::*;
 use diesel::r2d2::{ConnectionManager, Pool};
+use diesel::sql_types::{BigInt, Bool, Integer, Nullable, Text};
 use rand::Rng;
 use rand::rngs::OsRng;
 use uuid::Uuid;
@@ -201,13 +202,19 @@ fn create_users(conn: &mut PgConnection) -> Vec<i32> {
         }
 
         // NOTE: Raw SQL required - uses uuid_generate_v4() and ON CONFLICT (UPSERT)
-        let result = diesel::sql_query(format!(
+        let result = diesel::sql_query(
             "INSERT INTO users (uuid, username, email, password_hash, first_name, last_name, is_active, is_staff, is_superuser, auth_source, preferences)
-             VALUES (uuid_generate_v4(), '{}', '{}', '{}', '{}', '{}', true, {}, {}, 'local', '{{}}')
+             VALUES (uuid_generate_v4(), $1, $2, $3, $4, $5, true, $6, $7, 'local', '{}')
              ON CONFLICT (username) DO NOTHING
-             RETURNING id",
-            username, email, password_hash, first_name, last_name, is_staff, is_superuser
-        ))
+             RETURNING id"
+        )
+        .bind::<Text, _>(username)
+        .bind::<Text, _>(email)
+        .bind::<Text, _>(&password_hash)
+        .bind::<Text, _>(first_name)
+        .bind::<Text, _>(last_name)
+        .bind::<Bool, _>(is_staff)
+        .bind::<Bool, _>(is_superuser)
         .get_result::<UserId>(conn);
 
         match result {
@@ -283,23 +290,33 @@ fn create_assets(conn: &mut PgConnection, admin_id: i32) -> Vec<i32> {
             "offline"
         };
 
-        let result = diesel::sql_query(format!(
+        let hostname = format!("{}.vauban.local", name);
+        let require_mfa = rng.gen_bool(0.3);
+        let require_justification = rng.gen_bool(0.2);
+        let result = diesel::sql_query(
             "INSERT INTO assets (uuid, name, hostname, ip_address, port, asset_type, status, os_type, os_version, description, created_by_id, require_mfa, require_justification, connection_config)
-             VALUES (uuid_generate_v4(), '{}', '{}.vauban.local', '{}', 22, 'ssh', '{}', 'linux', '{}', '{}', {}, {}, {}, '{{}}')
+             VALUES (uuid_generate_v4(), $1, $2, $3, 22, 'ssh', $4, 'linux', $5, $6, $7, $8, $9, '{}')
              ON CONFLICT (hostname, port) DO UPDATE SET status = EXCLUDED.status
-             RETURNING id",
-            name, name, ip, status, os, desc, admin_id,
-            rng.gen_bool(0.3), rng.gen_bool(0.2)
-        ))
+             RETURNING id"
+        )
+        .bind::<Text, _>(*name)
+        .bind::<Text, _>(&hostname)
+        .bind::<Text, _>(&ip)
+        .bind::<Text, _>(status)
+        .bind::<Text, _>(*os)
+        .bind::<Text, _>(*desc)
+        .bind::<Integer, _>(admin_id)
+        .bind::<Bool, _>(require_mfa)
+        .bind::<Bool, _>(require_justification)
         .get_result::<AssetId>(conn);
 
         if let Ok(asset) = result {
             asset_ids.push(asset.id);
             // Check if it was an insert or update
-            let was_update = diesel::sql_query(format!(
-                "SELECT created_at < NOW() - INTERVAL '1 second' as existed FROM assets WHERE id = {}",
-                asset.id
-            ))
+            let was_update = diesel::sql_query(
+                "SELECT created_at < NOW() - INTERVAL '1 second' as existed FROM assets WHERE id = $1"
+            )
+            .bind::<Integer, _>(asset.id)
             .get_result::<ExistedCheck>(conn)
             .map(|r| r.existed)
             .unwrap_or(false);
@@ -335,22 +352,32 @@ fn create_assets(conn: &mut PgConnection, admin_id: i32) -> Vec<i32> {
             "offline"
         };
 
-        let result = diesel::sql_query(format!(
+        let hostname = format!("{}.vauban.local", name);
+        let require_mfa = rng.gen_bool(0.5);
+        let require_justification = rng.gen_bool(0.4);
+        let result = diesel::sql_query(
             "INSERT INTO assets (uuid, name, hostname, ip_address, port, asset_type, status, os_type, os_version, description, created_by_id, require_mfa, require_justification, connection_config)
-             VALUES (uuid_generate_v4(), '{}', '{}.vauban.local', '{}', 3389, 'rdp', '{}', 'windows', '{}', '{}', {}, {}, {}, '{{}}')
+             VALUES (uuid_generate_v4(), $1, $2, $3, 3389, 'rdp', $4, 'windows', $5, $6, $7, $8, $9, '{}')
              ON CONFLICT (hostname, port) DO UPDATE SET status = EXCLUDED.status
-             RETURNING id",
-            name, name, ip, status, os, desc, admin_id,
-            rng.gen_bool(0.5), rng.gen_bool(0.4)
-        ))
+             RETURNING id"
+        )
+        .bind::<Text, _>(*name)
+        .bind::<Text, _>(&hostname)
+        .bind::<Text, _>(&ip)
+        .bind::<Text, _>(status)
+        .bind::<Text, _>(*os)
+        .bind::<Text, _>(*desc)
+        .bind::<Integer, _>(admin_id)
+        .bind::<Bool, _>(require_mfa)
+        .bind::<Bool, _>(require_justification)
         .get_result::<AssetId>(conn);
 
         if let Ok(asset) = result {
             asset_ids.push(asset.id);
-            let was_update = diesel::sql_query(format!(
-                "SELECT created_at < NOW() - INTERVAL '1 second' as existed FROM assets WHERE id = {}",
-                asset.id
-            ))
+            let was_update = diesel::sql_query(
+                "SELECT created_at < NOW() - INTERVAL '1 second' as existed FROM assets WHERE id = $1"
+            )
+            .bind::<Integer, _>(asset.id)
             .get_result::<ExistedCheck>(conn)
             .map(|r| r.existed)
             .unwrap_or(false);
@@ -381,21 +408,28 @@ fn create_assets(conn: &mut PgConnection, admin_id: i32) -> Vec<i32> {
             "maintenance"
         };
 
-        let result = diesel::sql_query(format!(
+        let hostname = format!("{}.vauban.local", name);
+        let result = diesel::sql_query(
             "INSERT INTO assets (uuid, name, hostname, ip_address, port, asset_type, status, os_type, os_version, description, created_by_id, require_mfa, require_justification, connection_config)
-             VALUES (uuid_generate_v4(), '{}', '{}.vauban.local', '{}', 5900, 'vnc', '{}', 'linux', '{}', '{}', {}, true, true, '{{}}')
+             VALUES (uuid_generate_v4(), $1, $2, $3, 5900, 'vnc', $4, 'linux', $5, $6, $7, true, true, '{}')
              ON CONFLICT (hostname, port) DO UPDATE SET status = EXCLUDED.status
-             RETURNING id",
-            name, name, ip, status, os, desc, admin_id
-        ))
+             RETURNING id"
+        )
+        .bind::<Text, _>(*name)
+        .bind::<Text, _>(&hostname)
+        .bind::<Text, _>(&ip)
+        .bind::<Text, _>(status)
+        .bind::<Text, _>(*os)
+        .bind::<Text, _>(*desc)
+        .bind::<Integer, _>(admin_id)
         .get_result::<AssetId>(conn);
 
         if let Ok(asset) = result {
             asset_ids.push(asset.id);
-            let was_update = diesel::sql_query(format!(
-                "SELECT created_at < NOW() - INTERVAL '1 second' as existed FROM assets WHERE id = {}",
-                asset.id
-            ))
+            let was_update = diesel::sql_query(
+                "SELECT created_at < NOW() - INTERVAL '1 second' as existed FROM assets WHERE id = $1"
+            )
+            .bind::<Integer, _>(asset.id)
             .get_result::<ExistedCheck>(conn)
             .map(|r| r.existed)
             .unwrap_or(false);
@@ -474,23 +508,35 @@ fn create_sessions(
             None
         };
 
-        let result = diesel::sql_query(format!(
+        let credential_id = Uuid::new_v4().to_string();
+        let credential_username = if session_type == "ssh" { "root" } else { "Administrator" };
+        let connected_at_str = connected_at.format("%Y-%m-%d %H:%M:%S%z").to_string();
+        let disconnected_at_str = disconnected_at.map(|d| d.format("%Y-%m-%d %H:%M:%S%z").to_string());
+        let bytes_sent: i64 = rng.gen_range(1000..1000000);
+        let bytes_received: i64 = rng.gen_range(5000..5000000);
+        let commands_count: i32 = rng.gen_range(0..500);
+        let justification: Option<&str> = if rng.gen_bool(0.3) { Some("Maintenance task") } else { None };
+        
+        let result = diesel::sql_query(
             "INSERT INTO proxy_sessions (uuid, user_id, asset_id, credential_id, credential_username, session_type, status, client_ip, connected_at, disconnected_at, is_recorded, recording_path, bytes_sent, bytes_received, commands_count, justification, metadata)
-             VALUES (uuid_generate_v4(), {}, {}, '{}', '{}', '{}', '{}', '{}', '{}', {}, {}, {}, {}, {}, {}, {}, '{{}}')
-             RETURNING id",
-            user_id, asset_id,
-            Uuid::new_v4(),
-            if session_type == "ssh" { "root" } else { "Administrator" },
-            session_type, status, client_ip,
-            connected_at.format("%Y-%m-%d %H:%M:%S%z"),
-            disconnected_at.map(|d| format!("'{}'", d.format("%Y-%m-%d %H:%M:%S%z"))).unwrap_or("NULL".to_string()),
-            is_recorded,
-            recording_path.map(|p| format!("'{}'", p)).unwrap_or("NULL".to_string()),
-            rng.gen_range(1000..1000000),
-            rng.gen_range(5000..5000000),
-            rng.gen_range(0..500),
-            if rng.gen_bool(0.3) { "'Maintenance task'" } else { "NULL" }
-        ))
+             VALUES (uuid_generate_v4(), $1, $2, $3, $4, $5, $6, $7, $8::timestamptz, $9::timestamptz, $10, $11, $12, $13, $14, $15, '{}')
+             RETURNING id"
+        )
+        .bind::<Integer, _>(user_id)
+        .bind::<Integer, _>(asset_id)
+        .bind::<Text, _>(&credential_id)
+        .bind::<Text, _>(credential_username)
+        .bind::<Text, _>(session_type)
+        .bind::<Text, _>(status)
+        .bind::<Text, _>(client_ip)
+        .bind::<Text, _>(&connected_at_str)
+        .bind::<Nullable<Text>, _>(disconnected_at_str.as_deref())
+        .bind::<Bool, _>(is_recorded)
+        .bind::<Nullable<Text>, _>(recording_path.as_deref())
+        .bind::<BigInt, _>(bytes_sent)
+        .bind::<BigInt, _>(bytes_received)
+        .bind::<Integer, _>(commands_count)
+        .bind::<Nullable<Text>, _>(justification)
         .execute(conn);
 
         if result.is_ok() {
@@ -547,15 +593,21 @@ fn create_approval_requests(
         let client_ip = client_ips[rng.gen_range(0..client_ips.len())];
         let justification = justifications[rng.gen_range(0..justifications.len())];
 
-        let result = diesel::sql_query(format!(
+        let credential_id = Uuid::new_v4().to_string();
+        let credential_username = if session_type == "ssh" { "root" } else { "Administrator" };
+        
+        let result = diesel::sql_query(
             "INSERT INTO proxy_sessions (uuid, user_id, asset_id, credential_id, credential_username, session_type, status, client_ip, is_recorded, justification, metadata)
-             VALUES (uuid_generate_v4(), {}, {}, '{}', '{}', '{}', 'pending', '{}', true, '{}', '{{\"approval_required\": true}}')
-             RETURNING id",
-            user_id, asset_id,
-            Uuid::new_v4(),
-            if session_type == "ssh" { "root" } else { "Administrator" },
-            session_type, client_ip, justification
-        ))
+             VALUES (uuid_generate_v4(), $1, $2, $3, $4, $5, 'pending', $6, true, $7, '{\"approval_required\": true}')
+             RETURNING id"
+        )
+        .bind::<Integer, _>(user_id)
+        .bind::<Integer, _>(asset_id)
+        .bind::<Text, _>(&credential_id)
+        .bind::<Text, _>(credential_username)
+        .bind::<Text, _>(session_type)
+        .bind::<Text, _>(client_ip)
+        .bind::<Text, _>(justification)
         .execute(conn);
 
         if result.is_ok() {
@@ -619,14 +671,14 @@ fn create_groups(conn: &mut PgConnection) -> i32 {
         }
 
         // Create new group
-        let result = diesel::sql_query(format!(
+        let result = diesel::sql_query(
             "INSERT INTO vauban_groups (uuid, name, description, source)
-             VALUES (uuid_generate_v4(), '{}', '{}', '{}')
-             ON CONFLICT (name) DO NOTHING",
-            name.replace('\'', "''"),
-            description.replace('\'', "''"),
-            source
-        ))
+             VALUES (uuid_generate_v4(), $1, $2, $3)
+             ON CONFLICT (name) DO NOTHING"
+        )
+        .bind::<Text, _>(name)
+        .bind::<Text, _>(description)
+        .bind::<Text, _>(source)
         .execute(conn);
 
         match result {
@@ -708,16 +760,16 @@ fn create_asset_groups(conn: &mut PgConnection) -> i32 {
         }
 
         // Create new group
-        let result = diesel::sql_query(format!(
+        let result = diesel::sql_query(
             "INSERT INTO asset_groups (uuid, name, slug, description, color, icon)
-             VALUES (uuid_generate_v4(), '{}', '{}', '{}', '{}', '{}')
-             ON CONFLICT (slug) DO NOTHING",
-            name.replace('\'', "''"),
-            slug,
-            description.replace('\'', "''"),
-            color,
-            icon
-        ))
+             VALUES (uuid_generate_v4(), $1, $2, $3, $4, $5)
+             ON CONFLICT (slug) DO NOTHING"
+        )
+        .bind::<Text, _>(name)
+        .bind::<Text, _>(slug)
+        .bind::<Text, _>(description)
+        .bind::<Text, _>(color)
+        .bind::<Text, _>(icon)
         .execute(conn);
 
         match result {

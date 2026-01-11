@@ -5,6 +5,7 @@
 use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
+use diesel::sql_types::{Nullable, Text};
 use rand::rngs::OsRng;
 use rpassword::read_password;
 use std::io::{self, Write};
@@ -99,10 +100,10 @@ fn main() {
         }
 
         // Check if username already exists
-        let exists: bool = diesel::sql_query(format!(
-            "SELECT EXISTS(SELECT 1 FROM users WHERE username = '{}' AND is_deleted = false) as exists",
-            trimmed.replace('\'', "''")
-        ))
+        let exists: bool = diesel::sql_query(
+            "SELECT EXISTS(SELECT 1 FROM users WHERE username = $1 AND is_deleted = false) as exists"
+        )
+        .bind::<Text, _>(&trimmed)
         .get_result::<ExistsBool>(&mut conn)
         .map(|r| r.exists)
         .unwrap_or(false);
@@ -134,10 +135,10 @@ fn main() {
         }
 
         // Check if email already exists
-        let exists: bool = diesel::sql_query(format!(
-            "SELECT EXISTS(SELECT 1 FROM users WHERE email = '{}' AND is_deleted = false) as exists",
-            trimmed.replace('\'', "''")
-        ))
+        let exists: bool = diesel::sql_query(
+            "SELECT EXISTS(SELECT 1 FROM users WHERE email = $1 AND is_deleted = false) as exists"
+        )
+        .bind::<Text, _>(&trimmed)
         .get_result::<ExistsBool>(&mut conn)
         .map(|r| r.exists)
         .unwrap_or(false);
@@ -212,30 +213,21 @@ fn main() {
     // Create the superuser
     let user_uuid = Uuid::new_v4();
 
-    let first_name_sql = first_name
-        .as_ref()
-        .map(|n| format!("'{}'", n.replace('\'', "''")))
-        .unwrap_or_else(|| "NULL".to_string());
-    let last_name_sql = last_name
-        .as_ref()
-        .map(|n| format!("'{}'", n.replace('\'', "''")))
-        .unwrap_or_else(|| "NULL".to_string());
-
-    let result = diesel::sql_query(format!(
+    let result = diesel::sql_query(
         "INSERT INTO users (uuid, username, email, password_hash, first_name, last_name, 
                            is_active, is_staff, is_superuser, is_service_account, 
                            mfa_enabled, mfa_enforced, preferences, auth_source)
-         VALUES ('{}', '{}', '{}', '{}', {}, {}, 
+         VALUES ($1::uuid, $2, $3, $4, $5, $6, 
                  true, true, true, false, 
-                 false, false, '{{}}', 'local')
-         RETURNING id",
-        user_uuid,
-        username.replace('\'', "''"),
-        email.replace('\'', "''"),
-        password_hash.replace('\'', "''"),
-        first_name_sql,
-        last_name_sql
-    ))
+                 false, false, '{}', 'local')
+         RETURNING id"
+    )
+    .bind::<Text, _>(user_uuid.to_string())
+    .bind::<Text, _>(&username)
+    .bind::<Text, _>(&email)
+    .bind::<Text, _>(&password_hash)
+    .bind::<Nullable<Text>, _>(first_name.as_deref())
+    .bind::<Nullable<Text>, _>(last_name.as_deref())
     .execute(&mut conn);
 
     match result {
