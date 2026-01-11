@@ -13,11 +13,22 @@ use axum::http::header::COOKIE;
 use serial_test::serial;
 use uuid::Uuid;
 
+use diesel::prelude::*;
 use crate::common::{TestApp, assertions::assert_status};
 use crate::fixtures::{
     create_simple_user, create_simple_ssh_asset, create_test_session,
     create_recorded_session, unique_name,
 };
+
+/// Helper to get user UUID from user ID.
+fn get_user_uuid(conn: &mut diesel::PgConnection, user_id: i32) -> Uuid {
+    use vauban_web::schema::users;
+    users::table
+        .filter(users::id.eq(user_id))
+        .select(users::uuid)
+        .first(conn)
+        .expect("User should exist")
+}
 
 // =============================================================================
 // Login Page Tests
@@ -362,10 +373,15 @@ async fn test_asset_detail_with_sessions() {
 #[serial]
 async fn test_sessions_pagination() {
     let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let username = unique_name("pagination_user");
+    let user_id = create_simple_user(&mut conn, &username);
+    let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
-        "pagination_user",
+        &user_uuid.to_string(),
+        &username,
         true,
         true,
     );
@@ -392,10 +408,15 @@ async fn test_sessions_pagination() {
 #[serial]
 async fn test_asset_groups_pagination() {
     let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let username = unique_name("group_pagination_user");
+    let user_id = create_simple_user(&mut conn, &username);
+    let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
-        "group_pagination_user",
+        &user_uuid.to_string(),
+        &username,
         true,
         true,
     );
@@ -418,10 +439,15 @@ async fn test_asset_groups_pagination() {
 #[serial]
 async fn test_asset_groups_search() {
     let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let username = unique_name("search_user");
+    let user_id = create_simple_user(&mut conn, &username);
+    let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
-        "search_user",
+        &user_uuid.to_string(),
+        &username,
         true,
         true,
     );
@@ -450,10 +476,15 @@ async fn test_asset_groups_search() {
 #[serial]
 async fn test_user_groups_search() {
     let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let username = unique_name("group_search_user");
+    let user_id = create_simple_user(&mut conn, &username);
+    let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
-        "group_search_user",
+        &user_uuid.to_string(),
+        &username,
         true,
         true,
     );
