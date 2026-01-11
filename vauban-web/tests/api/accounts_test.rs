@@ -9,6 +9,36 @@ use uuid::Uuid;
 use crate::common::{TestApp, assertions::*, test_db};
 use crate::fixtures::{create_admin_user, create_test_user, unique_name};
 
+/// Test API returns 401 JSON error when not authenticated (not redirect).
+#[tokio::test]
+#[serial]
+async fn test_api_returns_401_json_without_auth() {
+    let app = TestApp::spawn().await;
+
+    // Execute: GET /api/v1/accounts without auth
+    let response = app.server.get("/api/v1/accounts").await;
+
+    // Assert: API should return 401 Unauthorized (not 303 redirect)
+    let status = response.status_code().as_u16();
+    assert_eq!(
+        status, 401,
+        "API endpoints without auth should return 401 JSON, not redirect. Got {}",
+        status
+    );
+
+    // Verify it's a JSON error response, not a redirect
+    let json: serde_json::Value = response.json();
+    assert!(
+        json.get("error").is_some(),
+        "API error response should contain 'error' field"
+    );
+    assert_eq!(
+        json.get("status").and_then(|v| v.as_u64()),
+        Some(401),
+        "API error response should have status 401"
+    );
+}
+
 /// Test list users as admin.
 #[tokio::test]
 #[serial]

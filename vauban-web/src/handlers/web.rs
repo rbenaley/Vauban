@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use crate::AppState;
 use crate::db::get_connection;
 use crate::error::AppError;
-use crate::middleware::auth::{AuthUser, OptionalAuthUser};
+use crate::middleware::auth::{AuthUser, OptionalAuthUser, WebAuthUser};
 use crate::schema::{api_keys, assets, auth_sessions, proxy_sessions};
 use crate::templates::accounts::{
     ApiKeyItem, ApikeyListTemplate, AuthSessionItem, GroupDetailTemplate, GroupListTemplate,
@@ -106,7 +106,7 @@ pub async fn dashboard_home(
 /// Dashboard admin page.
 pub async fn dashboard_admin(
     State(_state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: WebAuthUser,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
     let base =
@@ -133,7 +133,7 @@ pub async fn dashboard_admin(
 /// User list page.
 pub async fn user_list(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: WebAuthUser,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::schema::users;
@@ -267,7 +267,7 @@ pub async fn user_list(
 /// User detail page.
 pub async fn user_detail(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: WebAuthUser,
     axum::extract::Path(user_uuid): axum::extract::Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::schema::users;
@@ -382,7 +382,7 @@ pub async fn user_detail(
 /// User profile page.
 pub async fn profile(
     State(_state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: WebAuthUser,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
     let base = BaseTemplate::new("My Profile".to_string(), user.clone())
@@ -409,7 +409,7 @@ pub async fn profile(
 /// MFA setup page.
 pub async fn mfa_setup(
     State(_state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: WebAuthUser,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
     let base =
@@ -440,7 +440,7 @@ pub async fn mfa_setup(
 pub async fn user_sessions(
     State(state): State<AppState>,
     jar: axum_extra::extract::CookieJar,
-    auth_user: AuthUser,
+    auth_user: WebAuthUser,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::models::AuthSession;
     use sha3::{Digest, Sha3_256};
@@ -536,7 +536,7 @@ pub async fn user_sessions(
 /// API keys list page.
 pub async fn api_keys(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: WebAuthUser,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::models::ApiKey;
 
@@ -605,7 +605,7 @@ pub async fn api_keys(
 /// Revoke an auth session.
 pub async fn revoke_session(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: WebAuthUser,
     axum::extract::Path(session_uuid): axum::extract::Path<uuid::Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     let mut conn = get_connection(&state.db_pool)?;
@@ -758,7 +758,7 @@ fn build_sessions_html(sessions: &[crate::models::AuthSession], client_token_has
 /// Revoke an API key.
 pub async fn revoke_api_key(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: WebAuthUser,
     axum::extract::Path(key_uuid): axum::extract::Path<uuid::Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::services::broadcast::WsChannel;
@@ -813,7 +813,7 @@ pub async fn revoke_api_key(
 /// Create API key form (returns modal HTML).
 pub async fn create_api_key_form(
     State(_state): State<AppState>,
-    _auth_user: AuthUser,
+    _auth_user: WebAuthUser,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::templates::accounts::ApikeyCreateFormTemplate;
 
@@ -827,7 +827,7 @@ pub async fn create_api_key_form(
 /// Create a new API key.
 pub async fn create_api_key(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: WebAuthUser,
     axum::extract::Form(form): axum::extract::Form<CreateApiKeyForm>,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::models::{ApiKey, NewApiKey};
@@ -909,7 +909,7 @@ pub struct CreateApiKeyForm {
 /// Asset list page.
 pub async fn asset_list(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: WebAuthUser,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
@@ -1013,7 +1013,7 @@ pub async fn asset_list(
 /// Asset detail page.
 pub async fn asset_detail(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: WebAuthUser,
     axum::extract::Path(id): axum::extract::Path<i32>,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
@@ -1222,7 +1222,7 @@ pub async fn dashboard_widget_recent_activity(
 /// Session list page.
 pub async fn session_list(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: WebAuthUser,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::templates::sessions::session_list::SessionListItem;
@@ -1357,7 +1357,7 @@ pub async fn session_list(
 /// Session detail page.
 pub async fn session_detail(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: WebAuthUser,
     axum::extract::Path(id): axum::extract::Path<i32>,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::templates::sessions::session_detail::SessionDetail;
@@ -1530,7 +1530,7 @@ struct SessionQueryDetailResult {
 /// Recording list page.
 pub async fn recording_list(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: WebAuthUser,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::templates::sessions::recording_list::RecordingListItem;
@@ -1643,7 +1643,7 @@ pub async fn recording_list(
 /// Recording play page.
 pub async fn recording_play(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: WebAuthUser,
     axum::extract::Path(id): axum::extract::Path<i32>,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::templates::sessions::recording_play::RecordingData;
@@ -1761,7 +1761,7 @@ struct RecordingQueryResult {
 /// Approval list page.
 pub async fn approval_list(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: WebAuthUser,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
@@ -1915,7 +1915,7 @@ struct ApprovalQueryResult {
 /// Approval detail page.
 pub async fn approval_detail(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: WebAuthUser,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
@@ -2016,7 +2016,7 @@ struct ApprovalDetailResult {
 /// Active sessions page.
 pub async fn active_sessions(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: WebAuthUser,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
     let base = BaseTemplate::new("Active Sessions".to_string(), user.clone())
@@ -2108,7 +2108,7 @@ struct ActiveSessionQueryResult {
 /// Group list page.
 pub async fn group_list(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: WebAuthUser,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
@@ -2201,7 +2201,7 @@ pub async fn group_list(
 /// Group detail page.
 pub async fn group_detail(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: WebAuthUser,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
@@ -2302,7 +2302,7 @@ pub async fn group_detail(
 /// Access rules list page.
 pub async fn access_rules_list(
     State(_state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: WebAuthUser,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
     let base = BaseTemplate::new("Access Rules".to_string(), user.clone())
@@ -2329,7 +2329,7 @@ pub async fn access_rules_list(
 /// Asset group list page.
 pub async fn asset_group_list(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: WebAuthUser,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
@@ -2422,7 +2422,7 @@ struct AssetGroupQueryResult {
 /// Asset group detail page.
 pub async fn asset_group_detail(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: WebAuthUser,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
@@ -2539,7 +2539,7 @@ struct GroupAssetResult {
 /// Asset group edit page.
 pub async fn asset_group_edit(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: WebAuthUser,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
@@ -2624,7 +2624,7 @@ pub struct UpdateAssetGroupForm {
 /// Update asset group handler.
 pub async fn update_asset_group(
     State(state): State<AppState>,
-    _auth_user: AuthUser,
+    _auth_user: WebAuthUser,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
     axum::extract::Form(form): axum::extract::Form<UpdateAssetGroupForm>,
 ) -> Result<impl IntoResponse, AppError> {
