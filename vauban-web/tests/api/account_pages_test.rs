@@ -70,12 +70,21 @@ async fn test_user_sessions_page_requires_auth() {
     // Request without auth token
     let response = app.server.get("/accounts/sessions").await;
 
-    // Should redirect to login or return unauthorized
+    // Web pages should redirect to login (303 See Other)
     let status = response.status_code().as_u16();
-    assert!(
-        status == 303 || status == 401,
-        "Expected redirect (303) or unauthorized (401), got {}",
+    assert_eq!(
+        status, 303,
+        "Web pages without auth should redirect to login (303), got {}",
         status
+    );
+
+    // Verify redirect location
+    let location = response.headers().get("location");
+    assert!(location.is_some(), "Redirect should have Location header");
+    assert_eq!(
+        location.unwrap().to_str().unwrap(),
+        "/login",
+        "Should redirect to /login"
     );
 }
 

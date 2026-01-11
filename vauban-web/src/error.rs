@@ -4,7 +4,7 @@
 use axum::{
     Json,
     http::StatusCode,
-    response::{IntoResponse, Response},
+    response::{IntoResponse, Redirect, Response},
 };
 use serde_json::json;
 use thiserror::Error;
@@ -17,6 +17,9 @@ pub enum AppError {
 
     #[error("Authentication error: {0}")]
     Auth(String),
+
+    #[error("Authentication required - redirect to login")]
+    AuthRedirect,
 
     #[error("Authorization error: {0}")]
     Authorization(String),
@@ -42,6 +45,11 @@ pub enum AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
+        // Special case: AuthRedirect returns a redirect to login page
+        if matches!(self, AppError::AuthRedirect) {
+            return Redirect::to("/login").into_response();
+        }
+
         let (status, error_message) = match self {
             AppError::Database(e) => {
                 tracing::error!("Database error: {}", e);
@@ -51,6 +59,7 @@ impl IntoResponse for AppError {
                 )
             }
             AppError::Auth(msg) => (StatusCode::UNAUTHORIZED, msg),
+            AppError::AuthRedirect => unreachable!(), // Handled above
             AppError::Authorization(msg) => (StatusCode::FORBIDDEN, msg),
             AppError::Validation(msg) => (StatusCode::BAD_REQUEST, msg),
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
@@ -140,6 +149,39 @@ mod tests {
         let error = AppError::Auth("Invalid token".to_string());
         let response = error.into_response();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn test_app_error_into_response_auth_redirect_status() {
+        let error = AppError::AuthRedirect;
+        let response = error.into_response();
+        // AuthRedirect returns a 303 See Other redirect
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    }
+
+    #[test]
+    fn test_app_error_into_response_auth_redirect_has_location_header() {
+        let error = AppError::AuthRedirect;
+        let response = error.into_response();
+        let location = response.headers().get("location");
+        assert!(location.is_some());
+        assert_eq!(location.unwrap().to_str().unwrap(), "/login");
+    }
+
+    #[test]
+    fn test_app_error_display_auth_redirect() {
+        let error = AppError::AuthRedirect;
+        assert_eq!(
+            error.to_string(),
+            "Authentication required - redirect to login"
+        );
+    }
+
+    #[test]
+    fn test_app_error_debug_auth_redirect() {
+        let error = AppError::AuthRedirect;
+        let debug_str = format!("{:?}", error);
+        assert!(debug_str.contains("AuthRedirect"));
     }
 
     #[test]

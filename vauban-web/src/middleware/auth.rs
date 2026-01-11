@@ -30,6 +30,7 @@ pub struct AuthUser {
 }
 
 /// Implement FromRequestParts for AuthUser to extract from request extensions.
+/// Used by API endpoints - returns JSON 401 error if not authenticated.
 impl<S> FromRequestParts<S> for AuthUser
 where
     S: Send + Sync,
@@ -42,6 +43,36 @@ where
             .get::<AuthUser>()
             .cloned()
             .ok_or_else(|| AppError::Auth("Authentication required".to_string()))
+    }
+}
+
+/// Web page authentication extractor.
+/// Same as AuthUser but redirects to login page instead of returning JSON 401.
+/// Use this for web page handlers (HTML responses).
+#[derive(Debug, Clone)]
+pub struct WebAuthUser(pub AuthUser);
+
+impl std::ops::Deref for WebAuthUser {
+    type Target = AuthUser;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<S> FromRequestParts<S> for WebAuthUser
+where
+    S: Send + Sync,
+{
+    type Rejection = AppError;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        parts
+            .extensions
+            .get::<AuthUser>()
+            .cloned()
+            .map(WebAuthUser)
+            .ok_or(AppError::AuthRedirect)
     }
 }
 
@@ -527,5 +558,57 @@ mod tests {
         assert!(user.mfa_verified);
         assert!(user.is_superuser);
         assert!(user.is_staff);
+    }
+
+    // ==================== WebAuthUser Tests ====================
+
+    #[test]
+    fn test_web_auth_user_deref() {
+        let auth_user = create_test_user();
+        let web_user = WebAuthUser(auth_user.clone());
+
+        // WebAuthUser derefs to AuthUser
+        assert_eq!(web_user.uuid, auth_user.uuid);
+        assert_eq!(web_user.username, auth_user.username);
+        assert_eq!(web_user.is_superuser, auth_user.is_superuser);
+    }
+
+    #[test]
+    fn test_web_auth_user_clone() {
+        let auth_user = create_test_user();
+        let web_user = WebAuthUser(auth_user);
+        let cloned = web_user.clone();
+
+        assert_eq!(web_user.uuid, cloned.uuid);
+        assert_eq!(web_user.username, cloned.username);
+    }
+
+    #[test]
+    fn test_web_auth_user_debug() {
+        let auth_user = create_test_user();
+        let web_user = WebAuthUser(auth_user);
+        let debug_str = format!("{:?}", web_user);
+
+        assert!(debug_str.contains("WebAuthUser"));
+        assert!(debug_str.contains("testuser"));
+    }
+
+    #[test]
+    fn test_web_auth_user_inner_access() {
+        let auth_user = AuthUser {
+            uuid: "web-uuid".to_string(),
+            username: "webuser".to_string(),
+            mfa_verified: true,
+            is_superuser: false,
+            is_staff: true,
+        };
+        let web_user = WebAuthUser(auth_user);
+
+        // Access inner AuthUser via .0
+        assert_eq!(web_user.0.uuid, "web-uuid");
+        assert_eq!(web_user.0.username, "webuser");
+        assert!(web_user.0.mfa_verified);
+        assert!(!web_user.0.is_superuser);
+        assert!(web_user.0.is_staff);
     }
 }
