@@ -185,6 +185,8 @@ fn build_test_router(state: AppState) -> Router {
     use vauban_web::middleware;
 
     Router::new()
+        // Login page (for redirect tests)
+        .route("/login", get(handlers::web::login_page))
         // WebSocket routes
         .route("/ws/dashboard", get(handlers::websocket::dashboard_ws))
         .route("/ws/session/{id}", get(handlers::websocket::session_ws))
@@ -233,7 +235,8 @@ fn build_test_router(state: AppState) -> Router {
         .route("/assets/groups/{uuid}/edit", get(handlers::web::asset_group_edit))
         .route("/accounts/groups", get(handlers::web::group_list))
         .route("/accounts/groups/{uuid}", get(handlers::web::group_detail))
-        // Account pages (sessions and API keys)
+        // Account pages (profile, sessions and API keys)
+        .route("/accounts/profile", get(handlers::web::profile))
         .route("/accounts/sessions", get(handlers::web::user_sessions))
         .route(
             "/accounts/sessions/{uuid}/revoke",

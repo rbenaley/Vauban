@@ -4,17 +4,287 @@
 
 {% block content %}
 <div class="space-y-6">
+    <!-- Header -->
     <div class="md:flex md:items-center md:justify-between">
         <div class="min-w-0 flex-1">
             <h2 class="text-2xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-3xl sm:tracking-tight">
                 My Profile
             </h2>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                Manage your account settings and preferences
+            </p>
         </div>
     </div>
 
-    <div class="bg-white dark:bg-gray-800 shadow rounded-lg p-6">
-        <p class="text-gray-500 dark:text-gray-400">Profile content</p>
+    <div class="grid grid-cols-1 gap-6 lg:grid-cols-3">
+        <!-- Profile Information -->
+        <div class="lg:col-span-2 space-y-6">
+            <!-- Personal Information Card -->
+            <div class="bg-white dark:bg-gray-800 shadow rounded-lg">
+                <div class="px-6 py-5 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
+                    <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Personal Information</h3>
+                    <a href="/accounts/profile/edit" class="text-sm font-medium text-vauban-600 hover:text-vauban-500 dark:text-vauban-400">
+                        Edit
+                    </a>
+                </div>
+                <div class="px-6 py-5 space-y-6">
+                    <div class="flex items-center">
+                        <div class="flex-shrink-0 h-20 w-20">
+                            <div class="h-20 w-20 rounded-full bg-vauban-100 dark:bg-vauban-900/50 flex items-center justify-center">
+                                <span class="text-vauban-600 dark:text-vauban-400 font-medium text-2xl">
+                                    {{ profile.username[..1].to_uppercase() }}
+                                </span>
+                            </div>
+                        </div>
+                        <div class="ml-6">
+                            <h4 class="text-xl font-semibold text-gray-900 dark:text-white">
+                                {% if profile.full_name.is_some() %}{{ profile.full_name.as_ref().unwrap() }}{% else %}{{ profile.username }}{% endif %}
+                            </h4>
+                            <p class="text-sm text-gray-500 dark:text-gray-400">@{{ profile.username }}</p>
+                        </div>
+                    </div>
+
+                    <dl class="grid grid-cols-1 gap-x-4 gap-y-6 sm:grid-cols-2">
+                        <div>
+                            <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Email</dt>
+                            <dd class="mt-1 text-sm text-gray-900 dark:text-white">{{ profile.email }}</dd>
+                        </div>
+                        {% if profile.phone.is_some() %}
+                        <div>
+                            <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Phone</dt>
+                            <dd class="mt-1 text-sm text-gray-900 dark:text-white">{{ profile.phone.as_ref().unwrap() }}</dd>
+                        </div>
+                        {% endif %}
+                        <div>
+                            <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">First Name</dt>
+                            <dd class="mt-1 text-sm text-gray-900 dark:text-white">{% if profile.first_name.is_some() %}{{ profile.first_name.as_ref().unwrap() }}{% else %}-{% endif %}</dd>
+                        </div>
+                        <div>
+                            <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Last Name</dt>
+                            <dd class="mt-1 text-sm text-gray-900 dark:text-white">{% if profile.last_name.is_some() %}{{ profile.last_name.as_ref().unwrap() }}{% else %}-{% endif %}</dd>
+                        </div>
+                        <div>
+                            <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Account Status</dt>
+                            <dd class="mt-1">
+                                <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium
+                                    {% if profile.is_active %}bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300
+                                    {% else %}bg-red-100 text-red-800 dark:bg-red-900/50 dark:text-red-300{% endif %}">
+                                    {% if profile.is_active %}Active{% else %}Inactive{% endif %}
+                                </span>
+                                {% if profile.is_staff %}
+                                <span class="ml-2 inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-300">
+                                    Staff
+                                </span>
+                                {% endif %}
+                                {% if profile.is_superuser %}
+                                <span class="ml-2 inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-purple-100 text-purple-800 dark:bg-purple-900/50 dark:text-purple-300">
+                                    Admin
+                                </span>
+                                {% endif %}
+                            </dd>
+                        </div>
+                        <div>
+                            <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Auth Source</dt>
+                            <dd class="mt-1">
+                                <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium
+                                    {% if profile.auth_source == "local" %}bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-300
+                                    {% elif profile.auth_source == "ldap" %}bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300
+                                    {% elif profile.auth_source == "saml" %}bg-purple-100 text-purple-800 dark:bg-purple-900/50 dark:text-purple-300
+                                    {% else %}bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300{% endif %}">
+                                    {{ profile.auth_source|upper }}
+                                </span>
+                            </dd>
+                        </div>
+                        <div>
+                            <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Last Login</dt>
+                            <dd class="mt-1 text-sm text-gray-900 dark:text-white">
+                                {% if profile.last_login.is_some() %}{{ profile.last_login.as_ref().unwrap() }}{% else %}Never{% endif %}
+                            </dd>
+                        </div>
+                        <div>
+                            <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Member Since</dt>
+                            <dd class="mt-1 text-sm text-gray-900 dark:text-white">{{ profile.created_at }}</dd>
+                        </div>
+                    </dl>
+                </div>
+            </div>
+
+            <!-- Active Sessions Card -->
+            <div class="bg-white dark:bg-gray-800 shadow rounded-lg">
+                <div class="px-6 py-5 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
+                    <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Active Sessions</h3>
+                    <a href="/accounts/sessions" class="text-sm font-medium text-vauban-600 hover:text-vauban-500 dark:text-vauban-400">
+                        Manage all
+                    </a>
+                </div>
+                <div class="px-6 py-5">
+                    {% if sessions.is_empty() %}
+                    <p class="text-sm text-gray-500 dark:text-gray-400">No active sessions found.</p>
+                    {% else %}
+                    <ul class="divide-y divide-gray-200 dark:divide-gray-700">
+                        {% for session in sessions %}
+                        <li class="py-4 {% if loop.first %}pt-0{% endif %} {% if loop.last %}pb-0{% endif %}">
+                            <div class="flex items-center justify-between">
+                                <div class="flex items-center min-w-0">
+                                    <div class="flex-shrink-0">
+                                        <div class="h-10 w-10 rounded-full bg-gray-100 dark:bg-gray-700 flex items-center justify-center">
+                                            <svg class="h-5 w-5 text-gray-500 dark:text-gray-400" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                                <path stroke-linecap="round" stroke-linejoin="round" d="M9 17.25v1.007a3 3 0 01-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0115 18.257V17.25m6-12V15a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 15V5.25m18 0A2.25 2.25 0 0018.75 3H5.25A2.25 2.25 0 003 5.25m18 0V12a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 12V5.25" />
+                                            </svg>
+                                        </div>
+                                    </div>
+                                    <div class="ml-4 min-w-0">
+                                        <p class="text-sm font-medium text-gray-900 dark:text-white truncate">
+                                            {{ session.device_info }}
+                                            {% if session.is_current %}
+                                            <span class="ml-2 inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300">
+                                                Current
+                                            </span>
+                                            {% endif %}
+                                        </p>
+                                        <p class="text-sm text-gray-500 dark:text-gray-400">
+                                            {{ session.ip_address }} · {{ session.last_activity_display() }}
+                                        </p>
+                                    </div>
+                                </div>
+                                {% if !session.is_current %}
+                                <form method="post" action="/accounts/sessions/{{ session.uuid }}/revoke" class="flex-shrink-0 ml-4">
+                                    <button type="submit" class="text-sm font-medium text-red-600 hover:text-red-500 dark:text-red-400 dark:hover:text-red-300">
+                                        Revoke
+                                    </button>
+                                </form>
+                                {% endif %}
+                            </div>
+                        </li>
+                        {% endfor %}
+                    </ul>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <!-- Sidebar -->
+        <div class="space-y-6">
+            <!-- Security Card -->
+            <div class="bg-white dark:bg-gray-800 shadow rounded-lg">
+                <div class="px-6 py-5 border-b border-gray-200 dark:border-gray-700">
+                    <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Security</h3>
+                </div>
+                <div class="px-6 py-5 space-y-4">
+                    <!-- MFA Status -->
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-sm font-medium text-gray-900 dark:text-white">Two-Factor Authentication</p>
+                            <p class="text-sm text-gray-500 dark:text-gray-400">
+                                {% if profile.mfa_enabled %}Enabled{% else %}Not configured{% endif %}
+                            </p>
+                        </div>
+                        <div>
+                            {% if profile.mfa_enabled %}
+                            <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300">
+                                <svg class="-ml-0.5 mr-1.5 h-2 w-2 text-green-400" fill="currentColor" viewBox="0 0 8 8">
+                                    <circle cx="4" cy="4" r="3" />
+                                </svg>
+                                Active
+                            </span>
+                            {% else %}
+                            <a href="/accounts/mfa" class="inline-flex items-center rounded-md bg-vauban-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500">
+                                Enable
+                            </a>
+                            {% endif %}
+                        </div>
+                    </div>
+
+                    {% if profile.mfa_enforced %}
+                    <div class="rounded-md bg-yellow-50 dark:bg-yellow-900/20 p-3">
+                        <div class="flex">
+                            <div class="flex-shrink-0">
+                                <svg class="h-5 w-5 text-yellow-400" viewBox="0 0 20 20" fill="currentColor">
+                                    <path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" />
+                                </svg>
+                            </div>
+                            <div class="ml-3">
+                                <p class="text-sm text-yellow-700 dark:text-yellow-200">
+                                    MFA is required for your account.
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                    {% endif %}
+
+                    <div class="border-t border-gray-200 dark:border-gray-700 pt-4">
+                        {% if profile.auth_source == "local" %}
+                        <a href="/accounts/password/change" class="flex items-center text-sm font-medium text-vauban-600 hover:text-vauban-500 dark:text-vauban-400">
+                            <svg class="mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
+                            </svg>
+                            Change Password
+                        </a>
+                        {% else %}
+                        <p class="text-sm text-gray-500 dark:text-gray-400">
+                            Password is managed by {{ profile.auth_source|upper }}.
+                        </p>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+
+            <!-- Quick Actions Card -->
+            <div class="bg-white dark:bg-gray-800 shadow rounded-lg">
+                <div class="px-6 py-5 border-b border-gray-200 dark:border-gray-700">
+                    <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Quick Actions</h3>
+                </div>
+                <div class="px-6 py-5">
+                    <ul class="space-y-3">
+                        <li>
+                            <a href="/accounts/api-keys" class="flex items-center text-sm font-medium text-gray-700 hover:text-vauban-600 dark:text-gray-300 dark:hover:text-vauban-400">
+                                <svg class="mr-3 h-5 w-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z" />
+                                </svg>
+                                API Keys
+                            </a>
+                        </li>
+                        <li>
+                            <a href="/accounts/sessions" class="flex items-center text-sm font-medium text-gray-700 hover:text-vauban-600 dark:text-gray-300 dark:hover:text-vauban-400">
+                                <svg class="mr-3 h-5 w-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M9 17.25v1.007a3 3 0 01-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0115 18.257V17.25m6-12V15a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 15V5.25m18 0A2.25 2.25 0 0018.75 3H5.25A2.25 2.25 0 003 5.25m18 0V12a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 12V5.25" />
+                                </svg>
+                                Manage Sessions
+                            </a>
+                        </li>
+                        {% if profile.mfa_enabled %}
+                        <li>
+                            <a href="/accounts/mfa" class="flex items-center text-sm font-medium text-gray-700 hover:text-vauban-600 dark:text-gray-300 dark:hover:text-vauban-400">
+                                <svg class="mr-3 h-5 w-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
+                                </svg>
+                                MFA Settings
+                            </a>
+                        </li>
+                        {% endif %}
+                    </ul>
+                </div>
+            </div>
+
+            <!-- Account Info Card -->
+            <div class="bg-white dark:bg-gray-800 shadow rounded-lg">
+                <div class="px-6 py-5 border-b border-gray-200 dark:border-gray-700">
+                    <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Account Details</h3>
+                </div>
+                <div class="px-6 py-5">
+                    <dl class="space-y-3">
+                        <div>
+                            <dt class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">User ID</dt>
+                            <dd class="mt-1 text-sm text-gray-900 dark:text-white font-mono">{{ profile.uuid }}</dd>
+                        </div>
+                        <div>
+                            <dt class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Last Updated</dt>
+                            <dd class="mt-1 text-sm text-gray-900 dark:text-white">{{ profile.updated_at }}</dd>
+                        </div>
+                    </dl>
+                </div>
+            </div>
+        </div>
     </div>
 </div>
 {% endblock %}
-
