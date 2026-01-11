@@ -5,6 +5,7 @@
 use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
+use diesel::sql_types::Text;
 use rand::rngs::OsRng;
 use std::io::{self, Write};
 use vauban_web::config::Config;
@@ -28,10 +29,10 @@ fn main() {
     }
 
     // Check if user exists
-    let user_exists: bool = diesel::sql_query(format!(
-        "SELECT EXISTS(SELECT 1 FROM users WHERE username = '{}' AND is_deleted = false) as exists",
-        username.trim().replace('\'', "''")
-    ))
+    let user_exists: bool = diesel::sql_query(
+        "SELECT EXISTS(SELECT 1 FROM users WHERE username = $1 AND is_deleted = false) as exists"
+    )
+    .bind::<Text, _>(username.trim())
     .get_result::<ExistsResult>(&mut conn)
     .map(|r| r.exists)
     .unwrap_or(false);
@@ -68,11 +69,11 @@ fn main() {
         .to_string();
 
     // Update user password
-    let rows_affected = diesel::sql_query(format!(
-        "UPDATE users SET password_hash = '{}', updated_at = NOW() WHERE username = '{}' AND is_deleted = false",
-        hash.replace('\'', "''"),
-        username.trim().replace('\'', "''")
-    ))
+    let rows_affected = diesel::sql_query(
+        "UPDATE users SET password_hash = $1, updated_at = NOW() WHERE username = $2 AND is_deleted = false"
+    )
+    .bind::<Text, _>(&hash)
+    .bind::<Text, _>(username.trim())
     .execute(&mut conn)
     .expect("Failed to update password");
 

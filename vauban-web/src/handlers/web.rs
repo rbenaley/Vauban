@@ -6,6 +6,7 @@ use axum::{
     response::{Html, IntoResponse, Response},
 };
 use diesel::prelude::*;
+use diesel::sql_types::{BigInt, Integer, Nullable, Text, Uuid as DieselUuid};
 use std::collections::HashMap;
 
 use crate::AppState;
@@ -1369,7 +1370,7 @@ pub async fn session_detail(
     // 1. uuid::text casts for string representation
     // 2. inet::text cast for client_ip
     // 3. Triple JOIN (proxy_sessions -> users -> assets)
-    let session_data: SessionQueryDetailResult = diesel::sql_query(format!(
+    let session_data: SessionQueryDetailResult = diesel::sql_query(
         "SELECT ps.id, ps.uuid, u.username, u.uuid::text as user_uuid,
                 a.name as asset_name, a.hostname as asset_hostname, a.uuid::text as asset_uuid, a.asset_type,
                 ps.session_type, ps.status, ps.credential_username, ps.client_ip::text as client_ip,
@@ -1379,9 +1380,9 @@ pub async fn session_detail(
          FROM proxy_sessions ps
          INNER JOIN users u ON u.id = ps.user_id
          INNER JOIN assets a ON a.id = ps.asset_id
-         WHERE ps.id = {}",
-        id
-    ))
+         WHERE ps.id = $1"
+    )
+    .bind::<Integer, _>(id)
     .get_result(&mut conn)
     .map_err(|e| match e {
         diesel::result::Error::NotFound => AppError::NotFound("Session not found".to_string()),
@@ -1651,16 +1652,16 @@ pub async fn recording_play(
     let mut conn = get_connection(&state.db_pool)?;
 
     // NOTE: Raw SQL required - triple JOIN with PostgreSQL-specific features
-    let recording_data: RecordingQueryResult = diesel::sql_query(format!(
+    let recording_data: RecordingQueryResult = diesel::sql_query(
         "SELECT ps.id, ps.uuid, u.username, a.name as asset_name, a.hostname as asset_hostname,
                 ps.session_type, ps.connected_at, ps.disconnected_at, ps.recording_path,
                 ps.bytes_sent, ps.bytes_received, ps.commands_count
          FROM proxy_sessions ps
          INNER JOIN users u ON u.id = ps.user_id
          INNER JOIN assets a ON a.id = ps.asset_id
-         WHERE ps.id = {} AND ps.is_recorded = true",
-        id
-    ))
+         WHERE ps.id = $1 AND ps.is_recorded = true"
+    )
+    .bind::<Integer, _>(id)
     .get_result(&mut conn)
     .map_err(|e| match e {
         diesel::result::Error::NotFound => AppError::NotFound("Recording not found".to_string()),
@@ -1777,39 +1778,60 @@ pub async fn approval_list(
         .unwrap_or(1);
     let items_per_page = 20;
 
-    // Build query with optional status filter
-    let status_clause = if let Some(ref s) = status_filter {
-        format!("AND ps.status = '{}'", s.replace('\'', "''"))
+    // NOTE: Raw SQL with parameterized queries for security
+    let total_items: i64 = if let Some(ref status) = status_filter {
+        diesel::sql_query(
+            "SELECT COUNT(*) as count FROM proxy_sessions ps WHERE ps.justification IS NOT NULL AND ps.status = $1"
+        )
+        .bind::<Text, _>(status)
+        .get_result::<ApprovalCountResult>(&mut conn)
+        .map(|r| r.count)
+        .unwrap_or(0)
     } else {
-        String::new()
+        diesel::sql_query(
+            "SELECT COUNT(*) as count FROM proxy_sessions ps WHERE ps.justification IS NOT NULL"
+        )
+        .get_result::<ApprovalCountResult>(&mut conn)
+        .map(|r| r.count)
+        .unwrap_or(0)
     };
 
-    // NOTE: Raw SQL - uses dynamic WHERE clause from status_clause variable
-    let total_items: i64 = diesel::sql_query(format!(
-        "SELECT COUNT(*) as count FROM proxy_sessions ps WHERE ps.justification IS NOT NULL {}",
-        status_clause
-    ))
-    .get_result::<ApprovalCountResult>(&mut conn)
-    .map(|r| r.count)
-    .unwrap_or(0);
-
     let total_pages = ((total_items as f64) / (items_per_page as f64)).ceil() as i32;
-    let offset = (page - 1) * items_per_page;
+    let offset = ((page - 1) * items_per_page) as i64;
 
-    // NOTE: Raw SQL required - triple JOIN with inet::text cast and dynamic WHERE
-    let approvals_data: Vec<ApprovalQueryResult> = diesel::sql_query(format!(
-        "SELECT ps.uuid, u.username, a.hostname as asset_name, a.asset_type, ps.session_type, 
-                ps.justification, ps.client_ip::text as client_ip, ps.created_at, ps.status
-         FROM proxy_sessions ps
-         INNER JOIN users u ON u.id = ps.user_id
-         INNER JOIN assets a ON a.id = ps.asset_id
-         WHERE ps.justification IS NOT NULL {}
-         ORDER BY ps.created_at DESC
-         LIMIT {} OFFSET {}",
-        status_clause, items_per_page, offset
-    ))
-    .load(&mut conn)
-    .map_err(|e| AppError::Database(e))?;
+    // NOTE: Raw SQL required - triple JOIN with inet::text cast, using parameterized queries
+    let approvals_data: Vec<ApprovalQueryResult> = if let Some(ref status) = status_filter {
+        diesel::sql_query(
+            "SELECT ps.uuid, u.username, a.hostname as asset_name, a.asset_type, ps.session_type, 
+                    ps.justification, ps.client_ip::text as client_ip, ps.created_at, ps.status
+             FROM proxy_sessions ps
+             INNER JOIN users u ON u.id = ps.user_id
+             INNER JOIN assets a ON a.id = ps.asset_id
+             WHERE ps.justification IS NOT NULL AND ps.status = $1
+             ORDER BY ps.created_at DESC
+             LIMIT $2 OFFSET $3"
+        )
+        .bind::<Text, _>(status)
+        .bind::<Integer, _>(items_per_page)
+        .bind::<BigInt, _>(offset)
+        .load(&mut conn)
+        .map_err(|e| AppError::Database(e))?
+    } else {
+        diesel::sql_query(
+            "SELECT ps.uuid, u.username, a.hostname as asset_name, a.asset_type, ps.session_type, 
+                    ps.justification, ps.client_ip::text as client_ip, ps.created_at, ps.status
+             FROM proxy_sessions ps
+             INNER JOIN users u ON u.id = ps.user_id
+             INNER JOIN assets a ON a.id = ps.asset_id
+             WHERE ps.justification IS NOT NULL
+             ORDER BY ps.created_at DESC
+             LIMIT $1 OFFSET $2"
+        )
+        .bind::<Integer, _>(items_per_page)
+        .bind::<BigInt, _>(offset)
+        .load(&mut conn)
+        .map_err(|e| AppError::Database(e))?
+    };
 
     let approvals: Vec<crate::templates::sessions::approval_list::ApprovalListItem> =
         approvals_data
@@ -1903,16 +1925,16 @@ pub async fn approval_detail(
         .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
 
     // NOTE: Raw SQL required - triple JOIN with inet::text cast
-    let approval_data: ApprovalDetailResult = diesel::sql_query(format!(
+    let approval_data: ApprovalDetailResult = diesel::sql_query(
         "SELECT ps.uuid, u.username, u.email as user_email, a.name as asset_name, a.asset_type, 
                 a.hostname as asset_hostname, ps.session_type, ps.status, ps.justification, 
                 ps.client_ip::text as client_ip, ps.credential_username, ps.created_at, ps.is_recorded
          FROM proxy_sessions ps
          INNER JOIN users u ON u.id = ps.user_id
          INNER JOIN assets a ON a.id = ps.asset_id
-         WHERE ps.uuid = '{}'",
-        approval_uuid
-    ))
+         WHERE ps.uuid = $1"
+    )
+    .bind::<DieselUuid, _>(approval_uuid)
     .get_result(&mut conn)
     .map_err(|e| match e {
         diesel::result::Error::NotFound => AppError::NotFound("Approval request not found".to_string()),
@@ -2321,15 +2343,15 @@ pub async fn asset_group_list(
 
     // NOTE: Raw SQL required - subquery in SELECT (asset_count) not supported by Diesel DSL
     let groups_data: Vec<AssetGroupQueryResult> = if let Some(ref s) = search_filter {
-        diesel::sql_query(format!(
+        let search_pattern = format!("%{}%", s);
+        diesel::sql_query(
             "SELECT g.uuid, g.name, g.slug, g.description, g.color, g.icon, g.created_at,
                     (SELECT COUNT(*) FROM assets a WHERE a.group_id = g.id AND a.is_deleted = false) as asset_count
              FROM asset_groups g
-             WHERE g.is_deleted = false AND (g.name ILIKE '%{}%' OR g.slug ILIKE '%{}%')
-             ORDER BY g.name ASC",
-            s.replace('\'', "''"),
-            s.replace('\'', "''")
-        ))
+             WHERE g.is_deleted = false AND (g.name ILIKE $1 OR g.slug ILIKE $1)
+             ORDER BY g.name ASC"
+        )
+        .bind::<Text, _>(&search_pattern)
         .load(&mut conn)
         .map_err(|e| AppError::Database(e))?
     } else {
@@ -2410,11 +2432,11 @@ pub async fn asset_group_detail(
         .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
 
     // NOTE: Raw SQL - simple query but kept for consistency with related code
-    let group_data: AssetGroupDetailResult = diesel::sql_query(format!(
+    let group_data: AssetGroupDetailResult = diesel::sql_query(
         "SELECT uuid, name, slug, description, color, icon, created_at, updated_at
-         FROM asset_groups WHERE uuid = '{}' AND is_deleted = false",
-        group_uuid
-    ))
+         FROM asset_groups WHERE uuid = $1 AND is_deleted = false"
+    )
+    .bind::<DieselUuid, _>(group_uuid)
     .get_result(&mut conn)
     .map_err(|e| match e {
         diesel::result::Error::NotFound => AppError::NotFound("Asset group not found".to_string()),
@@ -2422,14 +2444,14 @@ pub async fn asset_group_detail(
     })?;
 
     // NOTE: Raw SQL - kept for consistency with asset_group_detail page
-    let assets_data: Vec<GroupAssetResult> = diesel::sql_query(format!(
+    let assets_data: Vec<GroupAssetResult> = diesel::sql_query(
         "SELECT a.uuid, a.name, a.hostname, a.asset_type, a.status
          FROM assets a
          INNER JOIN asset_groups g ON g.id = a.group_id
-         WHERE g.uuid = '{}' AND a.is_deleted = false
-         ORDER BY a.name ASC",
-        group_uuid
-    ))
+         WHERE g.uuid = $1 AND a.is_deleted = false
+         ORDER BY a.name ASC"
+    )
+    .bind::<DieselUuid, _>(group_uuid)
     .load(&mut conn)
     .map_err(|e| AppError::Database(e))?;
 
@@ -2527,11 +2549,11 @@ pub async fn asset_group_edit(
         .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
 
     // NOTE: Raw SQL - kept for consistency with asset_group pages
-    let group_data: AssetGroupEditResult = diesel::sql_query(format!(
+    let group_data: AssetGroupEditResult = diesel::sql_query(
         "SELECT uuid, name, slug, description, color, icon
-         FROM asset_groups WHERE uuid = '{}' AND is_deleted = false",
-        group_uuid
-    ))
+         FROM asset_groups WHERE uuid = $1 AND is_deleted = false"
+    )
+    .bind::<DieselUuid, _>(group_uuid)
     .get_result(&mut conn)
     .map_err(|e| match e {
         diesel::result::Error::NotFound => AppError::NotFound("Asset group not found".to_string()),
@@ -2610,17 +2632,17 @@ pub async fn update_asset_group(
     let group_uuid = ::uuid::Uuid::parse_str(&uuid_str)
         .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
 
-    // NOTE: Raw SQL - UPDATE with NOW() PostgreSQL function
-    diesel::sql_query(format!(
-        "UPDATE asset_groups SET name = '{}', slug = '{}', description = {}, color = '{}', icon = '{}', updated_at = NOW()
-         WHERE uuid = '{}' AND is_deleted = false",
-        form.name.replace('\'', "''"),
-        form.slug.replace('\'', "''"),
-        form.description.as_ref().map(|d| format!("'{}'", d.replace('\'', "''"))).unwrap_or_else(|| "NULL".to_string()),
-        form.color.replace('\'', "''"),
-        form.icon.replace('\'', "''"),
-        group_uuid
-    ))
+    // NOTE: Raw SQL - UPDATE with NOW() PostgreSQL function, using parameterized queries
+    diesel::sql_query(
+        "UPDATE asset_groups SET name = $1, slug = $2, description = $3, color = $4, icon = $5, updated_at = NOW()
+         WHERE uuid = $6 AND is_deleted = false"
+    )
+    .bind::<Text, _>(&form.name)
+    .bind::<Text, _>(&form.slug)
+    .bind::<Nullable<Text>, _>(form.description.as_deref())
+    .bind::<Text, _>(&form.color)
+    .bind::<Text, _>(&form.icon)
+    .bind::<DieselUuid, _>(group_uuid)
     .execute(&mut conn)
     .map_err(|e| AppError::Database(e))?;
 
