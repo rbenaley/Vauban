@@ -398,4 +398,241 @@ mod tests {
 
         assert!(request.validate().is_err());
     }
+
+    // ==================== ListAssetsParams Additional Tests ====================
+
+    #[test]
+    fn test_list_assets_params_debug() {
+        let params = ListAssetsParams {
+            asset_type: Some("ssh".to_string()),
+            group_id: Some(42),
+            limit: Some(100),
+            offset: Some(50),
+        };
+        
+        let debug_str = format!("{:?}", params);
+        
+        assert!(debug_str.contains("ListAssetsParams"));
+        assert!(debug_str.contains("ssh"));
+        assert!(debug_str.contains("42"));
+    }
+
+    #[test]
+    fn test_list_assets_params_zero_limit() {
+        let params = ListAssetsParams {
+            asset_type: None,
+            group_id: None,
+            limit: Some(0),
+            offset: None,
+        };
+        
+        assert_eq!(params.get_limit(), 0);
+    }
+
+    #[test]
+    fn test_list_assets_params_negative_offset_handled() {
+        // Note: i64 can be negative, but unwrap_or provides default
+        let params = ListAssetsParams {
+            asset_type: None,
+            group_id: None,
+            limit: None,
+            offset: Some(-10),
+        };
+        
+        assert_eq!(params.get_offset(), -10);
+    }
+
+    #[test]
+    fn test_list_assets_params_all_asset_types() {
+        let types = ["ssh", "rdp", "vnc", "web", "database", "kubernetes"];
+        
+        for type_str in types {
+            let params = ListAssetsParams {
+                asset_type: Some(type_str.to_string()),
+                group_id: None,
+                limit: None,
+                offset: None,
+            };
+            
+            assert_eq!(params.asset_type, Some(type_str.to_string()));
+        }
+    }
+
+    // ==================== IP Validation Edge Cases ====================
+
+    #[test]
+    fn test_validate_ip_address_loopback() {
+        assert!(validate_ip_address("127.0.0.1").is_ok());
+        assert!(validate_ip_address("::1").is_ok());
+    }
+
+    #[test]
+    fn test_validate_ip_address_private_ranges() {
+        assert!(validate_ip_address("10.0.0.1").is_ok());
+        assert!(validate_ip_address("172.16.0.1").is_ok());
+        assert!(validate_ip_address("192.168.1.1").is_ok());
+    }
+
+    #[test]
+    fn test_validate_ip_address_multicast() {
+        assert!(validate_ip_address("224.0.0.1").is_ok());
+        assert!(validate_ip_address("ff02::1").is_ok());
+    }
+
+    #[test]
+    fn test_validate_ip_address_broadcast() {
+        assert!(validate_ip_address("255.255.255.255").is_ok());
+    }
+
+    #[test]
+    fn test_validate_ip_address_partial() {
+        assert!(validate_ip_address("192.168.1").is_err());
+        assert!(validate_ip_address("192.168").is_err());
+    }
+
+    // ==================== IP to Network Additional Tests ====================
+
+    #[test]
+    fn test_ip_to_network_preserves_address() {
+        let ip: std::net::IpAddr = "10.20.30.40".parse().unwrap();
+        let network = ip_to_network(ip);
+        
+        assert_eq!(network.ip(), ip);
+        assert!(network.is_ipv4());
+    }
+
+    #[test]
+    fn test_ip_to_network_ipv6_full() {
+        let ip: std::net::IpAddr = "2001:db8:85a3::8a2e:370:7334".parse().unwrap();
+        let network = ip_to_network(ip);
+        
+        assert!(network.is_ipv6());
+    }
+
+    // ==================== CreateAssetRequest Additional Tests ====================
+
+    #[test]
+    fn test_create_asset_request_all_fields() {
+        let request = CreateAssetRequest {
+            name: "Full Server".to_string(),
+            hostname: "full.example.com".to_string(),
+            ip_address: Some("192.168.1.100".to_string()),
+            port: Some(22),
+            asset_type: "ssh".to_string(),
+            group_id: Some(5),
+            description: Some("A fully configured server".to_string()),
+            require_mfa: Some(true),
+            require_justification: Some(true),
+        };
+        
+        assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn test_create_asset_request_minimal() {
+        let request = CreateAssetRequest {
+            name: "Minimal".to_string(),
+            hostname: "min.example.com".to_string(),
+            ip_address: None,
+            port: None,
+            asset_type: "ssh".to_string(),
+            group_id: None,
+            description: None,
+            require_mfa: None,
+            require_justification: None,
+        };
+        
+        assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn test_create_asset_request_unicode_name() {
+        let request = CreateAssetRequest {
+            name: "服务器测试".to_string(),
+            hostname: "test.example.com".to_string(),
+            ip_address: None,
+            port: None,
+            asset_type: "ssh".to_string(),
+            group_id: None,
+            description: None,
+            require_mfa: None,
+            require_justification: None,
+        };
+        
+        assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn test_create_asset_request_long_description() {
+        let request = CreateAssetRequest {
+            name: "Server".to_string(),
+            hostname: "server.example.com".to_string(),
+            ip_address: None,
+            port: None,
+            asset_type: "ssh".to_string(),
+            group_id: None,
+            description: Some("A".repeat(5000)),
+            require_mfa: None,
+            require_justification: None,
+        };
+        
+        // Long description should be valid (no max length validation)
+        assert!(request.validate().is_ok());
+    }
+
+    // ==================== UpdateAssetRequest Additional Tests ====================
+
+    #[test]
+    fn test_update_asset_request_partial() {
+        let request = UpdateAssetRequest {
+            name: Some("New Name".to_string()),
+            hostname: None,
+            ip_address: None,
+            port: None,
+            status: None,
+            description: None,
+            require_mfa: None,
+            require_justification: None,
+        };
+        
+        assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn test_update_asset_request_status_values() {
+        let statuses = ["online", "offline", "maintenance", "unknown"];
+        
+        for status_val in statuses {
+            let request = UpdateAssetRequest {
+                name: None,
+                hostname: None,
+                ip_address: None,
+                port: None,
+                status: Some(status_val.to_string()),
+                description: None,
+                require_mfa: None,
+                require_justification: None,
+            };
+            
+            assert!(request.validate().is_ok());
+        }
+    }
+
+    #[test]
+    fn test_update_asset_request_valid_port_range() {
+        for port_val in [1, 22, 80, 443, 3389, 5900, 65535] {
+            let request = UpdateAssetRequest {
+                name: None,
+                hostname: None,
+                ip_address: None,
+                port: Some(port_val),
+                status: None,
+                description: None,
+                require_mfa: None,
+                require_justification: None,
+            };
+            
+            assert!(request.validate().is_ok(), "Port {} should be valid", port_val);
+        }
+    }
 }

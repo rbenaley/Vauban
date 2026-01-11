@@ -369,4 +369,135 @@ mod tests {
         assert!(formatted.contains("curl/8.0"));
         assert!(formatted.contains("150ms"));
     }
+
+    // ==================== AuditLog Additional Tests ====================
+
+    #[test]
+    fn test_audit_log_all_fields_none() {
+        let log = AuditLog {
+            user_id: None,
+            ip_address: None,
+            method: "OPTIONS".to_string(),
+            path: "/".to_string(),
+            status_code: 200,
+            event_type: "success".to_string(),
+            duration_ms: 0,
+            user_agent: None,
+            referer: None,
+            request_id: "".to_string(),
+        };
+
+        assert!(log.user_id.is_none());
+        assert!(log.ip_address.is_none());
+        assert!(log.user_agent.is_none());
+        assert!(log.referer.is_none());
+    }
+
+    #[test]
+    fn test_audit_log_long_path() {
+        let long_path = "/api/".to_string() + &"a".repeat(1000);
+        let log = AuditLog {
+            user_id: Some("user".to_string()),
+            ip_address: Some("1.2.3.4".to_string()),
+            method: "GET".to_string(),
+            path: long_path.clone(),
+            status_code: 200,
+            event_type: "success".to_string(),
+            duration_ms: 100,
+            user_agent: None,
+            referer: None,
+            request_id: "req-1".to_string(),
+        };
+
+        assert_eq!(log.path, long_path);
+    }
+
+    #[test]
+    fn test_audit_log_high_duration() {
+        let log = AuditLog {
+            user_id: None,
+            ip_address: None,
+            method: "POST".to_string(),
+            path: "/slow".to_string(),
+            status_code: 200,
+            event_type: "success".to_string(),
+            duration_ms: u64::MAX,
+            user_agent: None,
+            referer: None,
+            request_id: "slow-req".to_string(),
+        };
+
+        assert_eq!(log.duration_ms, u64::MAX);
+    }
+
+    // ==================== get_event_type Additional Tests ====================
+
+    #[test]
+    fn test_get_event_type_100_series() {
+        assert_eq!(get_event_type(100), "success");
+        assert_eq!(get_event_type(101), "success");
+    }
+
+    #[test]
+    fn test_get_event_type_200_series() {
+        assert_eq!(get_event_type(201), "success");
+        assert_eq!(get_event_type(202), "success");
+        assert_eq!(get_event_type(204), "success");
+    }
+
+    #[test]
+    fn test_get_event_type_300_series() {
+        assert_eq!(get_event_type(307), "redirect");
+        assert_eq!(get_event_type(308), "redirect");
+    }
+
+    #[test]
+    fn test_get_event_type_400_series() {
+        assert_eq!(get_event_type(405), "error");
+        assert_eq!(get_event_type(429), "error");
+        assert_eq!(get_event_type(499), "error");
+    }
+
+    #[test]
+    fn test_get_event_type_500_series() {
+        assert_eq!(get_event_type(501), "error");
+        assert_eq!(get_event_type(502), "error");
+        assert_eq!(get_event_type(504), "error");
+    }
+
+    // ==================== format_apache_combined Additional Tests ====================
+
+    #[test]
+    fn test_format_apache_combined_contains_http_version() {
+        let log = create_test_audit_log();
+        let formatted = format_apache_combined(&log);
+        assert!(formatted.contains("HTTP/1.1"));
+    }
+
+    #[test]
+    fn test_format_apache_combined_timestamp_format() {
+        let log = create_test_audit_log();
+        let formatted = format_apache_combined(&log);
+        // Should contain date in Apache format like [10/Jan/2026:12:34:56 +0000]
+        assert!(formatted.contains("["));
+        assert!(formatted.contains("]"));
+    }
+
+    #[test]
+    fn test_format_apache_combined_request_id_included() {
+        let log = AuditLog {
+            user_id: None,
+            ip_address: None,
+            method: "GET".to_string(),
+            path: "/".to_string(),
+            status_code: 200,
+            event_type: "success".to_string(),
+            duration_ms: 1,
+            user_agent: None,
+            referer: None,
+            request_id: "unique-req-id-12345".to_string(),
+        };
+        let formatted = format_apache_combined(&log);
+        assert!(formatted.contains("unique-req-id-12345"));
+    }
 }

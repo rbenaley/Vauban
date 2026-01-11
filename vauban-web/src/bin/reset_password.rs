@@ -258,4 +258,97 @@ mod tests {
     fn test_escape_sql_string_empty() {
         assert_eq!(escape_sql_string(""), "");
     }
+
+    // ==================== Username Validation Edge Cases ====================
+
+    #[test]
+    fn test_validate_username_not_empty_spaces_only() {
+        assert!(validate_username_not_empty("     ").is_err());
+    }
+
+    #[test]
+    fn test_validate_username_not_empty_mixed_whitespace() {
+        assert!(validate_username_not_empty(" \t \n ").is_err());
+    }
+
+    #[test]
+    fn test_validate_username_not_empty_valid_with_spaces() {
+        // Username with leading/trailing spaces should be trimmed
+        assert!(validate_username_not_empty("  admin  ").is_ok());
+    }
+
+    // ==================== Password Strength Edge Cases ====================
+
+    #[test]
+    fn test_validate_password_strength_unicode() {
+        // Unicode counts as characters
+        assert!(validate_password_strength("密码password").is_ok());
+    }
+
+    #[test]
+    fn test_validate_password_strength_exactly_12() {
+        assert!(validate_password_strength("abcdefghijkl").is_ok());
+    }
+
+    #[test]
+    fn test_validate_password_strength_empty() {
+        assert!(validate_password_strength("").is_err());
+    }
+
+    // ==================== Password Confirmation Edge Cases ====================
+
+    #[test]
+    fn test_validate_password_confirmation_empty_both() {
+        assert!(validate_password_confirmation("", "").is_ok());
+    }
+
+    #[test]
+    fn test_validate_password_confirmation_whitespace_difference() {
+        assert!(validate_password_confirmation("password", "password ").is_err());
+    }
+
+    #[test]
+    fn test_validate_password_confirmation_unicode() {
+        assert!(validate_password_confirmation("пароль123", "пароль123").is_ok());
+    }
+
+    // ==================== SQL Escape Edge Cases ====================
+
+    #[test]
+    fn test_escape_sql_string_only_quotes() {
+        assert_eq!(escape_sql_string("'''"), "''''''");
+    }
+
+    #[test]
+    fn test_escape_sql_string_unicode() {
+        assert_eq!(escape_sql_string("用户'名"), "用户''名");
+    }
+
+    #[test]
+    fn test_escape_sql_string_special_chars() {
+        // Only single quotes need escaping for SQL strings
+        let input = "test@#$%^&*()";
+        assert_eq!(escape_sql_string(input), input);
+    }
+
+    #[test]
+    fn test_escape_sql_string_double_quotes() {
+        // Double quotes don't need escaping in single-quoted strings
+        let input = r#"test"value"#;
+        assert_eq!(escape_sql_string(input), input);
+    }
+
+    #[test]
+    fn test_escape_sql_string_backslash() {
+        // Backslashes don't need escaping in standard SQL
+        let input = r"test\path";
+        assert_eq!(escape_sql_string(input), input);
+    }
+
+    #[test]
+    fn test_escape_sql_string_long_input() {
+        let long_input = "a'b".repeat(1000);
+        let escaped = escape_sql_string(&long_input);
+        assert!(escaped.len() > long_input.len());
+    }
 }

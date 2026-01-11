@@ -599,4 +599,167 @@ mod tests {
     fn test_ping_interval_value() {
         assert_eq!(PING_INTERVAL_SECS, 30);
     }
+
+    #[test]
+    fn test_ping_interval_as_duration() {
+        let duration = Duration::from_secs(PING_INTERVAL_SECS);
+        assert_eq!(duration.as_secs(), 30);
+        assert_eq!(duration.as_millis(), 30_000);
+    }
+
+    #[test]
+    fn test_ping_interval_reasonable() {
+        // Should be between 10 seconds and 2 minutes
+        assert!(PING_INTERVAL_SECS >= 10);
+        assert!(PING_INTERVAL_SECS <= 120);
+    }
+
+    // ==================== WsChannel Additional Tests ====================
+
+    #[test]
+    fn test_ws_channel_clone() {
+        let channel = WsChannel::SessionLive("session-123".to_string());
+        let cloned = channel.clone();
+        
+        assert_eq!(channel.as_str(), cloned.as_str());
+    }
+
+    #[test]
+    fn test_ws_channel_debug() {
+        let channel = WsChannel::DashboardStats;
+        let debug_str = format!("{:?}", channel);
+        
+        assert!(debug_str.contains("DashboardStats"));
+    }
+
+    #[test]
+    fn test_ws_channel_hash_eq() {
+        use std::collections::HashSet;
+        
+        let mut set = HashSet::new();
+        set.insert(WsChannel::DashboardStats);
+        set.insert(WsChannel::ActiveSessions);
+        set.insert(WsChannel::DashboardStats); // duplicate
+        
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn test_ws_channel_session_live_different_ids() {
+        let channel1 = WsChannel::SessionLive("abc".to_string());
+        let channel2 = WsChannel::SessionLive("xyz".to_string());
+        
+        assert_ne!(channel1.as_str(), channel2.as_str());
+    }
+
+    #[test]
+    fn test_ws_channel_user_channels_different_users() {
+        let auth1 = WsChannel::UserAuthSessions("user-1".to_string());
+        let auth2 = WsChannel::UserAuthSessions("user-2".to_string());
+        let api1 = WsChannel::UserApiKeys("user-1".to_string());
+        
+        assert_ne!(auth1.as_str(), auth2.as_str());
+        assert_ne!(auth1.as_str(), api1.as_str());
+    }
+
+    #[test]
+    fn test_ws_channel_from_str() {
+        assert_eq!(
+            WsChannel::from_str("dashboard:stats"),
+            Some(WsChannel::DashboardStats)
+        );
+        assert_eq!(
+            WsChannel::from_str("dashboard:active-sessions"),
+            Some(WsChannel::ActiveSessions)
+        );
+        assert_eq!(
+            WsChannel::from_str("dashboard:recent-activity"),
+            Some(WsChannel::RecentActivity)
+        );
+        assert_eq!(
+            WsChannel::from_str("notifications"),
+            Some(WsChannel::Notifications)
+        );
+        assert_eq!(WsChannel::from_str("invalid"), None);
+    }
+
+    #[test]
+    fn test_ws_channel_roundtrip() {
+        let channels = vec![
+            WsChannel::DashboardStats,
+            WsChannel::ActiveSessions,
+            WsChannel::RecentActivity,
+            WsChannel::Notifications,
+            WsChannel::SessionLive("test-id".to_string()),
+            WsChannel::UserAuthSessions("user-uuid".to_string()),
+            WsChannel::UserApiKeys("user-uuid".to_string()),
+        ];
+        
+        for channel in channels {
+            let str_val = channel.as_str();
+            let parsed = WsChannel::from_str(&str_val);
+            assert!(parsed.is_some(), "Failed to parse: {}", str_val);
+        }
+    }
+
+    // ==================== Token Hash Tests ====================
+
+    #[test]
+    fn test_sha3_256_hash_length() {
+        use sha3::{Digest, Sha3_256};
+        
+        let mut hasher = Sha3_256::new();
+        hasher.update(b"test-token");
+        let hash = format!("{:x}", hasher.finalize());
+        
+        assert_eq!(hash.len(), 64);
+    }
+
+    #[test]
+    fn test_sha3_256_hash_deterministic() {
+        use sha3::{Digest, Sha3_256};
+        
+        let compute_hash = |input: &[u8]| {
+            let mut hasher = Sha3_256::new();
+            hasher.update(input);
+            format!("{:x}", hasher.finalize())
+        };
+        
+        let hash1 = compute_hash(b"same-token");
+        let hash2 = compute_hash(b"same-token");
+        
+        assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_sha3_256_hash_different_inputs() {
+        use sha3::{Digest, Sha3_256};
+        
+        let compute_hash = |input: &[u8]| {
+            let mut hasher = Sha3_256::new();
+            hasher.update(input);
+            format!("{:x}", hasher.finalize())
+        };
+        
+        let hash1 = compute_hash(b"token-a");
+        let hash2 = compute_hash(b"token-b");
+        
+        assert_ne!(hash1, hash2);
+    }
+
+    // ==================== Duration Tests ====================
+
+    #[test]
+    fn test_duration_from_secs() {
+        let duration = Duration::from_secs(30);
+        assert_eq!(duration.as_secs(), 30);
+    }
+
+    #[tokio::test]
+    async fn test_interval_tick_immediate() {
+        // Verify interval creation doesn't panic
+        let mut ticker = interval(Duration::from_secs(1));
+        // First tick is immediate
+        ticker.tick().await;
+    }
 }

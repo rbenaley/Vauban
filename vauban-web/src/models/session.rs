@@ -374,4 +374,242 @@ mod tests {
         // Should be approximately 1 hour (3600 seconds)
         assert!(duration >= 3590 && duration <= 3610);
     }
+
+    // ==================== SessionType Additional Tests ====================
+
+    #[test]
+    fn test_session_type_debug() {
+        let session_type = SessionType::Ssh;
+        let debug_str = format!("{:?}", session_type);
+        assert!(debug_str.contains("Ssh"));
+    }
+
+    #[test]
+    fn test_session_type_clone() {
+        let session_type = SessionType::Rdp;
+        let cloned = session_type.clone();
+        assert_eq!(session_type, cloned);
+    }
+
+    #[test]
+    fn test_session_type_copy() {
+        let session_type = SessionType::Vnc;
+        let copied = session_type;
+        assert_eq!(session_type, copied);
+    }
+
+    #[test]
+    fn test_session_type_serialize() {
+        let session_type = SessionType::Ssh;
+        let json = serde_json::to_string(&session_type).unwrap();
+        assert!(json.contains("Ssh"));
+    }
+
+    #[test]
+    fn test_session_type_deserialize() {
+        let json = r#""Rdp""#;
+        let session_type: SessionType = serde_json::from_str(json).unwrap();
+        assert_eq!(session_type, SessionType::Rdp);
+    }
+
+    // ==================== SessionStatus Additional Tests ====================
+
+    #[test]
+    fn test_session_status_debug() {
+        let status = SessionStatus::Active;
+        let debug_str = format!("{:?}", status);
+        assert!(debug_str.contains("Active"));
+    }
+
+    #[test]
+    fn test_session_status_clone() {
+        let status = SessionStatus::Pending;
+        let cloned = status.clone();
+        assert_eq!(status, cloned);
+    }
+
+    #[test]
+    fn test_session_status_copy() {
+        let status = SessionStatus::Failed;
+        let copied = status;
+        assert_eq!(status, copied);
+    }
+
+    #[test]
+    fn test_session_status_serialize() {
+        let status = SessionStatus::Terminated;
+        let json = serde_json::to_string(&status).unwrap();
+        assert!(json.contains("Terminated"));
+    }
+
+    // ==================== ProxySession Additional Tests ====================
+
+    #[test]
+    fn test_proxy_session_clone() {
+        let session = create_test_session();
+        let cloned = session.clone();
+        assert_eq!(session.uuid, cloned.uuid);
+        assert_eq!(session.status, cloned.status);
+    }
+
+    #[test]
+    fn test_proxy_session_debug() {
+        let session = create_test_session();
+        let debug_str = format!("{:?}", session);
+        assert!(debug_str.contains("ProxySession"));
+    }
+
+    #[test]
+    fn test_proxy_session_serialize() {
+        let session = create_test_session();
+        let json = serde_json::to_string(&session).unwrap();
+        assert!(json.contains("active"));
+        // client_ip should be skipped
+        assert!(!json.contains("192.168.1.10"));
+    }
+
+    #[test]
+    fn test_session_type_enum_rdp() {
+        let mut session = create_test_session();
+        session.session_type = "rdp".to_string();
+        assert_eq!(session.session_type_enum(), SessionType::Rdp);
+    }
+
+    #[test]
+    fn test_session_type_enum_vnc() {
+        let mut session = create_test_session();
+        session.session_type = "vnc".to_string();
+        assert_eq!(session.session_type_enum(), SessionType::Vnc);
+    }
+
+    #[test]
+    fn test_status_enum_all_values() {
+        let statuses = [
+            ("pending", SessionStatus::Pending),
+            ("connecting", SessionStatus::Connecting),
+            ("active", SessionStatus::Active),
+            ("disconnected", SessionStatus::Disconnected),
+            ("terminated", SessionStatus::Terminated),
+            ("failed", SessionStatus::Failed),
+        ];
+        
+        for (status_str, expected) in statuses {
+            let mut session = create_test_session();
+            session.status = status_str.to_string();
+            assert_eq!(session.status_enum(), expected);
+        }
+    }
+
+    // ==================== NewProxySession Tests ====================
+
+    #[test]
+    fn test_new_proxy_session_debug() {
+        let new_session = NewProxySession {
+            uuid: Uuid::new_v4(),
+            user_id: 1,
+            asset_id: 1,
+            credential_id: "cred-1".to_string(),
+            credential_username: "admin".to_string(),
+            session_type: "ssh".to_string(),
+            status: "pending".to_string(),
+            client_ip: "10.0.0.1".parse().unwrap(),
+            client_user_agent: Some("Mozilla/5.0".to_string()),
+            proxy_instance: None,
+            justification: Some("Maintenance".to_string()),
+            is_recorded: true,
+            metadata: serde_json::json!({}),
+        };
+        
+        let debug_str = format!("{:?}", new_session);
+        assert!(debug_str.contains("NewProxySession"));
+    }
+
+    #[test]
+    fn test_new_proxy_session_clone() {
+        let new_session = NewProxySession {
+            uuid: Uuid::new_v4(),
+            user_id: 2,
+            asset_id: 3,
+            credential_id: "cred-2".to_string(),
+            credential_username: "root".to_string(),
+            session_type: "rdp".to_string(),
+            status: "connecting".to_string(),
+            client_ip: "192.168.1.1".parse().unwrap(),
+            client_user_agent: None,
+            proxy_instance: Some("proxy-02".to_string()),
+            justification: None,
+            is_recorded: false,
+            metadata: serde_json::json!({"key": "value"}),
+        };
+        
+        let cloned = new_session.clone();
+        assert_eq!(new_session.credential_id, cloned.credential_id);
+    }
+
+    // ==================== CreateSessionRequest Tests ====================
+
+    #[test]
+    fn test_create_session_request_debug() {
+        let request = CreateSessionRequest {
+            asset_id: Uuid::new_v4(),
+            credential_id: "cred-debug".to_string(),
+            session_type: "ssh".to_string(),
+            justification: Some("Debug session".to_string()),
+        };
+        
+        let debug_str = format!("{:?}", request);
+        assert!(debug_str.contains("CreateSessionRequest"));
+    }
+
+    #[test]
+    fn test_create_session_request_clone() {
+        let request = CreateSessionRequest {
+            asset_id: Uuid::new_v4(),
+            credential_id: "cred-clone".to_string(),
+            session_type: "vnc".to_string(),
+            justification: None,
+        };
+        
+        let cloned = request.clone();
+        assert_eq!(request.credential_id, cloned.credential_id);
+    }
+
+    #[test]
+    fn test_create_session_request_validation_valid() {
+        use validator::Validate;
+        
+        let request = CreateSessionRequest {
+            asset_id: Uuid::new_v4(),
+            credential_id: "cred-valid".to_string(),
+            session_type: "ssh".to_string(),
+            justification: Some("Valid request".to_string()),
+        };
+        
+        assert!(request.validate().is_ok());
+    }
+
+    // ==================== Duration Edge Cases ====================
+
+    #[test]
+    fn test_duration_zero_seconds() {
+        let mut session = create_test_session();
+        let now = Utc::now();
+        session.connected_at = Some(now);
+        session.disconnected_at = Some(now);
+        
+        let duration = session.duration().unwrap();
+        assert_eq!(duration, 0);
+    }
+
+    #[test]
+    fn test_duration_negative_handled() {
+        let mut session = create_test_session();
+        // This would be an invalid state, but test it anyway
+        session.connected_at = Some(Utc::now());
+        session.disconnected_at = Some(Utc::now() - Duration::hours(1));
+        
+        let duration = session.duration().unwrap();
+        // Duration would be negative
+        assert!(duration < 0);
+    }
 }

@@ -248,4 +248,47 @@ mod tests {
         assert_eq!(user.uuid, cloned.uuid);
         assert_eq!(user.username, cloned.username);
     }
+
+    #[test]
+    fn test_user_list_template_renders() {
+        use crate::templates::base::VaubanConfig;
+
+        let template = UserListTemplate {
+            title: "Users".to_string(),
+            user: Some(UserContext {
+                uuid: "test".to_string(),
+                username: "testuser".to_string(),
+                display_name: "Test User".to_string(),
+                is_superuser: true,
+                is_staff: true,
+            }),
+            vauban: VaubanConfig {
+                brand_name: "VAUBAN".to_string(),
+                brand_logo: None,
+                theme: "dark".to_string(),
+            },
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            users: vec![UserListItem {
+                uuid: "test-uuid".to_string(),
+                username: "testuser".to_string(),
+                email: "test@example.com".to_string(),
+                full_name: Some("Test User".to_string()),
+                auth_source: "local".to_string(),
+                mfa_enabled: true,
+                is_active: true,
+                is_staff: false,
+                is_superuser: false,
+                last_login: None,
+            }],
+            search: None,
+            status_filter: None,
+            pagination: Some(create_test_pagination(1, 1)),
+        };
+
+        let result = template.render();
+        assert!(result.is_ok(), "UserListTemplate should render");
+    }
 }

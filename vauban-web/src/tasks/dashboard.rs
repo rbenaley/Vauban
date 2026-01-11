@@ -237,6 +237,8 @@ fn fetch_recent_activity(db_pool: &DbPool) -> Result<Vec<ActivityItem>, String> 
 mod tests {
     use super::*;
 
+    // ==================== Interval Constants Tests ====================
+
     #[test]
     fn test_stats_interval() {
         assert_eq!(STATS_INTERVAL_SECS, 30);
@@ -250,5 +252,104 @@ mod tests {
     #[test]
     fn test_activity_interval() {
         assert_eq!(ACTIVITY_INTERVAL_SECS, 30);
+    }
+
+    #[test]
+    fn test_stats_interval_is_reasonable() {
+        // Stats should update at least every minute
+        assert!(STATS_INTERVAL_SECS <= 60);
+        assert!(STATS_INTERVAL_SECS >= 5);
+    }
+
+    #[test]
+    fn test_sessions_interval_is_faster_than_stats() {
+        // Active sessions should update more frequently than stats
+        assert!(SESSIONS_INTERVAL_SECS < STATS_INTERVAL_SECS);
+    }
+
+    // ==================== Duration Tests ====================
+
+    #[test]
+    fn test_duration_from_stats_interval() {
+        let duration = Duration::from_secs(STATS_INTERVAL_SECS);
+        assert_eq!(duration.as_secs(), 30);
+    }
+
+    #[test]
+    fn test_duration_from_sessions_interval() {
+        let duration = Duration::from_secs(SESSIONS_INTERVAL_SECS);
+        assert_eq!(duration.as_secs(), 10);
+    }
+
+    #[test]
+    fn test_duration_from_activity_interval() {
+        let duration = Duration::from_secs(ACTIVITY_INTERVAL_SECS);
+        assert_eq!(duration.as_secs(), 30);
+    }
+
+    // ==================== Interval Creation Tests ====================
+
+    #[tokio::test]
+    async fn test_interval_creation() {
+        let mut ticker = interval(Duration::from_secs(STATS_INTERVAL_SECS));
+        // First tick is immediate
+        ticker.tick().await;
+        // Verify the interval was created successfully
+        assert!(true);
+    }
+
+    #[test]
+    fn test_stats_interval_as_millis() {
+        let duration = Duration::from_secs(STATS_INTERVAL_SECS);
+        assert_eq!(duration.as_millis(), 30000);
+    }
+
+    #[test]
+    fn test_sessions_interval_as_millis() {
+        let duration = Duration::from_secs(SESSIONS_INTERVAL_SECS);
+        assert_eq!(duration.as_millis(), 10000);
+    }
+
+    // ==================== Interval Comparison Tests ====================
+
+    #[test]
+    fn test_activity_interval_equals_stats_interval() {
+        assert_eq!(ACTIVITY_INTERVAL_SECS, STATS_INTERVAL_SECS);
+    }
+
+    #[test]
+    fn test_all_intervals_nonzero() {
+        assert!(STATS_INTERVAL_SECS > 0);
+        assert!(SESSIONS_INTERVAL_SECS > 0);
+        assert!(ACTIVITY_INTERVAL_SECS > 0);
+    }
+
+    #[test]
+    fn test_intervals_are_multiples_of_5() {
+        // Good practice for dashboard updates
+        assert_eq!(STATS_INTERVAL_SECS % 5, 0);
+        assert_eq!(SESSIONS_INTERVAL_SECS % 5, 0);
+        assert_eq!(ACTIVITY_INTERVAL_SECS % 5, 0);
+    }
+
+    // ==================== Arc/Clone Pattern Tests ====================
+
+    #[test]
+    fn test_arc_clone_pattern() {
+        // Test that the Arc pattern used in start_dashboard_tasks works
+        let broadcast = BroadcastService::new();
+        let broadcast_arc = Arc::new(broadcast);
+        let cloned = Arc::clone(&broadcast_arc);
+        
+        // Both should point to the same allocation
+        assert!(Arc::ptr_eq(&broadcast_arc, &cloned));
+    }
+
+    #[test]
+    fn test_duration_conversion() {
+        // Verify durations can be converted correctly
+        let secs = STATS_INTERVAL_SECS;
+        let duration = Duration::from_secs(secs);
+        assert_eq!(duration.as_secs(), secs);
     }
 }

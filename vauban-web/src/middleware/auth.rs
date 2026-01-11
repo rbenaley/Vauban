@@ -442,4 +442,90 @@ mod tests {
 
         assert!(opt.0.is_none());
     }
+
+    // ==================== extract_token Additional Tests ====================
+
+    #[test]
+    fn test_extract_token_bearer_with_long_token() {
+        let long_token = "a".repeat(1000);
+        let request = HttpRequest::builder()
+            .header("Authorization", format!("Bearer {}", long_token))
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        let jar = CookieJar::new();
+        let result = extract_token(&jar, &request).unwrap();
+
+        assert_eq!(result, Some(long_token));
+    }
+
+    #[test]
+    fn test_extract_token_bearer_with_special_chars() {
+        let token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc123-_";
+        let request = HttpRequest::builder()
+            .header("Authorization", format!("Bearer {}", token))
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        let jar = CookieJar::new();
+        let result = extract_token(&jar, &request).unwrap();
+
+        assert_eq!(result, Some(token.to_string()));
+    }
+
+    #[test]
+    fn test_extract_token_no_auth_header() {
+        let request = HttpRequest::builder()
+            .header("Content-Type", "application/json")
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        let jar = CookieJar::new();
+        let result = extract_token(&jar, &request).unwrap();
+
+        assert!(result.is_none());
+    }
+
+    // ==================== AuthUser Serialization Tests ====================
+
+    #[test]
+    fn test_auth_user_json_roundtrip() {
+        let user = create_test_user();
+        let json = serde_json::to_string(&user).unwrap();
+        let deserialized: AuthUser = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(user.uuid, deserialized.uuid);
+        assert_eq!(user.username, deserialized.username);
+        assert_eq!(user.mfa_verified, deserialized.mfa_verified);
+    }
+
+    #[test]
+    fn test_auth_user_all_false_flags() {
+        let user = AuthUser {
+            uuid: "uuid".to_string(),
+            username: "basic".to_string(),
+            mfa_verified: false,
+            is_superuser: false,
+            is_staff: false,
+        };
+
+        assert!(!user.mfa_verified);
+        assert!(!user.is_superuser);
+        assert!(!user.is_staff);
+    }
+
+    #[test]
+    fn test_auth_user_all_true_flags() {
+        let user = AuthUser {
+            uuid: "uuid".to_string(),
+            username: "superadmin".to_string(),
+            mfa_verified: true,
+            is_superuser: true,
+            is_staff: true,
+        };
+
+        assert!(user.mfa_verified);
+        assert!(user.is_superuser);
+        assert!(user.is_staff);
+    }
 }

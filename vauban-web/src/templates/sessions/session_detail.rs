@@ -234,4 +234,31 @@ mod tests {
         let cloned = detail.clone();
         assert_eq!(detail.uuid, cloned.uuid);
     }
+
+    #[test]
+    fn test_session_detail_template_renders() {
+        let template = SessionDetailTemplate {
+            title: "Session Detail".to_string(),
+            user: Some(UserContext {
+                uuid: "test".to_string(),
+                username: "testuser".to_string(),
+                display_name: "Test User".to_string(),
+                is_superuser: false,
+                is_staff: false,
+            }),
+            vauban: VaubanConfig {
+                brand_name: "VAUBAN".to_string(),
+                brand_logo: None,
+                theme: "dark".to_string(),
+            },
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            session: create_test_session_detail("active", "ssh"),
+        };
+
+        let result = template.render();
+        assert!(result.is_ok(), "SessionDetailTemplate should render");
+    }
 }

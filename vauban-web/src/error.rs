@@ -204,4 +204,87 @@ mod tests {
         let result: AppResult<i32> = Err(AppError::NotFound("Not found".to_string()));
         assert!(result.is_err());
     }
+
+    // ==================== AppError Debug Tests ====================
+
+    #[test]
+    fn test_app_error_debug_auth() {
+        let error = AppError::Auth("test".to_string());
+        let debug_str = format!("{:?}", error);
+        assert!(debug_str.contains("Auth"));
+    }
+
+    #[test]
+    fn test_app_error_debug_authorization() {
+        let error = AppError::Authorization("test".to_string());
+        let debug_str = format!("{:?}", error);
+        assert!(debug_str.contains("Authorization"));
+    }
+
+    #[test]
+    fn test_app_error_debug_validation() {
+        let error = AppError::Validation("test".to_string());
+        let debug_str = format!("{:?}", error);
+        assert!(debug_str.contains("Validation"));
+    }
+
+    #[test]
+    fn test_app_error_debug_not_found() {
+        let error = AppError::NotFound("test".to_string());
+        let debug_str = format!("{:?}", error);
+        assert!(debug_str.contains("NotFound"));
+    }
+
+    #[test]
+    fn test_app_error_debug_config() {
+        let error = AppError::Config("test".to_string());
+        let debug_str = format!("{:?}", error);
+        assert!(debug_str.contains("Config"));
+    }
+
+    #[test]
+    fn test_app_error_debug_internal() {
+        let error = AppError::Internal(anyhow::anyhow!("test"));
+        let debug_str = format!("{:?}", error);
+        assert!(debug_str.contains("Internal"));
+    }
+
+    // ==================== Response Body Tests ====================
+
+    #[test]
+    fn test_app_error_into_response_grpc_status() {
+        let error = AppError::Grpc(tonic::Status::unavailable("service down"));
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    }
+
+    // ==================== Error Source Tests ====================
+
+    #[test]
+    fn test_app_error_from_tonic_status() {
+        let status = tonic::Status::not_found("resource not found");
+        let app_error: AppError = status.into();
+
+        match app_error {
+            AppError::Grpc(_) => (),
+            _ => panic!("Expected Grpc error"),
+        }
+    }
+
+    // ==================== Display Tests ====================
+
+    #[test]
+    fn test_app_error_display_internal() {
+        let error = AppError::Internal(anyhow::anyhow!("inner error"));
+        let display = error.to_string();
+        assert!(display.contains("Internal server error"));
+    }
+
+    #[test]
+    fn test_app_error_display_grpc() {
+        let error = AppError::Grpc(tonic::Status::unknown("unknown"));
+        let display = error.to_string();
+        assert!(display.contains("gRPC error"));
+    }
+
 }

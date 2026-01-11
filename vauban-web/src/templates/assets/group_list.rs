@@ -75,4 +75,34 @@ mod tests {
         item.asset_count = 0;
         assert_eq!(item.asset_count, 0);
     }
+
+    #[test]
+    fn test_asset_group_list_template_renders() {
+        use crate::templates::base::{VaubanConfig, UserContext};
+
+        let template = AssetGroupListTemplate {
+            title: "Asset Groups".to_string(),
+            user: Some(UserContext {
+                uuid: "test".to_string(),
+                username: "testuser".to_string(),
+                display_name: "Test User".to_string(),
+                is_superuser: true,
+                is_staff: true,
+            }),
+            vauban: VaubanConfig {
+                brand_name: "VAUBAN".to_string(),
+                brand_logo: None,
+                theme: "dark".to_string(),
+            },
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            groups: vec![create_test_asset_group_item()],
+            search: None,
+        };
+
+        let result = template.render();
+        assert!(result.is_ok(), "AssetGroupListTemplate should render");
+    }
 }

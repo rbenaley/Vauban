@@ -186,4 +186,33 @@ mod tests {
         let cloned = asset.clone();
         assert_eq!(asset.uuid, cloned.uuid);
     }
+
+    #[test]
+    fn test_asset_detail_template_renders() {
+        use crate::templates::base::{VaubanConfig, UserContext};
+
+        let template = AssetDetailTemplate {
+            title: "Asset Detail".to_string(),
+            user: Some(UserContext {
+                uuid: "test".to_string(),
+                username: "testuser".to_string(),
+                display_name: "Test User".to_string(),
+                is_superuser: true,
+                is_staff: true,
+            }),
+            vauban: VaubanConfig {
+                brand_name: "VAUBAN".to_string(),
+                brand_logo: None,
+                theme: "dark".to_string(),
+            },
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            asset: create_test_asset_detail("online", "ssh"),
+        };
+
+        let result = template.render();
+        assert!(result.is_ok(), "AssetDetailTemplate should render");
+    }
 }

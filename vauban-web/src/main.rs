@@ -369,3 +369,150 @@ async fn serve_static(
     // TODO: Implement proper static file serving
     Err(axum::http::StatusCode::NOT_FOUND)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==================== health_check Tests ====================
+
+    #[tokio::test]
+    async fn test_health_check_returns_ok() {
+        let response = health_check().await;
+        assert_eq!(response, "OK");
+    }
+
+    // ==================== serve_static Tests ====================
+
+    #[tokio::test]
+    async fn test_serve_static_returns_not_found() {
+        let path = axum::extract::Path("test.css".to_string());
+        let result = serve_static(path).await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), axum::http::StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_serve_static_any_path_returns_not_found() {
+        let path = axum::extract::Path("js/app.js".to_string());
+        let result = serve_static(path).await;
+        assert!(result.is_err());
+    }
+
+    // ==================== Configuration Tests ====================
+
+    #[test]
+    fn test_socket_addr_parsing() {
+        let addr: Result<SocketAddr, _> = "127.0.0.1:8080".parse();
+        assert!(addr.is_ok());
+        assert_eq!(addr.unwrap().port(), 8080);
+    }
+
+    #[test]
+    fn test_socket_addr_parsing_invalid() {
+        let addr: Result<SocketAddr, _> = "invalid:address".parse();
+        assert!(addr.is_err());
+    }
+
+    #[test]
+    fn test_socket_addr_ipv6() {
+        let addr: Result<SocketAddr, _> = "[::1]:8443".parse();
+        assert!(addr.is_ok());
+    }
+
+    // ==================== Additional health_check Tests ====================
+
+    #[tokio::test]
+    async fn test_health_check_is_static_str() {
+        let response = health_check().await;
+        assert!(response.len() == 2);
+    }
+
+    // ==================== serve_static Tests ====================
+
+    #[tokio::test]
+    async fn test_serve_static_nested_path() {
+        let path = axum::extract::Path("images/logo.png".to_string());
+        let result = serve_static(path).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_serve_static_empty_path() {
+        let path = axum::extract::Path("".to_string());
+        let result = serve_static(path).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_serve_static_with_dots() {
+        let path = axum::extract::Path("../../../etc/passwd".to_string());
+        let result = serve_static(path).await;
+        assert!(result.is_err());
+    }
+
+    // ==================== SocketAddr Tests ====================
+
+    #[test]
+    fn test_socket_addr_format_string() {
+        let host = "127.0.0.1";
+        let port = 8443u16;
+        let addr_str = format!("{}:{}", host, port);
+        let addr: SocketAddr = addr_str.parse().unwrap();
+        assert_eq!(addr.port(), 8443);
+    }
+
+    #[test]
+    fn test_socket_addr_ipv6_full() {
+        let addr: Result<SocketAddr, _> = "[2001:db8:85a3::8a2e:370:7334]:443".parse();
+        assert!(addr.is_ok());
+    }
+
+    #[test]
+    fn test_socket_addr_any_interface() {
+        let addr: SocketAddr = "0.0.0.0:8080".parse().unwrap();
+        assert!(addr.ip().is_unspecified());
+    }
+
+    #[test]
+    fn test_socket_addr_localhost_variations() {
+        let localhost: SocketAddr = "127.0.0.1:80".parse().unwrap();
+        assert!(localhost.ip().is_loopback());
+        
+        let ipv6_localhost: SocketAddr = "[::1]:80".parse().unwrap();
+        assert!(ipv6_localhost.ip().is_loopback());
+    }
+
+    // ==================== Port Tests ====================
+
+    #[test]
+    fn test_common_https_port() {
+        let addr: SocketAddr = "0.0.0.0:443".parse().unwrap();
+        assert_eq!(addr.port(), 443);
+    }
+
+    #[test]
+    fn test_development_port() {
+        let addr: SocketAddr = "127.0.0.1:3000".parse().unwrap();
+        assert_eq!(addr.port(), 3000);
+    }
+
+    #[test]
+    fn test_high_port() {
+        let addr: SocketAddr = "127.0.0.1:65535".parse().unwrap();
+        assert_eq!(addr.port(), 65535);
+    }
+
+    // ==================== CORS Methods Test ====================
+
+    #[test]
+    fn test_http_methods_available() {
+        // Verify all HTTP methods used in CORS are valid
+        assert_eq!(Method::GET.as_str(), "GET");
+        assert_eq!(Method::POST.as_str(), "POST");
+        assert_eq!(Method::PUT.as_str(), "PUT");
+        assert_eq!(Method::DELETE.as_str(), "DELETE");
+        assert_eq!(Method::PATCH.as_str(), "PATCH");
+        assert_eq!(Method::OPTIONS.as_str(), "OPTIONS");
+    }
+}

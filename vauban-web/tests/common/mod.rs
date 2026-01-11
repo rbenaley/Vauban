@@ -23,6 +23,7 @@ pub struct TestApp {
     pub auth_service: AuthService,
     pub config: Config,
     pub broadcast: BroadcastService,
+    pub user_connections: vauban_web::services::connections::UserConnectionRegistry,
 }
 
 /// Global test app instance (lazy initialization).
@@ -68,7 +69,7 @@ impl TestApp {
             cache,
             auth_service: auth_service.clone(),
             broadcast: broadcast.clone(),
-            user_connections,
+            user_connections: user_connections.clone(),
         };
 
         // Build router
@@ -83,6 +84,7 @@ impl TestApp {
             auth_service,
             config,
             broadcast,
+            user_connections,
         }
     }
 

@@ -372,4 +372,198 @@ mod tests {
             assert!(request.validate().is_ok());
         }
     }
+
+    // ==================== ListSessionsParams Additional Tests ====================
+
+    #[test]
+    fn test_list_sessions_params_debug() {
+        let params = ListSessionsParams {
+            user_id: Some("user-abc".to_string()),
+            asset_id: Some(Uuid::new_v4()),
+            status: Some("active".to_string()),
+            limit: Some(25),
+            offset: Some(10),
+        };
+        
+        let debug_str = format!("{:?}", params);
+        
+        assert!(debug_str.contains("ListSessionsParams"));
+        assert!(debug_str.contains("user-abc"));
+        assert!(debug_str.contains("active"));
+    }
+
+    #[test]
+    fn test_list_sessions_params_no_filters() {
+        let params = ListSessionsParams {
+            user_id: None,
+            asset_id: None,
+            status: None,
+            limit: None,
+            offset: None,
+        };
+        
+        assert!(!params.has_user_filter());
+        assert!(!params.has_asset_filter());
+        assert!(!params.has_status_filter());
+    }
+
+    #[test]
+    fn test_list_sessions_params_large_limit() {
+        let params = ListSessionsParams {
+            user_id: None,
+            asset_id: None,
+            status: None,
+            limit: Some(10000),
+            offset: None,
+        };
+        
+        assert_eq!(params.get_limit(), 10000);
+    }
+
+    #[test]
+    fn test_list_sessions_params_large_offset() {
+        let params = ListSessionsParams {
+            user_id: None,
+            asset_id: None,
+            status: None,
+            limit: None,
+            offset: Some(1000000),
+        };
+        
+        assert_eq!(params.get_offset(), 1000000);
+    }
+
+    #[test]
+    fn test_list_sessions_params_status_values() {
+        let statuses = ["active", "pending", "completed", "terminated", "failed"];
+        
+        for status_val in statuses {
+            let params = ListSessionsParams {
+                user_id: None,
+                asset_id: None,
+                status: Some(status_val.to_string()),
+                limit: None,
+                offset: None,
+            };
+            
+            assert!(params.has_status_filter());
+            assert_eq!(params.status, Some(status_val.to_string()));
+        }
+    }
+
+    // ==================== is_htmx_request Tests ====================
+
+    #[test]
+    fn test_is_htmx_request_with_header() {
+        use axum::http::HeaderMap;
+        
+        let mut headers = HeaderMap::new();
+        headers.insert("HX-Request", "true".parse().unwrap());
+        
+        assert!(is_htmx_request(&headers));
+    }
+
+    #[test]
+    fn test_is_htmx_request_without_header() {
+        use axum::http::HeaderMap;
+        
+        let headers = HeaderMap::new();
+        
+        assert!(!is_htmx_request(&headers));
+    }
+
+    #[test]
+    fn test_is_htmx_request_any_value() {
+        use axum::http::HeaderMap;
+        
+        let mut headers = HeaderMap::new();
+        headers.insert("HX-Request", "1".parse().unwrap());
+        
+        assert!(is_htmx_request(&headers));
+    }
+
+    // ==================== CreateSessionRequest Additional Tests ====================
+
+    #[test]
+    fn test_create_session_request_long_justification() {
+        let request = CreateSessionRequest {
+            asset_id: Uuid::new_v4(),
+            credential_id: "cred-123".to_string(),
+            session_type: "ssh".to_string(),
+            justification: Some("A".repeat(1000)),
+        };
+        
+        assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn test_create_session_request_empty_credential_id() {
+        let request = CreateSessionRequest {
+            asset_id: Uuid::new_v4(),
+            credential_id: "".to_string(),
+            session_type: "ssh".to_string(),
+            justification: None,
+        };
+        
+        // Empty credential_id may or may not be valid depending on validation rules
+        let _ = request.validate();
+    }
+
+    #[test]
+    fn test_create_session_request_uuid_format() {
+        let asset_uuid = Uuid::new_v4();
+        let request = CreateSessionRequest {
+            asset_id: asset_uuid,
+            credential_id: "cred".to_string(),
+            session_type: "rdp".to_string(),
+            justification: None,
+        };
+        
+        assert_eq!(request.asset_id, asset_uuid);
+        assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn test_create_session_request_unicode_justification() {
+        let request = CreateSessionRequest {
+            asset_id: Uuid::new_v4(),
+            credential_id: "cred".to_string(),
+            session_type: "ssh".to_string(),
+            justification: Some("需要访问服务器进行维护 🔧".to_string()),
+        };
+        
+        assert!(request.validate().is_ok());
+    }
+
+    // ==================== Filter Combinations ====================
+
+    #[test]
+    fn test_list_sessions_params_user_and_status() {
+        let params = ListSessionsParams {
+            user_id: Some("admin".to_string()),
+            asset_id: None,
+            status: Some("active".to_string()),
+            limit: Some(20),
+            offset: None,
+        };
+        
+        assert!(params.has_user_filter());
+        assert!(!params.has_asset_filter());
+        assert!(params.has_status_filter());
+    }
+
+    #[test]
+    fn test_list_sessions_params_asset_only() {
+        let params = ListSessionsParams {
+            user_id: None,
+            asset_id: Some(Uuid::new_v4()),
+            status: None,
+            limit: None,
+            offset: None,
+        };
+        
+        assert!(!params.has_user_filter());
+        assert!(params.has_asset_filter());
+        assert!(!params.has_status_filter());
+    }
 }

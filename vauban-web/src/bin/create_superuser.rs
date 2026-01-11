@@ -444,4 +444,101 @@ mod tests {
     fn test_validate_password_match_case_sensitive() {
         assert!(validate_password_match("Password123", "password123").is_err());
     }
+
+    // ==================== Username Validation Edge Cases ====================
+
+    #[test]
+    fn test_validate_username_with_numbers() {
+        assert!(validate_username("user123").is_ok());
+        assert!(validate_username("123user").is_ok());
+    }
+
+    #[test]
+    fn test_validate_username_all_allowed_chars() {
+        assert!(validate_username("user_name.test-123").is_ok());
+    }
+
+    #[test]
+    fn test_validate_username_unicode_accepted() {
+        // is_alphanumeric() accepts Unicode letters/numbers
+        assert!(validate_username("user\u{00E9}").is_ok()); // é is alphanumeric
+        assert!(validate_username("user123").is_ok());
+    }
+
+    #[test]
+    fn test_validate_username_unicode_chinese_accepted() {
+        // Chinese characters are alphanumeric in Unicode
+        assert!(validate_username("用户名").is_ok());
+    }
+
+    #[test]
+    fn test_validate_username_boundary_length() {
+        let min_valid = "abc";
+        let max_valid = "a".repeat(150);
+        let too_long = "a".repeat(151);
+        
+        assert!(validate_username(min_valid).is_ok());
+        assert!(validate_username(&max_valid).is_ok());
+        assert!(validate_username(&too_long).is_err());
+    }
+
+    // ==================== Email Validation Edge Cases ====================
+
+    #[test]
+    fn test_validate_email_subdomains() {
+        assert!(validate_email("user@mail.example.com").is_ok());
+        assert!(validate_email("user@sub.domain.example.org").is_ok());
+    }
+
+    #[test]
+    fn test_validate_email_plus_addressing() {
+        assert!(validate_email("user+tag@example.com").is_ok());
+    }
+
+    #[test]
+    fn test_validate_email_domain_no_dot() {
+        assert!(validate_email("user@localhost").is_err());
+    }
+
+    #[test]
+    fn test_validate_email_special_local_part() {
+        assert!(validate_email("user.name@example.com").is_ok());
+        assert!(validate_email("user_name@example.com").is_ok());
+    }
+
+    // ==================== Password Validation Edge Cases ====================
+
+    #[test]
+    fn test_validate_password_unicode() {
+        // Unicode characters should count
+        assert!(validate_password("пароль123456").is_ok()); // Russian "password"
+    }
+
+    #[test]
+    fn test_validate_password_spaces() {
+        assert!(validate_password("password with spaces").is_ok());
+    }
+
+    #[test]
+    fn test_validate_password_special_chars() {
+        assert!(validate_password("P@$$w0rd!#$%").is_ok());
+    }
+
+    // ==================== Password Match Edge Cases ====================
+
+    #[test]
+    fn test_validate_password_match_empty() {
+        assert!(validate_password_match("", "").is_ok());
+    }
+
+    #[test]
+    fn test_validate_password_match_whitespace() {
+        assert!(validate_password_match("pass word", "pass word").is_ok());
+        assert!(validate_password_match("password ", "password").is_err());
+    }
+
+    #[test]
+    fn test_validate_password_match_unicode() {
+        assert!(validate_password_match("パスワード", "パスワード").is_ok());
+    }
 }

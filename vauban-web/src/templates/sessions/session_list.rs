@@ -226,4 +226,68 @@ mod tests {
         assert_eq!(item.id, cloned.id);
         assert_eq!(item.session_type, cloned.session_type);
     }
+
+    #[test]
+    fn test_session_list_template_renders() {
+        use crate::templates::base::{VaubanConfig, UserContext};
+
+        let template = SessionListTemplate {
+            title: "Sessions".to_string(),
+            user: Some(UserContext {
+                uuid: "test".to_string(),
+                username: "testuser".to_string(),
+                display_name: "Test User".to_string(),
+                is_superuser: false,
+                is_staff: false,
+            }),
+            vauban: VaubanConfig {
+                brand_name: "VAUBAN".to_string(),
+                brand_logo: None,
+                theme: "dark".to_string(),
+            },
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            sessions: vec![create_test_session_item("ssh", "active", Some(100))],
+            status_filter: None,
+            type_filter: None,
+            asset_filter: None,
+        };
+
+        let result = template.render();
+        assert!(result.is_ok(), "SessionListTemplate should render");
+    }
+
+    #[test]
+    fn test_session_list_template_renders_empty() {
+        use crate::templates::base::{VaubanConfig, UserContext};
+
+        let template = SessionListTemplate {
+            title: "Sessions".to_string(),
+            user: Some(UserContext {
+                uuid: "test".to_string(),
+                username: "testuser".to_string(),
+                display_name: "Test User".to_string(),
+                is_superuser: false,
+                is_staff: false,
+            }),
+            vauban: VaubanConfig {
+                brand_name: "VAUBAN".to_string(),
+                brand_logo: None,
+                theme: "dark".to_string(),
+            },
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            sessions: Vec::new(),
+            status_filter: None,
+            type_filter: None,
+            asset_filter: None,
+        };
+
+        let result = template.render();
+        assert!(result.is_ok(), "Empty SessionListTemplate should render");
+    }
 }

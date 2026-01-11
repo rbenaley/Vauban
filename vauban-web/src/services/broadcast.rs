@@ -245,6 +245,18 @@ mod tests {
     }
 
     #[test]
+    fn test_ws_channel_user_auth_sessions_as_str() {
+        let channel = WsChannel::UserAuthSessions("user-uuid-123".to_string());
+        assert_eq!(channel.as_str(), "user:user-uuid-123:auth-sessions");
+    }
+
+    #[test]
+    fn test_ws_channel_user_api_keys_as_str() {
+        let channel = WsChannel::UserApiKeys("user-uuid-456".to_string());
+        assert_eq!(channel.as_str(), "user:user-uuid-456:api-keys");
+    }
+
+    #[test]
     fn test_ws_channel_from_str() {
         assert_eq!(
             WsChannel::from_str("dashboard:stats"),
@@ -266,6 +278,28 @@ mod tests {
     }
 
     #[test]
+    fn test_ws_channel_from_str_user_auth_sessions() {
+        assert_eq!(
+            WsChannel::from_str("user:abc123:auth-sessions"),
+            Some(WsChannel::UserAuthSessions("abc123".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_ws_channel_from_str_user_api_keys() {
+        assert_eq!(
+            WsChannel::from_str("user:xyz789:api-keys"),
+            Some(WsChannel::UserApiKeys("xyz789".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_ws_channel_from_str_invalid_user_channel() {
+        assert_eq!(WsChannel::from_str("user:abc:unknown"), None);
+        assert_eq!(WsChannel::from_str("user::auth-sessions"), Some(WsChannel::UserAuthSessions("".to_string())));
+    }
+
+    #[test]
     fn test_ws_channel_roundtrip() {
         let channels = vec![
             WsChannel::DashboardStats,
@@ -280,6 +314,46 @@ mod tests {
             let parsed = WsChannel::from_str(&str_val);
             assert_eq!(parsed, Some(channel));
         }
+    }
+
+    #[test]
+    fn test_ws_channel_roundtrip_user_channels() {
+        let channels = vec![
+            WsChannel::UserAuthSessions("user-1".to_string()),
+            WsChannel::UserApiKeys("user-2".to_string()),
+        ];
+
+        for channel in channels {
+            let str_val = channel.as_str();
+            let parsed = WsChannel::from_str(&str_val);
+            assert_eq!(parsed, Some(channel));
+        }
+    }
+
+    #[test]
+    fn test_ws_channel_clone() {
+        let channel = WsChannel::SessionLive("session-id".to_string());
+        let cloned = channel.clone();
+        assert_eq!(channel, cloned);
+    }
+
+    #[test]
+    fn test_ws_channel_debug() {
+        let channel = WsChannel::DashboardStats;
+        let debug_str = format!("{:?}", channel);
+        assert!(debug_str.contains("DashboardStats"));
+    }
+
+    #[test]
+    fn test_ws_channel_hash_eq() {
+        use std::collections::HashSet;
+        
+        let mut set = HashSet::new();
+        set.insert(WsChannel::DashboardStats);
+        set.insert(WsChannel::ActiveSessions);
+        set.insert(WsChannel::DashboardStats); // duplicate
+        
+        assert_eq!(set.len(), 2);
     }
 
     // ==================== WsMessage Tests ====================
@@ -396,5 +470,436 @@ mod tests {
     async fn test_broadcast_default() {
         let service = BroadcastService::default();
         assert_eq!(service.capacity, DEFAULT_CHANNEL_CAPACITY);
+    }
+
+    // ==================== Additional BroadcastService Tests ====================
+
+    #[tokio::test]
+    async fn test_broadcast_send_raw() {
+        let service = BroadcastService::new();
+        let mut receiver = service.subscribe_by_name("custom-channel").await;
+
+        let result = service.send_raw("custom-channel", "<div>Raw HTML</div>".to_string()).await;
+        assert!(result.is_ok());
+
+        let received = receiver.recv().await.unwrap();
+        assert_eq!(received, "<div>Raw HTML</div>");
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_send_raw_no_channel() {
+        let service = BroadcastService::new();
+        
+        // Try to send to non-existent channel
+        let result = service.send_raw("nonexistent", "test".to_string()).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_subscribe_by_name() {
+        let service = BroadcastService::new();
+        let _receiver = service.subscribe_by_name("my-custom-channel").await;
+
+        let channels = service.channels.read().await;
+        assert!(channels.contains_key("my-custom-channel"));
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_multiple_channels() {
+        let service = BroadcastService::new();
+
+        let _r1 = service.subscribe(&WsChannel::DashboardStats).await;
+        let _r2 = service.subscribe(&WsChannel::ActiveSessions).await;
+        let _r3 = service.subscribe(&WsChannel::Notifications).await;
+
+        let channels = service.channels.read().await;
+        assert_eq!(channels.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_send_no_receivers() {
+        let service = BroadcastService::new();
+        
+        // Create channel but drop receiver
+        {
+            let _receiver = service.subscribe(&WsChannel::DashboardStats).await;
+        }
+        // Receiver dropped, but channel still exists
+        
+        let msg = WsMessage::new("test", "content".to_string());
+        let result = service.send(&WsChannel::DashboardStats, msg).await;
+        
+        // Should succeed with 0 receivers
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_clone_shares_state() {
+        let service = BroadcastService::new();
+        let cloned = service.clone();
+
+        let _receiver = service.subscribe(&WsChannel::DashboardStats).await;
+        
+        // Cloned service should see the same channels
+        assert_eq!(cloned.subscriber_count(&WsChannel::DashboardStats).await, 1);
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_session_live_channel() {
+        let service = BroadcastService::new();
+        let session_id = "session-abc-123";
+        let channel = WsChannel::SessionLive(session_id.to_string());
+        
+        let mut receiver = service.subscribe(&channel).await;
+        
+        let msg = WsMessage::new("session-view", "<p>Session data</p>".to_string());
+        let _ = service.send(&channel, msg).await;
+        
+        let received = receiver.recv().await.unwrap();
+        assert!(received.contains("session-view"));
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_user_channels() {
+        let service = BroadcastService::new();
+        let user_id = "user-uuid-123";
+        
+        let _r1 = service.subscribe(&WsChannel::UserAuthSessions(user_id.to_string())).await;
+        let _r2 = service.subscribe(&WsChannel::UserApiKeys(user_id.to_string())).await;
+        
+        let channels = service.channels.read().await;
+        assert!(channels.contains_key(&format!("user:{}:auth-sessions", user_id)));
+        assert!(channels.contains_key(&format!("user:{}:api-keys", user_id)));
+    }
+
+    // ==================== WsMessage Additional Tests ====================
+
+    #[test]
+    fn test_ws_message_clone() {
+        let msg = WsMessage::new("target", "content".to_string());
+        let cloned = msg.clone();
+        
+        assert_eq!(msg.target_id, cloned.target_id);
+        assert_eq!(msg.html, cloned.html);
+        assert_eq!(msg.swap_mode, cloned.swap_mode);
+    }
+
+    #[test]
+    fn test_ws_message_debug() {
+        let msg = WsMessage::new("my-target", "<p>Test</p>".to_string());
+        let debug_str = format!("{:?}", msg);
+        
+        assert!(debug_str.contains("WsMessage"));
+        assert!(debug_str.contains("my-target"));
+    }
+
+    #[test]
+    fn test_ws_message_empty_html() {
+        let msg = WsMessage::new("target", "".to_string());
+        let html = msg.to_htmx_html();
+        
+        assert!(html.contains(r#"id="target""#));
+        assert!(html.ends_with("></div>") || html.contains("></div>"));
+    }
+
+    #[test]
+    fn test_ws_message_special_characters() {
+        let msg = WsMessage::new("target", "<script>alert('xss')</script>".to_string());
+        let html = msg.to_htmx_html();
+        
+        // Should preserve the content as-is (escaping is caller's responsibility)
+        assert!(html.contains("<script>"));
+    }
+
+    #[test]
+    fn test_ws_message_swap_modes() {
+        let modes = ["innerHTML", "outerHTML", "beforebegin", "afterend", "delete"];
+        
+        for mode in modes {
+            let msg = WsMessage::new("target", "content".to_string()).with_swap_mode(mode);
+            assert_eq!(msg.swap_mode, mode);
+            assert!(msg.to_htmx_html().contains(&format!(r#"hx-swap-oob="{}""#, mode)));
+        }
+    }
+
+    // ==================== Constants Tests ====================
+
+    #[test]
+    fn test_default_channel_capacity() {
+        assert_eq!(DEFAULT_CHANNEL_CAPACITY, 100);
+    }
+
+    #[test]
+    fn test_default_channel_capacity_is_reasonable() {
+        assert!(DEFAULT_CHANNEL_CAPACITY >= 10);
+        assert!(DEFAULT_CHANNEL_CAPACITY <= 10000);
+    }
+
+    // ==================== Complete WsChannel from_str Coverage ====================
+
+    #[test]
+    fn test_ws_channel_from_str_recent_activity() {
+        assert_eq!(
+            WsChannel::from_str("dashboard:recent-activity"),
+            Some(WsChannel::RecentActivity)
+        );
+    }
+
+    #[test]
+    fn test_ws_channel_from_str_empty_session_id() {
+        // "session:" with empty ID should still parse
+        assert_eq!(
+            WsChannel::from_str("session:"),
+            Some(WsChannel::SessionLive("".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_ws_channel_from_str_session_with_special_chars() {
+        let result = WsChannel::from_str("session:abc-123_xyz");
+        assert_eq!(result, Some(WsChannel::SessionLive("abc-123_xyz".to_string())));
+    }
+
+    #[test]
+    fn test_ws_channel_from_str_user_with_colons() {
+        // Edge case: user UUID contains colons
+        let result = WsChannel::from_str("user:a:b:c:auth-sessions");
+        assert_eq!(result, Some(WsChannel::UserAuthSessions("a:b:c".to_string())));
+    }
+
+    #[test]
+    fn test_ws_channel_from_str_partial_match() {
+        // Should not match partial prefixes
+        assert_eq!(WsChannel::from_str("dashboard:stat"), None);
+        assert_eq!(WsChannel::from_str("dashboard:"), None);
+        assert_eq!(WsChannel::from_str("notification"), None);
+    }
+
+    #[test]
+    fn test_ws_channel_from_str_case_sensitive() {
+        assert_eq!(WsChannel::from_str("Dashboard:stats"), None);
+        assert_eq!(WsChannel::from_str("NOTIFICATIONS"), None);
+    }
+
+    // ==================== WsChannel Equality Tests ====================
+
+    #[test]
+    fn test_ws_channel_eq_same_variant() {
+        assert_eq!(WsChannel::DashboardStats, WsChannel::DashboardStats);
+        assert_eq!(WsChannel::ActiveSessions, WsChannel::ActiveSessions);
+    }
+
+    #[test]
+    fn test_ws_channel_eq_different_variant() {
+        assert_ne!(WsChannel::DashboardStats, WsChannel::ActiveSessions);
+        assert_ne!(WsChannel::Notifications, WsChannel::RecentActivity);
+    }
+
+    #[test]
+    fn test_ws_channel_eq_session_live_same_id() {
+        let a = WsChannel::SessionLive("abc".to_string());
+        let b = WsChannel::SessionLive("abc".to_string());
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn test_ws_channel_eq_session_live_different_id() {
+        let a = WsChannel::SessionLive("abc".to_string());
+        let b = WsChannel::SessionLive("xyz".to_string());
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn test_ws_channel_eq_user_channels() {
+        let a = WsChannel::UserAuthSessions("user-1".to_string());
+        let b = WsChannel::UserAuthSessions("user-1".to_string());
+        let c = WsChannel::UserAuthSessions("user-2".to_string());
+        
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    // ==================== WsMessage Edge Cases ====================
+
+    #[test]
+    fn test_ws_message_unicode_content() {
+        let msg = WsMessage::new("target", "Bonjour le monde! 你好世界 🌍".to_string());
+        let html = msg.to_htmx_html();
+        
+        assert!(html.contains("Bonjour le monde!"));
+        assert!(html.contains("你好世界"));
+        assert!(html.contains("🌍"));
+    }
+
+    #[test]
+    fn test_ws_message_multiline_content() {
+        let content = "Line 1\nLine 2\nLine 3";
+        let msg = WsMessage::new("target", content.to_string());
+        let html = msg.to_htmx_html();
+        
+        assert!(html.contains("Line 1\nLine 2\nLine 3"));
+    }
+
+    #[test]
+    fn test_ws_message_html_entities() {
+        let msg = WsMessage::new("target", "&lt;escaped&gt;".to_string());
+        let html = msg.to_htmx_html();
+        
+        assert!(html.contains("&lt;escaped&gt;"));
+    }
+
+    #[test]
+    fn test_ws_message_quotes_in_content() {
+        let msg = WsMessage::new("target", r#"He said "Hello""#.to_string());
+        let html = msg.to_htmx_html();
+        
+        assert!(html.contains(r#"He said "Hello""#));
+    }
+
+    // ==================== BroadcastService Double-Check Pattern ====================
+
+    #[tokio::test]
+    async fn test_broadcast_concurrent_subscribe_same_channel() {
+        let service = BroadcastService::new();
+        let service_clone = service.clone();
+        
+        let handle1 = tokio::spawn(async move {
+            for _ in 0..10 {
+                let _rx = service_clone.subscribe(&WsChannel::DashboardStats).await;
+            }
+        });
+        
+        let service_clone2 = service.clone();
+        let handle2 = tokio::spawn(async move {
+            for _ in 0..10 {
+                let _rx = service_clone2.subscribe(&WsChannel::DashboardStats).await;
+            }
+        });
+        
+        handle1.await.unwrap();
+        handle2.await.unwrap();
+        
+        // Channel should exist and have been created only once
+        let channels = service.channels.read().await;
+        assert!(channels.contains_key("dashboard:stats"));
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_subscribe_reuses_existing_channel() {
+        let service = BroadcastService::new();
+        
+        // First subscription creates channel
+        let _rx1 = service.subscribe(&WsChannel::DashboardStats).await;
+        
+        // Get channel count before second subscription
+        let before = {
+            let channels = service.channels.read().await;
+            channels.len()
+        };
+        
+        // Second subscription should reuse
+        let _rx2 = service.subscribe(&WsChannel::DashboardStats).await;
+        
+        let after = {
+            let channels = service.channels.read().await;
+            channels.len()
+        };
+        
+        assert_eq!(before, after);
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_capacity_custom() {
+        let service = BroadcastService::with_capacity(5);
+        let _rx = service.subscribe(&WsChannel::DashboardStats).await;
+        
+        assert_eq!(service.capacity, 5);
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_capacity_one() {
+        let service = BroadcastService::with_capacity(1);
+        let mut rx = service.subscribe(&WsChannel::DashboardStats).await;
+        
+        let msg = WsMessage::new("test", "content".to_string());
+        let _ = service.send(&WsChannel::DashboardStats, msg).await;
+        
+        let received = rx.recv().await.unwrap();
+        assert!(received.contains("test"));
+    }
+
+    // ==================== BroadcastService All Channel Types ====================
+
+    #[tokio::test]
+    async fn test_broadcast_all_channel_types() {
+        let service = BroadcastService::new();
+        
+        let channels = vec![
+            WsChannel::DashboardStats,
+            WsChannel::ActiveSessions,
+            WsChannel::RecentActivity,
+            WsChannel::Notifications,
+            WsChannel::SessionLive("sess-1".to_string()),
+            WsChannel::UserAuthSessions("user-1".to_string()),
+            WsChannel::UserApiKeys("user-1".to_string()),
+        ];
+        
+        for channel in &channels {
+            let mut rx = service.subscribe(channel).await;
+            let msg = WsMessage::new("target", "test".to_string());
+            let _ = service.send(channel, msg).await;
+            let _ = rx.recv().await;
+        }
+        
+        assert_eq!(service.channels.read().await.len(), 7);
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_remove_all_channels() {
+        let service = BroadcastService::new();
+        
+        let channels = vec![
+            WsChannel::DashboardStats,
+            WsChannel::ActiveSessions,
+            WsChannel::Notifications,
+        ];
+        
+        for channel in &channels {
+            let _ = service.subscribe(channel).await;
+        }
+        
+        assert_eq!(service.channels.read().await.len(), 3);
+        
+        for channel in &channels {
+            service.remove_channel(channel).await;
+        }
+        
+        assert_eq!(service.channels.read().await.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_remove_nonexistent_channel() {
+        let service = BroadcastService::new();
+        
+        // Should not panic
+        service.remove_channel(&WsChannel::Notifications).await;
+        
+        assert_eq!(service.channels.read().await.len(), 0);
+    }
+
+    // ==================== Arc/RwLock Tests ====================
+
+    #[tokio::test]
+    async fn test_broadcast_arc_rwlock_shared() {
+        let service = BroadcastService::new();
+        let clone1 = service.clone();
+        let clone2 = service.clone();
+        
+        // All clones share the same channels
+        let _rx1 = clone1.subscribe(&WsChannel::DashboardStats).await;
+        
+        assert_eq!(clone2.subscriber_count(&WsChannel::DashboardStats).await, 1);
+        assert_eq!(service.subscriber_count(&WsChannel::DashboardStats).await, 1);
     }
 }
