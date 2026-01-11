@@ -478,4 +478,314 @@ mod tests {
 
         assert!(request.validate().is_err());
     }
+
+    // ==================== AuthSource Additional Tests ====================
+
+    #[test]
+    fn test_auth_source_debug() {
+        let source = AuthSource::Local;
+        let debug_str = format!("{:?}", source);
+        assert!(debug_str.contains("Local"));
+    }
+
+    #[test]
+    fn test_auth_source_clone() {
+        let source = AuthSource::Ldap;
+        let cloned = source.clone();
+        assert_eq!(source, cloned);
+    }
+
+    #[test]
+    fn test_auth_source_copy() {
+        let source = AuthSource::Oidc;
+        let copied = source;
+        assert_eq!(source, copied);
+    }
+
+    #[test]
+    fn test_auth_source_serialize() {
+        let source = AuthSource::Saml;
+        let json = serde_json::to_string(&source).unwrap();
+        assert!(json.contains("Saml"));
+    }
+
+    #[test]
+    fn test_auth_source_deserialize() {
+        let json = r#""Local""#;
+        let source: AuthSource = serde_json::from_str(json).unwrap();
+        assert_eq!(source, AuthSource::Local);
+    }
+
+    // ==================== User Additional Tests ====================
+
+    #[test]
+    fn test_user_clone() {
+        let user = create_test_user();
+        let cloned = user.clone();
+        assert_eq!(user.uuid, cloned.uuid);
+        assert_eq!(user.username, cloned.username);
+    }
+
+    #[test]
+    fn test_user_debug() {
+        let user = create_test_user();
+        let debug_str = format!("{:?}", user);
+        assert!(debug_str.contains("User"));
+        assert!(debug_str.contains("testuser"));
+    }
+
+    #[test]
+    fn test_user_to_dto_with_last_login_ip() {
+        let mut user = create_test_user();
+        user.last_login_ip = Some("192.168.1.100/32".parse().unwrap());
+        
+        let dto = user.to_dto();
+        // IpNetwork::to_string includes the CIDR notation
+        assert_eq!(dto.last_login_ip, Some("192.168.1.100/32".to_string()));
+    }
+
+    #[test]
+    fn test_user_to_dto_preserves_preferences() {
+        let mut user = create_test_user();
+        user.preferences = serde_json::json!({"theme": "dark", "language": "fr"});
+        
+        let dto = user.to_dto();
+        assert_eq!(dto.preferences["theme"], "dark");
+    }
+
+    // ==================== UserDto Tests ====================
+
+    #[test]
+    fn test_user_dto_serialize() {
+        let user = create_test_user();
+        let dto = user.to_dto();
+        let json = serde_json::to_string(&dto).unwrap();
+        
+        assert!(json.contains("testuser"));
+        assert!(json.contains("test@example.com"));
+    }
+
+    #[test]
+    fn test_user_dto_debug() {
+        let user = create_test_user();
+        let dto = user.to_dto();
+        let debug_str = format!("{:?}", dto);
+        
+        assert!(debug_str.contains("UserDto"));
+    }
+
+    #[test]
+    fn test_user_dto_clone() {
+        let user = create_test_user();
+        let dto = user.to_dto();
+        let cloned = dto.clone();
+        
+        assert_eq!(dto.uuid, cloned.uuid);
+    }
+
+    // ==================== NewUser Tests ====================
+
+    #[test]
+    fn test_new_user_debug() {
+        let new_user = NewUser {
+            uuid: Uuid::new_v4(),
+            username: "newuser".to_string(),
+            email: "new@test.com".to_string(),
+            password_hash: "hash".to_string(),
+            first_name: None,
+            last_name: None,
+            phone: None,
+            is_active: true,
+            is_staff: false,
+            is_superuser: false,
+            is_service_account: false,
+            mfa_enabled: false,
+            mfa_enforced: false,
+            mfa_secret: None,
+            preferences: serde_json::json!({}),
+            auth_source: "local".to_string(),
+            external_id: None,
+        };
+        
+        let debug_str = format!("{:?}", new_user);
+        assert!(debug_str.contains("NewUser"));
+    }
+
+    #[test]
+    fn test_new_user_clone() {
+        let new_user = NewUser {
+            uuid: Uuid::new_v4(),
+            username: "cloneuser".to_string(),
+            email: "clone@test.com".to_string(),
+            password_hash: "hash".to_string(),
+            first_name: Some("Clone".to_string()),
+            last_name: Some("User".to_string()),
+            phone: None,
+            is_active: true,
+            is_staff: true,
+            is_superuser: false,
+            is_service_account: false,
+            mfa_enabled: false,
+            mfa_enforced: false,
+            mfa_secret: None,
+            preferences: serde_json::json!({}),
+            auth_source: "local".to_string(),
+            external_id: None,
+        };
+        
+        let cloned = new_user.clone();
+        assert_eq!(new_user.username, cloned.username);
+    }
+
+    // ==================== UserUpdate Tests ====================
+
+    #[test]
+    fn test_user_update_debug() {
+        let update = UserUpdate {
+            email: Some("updated@test.com".to_string()),
+            first_name: None,
+            last_name: None,
+            phone: None,
+            is_active: None,
+            preferences: None,
+            updated_at: Utc::now(),
+        };
+        
+        let debug_str = format!("{:?}", update);
+        assert!(debug_str.contains("UserUpdate"));
+    }
+
+    #[test]
+    fn test_user_update_clone() {
+        let update = UserUpdate {
+            email: Some("test@test.com".to_string()),
+            first_name: Some("Test".to_string()),
+            last_name: Some("User".to_string()),
+            phone: Some("+1234567890".to_string()),
+            is_active: Some(true),
+            preferences: Some(serde_json::json!({"key": "value"})),
+            updated_at: Utc::now(),
+        };
+        
+        let cloned = update.clone();
+        assert_eq!(update.email, cloned.email);
+    }
+
+    // ==================== UpdateUserRequest Tests ====================
+
+    #[test]
+    fn test_update_user_request_debug() {
+        let request = UpdateUserRequest {
+            email: Some("debug@test.com".to_string()),
+            first_name: None,
+            last_name: None,
+            phone: None,
+            is_active: None,
+            preferences: None,
+        };
+        
+        let debug_str = format!("{:?}", request);
+        assert!(debug_str.contains("UpdateUserRequest"));
+    }
+
+    #[test]
+    fn test_update_user_request_clone() {
+        let request = UpdateUserRequest {
+            email: Some("clone@test.com".to_string()),
+            first_name: Some("Clone".to_string()),
+            last_name: None,
+            phone: None,
+            is_active: Some(false),
+            preferences: None,
+        };
+        
+        let cloned = request.clone();
+        assert_eq!(request.email, cloned.email);
+    }
+
+    #[test]
+    fn test_update_user_request_long_first_name_invalid() {
+        use validator::Validate;
+        
+        let request = UpdateUserRequest {
+            email: None,
+            first_name: Some("A".repeat(151)), // Too long
+            last_name: None,
+            phone: None,
+            is_active: None,
+            preferences: None,
+        };
+        
+        assert!(request.validate().is_err());
+    }
+
+    #[test]
+    fn test_update_user_request_long_phone_invalid() {
+        use validator::Validate;
+        
+        let request = UpdateUserRequest {
+            email: None,
+            first_name: None,
+            last_name: None,
+            phone: Some("1".repeat(21)), // Too long
+            is_active: None,
+            preferences: None,
+        };
+        
+        assert!(request.validate().is_err());
+    }
+
+    // ==================== CreateUserRequest Additional Tests ====================
+
+    #[test]
+    fn test_create_user_request_debug() {
+        let request = CreateUserRequest {
+            username: "debuguser".to_string(),
+            email: "debug@example.com".to_string(),
+            password: "securepassword123".to_string(),
+            first_name: None,
+            last_name: None,
+            phone: None,
+            is_staff: None,
+            is_superuser: None,
+        };
+        
+        let debug_str = format!("{:?}", request);
+        assert!(debug_str.contains("CreateUserRequest"));
+    }
+
+    #[test]
+    fn test_create_user_request_clone() {
+        let request = CreateUserRequest {
+            username: "cloneuser".to_string(),
+            email: "clone@example.com".to_string(),
+            password: "securepassword123".to_string(),
+            first_name: Some("Clone".to_string()),
+            last_name: None,
+            phone: None,
+            is_staff: Some(true),
+            is_superuser: None,
+        };
+        
+        let cloned = request.clone();
+        assert_eq!(request.username, cloned.username);
+    }
+
+    #[test]
+    fn test_create_user_request_long_username_invalid() {
+        use validator::Validate;
+        
+        let request = CreateUserRequest {
+            username: "a".repeat(151), // Too long
+            email: "valid@example.com".to_string(),
+            password: "securepassword123".to_string(),
+            first_name: None,
+            last_name: None,
+            phone: None,
+            is_staff: None,
+            is_superuser: None,
+        };
+        
+        assert!(request.validate().is_err());
+    }
 }

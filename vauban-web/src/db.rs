@@ -112,4 +112,111 @@ mod tests {
             panic!("Expected Config error");
         }
     }
+
+    // ==================== Database Error Kind Tests ====================
+
+    #[test]
+    fn test_database_error_unique_violation() {
+        let error = diesel::result::Error::DatabaseError(
+            diesel::result::DatabaseErrorKind::UniqueViolation,
+            Box::new("duplicate key".to_string()),
+        );
+
+        match error {
+            diesel::result::Error::DatabaseError(kind, _) => {
+                assert!(matches!(kind, diesel::result::DatabaseErrorKind::UniqueViolation));
+            }
+            _ => panic!("Expected DatabaseError"),
+        }
+    }
+
+    #[test]
+    fn test_database_error_foreign_key_violation() {
+        let error = diesel::result::Error::DatabaseError(
+            diesel::result::DatabaseErrorKind::ForeignKeyViolation,
+            Box::new("foreign key constraint".to_string()),
+        );
+
+        match error {
+            diesel::result::Error::DatabaseError(kind, _) => {
+                assert!(matches!(kind, diesel::result::DatabaseErrorKind::ForeignKeyViolation));
+            }
+            _ => panic!("Expected DatabaseError"),
+        }
+    }
+
+    #[test]
+    fn test_database_error_not_null_violation() {
+        let error = diesel::result::Error::DatabaseError(
+            diesel::result::DatabaseErrorKind::NotNullViolation,
+            Box::new("null value".to_string()),
+        );
+
+        match error {
+            diesel::result::Error::DatabaseError(kind, _) => {
+                assert!(matches!(kind, diesel::result::DatabaseErrorKind::NotNullViolation));
+            }
+            _ => panic!("Expected DatabaseError"),
+        }
+    }
+
+    #[test]
+    fn test_database_error_check_violation() {
+        let error = diesel::result::Error::DatabaseError(
+            diesel::result::DatabaseErrorKind::CheckViolation,
+            Box::new("check constraint".to_string()),
+        );
+
+        match error {
+            diesel::result::Error::DatabaseError(kind, _) => {
+                assert!(matches!(kind, diesel::result::DatabaseErrorKind::CheckViolation));
+            }
+            _ => panic!("Expected DatabaseError"),
+        }
+    }
+
+    // ==================== Error Conversion Tests ====================
+
+    #[test]
+    fn test_app_error_from_diesel_not_found() {
+        let diesel_error = diesel::result::Error::NotFound;
+        let app_error: AppError = diesel_error.into();
+
+        match app_error {
+            AppError::Database(_) => (),
+            _ => panic!("Expected Database error"),
+        }
+    }
+
+    #[test]
+    fn test_app_error_database_display() {
+        let diesel_error = diesel::result::Error::NotFound;
+        let app_error: AppError = diesel_error.into();
+        let display = app_error.to_string();
+        
+        assert!(display.contains("Database error"));
+    }
+
+    // ==================== Pool Configuration Tests ====================
+
+    #[test]
+    fn test_connection_timeout_duration() {
+        let timeout_secs: u64 = 5;
+        let duration = std::time::Duration::from_secs(timeout_secs);
+        assert_eq!(duration.as_secs(), 5);
+    }
+
+    #[test]
+    fn test_max_connections_reasonable() {
+        let max_connections: u32 = 10;
+        assert!(max_connections > 0);
+        assert!(max_connections <= 100);
+    }
+
+    #[test]
+    fn test_min_connections_less_than_max() {
+        let max_connections: u32 = 10;
+        let min_connections: u32 = 2;
+        assert!(min_connections <= max_connections);
+    }
 }

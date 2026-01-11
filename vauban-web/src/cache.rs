@@ -343,4 +343,121 @@ mod tests {
         assert!(!result1);
         assert!(!result2);
     }
+
+    // ==================== MockCache Additional Tests ====================
+
+    #[test]
+    fn test_mock_cache_is_zst() {
+        // MockCache should be a zero-sized type
+        assert_eq!(std::mem::size_of::<MockCache>(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_mock_cache_get_primitives() {
+        let cache = MockCache::new();
+        
+        let str_result: Option<String> = cache.get("key").await.unwrap();
+        let int_result: Option<i64> = cache.get("key").await.unwrap();
+        let bool_result: Option<bool> = cache.get("key").await.unwrap();
+        
+        assert!(str_result.is_none());
+        assert!(int_result.is_none());
+        assert!(bool_result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_mock_cache_set_various_types() {
+        let cache = MockCache::new();
+        
+        assert!(cache.set("str_key", &"value", None).await.is_ok());
+        assert!(cache.set("int_key", &42i64, None).await.is_ok());
+        assert!(cache.set("bool_key", &true, None).await.is_ok());
+        assert!(cache.set("vec_key", &vec![1, 2, 3], None).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_mock_cache_operations_idempotent() {
+        let cache = MockCache::new();
+        
+        // Multiple deletes should all succeed
+        for _ in 0..10 {
+            assert!(cache.delete("key").await.is_ok());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_mock_cache_exists_always_false() {
+        let cache = MockCache::new();
+        
+        // Set a value, but exists should still return false
+        cache.set("key", &"value", None).await.unwrap();
+        assert!(!cache.exists("key").await.unwrap());
+    }
+
+    // ==================== CacheConnection Pattern Tests ====================
+
+    #[test]
+    fn test_cache_connection_mock_construction() {
+        let mock = MockCache::new();
+        let conn = CacheConnection::Mock(Arc::new(mock));
+        
+        match conn {
+            CacheConnection::Mock(_) => (),
+            _ => panic!("Expected Mock variant"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_cache_connection_mock_set_with_various_ttl() {
+        let conn = CacheConnection::Mock(Arc::new(MockCache::new()));
+        
+        // No TTL
+        assert!(conn.set("key1", &"value", None).await.is_ok());
+        // Short TTL
+        assert!(conn.set("key2", &"value", Some(1)).await.is_ok());
+        // Long TTL
+        assert!(conn.set("key3", &"value", Some(86400)).await.is_ok());
+        // Max TTL
+        assert!(conn.set("key4", &"value", Some(u64::MAX)).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_cache_connection_arc_sharing() {
+        let mock = Arc::new(MockCache::new());
+        let conn1 = CacheConnection::Mock(Arc::clone(&mock));
+        let conn2 = CacheConnection::Mock(Arc::clone(&mock));
+        
+        // Both connections should work
+        assert!(conn1.exists("key").await.is_ok());
+        assert!(conn2.exists("key").await.is_ok());
+    }
+
+    // ==================== Edge Case Tests ====================
+
+    #[tokio::test]
+    async fn test_cache_empty_key() {
+        let cache = MockCache::new();
+        assert!(cache.get::<String>("").await.is_ok());
+        assert!(cache.set("", &"value", None).await.is_ok());
+        assert!(cache.delete("").await.is_ok());
+        assert!(cache.exists("").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_cache_long_key() {
+        let cache = MockCache::new();
+        let long_key = "k".repeat(10000);
+        
+        assert!(cache.get::<String>(&long_key).await.is_ok());
+        assert!(cache.set(&long_key, &"value", None).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_cache_unicode_key() {
+        let cache = MockCache::new();
+        let unicode_key = "键_key_clé_Schlüssel_\u{1F600}";
+        
+        assert!(cache.get::<String>(unicode_key).await.is_ok());
+        assert!(cache.set(unicode_key, &"value", None).await.is_ok());
+    }
 }

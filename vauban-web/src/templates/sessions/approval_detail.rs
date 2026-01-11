@@ -139,4 +139,33 @@ mod tests {
         let cloned = detail.clone();
         assert_eq!(detail.uuid, cloned.uuid);
     }
+
+    #[test]
+    fn test_approval_detail_template_renders() {
+        use crate::templates::base::{VaubanConfig, UserContext};
+
+        let template = ApprovalDetailTemplate {
+            title: "Approval Detail".to_string(),
+            user: Some(UserContext {
+                uuid: "test".to_string(),
+                username: "testuser".to_string(),
+                display_name: "Test User".to_string(),
+                is_superuser: false,
+                is_staff: false,
+            }),
+            vauban: VaubanConfig {
+                brand_name: "VAUBAN".to_string(),
+                brand_logo: None,
+                theme: "dark".to_string(),
+            },
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            approval: create_test_approval_detail("pending"),
+        };
+
+        let result = template.render();
+        assert!(result.is_ok(), "ApprovalDetailTemplate should render");
+    }
 }

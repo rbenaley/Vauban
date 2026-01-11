@@ -395,4 +395,22 @@ mod tests {
         assert!(sidebar.is_some());
         assert!(header.is_some());
     }
+
+    #[test]
+    fn test_base_template_renders() {
+        let base = BaseTemplate::new("Test Page".to_string(), None);
+        let result = base.render();
+        assert!(result.is_ok(), "BaseTemplate should render successfully");
+        let html = result.unwrap();
+        // Template renders successfully - content verification depends on HTML structure
+        assert!(!html.is_empty(), "Rendered HTML should not be empty");
+    }
+
+    #[test]
+    fn test_base_template_renders_with_user() {
+        let user = create_test_user();
+        let base = BaseTemplate::new("Dashboard".to_string(), Some(user));
+        let result = base.render();
+        assert!(result.is_ok(), "BaseTemplate with user should render");
+    }
 }

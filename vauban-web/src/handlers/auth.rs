@@ -712,4 +712,241 @@ mod tests {
         // Should only contain hex characters
         assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
     }
+
+    // ==================== hash_token Additional Tests ====================
+
+    #[test]
+    fn test_hash_token_empty() {
+        let hash = hash_token("");
+        assert_eq!(hash.len(), 64);
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_hash_token_unicode() {
+        let hash = hash_token("密码测试🔐");
+        assert_eq!(hash.len(), 64);
+    }
+
+    #[test]
+    fn test_hash_token_long_input() {
+        let long_token = "a".repeat(10000);
+        let hash = hash_token(&long_token);
+        assert_eq!(hash.len(), 64);
+    }
+
+    // ==================== extract_client_ip Additional Tests ====================
+
+    #[test]
+    fn test_extract_client_ip_xff_with_spaces() {
+        let mut headers = HeaderMap::new();
+        headers.insert("X-Forwarded-For", "  1.2.3.4  , 5.6.7.8".parse().unwrap());
+        
+        let fallback: SocketAddr = "10.0.0.1:8080".parse().unwrap();
+        let ip = extract_client_ip(&headers, fallback);
+        
+        assert_eq!(ip.ip().to_string(), "1.2.3.4");
+    }
+
+    #[test]
+    fn test_extract_client_ip_xff_ipv6_mixed() {
+        let mut headers = HeaderMap::new();
+        headers.insert("X-Forwarded-For", "::ffff:192.168.1.1, 10.0.0.1".parse().unwrap());
+        
+        let fallback: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+        let ip = extract_client_ip(&headers, fallback);
+        
+        assert!(ip.ip().to_string().contains("192.168.1.1") || ip.ip().to_string().contains("ffff"));
+    }
+
+    #[test]
+    fn test_extract_client_ip_x_real_ip_invalid_fallback() {
+        let mut headers = HeaderMap::new();
+        headers.insert("X-Real-IP", "not-valid".parse().unwrap());
+        
+        let fallback: SocketAddr = "172.16.0.1:443".parse().unwrap();
+        let ip = extract_client_ip(&headers, fallback);
+        
+        assert_eq!(ip.ip().to_string(), "172.16.0.1");
+    }
+
+    #[test]
+    fn test_extract_client_ip_localhost() {
+        let headers = HeaderMap::new();
+        
+        let fallback: SocketAddr = "127.0.0.1:3000".parse().unwrap();
+        let ip = extract_client_ip(&headers, fallback);
+        
+        assert_eq!(ip.ip().to_string(), "127.0.0.1");
+    }
+
+    // ==================== is_htmx_request Tests ====================
+
+    #[test]
+    fn test_is_htmx_request_true() {
+        let mut headers = HeaderMap::new();
+        headers.insert("HX-Request", "true".parse().unwrap());
+        
+        assert!(is_htmx_request(&headers));
+    }
+
+    #[test]
+    fn test_is_htmx_request_false() {
+        let headers = HeaderMap::new();
+        assert!(!is_htmx_request(&headers));
+    }
+
+    #[test]
+    fn test_is_htmx_request_any_value() {
+        let mut headers = HeaderMap::new();
+        headers.insert("HX-Request", "1".parse().unwrap());
+        
+        // Any value should be considered true (just presence check)
+        assert!(is_htmx_request(&headers));
+    }
+
+    // ==================== login_error_html Tests ====================
+
+    #[test]
+    fn test_login_error_html_contains_message() {
+        let html = login_error_html("Test error message");
+        
+        assert!(html.contains("Test error message"));
+        assert!(html.contains("login-result"));
+        assert!(html.contains("bg-red-50"));
+    }
+
+    #[test]
+    fn test_login_error_html_special_chars() {
+        let html = login_error_html("<script>alert('xss')</script>");
+        
+        // Should contain the message (escaping is caller's responsibility in real app)
+        assert!(html.contains("login-result"));
+    }
+
+    #[test]
+    fn test_login_error_html_empty_message() {
+        let html = login_error_html("");
+        
+        assert!(html.contains("login-result"));
+    }
+
+    // ==================== login_mfa_required_html Tests ====================
+
+    #[test]
+    fn test_login_mfa_required_html_structure() {
+        let html = login_mfa_required_html();
+        
+        assert!(html.contains("mfa_code"));
+        assert!(html.contains("mfa-section"));
+        assert!(html.contains("hx-swap-oob"));
+        assert!(html.contains("MFA Code"));
+    }
+
+    #[test]
+    fn test_login_mfa_required_html_autofocus() {
+        let html = login_mfa_required_html();
+        
+        assert!(html.contains("autofocus"));
+    }
+
+    // ==================== LoginRequest Debug Tests ====================
+
+    #[test]
+    fn test_login_request_debug() {
+        let request = LoginRequest {
+            username: "testuser".to_string(),
+            password: "securepassword".to_string(),
+            mfa_code: Some("123456".to_string()),
+        };
+        
+        let debug_str = format!("{:?}", request);
+        
+        assert!(debug_str.contains("LoginRequest"));
+        assert!(debug_str.contains("testuser"));
+    }
+
+    // ==================== LoginResponse Debug Tests ====================
+
+    #[test]
+    fn test_login_response_debug() {
+        let user_dto = crate::models::user::UserDto {
+            uuid: ::uuid::Uuid::new_v4(),
+            username: "debuguser".to_string(),
+            email: "debug@test.com".to_string(),
+            first_name: None,
+            last_name: None,
+            phone: None,
+            is_active: true,
+            is_staff: false,
+            is_superuser: false,
+            is_service_account: false,
+            mfa_enabled: false,
+            mfa_enforced: false,
+            preferences: serde_json::json!({}),
+            last_login: None,
+            last_login_ip: None,
+            auth_source: "local".to_string(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+
+        let response = LoginResponse {
+            access_token: "token".to_string(),
+            refresh_token: "refresh".to_string(),
+            user: user_dto,
+            mfa_required: false,
+        };
+        
+        let debug_str = format!("{:?}", response);
+        assert!(debug_str.contains("LoginResponse"));
+    }
+
+    // ==================== MfaSetupResponse Debug Tests ====================
+
+    #[test]
+    fn test_mfa_setup_response_debug() {
+        let response = MfaSetupResponse {
+            secret: "SECRET".to_string(),
+            qr_code_url: "otpauth://".to_string(),
+            qr_code_base64: None,
+        };
+        
+        let debug_str = format!("{:?}", response);
+        assert!(debug_str.contains("MfaSetupResponse"));
+    }
+
+    // ==================== Validation Edge Cases ====================
+
+    #[test]
+    fn test_login_request_boundary_username() {
+        // Exactly at minimum length
+        let request = LoginRequest {
+            username: "abc".to_string(),
+            password: "123456789012".to_string(),
+            mfa_code: None,
+        };
+        assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn test_login_request_unicode_username() {
+        let request = LoginRequest {
+            username: "用户名".to_string(),  // 3 unicode chars
+            password: "validpassword123".to_string(),
+            mfa_code: None,
+        };
+        // Unicode chars count as 1 each
+        assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn test_login_request_unicode_password() {
+        let request = LoginRequest {
+            username: "testuser".to_string(),
+            password: "密码测试密码测试密码测试".to_string(),  // 12 unicode chars
+            mfa_code: None,
+        };
+        assert!(request.validate().is_ok());
+    }
 }

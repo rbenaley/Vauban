@@ -98,4 +98,33 @@ mod tests {
         assert_eq!(item.uuid, cloned.uuid);
         assert_eq!(item.duration, cloned.duration);
     }
+
+    #[test]
+    fn test_active_list_template_renders() {
+        use crate::templates::base::{VaubanConfig, UserContext};
+
+        let template = ActiveListTemplate {
+            title: "Active Sessions".to_string(),
+            user: Some(UserContext {
+                uuid: "test".to_string(),
+                username: "testuser".to_string(),
+                display_name: "Test User".to_string(),
+                is_superuser: false,
+                is_staff: false,
+            }),
+            vauban: VaubanConfig {
+                brand_name: "VAUBAN".to_string(),
+                brand_logo: None,
+                theme: "dark".to_string(),
+            },
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            sessions: vec![create_test_active_session_item("ssh")],
+        };
+
+        let result = template.render();
+        assert!(result.is_ok(), "ActiveListTemplate should render");
+    }
 }

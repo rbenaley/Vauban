@@ -535,4 +535,158 @@ mod tests {
         assert!(config.jwt.access_token_lifetime_minutes > 0);
         assert!(!config.jwt.algorithm.is_empty());
     }
+
+    // ==================== Environment Additional Tests ====================
+
+    #[test]
+    fn test_environment_debug() {
+        let env = Environment::Development;
+        let debug_str = format!("{:?}", env);
+        assert!(debug_str.contains("Development"));
+    }
+
+    #[test]
+    fn test_environment_clone() {
+        let env = Environment::Production;
+        let cloned = env.clone();
+        assert_eq!(env, cloned);
+    }
+
+    #[test]
+    fn test_environment_default() {
+        let env = Environment::default();
+        assert_eq!(env, Environment::Development);
+    }
+
+    #[test]
+    fn test_environment_serialize() {
+        let env = Environment::Testing;
+        let json = serde_json::to_string(&env).unwrap();
+        assert!(json.contains("testing"));
+    }
+
+    #[test]
+    fn test_environment_deserialize() {
+        let json = r#""production""#;
+        let env: Environment = serde_json::from_str(json).unwrap();
+        assert_eq!(env, Environment::Production);
+    }
+
+    // ==================== LogFormat Additional Tests ====================
+
+    #[test]
+    fn test_log_format_debug() {
+        let format = LogFormat::Json;
+        let debug_str = format!("{:?}", format);
+        assert!(debug_str.contains("Json"));
+    }
+
+    #[test]
+    fn test_log_format_clone() {
+        let format = LogFormat::Text;
+        let cloned = format.clone();
+        assert_eq!(format, cloned);
+    }
+
+    #[test]
+    fn test_log_format_is_json_text() {
+        assert!(!LogFormat::Text.is_json());
+    }
+
+    #[test]
+    fn test_log_format_is_json_json() {
+        assert!(LogFormat::Json.is_json());
+    }
+
+    // ==================== Config Struct Tests ====================
+
+    #[test]
+    fn test_config_clone() {
+        let config = Config::load_with_environment("config", Environment::Testing)
+            .expect("Should load testing config");
+        let cloned = config.clone();
+        assert_eq!(config.environment, cloned.environment);
+    }
+
+    #[test]
+    fn test_config_debug() {
+        let config = Config::load_with_environment("config", Environment::Testing)
+            .expect("Should load testing config");
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("Config"));
+    }
+
+    // ==================== Sub-Config Tests ====================
+
+    #[test]
+    fn test_database_config_debug() {
+        let config = Config::load_with_environment("config", Environment::Testing)
+            .expect("Should load testing config");
+        let debug_str = format!("{:?}", config.database);
+        assert!(debug_str.contains("DatabaseConfig"));
+    }
+
+    #[test]
+    fn test_server_config_debug() {
+        let config = Config::load_with_environment("config", Environment::Testing)
+            .expect("Should load testing config");
+        let debug_str = format!("{:?}", config.server);
+        assert!(debug_str.contains("ServerConfig"));
+    }
+
+    #[test]
+    fn test_cache_config_debug() {
+        let config = Config::load_with_environment("config", Environment::Testing)
+            .expect("Should load testing config");
+        let debug_str = format!("{:?}", config.cache);
+        assert!(debug_str.contains("CacheConfig"));
+    }
+
+    #[test]
+    fn test_jwt_config_debug() {
+        let config = Config::load_with_environment("config", Environment::Testing)
+            .expect("Should load testing config");
+        let debug_str = format!("{:?}", config.jwt);
+        assert!(debug_str.contains("JwtConfig"));
+    }
+
+    #[test]
+    fn test_security_config_debug() {
+        let config = Config::load_with_environment("config", Environment::Testing)
+            .expect("Should load testing config");
+        let debug_str = format!("{:?}", config.security);
+        assert!(debug_str.contains("SecurityConfig"));
+    }
+
+    #[test]
+    fn test_logging_config_debug() {
+        let config = Config::load_with_environment("config", Environment::Testing)
+            .expect("Should load testing config");
+        let debug_str = format!("{:?}", config.logging);
+        assert!(debug_str.contains("LoggingConfig"));
+    }
+
+    #[test]
+    fn test_grpc_config_debug() {
+        let config = Config::load_with_environment("config", Environment::Testing)
+            .expect("Should load testing config");
+        let debug_str = format!("{:?}", config.grpc);
+        assert!(debug_str.contains("GrpcConfig"));
+    }
+
+    #[test]
+    fn test_tls_config_debug() {
+        let config = Config::load_with_environment("config", Environment::Testing)
+            .expect("Should load testing config");
+        let debug_str = format!("{:?}", config.server.tls);
+        assert!(debug_str.contains("TlsConfig"));
+    }
+
+    #[test]
+    fn test_mtls_config_debug() {
+        let config = Config::load_with_environment("config", Environment::Testing)
+            .expect("Should load testing config");
+        let debug_str = format!("{:?}", config.grpc.mtls);
+        assert!(debug_str.contains("MtlsConfig"));
+    }
 }

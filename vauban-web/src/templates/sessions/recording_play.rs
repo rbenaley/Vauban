@@ -150,4 +150,33 @@ mod tests {
         assert_eq!(data.session_uuid, cloned.session_uuid);
         assert_eq!(data.bytes_sent, cloned.bytes_sent);
     }
+
+    #[test]
+    fn test_recording_play_template_renders() {
+        use crate::templates::base::{VaubanConfig, UserContext};
+
+        let template = RecordingPlayTemplate {
+            title: "Recording".to_string(),
+            user: Some(UserContext {
+                uuid: "test".to_string(),
+                username: "testuser".to_string(),
+                display_name: "Test User".to_string(),
+                is_superuser: false,
+                is_staff: false,
+            }),
+            vauban: VaubanConfig {
+                brand_name: "VAUBAN".to_string(),
+                brand_logo: None,
+                theme: "dark".to_string(),
+            },
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            recording: create_test_recording_data("ssh"),
+        };
+
+        let result = template.render();
+        assert!(result.is_ok(), "RecordingPlayTemplate should render");
+    }
 }

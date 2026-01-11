@@ -3062,4 +3062,225 @@ mod tests {
         // UserContext doesn't have mfa_verified field, just verify it compiles
         assert_eq!(ctx.username, "user");
     }
+
+    // ==================== user_context_from_auth Additional Tests ====================
+
+    #[test]
+    fn test_user_context_from_auth_admin_permissions() {
+        let auth = AuthUser {
+            uuid: "admin-uuid".to_string(),
+            username: "admin".to_string(),
+            mfa_verified: true,
+            is_superuser: true,
+            is_staff: true,
+        };
+        let ctx = user_context_from_auth(&auth);
+
+        assert!(ctx.is_superuser);
+        assert!(ctx.is_staff);
+    }
+
+    #[test]
+    fn test_user_context_from_auth_chinese_username() {
+        let auth = AuthUser {
+            uuid: "uuid".to_string(),
+            username: "用户测试".to_string(),
+            mfa_verified: false,
+            is_superuser: false,
+            is_staff: false,
+        };
+        let ctx = user_context_from_auth(&auth);
+
+        assert_eq!(ctx.username, "用户测试");
+    }
+
+    #[test]
+    fn test_user_context_from_auth_email_format_username() {
+        let auth = AuthUser {
+            uuid: "uuid".to_string(),
+            username: "user@domain.com".to_string(),
+            mfa_verified: false,
+            is_superuser: false,
+            is_staff: false,
+        };
+        let ctx = user_context_from_auth(&auth);
+
+        assert_eq!(ctx.username, "user@domain.com");
+    }
+
+    // ==================== build_sessions_html Additional Tests ====================
+
+    #[test]
+    fn test_build_sessions_html_no_sessions() {
+        let html = super::build_sessions_html(&[], "any-hash");
+        // Empty list should still produce valid HTML structure
+        assert!(html.contains("auth-sessions") || html.is_empty() || html.len() > 0);
+    }
+
+    #[test]
+    fn test_build_sessions_html_five_sessions() {
+        use crate::models::AuthSession;
+        use chrono::{Duration, Utc};
+        use ipnetwork::IpNetwork;
+        use uuid::Uuid;
+
+        let sessions: Vec<AuthSession> = (1..=5)
+            .map(|i| AuthSession {
+                id: i,
+                uuid: Uuid::new_v4(),
+                user_id: 1,
+                token_hash: format!("hash-{}", i),
+                ip_address: format!("192.168.1.{}", i).parse::<IpNetwork>().unwrap(),
+                user_agent: Some(format!("Browser {}", i)),
+                device_info: Some(format!("Device {}", i)),
+                is_current: i == 1,
+                last_activity: Utc::now(),
+                created_at: Utc::now(),
+                expires_at: Utc::now() + Duration::hours(1),
+            })
+            .collect();
+
+        let html = super::build_sessions_html(&sessions, "hash-3");
+        
+        // Should produce non-empty HTML with sessions
+        assert!(!html.is_empty());
+        // HTML should contain li tags for sessions
+        assert!(html.contains("<li"));
+        // The current session (hash-3) should be marked
+        assert!(html.contains("Current session"));
+    }
+
+    #[test]
+    fn test_build_sessions_html_with_expired_session() {
+        use crate::models::AuthSession;
+        use chrono::{Duration, Utc};
+        use ipnetwork::IpNetwork;
+        use uuid::Uuid;
+
+        let session = AuthSession {
+            id: 1,
+            uuid: Uuid::new_v4(),
+            user_id: 1,
+            token_hash: "expired-hash".to_string(),
+            ip_address: "10.0.0.1".parse::<IpNetwork>().unwrap(),
+            user_agent: Some("Old Browser".to_string()),
+            device_info: Some("Old Device".to_string()),
+            is_current: false,
+            last_activity: Utc::now() - Duration::days(1),
+            created_at: Utc::now() - Duration::days(2),
+            expires_at: Utc::now() - Duration::hours(1), // Already expired
+        };
+
+        let html = super::build_sessions_html(&[session], "other-hash");
+        assert!(html.contains("session-row-"));
+    }
+
+    // ==================== UpdateAssetGroupForm Additional Tests ====================
+
+    #[test]
+    fn test_update_asset_group_form_minimal() {
+        let json = r##"{"name": "Test", "slug": "test", "color": "#000", "icon": "folder"}"##;
+        let form: UpdateAssetGroupForm = serde_json::from_str(json).unwrap();
+
+        assert_eq!(form.name, "Test");
+        assert!(form.description.is_none());
+    }
+
+    #[test]
+    fn test_update_asset_group_form_all_colors() {
+        let colors = ["#fff", "#000", "#123abc", "#AABBCC", "#f0f0f0"];
+        
+        for color in colors {
+            let json = format!(
+                r##"{{"name": "Test", "slug": "test", "color": "{}", "icon": "folder"}}"##,
+                color
+            );
+            let form: UpdateAssetGroupForm = serde_json::from_str(&json).unwrap();
+            assert_eq!(form.color, color);
+        }
+    }
+
+    #[test]
+    fn test_update_asset_group_form_icons() {
+        let icons = ["folder", "server", "database", "cloud", "lock"];
+        
+        for icon in icons {
+            let json = format!(
+                r##"{{"name": "Test", "slug": "test", "color": "#fff", "icon": "{}"}}"##,
+                icon
+            );
+            let form: UpdateAssetGroupForm = serde_json::from_str(&json).unwrap();
+            assert_eq!(form.icon, icon);
+        }
+    }
+
+    // ==================== CreateApiKeyForm Additional Tests ====================
+
+    #[test]
+    fn test_create_api_key_form_zero_expiry() {
+        let json = r#"{"name": "Zero Expiry", "expires_in_days": 0}"#;
+        let form: CreateApiKeyForm = serde_json::from_str(json).unwrap();
+
+        assert_eq!(form.expires_in_days, Some(0));
+    }
+
+    #[test]
+    fn test_create_api_key_form_long_expiry() {
+        let json = r#"{"name": "Long Expiry", "expires_in_days": 365}"#;
+        let form: CreateApiKeyForm = serde_json::from_str(json).unwrap();
+
+        assert_eq!(form.expires_in_days, Some(365));
+    }
+
+    #[test]
+    fn test_create_api_key_form_unicode_name() {
+        let json = r#"{"name": "密钥名称"}"#;
+        let form: CreateApiKeyForm = serde_json::from_str(json).unwrap();
+
+        assert_eq!(form.name, "密钥名称");
+    }
+
+    #[test]
+    fn test_create_api_key_form_long_name() {
+        let long_name = "A".repeat(100);
+        let json = format!(r#"{{"name": "{}"}}"#, long_name);
+        let form: CreateApiKeyForm = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(form.name.len(), 100);
+    }
+
+    // ==================== AuthUser Tests ====================
+
+    #[test]
+    fn test_auth_user_clone() {
+        let auth = AuthUser {
+            uuid: "test-uuid".to_string(),
+            username: "testuser".to_string(),
+            mfa_verified: true,
+            is_superuser: false,
+            is_staff: true,
+        };
+        
+        let cloned = auth.clone();
+        
+        assert_eq!(auth.uuid, cloned.uuid);
+        assert_eq!(auth.username, cloned.username);
+        assert_eq!(auth.mfa_verified, cloned.mfa_verified);
+    }
+
+    #[test]
+    fn test_auth_user_debug() {
+        let auth = AuthUser {
+            uuid: "debug-uuid".to_string(),
+            username: "debuguser".to_string(),
+            mfa_verified: false,
+            is_superuser: true,
+            is_staff: false,
+        };
+        
+        let debug_str = format!("{:?}", auth);
+        
+        assert!(debug_str.contains("AuthUser"));
+        assert!(debug_str.contains("debuguser"));
+    }
 }

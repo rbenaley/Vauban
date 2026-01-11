@@ -214,4 +214,35 @@ mod tests {
         assert_eq!(item.session_type, cloned.session_type);
         assert_eq!(item.recording_path, cloned.recording_path);
     }
+
+    #[test]
+    fn test_recording_list_template_renders() {
+        use crate::templates::base::{VaubanConfig, UserContext};
+
+        let template = RecordingListTemplate {
+            title: "Recordings".to_string(),
+            user: Some(UserContext {
+                uuid: "test".to_string(),
+                username: "testuser".to_string(),
+                display_name: "Test User".to_string(),
+                is_superuser: false,
+                is_staff: false,
+            }),
+            vauban: VaubanConfig {
+                brand_name: "VAUBAN".to_string(),
+                brand_logo: None,
+                theme: "dark".to_string(),
+            },
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            recordings: vec![create_test_recording_item("ssh", Some(100))],
+            format_filter: None,
+            asset_filter: None,
+        };
+
+        let result = template.render();
+        assert!(result.is_ok(), "RecordingListTemplate should render");
+    }
 }

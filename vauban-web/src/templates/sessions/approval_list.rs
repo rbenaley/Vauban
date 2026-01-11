@@ -261,4 +261,41 @@ mod tests {
         assert_eq!(pagination.current_page, cloned.current_page);
         assert_eq!(pagination.total_pages, cloned.total_pages);
     }
+
+    #[test]
+    fn test_approval_list_template_renders() {
+        use crate::templates::base::{VaubanConfig, UserContext};
+
+        let template = ApprovalListTemplate {
+            title: "Approvals".to_string(),
+            user: Some(UserContext {
+                uuid: "test".to_string(),
+                username: "testuser".to_string(),
+                display_name: "Test User".to_string(),
+                is_superuser: false,
+                is_staff: false,
+            }),
+            vauban: VaubanConfig {
+                brand_name: "VAUBAN".to_string(),
+                brand_logo: None,
+                theme: "dark".to_string(),
+            },
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            approvals: vec![create_test_approval_item("pending", "ssh")],
+            status_filter: None,
+            pagination: Some(Pagination {
+                current_page: 1,
+                total_pages: 1,
+                total_items: 1,
+                has_previous: false,
+                has_next: false,
+            }),
+        };
+
+        let result = template.render();
+        assert!(result.is_ok(), "ApprovalListTemplate should render");
+    }
 }

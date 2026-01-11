@@ -367,4 +367,375 @@ mod tests {
 
         assert_eq!(key.last_used_display(), "Never used");
     }
+
+    // ==================== ApiKeyScope Additional Tests ====================
+
+    #[test]
+    fn test_api_key_scope_debug() {
+        let scope = ApiKeyScope::Read;
+        let debug_str = format!("{:?}", scope);
+        assert!(debug_str.contains("Read"));
+    }
+
+    #[test]
+    fn test_api_key_scope_clone() {
+        let scope = ApiKeyScope::Write;
+        let cloned = scope.clone();
+        assert_eq!(scope, cloned);
+    }
+
+    #[test]
+    fn test_api_key_scope_copy() {
+        let scope = ApiKeyScope::Admin;
+        let copied = scope;
+        assert_eq!(scope, copied);
+    }
+
+    #[test]
+    fn test_api_key_scope_as_str() {
+        assert_eq!(ApiKeyScope::Read.as_str(), "read");
+        assert_eq!(ApiKeyScope::Write.as_str(), "write");
+        assert_eq!(ApiKeyScope::Admin.as_str(), "admin");
+    }
+
+    #[test]
+    fn test_api_key_scope_from_str_none() {
+        assert!(ApiKeyScope::from_str("invalid").is_none());
+        assert!(ApiKeyScope::from_str("").is_none());
+        assert!(ApiKeyScope::from_str("READ").is_none()); // Case sensitive
+    }
+
+    #[test]
+    fn test_api_key_scope_serialize() {
+        let scope = ApiKeyScope::Read;
+        let json = serde_json::to_string(&scope).unwrap();
+        assert!(json.contains("read"));
+    }
+
+    #[test]
+    fn test_api_key_scope_deserialize() {
+        let json = r#""write""#;
+        let scope: ApiKeyScope = serde_json::from_str(json).unwrap();
+        assert_eq!(scope, ApiKeyScope::Write);
+    }
+
+    // ==================== ApiKey Additional Tests ====================
+
+    fn create_test_api_key() -> ApiKey {
+        ApiKey {
+            id: 1,
+            uuid: Uuid::new_v4(),
+            user_id: 1,
+            name: "Test Key".to_string(),
+            key_prefix: "vbn_test".to_string(),
+            key_hash: "hash".to_string(),
+            scopes: serde_json::json!(["read", "write"]),
+            last_used_at: None,
+            last_used_ip: None,
+            expires_at: None,
+            is_active: true,
+            created_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn test_api_key_clone() {
+        let key = create_test_api_key();
+        let cloned = key.clone();
+        assert_eq!(key.uuid, cloned.uuid);
+        assert_eq!(key.name, cloned.name);
+    }
+
+    #[test]
+    fn test_api_key_debug() {
+        let key = create_test_api_key();
+        let debug_str = format!("{:?}", key);
+        assert!(debug_str.contains("ApiKey"));
+        assert!(debug_str.contains("Test Key"));
+    }
+
+    #[test]
+    fn test_api_key_serialize() {
+        let key = create_test_api_key();
+        let json = serde_json::to_string(&key).unwrap();
+        assert!(json.contains("Test Key"));
+        // key_hash and last_used_ip should be skipped
+        assert!(!json.contains("key_hash"));
+    }
+
+    #[test]
+    fn test_generate_key_uniqueness() {
+        let (_, key1, _) = ApiKey::generate_key();
+        let (_, key2, _) = ApiKey::generate_key();
+        assert_ne!(key1, key2);
+    }
+
+    #[test]
+    fn test_hash_key_length() {
+        let hash = ApiKey::hash_key("test");
+        assert_eq!(hash.len(), 64); // SHA3-256 produces 32 bytes = 64 hex chars
+    }
+
+    #[test]
+    fn test_hash_key_empty_string() {
+        let hash = ApiKey::hash_key("");
+        assert_eq!(hash.len(), 64);
+    }
+
+    #[test]
+    fn test_hash_key_unicode() {
+        let hash = ApiKey::hash_key("test-unicode-\u{1F600}");
+        assert_eq!(hash.len(), 64);
+    }
+
+    #[test]
+    fn test_scopes_vec_non_array() {
+        let mut key = create_test_api_key();
+        key.scopes = serde_json::json!("not_an_array");
+        
+        let scopes = key.scopes_vec();
+        assert_eq!(scopes, vec!["read"]);
+    }
+
+    #[test]
+    fn test_scopes_vec_empty_array() {
+        let mut key = create_test_api_key();
+        key.scopes = serde_json::json!([]);
+        
+        let scopes = key.scopes_vec();
+        assert!(scopes.is_empty());
+    }
+
+    #[test]
+    fn test_scopes_vec_mixed_values() {
+        let mut key = create_test_api_key();
+        key.scopes = serde_json::json!(["read", 123, null, "write"]);
+        
+        let scopes = key.scopes_vec();
+        assert_eq!(scopes, vec!["read", "write"]);
+    }
+
+    #[test]
+    fn test_has_scope_non_array() {
+        let mut key = create_test_api_key();
+        key.scopes = serde_json::json!("not_an_array");
+        
+        assert!(!key.has_scope("read"));
+    }
+
+    #[test]
+    fn test_is_expired_no_expiry() {
+        let key = create_test_api_key();
+        assert!(!key.is_expired());
+    }
+
+    // ==================== last_used_display Tests ====================
+
+    #[test]
+    fn test_last_used_display_just_now() {
+        let mut key = create_test_api_key();
+        key.last_used_at = Some(Utc::now());
+        
+        assert_eq!(key.last_used_display(), "Just now");
+    }
+
+    #[test]
+    fn test_last_used_display_minutes() {
+        let mut key = create_test_api_key();
+        key.last_used_at = Some(Utc::now() - chrono::Duration::minutes(30));
+        
+        assert!(key.last_used_display().contains("minutes ago"));
+    }
+
+    #[test]
+    fn test_last_used_display_hours() {
+        let mut key = create_test_api_key();
+        key.last_used_at = Some(Utc::now() - chrono::Duration::hours(5));
+        
+        assert!(key.last_used_display().contains("hours ago"));
+    }
+
+    #[test]
+    fn test_last_used_display_days() {
+        let mut key = create_test_api_key();
+        key.last_used_at = Some(Utc::now() - chrono::Duration::days(3));
+        
+        assert!(key.last_used_display().contains("days ago"));
+    }
+
+    // ==================== expires_display Tests ====================
+
+    #[test]
+    fn test_expires_display_never() {
+        let key = create_test_api_key();
+        assert_eq!(key.expires_display(), "Never expires");
+    }
+
+    #[test]
+    fn test_expires_display_expired() {
+        let mut key = create_test_api_key();
+        key.expires_at = Some(Utc::now() - chrono::Duration::hours(1));
+        
+        assert_eq!(key.expires_display(), "Expired");
+    }
+
+    #[test]
+    fn test_expires_display_soon() {
+        let mut key = create_test_api_key();
+        key.expires_at = Some(Utc::now() + chrono::Duration::minutes(30));
+        
+        assert_eq!(key.expires_display(), "Expires soon");
+    }
+
+    #[test]
+    fn test_expires_display_hours() {
+        let mut key = create_test_api_key();
+        key.expires_at = Some(Utc::now() + chrono::Duration::hours(12));
+        
+        assert!(key.expires_display().contains("hours"));
+    }
+
+    #[test]
+    fn test_expires_display_days() {
+        let mut key = create_test_api_key();
+        key.expires_at = Some(Utc::now() + chrono::Duration::days(15));
+        
+        assert!(key.expires_display().contains("days"));
+    }
+
+    #[test]
+    fn test_expires_display_months() {
+        let mut key = create_test_api_key();
+        key.expires_at = Some(Utc::now() + chrono::Duration::days(90));
+        
+        assert!(key.expires_display().contains("months"));
+    }
+
+    // ==================== NewApiKey Tests ====================
+
+    #[test]
+    fn test_new_api_key_debug() {
+        let new_key = NewApiKey {
+            uuid: Uuid::new_v4(),
+            user_id: 1,
+            name: "New Key".to_string(),
+            key_prefix: "vbn_new".to_string(),
+            key_hash: "newhash".to_string(),
+            scopes: serde_json::json!(["read"]),
+            expires_at: None,
+        };
+        
+        let debug_str = format!("{:?}", new_key);
+        assert!(debug_str.contains("NewApiKey"));
+    }
+
+    #[test]
+    fn test_new_api_key_clone() {
+        let new_key = NewApiKey {
+            uuid: Uuid::new_v4(),
+            user_id: 2,
+            name: "Clone Key".to_string(),
+            key_prefix: "vbn_cln".to_string(),
+            key_hash: "clonehash".to_string(),
+            scopes: serde_json::json!(["read", "write"]),
+            expires_at: Some(Utc::now() + chrono::Duration::days(30)),
+        };
+        
+        let cloned = new_key.clone();
+        assert_eq!(new_key.name, cloned.name);
+    }
+
+    // ==================== ApiKeyCreated Tests ====================
+
+    #[test]
+    fn test_api_key_created_debug() {
+        let created = ApiKeyCreated {
+            uuid: Uuid::new_v4(),
+            name: "Created Key".to_string(),
+            key: "vbn_abc123".to_string(),
+            key_prefix: "vbn_abc".to_string(),
+            scopes: vec!["read".to_string()],
+            expires_at: None,
+        };
+        
+        let debug_str = format!("{:?}", created);
+        assert!(debug_str.contains("ApiKeyCreated"));
+    }
+
+    #[test]
+    fn test_api_key_created_clone() {
+        let created = ApiKeyCreated {
+            uuid: Uuid::new_v4(),
+            name: "Clone Created".to_string(),
+            key: "vbn_xyz789".to_string(),
+            key_prefix: "vbn_xyz".to_string(),
+            scopes: vec!["read".to_string(), "admin".to_string()],
+            expires_at: Some(Utc::now() + chrono::Duration::days(60)),
+        };
+        
+        let cloned = created.clone();
+        assert_eq!(created.key, cloned.key);
+    }
+
+    #[test]
+    fn test_api_key_created_serialize() {
+        let created = ApiKeyCreated {
+            uuid: Uuid::new_v4(),
+            name: "Serialize Key".to_string(),
+            key: "vbn_serialize".to_string(),
+            key_prefix: "vbn_ser".to_string(),
+            scopes: vec!["write".to_string()],
+            expires_at: None,
+        };
+        
+        let json = serde_json::to_string(&created).unwrap();
+        assert!(json.contains("Serialize Key"));
+        assert!(json.contains("vbn_serialize"));
+    }
+
+    // ==================== CreateApiKeyRequest Tests ====================
+
+    #[test]
+    fn test_create_api_key_request_debug() {
+        let request = CreateApiKeyRequest {
+            name: "Debug Request".to_string(),
+            scopes: vec!["read".to_string()],
+            expires_in_days: Some(30),
+        };
+        
+        let debug_str = format!("{:?}", request);
+        assert!(debug_str.contains("CreateApiKeyRequest"));
+    }
+
+    #[test]
+    fn test_create_api_key_request_clone() {
+        let request = CreateApiKeyRequest {
+            name: "Clone Request".to_string(),
+            scopes: vec!["read".to_string(), "write".to_string()],
+            expires_in_days: None,
+        };
+        
+        let cloned = request.clone();
+        assert_eq!(request.name, cloned.name);
+    }
+
+    #[test]
+    fn test_create_api_key_request_deserialize() {
+        let json = r#"{"name": "Test", "scopes": ["read"], "expires_in_days": 90}"#;
+        let request: CreateApiKeyRequest = serde_json::from_str(json).unwrap();
+        
+        assert_eq!(request.name, "Test");
+        assert_eq!(request.scopes, vec!["read"]);
+        assert_eq!(request.expires_in_days, Some(90));
+    }
+
+    #[test]
+    fn test_create_api_key_request_deserialize_defaults() {
+        let json = r#"{"name": "Test"}"#;
+        let request: CreateApiKeyRequest = serde_json::from_str(json).unwrap();
+        
+        assert_eq!(request.name, "Test");
+        assert!(request.scopes.is_empty()); // Default
+        assert!(request.expires_in_days.is_none());
+    }
 }

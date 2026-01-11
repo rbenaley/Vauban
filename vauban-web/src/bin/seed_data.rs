@@ -967,4 +967,118 @@ mod tests {
         assert_eq!(generate_approval_status(4), "pending");
         assert_eq!(generate_approval_status(8), "pending");
     }
+
+    // ==================== Asset Name Edge Cases ====================
+
+    #[test]
+    fn test_generate_asset_name_unknown_type() {
+        let name = generate_asset_name("unknown", 0);
+        assert!(name.starts_with("server-"));
+    }
+
+    #[test]
+    fn test_generate_asset_name_large_index() {
+        let name = generate_asset_name("ssh", 1000);
+        assert!(name.ends_with("1001"));
+    }
+
+    #[test]
+    fn test_generate_asset_name_zero_index() {
+        let name = generate_asset_name("rdp", 0);
+        assert!(name.ends_with("001"));
+    }
+
+    // ==================== Hostname Generation Edge Cases ====================
+
+    #[test]
+    fn test_generate_hostname_uppercase() {
+        let hostname = generate_hostname("WEB-SERVER-01", "EXAMPLE.COM");
+        // Should lowercase the asset name
+        assert!(hostname.starts_with("web-server-01"));
+    }
+
+    #[test]
+    fn test_generate_hostname_empty_name() {
+        let hostname = generate_hostname("", "example.com");
+        assert_eq!(hostname, ".example.com");
+    }
+
+    #[test]
+    fn test_generate_hostname_subdomain() {
+        let hostname = generate_hostname("app", "prod.internal.example.com");
+        assert_eq!(hostname, "app.prod.internal.example.com");
+    }
+
+    // ==================== IP Address Edge Cases ====================
+
+    #[test]
+    fn test_generate_ip_address_different_base() {
+        let ip = generate_ip_address("172.16.0.0", 0);
+        assert_eq!(ip, "172.16.0.1");
+    }
+
+    #[test]
+    fn test_generate_ip_address_partial_base() {
+        let ip = generate_ip_address("10.0", 0);
+        assert_eq!(ip, "10.0.0.1");
+    }
+
+    #[test]
+    fn test_generate_ip_address_single_octet_base() {
+        let ip = generate_ip_address("10", 0);
+        assert_eq!(ip, "10.0.0.1");
+    }
+
+    #[test]
+    fn test_generate_ip_address_max_index() {
+        let ip = generate_ip_address("10.0.0.0", 253);
+        assert_eq!(ip, "10.0.0.254");
+    }
+
+    // ==================== Default Port Edge Cases ====================
+
+    #[test]
+    fn test_get_default_port_empty() {
+        assert_eq!(get_default_port(""), 22);
+    }
+
+    #[test]
+    fn test_get_default_port_case_sensitive() {
+        // Uppercase should not match
+        assert_eq!(get_default_port("SSH"), 22);
+        assert_eq!(get_default_port("RDP"), 22);
+    }
+
+    // ==================== Session Status Edge Cases ====================
+
+    #[test]
+    fn test_generate_session_status_all_values() {
+        let statuses: Vec<&str> = (0..5).map(generate_session_status).collect();
+        assert!(statuses.contains(&"active"));
+        assert!(statuses.contains(&"completed"));
+        assert!(statuses.contains(&"terminated"));
+        assert!(statuses.contains(&"error"));
+    }
+
+    #[test]
+    fn test_generate_session_status_large_index() {
+        // Should still work with large indices
+        assert_eq!(generate_session_status(1000), "active");
+    }
+
+    // ==================== Approval Status Edge Cases ====================
+
+    #[test]
+    fn test_generate_approval_status_all_values() {
+        let statuses: Vec<&str> = (0..4).map(generate_approval_status).collect();
+        assert!(statuses.contains(&"pending"));
+        assert!(statuses.contains(&"approved"));
+        assert!(statuses.contains(&"rejected"));
+    }
+
+    #[test]
+    fn test_generate_approval_status_large_index() {
+        // Should still work with large indices
+        assert_eq!(generate_approval_status(1000), "pending");
+    }
 }

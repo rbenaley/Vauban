@@ -464,4 +464,317 @@ mod tests {
         let result = AuthService::new(config);
         assert!(result.is_ok());
     }
+
+    #[test]
+    fn test_auth_service_clone() {
+        let config = load_test_config();
+        let auth_service = AuthService::new(config).unwrap();
+        let cloned = auth_service.clone();
+        
+        // Both should work identically
+        let token = auth_service.generate_access_token("user-1", "test", false, false, false).unwrap();
+        let claims = cloned.verify_token(&token).unwrap();
+        assert_eq!(claims.sub, "user-1");
+    }
+
+    #[test]
+    fn test_auth_service_access_token_lifetime() {
+        let config = load_test_config();
+        let auth_service = AuthService::new(config.clone()).unwrap();
+        
+        let lifetime = auth_service.access_token_lifetime_minutes();
+        assert_eq!(lifetime, config.jwt.access_token_lifetime_minutes);
+    }
+
+    // ==================== Claims Tests ====================
+
+    #[test]
+    fn test_claims_serialize_deserialize() {
+        let claims = Claims {
+            sub: "user-uuid".to_string(),
+            username: "testuser".to_string(),
+            exp: 1700000000,
+            iat: 1699999000,
+            mfa_verified: true,
+            is_superuser: false,
+            is_staff: true,
+        };
+        
+        let json = serde_json::to_string(&claims).unwrap();
+        let parsed: Claims = serde_json::from_str(&json).unwrap();
+        
+        assert_eq!(parsed.sub, claims.sub);
+        assert_eq!(parsed.username, claims.username);
+        assert_eq!(parsed.exp, claims.exp);
+        assert_eq!(parsed.iat, claims.iat);
+        assert_eq!(parsed.mfa_verified, claims.mfa_verified);
+        assert_eq!(parsed.is_superuser, claims.is_superuser);
+        assert_eq!(parsed.is_staff, claims.is_staff);
+    }
+
+    #[test]
+    fn test_claims_debug() {
+        let claims = Claims {
+            sub: "test-sub".to_string(),
+            username: "debug-user".to_string(),
+            exp: 0,
+            iat: 0,
+            mfa_verified: false,
+            is_superuser: false,
+            is_staff: false,
+        };
+        
+        let debug_str = format!("{:?}", claims);
+        assert!(debug_str.contains("Claims"));
+        assert!(debug_str.contains("test-sub"));
+        assert!(debug_str.contains("debug-user"));
+    }
+
+    #[test]
+    fn test_claims_default_fields() {
+        // Test that is_superuser and is_staff default to false when missing
+        let json = r#"{"sub":"user","username":"test","exp":0,"iat":0,"mfa_verified":false}"#;
+        let claims: Claims = serde_json::from_str(json).unwrap();
+        
+        assert!(!claims.is_superuser);
+        assert!(!claims.is_staff);
+    }
+
+    #[test]
+    fn test_claims_all_fields_present() {
+        let json = r#"{"sub":"u","username":"n","exp":1,"iat":2,"mfa_verified":true,"is_superuser":true,"is_staff":true}"#;
+        let claims: Claims = serde_json::from_str(json).unwrap();
+        
+        assert!(claims.is_superuser);
+        assert!(claims.is_staff);
+        assert!(claims.mfa_verified);
+    }
+
+    // ==================== Password Edge Cases ====================
+
+    #[test]
+    fn test_hash_password_empty() {
+        let config = load_test_config();
+        let auth_service = AuthService::new(config).unwrap();
+        
+        // Empty password should still hash
+        let hash = auth_service.hash_password("").unwrap();
+        assert!(hash.starts_with("$argon2"));
+    }
+
+    #[test]
+    fn test_hash_password_unicode() {
+        let config = load_test_config();
+        let auth_service = AuthService::new(config).unwrap();
+        
+        let password = "密码测试🔐";
+        let hash = auth_service.hash_password(password).unwrap();
+        
+        assert!(auth_service.verify_password(password, &hash).unwrap());
+    }
+
+    #[test]
+    fn test_hash_password_very_long() {
+        let config = load_test_config();
+        let auth_service = AuthService::new(config).unwrap();
+        
+        let password = "a".repeat(1000);
+        let hash = auth_service.hash_password(&password).unwrap();
+        
+        assert!(auth_service.verify_password(&password, &hash).unwrap());
+    }
+
+    #[test]
+    fn test_verify_password_empty_password() {
+        let config = load_test_config();
+        let auth_service = AuthService::new(config).unwrap();
+        
+        let hash = auth_service.hash_password("actual_password").unwrap();
+        let result = auth_service.verify_password("", &hash).unwrap();
+        
+        assert!(!result);
+    }
+
+    #[test]
+    fn test_verify_password_empty_hash() {
+        let config = load_test_config();
+        let auth_service = AuthService::new(config).unwrap();
+        
+        let result = auth_service.verify_password("password", "");
+        assert!(result.is_err());
+    }
+
+    // ==================== Token Edge Cases ====================
+
+    #[test]
+    fn test_generate_token_empty_username() {
+        let config = load_test_config();
+        let auth_service = AuthService::new(config).unwrap();
+        
+        let token = auth_service.generate_access_token("uuid", "", false, false, false).unwrap();
+        let claims = auth_service.verify_token(&token).unwrap();
+        
+        assert_eq!(claims.username, "");
+    }
+
+    #[test]
+    fn test_generate_token_unicode_username() {
+        let config = load_test_config();
+        let auth_service = AuthService::new(config).unwrap();
+        
+        let username = "用户名";
+        let token = auth_service.generate_access_token("uuid", username, false, false, false).unwrap();
+        let claims = auth_service.verify_token(&token).unwrap();
+        
+        assert_eq!(claims.username, username);
+    }
+
+    #[test]
+    fn test_verify_token_empty() {
+        let config = load_test_config();
+        let auth_service = AuthService::new(config).unwrap();
+        
+        let result = auth_service.verify_token("");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_verify_token_malformed() {
+        let config = load_test_config();
+        let auth_service = AuthService::new(config).unwrap();
+        
+        // Various malformed tokens
+        let malformed_tokens = [
+            "not.a.token",
+            "onlyonepart",
+            "two.parts",
+            "four.parts.are.invalid",
+            "eyJ.eyJ.sig", // Base64 but invalid JSON
+        ];
+        
+        for token in malformed_tokens {
+            let result = auth_service.verify_token(token);
+            assert!(result.is_err(), "Expected error for token: {}", token);
+        }
+    }
+
+    #[test]
+    fn test_token_expiration_is_in_future() {
+        let config = load_test_config();
+        let auth_service = AuthService::new(config).unwrap();
+        
+        let token = auth_service.generate_access_token("uuid", "user", false, false, false).unwrap();
+        let claims = auth_service.verify_token(&token).unwrap();
+        
+        let now = Utc::now().timestamp();
+        assert!(claims.exp > now);
+        assert!(claims.iat <= now);
+    }
+
+    #[test]
+    fn test_token_all_permission_combinations() {
+        let config = load_test_config();
+        let auth_service = AuthService::new(config).unwrap();
+        
+        let combinations = [
+            (false, false, false),
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
+            (true, true, false),
+            (true, false, true),
+            (false, true, true),
+            (true, true, true),
+        ];
+        
+        for (mfa, superuser, staff) in combinations {
+            let token = auth_service.generate_access_token("uuid", "user", mfa, superuser, staff).unwrap();
+            let claims = auth_service.verify_token(&token).unwrap();
+            
+            assert_eq!(claims.mfa_verified, mfa);
+            assert_eq!(claims.is_superuser, superuser);
+            assert_eq!(claims.is_staff, staff);
+        }
+    }
+
+    // ==================== TOTP Edge Cases ====================
+
+    #[test]
+    fn test_generate_totp_secret_special_chars_username() {
+        let (secret, uri) = AuthService::generate_totp_secret("user@example.com", "VAUBAN Test").unwrap();
+        
+        assert!(!secret.is_empty());
+        assert!(uri.contains("otpauth://"));
+    }
+
+    #[test]
+    fn test_generate_totp_secret_unicode_issuer() {
+        let (secret, uri) = AuthService::generate_totp_secret("user", "测试发行者").unwrap();
+        
+        assert!(!secret.is_empty());
+        assert!(!uri.is_empty());
+    }
+
+    #[test]
+    fn test_verify_totp_empty_code() {
+        let (secret, _) = AuthService::generate_totp_secret("user", "issuer").unwrap();
+        
+        let result = AuthService::verify_totp(&secret, "");
+        assert!(!result);
+    }
+
+    #[test]
+    fn test_verify_totp_empty_secret() {
+        let result = AuthService::verify_totp("", "123456");
+        assert!(!result);
+    }
+
+    #[test]
+    fn test_verify_totp_wrong_length_code() {
+        let (secret, _) = AuthService::generate_totp_secret("user", "issuer").unwrap();
+        
+        // Too short
+        assert!(!AuthService::verify_totp(&secret, "12345"));
+        // Too long
+        assert!(!AuthService::verify_totp(&secret, "1234567"));
+    }
+
+    #[test]
+    fn test_get_current_totp_invalid_secret() {
+        let result = AuthService::get_current_totp("invalid-base32!");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_current_totp_empty_secret() {
+        let result = AuthService::get_current_totp("");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_generate_totp_qr_code_invalid_secret() {
+        let result = AuthService::generate_totp_qr_code("invalid!", "user", "issuer");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_totp_provisioning_uri_format() {
+        let (_, uri) = AuthService::generate_totp_secret("alice", "MyApp").unwrap();
+        
+        // Should follow otpauth format
+        assert!(uri.starts_with("otpauth://totp/"));
+        assert!(uri.contains("secret="));
+        assert!(uri.contains("issuer="));
+    }
+
+    // ==================== Config Variations ====================
+
+    #[test]
+    fn test_auth_service_with_different_token_lifetime() {
+        let mut config = load_test_config();
+        config.jwt.access_token_lifetime_minutes = 60;
+        
+        let auth_service = AuthService::new(config).unwrap();
+        assert_eq!(auth_service.access_token_lifetime_minutes(), 60);
+    }
 }

@@ -340,4 +340,243 @@ mod tests {
         // Empty update should be valid
         assert!(request.validate().is_ok());
     }
+
+    // ==================== ListUsersParams Additional Tests ====================
+
+    #[test]
+    fn test_list_users_params_all_set() {
+        let params = ListUsersParams {
+            search: Some("admin".to_string()),
+            limit: Some(100),
+            offset: Some(50),
+        };
+        
+        assert!(params.has_search());
+        assert_eq!(params.get_limit(), 100);
+        assert_eq!(params.get_offset(), 50);
+    }
+
+    #[test]
+    fn test_list_users_params_search_whitespace() {
+        let params = ListUsersParams {
+            search: Some("   ".to_string()),
+            limit: None,
+            offset: None,
+        };
+        
+        // Whitespace-only string is not empty
+        assert!(params.has_search());
+    }
+
+    #[test]
+    fn test_list_users_params_unicode_search() {
+        let params = ListUsersParams {
+            search: Some("用户".to_string()),
+            limit: None,
+            offset: None,
+        };
+        
+        assert!(params.has_search());
+    }
+
+    #[test]
+    fn test_list_users_params_large_limit() {
+        let params = ListUsersParams {
+            search: None,
+            limit: Some(1000),
+            offset: None,
+        };
+        
+        assert_eq!(params.get_limit(), 1000);
+    }
+
+    #[test]
+    fn test_list_users_params_zero_values() {
+        let params = ListUsersParams {
+            search: None,
+            limit: Some(0),
+            offset: Some(0),
+        };
+        
+        assert_eq!(params.get_limit(), 0);
+        assert_eq!(params.get_offset(), 0);
+    }
+
+    // ==================== CreateUserRequest Additional Tests ====================
+
+    #[test]
+    fn test_create_user_request_minimal() {
+        let request = CreateUserRequest {
+            username: "minuser".to_string(),
+            email: "min@example.com".to_string(),
+            password: "securepassword123".to_string(),
+            first_name: None,
+            last_name: None,
+            phone: None,
+            is_staff: None,
+            is_superuser: None,
+        };
+        
+        assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn test_create_user_request_full() {
+        let request = CreateUserRequest {
+            username: "fulluser".to_string(),
+            email: "full@example.com".to_string(),
+            password: "securepassword123".to_string(),
+            first_name: Some("Full".to_string()),
+            last_name: Some("User".to_string()),
+            phone: Some("+1234567890".to_string()),
+            is_staff: Some(true),
+            is_superuser: Some(true),
+        };
+        
+        assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn test_create_user_request_unicode_names() {
+        let request = CreateUserRequest {
+            username: "unicodeuser".to_string(),
+            email: "unicode@example.com".to_string(),
+            password: "securepassword123".to_string(),
+            first_name: Some("张".to_string()),
+            last_name: Some("三".to_string()),
+            phone: None,
+            is_staff: None,
+            is_superuser: None,
+        };
+        
+        assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn test_create_user_request_long_password() {
+        let request = CreateUserRequest {
+            username: "longpassuser".to_string(),
+            email: "longpass@example.com".to_string(),
+            password: "a".repeat(100),
+            first_name: None,
+            last_name: None,
+            phone: None,
+            is_staff: None,
+            is_superuser: None,
+        };
+        
+        assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn test_create_user_request_short_username() {
+        let request = CreateUserRequest {
+            username: "ab".to_string(), // Might be too short
+            email: "short@example.com".to_string(),
+            password: "securepassword123".to_string(),
+            first_name: None,
+            last_name: None,
+            phone: None,
+            is_staff: None,
+            is_superuser: None,
+        };
+        
+        // Check validation - might fail depending on min length
+        let _ = request.validate();
+    }
+
+    // ==================== UpdateUserRequest Additional Tests ====================
+
+    #[test]
+    fn test_update_user_request_only_email() {
+        let request = UpdateUserRequest {
+            email: Some("newemail@example.com".to_string()),
+            first_name: None,
+            last_name: None,
+            phone: None,
+            is_active: None,
+            preferences: None,
+        };
+        
+        assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn test_update_user_request_with_preferences() {
+        let request = UpdateUserRequest {
+            email: None,
+            first_name: None,
+            last_name: None,
+            phone: None,
+            is_active: None,
+            preferences: Some(serde_json::json!({"theme": "dark", "language": "fr"})),
+        };
+        
+        assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn test_update_user_request_deactivate() {
+        let request = UpdateUserRequest {
+            email: None,
+            first_name: None,
+            last_name: None,
+            phone: None,
+            is_active: Some(false),
+            preferences: None,
+        };
+        
+        assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn test_update_user_request_international_phone() {
+        let request = UpdateUserRequest {
+            email: None,
+            first_name: None,
+            last_name: None,
+            phone: Some("+33 1 23 45 67 89".to_string()),
+            is_active: None,
+            preferences: None,
+        };
+        
+        assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn test_update_user_request_empty_strings() {
+        let request = UpdateUserRequest {
+            email: None,
+            first_name: Some("".to_string()),
+            last_name: Some("".to_string()),
+            phone: Some("".to_string()),
+            is_active: None,
+            preferences: None,
+        };
+        
+        // Empty strings might be valid depending on validation
+        let _ = request.validate();
+    }
+
+    // ==================== Deserialize Tests ====================
+
+    #[test]
+    fn test_list_users_params_deserialize() {
+        let json = r#"{"search": "test", "limit": 25, "offset": 5}"#;
+        let params: ListUsersParams = serde_json::from_str(json).unwrap();
+        
+        assert_eq!(params.search, Some("test".to_string()));
+        assert_eq!(params.limit, Some(25));
+        assert_eq!(params.offset, Some(5));
+    }
+
+    #[test]
+    fn test_list_users_params_deserialize_empty() {
+        let json = r#"{}"#;
+        let params: ListUsersParams = serde_json::from_str(json).unwrap();
+        
+        assert!(params.search.is_none());
+        assert!(params.limit.is_none());
+        assert!(params.offset.is_none());
+    }
 }

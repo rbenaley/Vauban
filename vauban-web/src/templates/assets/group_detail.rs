@@ -142,4 +142,33 @@ mod tests {
         assert_eq!(group.uuid, cloned.uuid);
         assert_eq!(group.assets.len(), cloned.assets.len());
     }
+
+    #[test]
+    fn test_asset_group_detail_template_renders() {
+        use crate::templates::base::{VaubanConfig, UserContext};
+
+        let template = AssetGroupDetailTemplate {
+            title: "Group Detail".to_string(),
+            user: Some(UserContext {
+                uuid: "test".to_string(),
+                username: "testuser".to_string(),
+                display_name: "Test User".to_string(),
+                is_superuser: true,
+                is_staff: true,
+            }),
+            vauban: VaubanConfig {
+                brand_name: "VAUBAN".to_string(),
+                brand_logo: None,
+                theme: "dark".to_string(),
+            },
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            group: create_test_asset_group_detail(),
+        };
+
+        let result = template.render();
+        assert!(result.is_ok(), "AssetGroupDetailTemplate should render");
+    }
 }
