@@ -99,7 +99,7 @@ mod tests {
 
     #[test]
     fn test_user_detail_template_renders() {
-        use crate::templates::base::{VaubanConfig, UserContext};
+        use crate::templates::base::{UserContext, VaubanConfig};
 
         let template = UserDetailTemplate {
             title: "User Detail".to_string(),

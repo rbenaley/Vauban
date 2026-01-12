@@ -7,6 +7,7 @@
 /// 3. config/local.toml - local overrides (not versioned)
 /// 4. Environment variables prefixed with VAUBAN_ (for secrets only)
 use config::{Config as ConfigBuilder, ConfigError, File};
+use secrecy::{ExposeSecret, SecretString as Secret};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -21,7 +22,7 @@ pub enum Environment {
 }
 
 impl Environment {
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "development" | "dev" => Self::Development,
             "testing" | "test" => Self::Testing,
@@ -49,10 +50,10 @@ impl Environment {
 
 /// Application configuration.
 /// All values must be defined in TOML files.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     pub environment: Environment,
-    pub secret_key: String,
+    pub secret_key: Secret,
     pub database: DatabaseConfig,
     pub cache: CacheConfig,
     pub server: ServerConfig,
@@ -63,19 +64,19 @@ pub struct Config {
 }
 
 /// Database configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct DatabaseConfig {
-    pub url: String,
+    pub url: Secret,
     pub max_connections: u32,
     pub min_connections: u32,
     pub connect_timeout_secs: u64,
 }
 
 /// Cache (Valkey/Redis) configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct CacheConfig {
     pub enabled: bool,
-    pub url: String,
+    pub url: Secret,
     pub default_ttl_secs: u64,
 }
 
@@ -143,6 +144,15 @@ pub struct SecurityConfig {
     pub session_max_duration_secs: u64,
     pub session_idle_timeout_secs: u64,
     pub rate_limit_per_minute: u32,
+    pub argon2: Argon2Config,
+}
+
+/// Argon2 configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Argon2Config {
+    pub memory_size_kb: u32,
+    pub iterations: u32,
+    pub parallelism: u32,
 }
 
 /// Log format options.
@@ -157,7 +167,7 @@ pub enum LogFormat {
 }
 
 impl LogFormat {
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "json" => Self::Json,
             _ => Self::Text,
@@ -196,7 +206,7 @@ impl Config {
 
         // Determine environment from VAUBAN_ENVIRONMENT or default.toml
         let environment = std::env::var("VAUBAN_ENVIRONMENT")
-            .map(|e| Environment::from_str(&e))
+            .map(|e| Environment::parse(&e))
             .unwrap_or(Environment::Development);
 
         Self::load_with_environment(config_path, environment)
@@ -244,18 +254,16 @@ impl Config {
         }
 
         // Build configuration
-        let settings = builder.build().map_err(|e| Self::config_error(e))?;
+        let settings = builder.build().map_err(Self::config_error)?;
 
         // Deserialize into Config
-        let mut config: Config = settings
-            .try_deserialize()
-            .map_err(|e| Self::config_error(e))?;
+        let mut config: Config = settings.try_deserialize().map_err(Self::config_error)?;
 
         // Force environment in case it's not in the file
         config.environment = environment;
 
         // Validate that secret_key is set
-        if config.secret_key.is_empty() {
+        if config.secret_key.expose_secret().is_empty() {
             return Err(crate::error::AppError::Config(
                 "secret_key is required. Set it in config/{environment}.toml, config/local.toml, \
                  or via VAUBAN_SECRET_KEY environment variable."
@@ -275,11 +283,9 @@ impl Config {
                 config::FileFormat::Toml,
             ))
             .build()
-            .map_err(|e| Self::config_error(e))?;
+            .map_err(Self::config_error)?;
 
-        settings
-            .try_deserialize()
-            .map_err(|e| Self::config_error(e))
+        settings.try_deserialize().map_err(Self::config_error)
     }
 
     /// Load configuration from multiple TOML strings (base + overlay).
@@ -295,11 +301,9 @@ impl Config {
                 config::FileFormat::Toml,
             ))
             .build()
-            .map_err(|e| Self::config_error(e))?;
+            .map_err(Self::config_error)?;
 
-        settings
-            .try_deserialize()
-            .map_err(|e| Self::config_error(e))
+        settings.try_deserialize().map_err(Self::config_error)
     }
 
     fn config_error(e: ConfigError) -> crate::error::AppError {
@@ -337,41 +341,35 @@ mod tests {
     // ==================== Environment Tests ====================
 
     #[test]
-    fn test_environment_from_str_development() {
-        assert_eq!(
-            Environment::from_str("development"),
-            Environment::Development
-        );
-        assert_eq!(Environment::from_str("dev"), Environment::Development);
+    fn test_environment_parse_development() {
+        assert_eq!(Environment::parse("development"), Environment::Development);
+        assert_eq!(Environment::parse("dev"), Environment::Development);
     }
 
     #[test]
-    fn test_environment_from_str_testing() {
-        assert_eq!(Environment::from_str("testing"), Environment::Testing);
-        assert_eq!(Environment::from_str("test"), Environment::Testing);
+    fn test_environment_parse_testing() {
+        assert_eq!(Environment::parse("testing"), Environment::Testing);
+        assert_eq!(Environment::parse("test"), Environment::Testing);
     }
 
     #[test]
-    fn test_environment_from_str_production() {
-        assert_eq!(Environment::from_str("production"), Environment::Production);
-        assert_eq!(Environment::from_str("prod"), Environment::Production);
+    fn test_environment_parse_production() {
+        assert_eq!(Environment::parse("production"), Environment::Production);
+        assert_eq!(Environment::parse("prod"), Environment::Production);
     }
 
     #[test]
-    fn test_environment_from_str_unknown() {
+    fn test_environment_parse_unknown() {
         // Unknown values default to Development
-        assert_eq!(Environment::from_str("unknown"), Environment::Development);
-        assert_eq!(Environment::from_str(""), Environment::Development);
+        assert_eq!(Environment::parse("unknown"), Environment::Development);
+        assert_eq!(Environment::parse(""), Environment::Development);
     }
 
     #[test]
-    fn test_environment_from_str_case_insensitive() {
-        assert_eq!(
-            Environment::from_str("DEVELOPMENT"),
-            Environment::Development
-        );
-        assert_eq!(Environment::from_str("PRODUCTION"), Environment::Production);
-        assert_eq!(Environment::from_str("Testing"), Environment::Testing);
+    fn test_environment_parse_case_insensitive() {
+        assert_eq!(Environment::parse("DEVELOPMENT"), Environment::Development);
+        assert_eq!(Environment::parse("PRODUCTION"), Environment::Production);
+        assert_eq!(Environment::parse("Testing"), Environment::Testing);
     }
 
     #[test]
@@ -403,7 +401,7 @@ mod tests {
             Environment::Production,
         ] {
             let str_val = env.as_str();
-            let parsed = Environment::from_str(str_val);
+            let parsed = Environment::parse(str_val);
             assert_eq!(env, parsed);
         }
     }
@@ -417,22 +415,22 @@ mod tests {
     }
 
     #[test]
-    fn test_log_format_from_str_json() {
-        assert_eq!(LogFormat::from_str("json"), LogFormat::Json);
-        assert_eq!(LogFormat::from_str("JSON"), LogFormat::Json);
+    fn test_log_format_parse_json() {
+        assert_eq!(LogFormat::parse("json"), LogFormat::Json);
+        assert_eq!(LogFormat::parse("JSON"), LogFormat::Json);
     }
 
     #[test]
-    fn test_log_format_from_str_text() {
-        assert_eq!(LogFormat::from_str("text"), LogFormat::Text);
-        assert_eq!(LogFormat::from_str("TEXT"), LogFormat::Text);
+    fn test_log_format_parse_text() {
+        assert_eq!(LogFormat::parse("text"), LogFormat::Text);
+        assert_eq!(LogFormat::parse("TEXT"), LogFormat::Text);
     }
 
     #[test]
-    fn test_log_format_from_str_unknown() {
+    fn test_log_format_parse_unknown() {
         // Unknown values default to Text
-        assert_eq!(LogFormat::from_str("unknown"), LogFormat::Text);
-        assert_eq!(LogFormat::from_str(""), LogFormat::Text);
+        assert_eq!(LogFormat::parse("unknown"), LogFormat::Text);
+        assert_eq!(LogFormat::parse(""), LogFormat::Text);
     }
 
     #[test]
@@ -450,7 +448,7 @@ mod tests {
             .expect("Should load testing config");
 
         assert_eq!(config.environment, Environment::Testing);
-        assert!(!config.secret_key.is_empty());
+        assert!(!config.secret_key.expose_secret().is_empty());
     }
 
     #[test]
@@ -501,7 +499,7 @@ mod tests {
             .expect("Should load testing config");
 
         // Database URL should be set
-        assert!(!config.database.url.is_empty());
+        assert!(!config.database.url.expose_secret().is_empty());
         assert!(config.database.max_connections > 0);
     }
 
@@ -688,5 +686,13 @@ mod tests {
             .expect("Should load testing config");
         let debug_str = format!("{:?}", config.grpc.mtls);
         assert!(debug_str.contains("MtlsConfig"));
+    }
+
+    #[test]
+    fn test_argon2_config_debug() {
+        let config = Config::load_with_environment("config", Environment::Testing)
+            .expect("Should load testing config");
+        let debug_str = format!("{:?}", config.security.argon2);
+        assert!(debug_str.contains("Argon2Config"));
     }
 }

@@ -299,14 +299,14 @@ async fn test_ws_channel_string_conversion() {
 
     // Test from_str
     assert_eq!(
-        WsChannel::from_str("dashboard:stats"),
+        WsChannel::parse("dashboard:stats"),
         Some(WsChannel::DashboardStats)
     );
     assert_eq!(
-        WsChannel::from_str("session:xyz"),
+        WsChannel::parse("session:xyz"),
         Some(WsChannel::SessionLive("xyz".to_string()))
     );
-    assert_eq!(WsChannel::from_str("invalid"), None);
+    assert_eq!(WsChannel::parse("invalid"), None);
 }
 
 /// Test broadcast channel isolation.

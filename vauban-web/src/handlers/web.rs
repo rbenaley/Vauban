@@ -155,17 +155,17 @@ pub async fn user_list(
         .filter(users::is_deleted.eq(false))
         .into_boxed();
 
-    if let Some(ref search) = search_filter {
-        if !search.is_empty() {
-            let pattern = format!("%{}%", search);
-            query = query.filter(
-                users::username
-                    .ilike(pattern.clone())
-                    .or(users::email.ilike(pattern.clone()))
-                    .or(users::first_name.ilike(pattern.clone()))
-                    .or(users::last_name.ilike(pattern)),
-            );
-        }
+    if let Some(ref search) = search_filter
+        && !search.is_empty()
+    {
+        let pattern = format!("%{}%", search);
+        query = query.filter(
+            users::username
+                .ilike(pattern.clone())
+                .or(users::email.ilike(pattern.clone()))
+                .or(users::first_name.ilike(pattern.clone()))
+                .or(users::last_name.ilike(pattern)),
+        );
     }
 
     if let Some(ref status) = status_filter {
@@ -176,6 +176,7 @@ pub async fn user_list(
         }
     }
 
+    #[allow(clippy::type_complexity)]
     let db_users: Vec<(
         uuid::Uuid,
         String,
@@ -283,6 +284,7 @@ pub async fn user_detail(
     let parsed_uuid = uuid::Uuid::parse_str(&user_uuid)
         .map_err(|_| AppError::NotFound("Invalid UUID".to_string()))?;
 
+    #[allow(clippy::type_complexity)]
     let db_user: Option<(
         uuid::Uuid,
         String,
@@ -402,9 +404,7 @@ pub async fn profile(
         .filter(users::is_deleted.eq(false))
         .first(&mut conn)
         .map_err(|e| match e {
-            diesel::result::Error::NotFound => {
-                AppError::NotFound("User not found".to_string())
-            }
+            diesel::result::Error::NotFound => AppError::NotFound("User not found".to_string()),
             _ => AppError::Database(e),
         })?;
 
@@ -434,8 +434,14 @@ pub async fn profile(
         last_login: db_user
             .last_login
             .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string()),
-        created_at: db_user.created_at.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
-        updated_at: db_user.updated_at.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+        created_at: db_user
+            .created_at
+            .format("%Y-%m-%d %H:%M:%S UTC")
+            .to_string(),
+        updated_at: db_user
+            .updated_at
+            .format("%Y-%m-%d %H:%M:%S UTC")
+            .to_string(),
     };
 
     // Get the current token hash from cookie for session detection
@@ -549,19 +555,17 @@ pub async fn user_sessions(
 
     // Load user sessions from database
     let mut conn = get_connection(&state.db_pool)?;
-    
+
     // Get current token hash to identify the real current session
-    let current_token_hash = jar
-        .get("access_token")
-        .map(|cookie| {
-            let mut hasher = Sha3_256::new();
-            hasher.update(cookie.value().as_bytes());
-            format!("{:x}", hasher.finalize())
-        });
-    
+    let current_token_hash = jar.get("access_token").map(|cookie| {
+        let mut hasher = Sha3_256::new();
+        hasher.update(cookie.value().as_bytes());
+        format!("{:x}", hasher.finalize())
+    });
+
     // Debug: log auth_user UUID
     tracing::debug!(auth_uuid = %auth_user.uuid, "Loading sessions for user");
-    
+
     let user_id: i32 = auth_user
         .uuid
         .parse::<uuid::Uuid>()
@@ -585,9 +589,13 @@ pub async fn user_sessions(
         .order(auth_sessions::created_at.desc())
         .load(&mut conn)
         .unwrap_or_default();
-    
+
     // Debug: log number of sessions found
-    tracing::debug!(session_count = db_sessions.len(), user_id = user_id, "Sessions loaded from DB");
+    tracing::debug!(
+        session_count = db_sessions.len(),
+        user_id = user_id,
+        "Sessions loaded from DB"
+    );
 
     let sessions: Vec<AuthSessionItem> = db_sessions
         .into_iter()
@@ -815,7 +823,8 @@ fn build_sessions_html(sessions: &[crate::models::AuthSession], client_token_has
         };
 
         let action_html = if is_current {
-            r#"<span class="text-xs text-gray-400 dark:text-gray-500">This device</span>"#.to_string()
+            r#"<span class="text-xs text-gray-400 dark:text-gray-500">This device</span>"#
+                .to_string()
         } else {
             format!(
                 r#"<form hx-post="/accounts/sessions/{}/revoke" hx-confirm="Are you sure you want to revoke this session?" hx-target="closest li" hx-swap="outerHTML">
@@ -899,7 +908,11 @@ pub async fn revoke_api_key(
             r#"<tr id="api-key-{}" hx-swap-oob="outerHTML" class="opacity-50"><td colspan="6" class="px-6 py-4 text-center text-sm text-gray-500 dark:text-gray-400">API key revoked</td></tr>"#,
             key_uuid
         );
-        state.broadcast.send_raw(&channel.as_str(), ws_html).await.ok();
+        state
+            .broadcast
+            .send_raw(&channel.as_str(), ws_html)
+            .await
+            .ok();
     }
 
     // Return updated row HTML for direct HTMX swap
@@ -950,7 +963,10 @@ pub async fn create_api_key(
     let (_prefix, full_key, hash) = ApiKey::generate_key();
 
     // Parse scopes
-    let scopes: Vec<String> = form.scopes.clone().unwrap_or_else(|| vec!["read".to_string()]);
+    let scopes: Vec<String> = form
+        .scopes
+        .clone()
+        .unwrap_or_else(|| vec!["read".to_string()]);
     let scopes_json = serde_json::to_value(&scopes)
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to serialize scopes: {}", e)))?;
 
@@ -1024,27 +1040,27 @@ pub async fn asset_list(
         .filter(assets::is_deleted.eq(false))
         .into_boxed();
 
-    if let Some(ref search) = search_filter {
-        if !search.is_empty() {
-            let pattern = format!("%{}%", search);
-            query = query.filter(
-                assets::name
-                    .ilike(pattern.clone())
-                    .or(assets::hostname.ilike(pattern)),
-            );
-        }
+    if let Some(ref search) = search_filter
+        && !search.is_empty()
+    {
+        let pattern = format!("%{}%", search);
+        query = query.filter(
+            assets::name
+                .ilike(pattern.clone())
+                .or(assets::hostname.ilike(pattern)),
+        );
     }
 
-    if let Some(ref asset_type) = type_filter {
-        if !asset_type.is_empty() {
-            query = query.filter(assets::asset_type.eq(asset_type));
-        }
+    if let Some(ref asset_type) = type_filter
+        && !asset_type.is_empty()
+    {
+        query = query.filter(assets::asset_type.eq(asset_type));
     }
 
-    if let Some(ref status) = status_filter {
-        if !status.is_empty() {
-            query = query.filter(assets::status.eq(status));
-        }
+    if let Some(ref status) = status_filter
+        && !status.is_empty()
+    {
+        query = query.filter(assets::status.eq(status));
     }
 
     let db_assets: Vec<(i32, String, String, i32, String, String)> = query
@@ -1117,48 +1133,91 @@ pub async fn asset_detail(
     let mut conn = get_connection(&state.db_pool)?;
 
     // Query asset details with optional group info - migrated to Diesel DSL
-    use crate::schema::assets::dsl as a;
     use crate::schema::asset_groups::dsl as ag;
-    
+    use crate::schema::assets::dsl as a;
+
     // First get the asset
+    #[allow(clippy::type_complexity)]
     let asset_row: (
-        ::uuid::Uuid, String, String, Option<ipnetwork::IpNetwork>, i32, String, String,
-        Option<i32>, Option<String>, Option<String>, Option<String>, bool, bool, i32,
-        Option<chrono::DateTime<chrono::Utc>>, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>
+        ::uuid::Uuid,
+        String,
+        String,
+        Option<ipnetwork::IpNetwork>,
+        i32,
+        String,
+        String,
+        Option<i32>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        bool,
+        bool,
+        i32,
+        Option<chrono::DateTime<chrono::Utc>>,
+        chrono::DateTime<chrono::Utc>,
+        chrono::DateTime<chrono::Utc>,
     ) = a::assets
         .filter(a::id.eq(id))
         .filter(a::is_deleted.eq(false))
         .select((
-            a::uuid, a::name, a::hostname, a::ip_address, a::port, a::asset_type, a::status,
-            a::group_id, a::description, a::os_type, a::os_version, a::require_mfa, a::require_justification,
-            a::max_session_duration, a::last_seen, a::created_at, a::updated_at
+            a::uuid,
+            a::name,
+            a::hostname,
+            a::ip_address,
+            a::port,
+            a::asset_type,
+            a::status,
+            a::group_id,
+            a::description,
+            a::os_type,
+            a::os_version,
+            a::require_mfa,
+            a::require_justification,
+            a::max_session_duration,
+            a::last_seen,
+            a::created_at,
+            a::updated_at,
         ))
         .first(&mut conn)
         .map_err(|e| match e {
             diesel::result::Error::NotFound => AppError::NotFound("Asset not found".to_string()),
             _ => AppError::Database(e),
         })?;
-    
+
     let (
-        asset_uuid, asset_name, asset_hostname, asset_ip, asset_port, asset_type_val, asset_status,
-        asset_group_id, asset_description, asset_os_type, asset_os_version, 
-        asset_require_mfa, asset_require_justification, asset_max_session_duration,
-        asset_last_seen, asset_created_at, asset_updated_at
+        asset_uuid,
+        asset_name,
+        asset_hostname,
+        asset_ip,
+        asset_port,
+        asset_type_val,
+        asset_status,
+        asset_group_id,
+        asset_description,
+        asset_os_type,
+        asset_os_version,
+        asset_require_mfa,
+        asset_require_justification,
+        asset_max_session_duration,
+        asset_last_seen,
+        asset_created_at,
+        asset_updated_at,
     ) = asset_row;
-    
+
     // Get group info if group_id is set
-    let (group_name, group_uuid): (Option<String>, Option<String>) = if let Some(gid) = asset_group_id {
-        ag::asset_groups
-            .filter(ag::id.eq(gid))
-            .select((ag::name, ag::uuid))
-            .first::<(String, ::uuid::Uuid)>(&mut conn)
-            .optional()
-            .map_err(|e| AppError::Database(e))?
-            .map(|(n, u)| (Some(n), Some(u.to_string())))
-            .unwrap_or((None, None))
-    } else {
-        (None, None)
-    };
+    let (group_name, group_uuid): (Option<String>, Option<String>) =
+        if let Some(gid) = asset_group_id {
+            ag::asset_groups
+                .filter(ag::id.eq(gid))
+                .select((ag::name, ag::uuid))
+                .first::<(String, ::uuid::Uuid)>(&mut conn)
+                .optional()
+                .map_err(AppError::Database)?
+                .map(|(n, u)| (Some(n), Some(u.to_string())))
+                .unwrap_or((None, None))
+        } else {
+            (None, None)
+        };
 
     let asset = crate::templates::assets::asset_detail::AssetDetail {
         uuid: asset_uuid.to_string(),
@@ -1176,8 +1235,7 @@ pub async fn asset_detail(
         require_mfa: asset_require_mfa,
         require_justification: asset_require_justification,
         max_session_duration: asset_max_session_duration,
-        last_seen: asset_last_seen
-            .map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
+        last_seen: asset_last_seen.map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
         created_at: asset_created_at.format("%b %d, %Y %H:%M").to_string(),
         updated_at: asset_updated_at.format("%b %d, %Y %H:%M").to_string(),
     };
@@ -1341,25 +1399,26 @@ pub async fn session_list(
     // Exclude pending approval requests
     query = query.filter(proxy_sessions::status.ne("pending"));
 
-    if let Some(ref status) = status_filter {
-        if !status.is_empty() {
-            query = query.filter(proxy_sessions::status.eq(status));
-        }
+    if let Some(ref status) = status_filter
+        && !status.is_empty()
+    {
+        query = query.filter(proxy_sessions::status.eq(status));
     }
 
-    if let Some(ref session_type) = type_filter {
-        if !session_type.is_empty() {
-            query = query.filter(proxy_sessions::session_type.eq(session_type));
-        }
+    if let Some(ref session_type) = type_filter
+        && !session_type.is_empty()
+    {
+        query = query.filter(proxy_sessions::session_type.eq(session_type));
     }
 
-    if let Some(ref asset) = asset_filter {
-        if !asset.is_empty() {
-            let pattern = format!("%{}%", asset);
-            query = query.filter(assets::name.ilike(pattern));
-        }
+    if let Some(ref asset) = asset_filter
+        && !asset.is_empty()
+    {
+        let pattern = format!("%{}%", asset);
+        query = query.filter(assets::name.ilike(pattern));
     }
 
+    #[allow(clippy::type_complexity)]
     let db_sessions: Vec<(
         i32,
         uuid::Uuid,
@@ -1649,19 +1708,20 @@ pub async fn recording_list(
         .filter(proxy_sessions::recording_path.is_not_null())
         .into_boxed();
 
-    if let Some(ref session_type) = format_filter {
-        if !session_type.is_empty() {
-            query = query.filter(proxy_sessions::session_type.eq(session_type));
-        }
+    if let Some(ref session_type) = format_filter
+        && !session_type.is_empty()
+    {
+        query = query.filter(proxy_sessions::session_type.eq(session_type));
     }
 
-    if let Some(ref asset) = asset_filter {
-        if !asset.is_empty() {
-            let pattern = format!("%{}%", asset);
-            query = query.filter(assets::name.ilike(pattern));
-        }
+    if let Some(ref asset) = asset_filter
+        && !asset.is_empty()
+    {
+        let pattern = format!("%{}%", asset);
+        query = query.filter(assets::name.ilike(pattern));
     }
 
+    #[allow(clippy::type_complexity)]
     let db_recordings: Vec<(
         i32,
         String,
@@ -1755,7 +1815,7 @@ pub async fn recording_play(
          FROM proxy_sessions ps
          INNER JOIN users u ON u.id = ps.user_id
          INNER JOIN assets a ON a.id = ps.asset_id
-         WHERE ps.id = $1 AND ps.is_recorded = true"
+         WHERE ps.id = $1 AND ps.is_recorded = true",
     )
     .bind::<Integer, _>(id)
     .get_result(&mut conn)
@@ -1885,7 +1945,7 @@ pub async fn approval_list(
         .unwrap_or(0)
     } else {
         diesel::sql_query(
-            "SELECT COUNT(*) as count FROM proxy_sessions ps WHERE ps.justification IS NOT NULL"
+            "SELECT COUNT(*) as count FROM proxy_sessions ps WHERE ps.justification IS NOT NULL",
         )
         .get_result::<ApprovalCountResult>(&mut conn)
         .map(|r| r.count)
@@ -1905,13 +1965,13 @@ pub async fn approval_list(
              INNER JOIN assets a ON a.id = ps.asset_id
              WHERE ps.justification IS NOT NULL AND ps.status = $1
              ORDER BY ps.created_at DESC
-             LIMIT $2 OFFSET $3"
+             LIMIT $2 OFFSET $3",
         )
         .bind::<Text, _>(status)
         .bind::<Integer, _>(items_per_page)
         .bind::<BigInt, _>(offset)
         .load(&mut conn)
-        .map_err(|e| AppError::Database(e))?
+        .map_err(AppError::Database)?
     } else {
         diesel::sql_query(
             "SELECT ps.uuid, u.username, a.hostname as asset_name, a.asset_type, ps.session_type, 
@@ -1921,12 +1981,12 @@ pub async fn approval_list(
              INNER JOIN assets a ON a.id = ps.asset_id
              WHERE ps.justification IS NOT NULL
              ORDER BY ps.created_at DESC
-             LIMIT $1 OFFSET $2"
+             LIMIT $1 OFFSET $2",
         )
         .bind::<Integer, _>(items_per_page)
         .bind::<BigInt, _>(offset)
         .load(&mut conn)
-        .map_err(|e| AppError::Database(e))?
+        .map_err(AppError::Database)?
     };
 
     let approvals: Vec<crate::templates::sessions::approval_list::ApprovalListItem> =
@@ -2133,7 +2193,7 @@ pub async fn active_sessions(
          ORDER BY ps.connected_at DESC",
     )
     .load(&mut conn)
-    .map_err(|e| AppError::Database(e))?;
+    .map_err(AppError::Database)?;
 
     let sessions: Vec<crate::templates::sessions::active_list::ActiveSessionItem> = sessions_data
         .into_iter()
@@ -2220,7 +2280,8 @@ pub async fn group_list(
     // Groups list query - migrated to Diesel DSL
     use crate::schema::vauban_groups::dsl::*;
     use diesel::dsl::sql;
-    
+
+    #[allow(clippy::type_complexity)]
     let groups_data: Vec<(
         ::uuid::Uuid,
         String,
@@ -2231,47 +2292,59 @@ pub async fn group_list(
         // NOTE: ILIKE requires raw SQL fragment for OR condition on nullable column
         let pattern = format!("%{}%", s);
         vauban_groups
-            .filter(
-                sql::<diesel::sql_types::Bool>(&format!(
-                    "name ILIKE '{}' OR description ILIKE '{}'",
-                    pattern.replace('\'', "''"),
-                    pattern.replace('\'', "''")
-                ))
-            )
+            .filter(sql::<diesel::sql_types::Bool>(&format!(
+                "name ILIKE '{}' OR description ILIKE '{}'",
+                pattern.replace('\'', "''"),
+                pattern.replace('\'', "''")
+            )))
             .order(name.asc())
             .select((uuid, name, description, source, created_at))
-            .load::<(::uuid::Uuid, String, Option<String>, String, chrono::DateTime<chrono::Utc>)>(&mut conn)
-            .map_err(|e| AppError::Database(e))?
+            .load::<(
+                ::uuid::Uuid,
+                String,
+                Option<String>,
+                String,
+                chrono::DateTime<chrono::Utc>,
+            )>(&mut conn)
+            .map_err(AppError::Database)?
     } else {
         vauban_groups
             .order(name.asc())
             .select((uuid, name, description, source, created_at))
-            .load::<(::uuid::Uuid, String, Option<String>, String, chrono::DateTime<chrono::Utc>)>(&mut conn)
-            .map_err(|e| AppError::Database(e))?
+            .load::<(
+                ::uuid::Uuid,
+                String,
+                Option<String>,
+                String,
+                chrono::DateTime<chrono::Utc>,
+            )>(&mut conn)
+            .map_err(AppError::Database)?
     };
 
     // Get member counts - migrated to Diesel DSL
-    use crate::schema::user_groups::dsl::{user_groups, group_id as ug_group_id};
+    use crate::schema::user_groups::dsl::{group_id as ug_group_id, user_groups};
     let group_items: Vec<crate::templates::accounts::group_list::GroupListItem> = groups_data
         .into_iter()
-        .map(|(group_uuid, group_name, group_description, group_source, group_created_at)| {
-            // Get member count for this group using JOIN
-            let member_count: i64 = user_groups
-                .inner_join(vauban_groups.on(id.eq(ug_group_id)))
-                .filter(uuid.eq(group_uuid))
-                .count()
-                .get_result(&mut conn)
-                .unwrap_or(0);
+        .map(
+            |(group_uuid, group_name, group_description, group_source, group_created_at)| {
+                // Get member count for this group using JOIN
+                let member_count: i64 = user_groups
+                    .inner_join(vauban_groups.on(id.eq(ug_group_id)))
+                    .filter(uuid.eq(group_uuid))
+                    .count()
+                    .get_result(&mut conn)
+                    .unwrap_or(0);
 
-            crate::templates::accounts::group_list::GroupListItem {
-                uuid: group_uuid.to_string(),
-                name: group_name,
-                description: group_description,
-                source: group_source,
-                member_count,
-                created_at: group_created_at.format("%b %d, %Y").to_string(),
-            }
-        })
+                crate::templates::accounts::group_list::GroupListItem {
+                    uuid: group_uuid.to_string(),
+                    name: group_name,
+                    description: group_description,
+                    source: group_source,
+                    member_count,
+                    created_at: group_created_at.format("%b %d, %Y").to_string(),
+                }
+            },
+        )
         .collect();
 
     let template = GroupListTemplate {
@@ -2308,54 +2381,93 @@ pub async fn group_detail(
 
     // Query group details - migrated to Diesel DSL (combined into single query)
     use crate::schema::vauban_groups::dsl as vg;
+    #[allow(clippy::type_complexity)]
     let group_row: (
-        ::uuid::Uuid, String, Option<String>, String, chrono::DateTime<chrono::Utc>,
-        Option<String>, chrono::DateTime<chrono::Utc>, Option<chrono::DateTime<chrono::Utc>>
+        ::uuid::Uuid,
+        String,
+        Option<String>,
+        String,
+        chrono::DateTime<chrono::Utc>,
+        Option<String>,
+        chrono::DateTime<chrono::Utc>,
+        Option<chrono::DateTime<chrono::Utc>>,
     ) = vg::vauban_groups
         .filter(vg::uuid.eq(group_uuid))
         .select((
-            vg::uuid, vg::name, vg::description, vg::source, vg::created_at,
-            vg::external_id, vg::updated_at, vg::last_synced
+            vg::uuid,
+            vg::name,
+            vg::description,
+            vg::source,
+            vg::created_at,
+            vg::external_id,
+            vg::updated_at,
+            vg::last_synced,
         ))
         .first(&mut conn)
         .map_err(|e| match e {
             diesel::result::Error::NotFound => AppError::NotFound("Group not found".to_string()),
             _ => AppError::Database(e),
         })?;
-    
+
     // Unpack the combined result
-    let (g_uuid, g_name, g_description, g_source, g_created_at, g_external_id, g_updated_at, g_last_synced) = group_row;
+    let (
+        g_uuid,
+        g_name,
+        g_description,
+        g_source,
+        g_created_at,
+        g_external_id,
+        g_updated_at,
+        g_last_synced,
+    ) = group_row;
 
     // Query group members - migrated to Diesel DSL with JOINs
-    use crate::schema::users::dsl as u;
     use crate::schema::user_groups::dsl as ug;
-    let members_data: Vec<(::uuid::Uuid, String, String, Option<String>, Option<String>, bool)> = u::users
+    use crate::schema::users::dsl as u;
+    #[allow(clippy::type_complexity)]
+    let members_data: Vec<(
+        ::uuid::Uuid,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        bool,
+    )> = u::users
         .inner_join(ug::user_groups.on(ug::user_id.eq(u::id)))
         .inner_join(vg::vauban_groups.on(vg::id.eq(ug::group_id)))
         .filter(vg::uuid.eq(group_uuid))
         .filter(u::is_deleted.eq(false))
         .order(u::username.asc())
-        .select((u::uuid, u::username, u::email, u::first_name, u::last_name, u::is_active))
+        .select((
+            u::uuid,
+            u::username,
+            u::email,
+            u::first_name,
+            u::last_name,
+            u::is_active,
+        ))
         .load(&mut conn)
-        .map_err(|e| AppError::Database(e))?;
+        .map_err(AppError::Database)?;
 
     let members: Vec<crate::templates::accounts::group_detail::GroupMember> = members_data
         .into_iter()
-        .map(|(m_uuid, m_username, m_email, m_first_name, m_last_name, m_is_active)| {
-            let full_name = match (m_first_name, m_last_name) {
-                (Some(f), Some(l)) => Some(format!("{} {}", f, l)),
-                (Some(f), None) => Some(f),
-                (None, Some(l)) => Some(l),
-                (None, None) => None,
-            };
-            crate::templates::accounts::group_detail::GroupMember {
-                uuid: m_uuid.to_string(),
-                username: m_username,
-                email: m_email,
-                full_name,
-                is_active: m_is_active,
-            }
-        })
+        .map(
+            |(m_uuid, m_username, m_email, m_first_name, m_last_name, m_is_active)| {
+                let full_name = match (m_first_name, m_last_name) {
+                    (Some(f), Some(l)) => Some(format!("{} {}", f, l)),
+                    (Some(f), None) => Some(f),
+                    (None, Some(l)) => Some(l),
+                    (None, None) => None,
+                };
+                crate::templates::accounts::group_detail::GroupMember {
+                    uuid: m_uuid.to_string(),
+                    username: m_username,
+                    email: m_email,
+                    full_name,
+                    is_active: m_is_active,
+                }
+            },
+        )
         .collect();
 
     let group = crate::templates::accounts::group_detail::GroupDetail {
@@ -2366,8 +2478,7 @@ pub async fn group_detail(
         external_id: g_external_id,
         created_at: g_created_at.format("%b %d, %Y %H:%M").to_string(),
         updated_at: g_updated_at.format("%b %d, %Y %H:%M").to_string(),
-        last_synced: g_last_synced
-            .map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
+        last_synced: g_last_synced.map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
         members,
     };
 
@@ -2449,7 +2560,7 @@ pub async fn asset_group_list(
         )
         .bind::<Text, _>(&search_pattern)
         .load(&mut conn)
-        .map_err(|e| AppError::Database(e))?
+        .map_err(AppError::Database)?
     } else {
         diesel::sql_query(
             "SELECT g.uuid, g.name, g.slug, g.description, g.color, g.icon, g.created_at,
@@ -2459,7 +2570,7 @@ pub async fn asset_group_list(
              ORDER BY g.name ASC"
         )
         .load(&mut conn)
-        .map_err(|e| AppError::Database(e))?
+        .map_err(AppError::Database)?
     };
 
     let groups: Vec<crate::templates::assets::group_list::AssetGroupItem> = groups_data
@@ -2530,7 +2641,7 @@ pub async fn asset_group_detail(
     // NOTE: Raw SQL - simple query but kept for consistency with related code
     let group_data: AssetGroupDetailResult = diesel::sql_query(
         "SELECT uuid, name, slug, description, color, icon, created_at, updated_at
-         FROM asset_groups WHERE uuid = $1 AND is_deleted = false"
+         FROM asset_groups WHERE uuid = $1 AND is_deleted = false",
     )
     .bind::<DieselUuid, _>(group_uuid)
     .get_result(&mut conn)
@@ -2545,11 +2656,11 @@ pub async fn asset_group_detail(
          FROM assets a
          INNER JOIN asset_groups g ON g.id = a.group_id
          WHERE g.uuid = $1 AND a.is_deleted = false
-         ORDER BY a.name ASC"
+         ORDER BY a.name ASC",
     )
     .bind::<DieselUuid, _>(group_uuid)
     .load(&mut conn)
-    .map_err(|e| AppError::Database(e))?;
+    .map_err(AppError::Database)?;
 
     let assets: Vec<crate::templates::assets::group_detail::GroupAssetItem> = assets_data
         .into_iter()
@@ -2647,7 +2758,7 @@ pub async fn asset_group_edit(
     // NOTE: Raw SQL - kept for consistency with asset_group pages
     let group_data: AssetGroupEditResult = diesel::sql_query(
         "SELECT uuid, name, slug, description, color, icon
-         FROM asset_groups WHERE uuid = $1 AND is_deleted = false"
+         FROM asset_groups WHERE uuid = $1 AND is_deleted = false",
     )
     .bind::<DieselUuid, _>(group_uuid)
     .get_result(&mut conn)
@@ -2740,7 +2851,7 @@ pub async fn update_asset_group(
     .bind::<Text, _>(&form.icon)
     .bind::<DieselUuid, _>(group_uuid)
     .execute(&mut conn)
-    .map_err(|e| AppError::Database(e))?;
+    .map_err(AppError::Database)?;
 
     // Redirect back to the group detail page
     Ok(axum::response::Redirect::to(&format!(
@@ -3259,7 +3370,7 @@ mod tests {
             .collect();
 
         let html = super::build_sessions_html(&sessions, "hash-3");
-        
+
         // Should produce non-empty HTML with sessions
         assert!(!html.is_empty());
         // HTML should contain li tags for sessions
@@ -3307,7 +3418,7 @@ mod tests {
     #[test]
     fn test_update_asset_group_form_all_colors() {
         let colors = ["#fff", "#000", "#123abc", "#AABBCC", "#f0f0f0"];
-        
+
         for color in colors {
             let json = format!(
                 r##"{{"name": "Test", "slug": "test", "color": "{}", "icon": "folder"}}"##,
@@ -3321,7 +3432,7 @@ mod tests {
     #[test]
     fn test_update_asset_group_form_icons() {
         let icons = ["folder", "server", "database", "cloud", "lock"];
-        
+
         for icon in icons {
             let json = format!(
                 r##"{{"name": "Test", "slug": "test", "color": "#fff", "icon": "{}"}}"##,
@@ -3378,9 +3489,9 @@ mod tests {
             is_superuser: false,
             is_staff: true,
         };
-        
+
         let cloned = auth.clone();
-        
+
         assert_eq!(auth.uuid, cloned.uuid);
         assert_eq!(auth.username, cloned.username);
         assert_eq!(auth.mfa_verified, cloned.mfa_verified);
@@ -3395,9 +3506,9 @@ mod tests {
             is_superuser: true,
             is_staff: false,
         };
-        
+
         let debug_str = format!("{:?}", auth);
-        
+
         assert!(debug_str.contains("AuthUser"));
         assert!(debug_str.contains("debuguser"));
     }

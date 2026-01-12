@@ -26,7 +26,7 @@ impl AssetType {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s {
             "rdp" => Self::Rdp,
             "vnc" => Self::Vnc,
@@ -62,7 +62,7 @@ impl AssetStatus {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s {
             "online" => Self::Online,
             "offline" => Self::Offline,
@@ -152,12 +152,12 @@ pub struct AssetGroup {
 impl Asset {
     /// Get asset type enum.
     pub fn asset_type_enum(&self) -> AssetType {
-        AssetType::from_str(&self.asset_type)
+        AssetType::parse(&self.asset_type)
     }
 
     /// Get status enum.
     pub fn status_enum(&self) -> AssetStatus {
-        AssetStatus::from_str(&self.status)
+        AssetStatus::parse(&self.status)
     }
 
     /// Get connection string.
@@ -237,25 +237,25 @@ mod tests {
 
     #[test]
     fn test_asset_type_from_str_ssh() {
-        assert_eq!(AssetType::from_str("ssh"), AssetType::Ssh);
+        assert_eq!(AssetType::parse("ssh"), AssetType::Ssh);
     }
 
     #[test]
     fn test_asset_type_from_str_rdp() {
-        assert_eq!(AssetType::from_str("rdp"), AssetType::Rdp);
+        assert_eq!(AssetType::parse("rdp"), AssetType::Rdp);
     }
 
     #[test]
     fn test_asset_type_from_str_vnc() {
-        assert_eq!(AssetType::from_str("vnc"), AssetType::Vnc);
+        assert_eq!(AssetType::parse("vnc"), AssetType::Vnc);
     }
 
     #[test]
     fn test_asset_type_from_str_unknown() {
         // Unknown values default to SSH
-        assert_eq!(AssetType::from_str("unknown"), AssetType::Ssh);
-        assert_eq!(AssetType::from_str(""), AssetType::Ssh);
-        assert_eq!(AssetType::from_str("SSH"), AssetType::Ssh); // Case sensitive, defaults to SSH
+        assert_eq!(AssetType::parse("unknown"), AssetType::Ssh);
+        assert_eq!(AssetType::parse(""), AssetType::Ssh);
+        assert_eq!(AssetType::parse("SSH"), AssetType::Ssh); // Case sensitive, defaults to SSH
     }
 
     #[test]
@@ -284,7 +284,7 @@ mod tests {
     fn test_asset_type_roundtrip() {
         for asset_type in [AssetType::Ssh, AssetType::Rdp, AssetType::Vnc] {
             let str_val = asset_type.as_str();
-            let parsed = AssetType::from_str(str_val);
+            let parsed = AssetType::parse(str_val);
             assert_eq!(asset_type, parsed);
         }
     }
@@ -293,27 +293,27 @@ mod tests {
 
     #[test]
     fn test_asset_status_from_str_online() {
-        assert_eq!(AssetStatus::from_str("online"), AssetStatus::Online);
+        assert_eq!(AssetStatus::parse("online"), AssetStatus::Online);
     }
 
     #[test]
     fn test_asset_status_from_str_offline() {
-        assert_eq!(AssetStatus::from_str("offline"), AssetStatus::Offline);
+        assert_eq!(AssetStatus::parse("offline"), AssetStatus::Offline);
     }
 
     #[test]
     fn test_asset_status_from_str_maintenance() {
         assert_eq!(
-            AssetStatus::from_str("maintenance"),
+            AssetStatus::parse("maintenance"),
             AssetStatus::Maintenance
         );
     }
 
     #[test]
     fn test_asset_status_from_str_unknown() {
-        assert_eq!(AssetStatus::from_str("unknown"), AssetStatus::Unknown);
-        assert_eq!(AssetStatus::from_str("invalid"), AssetStatus::Unknown);
-        assert_eq!(AssetStatus::from_str(""), AssetStatus::Unknown);
+        assert_eq!(AssetStatus::parse("unknown"), AssetStatus::Unknown);
+        assert_eq!(AssetStatus::parse("invalid"), AssetStatus::Unknown);
+        assert_eq!(AssetStatus::parse(""), AssetStatus::Unknown);
     }
 
     #[test]
@@ -333,7 +333,7 @@ mod tests {
             AssetStatus::Unknown,
         ] {
             let str_val = status.as_str();
-            let parsed = AssetStatus::from_str(str_val);
+            let parsed = AssetStatus::parse(str_val);
             assert_eq!(status, parsed);
         }
     }
@@ -589,7 +589,7 @@ mod tests {
             max_session_duration: 28800,
             created_by_id: None,
         };
-        
+
         let debug_str = format!("{:?}", new_asset);
         assert!(debug_str.contains("NewAsset"));
     }
@@ -615,7 +615,7 @@ mod tests {
             max_session_duration: 3600,
             created_by_id: Some(1),
         };
-        
+
         let cloned = new_asset.clone();
         assert_eq!(new_asset.name, cloned.name);
     }
@@ -640,7 +640,7 @@ mod tests {
             is_deleted: false,
             deleted_at: None,
         };
-        
+
         let debug_str = format!("{:?}", group);
         assert!(debug_str.contains("AssetGroup"));
     }
@@ -663,7 +663,7 @@ mod tests {
             is_deleted: false,
             deleted_at: None,
         };
-        
+
         let cloned = group.clone();
         assert_eq!(group.name, cloned.name);
     }
@@ -686,7 +686,7 @@ mod tests {
             is_deleted: false,
             deleted_at: None,
         };
-        
+
         let json = serde_json::to_string(&group).unwrap();
         assert!(json.contains("Serialize Group"));
     }
@@ -706,7 +706,7 @@ mod tests {
             require_mfa: None,
             require_justification: None,
         };
-        
+
         let debug_str = format!("{:?}", request);
         assert!(debug_str.contains("CreateAssetRequest"));
     }
@@ -724,7 +724,7 @@ mod tests {
             require_mfa: Some(true),
             require_justification: Some(false),
         };
-        
+
         let cloned = request.clone();
         assert_eq!(request.name, cloned.name);
     }
@@ -732,7 +732,7 @@ mod tests {
     #[test]
     fn test_create_asset_request_long_name_invalid() {
         use validator::Validate;
-        
+
         let request = CreateAssetRequest {
             name: "A".repeat(101), // Too long
             hostname: "server.example.com".to_string(),
@@ -744,14 +744,14 @@ mod tests {
             require_mfa: None,
             require_justification: None,
         };
-        
+
         assert!(request.validate().is_err());
     }
 
     #[test]
     fn test_create_asset_request_long_hostname_invalid() {
         use validator::Validate;
-        
+
         let request = CreateAssetRequest {
             name: "Server".to_string(),
             hostname: "a".repeat(256), // Too long
@@ -763,7 +763,7 @@ mod tests {
             require_mfa: None,
             require_justification: None,
         };
-        
+
         assert!(request.validate().is_err());
     }
 
@@ -781,7 +781,7 @@ mod tests {
             require_mfa: None,
             require_justification: None,
         };
-        
+
         let debug_str = format!("{:?}", request);
         assert!(debug_str.contains("UpdateAssetRequest"));
     }
@@ -798,7 +798,7 @@ mod tests {
             require_mfa: Some(true),
             require_justification: Some(true),
         };
-        
+
         let cloned = request.clone();
         assert_eq!(request.name, cloned.name);
     }

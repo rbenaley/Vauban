@@ -101,7 +101,7 @@ mod tests {
 
     #[test]
     fn test_active_list_template_renders() {
-        use crate::templates::base::{VaubanConfig, UserContext};
+        use crate::templates::base::{UserContext, VaubanConfig};
 
         let template = ActiveListTemplate {
             title: "Active Sessions".to_string(),

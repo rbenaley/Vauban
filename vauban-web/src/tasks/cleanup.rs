@@ -67,11 +67,10 @@ async fn session_cleanup_task(db_pool: Arc<DbPool>) {
 fn cleanup_expired_sessions(db_pool: &DbPool) -> Result<usize, String> {
     let mut conn = get_connection(db_pool).map_err(|e| e.to_string())?;
 
-    let deleted = diesel::delete(
-        auth_sessions::table.filter(auth_sessions::expires_at.lt(Utc::now())),
-    )
-    .execute(&mut conn)
-    .map_err(|e| e.to_string())?;
+    let deleted =
+        diesel::delete(auth_sessions::table.filter(auth_sessions::expires_at.lt(Utc::now())))
+            .execute(&mut conn)
+            .map_err(|e| e.to_string())?;
 
     Ok(deleted)
 }
@@ -177,7 +176,7 @@ mod tests {
     fn test_cleanup_error_contains_info() {
         let error = "Database connection failed: timeout".to_string();
         let result: Result<usize, String> = Err(error);
-        
+
         assert!(result.is_err());
         let err_msg = result.unwrap_err();
         assert!(err_msg.contains("Database"));
@@ -221,7 +220,7 @@ mod tests {
         let before = Utc::now();
         std::thread::sleep(std::time::Duration::from_millis(10));
         let after = Utc::now();
-        
+
         assert!(after > before);
     }
 
@@ -230,10 +229,10 @@ mod tests {
     #[test]
     fn test_arc_clone() {
         use std::sync::Arc;
-        
+
         let value = Arc::new(42);
         let cloned = Arc::clone(&value);
-        
+
         assert_eq!(*value, *cloned);
         assert_eq!(Arc::strong_count(&value), 2);
     }
@@ -241,10 +240,10 @@ mod tests {
     #[test]
     fn test_arc_drop() {
         use std::sync::Arc;
-        
+
         let value = Arc::new(42);
         let cloned = Arc::clone(&value);
-        
+
         assert_eq!(Arc::strong_count(&value), 2);
         drop(cloned);
         assert_eq!(Arc::strong_count(&value), 1);
@@ -255,10 +254,10 @@ mod tests {
     #[tokio::test]
     async fn test_interval_creation() {
         let mut ticker = interval(Duration::from_secs(CLEANUP_INTERVAL_SECS));
-        
+
         // First tick is immediate
         ticker.tick().await;
-        
+
         // Interval was created successfully
         assert!(true);
     }
@@ -267,7 +266,7 @@ mod tests {
     fn test_interval_duration_conversion() {
         let secs = CLEANUP_INTERVAL_SECS;
         let duration = Duration::from_secs(secs);
-        
+
         assert_eq!(duration.as_secs(), secs);
         assert_eq!(duration.as_nanos(), secs as u128 * 1_000_000_000);
     }
@@ -279,7 +278,7 @@ mod tests {
         let now = Utc::now();
         let past = now - chrono::Duration::hours(1);
         let future = now + chrono::Duration::hours(1);
-        
+
         // These are the comparisons used in cleanup
         assert!(past < now);
         assert!(future > now);
@@ -289,7 +288,7 @@ mod tests {
     fn test_utc_timestamp_ordering() {
         let t1 = chrono::DateTime::<Utc>::from_timestamp(1000, 0).unwrap();
         let t2 = chrono::DateTime::<Utc>::from_timestamp(2000, 0).unwrap();
-        
+
         assert!(t1 < t2);
         assert!(t2 > t1);
     }
@@ -301,9 +300,9 @@ mod tests {
         fn operation() -> Result<(), std::io::Error> {
             Err(std::io::Error::new(std::io::ErrorKind::Other, "test error"))
         }
-        
+
         let result: Result<(), String> = operation().map_err(|e| e.to_string());
-        
+
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("test error"));
     }
@@ -313,11 +312,11 @@ mod tests {
         fn step1() -> Result<i32, String> {
             Ok(5)
         }
-        
+
         fn step2(val: i32) -> Result<i32, String> {
             Ok(val * 2)
         }
-        
+
         let result = step1().and_then(step2);
         assert_eq!(result, Ok(10));
     }
@@ -341,7 +340,7 @@ mod tests {
     #[test]
     fn test_deleted_count_comparison() {
         let count: usize = 5;
-        
+
         // Pattern used in cleanup task
         if count > 0 {
             assert!(true); // Would log info
@@ -357,7 +356,7 @@ mod tests {
         // Verify the log macros we use are valid
         // (This is a compile-time check more than runtime)
         use tracing::{debug, error, info};
-        
+
         let _ = || {
             debug!("debug message");
             info!("info message");
@@ -369,10 +368,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_tokio_spawn_completes() {
-        let handle = tokio::spawn(async {
-            42
-        });
-        
+        let handle = tokio::spawn(async { 42 });
+
         let result = handle.await.unwrap();
         assert_eq!(result, 42);
     }
@@ -381,11 +378,11 @@ mod tests {
     async fn test_tokio_spawn_with_arc() {
         let value = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let value_clone = Arc::clone(&value);
-        
+
         let handle = tokio::spawn(async move {
             value_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         });
-        
+
         handle.await.unwrap();
         assert_eq!(value.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
@@ -397,7 +394,7 @@ mod tests {
         // Simulate the filter logic
         let is_active = false;
         let is_expired = true;
-        
+
         // Logic used: is_active.eq(false).or(expires_at.lt(now))
         let should_delete = !is_active || is_expired;
         assert!(should_delete);
@@ -407,7 +404,7 @@ mod tests {
     fn test_bool_or_expression_active_not_expired() {
         let is_active = true;
         let is_expired = false;
-        
+
         let should_delete = !is_active || is_expired;
         assert!(!should_delete);
     }
@@ -416,7 +413,7 @@ mod tests {
     fn test_bool_or_expression_inactive_not_expired() {
         let is_active = false;
         let is_expired = false;
-        
+
         let should_delete = !is_active || is_expired;
         assert!(should_delete); // Inactive keys get deleted
     }
@@ -425,7 +422,7 @@ mod tests {
     fn test_bool_or_expression_active_expired() {
         let is_active = true;
         let is_expired = true;
-        
+
         let should_delete = !is_active || is_expired;
         assert!(should_delete); // Expired keys get deleted
     }

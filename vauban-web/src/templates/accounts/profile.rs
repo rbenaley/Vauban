@@ -241,7 +241,7 @@ mod tests {
         let mut profile = create_test_profile_detail();
         profile.is_superuser = true;
         profile.is_staff = true;
-        
+
         assert!(profile.is_superuser);
         assert!(profile.is_staff);
     }
@@ -251,7 +251,7 @@ mod tests {
         let mut profile = create_test_profile_detail();
         profile.mfa_enabled = true;
         profile.mfa_enforced = true;
-        
+
         assert!(profile.mfa_enabled);
         assert!(profile.mfa_enforced);
     }
@@ -260,7 +260,7 @@ mod tests {
     fn test_profile_detail_inactive_user() {
         let mut profile = create_test_profile_detail();
         profile.is_active = false;
-        
+
         assert!(!profile.is_active);
     }
 
@@ -268,7 +268,7 @@ mod tests {
     fn test_profile_detail_ldap_auth_source() {
         let mut profile = create_test_profile_detail();
         profile.auth_source = "ldap".to_string();
-        
+
         assert_eq!(profile.auth_source, "ldap");
     }
 
@@ -276,7 +276,7 @@ mod tests {
     fn test_profile_detail_debug() {
         let profile = create_test_profile_detail();
         let debug_str = format!("{:?}", profile);
-        
+
         assert!(debug_str.contains("ProfileDetail"));
         assert!(debug_str.contains("testuser"));
     }
@@ -287,54 +287,78 @@ mod tests {
     fn test_profile_session_age_display_minutes() {
         let mut session = create_test_session();
         session.created_at = Utc::now() - chrono::Duration::minutes(45);
-        
+
         let display = session.age_display();
-        assert!(display.contains("minutes ago"), "Expected 'X minutes ago', got: {}", display);
+        assert!(
+            display.contains("minutes ago"),
+            "Expected 'X minutes ago', got: {}",
+            display
+        );
     }
 
     #[test]
     fn test_profile_session_age_display_hours() {
         let mut session = create_test_session();
         session.created_at = Utc::now() - chrono::Duration::hours(5);
-        
+
         let display = session.age_display();
-        assert!(display.contains("hours ago"), "Expected 'X hours ago', got: {}", display);
+        assert!(
+            display.contains("hours ago"),
+            "Expected 'X hours ago', got: {}",
+            display
+        );
     }
 
     #[test]
     fn test_profile_session_age_display_days() {
         let mut session = create_test_session();
         session.created_at = Utc::now() - chrono::Duration::days(3);
-        
+
         let display = session.age_display();
-        assert!(display.contains("days ago"), "Expected 'X days ago', got: {}", display);
+        assert!(
+            display.contains("days ago"),
+            "Expected 'X days ago', got: {}",
+            display
+        );
     }
 
     #[test]
     fn test_profile_session_last_activity_display_minutes() {
         let mut session = create_test_session();
         session.last_activity = Utc::now() - chrono::Duration::minutes(15);
-        
+
         let display = session.last_activity_display();
-        assert!(display.contains("minutes ago"), "Expected 'X minutes ago', got: {}", display);
+        assert!(
+            display.contains("minutes ago"),
+            "Expected 'X minutes ago', got: {}",
+            display
+        );
     }
 
     #[test]
     fn test_profile_session_last_activity_display_hours() {
         let mut session = create_test_session();
         session.last_activity = Utc::now() - chrono::Duration::hours(2);
-        
+
         let display = session.last_activity_display();
-        assert!(display.contains("hours ago"), "Expected 'X hours ago', got: {}", display);
+        assert!(
+            display.contains("hours ago"),
+            "Expected 'X hours ago', got: {}",
+            display
+        );
     }
 
     #[test]
     fn test_profile_session_last_activity_display_days() {
         let mut session = create_test_session();
         session.last_activity = Utc::now() - chrono::Duration::days(7);
-        
+
         let display = session.last_activity_display();
-        assert!(display.contains("days ago"), "Expected 'X days ago', got: {}", display);
+        assert!(
+            display.contains("days ago"),
+            "Expected 'X days ago', got: {}",
+            display
+        );
     }
 
     // ==================== ProfileSession Additional Tests ====================
@@ -343,7 +367,7 @@ mod tests {
     fn test_profile_session_not_current() {
         let mut session = create_test_session();
         session.is_current = false;
-        
+
         assert!(!session.is_current);
     }
 
@@ -351,7 +375,7 @@ mod tests {
     fn test_profile_session_debug() {
         let session = create_test_session();
         let debug_str = format!("{:?}", session);
-        
+
         assert!(debug_str.contains("ProfileSession"));
         assert!(debug_str.contains("Chrome on macOS"));
     }
@@ -360,7 +384,7 @@ mod tests {
     fn test_profile_session_ipv6() {
         let mut session = create_test_session();
         session.ip_address = "::1".to_string();
-        
+
         assert_eq!(session.ip_address, "::1");
     }
 
@@ -370,7 +394,7 @@ mod tests {
     fn test_profile_template_renders_with_mfa_enabled() {
         let mut profile = create_test_profile_detail();
         profile.mfa_enabled = true;
-        
+
         let template = ProfileTemplate {
             title: "Profile".to_string(),
             user: Some(create_test_user_context()),
@@ -383,12 +407,15 @@ mod tests {
             sessions: Vec::new(),
             current_session_token: None,
         };
-        
+
         let result = template.render();
         assert!(result.is_ok());
-        
+
         let html = result.unwrap();
-        assert!(html.contains("Active") || html.contains("Enabled"), "Should show MFA enabled status");
+        assert!(
+            html.contains("Active") || html.contains("Enabled"),
+            "Should show MFA enabled status"
+        );
     }
 
     #[test]
@@ -411,7 +438,7 @@ mod tests {
                 is_current: false,
             },
         ];
-        
+
         let template = ProfileTemplate {
             title: "Profile".to_string(),
             user: Some(create_test_user_context()),
@@ -424,10 +451,10 @@ mod tests {
             sessions,
             current_session_token: Some("token123".to_string()),
         };
-        
+
         let result = template.render();
         assert!(result.is_ok());
-        
+
         let html = result.unwrap();
         assert!(html.contains("Chrome on macOS"));
         assert!(html.contains("Firefox on Windows"));
@@ -439,7 +466,7 @@ mod tests {
         let mut profile = create_test_profile_detail();
         profile.is_superuser = true;
         profile.is_staff = true;
-        
+
         let template = ProfileTemplate {
             title: "Profile".to_string(),
             user: Some(create_test_user_context()),
@@ -452,10 +479,10 @@ mod tests {
             sessions: Vec::new(),
             current_session_token: None,
         };
-        
+
         let result = template.render();
         assert!(result.is_ok());
-        
+
         let html = result.unwrap();
         assert!(html.contains("Admin"), "Should show Admin badge");
         assert!(html.contains("Staff"), "Should show Staff badge");
@@ -465,7 +492,7 @@ mod tests {
     fn test_profile_template_renders_ldap_user() {
         let mut profile = create_test_profile_detail();
         profile.auth_source = "ldap".to_string();
-        
+
         let template = ProfileTemplate {
             title: "Profile".to_string(),
             user: Some(create_test_user_context()),
@@ -478,10 +505,10 @@ mod tests {
             sessions: Vec::new(),
             current_session_token: None,
         };
-        
+
         let result = template.render();
         assert!(result.is_ok());
-        
+
         let html = result.unwrap();
         assert!(html.contains("LDAP"), "Should show LDAP auth source");
     }
@@ -492,7 +519,7 @@ mod tests {
         profile.first_name = None;
         profile.last_name = None;
         profile.full_name = None;
-        
+
         let template = ProfileTemplate {
             title: "Profile".to_string(),
             user: Some(create_test_user_context()),
@@ -505,10 +532,10 @@ mod tests {
             sessions: Vec::new(),
             current_session_token: None,
         };
-        
+
         let result = template.render();
         assert!(result.is_ok());
-        
+
         let html = result.unwrap();
         // Should fall back to username
         assert!(html.contains("testuser"));
@@ -519,7 +546,7 @@ mod tests {
         let mut profile = create_test_profile_detail();
         profile.mfa_enforced = true;
         profile.mfa_enabled = false;
-        
+
         let template = ProfileTemplate {
             title: "Profile".to_string(),
             user: Some(create_test_user_context()),
@@ -532,11 +559,14 @@ mod tests {
             sessions: Vec::new(),
             current_session_token: None,
         };
-        
+
         let result = template.render();
         assert!(result.is_ok());
-        
+
         let html = result.unwrap();
-        assert!(html.contains("required") || html.contains("MFA"), "Should show MFA requirement");
+        assert!(
+            html.contains("required") || html.contains("MFA"),
+            "Should show MFA requirement"
+        );
     }
 }

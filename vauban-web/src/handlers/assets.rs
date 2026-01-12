@@ -69,7 +69,7 @@ pub async fn create_asset(
 
     let mut conn = get_connection(&state.db_pool)?;
 
-    let asset_type_enum = crate::models::asset::AssetType::from_str(&request.asset_type);
+    let asset_type_enum = crate::models::asset::AssetType::parse(&request.asset_type);
     let default_port = request.port.unwrap_or(asset_type_enum.default_port());
 
     // Validate and convert IP address format if provided
@@ -409,9 +409,9 @@ mod tests {
             limit: Some(100),
             offset: Some(50),
         };
-        
+
         let debug_str = format!("{:?}", params);
-        
+
         assert!(debug_str.contains("ListAssetsParams"));
         assert!(debug_str.contains("ssh"));
         assert!(debug_str.contains("42"));
@@ -425,7 +425,7 @@ mod tests {
             limit: Some(0),
             offset: None,
         };
-        
+
         assert_eq!(params.get_limit(), 0);
     }
 
@@ -438,14 +438,14 @@ mod tests {
             limit: None,
             offset: Some(-10),
         };
-        
+
         assert_eq!(params.get_offset(), -10);
     }
 
     #[test]
     fn test_list_assets_params_all_asset_types() {
         let types = ["ssh", "rdp", "vnc", "web", "database", "kubernetes"];
-        
+
         for type_str in types {
             let params = ListAssetsParams {
                 asset_type: Some(type_str.to_string()),
@@ -453,7 +453,7 @@ mod tests {
                 limit: None,
                 offset: None,
             };
-            
+
             assert_eq!(params.asset_type, Some(type_str.to_string()));
         }
     }
@@ -496,7 +496,7 @@ mod tests {
     fn test_ip_to_network_preserves_address() {
         let ip: std::net::IpAddr = "10.20.30.40".parse().unwrap();
         let network = ip_to_network(ip);
-        
+
         assert_eq!(network.ip(), ip);
         assert!(network.is_ipv4());
     }
@@ -505,7 +505,7 @@ mod tests {
     fn test_ip_to_network_ipv6_full() {
         let ip: std::net::IpAddr = "2001:db8:85a3::8a2e:370:7334".parse().unwrap();
         let network = ip_to_network(ip);
-        
+
         assert!(network.is_ipv6());
     }
 
@@ -524,7 +524,7 @@ mod tests {
             require_mfa: Some(true),
             require_justification: Some(true),
         };
-        
+
         assert!(request.validate().is_ok());
     }
 
@@ -541,7 +541,7 @@ mod tests {
             require_mfa: None,
             require_justification: None,
         };
-        
+
         assert!(request.validate().is_ok());
     }
 
@@ -558,7 +558,7 @@ mod tests {
             require_mfa: None,
             require_justification: None,
         };
-        
+
         assert!(request.validate().is_ok());
     }
 
@@ -575,7 +575,7 @@ mod tests {
             require_mfa: None,
             require_justification: None,
         };
-        
+
         // Long description should be valid (no max length validation)
         assert!(request.validate().is_ok());
     }
@@ -594,14 +594,14 @@ mod tests {
             require_mfa: None,
             require_justification: None,
         };
-        
+
         assert!(request.validate().is_ok());
     }
 
     #[test]
     fn test_update_asset_request_status_values() {
         let statuses = ["online", "offline", "maintenance", "unknown"];
-        
+
         for status_val in statuses {
             let request = UpdateAssetRequest {
                 name: None,
@@ -613,7 +613,7 @@ mod tests {
                 require_mfa: None,
                 require_justification: None,
             };
-            
+
             assert!(request.validate().is_ok());
         }
     }
@@ -631,8 +631,12 @@ mod tests {
                 require_mfa: None,
                 require_justification: None,
             };
-            
-            assert!(request.validate().is_ok(), "Port {} should be valid", port_val);
+
+            assert!(
+                request.validate().is_ok(),
+                "Port {} should be valid",
+                port_val
+            );
         }
     }
 }

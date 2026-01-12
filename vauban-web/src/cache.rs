@@ -4,6 +4,7 @@ use redis::AsyncCommands;
 /// Provides Redis client for caching and session storage.
 /// Supports a no-op mock cache when cache is disabled.
 use redis::Client;
+use secrecy::ExposeSecret;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::warn;
@@ -19,7 +20,7 @@ pub enum CacheConnection {
 }
 
 /// Mock cache implementation (no-op) for development.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct MockCache;
 
 impl MockCache {
@@ -36,7 +37,7 @@ pub async fn create_cache_client(config: &Config) -> AppResult<CacheConnection> 
     }
 
     // Try to create Redis connection
-    match Client::open(config.cache.url.as_str()) {
+    match Client::open(config.cache.url.expose_secret()) {
         Ok(client) => match client.get_multiplexed_async_connection().await {
             Ok(manager) => {
                 tracing::info!("Cache enabled - connected to Redis/Valkey");
@@ -84,7 +85,7 @@ impl CacheOps for CacheConnection {
         match self {
             CacheConnection::Redis(conn) => {
                 let mut conn = conn.lock().await;
-                let value: Option<String> = conn.get(key).await.map_err(|e| AppError::Cache(e))?;
+                let value: Option<String> = conn.get(key).await.map_err(AppError::Cache)?;
 
                 match value {
                     Some(v) => {
@@ -116,14 +117,14 @@ impl CacheOps for CacheConnection {
 
                 if let Some(ttl) = ttl_secs {
                     let _: () = conn
-                        .set_ex(key, &serialized, ttl as u64)
+                        .set_ex(key, &serialized, ttl)
                         .await
-                        .map_err(|e| AppError::Cache(e))?;
+                        .map_err(AppError::Cache)?;
                 } else {
                     let _: () = conn
                         .set(key, &serialized)
                         .await
-                        .map_err(|e| AppError::Cache(e))?;
+                        .map_err(AppError::Cache)?;
                 }
 
                 Ok(())
@@ -139,7 +140,7 @@ impl CacheOps for CacheConnection {
         match self {
             CacheConnection::Redis(conn) => {
                 let mut conn = conn.lock().await;
-                let _: () = conn.del(key).await.map_err(|e| AppError::Cache(e))?;
+                let _: () = conn.del(key).await.map_err(AppError::Cache)?;
                 Ok(())
             }
             CacheConnection::Mock(_) => {
@@ -153,7 +154,7 @@ impl CacheOps for CacheConnection {
         match self {
             CacheConnection::Redis(conn) => {
                 let mut conn = conn.lock().await;
-                let result: bool = conn.exists(key).await.map_err(|e| AppError::Cache(e))?;
+                let result: bool = conn.exists(key).await.map_err(AppError::Cache)?;
                 Ok(result)
             }
             CacheConnection::Mock(_) => {
@@ -355,11 +356,11 @@ mod tests {
     #[tokio::test]
     async fn test_mock_cache_get_primitives() {
         let cache = MockCache::new();
-        
+
         let str_result: Option<String> = cache.get("key").await.unwrap();
         let int_result: Option<i64> = cache.get("key").await.unwrap();
         let bool_result: Option<bool> = cache.get("key").await.unwrap();
-        
+
         assert!(str_result.is_none());
         assert!(int_result.is_none());
         assert!(bool_result.is_none());
@@ -368,7 +369,7 @@ mod tests {
     #[tokio::test]
     async fn test_mock_cache_set_various_types() {
         let cache = MockCache::new();
-        
+
         assert!(cache.set("str_key", &"value", None).await.is_ok());
         assert!(cache.set("int_key", &42i64, None).await.is_ok());
         assert!(cache.set("bool_key", &true, None).await.is_ok());
@@ -378,7 +379,7 @@ mod tests {
     #[tokio::test]
     async fn test_mock_cache_operations_idempotent() {
         let cache = MockCache::new();
-        
+
         // Multiple deletes should all succeed
         for _ in 0..10 {
             assert!(cache.delete("key").await.is_ok());
@@ -388,7 +389,7 @@ mod tests {
     #[tokio::test]
     async fn test_mock_cache_exists_always_false() {
         let cache = MockCache::new();
-        
+
         // Set a value, but exists should still return false
         cache.set("key", &"value", None).await.unwrap();
         assert!(!cache.exists("key").await.unwrap());
@@ -400,7 +401,7 @@ mod tests {
     fn test_cache_connection_mock_construction() {
         let mock = MockCache::new();
         let conn = CacheConnection::Mock(Arc::new(mock));
-        
+
         match conn {
             CacheConnection::Mock(_) => (),
             _ => panic!("Expected Mock variant"),
@@ -410,7 +411,7 @@ mod tests {
     #[tokio::test]
     async fn test_cache_connection_mock_set_with_various_ttl() {
         let conn = CacheConnection::Mock(Arc::new(MockCache::new()));
-        
+
         // No TTL
         assert!(conn.set("key1", &"value", None).await.is_ok());
         // Short TTL
@@ -426,7 +427,7 @@ mod tests {
         let mock = Arc::new(MockCache::new());
         let conn1 = CacheConnection::Mock(Arc::clone(&mock));
         let conn2 = CacheConnection::Mock(Arc::clone(&mock));
-        
+
         // Both connections should work
         assert!(conn1.exists("key").await.is_ok());
         assert!(conn2.exists("key").await.is_ok());
@@ -447,7 +448,7 @@ mod tests {
     async fn test_cache_long_key() {
         let cache = MockCache::new();
         let long_key = "k".repeat(10000);
-        
+
         assert!(cache.get::<String>(&long_key).await.is_ok());
         assert!(cache.set(&long_key, &"value", None).await.is_ok());
     }
@@ -456,7 +457,7 @@ mod tests {
     async fn test_cache_unicode_key() {
         let cache = MockCache::new();
         let unicode_key = "键_key_clé_Schlüssel_\u{1F600}";
-        
+
         assert!(cache.get::<String>(unicode_key).await.is_ok());
         assert!(cache.set(unicode_key, &"value", None).await.is_ok());
     }

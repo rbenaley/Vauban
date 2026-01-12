@@ -189,7 +189,7 @@ mod tests {
 
     #[test]
     fn test_asset_detail_template_renders() {
-        use crate::templates::base::{VaubanConfig, UserContext};
+        use crate::templates::base::{UserContext, VaubanConfig};
 
         let template = AssetDetailTemplate {
             title: "Asset Detail".to_string(),

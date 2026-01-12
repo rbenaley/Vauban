@@ -153,7 +153,7 @@ mod tests {
 
     #[test]
     fn test_recording_play_template_renders() {
-        use crate::templates::base::{VaubanConfig, UserContext};
+        use crate::templates::base::{UserContext, VaubanConfig};
 
         let template = RecordingPlayTemplate {
             title: "Recording".to_string(),

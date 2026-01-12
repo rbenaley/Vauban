@@ -3,12 +3,11 @@
 /// These tests cover the HTML page handlers that use diesel::sql_query()
 /// for complex queries with JOINs, subqueries, and PostgreSQL-specific features.
 /// Since raw SQL is not checked at compile time, these tests ensure query validity.
-
 use crate::common::{TestApp, assertions::assert_status};
 use crate::fixtures::{
-    create_simple_user, create_simple_ssh_asset, create_test_session,
-    create_recorded_session, create_approval_request, create_test_asset_group,
-    create_test_vauban_group, create_test_asset_in_group, unique_name,
+    create_approval_request, create_recorded_session, create_simple_ssh_asset, create_simple_user,
+    create_test_asset_group, create_test_asset_in_group, create_test_session,
+    create_test_vauban_group, unique_name,
 };
 use axum::http::header::COOKIE;
 use diesel::prelude::*;
@@ -40,12 +39,7 @@ async fn test_session_detail_page_loads() {
     let session_id = create_test_session(&mut conn, user_id, asset_id, "ssh", "active");
 
     // Generate auth token
-    let token = app.generate_test_token(
-        &user_uuid.to_string(),
-        "test_session_page",
-        true,
-        true,
-    );
+    let token = app.generate_test_token(&user_uuid.to_string(), "test_session_page", true, true);
 
     // Request session detail page
     let response = app
@@ -100,12 +94,7 @@ async fn test_recording_play_page_with_recorded_session() {
     let asset_id = create_simple_ssh_asset(&mut conn, "test-recording-asset", user_id);
     let session_id = create_recorded_session(&mut conn, user_id, asset_id);
 
-    let token = app.generate_test_token(
-        &user_uuid.to_string(),
-        "test_recording_page",
-        true,
-        true,
-    );
+    let token = app.generate_test_token(&user_uuid.to_string(), "test_recording_page", true, true);
 
     let response = app
         .server
@@ -125,12 +114,8 @@ async fn test_recording_play_page_with_recorded_session() {
 async fn test_recording_play_not_found() {
     let app = TestApp::spawn().await;
 
-    let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
-        "test_rec_notfound",
-        true,
-        true,
-    );
+    let token =
+        app.generate_test_token(&Uuid::new_v4().to_string(), "test_rec_notfound", true, true);
 
     let response = app
         .server
@@ -237,12 +222,7 @@ async fn test_approval_detail_page_loads() {
     let asset_id = create_simple_ssh_asset(&mut conn, "test-approval-asset", user_id);
     let session_uuid = create_approval_request(&mut conn, user_id, asset_id);
 
-    let token = app.generate_test_token(
-        &user_uuid.to_string(),
-        "test_approval_detail",
-        true,
-        true,
-    );
+    let token = app.generate_test_token(&user_uuid.to_string(), "test_approval_detail", true, true);
 
     let response = app
         .server
@@ -319,12 +299,7 @@ async fn test_active_sessions_with_data() {
     let asset_id = create_simple_ssh_asset(&mut conn, "test-active-asset", user_id);
     let _session_id = create_test_session(&mut conn, user_id, asset_id, "ssh", "active");
 
-    let token = app.generate_test_token(
-        &user_uuid.to_string(),
-        "test_active_data",
-        true,
-        true,
-    );
+    let token = app.generate_test_token(&user_uuid.to_string(), "test_active_data", true, true);
 
     let response = app
         .server
@@ -522,12 +497,8 @@ async fn test_asset_detail_page_loads() {
     let user_uuid = get_user_uuid(&mut conn, user_id);
     let asset_id = create_simple_ssh_asset(&mut conn, "test-asset-detail", user_id);
 
-    let token = app.generate_test_token(
-        &user_uuid.to_string(),
-        "test_asset_detail_page",
-        true,
-        true,
-    );
+    let token =
+        app.generate_test_token(&user_uuid.to_string(), "test_asset_detail_page", true, true);
 
     let response = app
         .server
@@ -550,7 +521,12 @@ async fn test_asset_detail_with_group() {
 
     let user_id = create_simple_user(&mut conn, &unique_name("test_asset_group"));
     let group_uuid = create_test_asset_group(&mut conn, &unique_name("test-asset-group-link"));
-    let asset_id = create_test_asset_in_group(&mut conn, &unique_name("test-asset-in-group"), user_id, &group_uuid);
+    let asset_id = create_test_asset_in_group(
+        &mut conn,
+        &unique_name("test-asset-in-group"),
+        user_id,
+        &group_uuid,
+    );
 
     let token = app.generate_test_token(
         &Uuid::new_v4().to_string(),
@@ -601,12 +577,7 @@ async fn test_asset_detail_not_found() {
 async fn test_group_list_page_loads() {
     let app = TestApp::spawn().await;
 
-    let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
-        "test_group_list",
-        true,
-        true,
-    );
+    let token = app.generate_test_token(&Uuid::new_v4().to_string(), "test_group_list", true, true);
 
     let response = app
         .server
@@ -626,12 +597,8 @@ async fn test_group_list_page_loads() {
 async fn test_group_list_with_search() {
     let app = TestApp::spawn().await;
 
-    let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
-        "test_group_search",
-        true,
-        true,
-    );
+    let token =
+        app.generate_test_token(&Uuid::new_v4().to_string(), "test_group_search", true, true);
 
     let response = app
         .server
@@ -695,4 +662,3 @@ async fn test_group_detail_not_found() {
 
     assert_status(&response, 404);
 }
-

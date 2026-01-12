@@ -7,7 +7,7 @@
 /// - 20 approval requests
 ///
 /// This script can be run multiple times without creating duplicates.
-use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
+use argon2::{Algorithm, Argon2, Params, PasswordHasher, Version, password_hash::SaltString};
 use chrono::{Duration, Utc};
 use diesel::PgConnection;
 use diesel::prelude::*;
@@ -15,6 +15,7 @@ use diesel::r2d2::{ConnectionManager, Pool};
 use diesel::sql_types::{BigInt, Bool, Integer, Nullable, Text};
 use rand::Rng;
 use rand::rngs::OsRng;
+use secrecy::ExposeSecret;
 use uuid::Uuid;
 use vauban_web::config::Config;
 
@@ -31,7 +32,7 @@ fn main() {
     let config = Config::load().expect("Failed to load configuration from config/*.toml");
 
     // Create connection pool
-    let manager = ConnectionManager::<PgConnection>::new(&config.database.url);
+    let manager = ConnectionManager::<PgConnection>::new(config.database.url.expose_secret());
     let pool = Pool::builder()
         .build(manager)
         .expect("Failed to create database pool");
@@ -40,7 +41,7 @@ fn main() {
 
     // Create users
     println!("👥 Creating users...");
-    let user_ids = create_users(&mut conn);
+    let user_ids = create_users(&mut conn, &config);
     println!("   ✅ {} users ready\n", user_ids.len());
 
     // Get first user id for ownership
@@ -125,9 +126,17 @@ fn main() {
 }
 
 /// Hash a password using Argon2.
-fn hash_password(password: &str) -> String {
+fn hash_password(password: &str, config: &Config) -> String {
     let salt = SaltString::generate(&mut OsRng);
-    let argon2 = Argon2::default();
+    let params = Params::new(
+        config.security.argon2.memory_size_kb,
+        config.security.argon2.iterations,
+        config.security.argon2.parallelism,
+        Some(32),
+    )
+    .expect("Failed to create Argon2 parameters");
+
+    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
     argon2
         .hash_password(password.as_bytes(), &salt)
         .expect("Failed to hash password")
@@ -135,7 +144,7 @@ fn hash_password(password: &str) -> String {
 }
 
 /// Create test users (idempotent).
-fn create_users(conn: &mut PgConnection) -> Vec<i32> {
+fn create_users(conn: &mut PgConnection, config: &Config) -> Vec<i32> {
     let mut user_ids = Vec::new();
 
     // Define users: (username, email, first_name, last_name, is_staff, is_superuser)
@@ -176,11 +185,13 @@ fn create_users(conn: &mut PgConnection) -> Vec<i32> {
     ];
 
     let default_password = "SecurePassword123!";
-    let password_hash = hash_password(default_password);
+    let password_hash = hash_password(default_password, config);
 
     for (username, email, first_name, last_name, is_staff, is_superuser) in users_data {
         // Check if user already exists
-        use schema::users::dsl::{users, username as user_username, email as user_email, id as user_id};
+        use schema::users::dsl::{
+            email as user_email, id as user_id, username as user_username, users,
+        };
         let existing: Option<i32> = users
             .filter(user_username.eq(username).or(user_email.eq(email)))
             .select(user_id)
@@ -236,7 +247,7 @@ fn create_users(conn: &mut PgConnection) -> Vec<i32> {
     }
 
     // Also include existing 'mnemonic' user if present
-    use schema::users::dsl::{users, username as user_username, id as user_id};
+    use schema::users::dsl::{id as user_id, username as user_username, users};
     let mnemonic_id: Option<i32> = users
         .filter(user_username.eq("mnemonic"))
         .select(user_id)
@@ -244,11 +255,11 @@ fn create_users(conn: &mut PgConnection) -> Vec<i32> {
         .optional()
         .expect("Failed to query users");
 
-    if let Some(id) = mnemonic_id {
-        if !user_ids.contains(&id) {
-            user_ids.push(id);
-            println!("   - mnemonic (existing) included");
-        }
+    if let Some(id) = mnemonic_id
+        && !user_ids.contains(&id)
+    {
+        user_ids.push(id);
+        println!("   - mnemonic (existing) included");
     }
 
     user_ids
@@ -392,7 +403,7 @@ fn create_assets(conn: &mut PgConnection, admin_id: i32) -> Vec<i32> {
     }
 
     // VNC servers
-    let vnc_servers = vec![
+    let vnc_servers = [
         ("kvm-host-01", "Proxmox VE 8", "KVM Hypervisor"),
         ("kvm-host-02", "Proxmox VE 8", "KVM Hypervisor"),
         ("esxi-01", "VMware ESXi 8", "VMware Host"),
@@ -468,9 +479,9 @@ fn create_sessions(
         return 0;
     }
 
-    let statuses = vec!["active", "disconnected", "completed", "terminated"];
-    let session_types = vec!["ssh", "rdp", "vnc"];
-    let client_ips = vec![
+    let statuses = ["active", "disconnected", "completed", "terminated"];
+    let session_types = ["ssh", "rdp", "vnc"];
+    let client_ips = [
         "192.168.1.10",
         "192.168.1.25",
         "192.168.1.100",
@@ -509,14 +520,23 @@ fn create_sessions(
         };
 
         let credential_id = Uuid::new_v4().to_string();
-        let credential_username = if session_type == "ssh" { "root" } else { "Administrator" };
+        let credential_username = if session_type == "ssh" {
+            "root"
+        } else {
+            "Administrator"
+        };
         let connected_at_str = connected_at.format("%Y-%m-%d %H:%M:%S%z").to_string();
-        let disconnected_at_str = disconnected_at.map(|d| d.format("%Y-%m-%d %H:%M:%S%z").to_string());
+        let disconnected_at_str =
+            disconnected_at.map(|d| d.format("%Y-%m-%d %H:%M:%S%z").to_string());
         let bytes_sent: i64 = rng.gen_range(1000..1000000);
         let bytes_received: i64 = rng.gen_range(5000..5000000);
         let commands_count: i32 = rng.gen_range(0..500);
-        let justification: Option<&str> = if rng.gen_bool(0.3) { Some("Maintenance task") } else { None };
-        
+        let justification: Option<&str> = if rng.gen_bool(0.3) {
+            Some("Maintenance task")
+        } else {
+            None
+        };
+
         let result = diesel::sql_query(
             "INSERT INTO proxy_sessions (uuid, user_id, asset_id, credential_id, credential_username, session_type, status, client_ip, connected_at, disconnected_at, is_recorded, recording_path, bytes_sent, bytes_received, commands_count, justification, metadata)
              VALUES (uuid_generate_v4(), $1, $2, $3, $4, $5, $6, $7, $8::timestamptz, $9::timestamptz, $10, $11, $12, $13, $14, $15, '{}')
@@ -577,8 +597,8 @@ fn create_approval_requests(
         "Emergency fix for critical bug",
     ];
 
-    let session_types = vec!["ssh", "rdp"];
-    let client_ips = vec![
+    let session_types = ["ssh", "rdp"];
+    let client_ips = [
         "192.168.1.50",
         "192.168.1.75",
         "192.168.1.150",
@@ -594,8 +614,12 @@ fn create_approval_requests(
         let justification = justifications[rng.gen_range(0..justifications.len())];
 
         let credential_id = Uuid::new_v4().to_string();
-        let credential_username = if session_type == "ssh" { "root" } else { "Administrator" };
-        
+        let credential_username = if session_type == "ssh" {
+            "root"
+        } else {
+            "Administrator"
+        };
+
         let result = diesel::sql_query(
             "INSERT INTO proxy_sessions (uuid, user_id, asset_id, credential_id, credential_username, session_type, status, client_ip, is_recorded, justification, metadata)
              VALUES (uuid_generate_v4(), $1, $2, $3, $4, $5, 'pending', $6, true, $7, '{\"approval_required\": true}')
@@ -657,12 +681,10 @@ fn create_groups(conn: &mut PgConnection) -> i32 {
     for (name, description, source) in groups_data {
         // Check if group already exists
         use diesel::dsl::exists;
-        use schema::vauban_groups::dsl::{vauban_groups, name as group_name};
-        let existing: bool = diesel::select(exists(
-            vauban_groups.filter(group_name.eq(name))
-        ))
-        .get_result(conn)
-        .unwrap_or(false);
+        use schema::vauban_groups::dsl::{name as group_name, vauban_groups};
+        let existing: bool = diesel::select(exists(vauban_groups.filter(group_name.eq(name))))
+            .get_result(conn)
+            .unwrap_or(false);
 
         if existing {
             count += 1;
@@ -674,7 +696,7 @@ fn create_groups(conn: &mut PgConnection) -> i32 {
         let result = diesel::sql_query(
             "INSERT INTO vauban_groups (uuid, name, description, source)
              VALUES (uuid_generate_v4(), $1, $2, $3)
-             ON CONFLICT (name) DO NOTHING"
+             ON CONFLICT (name) DO NOTHING",
         )
         .bind::<Text, _>(name)
         .bind::<Text, _>(description)
@@ -746,9 +768,11 @@ fn create_asset_groups(conn: &mut PgConnection) -> i32 {
     for (name, slug, description, color, icon) in groups_data {
         // Check if group already exists
         use diesel::dsl::exists;
-        use schema::asset_groups::dsl::{asset_groups, slug as group_slug, is_deleted};
+        use schema::asset_groups::dsl::{asset_groups, is_deleted, slug as group_slug};
         let existing: bool = diesel::select(exists(
-            asset_groups.filter(group_slug.eq(slug)).filter(is_deleted.eq(false))
+            asset_groups
+                .filter(group_slug.eq(slug))
+                .filter(is_deleted.eq(false)),
         ))
         .get_result(conn)
         .unwrap_or(false);
@@ -763,7 +787,7 @@ fn create_asset_groups(conn: &mut PgConnection) -> i32 {
         let result = diesel::sql_query(
             "INSERT INTO asset_groups (uuid, name, slug, description, color, icon)
              VALUES (uuid_generate_v4(), $1, $2, $3, $4, $5)
-             ON CONFLICT (slug) DO NOTHING"
+             ON CONFLICT (slug) DO NOTHING",
         )
         .bind::<Text, _>(name)
         .bind::<Text, _>(slug)

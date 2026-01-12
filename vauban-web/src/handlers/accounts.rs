@@ -350,7 +350,7 @@ mod tests {
             limit: Some(100),
             offset: Some(50),
         };
-        
+
         assert!(params.has_search());
         assert_eq!(params.get_limit(), 100);
         assert_eq!(params.get_offset(), 50);
@@ -363,7 +363,7 @@ mod tests {
             limit: None,
             offset: None,
         };
-        
+
         // Whitespace-only string is not empty
         assert!(params.has_search());
     }
@@ -375,7 +375,7 @@ mod tests {
             limit: None,
             offset: None,
         };
-        
+
         assert!(params.has_search());
     }
 
@@ -386,7 +386,7 @@ mod tests {
             limit: Some(1000),
             offset: None,
         };
-        
+
         assert_eq!(params.get_limit(), 1000);
     }
 
@@ -397,7 +397,7 @@ mod tests {
             limit: Some(0),
             offset: Some(0),
         };
-        
+
         assert_eq!(params.get_limit(), 0);
         assert_eq!(params.get_offset(), 0);
     }
@@ -416,7 +416,7 @@ mod tests {
             is_staff: None,
             is_superuser: None,
         };
-        
+
         assert!(request.validate().is_ok());
     }
 
@@ -432,7 +432,7 @@ mod tests {
             is_staff: Some(true),
             is_superuser: Some(true),
         };
-        
+
         assert!(request.validate().is_ok());
     }
 
@@ -448,7 +448,7 @@ mod tests {
             is_staff: None,
             is_superuser: None,
         };
-        
+
         assert!(request.validate().is_ok());
     }
 
@@ -464,7 +464,7 @@ mod tests {
             is_staff: None,
             is_superuser: None,
         };
-        
+
         assert!(request.validate().is_ok());
     }
 
@@ -480,7 +480,7 @@ mod tests {
             is_staff: None,
             is_superuser: None,
         };
-        
+
         // Check validation - might fail depending on min length
         let _ = request.validate();
     }
@@ -497,7 +497,7 @@ mod tests {
             is_active: None,
             preferences: None,
         };
-        
+
         assert!(request.validate().is_ok());
     }
 
@@ -511,7 +511,7 @@ mod tests {
             is_active: None,
             preferences: Some(serde_json::json!({"theme": "dark", "language": "fr"})),
         };
-        
+
         assert!(request.validate().is_ok());
     }
 
@@ -525,7 +525,7 @@ mod tests {
             is_active: Some(false),
             preferences: None,
         };
-        
+
         assert!(request.validate().is_ok());
     }
 
@@ -539,7 +539,7 @@ mod tests {
             is_active: None,
             preferences: None,
         };
-        
+
         assert!(request.validate().is_ok());
     }
 
@@ -553,7 +553,7 @@ mod tests {
             is_active: None,
             preferences: None,
         };
-        
+
         // Empty strings might be valid depending on validation
         let _ = request.validate();
     }
@@ -564,7 +564,7 @@ mod tests {
     fn test_list_users_params_deserialize() {
         let json = r#"{"search": "test", "limit": 25, "offset": 5}"#;
         let params: ListUsersParams = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(params.search, Some("test".to_string()));
         assert_eq!(params.limit, Some(25));
         assert_eq!(params.offset, Some(5));
@@ -574,7 +574,7 @@ mod tests {
     fn test_list_users_params_deserialize_empty() {
         let json = r#"{}"#;
         let params: ListUsersParams = serde_json::from_str(json).unwrap();
-        
+
         assert!(params.search.is_none());
         assert!(params.limit.is_none());
         assert!(params.offset.is_none());

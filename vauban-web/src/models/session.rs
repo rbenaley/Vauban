@@ -30,7 +30,7 @@ impl SessionType {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s {
             "rdp" => Self::Rdp,
             "vnc" => Self::Vnc,
@@ -62,7 +62,7 @@ impl SessionStatus {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s {
             "connecting" => Self::Connecting,
             "active" => Self::Active,
@@ -128,12 +128,12 @@ pub struct NewProxySession {
 impl ProxySession {
     /// Get session type enum.
     pub fn session_type_enum(&self) -> SessionType {
-        SessionType::from_str(&self.session_type)
+        SessionType::parse(&self.session_type)
     }
 
     /// Get status enum.
     pub fn status_enum(&self) -> SessionStatus {
-        SessionStatus::from_str(&self.status)
+        SessionStatus::parse(&self.status)
     }
 
     /// Check if session is active.
@@ -198,23 +198,23 @@ mod tests {
 
     #[test]
     fn test_session_type_from_str_ssh() {
-        assert_eq!(SessionType::from_str("ssh"), SessionType::Ssh);
+        assert_eq!(SessionType::parse("ssh"), SessionType::Ssh);
     }
 
     #[test]
     fn test_session_type_from_str_rdp() {
-        assert_eq!(SessionType::from_str("rdp"), SessionType::Rdp);
+        assert_eq!(SessionType::parse("rdp"), SessionType::Rdp);
     }
 
     #[test]
     fn test_session_type_from_str_vnc() {
-        assert_eq!(SessionType::from_str("vnc"), SessionType::Vnc);
+        assert_eq!(SessionType::parse("vnc"), SessionType::Vnc);
     }
 
     #[test]
     fn test_session_type_from_str_unknown() {
-        assert_eq!(SessionType::from_str("unknown"), SessionType::Ssh);
-        assert_eq!(SessionType::from_str(""), SessionType::Ssh);
+        assert_eq!(SessionType::parse("unknown"), SessionType::Ssh);
+        assert_eq!(SessionType::parse(""), SessionType::Ssh);
     }
 
     #[test]
@@ -228,7 +228,7 @@ mod tests {
     fn test_session_type_roundtrip() {
         for session_type in [SessionType::Ssh, SessionType::Rdp, SessionType::Vnc] {
             let str_val = session_type.as_str();
-            let parsed = SessionType::from_str(str_val);
+            let parsed = SessionType::parse(str_val);
             assert_eq!(session_type, parsed);
         }
     }
@@ -237,26 +237,26 @@ mod tests {
 
     #[test]
     fn test_session_status_from_str_pending() {
-        assert_eq!(SessionStatus::from_str("pending"), SessionStatus::Pending);
+        assert_eq!(SessionStatus::parse("pending"), SessionStatus::Pending);
     }
 
     #[test]
     fn test_session_status_from_str_connecting() {
         assert_eq!(
-            SessionStatus::from_str("connecting"),
+            SessionStatus::parse("connecting"),
             SessionStatus::Connecting
         );
     }
 
     #[test]
     fn test_session_status_from_str_active() {
-        assert_eq!(SessionStatus::from_str("active"), SessionStatus::Active);
+        assert_eq!(SessionStatus::parse("active"), SessionStatus::Active);
     }
 
     #[test]
     fn test_session_status_from_str_disconnected() {
         assert_eq!(
-            SessionStatus::from_str("disconnected"),
+            SessionStatus::parse("disconnected"),
             SessionStatus::Disconnected
         );
     }
@@ -264,20 +264,20 @@ mod tests {
     #[test]
     fn test_session_status_from_str_terminated() {
         assert_eq!(
-            SessionStatus::from_str("terminated"),
+            SessionStatus::parse("terminated"),
             SessionStatus::Terminated
         );
     }
 
     #[test]
     fn test_session_status_from_str_failed() {
-        assert_eq!(SessionStatus::from_str("failed"), SessionStatus::Failed);
+        assert_eq!(SessionStatus::parse("failed"), SessionStatus::Failed);
     }
 
     #[test]
     fn test_session_status_from_str_unknown() {
-        assert_eq!(SessionStatus::from_str("unknown"), SessionStatus::Pending);
-        assert_eq!(SessionStatus::from_str(""), SessionStatus::Pending);
+        assert_eq!(SessionStatus::parse("unknown"), SessionStatus::Pending);
+        assert_eq!(SessionStatus::parse(""), SessionStatus::Pending);
     }
 
     #[test]
@@ -301,7 +301,7 @@ mod tests {
             SessionStatus::Failed,
         ] {
             let str_val = status.as_str();
-            let parsed = SessionStatus::from_str(str_val);
+            let parsed = SessionStatus::parse(str_val);
             assert_eq!(status, parsed);
         }
     }
@@ -492,7 +492,7 @@ mod tests {
             ("terminated", SessionStatus::Terminated),
             ("failed", SessionStatus::Failed),
         ];
-        
+
         for (status_str, expected) in statuses {
             let mut session = create_test_session();
             session.status = status_str.to_string();
@@ -519,7 +519,7 @@ mod tests {
             is_recorded: true,
             metadata: serde_json::json!({}),
         };
-        
+
         let debug_str = format!("{:?}", new_session);
         assert!(debug_str.contains("NewProxySession"));
     }
@@ -541,7 +541,7 @@ mod tests {
             is_recorded: false,
             metadata: serde_json::json!({"key": "value"}),
         };
-        
+
         let cloned = new_session.clone();
         assert_eq!(new_session.credential_id, cloned.credential_id);
     }
@@ -556,7 +556,7 @@ mod tests {
             session_type: "ssh".to_string(),
             justification: Some("Debug session".to_string()),
         };
-        
+
         let debug_str = format!("{:?}", request);
         assert!(debug_str.contains("CreateSessionRequest"));
     }
@@ -569,7 +569,7 @@ mod tests {
             session_type: "vnc".to_string(),
             justification: None,
         };
-        
+
         let cloned = request.clone();
         assert_eq!(request.credential_id, cloned.credential_id);
     }
@@ -577,14 +577,14 @@ mod tests {
     #[test]
     fn test_create_session_request_validation_valid() {
         use validator::Validate;
-        
+
         let request = CreateSessionRequest {
             asset_id: Uuid::new_v4(),
             credential_id: "cred-valid".to_string(),
             session_type: "ssh".to_string(),
             justification: Some("Valid request".to_string()),
         };
-        
+
         assert!(request.validate().is_ok());
     }
 
@@ -596,7 +596,7 @@ mod tests {
         let now = Utc::now();
         session.connected_at = Some(now);
         session.disconnected_at = Some(now);
-        
+
         let duration = session.duration().unwrap();
         assert_eq!(duration, 0);
     }
@@ -607,7 +607,7 @@ mod tests {
         // This would be an invalid state, but test it anyway
         session.connected_at = Some(Utc::now());
         session.disconnected_at = Some(Utc::now() - Duration::hours(1));
-        
+
         let duration = session.duration().unwrap();
         // Duration would be negative
         assert!(duration < 0);

@@ -67,7 +67,7 @@ async fn stats_updater(broadcast: Arc<BroadcastService>, db_pool: Arc<DbPool>) {
                 match template.render() {
                     Ok(html) => {
                         let msg = WsMessage::new("ws-stats", html);
-                        if let Err(_) = broadcast.send(&WsChannel::DashboardStats, msg).await {
+                        if broadcast.send(&WsChannel::DashboardStats, msg).await.is_err() {
                             debug!("No subscribers for stats channel");
                         }
                     }
@@ -92,7 +92,7 @@ async fn sessions_updater(broadcast: Arc<BroadcastService>, db_pool: Arc<DbPool>
                 match template.render() {
                     Ok(html) => {
                         let msg = WsMessage::new("ws-active-sessions", html);
-                        if let Err(_) = broadcast.send(&WsChannel::ActiveSessions, msg).await {
+                        if broadcast.send(&WsChannel::ActiveSessions, msg).await.is_err() {
                             debug!("No subscribers for sessions channel");
                         }
                     }
@@ -117,7 +117,7 @@ async fn activity_updater(broadcast: Arc<BroadcastService>, db_pool: Arc<DbPool>
                 match template.render() {
                     Ok(html) => {
                         let msg = WsMessage::new("ws-recent-activity", html);
-                        if let Err(_) = broadcast.send(&WsChannel::RecentActivity, msg).await {
+                        if broadcast.send(&WsChannel::RecentActivity, msg).await.is_err() {
                             debug!("No subscribers for activity channel");
                         }
                     }
@@ -340,7 +340,7 @@ mod tests {
         let broadcast = BroadcastService::new();
         let broadcast_arc = Arc::new(broadcast);
         let cloned = Arc::clone(&broadcast_arc);
-        
+
         // Both should point to the same allocation
         assert!(Arc::ptr_eq(&broadcast_arc, &cloned));
     }

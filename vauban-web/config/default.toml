@@ -51,6 +51,11 @@ session_max_duration_secs = 28800   # 8 hours
 session_idle_timeout_secs = 1800    # 30 minutes
 rate_limit_per_minute = 100
 
+[security.argon2]
+memory_size_kb = 65536
+iterations = 3
+parallelism = 1
+
 [logging]
 level = "info"
 format = "text"

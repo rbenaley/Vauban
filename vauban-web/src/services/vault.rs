@@ -163,14 +163,14 @@ mod tests {
         let lookup = CredentialLookup::all()
             .with_type("first")
             .with_type("second");
-        
+
         assert_eq!(lookup.credential_type, Some("second".to_string()));
     }
 
     #[test]
     fn test_credential_lookup_all_is_default() {
         let lookup = CredentialLookup::all();
-        
+
         assert!(lookup.asset_id.is_none());
         assert!(lookup.credential_type.is_none());
     }
@@ -178,7 +178,7 @@ mod tests {
     #[test]
     fn test_credential_lookup_for_asset_preserves_none_type() {
         let lookup = CredentialLookup::for_asset("my-asset");
-        
+
         assert!(lookup.asset_id.is_some());
         assert!(lookup.credential_type.is_none());
     }
@@ -187,9 +187,9 @@ mod tests {
     fn test_credential_lookup_clone_independence() {
         let mut lookup1 = CredentialLookup::for_asset("asset-1");
         let lookup2 = lookup1.clone();
-        
+
         lookup1.asset_id = Some("modified".to_string());
-        
+
         // Clone should not be affected
         assert_eq!(lookup2.asset_id, Some("asset-1".to_string()));
     }
@@ -198,14 +198,14 @@ mod tests {
     fn test_credential_lookup_debug_all() {
         let lookup = CredentialLookup::all();
         let debug_str = format!("{:?}", lookup);
-        
+
         assert!(debug_str.contains("None"));
     }
 
     #[test]
     fn test_credential_lookup_multiple_assets() {
         let assets = ["server-01", "db-primary", "cache-redis", "queue-rabbitmq"];
-        
+
         for asset in assets {
             let lookup = CredentialLookup::for_asset(asset);
             assert_eq!(lookup.asset_id, Some(asset.to_string()));
@@ -216,7 +216,7 @@ mod tests {
     fn test_credential_lookup_uuid_asset_id() {
         let uuid = "550e8400-e29b-41d4-a716-446655440000";
         let lookup = CredentialLookup::for_asset(uuid);
-        
+
         assert_eq!(lookup.asset_id, Some(uuid.to_string()));
     }
 
@@ -228,7 +228,7 @@ mod tests {
             asset_id: Some("direct-asset".to_string()),
             credential_type: Some("direct-type".to_string()),
         };
-        
+
         assert_eq!(lookup.asset_id, Some("direct-asset".to_string()));
         assert_eq!(lookup.credential_type, Some("direct-type".to_string()));
     }
@@ -239,7 +239,7 @@ mod tests {
             asset_id: None,
             credential_type: Some("only-type".to_string()),
         };
-        
+
         assert!(lookup.asset_id.is_none());
         assert!(lookup.credential_type.is_some());
     }

@@ -226,7 +226,7 @@ mod tests {
     fn test_to_dto_fields() {
         let session = create_test_session();
         let dto = session.to_dto();
-        
+
         assert_eq!(dto.uuid, session.uuid);
         assert_eq!(dto.ip_address, "127.0.0.1");
         assert_eq!(dto.user_agent, session.user_agent);
@@ -237,11 +237,8 @@ mod tests {
     #[test]
     fn test_to_dto_ipv6() {
         let mut session = create_test_session();
-        session.ip_address = IpNetwork::new(
-            IpAddr::from([0, 0, 0, 0, 0, 0, 0, 1]),
-            128
-        ).unwrap();
-        
+        session.ip_address = IpNetwork::new(IpAddr::from([0, 0, 0, 0, 0, 0, 0, 1]), 128).unwrap();
+
         let dto = session.to_dto();
         assert_eq!(dto.ip_address, "::1");
     }
@@ -252,7 +249,7 @@ mod tests {
     fn test_age_display_minutes() {
         let mut session = create_test_session();
         session.created_at = Utc::now() - chrono::Duration::minutes(30);
-        
+
         assert!(session.age_display().contains("minutes ago"));
     }
 
@@ -260,7 +257,7 @@ mod tests {
     fn test_age_display_hours() {
         let mut session = create_test_session();
         session.created_at = Utc::now() - chrono::Duration::hours(5);
-        
+
         assert!(session.age_display().contains("hours ago"));
     }
 
@@ -268,7 +265,7 @@ mod tests {
     fn test_age_display_days() {
         let mut session = create_test_session();
         session.created_at = Utc::now() - chrono::Duration::days(3);
-        
+
         assert!(session.age_display().contains("days ago"));
     }
 
@@ -284,7 +281,7 @@ mod tests {
     fn test_last_activity_display_minutes() {
         let mut session = create_test_session();
         session.last_activity = Utc::now() - chrono::Duration::minutes(15);
-        
+
         assert!(session.last_activity_display().contains("minutes ago"));
     }
 
@@ -292,7 +289,7 @@ mod tests {
     fn test_last_activity_display_hours() {
         let mut session = create_test_session();
         session.last_activity = Utc::now() - chrono::Duration::hours(2);
-        
+
         assert!(session.last_activity_display().contains("hours ago"));
     }
 
@@ -300,7 +297,7 @@ mod tests {
     fn test_last_activity_display_days() {
         let mut session = create_test_session();
         session.last_activity = Utc::now() - chrono::Duration::days(7);
-        
+
         assert!(session.last_activity_display().contains("days ago"));
     }
 
@@ -356,7 +353,8 @@ mod tests {
 
     #[test]
     fn test_parse_device_info_firefox_macos() {
-        let ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0";
+        let ua =
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0";
         assert_eq!(AuthSession::parse_device_info(ua), "Firefox on macOS");
     }
 
@@ -402,7 +400,7 @@ mod tests {
     fn test_auth_session_dto_debug() {
         let session = create_test_session();
         let dto = session.to_dto();
-        
+
         let debug_str = format!("{:?}", dto);
         assert!(debug_str.contains("AuthSessionDto"));
     }
@@ -412,7 +410,7 @@ mod tests {
         let session = create_test_session();
         let dto = session.to_dto();
         let cloned = dto.clone();
-        
+
         assert_eq!(dto.uuid, cloned.uuid);
     }
 
@@ -420,7 +418,7 @@ mod tests {
     fn test_auth_session_dto_serialize() {
         let session = create_test_session();
         let dto = session.to_dto();
-        
+
         let json = serde_json::to_string(&dto).unwrap();
         assert!(json.contains("127.0.0.1"));
     }
@@ -439,7 +437,7 @@ mod tests {
             expires_at: Utc::now() + chrono::Duration::hours(24),
             is_current: true,
         };
-        
+
         let debug_str = format!("{:?}", new_session);
         assert!(debug_str.contains("NewAuthSession"));
     }
@@ -456,7 +454,7 @@ mod tests {
             expires_at: Utc::now() + chrono::Duration::hours(48),
             is_current: false,
         };
-        
+
         let cloned = new_session.clone();
         assert_eq!(new_session.token_hash, cloned.token_hash);
     }
