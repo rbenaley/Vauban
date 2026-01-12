@@ -1,14 +1,16 @@
 /// VAUBAN Web - Authentication service.
 ///
 /// Handles password hashing, JWT tokens, and MFA (TOTP).
+use anyhow::anyhow;
 use argon2::{
-    Argon2,
+    Algorithm as Argon2Algorithm, Argon2, Params, Version,
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
 };
 use chrono::{Duration, Utc};
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
+use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
-use totp_rs::{Algorithm, Secret, TOTP};
+use totp_rs::{Algorithm as TotpAlgorithm, Secret as TotpSecret, TOTP};
 
 use crate::config::Config;
 use crate::error::{AppError, AppResult};
@@ -38,7 +40,7 @@ pub struct AuthService {
 impl AuthService {
     /// Create a new authentication service.
     pub fn new(config: Config) -> AppResult<Self> {
-        let secret = config.secret_key.as_bytes();
+        let secret = config.secret_key.expose_secret().as_bytes();
         let encoding_key = EncodingKey::from_secret(secret);
         let decoding_key = DecodingKey::from_secret(secret);
 
@@ -57,10 +59,18 @@ impl AuthService {
     /// Hash password using Argon2id.
     pub fn hash_password(&self, password: &str) -> AppResult<String> {
         let salt = SaltString::generate(&mut OsRng);
-        let argon2 = Argon2::default();
+        let params = Params::new(
+            self.config.security.argon2.memory_size_kb,
+            self.config.security.argon2.iterations,
+            self.config.security.argon2.parallelism,
+            Some(32),
+        )
+        .map_err(|e| AppError::Internal(anyhow!("Argon2 params error: {}", e)))?;
+
+        let argon2 = Argon2::new(Argon2Algorithm::Argon2id, Version::V0x13, params);
         let password_hash = argon2
             .hash_password(password.as_bytes(), &salt)
-            .map_err(|e| AppError::Internal(anyhow::anyhow!("Password hashing failed: {}", e)))?;
+            .map_err(|e| AppError::Internal(anyhow!("Password hashing failed: {}", e)))?;
 
         Ok(password_hash.to_string())
     }
@@ -68,9 +78,17 @@ impl AuthService {
     /// Verify password against hash.
     pub fn verify_password(&self, password: &str, hash: &str) -> AppResult<bool> {
         let parsed_hash = PasswordHash::new(hash)
-            .map_err(|e| AppError::Internal(anyhow::anyhow!("Invalid hash format: {}", e)))?;
+            .map_err(|e| AppError::Internal(anyhow!("Invalid hash format: {}", e)))?;
 
-        let argon2 = Argon2::default();
+        let params = Params::new(
+            self.config.security.argon2.memory_size_kb,
+            self.config.security.argon2.iterations,
+            self.config.security.argon2.parallelism,
+            Some(32),
+        )
+        .map_err(|e| AppError::Internal(anyhow!("Argon2 params error: {}", e)))?;
+
+        let argon2 = Argon2::new(Argon2Algorithm::Argon2id, Version::V0x13, params);
         match argon2.verify_password(password.as_bytes(), &parsed_hash) {
             Ok(()) => Ok(true),
             Err(_) => Ok(false),
@@ -119,13 +137,13 @@ impl AuthService {
     /// Returns (base32_secret, provisioning_uri).
     /// The provisioning_uri can be used to generate a QR code for authenticator apps.
     pub fn generate_totp_secret(username: &str, issuer: &str) -> AppResult<(String, String)> {
-        let secret = Secret::generate_secret();
+        let secret = TotpSecret::generate_secret();
         let secret_bytes = secret.to_bytes().map_err(|e| {
             AppError::Internal(anyhow::anyhow!("Failed to generate TOTP secret: {:?}", e))
         })?;
 
         let totp = TOTP::new(
-            Algorithm::SHA1,
+            TotpAlgorithm::SHA1,
             6,  // 6 digits
             1,  // 1 step tolerance (±30 seconds)
             30, // 30 second step
@@ -146,13 +164,13 @@ impl AuthService {
     /// Returns base64-encoded PNG image data.
     #[allow(dead_code)]
     pub fn generate_totp_qr_code(secret: &str, username: &str, issuer: &str) -> AppResult<String> {
-        let secret_obj = Secret::Encoded(secret.to_string());
+        let secret_obj = TotpSecret::Encoded(secret.to_string());
         let secret_bytes = secret_obj
             .to_bytes()
             .map_err(|e| AppError::Internal(anyhow::anyhow!("Invalid TOTP secret: {:?}", e)))?;
 
         let totp = TOTP::new(
-            Algorithm::SHA1,
+            TotpAlgorithm::SHA1,
             6,
             1,
             30,
@@ -174,14 +192,14 @@ impl AuthService {
     ///
     /// Checks the code against current time with ±1 step tolerance (±30 seconds).
     pub fn verify_totp(secret: &str, code: &str) -> bool {
-        let secret_obj = Secret::Encoded(secret.to_string());
+        let secret_obj = TotpSecret::Encoded(secret.to_string());
         let secret_bytes = match secret_obj.to_bytes() {
             Ok(bytes) => bytes,
             Err(_) => return false,
         };
 
         let totp = match TOTP::new(
-            Algorithm::SHA1,
+            TotpAlgorithm::SHA1,
             6,
             1, // 1 step tolerance
             30,
@@ -199,12 +217,21 @@ impl AuthService {
     /// Get current TOTP code (for testing/debugging).
     #[allow(dead_code)]
     pub fn get_current_totp(secret: &str) -> Option<String> {
-        let secret_obj = Secret::Encoded(secret.to_string());
+        let secret_obj = TotpSecret::Encoded(secret.to_string());
         let secret_bytes = secret_obj.to_bytes().ok()?;
 
-        let totp = TOTP::new(Algorithm::SHA1, 6, 1, 30, secret_bytes, None, String::new()).ok()?;
+        let totp = TOTP::new(
+            TotpAlgorithm::SHA1,
+            6,
+            1,
+            30,
+            secret_bytes,
+            None,
+            String::new(),
+        )
+        .ok()?;
 
-        Some(totp.generate_current().ok()?)
+        totp.generate_current().ok()
     }
 }
 
@@ -353,7 +380,7 @@ mod tests {
 
         // Create another service with a different secret
         let mut config2 = load_test_config();
-        config2.secret_key = "different-secret-key-for-testing!".to_string();
+        config2.secret_key = "different-secret-key-for-testing!".to_string().into();
         let auth_service2 = AuthService::new(config2).unwrap();
 
         let result = auth_service2.verify_token(&token);
@@ -470,9 +497,11 @@ mod tests {
         let config = load_test_config();
         let auth_service = AuthService::new(config).unwrap();
         let cloned = auth_service.clone();
-        
+
         // Both should work identically
-        let token = auth_service.generate_access_token("user-1", "test", false, false, false).unwrap();
+        let token = auth_service
+            .generate_access_token("user-1", "test", false, false, false)
+            .unwrap();
         let claims = cloned.verify_token(&token).unwrap();
         assert_eq!(claims.sub, "user-1");
     }
@@ -481,7 +510,7 @@ mod tests {
     fn test_auth_service_access_token_lifetime() {
         let config = load_test_config();
         let auth_service = AuthService::new(config.clone()).unwrap();
-        
+
         let lifetime = auth_service.access_token_lifetime_minutes();
         assert_eq!(lifetime, config.jwt.access_token_lifetime_minutes);
     }
@@ -499,10 +528,10 @@ mod tests {
             is_superuser: false,
             is_staff: true,
         };
-        
+
         let json = serde_json::to_string(&claims).unwrap();
         let parsed: Claims = serde_json::from_str(&json).unwrap();
-        
+
         assert_eq!(parsed.sub, claims.sub);
         assert_eq!(parsed.username, claims.username);
         assert_eq!(parsed.exp, claims.exp);
@@ -523,7 +552,7 @@ mod tests {
             is_superuser: false,
             is_staff: false,
         };
-        
+
         let debug_str = format!("{:?}", claims);
         assert!(debug_str.contains("Claims"));
         assert!(debug_str.contains("test-sub"));
@@ -535,7 +564,7 @@ mod tests {
         // Test that is_superuser and is_staff default to false when missing
         let json = r#"{"sub":"user","username":"test","exp":0,"iat":0,"mfa_verified":false}"#;
         let claims: Claims = serde_json::from_str(json).unwrap();
-        
+
         assert!(!claims.is_superuser);
         assert!(!claims.is_staff);
     }
@@ -544,7 +573,7 @@ mod tests {
     fn test_claims_all_fields_present() {
         let json = r#"{"sub":"u","username":"n","exp":1,"iat":2,"mfa_verified":true,"is_superuser":true,"is_staff":true}"#;
         let claims: Claims = serde_json::from_str(json).unwrap();
-        
+
         assert!(claims.is_superuser);
         assert!(claims.is_staff);
         assert!(claims.mfa_verified);
@@ -556,7 +585,7 @@ mod tests {
     fn test_hash_password_empty() {
         let config = load_test_config();
         let auth_service = AuthService::new(config).unwrap();
-        
+
         // Empty password should still hash
         let hash = auth_service.hash_password("").unwrap();
         assert!(hash.starts_with("$argon2"));
@@ -566,10 +595,10 @@ mod tests {
     fn test_hash_password_unicode() {
         let config = load_test_config();
         let auth_service = AuthService::new(config).unwrap();
-        
+
         let password = "密码测试🔐";
         let hash = auth_service.hash_password(password).unwrap();
-        
+
         assert!(auth_service.verify_password(password, &hash).unwrap());
     }
 
@@ -577,10 +606,10 @@ mod tests {
     fn test_hash_password_very_long() {
         let config = load_test_config();
         let auth_service = AuthService::new(config).unwrap();
-        
+
         let password = "a".repeat(1000);
         let hash = auth_service.hash_password(&password).unwrap();
-        
+
         assert!(auth_service.verify_password(&password, &hash).unwrap());
     }
 
@@ -588,10 +617,10 @@ mod tests {
     fn test_verify_password_empty_password() {
         let config = load_test_config();
         let auth_service = AuthService::new(config).unwrap();
-        
+
         let hash = auth_service.hash_password("actual_password").unwrap();
         let result = auth_service.verify_password("", &hash).unwrap();
-        
+
         assert!(!result);
     }
 
@@ -599,7 +628,7 @@ mod tests {
     fn test_verify_password_empty_hash() {
         let config = load_test_config();
         let auth_service = AuthService::new(config).unwrap();
-        
+
         let result = auth_service.verify_password("password", "");
         assert!(result.is_err());
     }
@@ -610,10 +639,12 @@ mod tests {
     fn test_generate_token_empty_username() {
         let config = load_test_config();
         let auth_service = AuthService::new(config).unwrap();
-        
-        let token = auth_service.generate_access_token("uuid", "", false, false, false).unwrap();
+
+        let token = auth_service
+            .generate_access_token("uuid", "", false, false, false)
+            .unwrap();
         let claims = auth_service.verify_token(&token).unwrap();
-        
+
         assert_eq!(claims.username, "");
     }
 
@@ -621,11 +652,13 @@ mod tests {
     fn test_generate_token_unicode_username() {
         let config = load_test_config();
         let auth_service = AuthService::new(config).unwrap();
-        
+
         let username = "用户名";
-        let token = auth_service.generate_access_token("uuid", username, false, false, false).unwrap();
+        let token = auth_service
+            .generate_access_token("uuid", username, false, false, false)
+            .unwrap();
         let claims = auth_service.verify_token(&token).unwrap();
-        
+
         assert_eq!(claims.username, username);
     }
 
@@ -633,7 +666,7 @@ mod tests {
     fn test_verify_token_empty() {
         let config = load_test_config();
         let auth_service = AuthService::new(config).unwrap();
-        
+
         let result = auth_service.verify_token("");
         assert!(result.is_err());
     }
@@ -642,7 +675,7 @@ mod tests {
     fn test_verify_token_malformed() {
         let config = load_test_config();
         let auth_service = AuthService::new(config).unwrap();
-        
+
         // Various malformed tokens
         let malformed_tokens = [
             "not.a.token",
@@ -651,7 +684,7 @@ mod tests {
             "four.parts.are.invalid",
             "eyJ.eyJ.sig", // Base64 but invalid JSON
         ];
-        
+
         for token in malformed_tokens {
             let result = auth_service.verify_token(token);
             assert!(result.is_err(), "Expected error for token: {}", token);
@@ -662,10 +695,12 @@ mod tests {
     fn test_token_expiration_is_in_future() {
         let config = load_test_config();
         let auth_service = AuthService::new(config).unwrap();
-        
-        let token = auth_service.generate_access_token("uuid", "user", false, false, false).unwrap();
+
+        let token = auth_service
+            .generate_access_token("uuid", "user", false, false, false)
+            .unwrap();
         let claims = auth_service.verify_token(&token).unwrap();
-        
+
         let now = Utc::now().timestamp();
         assert!(claims.exp > now);
         assert!(claims.iat <= now);
@@ -675,7 +710,7 @@ mod tests {
     fn test_token_all_permission_combinations() {
         let config = load_test_config();
         let auth_service = AuthService::new(config).unwrap();
-        
+
         let combinations = [
             (false, false, false),
             (true, false, false),
@@ -686,11 +721,13 @@ mod tests {
             (false, true, true),
             (true, true, true),
         ];
-        
+
         for (mfa, superuser, staff) in combinations {
-            let token = auth_service.generate_access_token("uuid", "user", mfa, superuser, staff).unwrap();
+            let token = auth_service
+                .generate_access_token("uuid", "user", mfa, superuser, staff)
+                .unwrap();
             let claims = auth_service.verify_token(&token).unwrap();
-            
+
             assert_eq!(claims.mfa_verified, mfa);
             assert_eq!(claims.is_superuser, superuser);
             assert_eq!(claims.is_staff, staff);
@@ -701,8 +738,9 @@ mod tests {
 
     #[test]
     fn test_generate_totp_secret_special_chars_username() {
-        let (secret, uri) = AuthService::generate_totp_secret("user@example.com", "VAUBAN Test").unwrap();
-        
+        let (secret, uri) =
+            AuthService::generate_totp_secret("user@example.com", "VAUBAN Test").unwrap();
+
         assert!(!secret.is_empty());
         assert!(uri.contains("otpauth://"));
     }
@@ -710,7 +748,7 @@ mod tests {
     #[test]
     fn test_generate_totp_secret_unicode_issuer() {
         let (secret, uri) = AuthService::generate_totp_secret("user", "测试发行者").unwrap();
-        
+
         assert!(!secret.is_empty());
         assert!(!uri.is_empty());
     }
@@ -718,7 +756,7 @@ mod tests {
     #[test]
     fn test_verify_totp_empty_code() {
         let (secret, _) = AuthService::generate_totp_secret("user", "issuer").unwrap();
-        
+
         let result = AuthService::verify_totp(&secret, "");
         assert!(!result);
     }
@@ -732,7 +770,7 @@ mod tests {
     #[test]
     fn test_verify_totp_wrong_length_code() {
         let (secret, _) = AuthService::generate_totp_secret("user", "issuer").unwrap();
-        
+
         // Too short
         assert!(!AuthService::verify_totp(&secret, "12345"));
         // Too long
@@ -760,7 +798,7 @@ mod tests {
     #[test]
     fn test_totp_provisioning_uri_format() {
         let (_, uri) = AuthService::generate_totp_secret("alice", "MyApp").unwrap();
-        
+
         // Should follow otpauth format
         assert!(uri.starts_with("otpauth://totp/"));
         assert!(uri.contains("secret="));
@@ -773,7 +811,7 @@ mod tests {
     fn test_auth_service_with_different_token_lifetime() {
         let mut config = load_test_config();
         config.jwt.access_token_lifetime_minutes = 60;
-        
+
         let auth_service = AuthService::new(config).unwrap();
         assert_eq!(auth_service.access_token_lifetime_minutes(), 60);
     }

@@ -229,7 +229,7 @@ mod tests {
 
     #[test]
     fn test_session_list_template_renders() {
-        use crate::templates::base::{VaubanConfig, UserContext};
+        use crate::templates::base::{UserContext, VaubanConfig};
 
         let template = SessionListTemplate {
             title: "Sessions".to_string(),
@@ -261,7 +261,7 @@ mod tests {
 
     #[test]
     fn test_session_list_template_renders_empty() {
-        use crate::templates::base::{VaubanConfig, UserContext};
+        use crate::templates::base::{UserContext, VaubanConfig};
 
         let template = SessionListTemplate {
             title: "Sessions".to_string(),

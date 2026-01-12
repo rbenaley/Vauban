@@ -384,9 +384,9 @@ mod tests {
             limit: Some(25),
             offset: Some(10),
         };
-        
+
         let debug_str = format!("{:?}", params);
-        
+
         assert!(debug_str.contains("ListSessionsParams"));
         assert!(debug_str.contains("user-abc"));
         assert!(debug_str.contains("active"));
@@ -401,7 +401,7 @@ mod tests {
             limit: None,
             offset: None,
         };
-        
+
         assert!(!params.has_user_filter());
         assert!(!params.has_asset_filter());
         assert!(!params.has_status_filter());
@@ -416,7 +416,7 @@ mod tests {
             limit: Some(10000),
             offset: None,
         };
-        
+
         assert_eq!(params.get_limit(), 10000);
     }
 
@@ -429,14 +429,14 @@ mod tests {
             limit: None,
             offset: Some(1000000),
         };
-        
+
         assert_eq!(params.get_offset(), 1000000);
     }
 
     #[test]
     fn test_list_sessions_params_status_values() {
         let statuses = ["active", "pending", "completed", "terminated", "failed"];
-        
+
         for status_val in statuses {
             let params = ListSessionsParams {
                 user_id: None,
@@ -445,7 +445,7 @@ mod tests {
                 limit: None,
                 offset: None,
             };
-            
+
             assert!(params.has_status_filter());
             assert_eq!(params.status, Some(status_val.to_string()));
         }
@@ -456,29 +456,29 @@ mod tests {
     #[test]
     fn test_is_htmx_request_with_header() {
         use axum::http::HeaderMap;
-        
+
         let mut headers = HeaderMap::new();
         headers.insert("HX-Request", "true".parse().unwrap());
-        
+
         assert!(is_htmx_request(&headers));
     }
 
     #[test]
     fn test_is_htmx_request_without_header() {
         use axum::http::HeaderMap;
-        
+
         let headers = HeaderMap::new();
-        
+
         assert!(!is_htmx_request(&headers));
     }
 
     #[test]
     fn test_is_htmx_request_any_value() {
         use axum::http::HeaderMap;
-        
+
         let mut headers = HeaderMap::new();
         headers.insert("HX-Request", "1".parse().unwrap());
-        
+
         assert!(is_htmx_request(&headers));
     }
 
@@ -492,7 +492,7 @@ mod tests {
             session_type: "ssh".to_string(),
             justification: Some("A".repeat(1000)),
         };
-        
+
         assert!(request.validate().is_ok());
     }
 
@@ -504,7 +504,7 @@ mod tests {
             session_type: "ssh".to_string(),
             justification: None,
         };
-        
+
         // Empty credential_id may or may not be valid depending on validation rules
         let _ = request.validate();
     }
@@ -518,7 +518,7 @@ mod tests {
             session_type: "rdp".to_string(),
             justification: None,
         };
-        
+
         assert_eq!(request.asset_id, asset_uuid);
         assert!(request.validate().is_ok());
     }
@@ -531,7 +531,7 @@ mod tests {
             session_type: "ssh".to_string(),
             justification: Some("需要访问服务器进行维护 🔧".to_string()),
         };
-        
+
         assert!(request.validate().is_ok());
     }
 
@@ -546,7 +546,7 @@ mod tests {
             limit: Some(20),
             offset: None,
         };
-        
+
         assert!(params.has_user_filter());
         assert!(!params.has_asset_filter());
         assert!(params.has_status_filter());
@@ -561,7 +561,7 @@ mod tests {
             limit: None,
             offset: None,
         };
-        
+
         assert!(!params.has_user_filter());
         assert!(params.has_asset_filter());
         assert!(!params.has_status_filter());

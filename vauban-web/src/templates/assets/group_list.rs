@@ -78,7 +78,7 @@ mod tests {
 
     #[test]
     fn test_asset_group_list_template_renders() {
-        use crate::templates::base::{VaubanConfig, UserContext};
+        use crate::templates::base::{UserContext, VaubanConfig};
 
         let template = AssetGroupListTemplate {
             title: "Asset Groups".to_string(),

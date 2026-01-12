@@ -328,5 +328,4 @@ mod tests {
         let display = error.to_string();
         assert!(display.contains("gRPC error"));
     }
-
 }

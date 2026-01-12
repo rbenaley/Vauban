@@ -132,7 +132,9 @@ mod tests {
 
     #[test]
     fn test_client_addr_ipv6_full() {
-        let addr: SocketAddr = "[2001:0db8:85a3:0000:0000:8a2e:0370:7334]:80".parse().unwrap();
+        let addr: SocketAddr = "[2001:0db8:85a3:0000:0000:8a2e:0370:7334]:80"
+            .parse()
+            .unwrap();
         let client_addr = ClientAddr(addr);
         assert!(client_addr.addr().ip().is_ipv6());
     }

@@ -43,7 +43,7 @@ impl WsChannel {
     }
 
     /// Parse a channel from a string.
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "dashboard:stats" => Some(WsChannel::DashboardStats),
             "dashboard:active-sessions" => Some(WsChannel::ActiveSessions),
@@ -54,11 +54,17 @@ impl WsChannel {
                 Some(WsChannel::SessionLive(id))
             }
             s if s.starts_with("user:") && s.ends_with(":auth-sessions") => {
-                let user_id = s.strip_prefix("user:")?.strip_suffix(":auth-sessions")?.to_string();
+                let user_id = s
+                    .strip_prefix("user:")?
+                    .strip_suffix(":auth-sessions")?
+                    .to_string();
                 Some(WsChannel::UserAuthSessions(user_id))
             }
             s if s.starts_with("user:") && s.ends_with(":api-keys") => {
-                let user_id = s.strip_prefix("user:")?.strip_suffix(":api-keys")?.to_string();
+                let user_id = s
+                    .strip_prefix("user:")?
+                    .strip_suffix(":api-keys")?
+                    .to_string();
                 Some(WsChannel::UserApiKeys(user_id))
             }
             _ => None,
@@ -259,28 +265,28 @@ mod tests {
     #[test]
     fn test_ws_channel_from_str() {
         assert_eq!(
-            WsChannel::from_str("dashboard:stats"),
+            WsChannel::parse("dashboard:stats"),
             Some(WsChannel::DashboardStats)
         );
         assert_eq!(
-            WsChannel::from_str("dashboard:active-sessions"),
+            WsChannel::parse("dashboard:active-sessions"),
             Some(WsChannel::ActiveSessions)
         );
         assert_eq!(
-            WsChannel::from_str("notifications"),
+            WsChannel::parse("notifications"),
             Some(WsChannel::Notifications)
         );
         assert_eq!(
-            WsChannel::from_str("session:xyz"),
+            WsChannel::parse("session:xyz"),
             Some(WsChannel::SessionLive("xyz".to_string()))
         );
-        assert_eq!(WsChannel::from_str("invalid"), None);
+        assert_eq!(WsChannel::parse("invalid"), None);
     }
 
     #[test]
     fn test_ws_channel_from_str_user_auth_sessions() {
         assert_eq!(
-            WsChannel::from_str("user:abc123:auth-sessions"),
+            WsChannel::parse("user:abc123:auth-sessions"),
             Some(WsChannel::UserAuthSessions("abc123".to_string()))
         );
     }
@@ -288,15 +294,18 @@ mod tests {
     #[test]
     fn test_ws_channel_from_str_user_api_keys() {
         assert_eq!(
-            WsChannel::from_str("user:xyz789:api-keys"),
+            WsChannel::parse("user:xyz789:api-keys"),
             Some(WsChannel::UserApiKeys("xyz789".to_string()))
         );
     }
 
     #[test]
     fn test_ws_channel_from_str_invalid_user_channel() {
-        assert_eq!(WsChannel::from_str("user:abc:unknown"), None);
-        assert_eq!(WsChannel::from_str("user::auth-sessions"), Some(WsChannel::UserAuthSessions("".to_string())));
+        assert_eq!(WsChannel::parse("user:abc:unknown"), None);
+        assert_eq!(
+            WsChannel::parse("user::auth-sessions"),
+            Some(WsChannel::UserAuthSessions("".to_string()))
+        );
     }
 
     #[test]
@@ -311,7 +320,7 @@ mod tests {
 
         for channel in channels {
             let str_val = channel.as_str();
-            let parsed = WsChannel::from_str(&str_val);
+            let parsed = WsChannel::parse(&str_val);
             assert_eq!(parsed, Some(channel));
         }
     }
@@ -325,7 +334,7 @@ mod tests {
 
         for channel in channels {
             let str_val = channel.as_str();
-            let parsed = WsChannel::from_str(&str_val);
+            let parsed = WsChannel::parse(&str_val);
             assert_eq!(parsed, Some(channel));
         }
     }
@@ -347,12 +356,12 @@ mod tests {
     #[test]
     fn test_ws_channel_hash_eq() {
         use std::collections::HashSet;
-        
+
         let mut set = HashSet::new();
         set.insert(WsChannel::DashboardStats);
         set.insert(WsChannel::ActiveSessions);
         set.insert(WsChannel::DashboardStats); // duplicate
-        
+
         assert_eq!(set.len(), 2);
     }
 
@@ -479,7 +488,9 @@ mod tests {
         let service = BroadcastService::new();
         let mut receiver = service.subscribe_by_name("custom-channel").await;
 
-        let result = service.send_raw("custom-channel", "<div>Raw HTML</div>".to_string()).await;
+        let result = service
+            .send_raw("custom-channel", "<div>Raw HTML</div>".to_string())
+            .await;
         assert!(result.is_ok());
 
         let received = receiver.recv().await.unwrap();
@@ -489,7 +500,7 @@ mod tests {
     #[tokio::test]
     async fn test_broadcast_send_raw_no_channel() {
         let service = BroadcastService::new();
-        
+
         // Try to send to non-existent channel
         let result = service.send_raw("nonexistent", "test".to_string()).await;
         assert!(result.is_err());
@@ -519,16 +530,16 @@ mod tests {
     #[tokio::test]
     async fn test_broadcast_send_no_receivers() {
         let service = BroadcastService::new();
-        
+
         // Create channel but drop receiver
         {
             let _receiver = service.subscribe(&WsChannel::DashboardStats).await;
         }
         // Receiver dropped, but channel still exists
-        
+
         let msg = WsMessage::new("test", "content".to_string());
         let result = service.send(&WsChannel::DashboardStats, msg).await;
-        
+
         // Should succeed with 0 receivers
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 0);
@@ -540,7 +551,7 @@ mod tests {
         let cloned = service.clone();
 
         let _receiver = service.subscribe(&WsChannel::DashboardStats).await;
-        
+
         // Cloned service should see the same channels
         assert_eq!(cloned.subscriber_count(&WsChannel::DashboardStats).await, 1);
     }
@@ -550,12 +561,12 @@ mod tests {
         let service = BroadcastService::new();
         let session_id = "session-abc-123";
         let channel = WsChannel::SessionLive(session_id.to_string());
-        
+
         let mut receiver = service.subscribe(&channel).await;
-        
+
         let msg = WsMessage::new("session-view", "<p>Session data</p>".to_string());
         let _ = service.send(&channel, msg).await;
-        
+
         let received = receiver.recv().await.unwrap();
         assert!(received.contains("session-view"));
     }
@@ -564,10 +575,14 @@ mod tests {
     async fn test_broadcast_user_channels() {
         let service = BroadcastService::new();
         let user_id = "user-uuid-123";
-        
-        let _r1 = service.subscribe(&WsChannel::UserAuthSessions(user_id.to_string())).await;
-        let _r2 = service.subscribe(&WsChannel::UserApiKeys(user_id.to_string())).await;
-        
+
+        let _r1 = service
+            .subscribe(&WsChannel::UserAuthSessions(user_id.to_string()))
+            .await;
+        let _r2 = service
+            .subscribe(&WsChannel::UserApiKeys(user_id.to_string()))
+            .await;
+
         let channels = service.channels.read().await;
         assert!(channels.contains_key(&format!("user:{}:auth-sessions", user_id)));
         assert!(channels.contains_key(&format!("user:{}:api-keys", user_id)));
@@ -579,7 +594,7 @@ mod tests {
     fn test_ws_message_clone() {
         let msg = WsMessage::new("target", "content".to_string());
         let cloned = msg.clone();
-        
+
         assert_eq!(msg.target_id, cloned.target_id);
         assert_eq!(msg.html, cloned.html);
         assert_eq!(msg.swap_mode, cloned.swap_mode);
@@ -589,7 +604,7 @@ mod tests {
     fn test_ws_message_debug() {
         let msg = WsMessage::new("my-target", "<p>Test</p>".to_string());
         let debug_str = format!("{:?}", msg);
-        
+
         assert!(debug_str.contains("WsMessage"));
         assert!(debug_str.contains("my-target"));
     }
@@ -598,7 +613,7 @@ mod tests {
     fn test_ws_message_empty_html() {
         let msg = WsMessage::new("target", "".to_string());
         let html = msg.to_htmx_html();
-        
+
         assert!(html.contains(r#"id="target""#));
         assert!(html.ends_with("></div>") || html.contains("></div>"));
     }
@@ -607,19 +622,28 @@ mod tests {
     fn test_ws_message_special_characters() {
         let msg = WsMessage::new("target", "<script>alert('xss')</script>".to_string());
         let html = msg.to_htmx_html();
-        
+
         // Should preserve the content as-is (escaping is caller's responsibility)
         assert!(html.contains("<script>"));
     }
 
     #[test]
     fn test_ws_message_swap_modes() {
-        let modes = ["innerHTML", "outerHTML", "beforebegin", "afterend", "delete"];
-        
+        let modes = [
+            "innerHTML",
+            "outerHTML",
+            "beforebegin",
+            "afterend",
+            "delete",
+        ];
+
         for mode in modes {
             let msg = WsMessage::new("target", "content".to_string()).with_swap_mode(mode);
             assert_eq!(msg.swap_mode, mode);
-            assert!(msg.to_htmx_html().contains(&format!(r#"hx-swap-oob="{}""#, mode)));
+            assert!(
+                msg.to_htmx_html()
+                    .contains(&format!(r#"hx-swap-oob="{}""#, mode))
+            );
         }
     }
 
@@ -641,7 +665,7 @@ mod tests {
     #[test]
     fn test_ws_channel_from_str_recent_activity() {
         assert_eq!(
-            WsChannel::from_str("dashboard:recent-activity"),
+            WsChannel::parse("dashboard:recent-activity"),
             Some(WsChannel::RecentActivity)
         );
     }
@@ -650,36 +674,42 @@ mod tests {
     fn test_ws_channel_from_str_empty_session_id() {
         // "session:" with empty ID should still parse
         assert_eq!(
-            WsChannel::from_str("session:"),
+            WsChannel::parse("session:"),
             Some(WsChannel::SessionLive("".to_string()))
         );
     }
 
     #[test]
     fn test_ws_channel_from_str_session_with_special_chars() {
-        let result = WsChannel::from_str("session:abc-123_xyz");
-        assert_eq!(result, Some(WsChannel::SessionLive("abc-123_xyz".to_string())));
+        let result = WsChannel::parse("session:abc-123_xyz");
+        assert_eq!(
+            result,
+            Some(WsChannel::SessionLive("abc-123_xyz".to_string()))
+        );
     }
 
     #[test]
     fn test_ws_channel_from_str_user_with_colons() {
         // Edge case: user UUID contains colons
-        let result = WsChannel::from_str("user:a:b:c:auth-sessions");
-        assert_eq!(result, Some(WsChannel::UserAuthSessions("a:b:c".to_string())));
+        let result = WsChannel::parse("user:a:b:c:auth-sessions");
+        assert_eq!(
+            result,
+            Some(WsChannel::UserAuthSessions("a:b:c".to_string()))
+        );
     }
 
     #[test]
     fn test_ws_channel_from_str_partial_match() {
         // Should not match partial prefixes
-        assert_eq!(WsChannel::from_str("dashboard:stat"), None);
-        assert_eq!(WsChannel::from_str("dashboard:"), None);
-        assert_eq!(WsChannel::from_str("notification"), None);
+        assert_eq!(WsChannel::parse("dashboard:stat"), None);
+        assert_eq!(WsChannel::parse("dashboard:"), None);
+        assert_eq!(WsChannel::parse("notification"), None);
     }
 
     #[test]
     fn test_ws_channel_from_str_case_sensitive() {
-        assert_eq!(WsChannel::from_str("Dashboard:stats"), None);
-        assert_eq!(WsChannel::from_str("NOTIFICATIONS"), None);
+        assert_eq!(WsChannel::parse("Dashboard:stats"), None);
+        assert_eq!(WsChannel::parse("NOTIFICATIONS"), None);
     }
 
     // ==================== WsChannel Equality Tests ====================
@@ -715,7 +745,7 @@ mod tests {
         let a = WsChannel::UserAuthSessions("user-1".to_string());
         let b = WsChannel::UserAuthSessions("user-1".to_string());
         let c = WsChannel::UserAuthSessions("user-2".to_string());
-        
+
         assert_eq!(a, b);
         assert_ne!(a, c);
     }
@@ -726,7 +756,7 @@ mod tests {
     fn test_ws_message_unicode_content() {
         let msg = WsMessage::new("target", "Bonjour le monde! 你好世界 🌍".to_string());
         let html = msg.to_htmx_html();
-        
+
         assert!(html.contains("Bonjour le monde!"));
         assert!(html.contains("你好世界"));
         assert!(html.contains("🌍"));
@@ -737,7 +767,7 @@ mod tests {
         let content = "Line 1\nLine 2\nLine 3";
         let msg = WsMessage::new("target", content.to_string());
         let html = msg.to_htmx_html();
-        
+
         assert!(html.contains("Line 1\nLine 2\nLine 3"));
     }
 
@@ -745,7 +775,7 @@ mod tests {
     fn test_ws_message_html_entities() {
         let msg = WsMessage::new("target", "&lt;escaped&gt;".to_string());
         let html = msg.to_htmx_html();
-        
+
         assert!(html.contains("&lt;escaped&gt;"));
     }
 
@@ -753,7 +783,7 @@ mod tests {
     fn test_ws_message_quotes_in_content() {
         let msg = WsMessage::new("target", r#"He said "Hello""#.to_string());
         let html = msg.to_htmx_html();
-        
+
         assert!(html.contains(r#"He said "Hello""#));
     }
 
@@ -763,23 +793,23 @@ mod tests {
     async fn test_broadcast_concurrent_subscribe_same_channel() {
         let service = BroadcastService::new();
         let service_clone = service.clone();
-        
+
         let handle1 = tokio::spawn(async move {
             for _ in 0..10 {
                 let _rx = service_clone.subscribe(&WsChannel::DashboardStats).await;
             }
         });
-        
+
         let service_clone2 = service.clone();
         let handle2 = tokio::spawn(async move {
             for _ in 0..10 {
                 let _rx = service_clone2.subscribe(&WsChannel::DashboardStats).await;
             }
         });
-        
+
         handle1.await.unwrap();
         handle2.await.unwrap();
-        
+
         // Channel should exist and have been created only once
         let channels = service.channels.read().await;
         assert!(channels.contains_key("dashboard:stats"));
@@ -788,24 +818,24 @@ mod tests {
     #[tokio::test]
     async fn test_broadcast_subscribe_reuses_existing_channel() {
         let service = BroadcastService::new();
-        
+
         // First subscription creates channel
         let _rx1 = service.subscribe(&WsChannel::DashboardStats).await;
-        
+
         // Get channel count before second subscription
         let before = {
             let channels = service.channels.read().await;
             channels.len()
         };
-        
+
         // Second subscription should reuse
         let _rx2 = service.subscribe(&WsChannel::DashboardStats).await;
-        
+
         let after = {
             let channels = service.channels.read().await;
             channels.len()
         };
-        
+
         assert_eq!(before, after);
     }
 
@@ -813,7 +843,7 @@ mod tests {
     async fn test_broadcast_capacity_custom() {
         let service = BroadcastService::with_capacity(5);
         let _rx = service.subscribe(&WsChannel::DashboardStats).await;
-        
+
         assert_eq!(service.capacity, 5);
     }
 
@@ -821,10 +851,10 @@ mod tests {
     async fn test_broadcast_capacity_one() {
         let service = BroadcastService::with_capacity(1);
         let mut rx = service.subscribe(&WsChannel::DashboardStats).await;
-        
+
         let msg = WsMessage::new("test", "content".to_string());
         let _ = service.send(&WsChannel::DashboardStats, msg).await;
-        
+
         let received = rx.recv().await.unwrap();
         assert!(received.contains("test"));
     }
@@ -834,7 +864,7 @@ mod tests {
     #[tokio::test]
     async fn test_broadcast_all_channel_types() {
         let service = BroadcastService::new();
-        
+
         let channels = vec![
             WsChannel::DashboardStats,
             WsChannel::ActiveSessions,
@@ -844,47 +874,47 @@ mod tests {
             WsChannel::UserAuthSessions("user-1".to_string()),
             WsChannel::UserApiKeys("user-1".to_string()),
         ];
-        
+
         for channel in &channels {
             let mut rx = service.subscribe(channel).await;
             let msg = WsMessage::new("target", "test".to_string());
             let _ = service.send(channel, msg).await;
             let _ = rx.recv().await;
         }
-        
+
         assert_eq!(service.channels.read().await.len(), 7);
     }
 
     #[tokio::test]
     async fn test_broadcast_remove_all_channels() {
         let service = BroadcastService::new();
-        
+
         let channels = vec![
             WsChannel::DashboardStats,
             WsChannel::ActiveSessions,
             WsChannel::Notifications,
         ];
-        
+
         for channel in &channels {
             let _ = service.subscribe(channel).await;
         }
-        
+
         assert_eq!(service.channels.read().await.len(), 3);
-        
+
         for channel in &channels {
             service.remove_channel(channel).await;
         }
-        
+
         assert_eq!(service.channels.read().await.len(), 0);
     }
 
     #[tokio::test]
     async fn test_broadcast_remove_nonexistent_channel() {
         let service = BroadcastService::new();
-        
+
         // Should not panic
         service.remove_channel(&WsChannel::Notifications).await;
-        
+
         assert_eq!(service.channels.read().await.len(), 0);
     }
 
@@ -895,11 +925,14 @@ mod tests {
         let service = BroadcastService::new();
         let clone1 = service.clone();
         let clone2 = service.clone();
-        
+
         // All clones share the same channels
         let _rx1 = clone1.subscribe(&WsChannel::DashboardStats).await;
-        
+
         assert_eq!(clone2.subscriber_count(&WsChannel::DashboardStats).await, 1);
-        assert_eq!(service.subscriber_count(&WsChannel::DashboardStats).await, 1);
+        assert_eq!(
+            service.subscriber_count(&WsChannel::DashboardStats).await,
+            1
+        );
     }
 }

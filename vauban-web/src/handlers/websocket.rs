@@ -106,37 +106,37 @@ async fn handle_dashboard_socket(socket: WebSocket, state: AppState, user: AuthU
 
             // Stats channel updates
             result = stats_rx.recv() => {
-                if let Ok(html) = result {
-                    if sender.send(Message::Text(html.into())).await.is_err() {
-                        should_close = true;
-                    }
+                if let Ok(html) = result
+                    && sender.send(Message::Text(html.into())).await.is_err()
+                {
+                    should_close = true;
                 }
             }
 
             // Active sessions channel updates
             result = sessions_rx.recv() => {
-                if let Ok(html) = result {
-                    if sender.send(Message::Text(html.into())).await.is_err() {
-                        should_close = true;
-                    }
+                if let Ok(html) = result
+                    && sender.send(Message::Text(html.into())).await.is_err()
+                {
+                    should_close = true;
                 }
             }
 
             // Recent activity channel updates
             result = activity_rx.recv() => {
-                if let Ok(html) = result {
-                    if sender.send(Message::Text(html.into())).await.is_err() {
-                        should_close = true;
-                    }
+                if let Ok(html) = result
+                    && sender.send(Message::Text(html.into())).await.is_err()
+                {
+                    should_close = true;
                 }
             }
 
             // Notifications channel updates
             result = notifications_rx.recv() => {
-                if let Ok(html) = result {
-                    if sender.send(Message::Text(html.into())).await.is_err() {
-                        should_close = true;
-                    }
+                if let Ok(html) = result
+                    && sender.send(Message::Text(html.into())).await.is_err()
+                {
+                    should_close = true;
                 }
             }
         }
@@ -501,10 +501,10 @@ async fn handle_notifications_socket(
 
             // General notifications channel
             result = notifications_rx.recv() => {
-                if let Ok(html) = result {
-                    if sender.send(Message::Text(html.into())).await.is_err() {
-                        should_close = true;
-                    }
+                if let Ok(html) = result
+                    && sender.send(Message::Text(html.into())).await.is_err()
+                {
+                    should_close = true;
                 }
             }
 
@@ -620,7 +620,7 @@ mod tests {
     fn test_ws_channel_clone() {
         let channel = WsChannel::SessionLive("session-123".to_string());
         let cloned = channel.clone();
-        
+
         assert_eq!(channel.as_str(), cloned.as_str());
     }
 
@@ -628,19 +628,19 @@ mod tests {
     fn test_ws_channel_debug() {
         let channel = WsChannel::DashboardStats;
         let debug_str = format!("{:?}", channel);
-        
+
         assert!(debug_str.contains("DashboardStats"));
     }
 
     #[test]
     fn test_ws_channel_hash_eq() {
         use std::collections::HashSet;
-        
+
         let mut set = HashSet::new();
         set.insert(WsChannel::DashboardStats);
         set.insert(WsChannel::ActiveSessions);
         set.insert(WsChannel::DashboardStats); // duplicate
-        
+
         assert_eq!(set.len(), 2);
     }
 
@@ -648,7 +648,7 @@ mod tests {
     fn test_ws_channel_session_live_different_ids() {
         let channel1 = WsChannel::SessionLive("abc".to_string());
         let channel2 = WsChannel::SessionLive("xyz".to_string());
-        
+
         assert_ne!(channel1.as_str(), channel2.as_str());
     }
 
@@ -657,7 +657,7 @@ mod tests {
         let auth1 = WsChannel::UserAuthSessions("user-1".to_string());
         let auth2 = WsChannel::UserAuthSessions("user-2".to_string());
         let api1 = WsChannel::UserApiKeys("user-1".to_string());
-        
+
         assert_ne!(auth1.as_str(), auth2.as_str());
         assert_ne!(auth1.as_str(), api1.as_str());
     }
@@ -665,22 +665,22 @@ mod tests {
     #[test]
     fn test_ws_channel_from_str() {
         assert_eq!(
-            WsChannel::from_str("dashboard:stats"),
+            WsChannel::parse("dashboard:stats"),
             Some(WsChannel::DashboardStats)
         );
         assert_eq!(
-            WsChannel::from_str("dashboard:active-sessions"),
+            WsChannel::parse("dashboard:active-sessions"),
             Some(WsChannel::ActiveSessions)
         );
         assert_eq!(
-            WsChannel::from_str("dashboard:recent-activity"),
+            WsChannel::parse("dashboard:recent-activity"),
             Some(WsChannel::RecentActivity)
         );
         assert_eq!(
-            WsChannel::from_str("notifications"),
+            WsChannel::parse("notifications"),
             Some(WsChannel::Notifications)
         );
-        assert_eq!(WsChannel::from_str("invalid"), None);
+        assert_eq!(WsChannel::parse("invalid"), None);
     }
 
     #[test]
@@ -694,10 +694,10 @@ mod tests {
             WsChannel::UserAuthSessions("user-uuid".to_string()),
             WsChannel::UserApiKeys("user-uuid".to_string()),
         ];
-        
+
         for channel in channels {
             let str_val = channel.as_str();
-            let parsed = WsChannel::from_str(&str_val);
+            let parsed = WsChannel::parse(&str_val);
             assert!(parsed.is_some(), "Failed to parse: {}", str_val);
         }
     }
@@ -707,43 +707,43 @@ mod tests {
     #[test]
     fn test_sha3_256_hash_length() {
         use sha3::{Digest, Sha3_256};
-        
+
         let mut hasher = Sha3_256::new();
         hasher.update(b"test-token");
         let hash = format!("{:x}", hasher.finalize());
-        
+
         assert_eq!(hash.len(), 64);
     }
 
     #[test]
     fn test_sha3_256_hash_deterministic() {
         use sha3::{Digest, Sha3_256};
-        
+
         let compute_hash = |input: &[u8]| {
             let mut hasher = Sha3_256::new();
             hasher.update(input);
             format!("{:x}", hasher.finalize())
         };
-        
+
         let hash1 = compute_hash(b"same-token");
         let hash2 = compute_hash(b"same-token");
-        
+
         assert_eq!(hash1, hash2);
     }
 
     #[test]
     fn test_sha3_256_hash_different_inputs() {
         use sha3::{Digest, Sha3_256};
-        
+
         let compute_hash = |input: &[u8]| {
             let mut hasher = Sha3_256::new();
             hasher.update(input);
             format!("{:x}", hasher.finalize())
         };
-        
+
         let hash1 = compute_hash(b"token-a");
         let hash2 = compute_hash(b"token-b");
-        
+
         assert_ne!(hash1, hash2);
     }
 

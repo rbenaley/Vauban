@@ -5,6 +5,7 @@ use axum::{Router, http::HeaderValue};
 use axum_test::TestServer;
 use diesel::prelude::*;
 use diesel::r2d2::{ConnectionManager, Pool};
+use secrecy::ExposeSecret;
 use tokio::sync::OnceCell;
 
 use vauban_web::{
@@ -44,7 +45,8 @@ impl TestApp {
             .expect("Failed to load test config from config/testing.toml");
 
         // Create database pool
-        let manager = ConnectionManager::<diesel::PgConnection>::new(&config.database.url);
+        let manager =
+            ConnectionManager::<diesel::PgConnection>::new(config.database.url.expose_secret());
         let db_pool = Pool::builder()
             .max_size(config.database.max_connections)
             .build(manager)
@@ -108,7 +110,8 @@ impl TestApp {
         use vauban_web::models::NewAuthSession;
         use vauban_web::schema::{auth_sessions, users};
 
-        let token = self.auth_service
+        let token = self
+            .auth_service
             .generate_access_token(user_uuid, username, true, is_superuser, is_staff)
             .expect("Failed to generate test token");
 
@@ -225,14 +228,26 @@ fn build_test_router(state: AppState) -> Router {
         )
         // Web pages (HTML) - for testing raw SQL queries
         .route("/sessions/{id}", get(handlers::web::session_detail))
-        .route("/sessions/recordings/{id}/play", get(handlers::web::recording_play))
+        .route(
+            "/sessions/recordings/{id}/play",
+            get(handlers::web::recording_play),
+        )
         .route("/sessions/approvals", get(handlers::web::approval_list))
-        .route("/sessions/approvals/{uuid}", get(handlers::web::approval_detail))
+        .route(
+            "/sessions/approvals/{uuid}",
+            get(handlers::web::approval_detail),
+        )
         .route("/sessions/active", get(handlers::web::active_sessions))
         .route("/assets/{id}", get(handlers::web::asset_detail))
         .route("/assets/groups", get(handlers::web::asset_group_list))
-        .route("/assets/groups/{uuid}", get(handlers::web::asset_group_detail))
-        .route("/assets/groups/{uuid}/edit", get(handlers::web::asset_group_edit))
+        .route(
+            "/assets/groups/{uuid}",
+            get(handlers::web::asset_group_detail),
+        )
+        .route(
+            "/assets/groups/{uuid}/edit",
+            get(handlers::web::asset_group_edit),
+        )
         .route("/accounts/groups", get(handlers::web::group_list))
         .route("/accounts/groups/{uuid}", get(handlers::web::group_detail))
         // Account pages (profile, sessions and API keys)

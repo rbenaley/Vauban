@@ -128,7 +128,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr: SocketAddr = format!("{}:{}", config.server.host, config.server.port)
         .parse()
         .map_err(|e| format!("Invalid address: {}", e))?;
-    
+
     tracing::info!(
         address = %addr,
         cert = %config.server.tls.cert_path,
@@ -158,7 +158,8 @@ async fn load_tls_config(config: &Config) -> Result<RustlsConfig, Box<dyn std::e
         return Err(format!(
             "TLS certificate not found: {}. Run scripts/generate-dev-certs.sh for development.",
             cert_path
-        ).into());
+        )
+        .into());
     }
     if !std::path::Path::new(key_path).exists() {
         return Err(format!("TLS private key not found: {}", key_path).into());
@@ -177,22 +178,20 @@ async fn load_tls_config(config: &Config) -> Result<RustlsConfig, Box<dyn std::e
 
     // Load CA chain if provided (for intermediate certificates)
     let mut full_chain = cert_chain;
-    if let Some(ca_path) = &config.server.tls.ca_chain_path {
-        if std::path::Path::new(ca_path).exists() {
-            let ca_file = File::open(ca_path)?;
-            let mut ca_reader = BufReader::new(ca_file);
-            let ca_certs: Vec<_> = certs(&mut ca_reader)
-                .filter_map(|cert| cert.ok())
-                .collect();
-            full_chain.extend(ca_certs);
-        }
+    if let Some(ca_path) = &config.server.tls.ca_chain_path
+        && std::path::Path::new(ca_path).exists()
+    {
+        let ca_file = File::open(ca_path)?;
+        let mut ca_reader = BufReader::new(ca_file);
+        let ca_certs: Vec<_> = certs(&mut ca_reader).filter_map(|cert| cert.ok()).collect();
+        full_chain.extend(ca_certs);
     }
 
     // Load private key
     let key_file = File::open(key_path)?;
     let mut key_reader = BufReader::new(key_file);
-    let private_key = private_key(&mut key_reader)?
-        .ok_or("No valid private key found in key file")?;
+    let private_key =
+        private_key(&mut key_reader)?.ok_or("No valid private key found in key file")?;
 
     // Build rustls config with TLS 1.3 ONLY
     // Explicitly restrict to TLS 1.3 protocol version (no TLS 1.2 or lower)
@@ -205,7 +204,9 @@ async fn load_tls_config(config: &Config) -> Result<RustlsConfig, Box<dyn std::e
         server_config.crypto_provider().cipher_suites.len()
     );
 
-    Ok(RustlsConfig::from_config(std::sync::Arc::new(server_config)))
+    Ok(RustlsConfig::from_config(std::sync::Arc::new(
+        server_config,
+    )))
 }
 
 /// Create Axum application.
@@ -478,7 +479,7 @@ mod tests {
     fn test_socket_addr_localhost_variations() {
         let localhost: SocketAddr = "127.0.0.1:80".parse().unwrap();
         assert!(localhost.ip().is_loopback());
-        
+
         let ipv6_localhost: SocketAddr = "[::1]:80".parse().unwrap();
         assert!(ipv6_localhost.ip().is_loopback());
     }

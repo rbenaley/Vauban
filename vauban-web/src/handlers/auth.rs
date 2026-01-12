@@ -84,7 +84,7 @@ pub async fn login(
         .filter(is_deleted.eq(false))
         .first::<User>(&mut conn)
         .optional()
-        .map_err(|e| AppError::Database(e))?
+        .map_err(AppError::Database)?
     {
         Some(u) => u,
         None => {
@@ -112,7 +112,7 @@ pub async fn login(
         diesel::update(users.find(user.id))
             .set(failed_login_attempts.eq(failed_login_attempts + 1))
             .execute(&mut conn)
-            .map_err(|e| AppError::Database(e))?;
+            .map_err(AppError::Database)?;
 
         if htmx {
             return Ok(Html(login_error_html("Invalid credentials")).into_response());
@@ -169,7 +169,7 @@ pub async fn login(
             last_login.eq(chrono::Utc::now()),
         ))
         .execute(&mut conn)
-        .map_err(|e| AppError::Database(e))?;
+        .map_err(AppError::Database)?;
 
     // Create auth session record for session management
     let token_hash = hash_token(&access_token);
@@ -200,7 +200,8 @@ pub async fn login(
         ip_address: client_ip,
         user_agent: user_agent_str,
         device_info,
-        expires_at: Utc::now() + Duration::minutes(state.auth_service.access_token_lifetime_minutes() as i64),
+        expires_at: Utc::now()
+            + Duration::minutes(state.auth_service.access_token_lifetime_minutes() as i64),
         is_current: true,
     };
 
@@ -215,12 +216,8 @@ pub async fn login(
 
     // Broadcast session update to all connected WebSocket clients for this user
     if session_created {
-        crate::handlers::web::broadcast_sessions_update(
-            &state,
-            &user.uuid.to_string(),
-            user.id,
-        )
-        .await;
+        crate::handlers::web::broadcast_sessions_update(&state, &user.uuid.to_string(), user.id)
+            .await;
     }
 
     // Set cookie
@@ -297,23 +294,20 @@ fn hash_token(token: &str) -> String {
 /// Extract client IP from headers (X-Forwarded-For, X-Real-IP) or connection address.
 fn extract_client_ip(headers: &HeaderMap, connect_addr: SocketAddr) -> IpNetwork {
     // Try X-Forwarded-For first (comma-separated list, first is original client)
-    if let Some(xff) = headers.get("X-Forwarded-For") {
-        if let Ok(xff_str) = xff.to_str() {
-            if let Some(first_ip) = xff_str.split(',').next() {
-                if let Ok(ip) = first_ip.trim().parse::<std::net::IpAddr>() {
-                    return IpNetwork::from(ip);
-                }
-            }
-        }
+    if let Some(xff) = headers.get("X-Forwarded-For")
+        && let Ok(xff_str) = xff.to_str()
+        && let Some(first_ip) = xff_str.split(',').next()
+        && let Ok(ip) = first_ip.trim().parse::<std::net::IpAddr>()
+    {
+        return IpNetwork::from(ip);
     }
 
     // Try X-Real-IP
-    if let Some(real_ip) = headers.get("X-Real-IP") {
-        if let Ok(ip_str) = real_ip.to_str() {
-            if let Ok(ip) = ip_str.parse::<std::net::IpAddr>() {
-                return IpNetwork::from(ip);
-            }
-        }
+    if let Some(real_ip) = headers.get("X-Real-IP")
+        && let Ok(ip_str) = real_ip.to_str()
+        && let Ok(ip) = ip_str.parse::<std::net::IpAddr>()
+    {
+        return IpNetwork::from(ip);
     }
 
     // Fallback to the actual TCP connection address
@@ -347,15 +341,15 @@ pub async fn logout(State(state): State<AppState>, jar: CookieJar) -> Response {
             .unwrap_or(0);
 
             // Broadcast session update to other connected clients
-            if deleted > 0 {
-                if let Some((user_id, user_uuid_val)) = user_info {
-                    crate::handlers::web::broadcast_sessions_update(
-                        &state,
-                        &user_uuid_val.to_string(),
-                        user_id,
-                    )
-                    .await;
-                }
+            if deleted > 0
+                && let Some((user_id, user_uuid_val)) = user_info
+            {
+                crate::handlers::web::broadcast_sessions_update(
+                    &state,
+                    &user_uuid_val.to_string(),
+                    user_id,
+                )
+                .await;
             }
         }
     }
@@ -396,7 +390,7 @@ pub async fn setup_mfa(
     diesel::update(users.filter(uuid.eq(user_uuid)))
         .set(mfa_secret.eq(Some(secret.clone())))
         .execute(&mut conn)
-        .map_err(|e| AppError::Database(e))?;
+        .map_err(AppError::Database)?;
 
     Ok(Json(MfaSetupResponse {
         secret,
@@ -590,11 +584,14 @@ mod tests {
     #[test]
     fn test_extract_client_ip_from_x_forwarded_for() {
         let mut headers = HeaderMap::new();
-        headers.insert("X-Forwarded-For", "203.0.113.50, 70.41.3.18, 150.172.238.178".parse().unwrap());
-        
+        headers.insert(
+            "X-Forwarded-For",
+            "203.0.113.50, 70.41.3.18, 150.172.238.178".parse().unwrap(),
+        );
+
         let fallback_addr: SocketAddr = "192.168.1.1:12345".parse().unwrap();
         let ip = extract_client_ip(&headers, fallback_addr);
-        
+
         // Should return the first IP in X-Forwarded-For (the original client)
         assert_eq!(ip.ip().to_string(), "203.0.113.50");
     }
@@ -603,10 +600,10 @@ mod tests {
     fn test_extract_client_ip_from_x_forwarded_for_single() {
         let mut headers = HeaderMap::new();
         headers.insert("X-Forwarded-For", "8.8.8.8".parse().unwrap());
-        
+
         let fallback_addr: SocketAddr = "192.168.1.1:12345".parse().unwrap();
         let ip = extract_client_ip(&headers, fallback_addr);
-        
+
         assert_eq!(ip.ip().to_string(), "8.8.8.8");
     }
 
@@ -614,10 +611,10 @@ mod tests {
     fn test_extract_client_ip_from_x_real_ip() {
         let mut headers = HeaderMap::new();
         headers.insert("X-Real-IP", "1.2.3.4".parse().unwrap());
-        
+
         let fallback_addr: SocketAddr = "192.168.1.1:12345".parse().unwrap();
         let ip = extract_client_ip(&headers, fallback_addr);
-        
+
         assert_eq!(ip.ip().to_string(), "1.2.3.4");
     }
 
@@ -626,10 +623,10 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("X-Forwarded-For", "203.0.113.50".parse().unwrap());
         headers.insert("X-Real-IP", "1.2.3.4".parse().unwrap());
-        
+
         let fallback_addr: SocketAddr = "192.168.1.1:12345".parse().unwrap();
         let ip = extract_client_ip(&headers, fallback_addr);
-        
+
         // X-Forwarded-For should take priority
         assert_eq!(ip.ip().to_string(), "203.0.113.50");
     }
@@ -637,10 +634,10 @@ mod tests {
     #[test]
     fn test_extract_client_ip_fallback_to_connect_addr() {
         let headers = HeaderMap::new(); // No proxy headers
-        
+
         let fallback_addr: SocketAddr = "85.123.45.67:54321".parse().unwrap();
         let ip = extract_client_ip(&headers, fallback_addr);
-        
+
         // Should use the TCP connection address
         assert_eq!(ip.ip().to_string(), "85.123.45.67");
     }
@@ -649,20 +646,20 @@ mod tests {
     fn test_extract_client_ip_ipv6() {
         let mut headers = HeaderMap::new();
         headers.insert("X-Forwarded-For", "2001:db8::1".parse().unwrap());
-        
+
         let fallback_addr: SocketAddr = "[::1]:12345".parse().unwrap();
         let ip = extract_client_ip(&headers, fallback_addr);
-        
+
         assert_eq!(ip.ip().to_string(), "2001:db8::1");
     }
 
     #[test]
     fn test_extract_client_ip_fallback_ipv6() {
         let headers = HeaderMap::new();
-        
+
         let fallback_addr: SocketAddr = "[2001:db8::abcd]:443".parse().unwrap();
         let ip = extract_client_ip(&headers, fallback_addr);
-        
+
         assert_eq!(ip.ip().to_string(), "2001:db8::abcd");
     }
 
@@ -670,10 +667,10 @@ mod tests {
     fn test_extract_client_ip_invalid_x_forwarded_for() {
         let mut headers = HeaderMap::new();
         headers.insert("X-Forwarded-For", "not-an-ip-address".parse().unwrap());
-        
+
         let fallback_addr: SocketAddr = "10.0.0.1:8080".parse().unwrap();
         let ip = extract_client_ip(&headers, fallback_addr);
-        
+
         // Should fallback to connection address when header is invalid
         assert_eq!(ip.ip().to_string(), "10.0.0.1");
     }
@@ -685,7 +682,7 @@ mod tests {
         let token = "my-secret-jwt-token";
         let hash1 = hash_token(token);
         let hash2 = hash_token(token);
-        
+
         assert_eq!(hash1, hash2);
     }
 
@@ -693,14 +690,14 @@ mod tests {
     fn test_hash_token_different_inputs() {
         let hash1 = hash_token("token-a");
         let hash2 = hash_token("token-b");
-        
+
         assert_ne!(hash1, hash2);
     }
 
     #[test]
     fn test_hash_token_length() {
         let hash = hash_token("any-token");
-        
+
         // SHA3-256 produces a 64-character hex string
         assert_eq!(hash.len(), 64);
     }
@@ -708,7 +705,7 @@ mod tests {
     #[test]
     fn test_hash_token_hex_format() {
         let hash = hash_token("test-token");
-        
+
         // Should only contain hex characters
         assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
     }
@@ -741,42 +738,47 @@ mod tests {
     fn test_extract_client_ip_xff_with_spaces() {
         let mut headers = HeaderMap::new();
         headers.insert("X-Forwarded-For", "  1.2.3.4  , 5.6.7.8".parse().unwrap());
-        
+
         let fallback: SocketAddr = "10.0.0.1:8080".parse().unwrap();
         let ip = extract_client_ip(&headers, fallback);
-        
+
         assert_eq!(ip.ip().to_string(), "1.2.3.4");
     }
 
     #[test]
     fn test_extract_client_ip_xff_ipv6_mixed() {
         let mut headers = HeaderMap::new();
-        headers.insert("X-Forwarded-For", "::ffff:192.168.1.1, 10.0.0.1".parse().unwrap());
-        
+        headers.insert(
+            "X-Forwarded-For",
+            "::ffff:192.168.1.1, 10.0.0.1".parse().unwrap(),
+        );
+
         let fallback: SocketAddr = "127.0.0.1:8080".parse().unwrap();
         let ip = extract_client_ip(&headers, fallback);
-        
-        assert!(ip.ip().to_string().contains("192.168.1.1") || ip.ip().to_string().contains("ffff"));
+
+        assert!(
+            ip.ip().to_string().contains("192.168.1.1") || ip.ip().to_string().contains("ffff")
+        );
     }
 
     #[test]
     fn test_extract_client_ip_x_real_ip_invalid_fallback() {
         let mut headers = HeaderMap::new();
         headers.insert("X-Real-IP", "not-valid".parse().unwrap());
-        
+
         let fallback: SocketAddr = "172.16.0.1:443".parse().unwrap();
         let ip = extract_client_ip(&headers, fallback);
-        
+
         assert_eq!(ip.ip().to_string(), "172.16.0.1");
     }
 
     #[test]
     fn test_extract_client_ip_localhost() {
         let headers = HeaderMap::new();
-        
+
         let fallback: SocketAddr = "127.0.0.1:3000".parse().unwrap();
         let ip = extract_client_ip(&headers, fallback);
-        
+
         assert_eq!(ip.ip().to_string(), "127.0.0.1");
     }
 
@@ -786,7 +788,7 @@ mod tests {
     fn test_is_htmx_request_true() {
         let mut headers = HeaderMap::new();
         headers.insert("HX-Request", "true".parse().unwrap());
-        
+
         assert!(is_htmx_request(&headers));
     }
 
@@ -800,7 +802,7 @@ mod tests {
     fn test_is_htmx_request_any_value() {
         let mut headers = HeaderMap::new();
         headers.insert("HX-Request", "1".parse().unwrap());
-        
+
         // Any value should be considered true (just presence check)
         assert!(is_htmx_request(&headers));
     }
@@ -810,7 +812,7 @@ mod tests {
     #[test]
     fn test_login_error_html_contains_message() {
         let html = login_error_html("Test error message");
-        
+
         assert!(html.contains("Test error message"));
         assert!(html.contains("login-result"));
         assert!(html.contains("bg-red-50"));
@@ -819,7 +821,7 @@ mod tests {
     #[test]
     fn test_login_error_html_special_chars() {
         let html = login_error_html("<script>alert('xss')</script>");
-        
+
         // Should contain the message (escaping is caller's responsibility in real app)
         assert!(html.contains("login-result"));
     }
@@ -827,7 +829,7 @@ mod tests {
     #[test]
     fn test_login_error_html_empty_message() {
         let html = login_error_html("");
-        
+
         assert!(html.contains("login-result"));
     }
 
@@ -836,7 +838,7 @@ mod tests {
     #[test]
     fn test_login_mfa_required_html_structure() {
         let html = login_mfa_required_html();
-        
+
         assert!(html.contains("mfa_code"));
         assert!(html.contains("mfa-section"));
         assert!(html.contains("hx-swap-oob"));
@@ -846,7 +848,7 @@ mod tests {
     #[test]
     fn test_login_mfa_required_html_autofocus() {
         let html = login_mfa_required_html();
-        
+
         assert!(html.contains("autofocus"));
     }
 
@@ -859,9 +861,9 @@ mod tests {
             password: "securepassword".to_string(),
             mfa_code: Some("123456".to_string()),
         };
-        
+
         let debug_str = format!("{:?}", request);
-        
+
         assert!(debug_str.contains("LoginRequest"));
         assert!(debug_str.contains("testuser"));
     }
@@ -897,7 +899,7 @@ mod tests {
             user: user_dto,
             mfa_required: false,
         };
-        
+
         let debug_str = format!("{:?}", response);
         assert!(debug_str.contains("LoginResponse"));
     }
@@ -911,7 +913,7 @@ mod tests {
             qr_code_url: "otpauth://".to_string(),
             qr_code_base64: None,
         };
-        
+
         let debug_str = format!("{:?}", response);
         assert!(debug_str.contains("MfaSetupResponse"));
     }
@@ -932,7 +934,7 @@ mod tests {
     #[test]
     fn test_login_request_unicode_username() {
         let request = LoginRequest {
-            username: "用户名".to_string(),  // 3 unicode chars
+            username: "用户名".to_string(), // 3 unicode chars
             password: "validpassword123".to_string(),
             mfa_code: None,
         };
@@ -944,7 +946,7 @@ mod tests {
     fn test_login_request_unicode_password() {
         let request = LoginRequest {
             username: "testuser".to_string(),
-            password: "密码测试密码测试密码测试".to_string(),  // 12 unicode chars
+            password: "密码测试密码测试密码测试".to_string(), // 12 unicode chars
             mfa_code: None,
         };
         assert!(request.validate().is_ok());

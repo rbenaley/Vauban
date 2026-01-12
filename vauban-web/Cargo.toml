@@ -26,7 +26,7 @@ askama = { version = "0.15", features = ["serde_json"] }
 jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 argon2 = "0.5"
 totp-rs = { version = "5.6", features = ["qr", "gen_secret"] }
-secrecy = "0.10"
+secrecy = { version = "0.10", features = ["serde"] }
 zeroize = { version = "1.8", features = ["derive"] }
 
 # OAuth2 / OpenID Connect
@@ -47,7 +47,8 @@ prost = "0.14"
 # Cryptography (Post-Quantum)
 pqcrypto-kyber = "0.8"
 pqcrypto-dilithium = "0.5"
-x25519-dalek = "2.0"
+pqcrypto-traits = "0.3"
+x25519-dalek = { version = "2.0", features = ["static_secrets"] }
 ed25519-dalek = { version = "2.1", features = ["rand_core"] }
 aes-gcm = "0.10"
 sha1 = "0.10"

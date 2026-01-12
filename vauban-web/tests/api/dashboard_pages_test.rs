@@ -13,12 +13,12 @@ use axum::http::header::COOKIE;
 use serial_test::serial;
 use uuid::Uuid;
 
-use diesel::prelude::*;
 use crate::common::{TestApp, assertions::assert_status};
 use crate::fixtures::{
-    create_simple_user, create_simple_ssh_asset, create_test_session,
-    create_recorded_session, unique_name,
+    create_recorded_session, create_simple_ssh_asset, create_simple_user, create_test_session,
+    unique_name,
 };
+use diesel::prelude::*;
 
 /// Helper to get user UUID from user ID.
 fn get_user_uuid(conn: &mut diesel::PgConnection, user_id: i32) -> Uuid {
@@ -75,7 +75,7 @@ async fn test_dashboard_home_loads_with_auth() {
 
     let username = unique_name("dashboard_user");
     let user_id = create_simple_user(&mut conn, &username);
-    
+
     let user_uuid: Uuid = {
         use diesel::prelude::*;
         use vauban_web::schema::users;
@@ -86,12 +86,7 @@ async fn test_dashboard_home_loads_with_auth() {
             .expect("User should exist")
     };
 
-    let token = app.generate_test_token(
-        &user_uuid.to_string(),
-        &username,
-        true,
-        true,
-    );
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
 
     let response = app
         .server
@@ -114,7 +109,7 @@ async fn test_user_sessions_page_contains_html() {
 
     let username = unique_name("sessions_html_user");
     let user_id = create_simple_user(&mut conn, &username);
-    
+
     let user_uuid: Uuid = {
         use diesel::prelude::*;
         use vauban_web::schema::users;
@@ -125,12 +120,7 @@ async fn test_user_sessions_page_contains_html() {
             .expect("User should exist")
     };
 
-    let token = app.generate_test_token(
-        &user_uuid.to_string(),
-        &username,
-        true,
-        true,
-    );
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
 
     let response = app
         .server
@@ -139,7 +129,7 @@ async fn test_user_sessions_page_contains_html() {
         .await;
 
     assert_status(&response, 200);
-    
+
     let body = response.text();
     // Verify it's HTML content
     assert!(
@@ -160,7 +150,7 @@ async fn test_api_keys_page_contains_html() {
 
     let username = unique_name("apikeys_html_user");
     let user_id = create_simple_user(&mut conn, &username);
-    
+
     let user_uuid: Uuid = {
         use diesel::prelude::*;
         use vauban_web::schema::users;
@@ -171,12 +161,7 @@ async fn test_api_keys_page_contains_html() {
             .expect("User should exist")
     };
 
-    let token = app.generate_test_token(
-        &user_uuid.to_string(),
-        &username,
-        true,
-        true,
-    );
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
 
     let response = app
         .server
@@ -185,7 +170,7 @@ async fn test_api_keys_page_contains_html() {
         .await;
 
     assert_status(&response, 200);
-    
+
     let body = response.text();
     assert!(
         body.contains("<!DOCTYPE html>") || body.contains("<html") || body.contains("API Keys"),
@@ -205,7 +190,7 @@ async fn test_sessions_list_loads_empty() {
 
     let username = unique_name("empty_sessions_list");
     let user_id = create_simple_user(&mut conn, &username);
-    
+
     let user_uuid: Uuid = {
         use diesel::prelude::*;
         use vauban_web::schema::users;
@@ -216,12 +201,7 @@ async fn test_sessions_list_loads_empty() {
             .expect("User should exist")
     };
 
-    let token = app.generate_test_token(
-        &user_uuid.to_string(),
-        &username,
-        true,
-        true,
-    );
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
 
     let response = app
         .server
@@ -242,11 +222,11 @@ async fn test_sessions_list_with_active_sessions() {
     let username = unique_name("active_sessions_list");
     let user_id = create_simple_user(&mut conn, &username);
     let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("session-asset"), user_id);
-    
+
     // Create some active sessions
     let _session1 = create_test_session(&mut conn, user_id, asset_id, "ssh", "active");
     let _session2 = create_test_session(&mut conn, user_id, asset_id, "rdp", "active");
-    
+
     let user_uuid: Uuid = {
         use diesel::prelude::*;
         use vauban_web::schema::users;
@@ -257,12 +237,7 @@ async fn test_sessions_list_with_active_sessions() {
             .expect("User should exist")
     };
 
-    let token = app.generate_test_token(
-        &user_uuid.to_string(),
-        &username,
-        true,
-        true,
-    );
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
 
     let response = app
         .server
@@ -287,10 +262,10 @@ async fn test_recordings_list_loads() {
     let username = unique_name("recordings_list");
     let user_id = create_simple_user(&mut conn, &username);
     let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("rec-asset"), user_id);
-    
+
     // Create a recorded session
     let _session = create_recorded_session(&mut conn, user_id, asset_id);
-    
+
     let user_uuid: Uuid = {
         use diesel::prelude::*;
         use vauban_web::schema::users;
@@ -301,12 +276,7 @@ async fn test_recordings_list_loads() {
             .expect("User should exist")
     };
 
-    let token = app.generate_test_token(
-        &user_uuid.to_string(),
-        &username,
-        true,
-        true,
-    );
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
 
     // Note: /sessions/recordings not in test router
     // Test with available endpoint
@@ -333,11 +303,11 @@ async fn test_asset_detail_with_sessions() {
     let username = unique_name("asset_sessions");
     let user_id = create_simple_user(&mut conn, &username);
     let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("asset-with-sess"), user_id);
-    
+
     // Create sessions for this asset
     let _session1 = create_test_session(&mut conn, user_id, asset_id, "ssh", "completed");
     let _session2 = create_test_session(&mut conn, user_id, asset_id, "ssh", "active");
-    
+
     let user_uuid: Uuid = {
         use diesel::prelude::*;
         use vauban_web::schema::users;
@@ -348,12 +318,7 @@ async fn test_asset_detail_with_sessions() {
             .expect("User should exist")
     };
 
-    let token = app.generate_test_token(
-        &user_uuid.to_string(),
-        &username,
-        true,
-        true,
-    );
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
 
     let response = app
         .server
@@ -379,12 +344,7 @@ async fn test_sessions_pagination() {
     let user_id = create_simple_user(&mut conn, &username);
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
-    let token = app.generate_test_token(
-        &user_uuid.to_string(),
-        &username,
-        true,
-        true,
-    );
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
 
     // Test various page numbers
     for page in [1, 2, 10, 100] {
@@ -414,12 +374,7 @@ async fn test_asset_groups_pagination() {
     let user_id = create_simple_user(&mut conn, &username);
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
-    let token = app.generate_test_token(
-        &user_uuid.to_string(),
-        &username,
-        true,
-        true,
-    );
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
 
     let response = app
         .server
@@ -445,12 +400,7 @@ async fn test_asset_groups_search() {
     let user_id = create_simple_user(&mut conn, &username);
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
-    let token = app.generate_test_token(
-        &user_uuid.to_string(),
-        &username,
-        true,
-        true,
-    );
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
 
     // Test search with various terms
     let search_terms = ["production", "test", "web", "database"];
@@ -482,12 +432,7 @@ async fn test_user_groups_search() {
     let user_id = create_simple_user(&mut conn, &username);
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
-    let token = app.generate_test_token(
-        &user_uuid.to_string(),
-        &username,
-        true,
-        true,
-    );
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
 
     let response = app
         .server
@@ -511,7 +456,7 @@ async fn test_html_pages_return_html_content_type() {
 
     let username = unique_name("content_type_user");
     let user_id = create_simple_user(&mut conn, &username);
-    
+
     let user_uuid: Uuid = {
         use diesel::prelude::*;
         use vauban_web::schema::users;
@@ -522,12 +467,7 @@ async fn test_html_pages_return_html_content_type() {
             .expect("User should exist")
     };
 
-    let token = app.generate_test_token(
-        &user_uuid.to_string(),
-        &username,
-        true,
-        true,
-    );
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
 
     let response = app
         .server
@@ -536,14 +476,11 @@ async fn test_html_pages_return_html_content_type() {
         .await;
 
     assert_status(&response, 200);
-    
+
     // Check content type header
     let content_type = response.headers().get("content-type");
-    assert!(
-        content_type.is_some(),
-        "Should have content-type header"
-    );
-    
+    assert!(content_type.is_some(), "Should have content-type header");
+
     let content_type_str = content_type.unwrap().to_str().unwrap_or("");
     assert!(
         content_type_str.contains("text/html"),

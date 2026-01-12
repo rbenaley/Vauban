@@ -105,7 +105,7 @@ mod tests {
 
     #[test]
     fn test_group_list_template_renders() {
-        use crate::templates::base::{VaubanConfig, UserContext};
+        use crate::templates::base::{UserContext, VaubanConfig};
 
         let template = GroupListTemplate {
             title: "Groups".to_string(),

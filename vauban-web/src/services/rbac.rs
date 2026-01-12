@@ -126,7 +126,7 @@ mod tests {
     #[test]
     fn test_permission_check_all_empty() {
         let check = PermissionCheck::new("", "", "");
-        
+
         assert_eq!(check.user_id, "");
         assert_eq!(check.resource, "");
         assert_eq!(check.action, "");
@@ -155,9 +155,9 @@ mod tests {
         let check = PermissionCheck::new(
             "user@domain.com",
             "resource:with:colons",
-            "action/with/slashes"
+            "action/with/slashes",
         );
-        
+
         assert_eq!(check.user_id, "user@domain.com");
         assert_eq!(check.resource, "resource:with:colons");
         assert_eq!(check.action, "action/with/slashes");
@@ -167,7 +167,7 @@ mod tests {
     fn test_permission_check_uuid_user_id() {
         let uuid = "550e8400-e29b-41d4-a716-446655440000";
         let check = PermissionCheck::new(uuid, "assets", "read");
-        
+
         assert_eq!(check.user_id, uuid);
     }
 
@@ -176,9 +176,9 @@ mod tests {
         let long_user = "u".repeat(500);
         let long_resource = "r".repeat(500);
         let long_action = "a".repeat(500);
-        
+
         let check = PermissionCheck::new(&long_user, &long_resource, &long_action);
-        
+
         assert_eq!(check.user_id.len(), 500);
         assert_eq!(check.resource.len(), 500);
         assert_eq!(check.action.len(), 500);
@@ -188,9 +188,9 @@ mod tests {
     fn test_permission_check_clone_independence() {
         let mut check1 = PermissionCheck::new("user1", "resource1", "action1");
         let check2 = check1.clone();
-        
+
         check1.user_id = "modified".to_string();
-        
+
         // Clone should not be affected
         assert_eq!(check2.user_id, "user1");
     }
@@ -199,7 +199,7 @@ mod tests {
     fn test_permission_check_debug_format() {
         let check = PermissionCheck::new("test-user", "test-resource", "test-action");
         let debug_str = format!("{:?}", check);
-        
+
         assert!(debug_str.contains("PermissionCheck"));
         assert!(debug_str.contains("test-user"));
         assert!(debug_str.contains("test-resource"));
@@ -215,7 +215,7 @@ mod tests {
             resource: "direct-resource".to_string(),
             action: "direct-action".to_string(),
         };
-        
+
         assert_eq!(check.user_id, "direct-user");
         assert_eq!(check.resource, "direct-resource");
         assert_eq!(check.action, "direct-action");
@@ -224,11 +224,11 @@ mod tests {
     #[test]
     fn test_permission_check_field_mutation() {
         let mut check = PermissionCheck::new("original", "resource", "action");
-        
+
         check.user_id = "modified".to_string();
         check.resource = "new-resource".to_string();
         check.action = "new-action".to_string();
-        
+
         assert_eq!(check.user_id, "modified");
         assert_eq!(check.resource, "new-resource");
         assert_eq!(check.action, "new-action");
@@ -241,7 +241,7 @@ mod tests {
         let crud_actions = ["create", "read", "update", "delete"];
         let user = "user-123";
         let resource = "sessions";
-        
+
         for action in crud_actions {
             let check = PermissionCheck::new(user, resource, action);
             assert_eq!(check.action, action);
@@ -251,7 +251,7 @@ mod tests {
     #[test]
     fn test_permission_check_admin_pattern() {
         let admin_actions = ["manage", "configure", "audit", "export"];
-        
+
         for action in admin_actions {
             let check = PermissionCheck::new("admin", "system", action);
             assert_eq!(check.action, action);
@@ -261,7 +261,7 @@ mod tests {
     #[test]
     fn test_permission_check_wildcard_pattern() {
         let check = PermissionCheck::new("*", "*", "*");
-        
+
         assert_eq!(check.user_id, "*");
         assert_eq!(check.resource, "*");
         assert_eq!(check.action, "*");

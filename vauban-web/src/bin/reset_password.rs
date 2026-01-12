@@ -2,11 +2,12 @@
 ///
 /// Interactive CLI tool to reset a user's password.
 /// No secrets are stored in code - all input is provided interactively.
-use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
+use argon2::{Algorithm, Argon2, Params, PasswordHasher, Version, password_hash::SaltString};
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel::sql_types::Text;
 use rand::rngs::OsRng;
+use secrecy::ExposeSecret;
 use std::io::{self, Write};
 use vauban_web::config::Config;
 
@@ -17,8 +18,8 @@ fn main() {
     // Load configuration from TOML files
     let config = Config::load().expect("Failed to load configuration from config/*.toml");
 
-    let mut conn =
-        PgConnection::establish(&config.database.url).expect("Failed to connect to database");
+    let mut conn = PgConnection::establish(config.database.url.expose_secret())
+        .expect("Failed to connect to database");
 
     // Prompt for username
     let username = prompt("Enter username: ").expect("Failed to read username");
@@ -30,7 +31,7 @@ fn main() {
 
     // Check if user exists
     let user_exists: bool = diesel::sql_query(
-        "SELECT EXISTS(SELECT 1 FROM users WHERE username = $1 AND is_deleted = false) as exists"
+        "SELECT EXISTS(SELECT 1 FROM users WHERE username = $1 AND is_deleted = false) as exists",
     )
     .bind::<Text, _>(username.trim())
     .get_result::<ExistsResult>(&mut conn)
@@ -62,7 +63,15 @@ fn main() {
 
     // Hash the password
     let salt = SaltString::generate(&mut OsRng);
-    let argon2 = Argon2::default();
+    let params = Params::new(
+        config.security.argon2.memory_size_kb,
+        config.security.argon2.iterations,
+        config.security.argon2.parallelism,
+        Some(32),
+    )
+    .expect("Failed to create Argon2 parameters");
+
+    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
     let hash = argon2
         .hash_password(password.as_bytes(), &salt)
         .expect("Failed to hash password")

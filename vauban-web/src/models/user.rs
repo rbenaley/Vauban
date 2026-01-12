@@ -28,7 +28,7 @@ impl AuthSource {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s {
             "ldap" => Self::Ldap,
             "oidc" => Self::Oidc,
@@ -178,7 +178,7 @@ impl User {
 
     /// Get authentication source enum.
     pub fn auth_source_enum(&self) -> AuthSource {
-        AuthSource::from_str(&self.auth_source)
+        AuthSource::parse(&self.auth_source)
     }
 }
 
@@ -254,30 +254,30 @@ mod tests {
 
     #[test]
     fn test_auth_source_from_str_local() {
-        assert_eq!(AuthSource::from_str("local"), AuthSource::Local);
+        assert_eq!(AuthSource::parse("local"), AuthSource::Local);
     }
 
     #[test]
     fn test_auth_source_from_str_ldap() {
-        assert_eq!(AuthSource::from_str("ldap"), AuthSource::Ldap);
+        assert_eq!(AuthSource::parse("ldap"), AuthSource::Ldap);
     }
 
     #[test]
     fn test_auth_source_from_str_oidc() {
-        assert_eq!(AuthSource::from_str("oidc"), AuthSource::Oidc);
+        assert_eq!(AuthSource::parse("oidc"), AuthSource::Oidc);
     }
 
     #[test]
     fn test_auth_source_from_str_saml() {
-        assert_eq!(AuthSource::from_str("saml"), AuthSource::Saml);
+        assert_eq!(AuthSource::parse("saml"), AuthSource::Saml);
     }
 
     #[test]
     fn test_auth_source_from_str_unknown() {
         // Unknown values default to Local
-        assert_eq!(AuthSource::from_str("unknown"), AuthSource::Local);
-        assert_eq!(AuthSource::from_str(""), AuthSource::Local);
-        assert_eq!(AuthSource::from_str("LDAP"), AuthSource::Local); // Case sensitive
+        assert_eq!(AuthSource::parse("unknown"), AuthSource::Local);
+        assert_eq!(AuthSource::parse(""), AuthSource::Local);
+        assert_eq!(AuthSource::parse("LDAP"), AuthSource::Local); // Case sensitive
     }
 
     #[test]
@@ -297,7 +297,7 @@ mod tests {
             AuthSource::Saml,
         ] {
             let str_val = source.as_str();
-            let parsed = AuthSource::from_str(str_val);
+            let parsed = AuthSource::parse(str_val);
             assert_eq!(source, parsed);
         }
     }
@@ -538,7 +538,7 @@ mod tests {
     fn test_user_to_dto_with_last_login_ip() {
         let mut user = create_test_user();
         user.last_login_ip = Some("192.168.1.100/32".parse().unwrap());
-        
+
         let dto = user.to_dto();
         // IpNetwork::to_string includes the CIDR notation
         assert_eq!(dto.last_login_ip, Some("192.168.1.100/32".to_string()));
@@ -548,7 +548,7 @@ mod tests {
     fn test_user_to_dto_preserves_preferences() {
         let mut user = create_test_user();
         user.preferences = serde_json::json!({"theme": "dark", "language": "fr"});
-        
+
         let dto = user.to_dto();
         assert_eq!(dto.preferences["theme"], "dark");
     }
@@ -560,7 +560,7 @@ mod tests {
         let user = create_test_user();
         let dto = user.to_dto();
         let json = serde_json::to_string(&dto).unwrap();
-        
+
         assert!(json.contains("testuser"));
         assert!(json.contains("test@example.com"));
     }
@@ -570,7 +570,7 @@ mod tests {
         let user = create_test_user();
         let dto = user.to_dto();
         let debug_str = format!("{:?}", dto);
-        
+
         assert!(debug_str.contains("UserDto"));
     }
 
@@ -579,7 +579,7 @@ mod tests {
         let user = create_test_user();
         let dto = user.to_dto();
         let cloned = dto.clone();
-        
+
         assert_eq!(dto.uuid, cloned.uuid);
     }
 
@@ -606,7 +606,7 @@ mod tests {
             auth_source: "local".to_string(),
             external_id: None,
         };
-        
+
         let debug_str = format!("{:?}", new_user);
         assert!(debug_str.contains("NewUser"));
     }
@@ -632,7 +632,7 @@ mod tests {
             auth_source: "local".to_string(),
             external_id: None,
         };
-        
+
         let cloned = new_user.clone();
         assert_eq!(new_user.username, cloned.username);
     }
@@ -650,7 +650,7 @@ mod tests {
             preferences: None,
             updated_at: Utc::now(),
         };
-        
+
         let debug_str = format!("{:?}", update);
         assert!(debug_str.contains("UserUpdate"));
     }
@@ -666,7 +666,7 @@ mod tests {
             preferences: Some(serde_json::json!({"key": "value"})),
             updated_at: Utc::now(),
         };
-        
+
         let cloned = update.clone();
         assert_eq!(update.email, cloned.email);
     }
@@ -683,7 +683,7 @@ mod tests {
             is_active: None,
             preferences: None,
         };
-        
+
         let debug_str = format!("{:?}", request);
         assert!(debug_str.contains("UpdateUserRequest"));
     }
@@ -698,7 +698,7 @@ mod tests {
             is_active: Some(false),
             preferences: None,
         };
-        
+
         let cloned = request.clone();
         assert_eq!(request.email, cloned.email);
     }
@@ -706,7 +706,7 @@ mod tests {
     #[test]
     fn test_update_user_request_long_first_name_invalid() {
         use validator::Validate;
-        
+
         let request = UpdateUserRequest {
             email: None,
             first_name: Some("A".repeat(151)), // Too long
@@ -715,14 +715,14 @@ mod tests {
             is_active: None,
             preferences: None,
         };
-        
+
         assert!(request.validate().is_err());
     }
 
     #[test]
     fn test_update_user_request_long_phone_invalid() {
         use validator::Validate;
-        
+
         let request = UpdateUserRequest {
             email: None,
             first_name: None,
@@ -731,7 +731,7 @@ mod tests {
             is_active: None,
             preferences: None,
         };
-        
+
         assert!(request.validate().is_err());
     }
 
@@ -749,7 +749,7 @@ mod tests {
             is_staff: None,
             is_superuser: None,
         };
-        
+
         let debug_str = format!("{:?}", request);
         assert!(debug_str.contains("CreateUserRequest"));
     }
@@ -766,7 +766,7 @@ mod tests {
             is_staff: Some(true),
             is_superuser: None,
         };
-        
+
         let cloned = request.clone();
         assert_eq!(request.username, cloned.username);
     }
@@ -774,7 +774,7 @@ mod tests {
     #[test]
     fn test_create_user_request_long_username_invalid() {
         use validator::Validate;
-        
+
         let request = CreateUserRequest {
             username: "a".repeat(151), // Too long
             email: "valid@example.com".to_string(),
@@ -785,7 +785,7 @@ mod tests {
             is_staff: None,
             is_superuser: None,
         };
-        
+
         assert!(request.validate().is_err());
     }
 }

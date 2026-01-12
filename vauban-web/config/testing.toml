@@ -23,3 +23,9 @@ enabled = false
 cert_path = "certs/dev-server.crt"
 key_path = "certs/dev-server.key"
 
+# Lightweight Argon2 parameters for faster tests
+[security.argon2]
+memory_size_kb = 1024
+iterations = 1
+parallelism = 1
+

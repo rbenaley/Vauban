@@ -3,6 +3,7 @@ pub mod cache;
 ///
 /// This file makes modules available for integration tests.
 pub mod config;
+pub mod crypto;
 pub mod db;
 pub mod error;
 pub mod grpc;
@@ -131,7 +132,8 @@ mod tests {
     #[test]
     fn test_app_state_has_user_connections_field() {
         fn check_connections(state: &AppState) {
-            let _connections: &services::connections::UserConnectionRegistry = &state.user_connections;
+            let _connections: &services::connections::UserConnectionRegistry =
+                &state.user_connections;
         }
         let _ = check_connections;
     }

@@ -302,13 +302,13 @@ pub fn unique_name(prefix: &str) -> String {
 pub fn create_simple_user(conn: &mut PgConnection, username: &str) -> i32 {
     use diesel::sql_query;
     use diesel::sql_types::Int4;
-    
+
     #[derive(QueryableByName)]
     struct UserId {
         #[diesel(sql_type = Int4)]
         id: i32,
     }
-    
+
     let result: UserId = sql_query(format!(
         "INSERT INTO users (uuid, username, email, password_hash, is_active, auth_source, preferences)
          VALUES (uuid_generate_v4(), '{}', '{}@test.vauban.io', 'hash', true, 'local', '{{}}')
@@ -318,7 +318,7 @@ pub fn create_simple_user(conn: &mut PgConnection, username: &str) -> i32 {
     ))
     .get_result(conn)
     .expect("Failed to create test user");
-    
+
     result.id
 }
 
@@ -326,13 +326,13 @@ pub fn create_simple_user(conn: &mut PgConnection, username: &str) -> i32 {
 pub fn create_simple_ssh_asset(conn: &mut PgConnection, name: &str, created_by: i32) -> i32 {
     use diesel::sql_query;
     use diesel::sql_types::Int4;
-    
+
     #[derive(QueryableByName)]
     struct AssetId {
         #[diesel(sql_type = Int4)]
         id: i32,
     }
-    
+
     let result: AssetId = sql_query(format!(
         "INSERT INTO assets (uuid, name, hostname, port, asset_type, status, require_mfa, require_justification, connection_config, created_by_id)
          VALUES (uuid_generate_v4(), '{}', '{}.test.local', 22, 'ssh', 'online', false, false, '{{}}', {})
@@ -342,7 +342,7 @@ pub fn create_simple_ssh_asset(conn: &mut PgConnection, name: &str, created_by: 
     ))
     .get_result(conn)
     .expect("Failed to create test SSH asset");
-    
+
     result.id
 }
 
@@ -356,25 +356,25 @@ pub fn create_test_session(
 ) -> i32 {
     use diesel::sql_query;
     use diesel::sql_types::Int4;
-    
+
     #[derive(QueryableByName)]
     struct SessionId {
         #[diesel(sql_type = Int4)]
         id: i32,
     }
-    
+
     let connected_at = if status == "active" {
         "NOW()".to_string()
     } else {
         "NOW() - INTERVAL '1 hour'".to_string()
     };
-    
+
     let disconnected_at = if status == "active" {
         "NULL".to_string()
     } else {
         "NOW()".to_string()
     };
-    
+
     let result: SessionId = sql_query(format!(
         "INSERT INTO proxy_sessions (uuid, user_id, asset_id, credential_id, credential_username, session_type, status, client_ip, connected_at, disconnected_at, is_recorded, metadata)
          VALUES (uuid_generate_v4(), {}, {}, 'cred-123', 'testuser', '{}', '{}', '127.0.0.1', {}, {}, false, '{{}}')
@@ -383,7 +383,7 @@ pub fn create_test_session(
     ))
     .get_result(conn)
     .expect("Failed to create test session");
-    
+
     result.id
 }
 
@@ -391,13 +391,13 @@ pub fn create_test_session(
 pub fn create_recorded_session(conn: &mut PgConnection, user_id: i32, asset_id: i32) -> i32 {
     use diesel::sql_query;
     use diesel::sql_types::Int4;
-    
+
     #[derive(QueryableByName)]
     struct SessionId {
         #[diesel(sql_type = Int4)]
         id: i32,
     }
-    
+
     let result: SessionId = sql_query(format!(
         "INSERT INTO proxy_sessions (uuid, user_id, asset_id, credential_id, credential_username, session_type, status, client_ip, connected_at, disconnected_at, is_recorded, recording_path, metadata)
          VALUES (uuid_generate_v4(), {}, {}, 'cred-123', 'testuser', 'ssh', 'completed', '127.0.0.1', NOW() - INTERVAL '1 hour', NOW(), true, '/recordings/test.cast', '{{}}')
@@ -406,20 +406,20 @@ pub fn create_recorded_session(conn: &mut PgConnection, user_id: i32, asset_id: 
     ))
     .get_result(conn)
     .expect("Failed to create recorded session");
-    
+
     result.id
 }
 
 /// Create an approval request (session with justification) and return session_uuid.
 pub fn create_approval_request(conn: &mut PgConnection, user_id: i32, asset_id: i32) -> Uuid {
     use diesel::sql_query;
-    
+
     #[derive(QueryableByName)]
     struct SessionUuid {
         #[diesel(sql_type = diesel::sql_types::Uuid)]
         uuid: Uuid,
     }
-    
+
     let result: SessionUuid = sql_query(format!(
         "INSERT INTO proxy_sessions (uuid, user_id, asset_id, credential_id, credential_username, session_type, status, client_ip, is_recorded, justification, metadata)
          VALUES (uuid_generate_v4(), {}, {}, 'cred-123', 'testuser', 'ssh', 'pending', '127.0.0.1', true, 'Need access for maintenance', '{{\"approval_required\": true}}')
@@ -428,20 +428,20 @@ pub fn create_approval_request(conn: &mut PgConnection, user_id: i32, asset_id: 
     ))
     .get_result(conn)
     .expect("Failed to create approval request");
-    
+
     result.uuid
 }
 
 /// Create a test vauban group (user group) and return group_uuid.
 pub fn create_test_vauban_group(conn: &mut PgConnection, name: &str) -> Uuid {
     use diesel::sql_query;
-    
+
     #[derive(QueryableByName)]
     struct GroupUuid {
         #[diesel(sql_type = diesel::sql_types::Uuid)]
         uuid: Uuid,
     }
-    
+
     let result: GroupUuid = sql_query(format!(
         "INSERT INTO vauban_groups (uuid, name, description, source)
          VALUES (uuid_generate_v4(), '{}', 'Test group', 'local')
@@ -451,7 +451,7 @@ pub fn create_test_vauban_group(conn: &mut PgConnection, name: &str) -> Uuid {
     ))
     .get_result(conn)
     .expect("Failed to create vauban group");
-    
+
     result.uuid
 }
 
@@ -464,27 +464,27 @@ pub fn create_test_asset_in_group(
 ) -> i32 {
     use diesel::sql_query;
     use diesel::sql_types::Int4;
-    
+
     #[derive(QueryableByName)]
     struct AssetId {
         #[diesel(sql_type = Int4)]
         id: i32,
     }
-    
+
     // First get the group_id from uuid
     #[derive(QueryableByName)]
     struct GroupId {
         #[diesel(sql_type = Int4)]
         id: i32,
     }
-    
+
     let group: GroupId = sql_query(format!(
         "SELECT id FROM asset_groups WHERE uuid = '{}'",
         group_uuid
     ))
     .get_result(conn)
     .expect("Failed to find asset group");
-    
+
     let result: AssetId = sql_query(format!(
         "INSERT INTO assets (uuid, name, hostname, port, asset_type, status, group_id, require_mfa, require_justification, connection_config, created_by_id)
          VALUES (uuid_generate_v4(), '{}', '{}.test.local', 22, 'ssh', 'online', {}, false, false, '{{}}', {})
@@ -494,7 +494,7 @@ pub fn create_test_asset_in_group(
     ))
     .get_result(conn)
     .expect("Failed to create test asset in group");
-    
+
     result.id
 }
 
@@ -503,18 +503,18 @@ pub fn create_test_asset_in_group(
 // =============================================================================
 
 /// Create a test auth session and return session_uuid.
-pub fn create_test_auth_session(
-    conn: &mut PgConnection,
-    user_id: i32,
-    is_current: bool,
-) -> Uuid {
+pub fn create_test_auth_session(conn: &mut PgConnection, user_id: i32, is_current: bool) -> Uuid {
     use chrono::{Duration, Utc};
     use vauban_web::models::NewAuthSession;
     use vauban_web::schema::auth_sessions;
 
     let session_uuid = Uuid::new_v4();
     let ip: ipnetwork::IpNetwork = "127.0.0.1".parse().unwrap();
-    let token_hash = format!("hash_{}_{}", user_id, if is_current { "current" } else { "other" });
+    let token_hash = format!(
+        "hash_{}_{}",
+        user_id,
+        if is_current { "current" } else { "other" }
+    );
 
     let new_session = NewAuthSession {
         uuid: session_uuid,
@@ -563,11 +563,7 @@ pub fn create_test_api_key(
 }
 
 /// Create an expired test API key and return key_uuid.
-pub fn create_expired_api_key(
-    conn: &mut PgConnection,
-    user_id: i32,
-    name: &str,
-) -> Uuid {
+pub fn create_expired_api_key(conn: &mut PgConnection, user_id: i32, name: &str) -> Uuid {
     use chrono::{Duration, Utc};
     use vauban_web::schema::api_keys;
 
@@ -632,11 +628,7 @@ pub fn create_auth_session_with_token(
 
 /// Create an expired auth session with a specific token hash.
 /// Returns the session UUID.
-pub fn create_expired_auth_session(
-    conn: &mut PgConnection,
-    user_id: i32,
-    token: &str,
-) -> Uuid {
+pub fn create_expired_auth_session(conn: &mut PgConnection, user_id: i32, token: &str) -> Uuid {
     use chrono::{Duration, Utc};
     use sha3::{Digest, Sha3_256};
     use vauban_web::models::NewAuthSession;

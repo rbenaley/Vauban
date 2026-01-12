@@ -113,6 +113,7 @@ impl BaseTemplate {
     }
 
     /// Decompose BaseTemplate into individual fields for child templates.
+    #[allow(clippy::type_complexity)]
     pub fn into_fields(
         self,
     ) -> (

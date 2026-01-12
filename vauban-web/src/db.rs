@@ -3,6 +3,7 @@
 /// Uses Diesel with connection pooling for PostgreSQL.
 use diesel::pg::PgConnection;
 use diesel::r2d2::{ConnectionManager, Pool, PooledConnection};
+use secrecy::ExposeSecret;
 
 use crate::config::Config;
 use crate::error::{AppError, AppResult};
@@ -13,7 +14,7 @@ pub type DbConnection = PooledConnection<ConnectionManager<PgConnection>>;
 
 /// Create a new database connection pool.
 pub fn create_pool(config: &Config) -> AppResult<DbPool> {
-    let manager = ConnectionManager::<PgConnection>::new(config.database.url.as_str());
+    let manager = ConnectionManager::<PgConnection>::new(config.database.url.expose_secret());
 
     Pool::builder()
         .max_size(config.database.max_connections)
@@ -94,7 +95,10 @@ mod tests {
 
         match error {
             diesel::result::Error::DatabaseError(kind, _) => {
-                assert!(matches!(kind, diesel::result::DatabaseErrorKind::SerializationFailure));
+                assert!(matches!(
+                    kind,
+                    diesel::result::DatabaseErrorKind::SerializationFailure
+                ));
             }
             _ => panic!("Expected DatabaseError"),
         }
@@ -124,7 +128,10 @@ mod tests {
 
         match error {
             diesel::result::Error::DatabaseError(kind, _) => {
-                assert!(matches!(kind, diesel::result::DatabaseErrorKind::UniqueViolation));
+                assert!(matches!(
+                    kind,
+                    diesel::result::DatabaseErrorKind::UniqueViolation
+                ));
             }
             _ => panic!("Expected DatabaseError"),
         }
@@ -139,7 +146,10 @@ mod tests {
 
         match error {
             diesel::result::Error::DatabaseError(kind, _) => {
-                assert!(matches!(kind, diesel::result::DatabaseErrorKind::ForeignKeyViolation));
+                assert!(matches!(
+                    kind,
+                    diesel::result::DatabaseErrorKind::ForeignKeyViolation
+                ));
             }
             _ => panic!("Expected DatabaseError"),
         }
@@ -154,7 +164,10 @@ mod tests {
 
         match error {
             diesel::result::Error::DatabaseError(kind, _) => {
-                assert!(matches!(kind, diesel::result::DatabaseErrorKind::NotNullViolation));
+                assert!(matches!(
+                    kind,
+                    diesel::result::DatabaseErrorKind::NotNullViolation
+                ));
             }
             _ => panic!("Expected DatabaseError"),
         }
@@ -169,7 +182,10 @@ mod tests {
 
         match error {
             diesel::result::Error::DatabaseError(kind, _) => {
-                assert!(matches!(kind, diesel::result::DatabaseErrorKind::CheckViolation));
+                assert!(matches!(
+                    kind,
+                    diesel::result::DatabaseErrorKind::CheckViolation
+                ));
             }
             _ => panic!("Expected DatabaseError"),
         }
@@ -193,7 +209,7 @@ mod tests {
         let diesel_error = diesel::result::Error::NotFound;
         let app_error: AppError = diesel_error.into();
         let display = app_error.to_string();
-        
+
         assert!(display.contains("Database error"));
     }
 
