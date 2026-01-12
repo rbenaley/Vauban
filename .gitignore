@@ -30,7 +30,5 @@ Thumbs.db
 *.log
 
 # TLS certificates (private keys must never be committed)
-**/certs/*.key
-**/certs/*.pem
-!**/certs/*.crt
+**/certs/*
 
