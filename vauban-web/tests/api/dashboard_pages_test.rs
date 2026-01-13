@@ -16,7 +16,7 @@ use uuid::Uuid;
 use crate::common::{TestApp, assertions::assert_status};
 use crate::fixtures::{
     create_recorded_session, create_simple_ssh_asset, create_simple_user, create_test_session,
-    unique_name,
+    get_asset_uuid, unique_name,
 };
 use diesel::prelude::*;
 
@@ -303,6 +303,7 @@ async fn test_asset_detail_with_sessions() {
     let username = unique_name("asset_sessions");
     let user_id = create_simple_user(&mut conn, &username);
     let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("asset-with-sess"), user_id);
+    let asset_uuid = get_asset_uuid(&mut conn, asset_id);
 
     // Create sessions for this asset
     let _session1 = create_test_session(&mut conn, user_id, asset_id, "ssh", "completed");
@@ -322,7 +323,7 @@ async fn test_asset_detail_with_sessions() {
 
     let response = app
         .server
-        .get(&format!("/assets/{}", asset_id))
+        .get(&format!("/assets/{}", asset_uuid))
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 

@@ -276,7 +276,8 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             get(handlers::web::asset_group_edit),
         )
         .route("/assets/access", get(handlers::web::access_rules_list))
-        .route("/assets/{id}", get(handlers::web::asset_detail))
+        .route("/assets/{uuid}/edit", get(handlers::web::asset_edit))
+        .route("/assets/{uuid}", get(handlers::web::asset_detail))
         // Sessions pages
         .route("/sessions", get(handlers::web::session_list))
         .route("/sessions/recordings", get(handlers::web::recording_list))

@@ -69,6 +69,14 @@
             0%, 100% { opacity: 1; }
             50% { opacity: .5; }
         }
+
+        /* Error container visibility - hidden when empty, shown when has content */
+        .error-container:empty {
+            display: none;
+        }
+        .error-container:not(:empty) {
+            display: block;
+        }
     </style>
 
     {% block extra_css %}{% endblock %}

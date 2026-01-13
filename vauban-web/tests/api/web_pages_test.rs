@@ -7,7 +7,7 @@ use crate::common::{TestApp, assertions::assert_status};
 use crate::fixtures::{
     create_approval_request, create_recorded_session, create_simple_ssh_asset, create_simple_user,
     create_test_asset_group, create_test_asset_in_group, create_test_session,
-    create_test_vauban_group, unique_name,
+    create_test_vauban_group, get_asset_uuid, unique_name,
 };
 use axum::http::header::COOKIE;
 use diesel::prelude::*;
@@ -496,13 +496,14 @@ async fn test_asset_detail_page_loads() {
     let user_id = create_simple_user(&mut conn, "test_asset_detail_page");
     let user_uuid = get_user_uuid(&mut conn, user_id);
     let asset_id = create_simple_ssh_asset(&mut conn, "test-asset-detail", user_id);
+    let asset_uuid = get_asset_uuid(&mut conn, asset_id);
 
     let token =
         app.generate_test_token(&user_uuid.to_string(), "test_asset_detail_page", true, true);
 
     let response = app
         .server
-        .get(&format!("/assets/{}", asset_id))
+        .get(&format!("/assets/{}", asset_uuid))
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -527,6 +528,7 @@ async fn test_asset_detail_with_group() {
         user_id,
         &group_uuid,
     );
+    let asset_uuid = get_asset_uuid(&mut conn, asset_id);
 
     let token = app.generate_test_token(
         &Uuid::new_v4().to_string(),
@@ -537,7 +539,7 @@ async fn test_asset_detail_with_group() {
 
     let response = app
         .server
-        .get(&format!("/assets/{}", asset_id))
+        .get(&format!("/assets/{}", asset_uuid))
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -560,9 +562,11 @@ async fn test_asset_detail_not_found() {
         true,
     );
 
+    // Use a random UUID that doesn't exist
+    let non_existent_uuid = Uuid::new_v4();
     let response = app
         .server
-        .get("/assets/999999")
+        .get(&format!("/assets/{}", non_existent_uuid))
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 

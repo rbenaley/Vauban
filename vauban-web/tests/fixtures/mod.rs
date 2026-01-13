@@ -346,6 +346,25 @@ pub fn create_simple_ssh_asset(conn: &mut PgConnection, name: &str, created_by: 
     result.id
 }
 
+/// Get the UUID of an asset by its ID.
+pub fn get_asset_uuid(conn: &mut PgConnection, asset_id: i32) -> Uuid {
+    use diesel::sql_query;
+    use diesel::sql_types::Int4;
+
+    #[derive(QueryableByName)]
+    struct AssetUuid {
+        #[diesel(sql_type = diesel::sql_types::Uuid)]
+        uuid: Uuid,
+    }
+
+    let result: AssetUuid = sql_query("SELECT uuid FROM assets WHERE id = $1")
+        .bind::<Int4, _>(asset_id)
+        .get_result(conn)
+        .expect("Failed to get asset UUID");
+
+    result.uuid
+}
+
 /// Create a test session and return session_id.
 pub fn create_test_session(
     conn: &mut PgConnection,

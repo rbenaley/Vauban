@@ -4,10 +4,64 @@
 use chrono::{DateTime, Utc};
 use diesel::prelude::*;
 use ipnetwork::IpNetwork;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use uuid::Uuid;
 
 use crate::schema::{asset_groups, assets};
+
+// ==================== Flexible Deserialization Helpers ====================
+
+/// Deserialize an optional i32 from either a number or a string.
+/// This is needed because HTML forms send all values as strings.
+fn deserialize_optional_i32<'de, D>(deserializer: D) -> Result<Option<i32>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::Error;
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StringOrInt {
+        String(String),
+        Int(i32),
+    }
+
+    let opt: Option<StringOrInt> = Option::deserialize(deserializer)?;
+    match opt {
+        None => Ok(None),
+        Some(StringOrInt::Int(i)) => Ok(Some(i)),
+        Some(StringOrInt::String(s)) if s.is_empty() => Ok(None),
+        Some(StringOrInt::String(s)) => s
+            .parse::<i32>()
+            .map(Some)
+            .map_err(|_| D::Error::custom(format!("invalid integer: {}", s))),
+    }
+}
+
+/// Deserialize an optional bool from either a boolean, string ("true"/"false"/"on"), or presence.
+/// HTML checkboxes send "on" when checked, or are absent when unchecked.
+fn deserialize_optional_bool<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StringOrBool {
+        Bool(bool),
+        String(String),
+    }
+
+    let opt: Option<StringOrBool> = Option::deserialize(deserializer)?;
+    match opt {
+        None => Ok(None),
+        Some(StringOrBool::Bool(b)) => Ok(Some(b)),
+        Some(StringOrBool::String(s)) => match s.to_lowercase().as_str() {
+            "true" | "on" | "1" | "yes" => Ok(Some(true)),
+            "false" | "off" | "0" | "no" | "" => Ok(Some(false)),
+            _ => Ok(Some(false)),
+        },
+    }
+}
 
 /// Asset type (protocol).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -184,6 +238,9 @@ pub struct CreateAssetRequest {
 }
 
 /// Asset update request.
+///
+/// Supports flexible deserialization for HTML form submissions where
+/// numbers are sent as strings and checkboxes send "on" or are absent.
 #[derive(Debug, Clone, Deserialize, validator::Validate)]
 pub struct UpdateAssetRequest {
     #[validate(length(max = 100))]
@@ -192,10 +249,13 @@ pub struct UpdateAssetRequest {
     pub hostname: Option<String>,
     pub ip_address: Option<String>,
     #[validate(range(min = 1, max = 65535))]
+    #[serde(default, deserialize_with = "deserialize_optional_i32")]
     pub port: Option<i32>,
     pub status: Option<String>,
     pub description: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_bool")]
     pub require_mfa: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_optional_bool")]
     pub require_justification: Option<bool>,
 }
 
@@ -801,5 +861,98 @@ mod tests {
 
         let cloned = request.clone();
         assert_eq!(request.name, cloned.name);
+    }
+
+    // ==================== Flexible Deserialization Tests ====================
+
+    #[test]
+    fn test_update_asset_request_port_as_string() {
+        let json = r#"{"port": "22"}"#;
+        let request: UpdateAssetRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.port, Some(22));
+    }
+
+    #[test]
+    fn test_update_asset_request_port_as_integer() {
+        let json = r#"{"port": 22}"#;
+        let request: UpdateAssetRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.port, Some(22));
+    }
+
+    #[test]
+    fn test_update_asset_request_port_empty_string() {
+        let json = r#"{"port": ""}"#;
+        let request: UpdateAssetRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.port, None);
+    }
+
+    #[test]
+    fn test_update_asset_request_port_null() {
+        let json = r#"{"port": null}"#;
+        let request: UpdateAssetRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.port, None);
+    }
+
+    #[test]
+    fn test_update_asset_request_bool_as_string_true() {
+        let json = r#"{"require_mfa": "true"}"#;
+        let request: UpdateAssetRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.require_mfa, Some(true));
+    }
+
+    #[test]
+    fn test_update_asset_request_bool_as_string_on() {
+        let json = r#"{"require_mfa": "on"}"#;
+        let request: UpdateAssetRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.require_mfa, Some(true));
+    }
+
+    #[test]
+    fn test_update_asset_request_bool_as_boolean() {
+        let json = r#"{"require_mfa": true}"#;
+        let request: UpdateAssetRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.require_mfa, Some(true));
+    }
+
+    #[test]
+    fn test_update_asset_request_bool_as_string_false() {
+        let json = r#"{"require_justification": "false"}"#;
+        let request: UpdateAssetRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.require_justification, Some(false));
+    }
+
+    #[test]
+    fn test_update_asset_request_form_like_json() {
+        // Simulates what HTMX json-enc extension sends
+        let json = r#"{
+            "name": "test-server",
+            "hostname": "test.example.com",
+            "ip_address": "192.168.1.100",
+            "port": "22",
+            "status": "online",
+            "description": "Test server",
+            "require_mfa": "on",
+            "require_justification": "on"
+        }"#;
+        let request: UpdateAssetRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.name, Some("test-server".to_string()));
+        assert_eq!(request.port, Some(22));
+        assert_eq!(request.require_mfa, Some(true));
+        assert_eq!(request.require_justification, Some(true));
+    }
+
+    #[test]
+    fn test_update_asset_request_form_without_checkboxes() {
+        // When checkboxes are unchecked, they are not sent at all
+        let json = r#"{
+            "name": "test-server",
+            "hostname": "test.example.com",
+            "port": "22",
+            "status": "online"
+        }"#;
+        let request: UpdateAssetRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.port, Some(22));
+        assert_eq!(request.require_mfa, None);
+        assert_eq!(request.require_justification, None);
     }
 }

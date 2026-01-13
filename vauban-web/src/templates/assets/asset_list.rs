@@ -8,6 +8,7 @@ use crate::templates::accounts::user_list::Pagination;
 #[derive(Debug, Clone)]
 pub struct AssetListItem {
     pub id: i32,
+    pub uuid: ::uuid::Uuid,
     pub name: String,
     pub hostname: String,
     pub port: i32,
@@ -43,6 +44,7 @@ mod tests {
     fn create_test_asset_item() -> AssetListItem {
         AssetListItem {
             id: 1,
+            uuid: ::uuid::Uuid::new_v4(),
             name: "Test Server".to_string(),
             hostname: "test.example.com".to_string(),
             port: 22,

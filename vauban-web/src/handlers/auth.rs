@@ -251,6 +251,8 @@ pub async fn login(
 
 /// Generate error HTML for HTMX login response.
 fn login_error_html(message: &str) -> String {
+    use crate::error::user_friendly_message;
+    let friendly = user_friendly_message(message);
     format!(
         r#"<div id="login-result" class="rounded-md bg-red-50 dark:bg-red-900/50 p-4">
             <div class="flex">
@@ -264,7 +266,7 @@ fn login_error_html(message: &str) -> String {
                 </div>
             </div>
         </div>"#,
-        message
+        friendly
     )
 }
 
