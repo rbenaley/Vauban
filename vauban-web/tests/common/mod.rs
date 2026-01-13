@@ -198,9 +198,9 @@ fn build_test_router(state: AppState) -> Router {
             get(handlers::websocket::notifications_ws),
         )
         // Auth routes
-        .route("/api/auth/login", post(handlers::auth::login))
-        .route("/api/auth/logout", post(handlers::auth::logout))
-        .route("/api/auth/mfa/setup", post(handlers::auth::setup_mfa))
+        .route("/api/v1/auth/login", post(handlers::auth::login))
+        .route("/api/v1/auth/logout", post(handlers::auth::logout))
+        .route("/api/v1/auth/mfa/setup", post(handlers::auth::setup_mfa))
         // Accounts routes
         .route("/api/v1/accounts", get(handlers::accounts::list_users))
         .route("/api/v1/accounts", post(handlers::accounts::create_user))

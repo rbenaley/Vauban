@@ -1,6 +1,6 @@
 /// VAUBAN Web - Auth API Integration Tests.
 ///
-/// Tests for /api/auth/* endpoints.
+/// Tests for /api/v1/auth/* endpoints.
 use axum::http::header;
 use serde_json::json;
 use serial_test::serial;
@@ -19,10 +19,10 @@ async fn test_login_success() {
     let username = unique_name("test_login");
     let test_user = create_test_user(&mut conn, &app.auth_service, &username);
 
-    // Execute: POST /api/auth/login
+    // Execute: POST /api/v1/auth/login
     let response = app
         .server
-        .post("/api/auth/login")
+        .post("/api/v1/auth/login")
         .json(&json!({
             "username": username,
             "password": test_user.password
@@ -49,10 +49,10 @@ async fn test_login_invalid_password() {
     let username = unique_name("test_badpwd");
     let _test_user = create_test_user(&mut conn, &app.auth_service, &username);
 
-    // Execute: POST /api/auth/login with wrong password
+    // Execute: POST /api/v1/auth/login with wrong password
     let response = app
         .server
-        .post("/api/auth/login")
+        .post("/api/v1/auth/login")
         .json(&json!({
             "username": username,
             "password": "WrongPassword123!"
@@ -72,10 +72,10 @@ async fn test_login_invalid_password() {
 async fn test_login_unknown_user() {
     let app = TestApp::spawn().await;
 
-    // Execute: POST /api/auth/login with non-existent user
+    // Execute: POST /api/v1/auth/login with non-existent user
     let response = app
         .server
-        .post("/api/auth/login")
+        .post("/api/v1/auth/login")
         .json(&json!({
             "username": "nonexistent_user_12345",
             "password": "SomePassword123!"
@@ -97,10 +97,10 @@ async fn test_login_mfa_required() {
     let username = unique_name("test_mfa");
     let mfa_user = create_mfa_user(&mut conn, &app.auth_service, &username);
 
-    // Execute: POST /api/auth/login without MFA code
+    // Execute: POST /api/v1/auth/login without MFA code
     let response = app
         .server
-        .post("/api/auth/login")
+        .post("/api/v1/auth/login")
         .json(&json!({
             "username": username,
             "password": mfa_user.password
@@ -130,10 +130,10 @@ async fn test_logout_success() {
     let username = unique_name("test_logout");
     let test_user = create_test_user(&mut conn, &app.auth_service, &username);
 
-    // Execute: POST /api/auth/logout with valid token
+    // Execute: POST /api/v1/auth/logout with valid token
     let response = app
         .server
-        .post("/api/auth/logout")
+        .post("/api/v1/auth/logout")
         .add_header(header::AUTHORIZATION, app.auth_header(&test_user.token))
         .await;
 
@@ -155,8 +155,8 @@ async fn test_logout_success() {
 async fn test_logout_without_token() {
     let app = TestApp::spawn().await;
 
-    // Execute: POST /api/auth/logout without token
-    let response = app.server.post("/api/auth/logout").await;
+    // Execute: POST /api/v1/auth/logout without token
+    let response = app.server.post("/api/v1/auth/logout").await;
 
     // Assert: 401 Unauthorized or 303 redirect to login
     let status = response.status_code().as_u16();
@@ -178,10 +178,10 @@ async fn test_mfa_setup_success() {
     let username = unique_name("test_mfa_setup");
     let test_user = create_test_user(&mut conn, &app.auth_service, &username);
 
-    // Execute: POST /api/auth/mfa/setup with valid token
+    // Execute: POST /api/v1/auth/mfa/setup with valid token
     let response = app
         .server
-        .post("/api/auth/mfa/setup")
+        .post("/api/v1/auth/mfa/setup")
         .add_header(header::AUTHORIZATION, app.auth_header(&test_user.token))
         .await;
 
@@ -203,8 +203,8 @@ async fn test_mfa_setup_success() {
 async fn test_mfa_setup_without_auth() {
     let app = TestApp::spawn().await;
 
-    // Execute: POST /api/auth/mfa/setup without token
-    let response = app.server.post("/api/auth/mfa/setup").await;
+    // Execute: POST /api/v1/auth/mfa/setup without token
+    let response = app.server.post("/api/v1/auth/mfa/setup").await;
 
     // Assert: 401 Unauthorized
     assert_status(&response, 401);
