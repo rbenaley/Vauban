@@ -122,7 +122,7 @@ pub async fn update_asset(
     let mut conn = get_connection(&state.db_pool)?;
 
     use crate::schema::assets::dsl::{
-        assets, hostname as hostname_col, name as name_col, port as port_col, status as status_col,
+        assets, hostname as hostname_col, ip_address as ip_address_col, name as name_col, port as port_col, status as status_col,
         updated_at, uuid,
     };
     use chrono::Utc;
@@ -133,11 +133,19 @@ pub async fn update_asset(
         .first(&mut conn)
         .map_err(|_| AppError::NotFound("Asset not found".to_string()))?;
 
+    // Parse ip_address if provided
+    let new_ip_address = if let Some(ip_str) = &request.ip_address {
+        Some(ip_str.parse().map_err(|_| AppError::Validation("Invalid IP address format".to_string()))?)
+    } else {
+        None
+    };
+
     // Build update with provided values or keep existing
     let asset: Asset = diesel::update(assets.filter(uuid.eq(asset_uuid)))
         .set((
             name_col.eq(request.name.unwrap_or(existing.name)),
             hostname_col.eq(request.hostname.unwrap_or(existing.hostname)),
+            ip_address_col.eq(new_ip_address.or(existing.ip_address)),
             port_col.eq(request.port.unwrap_or(existing.port)),
             status_col.eq(request.status.unwrap_or(existing.status)),
             updated_at.eq(Utc::now()),
@@ -638,5 +646,39 @@ mod tests {
                 port_val
             );
         }
+    }
+
+    // ==================== UpdateAssetRequest IP Address Tests ====================
+
+    #[test]
+    fn test_update_asset_request_with_valid_ipv4_succeeds() {
+        let request = UpdateAssetRequest {
+            name: None,
+            hostname: None,
+            ip_address: Some("192.168.1.100".to_string()),
+            port: None,
+            status: None,
+            description: None,
+            require_mfa: None,
+            require_justification: None,
+        };
+
+        assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn test_update_asset_request_with_valid_ipv6_succeeds() {
+        let request = UpdateAssetRequest {
+            name: None,
+            hostname: None,
+            ip_address: Some("2001:db8::1".to_string()),
+            port: None,
+            status: None,
+            description: None,
+            require_mfa: None,
+            require_justification: None,
+        };
+
+        assert!(request.validate().is_ok());
     }
 }
