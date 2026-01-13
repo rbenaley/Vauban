@@ -7,9 +7,155 @@
 /// 3. config/local.toml - local overrides (not versioned)
 /// 4. Environment variables prefixed with VAUBAN_ (for secrets only)
 use config::{Config as ConfigBuilder, ConfigError, File};
-use secrecy::{ExposeSecret, SecretString as Secret};
+use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+
+// ==================== Optional Secret Wrapper ====================
+
+/// Wrapper for optional secret values that properly implements Serialize/Deserialize.
+/// This is needed because SecretString (SecretBox<str>) doesn't implement Serialize for Option.
+#[derive(Clone, Default, Deserialize, Serialize)]
+#[serde(transparent)]
+pub struct OptionalSecret(Option<String>);
+
+impl OptionalSecret {
+    /// Create a new OptionalSecret from a string value.
+    pub fn new(value: Option<String>) -> Self {
+        Self(value)
+    }
+
+    /// Get the exposed secret value if present.
+    pub fn as_ref(&self) -> Option<&str> {
+        self.0.as_deref()
+    }
+
+    /// Get the wrapped secret as a SecretString if present.
+    pub fn as_secret(&self) -> Option<secrecy::SecretString> {
+        self.0.as_ref().map(|s| secrecy::SecretString::from(s.clone()))
+    }
+
+    /// Get the exposed secret value as an Option<String>.
+    pub fn to_string(&self) -> Option<String> {
+        self.0.clone()
+    }
+
+    /// Check if the secret is present.
+    pub fn is_some(&self) -> bool {
+        self.0.is_some()
+    }
+
+    /// Check if the secret is absent.
+    pub fn is_none(&self) -> bool {
+        self.0.is_none()
+    }
+
+    /// Convert to a SecretString if present.
+    pub fn into_secret(self) -> Option<secrecy::SecretString> {
+        self.0.map(|s| secrecy::SecretString::from(s))
+    }
+}
+
+impl std::fmt::Debug for OptionalSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.is_some() {
+            write!(f, "[REDACTED]")
+        } else {
+            write!(f, "None")
+        }
+    }
+}
+
+impl From<Option<String>> for OptionalSecret {
+    fn from(value: Option<String>) -> Self {
+        Self::new(value)
+    }
+}
+
+// ==================== Debug Helper Macro ====================
+
+/// Macro to generate a Debug implementation that redacts sensitive fields.
+///
+/// # Example
+///
+/// ```rust
+/// use vauban_web::debug_redacted_struct;
+/// use secrecy::{SecretString, ExposeSecret};
+///
+/// struct MyConfig {
+///     password: SecretString,
+///     api_key: SecretString,
+///     url: SecretString,
+/// }
+///
+/// // Only redact password and api_key, expose url (calls expose_secret())
+/// debug_redacted_struct!(
+///     MyConfig,
+///     redact: [password, api_key],
+///     expose: [url]
+/// );
+///
+/// fn main() {
+///     let config = MyConfig {
+///         password: SecretString::from("super_secret"),
+///         api_key: SecretString::from("api_key_123"),
+///         url: SecretString::from("https://example.com"),
+///     };
+///
+///     let debug_str = format!("{:?}", config);
+///     // Redacted fields show [REDACTED] (appears twice for 2 redacted fields)
+///     assert!(debug_str.contains("[REDACTED]"));
+///     // Exposed secret shows the actual value
+///     assert!(debug_str.contains("https://example.com"));
+///     // Secrets are NOT exposed in the debug output
+///     assert!(!debug_str.contains("super_secret"));
+///     assert!(!debug_str.contains("api_key_123"));
+/// }
+/// ```
+#[macro_export]
+macro_rules! debug_redacted_struct {
+    (
+        $name:ident,
+        redact: [$($redact:ident),*],
+        expose: [$($expose:ident),*]
+    ) => {
+        impl std::fmt::Debug for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_struct(stringify!($name))
+                    $(.field(stringify!($redact), &"[REDACTED]"))*
+                    $(.field(stringify!($expose), &self.$expose.expose_secret()))*
+                    .finish()
+            }
+        }
+    };
+    (
+        $name:ident,
+        redact: [$($redact:ident),*]
+    ) => {
+        impl std::fmt::Debug for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_struct(stringify!($name))
+                    $(.field(stringify!($redact), &"[REDACTED]"))*
+                    .finish()
+            }
+        }
+    };
+}
+
+/// Macro to generate a Debug implementation that redacts Option<Secret<String>> fields.
+#[macro_export]
+macro_rules! debug_redacted_optional {
+    ($name:ident, redact: [$($redact:ident),*]) => {
+        impl std::fmt::Debug for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_struct(stringify!($name))
+                    .field("enabled", &self.enabled)
+                    $(.field(stringify!($redact), &"[REDACTED]"))*
+                    .finish()
+            }
+        }
+    };
+}
 
 /// Application environment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -50,10 +196,10 @@ impl Environment {
 
 /// Application configuration.
 /// All values must be defined in TOML files.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct Config {
     pub environment: Environment,
-    pub secret_key: Secret,
+    pub secret_key: secrecy::SecretString,
     pub database: DatabaseConfig,
     pub cache: CacheConfig,
     pub server: ServerConfig,
@@ -63,22 +209,37 @@ pub struct Config {
     pub logging: LoggingConfig,
 }
 
+debug_redacted_struct!(
+    Config,
+    redact: [secret_key]
+);
+
 /// Database configuration.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct DatabaseConfig {
-    pub url: Secret,
+    pub url: secrecy::SecretString,
     pub max_connections: u32,
     pub min_connections: u32,
     pub connect_timeout_secs: u64,
 }
 
+debug_redacted_struct!(
+    DatabaseConfig,
+    redact: [url]
+);
+
 /// Cache (Valkey/Redis) configuration.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct CacheConfig {
     pub enabled: bool,
-    pub url: Secret,
+    pub url: secrecy::SecretString,
     pub default_ttl_secs: u64,
 }
+
+debug_redacted_struct!(
+    CacheConfig,
+    redact: [url]
+);
 
 /// Server configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,16 +286,21 @@ pub struct GrpcConfig {
 }
 
 /// mTLS configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct MtlsConfig {
     pub enabled: bool,
     #[serde(default)]
-    pub ca_cert: Option<String>,
+    pub ca_cert: OptionalSecret,
     #[serde(default)]
-    pub client_cert: Option<String>,
+    pub client_cert: OptionalSecret,
     #[serde(default)]
-    pub client_key: Option<String>,
+    pub client_key: OptionalSecret,
 }
+
+debug_redacted_optional!(
+    MtlsConfig,
+    redact: [ca_cert, client_cert, client_key]
+);
 
 /// Security configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]

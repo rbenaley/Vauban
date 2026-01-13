@@ -187,9 +187,9 @@ cargo build --release
 ## API Endpoints
 
 ### Authentication
-- `POST /api/auth/login` - Login
-- `POST /api/auth/logout` - Logout
-- `POST /api/auth/mfa/setup` - Setup MFA
+- `POST /api/v1/auth/login` - Login
+- `POST /api/v1/auth/logout` - Logout
+- `POST /api/v1/auth/mfa/setup` - Setup MFA
 
 ### Accounts
 - `GET /api/v1/accounts` - List users

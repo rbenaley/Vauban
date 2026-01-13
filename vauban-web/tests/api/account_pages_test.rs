@@ -1033,7 +1033,7 @@ async fn test_session_created_on_login() {
     // Attempt login with correct password
     let response = app
         .server
-        .post("/api/auth/login")
+        .post("/api/v1/auth/login")
         .json(&serde_json::json!({
             "username": username,
             "password": password
@@ -1254,7 +1254,7 @@ async fn test_logout_broadcasts_session_removal() {
     // Logout
     let response = app
         .server
-        .post("/api/auth/logout")
+        .post("/api/v1/auth/logout")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -1320,7 +1320,7 @@ async fn test_login_broadcasts_new_session() {
     // Attempt login
     let response = app
         .server
-        .post("/api/auth/login")
+        .post("/api/v1/auth/login")
         .json(&serde_json::json!({
             "username": username,
             "password": password

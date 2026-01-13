@@ -295,9 +295,9 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
         .route("/accounts/groups", get(handlers::web::group_list))
         .route("/accounts/groups/{uuid}", get(handlers::web::group_detail))
         // Authentication routes
-        .route("/api/auth/login", post(handlers::auth::login))
-        .route("/api/auth/logout", post(handlers::auth::logout))
-        .route("/api/auth/mfa/setup", post(handlers::auth::setup_mfa))
+        .route("/api/v1/auth/login", post(handlers::auth::login))
+        .route("/api/v1/auth/logout", post(handlers::auth::logout))
+        .route("/api/v1/auth/mfa/setup", post(handlers::auth::setup_mfa))
         // API v1 routes
         .route("/api/v1/accounts", get(handlers::accounts::list_users))
         .route("/api/v1/accounts", post(handlers::accounts::create_user))
