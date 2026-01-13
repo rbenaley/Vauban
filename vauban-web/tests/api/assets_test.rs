@@ -2,6 +2,7 @@
 ///
 /// Tests for /api/v1/assets/* endpoints.
 use axum::http::header;
+use diesel::prelude::*;
 use serde_json::json;
 use serial_test::serial;
 use uuid::Uuid;
@@ -294,6 +295,192 @@ async fn test_update_asset_success() {
 
     // Assert: 200 OK
     assert_status(&response, 200);
+
+    // Cleanup
+    test_db::cleanup(&mut conn);
+}
+
+/// Test update asset with IPv4 address persists to database.
+#[tokio::test]
+#[serial]
+async fn test_update_asset_with_ipv4_persists_to_database() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    // Setup: create admin and asset
+    let admin_name = unique_name("test_admin_ip_asset");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+
+    let asset = create_test_ssh_asset(&mut conn, &unique_name("test-ip-asset"));
+
+    // Execute: PUT /api/v1/assets/{uuid} with new IP
+    let response = app
+        .server
+        .put(&format!("/api/v1/assets/{}", asset.asset.uuid))
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .json(&json!({
+            "ip_address": "192.168.1.200"
+        }))
+        .await;
+
+    // Assert: 200 OK
+    assert_status(&response, 200);
+
+    // Verify IP was persisted in database
+    use vauban_web::schema::assets::dsl::{assets, ip_address, uuid};
+    let db_ip: Option<ipnetwork::IpNetwork> = assets
+        .filter(uuid.eq(asset.asset.uuid))
+        .select(ip_address)
+        .first(&mut conn)
+        .expect("Asset should exist in database");
+
+    assert_eq!(
+        db_ip.map(|ip| ip.to_string()),
+        Some("192.168.1.200/32".to_string()),
+        "Database should contain the updated IPv4 address"
+    );
+
+    // Cleanup
+    test_db::cleanup(&mut conn);
+}
+
+/// Test update asset with IPv6 address persists to database.
+#[tokio::test]
+#[serial]
+async fn test_update_asset_with_ipv6_persists_to_database() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    // Setup: create admin and asset
+    let admin_name = unique_name("test_admin_ipv6_asset");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+
+    let asset = create_test_ssh_asset(&mut conn, &unique_name("test-ipv6-asset"));
+
+    // Execute: PUT /api/v1/assets/{uuid} with IPv6
+    let response = app
+        .server
+        .put(&format!("/api/v1/assets/{}", asset.asset.uuid))
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .json(&json!({
+            "ip_address": "2001:db8::1"
+        }))
+        .await;
+
+    // Assert: 200 OK
+    assert_status(&response, 200);
+
+    // Verify IPv6 was persisted in database
+    use vauban_web::schema::assets::dsl::{assets, ip_address, uuid};
+    let db_ip: Option<ipnetwork::IpNetwork> = assets
+        .filter(uuid.eq(asset.asset.uuid))
+        .select(ip_address)
+        .first(&mut conn)
+        .expect("Asset should exist in database");
+
+    assert_eq!(
+        db_ip.map(|ip| ip.to_string()),
+        Some("2001:db8::1/128".to_string()),
+        "Database should contain the updated IPv6 address"
+    );
+
+    // Cleanup
+    test_db::cleanup(&mut conn);
+}
+
+/// Test update asset with multiple fields persists all to database.
+#[tokio::test]
+#[serial]
+async fn test_update_asset_with_multiple_fields_persists_to_database() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    // Setup: create admin and asset
+    let admin_name = unique_name("test_admin_multi_asset");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+
+    let asset = create_test_ssh_asset(&mut conn, &unique_name("test-multi-asset"));
+
+    // Execute: PUT /api/v1/assets/{uuid} with multiple fields
+    let response = app
+        .server
+        .put(&format!("/api/v1/assets/{}", asset.asset.uuid))
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .json(&json!({
+            "name": "multi-updated-asset",
+            "ip_address": "10.0.0.100",
+            "port": 2222,
+            "status": "maintenance"
+        }))
+        .await;
+
+    // Assert: 200 OK with updated fields in response (except ip_address which is skip_serializing)
+    assert_status(&response, 200);
+    let json: serde_json::Value = response.json();
+    assert_eq!(
+        json.get("name").and_then(|v| v.as_str()),
+        Some("multi-updated-asset"),
+        "Response should contain the updated name"
+    );
+    assert_eq!(
+        json.get("port").and_then(|v| v.as_i64()),
+        Some(2222),
+        "Response should contain the updated port"
+    );
+    assert_eq!(
+        json.get("status").and_then(|v| v.as_str()),
+        Some("maintenance"),
+        "Response should contain the updated status"
+    );
+
+    // Verify IP was persisted in database (ip_address is not serialized in response for security)
+    use vauban_web::schema::assets::dsl::{assets, ip_address, uuid};
+    let db_ip: Option<ipnetwork::IpNetwork> = assets
+        .filter(uuid.eq(asset.asset.uuid))
+        .select(ip_address)
+        .first(&mut conn)
+        .expect("Asset should exist in database");
+
+    assert_eq!(
+        db_ip.map(|ip| ip.to_string()),
+        Some("10.0.0.100/32".to_string()),
+        "Database should contain the updated IP address"
+    );
+
+    // Cleanup
+    test_db::cleanup(&mut conn);
+}
+
+/// Test update asset with invalid IP address returns error.
+#[tokio::test]
+#[serial]
+async fn test_update_asset_with_invalid_ip_returns_error() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    // Setup: create admin and asset
+    let admin_name = unique_name("test_admin_invalid_ip");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+
+    let asset = create_test_ssh_asset(&mut conn, &unique_name("test-invalid-ip-asset"));
+
+    // Execute: PUT /api/v1/assets/{uuid} with invalid IP
+    let response = app
+        .server
+        .put(&format!("/api/v1/assets/{}", asset.asset.uuid))
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .json(&json!({
+            "ip_address": "not-a-valid-ip"
+        }))
+        .await;
+
+    // Assert: 400 Bad Request or 422 Unprocessable Entity
+    let status = response.status_code();
+    assert!(
+        status == 400 || status == 422,
+        "Invalid IP should return 400 or 422, got {}",
+        status
+    );
 
     // Cleanup
     test_db::cleanup(&mut conn);
