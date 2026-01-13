@@ -1,0 +1,188 @@
+{% extends "base.html" %}
+
+{% block title %}Edit {{ asset.name }} - Assets - {{ vauban.brand_name }}{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <!-- Header -->
+    <div class="md:flex md:items-center md:justify-between">
+        <div class="min-w-0 flex-1">
+            <nav class="flex" aria-label="Breadcrumb">
+                <ol class="flex items-center space-x-2">
+                    <li>
+                        <a href="/assets" class="text-gray-400 hover:text-gray-500 dark:text-gray-500 dark:hover:text-gray-400">
+                            <svg class="h-5 w-5 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd" d="M9.293 2.293a1 1 0 011.414 0l7 7A1 1 0 0117 11h-1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-3a1 1 0 00-1-1H9a1 1 0 00-1 1v3a1 1 0 01-1 1H5a1 1 0 01-1-1v-6H3a1 1 0 01-.707-1.707l7-7z" clip-rule="evenodd"/>
+                            </svg>
+                        </a>
+                    </li>
+                    <li>
+                        <div class="flex items-center">
+                            <svg class="h-5 w-5 flex-shrink-0 text-gray-300 dark:text-gray-600" viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd"/>
+                            </svg>
+                            <a href="/assets" class="ml-2 text-sm font-medium text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300">Assets</a>
+                        </div>
+                    </li>
+                    <li>
+                        <div class="flex items-center">
+                            <svg class="h-5 w-5 flex-shrink-0 text-gray-300 dark:text-gray-600" viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd"/>
+                            </svg>
+                            <a href="/assets/{{ asset.uuid }}" class="ml-2 text-sm font-medium text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300">{{ asset.name }}</a>
+                        </div>
+                    </li>
+                    <li>
+                        <div class="flex items-center">
+                            <svg class="h-5 w-5 flex-shrink-0 text-gray-300 dark:text-gray-600" viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd"/>
+                            </svg>
+                            <span class="ml-2 text-sm font-medium text-gray-500 dark:text-gray-400">Edit</span>
+                        </div>
+                    </li>
+                </ol>
+            </nav>
+            <div class="mt-2 flex items-center">
+                <span class="inline-flex h-10 w-10 items-center justify-center rounded-lg mr-3
+                    {% if asset.asset_type == "ssh" %}bg-green-100 dark:bg-green-900/50
+                    {% else if asset.asset_type == "rdp" %}bg-blue-100 dark:bg-blue-900/50
+                    {% else %}bg-purple-100 dark:bg-purple-900/50{% endif %}">
+                    <span class="text-sm font-bold
+                        {% if asset.asset_type == "ssh" %}text-green-600 dark:text-green-400
+                        {% else if asset.asset_type == "rdp" %}text-blue-600 dark:text-blue-400
+                        {% else %}text-purple-600 dark:text-purple-400{% endif %}">
+                        {{ asset.asset_type|upper }}
+                    </span>
+                </span>
+                <h2 class="text-2xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-3xl sm:tracking-tight">
+                    Edit Asset
+                </h2>
+            </div>
+        </div>
+    </div>
+
+    <!-- Error message container - content injected by server on error -->
+    <div id="error-message" class="error-container rounded-md bg-red-50 dark:bg-red-900/50 p-4"></div>
+
+    <!-- Edit Form -->
+    <form hx-put="/api/v1/assets/{{ asset.uuid }}"
+          hx-headers='{"Content-Type": "application/json"}'
+          hx-ext="json-enc"
+          hx-target="#error-message"
+          hx-swap="innerHTML"
+          class="space-y-6">
+
+        <!-- Connection Details -->
+        <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+            <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
+                <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Connection Details</h3>
+                <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">Update the asset connection information.</p>
+            </div>
+            <div class="px-4 py-5 sm:p-6 space-y-6">
+                <div class="grid grid-cols-1 gap-6 sm:grid-cols-2">
+                    <div>
+                        <label for="name" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Name</label>
+                        <input type="text" name="name" id="name" value="{{ asset.name }}"
+                               class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
+                               required maxlength="100">
+                    </div>
+                    <div>
+                        <label for="hostname" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Hostname</label>
+                        <input type="text" name="hostname" id="hostname" value="{{ asset.hostname }}"
+                               class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm font-mono"
+                               required maxlength="255">
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 gap-6 sm:grid-cols-2">
+                    <div>
+                        <label for="ip_address" class="block text-sm font-medium text-gray-700 dark:text-gray-300">IP Address</label>
+                        <input type="text" name="ip_address" id="ip_address" value="{{ asset.ip_address.as_deref().unwrap_or_default() }}"
+                               class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm font-mono"
+                               placeholder="192.168.1.100 or 2001:db8::1">
+                        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">IPv4 or IPv6 address</p>
+                    </div>
+                    <div>
+                        <label for="port" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Port</label>
+                        <input type="number" name="port" id="port" value="{{ asset.port }}"
+                               class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
+                               min="1" max="65535" required>
+                    </div>
+                </div>
+
+                <div>
+                    <label for="status" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Status</label>
+                    <select name="status" id="status"
+                            class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
+                        <option value="online" {% if asset.status == "online" %}selected{% endif %}>Online</option>
+                        <option value="offline" {% if asset.status == "offline" %}selected{% endif %}>Offline</option>
+                        <option value="maintenance" {% if asset.status == "maintenance" %}selected{% endif %}>Maintenance</option>
+                        <option value="unknown" {% if asset.status == "unknown" %}selected{% endif %}>Unknown</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <!-- System Information -->
+        <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+            <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
+                <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">System Information</h3>
+            </div>
+            <div class="px-4 py-5 sm:p-6">
+                <div>
+                    <label for="description" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Description</label>
+                    <textarea name="description" id="description" rows="3"
+                              class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">{{ asset.description.as_deref().unwrap_or_default() }}</textarea>
+                </div>
+            </div>
+        </div>
+
+        <!-- Security Settings -->
+        <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+            <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
+                <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Security Settings</h3>
+            </div>
+            <div class="px-4 py-5 sm:p-6 space-y-4">
+                <div class="flex items-start">
+                    <div class="flex h-6 items-center">
+                        <input type="checkbox" name="require_mfa" id="require_mfa" {% if asset.require_mfa %}checked{% endif %}
+                               class="h-4 w-4 rounded border-gray-300 text-vauban-600 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600">
+                    </div>
+                    <div class="ml-3">
+                        <label for="require_mfa" class="text-sm font-medium text-gray-700 dark:text-gray-300">Require MFA</label>
+                        <p class="text-xs text-gray-500 dark:text-gray-400">Users must complete multi-factor authentication to connect</p>
+                    </div>
+                </div>
+                <div class="flex items-start">
+                    <div class="flex h-6 items-center">
+                        <input type="checkbox" name="require_justification" id="require_justification" {% if asset.require_justification %}checked{% endif %}
+                               class="h-4 w-4 rounded border-gray-300 text-vauban-600 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600">
+                    </div>
+                    <div class="ml-3">
+                        <label for="require_justification" class="text-sm font-medium text-gray-700 dark:text-gray-300">Require Justification</label>
+                        <p class="text-xs text-gray-500 dark:text-gray-400">Users must provide a reason before connecting</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Actions -->
+        <div class="flex justify-end space-x-3">
+            <a href="/assets/{{ asset.uuid }}"
+               class="inline-flex items-center rounded-md bg-white dark:bg-gray-700 px-4 py-2 text-sm font-semibold text-gray-900 dark:text-white shadow-sm ring-1 ring-inset ring-gray-300 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600">
+                Cancel
+            </a>
+            <button type="submit"
+                    class="inline-flex items-center rounded-md bg-vauban-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-600">
+                <span class="htmx-indicator mr-2">
+                    <svg class="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                </span>
+                Save Changes
+            </button>
+        </div>
+    </form>
+</div>
+{% endblock %}

@@ -21,8 +21,8 @@ use crate::templates::accounts::{
 };
 use crate::templates::assets::asset_list::AssetListItem;
 use crate::templates::assets::{
-    AccessListTemplate, AssetDetailTemplate, AssetGroupDetailTemplate, AssetGroupEditTemplate,
-    AssetGroupListTemplate, AssetListTemplate,
+    AccessListTemplate, AssetDetailTemplate, AssetEditTemplate, AssetGroupDetailTemplate,
+    AssetGroupEditTemplate, AssetGroupListTemplate, AssetListTemplate,
 };
 use crate::templates::base::{BaseTemplate, UserContext};
 use crate::templates::dashboard::widgets::{
@@ -1063,9 +1063,10 @@ pub async fn asset_list(
         query = query.filter(assets::status.eq(status));
     }
 
-    let db_assets: Vec<(i32, String, String, i32, String, String)> = query
+    let db_assets: Vec<(i32, ::uuid::Uuid, String, String, i32, String, String)> = query
         .select((
             assets::id,
+            assets::uuid,
             assets::name,
             assets::hostname,
             assets::port,
@@ -1079,8 +1080,9 @@ pub async fn asset_list(
     let asset_items: Vec<AssetListItem> = db_assets
         .into_iter()
         .map(
-            |(id, name, hostname, port, asset_type, status)| AssetListItem {
+            |(id, uuid, name, hostname, port, asset_type, status)| AssetListItem {
                 id,
+                uuid,
                 name,
                 hostname,
                 port,
@@ -1126,7 +1128,7 @@ pub async fn asset_list(
 pub async fn asset_detail(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
-    axum::extract::Path(id): axum::extract::Path<i32>,
+    axum::extract::Path(asset_uuid): axum::extract::Path<::uuid::Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
 
@@ -1157,7 +1159,7 @@ pub async fn asset_detail(
         chrono::DateTime<chrono::Utc>,
         chrono::DateTime<chrono::Utc>,
     ) = a::assets
-        .filter(a::id.eq(id))
+        .filter(a::uuid.eq(asset_uuid))
         .filter(a::is_deleted.eq(false))
         .select((
             a::uuid,
@@ -1263,6 +1265,102 @@ pub async fn asset_detail(
 }
 
 // NOTE: AssetQueryDetailResult removed - migrated to Diesel DSL tuple query
+
+/// Asset edit page.
+pub async fn asset_edit(
+    State(state): State<AppState>,
+    auth_user: WebAuthUser,
+    axum::extract::Path(uuid_str): axum::extract::Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    let user = Some(user_context_from_auth(&auth_user));
+
+    let mut conn = get_connection(&state.db_pool)?;
+    let asset_uuid = ::uuid::Uuid::parse_str(&uuid_str)
+        .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
+
+    use crate::schema::assets::dsl as a;
+
+    // Query asset for editing
+    #[allow(clippy::type_complexity)]
+    let asset_row: (
+        ::uuid::Uuid,
+        String,
+        String,
+        Option<ipnetwork::IpNetwork>,
+        i32,
+        String,
+        String,
+        Option<String>,
+        bool,
+        bool,
+    ) = a::assets
+        .filter(a::uuid.eq(asset_uuid))
+        .filter(a::is_deleted.eq(false))
+        .select((
+            a::uuid,
+            a::name,
+            a::hostname,
+            a::ip_address,
+            a::port,
+            a::asset_type,
+            a::status,
+            a::description,
+            a::require_mfa,
+            a::require_justification,
+        ))
+        .first(&mut conn)
+        .map_err(|e| match e {
+            diesel::result::Error::NotFound => AppError::NotFound("Asset not found".to_string()),
+            _ => AppError::Database(e),
+        })?;
+
+    let (
+        asset_uuid_val,
+        asset_name,
+        asset_hostname,
+        asset_ip,
+        asset_port,
+        asset_type_val,
+        asset_status,
+        asset_description,
+        asset_require_mfa,
+        asset_require_justification,
+    ) = asset_row;
+
+    let asset = crate::templates::assets::asset_edit::AssetEdit {
+        uuid: asset_uuid_val.to_string(),
+        name: asset_name.clone(),
+        hostname: asset_hostname,
+        ip_address: asset_ip.map(|ip| ip.ip().to_string()),
+        port: asset_port,
+        asset_type: asset_type_val,
+        status: asset_status,
+        description: asset_description,
+        require_mfa: asset_require_mfa,
+        require_justification: asset_require_justification,
+    };
+
+    let base = BaseTemplate::new(format!("Edit {} - Asset", asset_name), user.clone())
+        .with_current_path("/assets");
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        base.into_fields();
+
+    let template = AssetEditTemplate {
+        title,
+        user: user_ctx,
+        vauban,
+        messages,
+        language_code,
+        sidebar_content,
+        header_user,
+        asset,
+    };
+
+    let html = template
+        .render()
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
+    Ok(Html(html))
+}
 
 /// Dashboard stats widget.
 pub async fn dashboard_widget_stats(

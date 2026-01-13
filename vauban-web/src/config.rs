@@ -52,7 +52,7 @@ impl OptionalSecret {
 
     /// Convert to a SecretString if present.
     pub fn into_secret(self) -> Option<secrecy::SecretString> {
-        self.0.map(|s| secrecy::SecretString::from(s))
+        self.0.map(secrecy::SecretString::from)
     }
 }
 
@@ -95,22 +95,20 @@ impl From<Option<String>> for OptionalSecret {
 ///     expose: [url]
 /// );
 ///
-/// fn main() {
-///     let config = MyConfig {
-///         password: SecretString::from("super_secret"),
-///         api_key: SecretString::from("api_key_123"),
-///         url: SecretString::from("https://example.com"),
-///     };
+/// let config = MyConfig {
+///     password: SecretString::from("super_secret"),
+///     api_key: SecretString::from("api_key_123"),
+///     url: SecretString::from("https://example.com"),
+/// };
 ///
-///     let debug_str = format!("{:?}", config);
-///     // Redacted fields show [REDACTED] (appears twice for 2 redacted fields)
-///     assert!(debug_str.contains("[REDACTED]"));
-///     // Exposed secret shows the actual value
-///     assert!(debug_str.contains("https://example.com"));
-///     // Secrets are NOT exposed in the debug output
-///     assert!(!debug_str.contains("super_secret"));
-///     assert!(!debug_str.contains("api_key_123"));
-/// }
+/// let debug_str = format!("{:?}", config);
+/// // Redacted fields show [REDACTED] (appears twice for 2 redacted fields)
+/// assert!(debug_str.contains("[REDACTED]"));
+/// // Exposed secret shows the actual value
+/// assert!(debug_str.contains("https://example.com"));
+/// // Secrets are NOT exposed in the debug output
+/// assert!(!debug_str.contains("super_secret"));
+/// assert!(!debug_str.contains("api_key_123"));
 /// ```
 #[macro_export]
 macro_rules! debug_redacted_struct {

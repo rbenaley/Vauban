@@ -6,6 +6,7 @@ use askama::Template;
 #[derive(Debug, Clone)]
 pub struct FavoriteAsset {
     pub id: i32,
+    pub uuid: ::uuid::Uuid,
     pub name: String,
     pub hostname: String,
     pub asset_type: String, // "ssh", "rdp", "vnc"
@@ -37,6 +38,7 @@ mod tests {
     fn test_favorite_asset_ssh() {
         let asset = FavoriteAsset {
             id: 1,
+            uuid: ::uuid::Uuid::new_v4(),
             name: "Web Server".to_string(),
             hostname: "web.example.com".to_string(),
             asset_type: "ssh".to_string(),
@@ -51,6 +53,7 @@ mod tests {
     fn test_favorite_asset_rdp() {
         let asset = FavoriteAsset {
             id: 2,
+            uuid: ::uuid::Uuid::new_v4(),
             name: "Windows Server".to_string(),
             hostname: "win.example.com".to_string(),
             asset_type: "rdp".to_string(),
@@ -63,6 +66,7 @@ mod tests {
     fn test_favorite_asset_clone() {
         let asset = FavoriteAsset {
             id: 3,
+            uuid: ::uuid::Uuid::new_v4(),
             name: "Database".to_string(),
             hostname: "db.example.com".to_string(),
             asset_type: "ssh".to_string(),
@@ -77,6 +81,7 @@ mod tests {
     fn test_favorite_asset_debug() {
         let asset = FavoriteAsset {
             id: 4,
+            uuid: ::uuid::Uuid::new_v4(),
             name: "Test".to_string(),
             hostname: "test.local".to_string(),
             asset_type: "vnc".to_string(),
@@ -138,12 +143,14 @@ mod tests {
             favorite_assets: vec![
                 FavoriteAsset {
                     id: 1,
+                    uuid: ::uuid::Uuid::new_v4(),
                     name: "Server 1".to_string(),
                     hostname: "s1.local".to_string(),
                     asset_type: "ssh".to_string(),
                 },
                 FavoriteAsset {
                     id: 2,
+                    uuid: ::uuid::Uuid::new_v4(),
                     name: "Server 2".to_string(),
                     hostname: "s2.local".to_string(),
                     asset_type: "rdp".to_string(),

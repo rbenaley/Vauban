@@ -238,7 +238,8 @@ fn build_test_router(state: AppState) -> Router {
             get(handlers::web::approval_detail),
         )
         .route("/sessions/active", get(handlers::web::active_sessions))
-        .route("/assets/{id}", get(handlers::web::asset_detail))
+        .route("/assets/{uuid}/edit", get(handlers::web::asset_edit))
+        .route("/assets/{uuid}", get(handlers::web::asset_detail))
         .route("/assets/groups", get(handlers::web::asset_group_list))
         .route(
             "/assets/groups/{uuid}",
