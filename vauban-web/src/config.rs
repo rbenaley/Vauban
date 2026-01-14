@@ -205,6 +205,9 @@ pub struct Config {
     pub grpc: GrpcConfig,
     pub security: SecurityConfig,
     pub logging: LoggingConfig,
+    /// API configuration for M2M endpoints.
+    #[serde(default)]
+    pub api: ApiConfig,
 }
 
 debug_redacted_struct!(
@@ -350,6 +353,26 @@ pub struct LoggingConfig {
     pub level: String,
     /// Log format: json or text.
     pub format: LogFormat,
+}
+
+/// API configuration.
+/// Controls the M2M API endpoints (/api/v1/*).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiConfig {
+    /// Enable or disable API endpoints.
+    /// When false, only web routes are available.
+    pub enabled: bool,
+    /// API route prefix (e.g., "/api/v1").
+    pub prefix: String,
+}
+
+impl Default for ApiConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            prefix: "/api/v1".to_string(),
+        }
+    }
 }
 
 impl Config {

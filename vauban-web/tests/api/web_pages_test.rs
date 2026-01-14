@@ -666,3 +666,482 @@ async fn test_group_detail_not_found() {
 
     assert_status(&response, 404);
 }
+
+// =============================================================================
+// Web Form POST Tests (PRG Pattern with Flash Messages)
+// =============================================================================
+
+#[tokio::test]
+async fn test_update_asset_web_form_redirects_on_success() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    // Create test data
+    let user_id = create_simple_user(&mut conn, "test_asset_form");
+    let user_uuid = get_user_uuid(&mut conn, user_id);
+    let asset_id = create_simple_ssh_asset(&mut conn, "test-form-asset", user_id);
+    let asset_uuid = get_asset_uuid(&mut conn, asset_id);
+
+    let token = app.generate_test_token(&user_uuid.to_string(), "test_asset_form", true, true);
+
+    // Submit form with valid data
+    let response = app
+        .server
+        .post(&format!("/assets/{}/edit", asset_uuid))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .form(&[
+            ("name", "Updated Asset Name"),
+            ("hostname", "updated.example.com"),
+            ("port", "22"),
+            ("status", "online"),
+        ])
+        .await;
+
+    // Should redirect (PRG pattern)
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 302 || status == 303,
+        "Expected redirect (302 or 303), got {}",
+        status
+    );
+}
+
+#[tokio::test]
+async fn test_update_asset_web_form_validation_error() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    // Create test data
+    let user_id = create_simple_user(&mut conn, "test_asset_val");
+    let user_uuid = get_user_uuid(&mut conn, user_id);
+    let asset_id = create_simple_ssh_asset(&mut conn, "test-val-asset", user_id);
+    let asset_uuid = get_asset_uuid(&mut conn, asset_id);
+
+    let token = app.generate_test_token(&user_uuid.to_string(), "test_asset_val", true, true);
+
+    // Submit form with invalid port
+    let response = app
+        .server
+        .post(&format!("/assets/{}/edit", asset_uuid))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .form(&[
+            ("name", "Test Asset"),
+            ("hostname", "test.example.com"),
+            ("port", "99999"),  // Invalid port
+            ("status", "online"),
+        ])
+        .await;
+
+    // Should redirect back to edit page with error flash
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 302 || status == 303,
+        "Expected redirect (302 or 303), got {}",
+        status
+    );
+}
+
+#[tokio::test]
+async fn test_update_asset_group_web_form_redirects_on_success() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    // Create test data
+    let user_id = create_simple_user(&mut conn, "test_group_form");
+    let user_uuid = get_user_uuid(&mut conn, user_id);
+    let group_uuid = create_test_asset_group(&mut conn, "test-form-group");
+
+    let token = app.generate_test_token(&user_uuid.to_string(), "test_group_form", true, true);
+
+    // Submit form with valid data
+    let response = app
+        .server
+        .post(&format!("/assets/groups/{}/edit", group_uuid))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .form(&[
+            ("name", "Updated Group Name"),
+            ("slug", "updated-group-slug"),
+            ("description", "Updated description"),
+            ("color", "#FF5733"),
+            ("icon", "server"),
+        ])
+        .await;
+
+    // Should redirect (PRG pattern)
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 302 || status == 303,
+        "Expected redirect (302 or 303), got {}",
+        status
+    );
+}
+
+#[tokio::test]
+async fn test_update_asset_group_web_form_validation_error() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    // Create test data
+    let user_id = create_simple_user(&mut conn, "test_group_val");
+    let user_uuid = get_user_uuid(&mut conn, user_id);
+    let group_uuid = create_test_asset_group(&mut conn, "test-val-group");
+
+    let token = app.generate_test_token(&user_uuid.to_string(), "test_group_val", true, true);
+
+    // Submit form with empty name (validation error)
+    let response = app
+        .server
+        .post(&format!("/assets/groups/{}/edit", group_uuid))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .form(&[
+            ("name", ""),  // Empty name - validation error
+            ("slug", "valid-slug"),
+            ("color", "#FF5733"),
+            ("icon", "server"),
+        ])
+        .await;
+
+    // Should redirect back to edit page with error flash
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 302 || status == 303,
+        "Expected redirect (302 or 303), got {}",
+        status
+    );
+}
+
+#[tokio::test]
+async fn test_asset_edit_page_requires_authentication() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let user_id = create_simple_user(&mut conn, "test_auth_check");
+    let asset_id = create_simple_ssh_asset(&mut conn, "test-auth-asset", user_id);
+    let asset_uuid = get_asset_uuid(&mut conn, asset_id);
+
+    // Try to access edit page without authentication
+    let response = app
+        .server
+        .get(&format!("/assets/{}/edit", asset_uuid))
+        .await;
+
+    // Should redirect to login (303) or return 401
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 303 || status == 401,
+        "Expected redirect to login (303) or 401, got {}",
+        status
+    );
+}
+
+#[tokio::test]
+async fn test_web_form_post_requires_authentication() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let user_id = create_simple_user(&mut conn, "test_post_auth");
+    let asset_id = create_simple_ssh_asset(&mut conn, "test-post-asset", user_id);
+    let asset_uuid = get_asset_uuid(&mut conn, asset_id);
+
+    // Try to submit form without authentication
+    let response = app
+        .server
+        .post(&format!("/assets/{}/edit", asset_uuid))
+        .form(&[
+            ("name", "Hacked"),
+            ("hostname", "hacked.com"),
+            ("port", "22"),
+            ("status", "online"),
+        ])
+        .await;
+
+    // Should redirect to login (303) or return 401
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 303 || status == 401,
+        "Expected redirect to login (303) or 401, got {}",
+        status
+    );
+}
+
+// =============================================================================
+// Flash Message Display Tests (Regression Prevention)
+// =============================================================================
+
+#[tokio::test]
+async fn test_invalid_ip_address_shows_flash_error() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    // Create test data
+    let user_id = create_simple_user(&mut conn, "test_ip_error");
+    let user_uuid = get_user_uuid(&mut conn, user_id);
+    let asset_id = create_simple_ssh_asset(&mut conn, "test-ip-asset", user_id);
+    let asset_uuid = get_asset_uuid(&mut conn, asset_id);
+
+    let token = app.generate_test_token(&user_uuid.to_string(), "test_ip_error", true, true);
+
+    // Submit form with invalid IP address (192.168.1.400 is invalid)
+    let response = app
+        .server
+        .post(&format!("/assets/{}/edit", asset_uuid))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .form(&[
+            ("name", "Test Asset"),
+            ("hostname", "test.example.com"),
+            ("ip_address", "192.168.1.400"),  // Invalid IP address
+            ("port", "22"),
+            ("status", "online"),
+        ])
+        .await;
+
+    // Should redirect back to edit page (PRG pattern)
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 302 || status == 303,
+        "Expected redirect (302 or 303), got {}",
+        status
+    );
+
+    // Check that redirect location is back to edit page
+    let location = response.headers().get("location");
+    assert!(
+        location.is_some(),
+        "Response should have Location header for redirect"
+    );
+    let location_str = location.unwrap().to_str().unwrap();
+    assert!(
+        location_str.contains(&format!("/assets/{}/edit", asset_uuid)),
+        "Should redirect back to edit page, got: {}",
+        location_str
+    );
+
+    // Check that flash cookie is set with error message
+    let cookies = response.headers().get_all("set-cookie");
+    let flash_cookie = cookies
+        .iter()
+        .find(|c| c.to_str().unwrap().contains("__vauban_flash"));
+    assert!(
+        flash_cookie.is_some(),
+        "Flash cookie should be set for error message"
+    );
+}
+
+#[tokio::test]
+async fn test_edit_page_displays_flash_messages() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    // Create test data
+    let user_id = create_simple_user(&mut conn, "test_flash_display");
+    let user_uuid = get_user_uuid(&mut conn, user_id);
+    let asset_id = create_simple_ssh_asset(&mut conn, "test-flash-asset", user_id);
+    let asset_uuid = get_asset_uuid(&mut conn, asset_id);
+
+    let token = app.generate_test_token(&user_uuid.to_string(), "test_flash_display", true, true);
+
+    // First, submit form with invalid IP to set flash cookie
+    let error_response = app
+        .server
+        .post(&format!("/assets/{}/edit", asset_uuid))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .form(&[
+            ("name", "Test Asset"),
+            ("hostname", "test.example.com"),
+            ("ip_address", "invalid-ip"),  // Invalid IP address
+            ("port", "22"),
+            ("status", "online"),
+        ])
+        .await;
+
+    // Extract flash cookie from response
+    let flash_cookie = error_response
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .find(|c| c.to_str().unwrap().contains("__vauban_flash"))
+        .map(|c| {
+            let cookie_str = c.to_str().unwrap();
+            // Extract just the cookie value part (before ;)
+            cookie_str.split(';').next().unwrap().to_string()
+        });
+
+    assert!(flash_cookie.is_some(), "Flash cookie should be set");
+
+    // Now GET the edit page with the flash cookie to verify message is displayed
+    let get_response = app
+        .server
+        .get(&format!("/assets/{}/edit", asset_uuid))
+        .add_header(COOKIE, format!("access_token={}; {}", token, flash_cookie.unwrap()))
+        .await;
+
+    // Should return 200 with HTML containing error message
+    assert_status(&get_response, 200);
+
+    // Check that the response body contains error message
+    let body = get_response.text();
+    assert!(
+        body.contains("Invalid IP address") || body.contains("bg-red-50") || body.contains("error"),
+        "Edit page should display error flash message. Body excerpt: {}...",
+        &body[..std::cmp::min(500, body.len())]
+    );
+}
+
+#[tokio::test]
+async fn test_asset_group_empty_name_shows_flash_error() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    // Create test data
+    let user_id = create_simple_user(&mut conn, "test_group_name_err");
+    let user_uuid = get_user_uuid(&mut conn, user_id);
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("test-name-err-grp"));
+
+    let token = app.generate_test_token(&user_uuid.to_string(), "test_group_name_err", true, true);
+
+    // Submit form with empty name (validation error)
+    let response = app
+        .server
+        .post(&format!("/assets/groups/{}/edit", group_uuid))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .form(&[
+            ("name", ""),  // Empty name - validation error
+            ("slug", "valid-slug"),
+            ("color", "#FF5733"),
+            ("icon", "server"),
+        ])
+        .await;
+
+    // Should redirect back to edit page (PRG pattern)
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 302 || status == 303,
+        "Expected redirect (302 or 303), got {}",
+        status
+    );
+
+    // Check that redirect location is back to edit page
+    let location = response.headers().get("location");
+    assert!(
+        location.is_some(),
+        "Response should have Location header for redirect"
+    );
+    let location_str = location.unwrap().to_str().unwrap();
+    assert!(
+        location_str.contains(&format!("/assets/groups/{}/edit", group_uuid)),
+        "Should redirect back to edit page, got: {}",
+        location_str
+    );
+
+    // Check that flash cookie is set with error message
+    let cookies = response.headers().get_all("set-cookie");
+    let flash_cookie = cookies
+        .iter()
+        .find(|c| c.to_str().unwrap().contains("__vauban_flash"));
+    assert!(
+        flash_cookie.is_some(),
+        "Flash cookie should be set for error message"
+    );
+}
+
+#[tokio::test]
+async fn test_asset_group_empty_slug_shows_flash_error() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    // Create test data
+    let user_id = create_simple_user(&mut conn, "test_group_slug_err");
+    let user_uuid = get_user_uuid(&mut conn, user_id);
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("test-slug-err-grp"));
+
+    let token = app.generate_test_token(&user_uuid.to_string(), "test_group_slug_err", true, true);
+
+    // Submit form with empty slug (validation error)
+    let response = app
+        .server
+        .post(&format!("/assets/groups/{}/edit", group_uuid))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .form(&[
+            ("name", "Valid Group Name"),
+            ("slug", ""),  // Empty slug - validation error
+            ("color", "#FF5733"),
+            ("icon", "server"),
+        ])
+        .await;
+
+    // Should redirect back to edit page (PRG pattern)
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 302 || status == 303,
+        "Expected redirect (302 or 303), got {}",
+        status
+    );
+
+    // Check that flash cookie is set with error message
+    let cookies = response.headers().get_all("set-cookie");
+    let flash_cookie = cookies
+        .iter()
+        .find(|c| c.to_str().unwrap().contains("__vauban_flash"));
+    assert!(
+        flash_cookie.is_some(),
+        "Flash cookie should be set for slug validation error"
+    );
+}
+
+#[tokio::test]
+async fn test_asset_group_edit_page_displays_flash_messages() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    // Create test data
+    let user_id = create_simple_user(&mut conn, "test_group_flash");
+    let user_uuid = get_user_uuid(&mut conn, user_id);
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("test-grp-flash-disp"));
+
+    let token = app.generate_test_token(&user_uuid.to_string(), "test_group_flash", true, true);
+
+    // First, submit form with empty name to set flash cookie
+    let error_response = app
+        .server
+        .post(&format!("/assets/groups/{}/edit", group_uuid))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .form(&[
+            ("name", ""),  // Empty name - validation error
+            ("slug", "valid-slug"),
+            ("color", "#FF5733"),
+            ("icon", "server"),
+        ])
+        .await;
+
+    // Extract flash cookie from response
+    let flash_cookie = error_response
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .find(|c| c.to_str().unwrap().contains("__vauban_flash"))
+        .map(|c| {
+            let cookie_str = c.to_str().unwrap();
+            // Extract just the cookie value part (before ;)
+            cookie_str.split(';').next().unwrap().to_string()
+        });
+
+    assert!(flash_cookie.is_some(), "Flash cookie should be set");
+
+    // Now GET the edit page with the flash cookie to verify message is displayed
+    let get_response = app
+        .server
+        .get(&format!("/assets/groups/{}/edit", group_uuid))
+        .add_header(COOKIE, format!("access_token={}; {}", token, flash_cookie.unwrap()))
+        .await;
+
+    // Should return 200 with HTML containing error message
+    assert_status(&get_response, 200);
+
+    // Check that the response body contains error message
+    let body = get_response.text();
+    assert!(
+        body.contains("name") || body.contains("required") || body.contains("bg-red-50") || body.contains("error"),
+        "Edit page should display error flash message. Body excerpt: {}...",
+        &body[..std::cmp::min(500, body.len())]
+    );
+}

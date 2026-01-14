@@ -210,7 +210,13 @@ async fn load_tls_config(config: &Config) -> Result<RustlsConfig, Box<dyn std::e
 }
 
 /// Create Axum application.
+///
+/// Routes are organized into:
+/// - Web routes: Always active, serve HTML pages for human users
+/// - API routes: Conditionally active based on config.api.enabled, serve JSON for M2M
 async fn create_app(state: AppState) -> Result<Router, AppError> {
+    use secrecy::ExposeSecret;
+    
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods([
@@ -227,7 +233,13 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             axum::http::header::ACCEPT,
         ]);
 
-    let app = Router::new()
+    // Get flash secret key from config
+    let flash_secret = state.config.secret_key.expose_secret().as_bytes().to_vec();
+
+    // ==========================================================================
+    // WEB ROUTES - Always active (HTML pages for human users)
+    // ==========================================================================
+    let web_routes = Router::new()
         // Health check
         .route("/health", get(health_check))
         // Static files (served from static/ directory)
@@ -239,8 +251,11 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             "/ws/notifications",
             get(handlers::websocket::notifications_ws),
         )
-        // Web pages (HTML)
+        // Authentication pages and form handlers
         .route("/login", get(handlers::web::login_page))
+        .route("/auth/login", post(handlers::auth::login))
+        .route("/auth/logout", post(handlers::auth::logout))
+        // Dashboard pages
         .route("/", get(handlers::web::dashboard_home))
         .route("/dashboard", get(handlers::web::dashboard_home))
         .route("/dashboard/", get(handlers::web::dashboard_home))
@@ -264,7 +279,9 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             "/accounts/apikeys/{uuid}/revoke",
             post(handlers::web::revoke_api_key),
         )
-        // Assets pages (specific routes before generic {id} route)
+        .route("/accounts/groups", get(handlers::web::group_list))
+        .route("/accounts/groups/{uuid}", get(handlers::web::group_detail))
+        // Assets pages - GET for viewing, POST for form submission (PRG pattern)
         .route("/assets", get(handlers::web::asset_list))
         .route("/assets/groups", get(handlers::web::asset_group_list))
         .route(
@@ -273,10 +290,13 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
         )
         .route(
             "/assets/groups/{uuid}/edit",
-            get(handlers::web::asset_group_edit),
+            get(handlers::web::asset_group_edit).post(handlers::web::update_asset_group),
         )
         .route("/assets/access", get(handlers::web::access_rules_list))
-        .route("/assets/{uuid}/edit", get(handlers::web::asset_edit))
+        .route(
+            "/assets/{uuid}/edit",
+            get(handlers::web::asset_edit).post(handlers::web::update_asset_web),
+        )
         .route("/assets/{uuid}", get(handlers::web::asset_detail))
         // Sessions pages
         .route("/sessions", get(handlers::web::session_list))
@@ -291,53 +311,62 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             "/sessions/approvals/{uuid}",
             get(handlers::web::approval_detail),
         )
-        .route("/sessions/active", get(handlers::web::active_sessions))
-        // Groups pages (user groups)
-        .route("/accounts/groups", get(handlers::web::group_list))
-        .route("/accounts/groups/{uuid}", get(handlers::web::group_detail))
-        // Authentication routes
-        .route("/api/v1/auth/login", post(handlers::auth::login))
-        .route("/api/v1/auth/logout", post(handlers::auth::logout))
-        .route("/api/v1/auth/mfa/setup", post(handlers::auth::setup_mfa))
-        // API v1 routes
-        .route("/api/v1/accounts", get(handlers::accounts::list_users))
-        .route("/api/v1/accounts", post(handlers::accounts::create_user))
-        .route("/api/v1/accounts/{uuid}", get(handlers::accounts::get_user))
-        .route(
-            "/api/v1/accounts/{uuid}",
-            put(handlers::accounts::update_user),
-        )
-        .route(
-            "/api/v1/accounts/{uuid}",
-            axum::routing::delete(|| async { "Not implemented" }),
-        )
-        .route("/api/v1/assets", get(handlers::assets::list_assets))
-        .route("/api/v1/assets", post(handlers::assets::create_asset))
-        .route("/api/v1/assets/{uuid}", get(handlers::assets::get_asset))
-        .route("/api/v1/assets/{uuid}", put(handlers::assets::update_asset))
-        .route(
-            "/api/v1/assets/{uuid}",
-            axum::routing::delete(|| async { "Not implemented" }),
-        )
-        // Asset groups API
-        .route(
-            "/api/v1/assets/groups/{uuid}",
-            post(handlers::web::update_asset_group),
-        )
-        .route("/api/v1/sessions", get(handlers::sessions::list_sessions))
-        .route("/api/v1/sessions", post(handlers::sessions::create_session))
-        .route(
-            "/api/v1/sessions/{uuid}",
-            get(handlers::sessions::get_session),
-        )
-        .route(
-            "/api/v1/sessions/{uuid}",
-            axum::routing::delete(|| async { "Not implemented" }),
-        )
-        .route(
-            "/api/v1/sessions/{id}/terminate",
-            post(handlers::sessions::terminate_session),
-        )
+        .route("/sessions/active", get(handlers::web::active_sessions));
+
+    // ==========================================================================
+    // API ROUTES - Conditionally active based on config.api.enabled
+    // These are M2M (Machine-to-Machine) endpoints returning JSON only
+    // ==========================================================================
+    let api_enabled = state.config.api.enabled;
+
+    let api_routes = if api_enabled {
+        tracing::info!("API routes enabled at {}", state.config.api.prefix);
+        Router::new()
+            // Authentication API
+            .route("/api/v1/auth/login", post(handlers::auth::login))
+            .route("/api/v1/auth/logout", post(handlers::auth::logout))
+            .route("/api/v1/auth/mfa/setup", post(handlers::auth::setup_mfa))
+            // Accounts API
+            .route("/api/v1/accounts", get(handlers::api::list_users))
+            .route("/api/v1/accounts", post(handlers::api::create_user))
+            .route("/api/v1/accounts/{uuid}", get(handlers::api::get_user))
+            .route("/api/v1/accounts/{uuid}", put(handlers::api::update_user))
+            .route(
+                "/api/v1/accounts/{uuid}",
+                axum::routing::delete(|| async { "Not implemented" }),
+            )
+            // Assets API
+            .route("/api/v1/assets", get(handlers::api::list_assets))
+            .route("/api/v1/assets", post(handlers::api::create_asset))
+            .route("/api/v1/assets/{uuid}", get(handlers::api::get_asset))
+            .route("/api/v1/assets/{uuid}", put(handlers::api::update_asset))
+            .route(
+                "/api/v1/assets/{uuid}",
+                axum::routing::delete(|| async { "Not implemented" }),
+            )
+            // Sessions API
+            .route("/api/v1/sessions", get(handlers::api::list_sessions))
+            .route("/api/v1/sessions", post(handlers::api::create_session))
+            .route("/api/v1/sessions/{uuid}", get(handlers::api::get_session))
+            .route(
+                "/api/v1/sessions/{uuid}",
+                axum::routing::delete(|| async { "Not implemented" }),
+            )
+            .route(
+                "/api/v1/sessions/{id}/terminate",
+                post(handlers::api::terminate_session),
+            )
+    } else {
+        tracing::info!("API routes disabled by configuration");
+        Router::new()
+            // Return 404 for all API routes when disabled
+            .route("/api/v1/{*path}", get(api_disabled_handler).post(api_disabled_handler).put(api_disabled_handler).delete(api_disabled_handler))
+    };
+
+    // Merge web and API routes
+    let flash_key = middleware::flash::FlashSecretKey(flash_secret);
+    let app = web_routes
+        .merge(api_routes)
         .layer(
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())
@@ -346,6 +375,10 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
                     std::time::Duration::from_secs(30),
                 ))
                 .layer(cors)
+                .layer(axum::middleware::from_fn_with_state(
+                    flash_key,
+                    middleware::flash::flash_middleware,
+                ))
                 .layer(axum::middleware::from_fn_with_state(
                     state.clone(),
                     middleware::auth::auth_middleware,
@@ -357,6 +390,11 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
         .with_state(state);
 
     Ok(app)
+}
+
+/// Handler for disabled API routes.
+async fn api_disabled_handler() -> (axum::http::StatusCode, &'static str) {
+    (axum::http::StatusCode::NOT_FOUND, "API is disabled")
 }
 
 /// Health check endpoint.
