@@ -48,8 +48,10 @@
         </div>
     </div>
 
-    <!-- Edit Form -->
-    <form action="/api/v1/assets/groups/{{ group.uuid }}" method="POST" class="space-y-6">
+    <!-- Flash messages are displayed in base.html -->
+
+    <!-- Edit Form - Native HTML form with PRG pattern -->
+    <form action="/assets/groups/{{ group.uuid }}/edit" method="POST" class="space-y-6">
         <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
             <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
                 <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Group Details</h3>
@@ -83,11 +85,10 @@
                         <label for="color" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Color</label>
                         <div class="mt-1 flex items-center space-x-3">
                             <input type="color" name="color" id="color" value="{{ group.color }}"
-                                   oninput="this.nextElementSibling.value = this.value"
                                    class="h-10 w-14 rounded border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500">
-                            <input type="text" value="{{ group.color }}" readonly
-                                   class="block w-24 rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm font-mono">
+                            <span class="text-sm font-mono text-gray-500 dark:text-gray-400">{{ group.color }}</span>
                         </div>
+                        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Color will update after saving</p>
                     </div>
                     <div>
                         <label for="icon" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Icon</label>

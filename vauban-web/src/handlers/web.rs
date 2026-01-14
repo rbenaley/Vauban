@@ -13,6 +13,7 @@ use crate::AppState;
 use crate::db::get_connection;
 use crate::error::AppError;
 use crate::middleware::auth::{AuthUser, OptionalAuthUser, WebAuthUser};
+use crate::middleware::flash::{IncomingFlash, flash_redirect};
 use crate::schema::{api_keys, assets, auth_sessions, proxy_sessions};
 use crate::templates::accounts::{
     ApiKeyItem, ApikeyListTemplate, AuthSessionItem, GroupDetailTemplate, GroupListTemplate,
@@ -1270,9 +1271,20 @@ pub async fn asset_detail(
 pub async fn asset_edit(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    incoming_flash: IncomingFlash,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
+
+    // Convert incoming flash messages to template FlashMessages
+    let flash_messages: Vec<crate::templates::base::FlashMessage> = incoming_flash
+        .messages()
+        .iter()
+        .map(|m| crate::templates::base::FlashMessage {
+            level: m.level.clone(),
+            message: m.message.clone(),
+        })
+        .collect();
 
     let mut conn = get_connection(&state.db_pool)?;
     let asset_uuid = ::uuid::Uuid::parse_str(&uuid_str)
@@ -1341,7 +1353,8 @@ pub async fn asset_edit(
     };
 
     let base = BaseTemplate::new(format!("Edit {} - Asset", asset_name), user.clone())
-        .with_current_path("/assets");
+        .with_current_path("/assets")
+        .with_messages(flash_messages);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         base.into_fields();
 
@@ -1359,7 +1372,10 @@ pub async fn asset_edit(
     let html = template
         .render()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
-    Ok(Html(html))
+
+    // Clear flash cookie after reading and return HTML
+    use crate::middleware::flash::ClearFlashCookie;
+    Ok((ClearFlashCookie, Html(html)))
 }
 
 /// Dashboard stats widget.
@@ -2845,9 +2861,20 @@ struct GroupAssetResult {
 pub async fn asset_group_edit(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    incoming_flash: IncomingFlash,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
+
+    // Convert incoming flash messages to template FlashMessages
+    let flash_messages: Vec<crate::templates::base::FlashMessage> = incoming_flash
+        .messages()
+        .iter()
+        .map(|m| crate::templates::base::FlashMessage {
+            level: m.level.clone(),
+            message: m.message.clone(),
+        })
+        .collect();
 
     let mut conn = get_connection(&state.db_pool)?;
     let group_uuid = ::uuid::Uuid::parse_str(&uuid_str)
@@ -2878,7 +2905,8 @@ pub async fn asset_group_edit(
         format!("Edit {} - Asset Group", group_data.name),
         user.clone(),
     )
-    .with_current_path("/assets/groups");
+    .with_current_path("/assets/groups")
+    .with_messages(flash_messages);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         base.into_fields();
 
@@ -2896,7 +2924,10 @@ pub async fn asset_group_edit(
     let html = template
         .render()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
-    Ok(Html(html))
+
+    // Clear flash cookie after reading and return HTML
+    use crate::middleware::flash::ClearFlashCookie;
+    Ok((ClearFlashCookie, Html(html)))
 }
 
 /// Helper struct for asset group edit query results.
@@ -2926,19 +2957,57 @@ pub struct UpdateAssetGroupForm {
     pub icon: String,
 }
 
-/// Update asset group handler.
+/// Update asset group handler (Web form with PRG pattern).
+///
+/// Handles POST /assets/groups/{uuid}/edit with flash messages.
 pub async fn update_asset_group(
     State(state): State<AppState>,
     _auth_user: WebAuthUser,
+    incoming_flash: IncomingFlash,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
     axum::extract::Form(form): axum::extract::Form<UpdateAssetGroupForm>,
-) -> Result<impl IntoResponse, AppError> {
-    let mut conn = get_connection(&state.db_pool)?;
-    let group_uuid = ::uuid::Uuid::parse_str(&uuid_str)
-        .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
+) -> Response {
+    let flash = incoming_flash.flash();
+
+    // Validate UUID
+    let group_uuid = match ::uuid::Uuid::parse_str(&uuid_str) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Invalid group identifier"),
+                &format!("/assets/groups/{}/edit", uuid_str),
+            );
+        }
+    };
+
+    // Validate form fields
+    if form.name.trim().is_empty() {
+        return flash_redirect(
+            flash.error("Group name is required"),
+            &format!("/assets/groups/{}/edit", group_uuid),
+        );
+    }
+
+    if form.slug.trim().is_empty() {
+        return flash_redirect(
+            flash.error("Group slug is required"),
+            &format!("/assets/groups/{}/edit", group_uuid),
+        );
+    }
+
+    // Get database connection
+    let mut conn = match get_connection(&state.db_pool) {
+        Ok(conn) => conn,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Database connection error. Please try again."),
+                &format!("/assets/groups/{}/edit", group_uuid),
+            );
+        }
+    };
 
     // NOTE: Raw SQL - UPDATE with NOW() PostgreSQL function, using parameterized queries
-    diesel::sql_query(
+    let result = diesel::sql_query(
         "UPDATE asset_groups SET name = $1, slug = $2, description = $3, color = $4, icon = $5, updated_at = NOW()
          WHERE uuid = $6 AND is_deleted = false"
     )
@@ -2948,14 +3017,171 @@ pub async fn update_asset_group(
     .bind::<Text, _>(&form.color)
     .bind::<Text, _>(&form.icon)
     .bind::<DieselUuid, _>(group_uuid)
-    .execute(&mut conn)
-    .map_err(AppError::Database)?;
+    .execute(&mut conn);
 
-    // Redirect back to the group detail page
-    Ok(axum::response::Redirect::to(&format!(
-        "/assets/groups/{}",
-        group_uuid
-    )))
+    match result {
+        Ok(_) => {
+            // Success: redirect to detail page with success message
+            flash_redirect(
+                flash.success("Asset group updated successfully"),
+                &format!("/assets/groups/{}", group_uuid),
+            )
+        }
+        Err(_) => {
+            // Error: redirect back to edit page with error message
+            flash_redirect(
+                flash.error("Failed to update asset group. Please try again."),
+                &format!("/assets/groups/{}/edit", group_uuid),
+            )
+        }
+    }
+}
+
+/// Form data for updating an asset (Web form).
+#[derive(Debug, serde::Deserialize)]
+pub struct UpdateAssetForm {
+    pub name: String,
+    pub hostname: String,
+    pub ip_address: Option<String>,
+    pub port: i32,
+    pub status: String,
+    pub description: Option<String>,
+    #[serde(default)]
+    pub require_mfa: Option<String>,
+    #[serde(default)]
+    pub require_justification: Option<String>,
+}
+
+/// Update asset handler (Web form with PRG pattern).
+///
+/// Handles POST /assets/{uuid}/edit with flash messages.
+pub async fn update_asset_web(
+    State(state): State<AppState>,
+    _auth_user: WebAuthUser,
+    incoming_flash: IncomingFlash,
+    axum::extract::Path(uuid_str): axum::extract::Path<String>,
+    axum::extract::Form(form): axum::extract::Form<UpdateAssetForm>,
+) -> Response {
+    let flash = incoming_flash.flash();
+
+    // Validate UUID
+    let asset_uuid = match ::uuid::Uuid::parse_str(&uuid_str) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Invalid asset identifier"),
+                &format!("/assets/{}/edit", uuid_str),
+            );
+        }
+    };
+
+    // Validate form fields
+    if form.name.trim().is_empty() {
+        return flash_redirect(
+            flash.error("Asset name is required"),
+            &format!("/assets/{}/edit", asset_uuid),
+        );
+    }
+
+    if form.hostname.trim().is_empty() {
+        return flash_redirect(
+            flash.error("Hostname is required"),
+            &format!("/assets/{}/edit", asset_uuid),
+        );
+    }
+
+    if form.port < 1 || form.port > 65535 {
+        return flash_redirect(
+            flash.error("Port must be between 1 and 65535"),
+            &format!("/assets/{}/edit", asset_uuid),
+        );
+    }
+
+    // Parse and validate IP address if provided
+    let new_ip_address: Option<ipnetwork::IpNetwork> = if let Some(ref ip_str) = form.ip_address {
+        if ip_str.trim().is_empty() {
+            None
+        } else {
+            match ip_str.parse::<std::net::IpAddr>() {
+                Ok(ip) => Some(ipnetwork::IpNetwork::from(ip)),
+                Err(_) => {
+                    return flash_redirect(
+                        flash.error("Invalid IP address format. Use format like 192.168.1.1 or 2001:db8::1"),
+                        &format!("/assets/{}/edit", asset_uuid),
+                    );
+                }
+            }
+        }
+    } else {
+        None
+    };
+
+    // Get database connection
+    let mut conn = match get_connection(&state.db_pool) {
+        Ok(conn) => conn,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Database connection error. Please try again."),
+                &format!("/assets/{}/edit", asset_uuid),
+            );
+        }
+    };
+
+    // Parse boolean fields from checkbox values
+    let require_mfa = form.require_mfa.as_ref().map(|v| v == "on" || v == "true").unwrap_or(false);
+    let require_justification = form.require_justification.as_ref().map(|v| v == "on" || v == "true").unwrap_or(false);
+
+    use crate::schema::assets::dsl as a;
+    use chrono::Utc;
+
+    // First, get the existing asset to preserve unchanged values
+    let existing: Result<crate::models::asset::Asset, _> = a::assets
+        .filter(a::uuid.eq(asset_uuid))
+        .filter(a::is_deleted.eq(false))
+        .first(&mut conn);
+
+    let existing = match existing {
+        Ok(asset) => asset,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Asset not found"),
+                "/assets",
+            );
+        }
+    };
+
+    // Update the asset
+    let result = diesel::update(a::assets.filter(a::uuid.eq(asset_uuid)))
+        .set((
+            a::name.eq(&form.name),
+            a::hostname.eq(&form.hostname),
+            a::ip_address.eq(new_ip_address.or(existing.ip_address)),
+            a::port.eq(form.port),
+            a::status.eq(&form.status),
+            a::description.eq(form.description.as_deref()),
+            a::require_mfa.eq(require_mfa),
+            a::require_justification.eq(require_justification),
+            a::updated_at.eq(Utc::now()),
+        ))
+        .execute(&mut conn);
+
+    match result {
+        Ok(_) => {
+            // Success: redirect to detail page with success message
+            flash_redirect(
+                flash.success("Asset updated successfully"),
+                &format!("/assets/{}", asset_uuid),
+            )
+        }
+        Err(e) => {
+            tracing::error!("Failed to update asset: {}", e);
+            // Error: redirect back to edit page with error message
+            flash_redirect(
+                flash.error("Failed to update asset. Please try again."),
+                &format!("/assets/{}/edit", asset_uuid),
+            )
+        }
+    }
 }
 
 #[cfg(test)]

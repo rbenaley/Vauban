@@ -238,7 +238,10 @@ fn build_test_router(state: AppState) -> Router {
             get(handlers::web::approval_detail),
         )
         .route("/sessions/active", get(handlers::web::active_sessions))
-        .route("/assets/{uuid}/edit", get(handlers::web::asset_edit))
+        .route(
+            "/assets/{uuid}/edit",
+            get(handlers::web::asset_edit).post(handlers::web::update_asset_web),
+        )
         .route("/assets/{uuid}", get(handlers::web::asset_detail))
         .route("/assets/groups", get(handlers::web::asset_group_list))
         .route(
@@ -247,7 +250,7 @@ fn build_test_router(state: AppState) -> Router {
         )
         .route(
             "/assets/groups/{uuid}/edit",
-            get(handlers::web::asset_group_edit),
+            get(handlers::web::asset_group_edit).post(handlers::web::update_asset_group),
         )
         .route("/accounts/groups", get(handlers::web::group_list))
         .route("/accounts/groups/{uuid}", get(handlers::web::group_detail))
@@ -269,6 +272,11 @@ fn build_test_router(state: AppState) -> Router {
         )
         // Health check
         .route("/health", get(|| async { "OK" }))
+        // Add flash middleware
+        .layer(axum::middleware::from_fn_with_state(
+            middleware::flash::FlashSecretKey(state.config.secret_key.expose_secret().as_bytes().to_vec()),
+            middleware::flash::flash_middleware,
+        ))
         // Add auth middleware
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
