@@ -225,7 +225,7 @@ pub async fn login(
     let cookie = Cookie::build(("access_token", access_token.clone()))
         .path("/")
         .http_only(true)
-        .secure(false) // Set to true in production with HTTPS
+        .secure(true) // HTTPS-only app: always require secure cookies
         .same_site(SameSite::Lax) // Changed to Lax for better compatibility
         .build();
 

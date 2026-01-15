@@ -148,10 +148,9 @@ fn verify_session_exists(state: &AppState, token: &str) -> bool {
 
         matches!(exists, Ok(count) if count > 0)
     } else {
-        // If database is unavailable, fail open for availability
-        // In high-security environments, consider failing closed instead
-        tracing::warn!("Database unavailable for session verification, allowing token");
-        true
+        // Fail closed: if session verification cannot be performed, deny auth.
+        tracing::warn!("Database unavailable for session verification; denying token");
+        false
     }
 }
 
