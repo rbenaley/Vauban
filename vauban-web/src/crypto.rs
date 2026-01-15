@@ -2,10 +2,10 @@ use ed25519_dalek::{Signature as Ed25519Signature, Signer, SigningKey, Verifier,
 /// VAUBAN Web - Post-Quantum Cryptography (PQC) module.
 ///
 /// Implements hybrid cryptographic schemes combining classical algorithms
-/// (X25519, Ed25519) with post-quantum resistant algorithms (Kyber, Dilithium).
+/// (X25519, Ed25519) with post-quantum resistant algorithms (ML-KEM, ML-DSA).
 use hkdf::Hkdf;
-use pqcrypto_dilithium::dilithium3;
-use pqcrypto_kyber::kyber768;
+use pqcrypto_mldsa::mldsa65;
+use pqcrypto_mlkem::mlkem768;
 use sha3::Sha3_256;
 use subtle::ConstantTimeEq;
 use thiserror::Error;
@@ -33,19 +33,19 @@ pub type CryptoResult<T> = Result<T, CryptoError>;
 /// Hybrid KEM public key.
 pub struct HybridKemPublicKey {
     pub classical: X25519PublicKey,
-    pub post_quantum: kyber768::PublicKey,
+    pub post_quantum: mlkem768::PublicKey,
 }
 
 /// Hybrid KEM secret key.
 pub struct HybridKemSecretKey {
     pub classical: StaticSecret,
-    pub post_quantum: kyber768::SecretKey,
+    pub post_quantum: mlkem768::SecretKey,
 }
 
 impl Drop for HybridKemSecretKey {
     fn drop(&mut self) {
         // StaticSecret implements ZeroizeOnDrop in 2.0
-        // kyber768::SecretKey does not support Zeroize currently
+        // mlkem768::SecretKey does not support Zeroize currently
     }
 }
 
@@ -57,7 +57,7 @@ impl HybridKemSecretKey {
         let classical_secret = StaticSecret::random_from_rng(OsRng);
         let classical_public = X25519PublicKey::from(&classical_secret);
 
-        let (pq_public, pq_secret) = kyber768::keypair();
+        let (pq_public, pq_secret) = mlkem768::keypair();
 
         (
             HybridKemPublicKey {
@@ -97,13 +97,13 @@ pub fn constant_time_compare(a: &[u8], b: &[u8]) -> bool {
 /// Hybrid signature public key.
 pub struct HybridSigPublicKey {
     pub classical: VerifyingKey,
-    pub post_quantum: dilithium3::PublicKey,
+    pub post_quantum: mldsa65::PublicKey,
 }
 
 /// Hybrid signature secret key.
 pub struct HybridSigSecretKey {
     pub classical: SigningKey,
-    pub post_quantum: dilithium3::SecretKey,
+    pub post_quantum: mldsa65::SecretKey,
 }
 
 impl Drop for HybridSigSecretKey {
@@ -115,7 +115,7 @@ impl Drop for HybridSigSecretKey {
 /// Combined hybrid signature.
 pub struct HybridSignature {
     pub classical: Ed25519Signature,
-    pub post_quantum: dilithium3::DetachedSignature,
+    pub post_quantum: mldsa65::DetachedSignature,
 }
 
 impl HybridSigSecretKey {
@@ -128,7 +128,7 @@ impl HybridSigSecretKey {
         let classical_secret = SigningKey::from_bytes(&ed25519_bytes);
         let classical_public = classical_secret.verifying_key();
 
-        let (pq_public, pq_secret) = dilithium3::keypair();
+        let (pq_public, pq_secret) = mldsa65::keypair();
 
         (
             HybridSigPublicKey {
@@ -145,7 +145,7 @@ impl HybridSigSecretKey {
     /// Sign a message using both algorithms.
     pub fn sign(&self, message: &[u8]) -> HybridSignature {
         let classical_sig = self.classical.sign(message);
-        let pq_sig = dilithium3::detached_sign(message, &self.post_quantum);
+        let pq_sig = mldsa65::detached_sign(message, &self.post_quantum);
 
         HybridSignature {
             classical: classical_sig,
@@ -163,7 +163,7 @@ impl HybridSigPublicKey {
             .map_err(|_| CryptoError::SignatureVerificationFailed)?;
 
         // Verify post-quantum signature
-        dilithium3::verify_detached_signature(&signature.post_quantum, message, &self.post_quantum)
+        mldsa65::verify_detached_signature(&signature.post_quantum, message, &self.post_quantum)
             .map_err(|_| CryptoError::SignatureVerificationFailed)?;
 
         Ok(())
@@ -180,11 +180,11 @@ mod tests {
         let (pk, sk) = HybridKemSecretKey::generate();
         assert_eq!(
             pk.post_quantum.as_bytes().len(),
-            kyber768::public_key_bytes()
+            mlkem768::public_key_bytes()
         );
         assert_eq!(
             sk.post_quantum.as_bytes().len(),
-            kyber768::secret_key_bytes()
+            mlkem768::secret_key_bytes()
         );
     }
 
