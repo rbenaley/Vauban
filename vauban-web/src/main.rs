@@ -146,7 +146,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// Configures rustls for TLS 1.3 only (no TLS 1.2 or lower).
 async fn load_tls_config(config: &Config) -> Result<RustlsConfig, Box<dyn std::error::Error>> {
     use rustls::ServerConfig;
-    use rustls_pemfile::{certs, private_key};
+    use rustls_pki_types::pem::PemObject;
+    use rustls_pki_types::{CertificateDer, PrivateKeyDer};
     use std::fs::File;
     use std::io::BufReader;
 
@@ -168,7 +169,7 @@ async fn load_tls_config(config: &Config) -> Result<RustlsConfig, Box<dyn std::e
     // Load certificate chain
     let cert_file = File::open(cert_path)?;
     let mut cert_reader = BufReader::new(cert_file);
-    let cert_chain: Vec<_> = certs(&mut cert_reader)
+    let cert_chain: Vec<CertificateDer<'static>> = CertificateDer::pem_reader_iter(&mut cert_reader)
         .filter_map(|cert| cert.ok())
         .collect();
 
@@ -183,15 +184,18 @@ async fn load_tls_config(config: &Config) -> Result<RustlsConfig, Box<dyn std::e
     {
         let ca_file = File::open(ca_path)?;
         let mut ca_reader = BufReader::new(ca_file);
-        let ca_certs: Vec<_> = certs(&mut ca_reader).filter_map(|cert| cert.ok()).collect();
+        let ca_certs: Vec<CertificateDer<'static>> =
+            CertificateDer::pem_reader_iter(&mut ca_reader)
+                .filter_map(|cert| cert.ok())
+                .collect();
         full_chain.extend(ca_certs);
     }
 
     // Load private key
     let key_file = File::open(key_path)?;
     let mut key_reader = BufReader::new(key_file);
-    let private_key =
-        private_key(&mut key_reader)?.ok_or("No valid private key found in key file")?;
+    let private_key = PrivateKeyDer::from_pem_reader(&mut key_reader)
+        .map_err(|e| format!("No valid private key found in key file: {}", e))?;
 
     // Build rustls config with TLS 1.3 ONLY
     // Explicitly restrict to TLS 1.3 protocol version (no TLS 1.2 or lower)

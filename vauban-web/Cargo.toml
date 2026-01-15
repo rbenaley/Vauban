@@ -45,8 +45,8 @@ tonic-tls = "0.6"
 prost = "0.14"
 
 # Cryptography (Post-Quantum)
-pqcrypto-kyber = "0.8"
-pqcrypto-dilithium = "0.5"
+pqcrypto-mlkem = "0.1"
+pqcrypto-mldsa = "0.1"
 pqcrypto-traits = "0.3"
 x25519-dalek = { version = "2.0", features = ["static_secrets"] }
 ed25519-dalek = { version = "2.1", features = ["rand_core"] }
@@ -87,7 +87,7 @@ libc = "0.2"
 
 # Configuration
 config = "0.15"
-dotenv = "0.15"
+dotenvy = "0.15"
 rpassword = "7"
 
 # HTTP client
@@ -100,7 +100,7 @@ futures-util = "0.3"
 # TLS (HTTPS only, TLS 1.3)
 axum-server = { version = "0.7", features = ["tls-rustls"] }
 rustls = "0.23"
-rustls-pemfile = "2"
+rustls-pki-types = "1"
 
 [dev-dependencies]
 tokio-test = "0.4"
