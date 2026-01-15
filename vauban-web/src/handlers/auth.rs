@@ -66,12 +66,7 @@ pub async fn login(
     // Validation
     if let Err(e) = validator::Validate::validate(&request) {
         if htmx {
-            return Ok(Html(format!(
-                r#"<div id="login-result" class="rounded-md bg-red-50 dark:bg-red-900/50 p-4">
-                    <p class="text-sm font-medium text-red-800 dark:text-red-200">Validation error: {}</p>
-                </div>"#,
-                e
-            )).into_response());
+            return Ok(Html(login_error_html(LoginErrorKind::ValidationError)).into_response());
         }
         return Err(AppError::Validation(format!("Validation failed: {:?}", e)));
     }
@@ -89,7 +84,7 @@ pub async fn login(
         Some(u) => u,
         None => {
             if htmx {
-                return Ok(Html(login_error_html("Invalid credentials")).into_response());
+                return Ok(Html(login_error_html(LoginErrorKind::InvalidCredentials)).into_response());
             }
             return Err(AppError::Auth("Invalid credentials".to_string()));
         }
@@ -98,7 +93,7 @@ pub async fn login(
     // Check if account is locked
     if user.is_locked() {
         if htmx {
-            return Ok(Html(login_error_html("Account is locked")).into_response());
+            return Ok(Html(login_error_html(LoginErrorKind::AccountLocked)).into_response());
         }
         return Err(AppError::Auth("Account is locked".to_string()));
     }
@@ -108,14 +103,32 @@ pub async fn login(
         .auth_service
         .verify_password(&request.password, &user.password_hash)?;
     if !password_valid {
-        // Increment failed attempts
+        // Increment failed attempts and apply progressive lockout if needed
+        let max_failed_attempts = state.config.security.max_failed_login_attempts as i32;
+        let new_failed_attempts = user.failed_login_attempts + 1;
+        let locked_until_value = lockout_duration_for_attempts(
+            new_failed_attempts,
+            state.config.security.max_failed_login_attempts,
+        )
+        .map(|duration| Utc::now() + duration);
+
         diesel::update(users.find(user.id))
-            .set(failed_login_attempts.eq(failed_login_attempts + 1))
+            .set((
+                failed_login_attempts.eq(new_failed_attempts),
+                locked_until.eq(locked_until_value),
+            ))
             .execute(&mut conn)
             .map_err(AppError::Database)?;
 
+        if locked_until_value.is_some() && new_failed_attempts >= max_failed_attempts {
+            if htmx {
+                return Ok(Html(login_error_html(LoginErrorKind::AccountLocked)).into_response());
+            }
+            return Err(AppError::Auth("Account is locked".to_string()));
+        }
+
         if htmx {
-            return Ok(Html(login_error_html("Invalid credentials")).into_response());
+            return Ok(Html(login_error_html(LoginErrorKind::InvalidCredentials)).into_response());
         }
         return Err(AppError::Auth("Invalid credentials".to_string()));
     }
@@ -147,7 +160,7 @@ pub async fn login(
 
     if user.mfa_enabled && !mfa_verified {
         if htmx {
-            return Ok(Html(login_error_html("Invalid MFA code")).into_response());
+            return Ok(Html(login_error_html(LoginErrorKind::InvalidMfa)).into_response());
         }
         return Err(AppError::Auth("Invalid MFA code".to_string()));
     }
@@ -249,10 +262,28 @@ pub async fn login(
     Ok((jar.add(cookie), Json(response)).into_response())
 }
 
+#[derive(Debug, Clone, Copy)]
+enum LoginErrorKind {
+    InvalidCredentials,
+    AccountLocked,
+    InvalidMfa,
+    ValidationError,
+}
+
+impl LoginErrorKind {
+    fn message(self) -> &'static str {
+        match self {
+            Self::InvalidCredentials => "Invalid credentials",
+            Self::AccountLocked => "Account is locked",
+            Self::InvalidMfa => "Invalid MFA code",
+            Self::ValidationError => "Validation error",
+        }
+    }
+}
+
 /// Generate error HTML for HTMX login response.
-fn login_error_html(message: &str) -> String {
-    use crate::error::user_friendly_message;
-    let friendly = user_friendly_message(message);
+fn login_error_html(kind: LoginErrorKind) -> String {
+    let friendly = kind.message();
     format!(
         r#"<div id="login-result" class="rounded-md bg-red-50 dark:bg-red-900/50 p-4">
             <div class="flex">
@@ -291,6 +322,26 @@ fn hash_token(token: &str) -> String {
     let mut hasher = Sha3_256::new();
     hasher.update(token.as_bytes());
     format!("{:x}", hasher.finalize())
+}
+
+/// Determine progressive lockout duration based on failed attempts.
+fn lockout_duration_for_attempts(
+    failed_attempts: i32,
+    threshold: u32,
+) -> Option<Duration> {
+    let threshold = threshold as i32;
+    if failed_attempts < threshold {
+        return None;
+    }
+
+    let stages = [
+        Duration::minutes(5),
+        Duration::minutes(15),
+        Duration::hours(1),
+        Duration::hours(24),
+    ];
+    let stage_index = (failed_attempts - threshold) as usize;
+    Some(stages[stage_index.min(stages.len() - 1)])
 }
 
 /// Extract client IP from headers (X-Forwarded-For, X-Real-IP) or connection address.
@@ -813,25 +864,26 @@ mod tests {
 
     #[test]
     fn test_login_error_html_contains_message() {
-        let html = login_error_html("Test error message");
+        let html = login_error_html(LoginErrorKind::InvalidCredentials);
 
-        assert!(html.contains("Test error message"));
+        assert!(html.contains("Invalid credentials"));
         assert!(html.contains("login-result"));
         assert!(html.contains("bg-red-50"));
     }
 
     #[test]
-    fn test_login_error_html_special_chars() {
-        let html = login_error_html("<script>alert('xss')</script>");
+    fn test_login_error_html_account_locked_message() {
+        let html = login_error_html(LoginErrorKind::AccountLocked);
 
-        // Should contain the message (escaping is caller's responsibility in real app)
+        assert!(html.contains("Account is locked"));
         assert!(html.contains("login-result"));
     }
 
     #[test]
-    fn test_login_error_html_empty_message() {
-        let html = login_error_html("");
+    fn test_login_error_html_validation_message() {
+        let html = login_error_html(LoginErrorKind::ValidationError);
 
+        assert!(html.contains("Validation error"));
         assert!(html.contains("login-result"));
     }
 
@@ -852,6 +904,40 @@ mod tests {
         let html = login_mfa_required_html();
 
         assert!(html.contains("autofocus"));
+    }
+
+    // ==================== lockout_duration_for_attempts Tests ====================
+
+    #[test]
+    fn test_lockout_duration_below_threshold() {
+        let duration = lockout_duration_for_attempts(2, 3);
+        assert!(duration.is_none());
+    }
+
+    #[test]
+    fn test_lockout_duration_first_stage() {
+        let duration = lockout_duration_for_attempts(3, 3).unwrap();
+        assert_eq!(duration, Duration::minutes(5));
+    }
+
+    #[test]
+    fn test_lockout_duration_progressive_stages() {
+        assert_eq!(
+            lockout_duration_for_attempts(4, 3).unwrap(),
+            Duration::minutes(15)
+        );
+        assert_eq!(
+            lockout_duration_for_attempts(5, 3).unwrap(),
+            Duration::hours(1)
+        );
+        assert_eq!(
+            lockout_duration_for_attempts(6, 3).unwrap(),
+            Duration::hours(24)
+        );
+        assert_eq!(
+            lockout_duration_for_attempts(10, 3).unwrap(),
+            Duration::hours(24)
+        );
     }
 
     // ==================== LoginRequest Debug Tests ====================
