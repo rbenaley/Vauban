@@ -11,7 +11,7 @@ use axum_server::tls_rustls::RustlsConfig;
 use std::net::SocketAddr;
 use tower::ServiceBuilder;
 use tower_http::{
-    cors::{Any, CorsLayer},
+    cors::{AllowOrigin, CorsLayer},
     timeout::TimeoutLayer,
     trace::TraceLayer,
 };
@@ -222,7 +222,18 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
     use secrecy::ExposeSecret;
     
     let cors = CorsLayer::new()
-        .allow_origin(Any)
+        .allow_origin(AllowOrigin::predicate(|origin, request_parts| {
+            let host = request_parts
+                .headers
+                .get(axum::http::header::HOST)
+                .and_then(|value| value.to_str().ok());
+            let origin = origin.to_str().ok();
+
+            match (origin, host) {
+                (Some(origin), Some(host)) => is_same_origin(origin, host),
+                _ => false,
+            }
+        }))
         .allow_methods([
             Method::GET,
             Method::POST,
@@ -396,6 +407,13 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
     Ok(app)
 }
 
+/// Determine if the Origin header matches the request host.
+fn is_same_origin(origin: &str, host: &str) -> bool {
+    let origin = origin.trim_end_matches('/');
+    let expected = format!("https://{}", host);
+    origin == expected
+}
+
 /// Handler for disabled API routes.
 async fn api_disabled_handler() -> (axum::http::StatusCode, &'static str) {
     (axum::http::StatusCode::NOT_FOUND, "API is disabled")
@@ -558,5 +576,36 @@ mod tests {
         assert_eq!(Method::DELETE.as_str(), "DELETE");
         assert_eq!(Method::PATCH.as_str(), "PATCH");
         assert_eq!(Method::OPTIONS.as_str(), "OPTIONS");
+    }
+
+    // ==================== CORS Origin Tests ====================
+
+    #[test]
+    fn test_is_same_origin_https_match() {
+        let origin = "https://example.com:8443";
+        let host = "example.com:8443";
+        assert!(is_same_origin(origin, host));
+    }
+
+    #[test]
+    fn test_is_same_origin_trailing_slash() {
+        let origin = "https://example.com";
+        let host = "example.com";
+        assert!(is_same_origin(origin, host));
+        assert!(is_same_origin("https://example.com/", host));
+    }
+
+    #[test]
+    fn test_is_same_origin_scheme_mismatch() {
+        let origin = "http://example.com";
+        let host = "example.com";
+        assert!(!is_same_origin(origin, host));
+    }
+
+    #[test]
+    fn test_is_same_origin_host_mismatch() {
+        let origin = "https://other.example.com";
+        let host = "example.com";
+        assert!(!is_same_origin(origin, host));
     }
 }
