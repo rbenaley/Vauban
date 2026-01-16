@@ -28,6 +28,7 @@
                     <option value="approved" {% if status_filter.as_deref() == Some("approved") %}selected{% endif %}>Approved</option>
                     <option value="rejected" {% if status_filter.as_deref() == Some("rejected") %}selected{% endif %}>Rejected</option>
                     <option value="expired" {% if status_filter.as_deref() == Some("expired") %}selected{% endif %}>Expired</option>
+                    <option value="orphaned" {% if status_filter.as_deref() == Some("orphaned") %}selected{% endif %}>Orphaned</option>
                 </select>
             </div>
             <button type="submit"

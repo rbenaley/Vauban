@@ -549,12 +549,17 @@ async fn test_revoke_session_works() {
     let session_uuid = create_test_auth_session(&mut conn, user_id, false);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let csrf_token = app.generate_csrf_token();
 
     // Revoke the session
     let response = app
         .server
         .post(&format!("/accounts/sessions/{}/revoke", session_uuid))
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[("csrf_token", csrf_token.as_str())])
         .await;
 
     let status = response.status_code().as_u16();
@@ -769,14 +774,18 @@ async fn test_create_api_key_endpoint_accepts_form() {
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let csrf_token = app.generate_csrf_token();
 
     // Create API key via POST with form data
     // Note: scopes is optional, so we only send the required field 'name'
     let response = app
         .server
         .post("/accounts/apikeys/create")
-        .add_header(COOKIE, format!("access_token={}", token))
-        .form(&[("name", "My Test Key")])
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[("name", "My Test Key"), ("csrf_token", csrf_token.as_str())])
         .await;
 
     let status = response.status_code().as_u16();
@@ -823,12 +832,17 @@ async fn test_revoke_api_key_success() {
     let key_uuid = create_test_api_key(&mut conn, user_id, "Key to Revoke", true);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let csrf_token = app.generate_csrf_token();
 
     // Revoke the key
     let response = app
         .server
         .post(&format!("/accounts/apikeys/{}/revoke", key_uuid))
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[("csrf_token", csrf_token.as_str())])
         .await;
 
     let status = response.status_code().as_u16();
@@ -869,12 +883,17 @@ async fn test_revoke_api_key_not_found() {
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let csrf_token = app.generate_csrf_token();
 
     // Try to revoke non-existent key
     let response = app
         .server
         .post(&format!("/accounts/apikeys/{}/revoke", nonexistent_uuid))
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[("csrf_token", csrf_token.as_str())])
         .await;
 
     // Should succeed (no-op) or return error
@@ -903,12 +922,17 @@ async fn test_cannot_revoke_other_users_key() {
 
     let attacker_token =
         app.generate_test_token(&attacker_uuid.to_string(), &attacker_name, true, true);
+    let csrf_token = app.generate_csrf_token();
 
     // Try to revoke another user's key
     let response = app
         .server
         .post(&format!("/accounts/apikeys/{}/revoke", key_uuid))
-        .add_header(COOKIE, format!("access_token={}", attacker_token))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", attacker_token, csrf_token),
+        )
+        .form(&[("csrf_token", csrf_token.as_str())])
         .await;
 
     // Should succeed (no-op since key doesn't belong to attacker)
@@ -1139,6 +1163,7 @@ async fn test_revoke_session_broadcasts_update_to_websocket() {
     let session_to_revoke = create_test_auth_session(&mut conn, user_id, false);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let csrf_token = app.generate_csrf_token();
 
     // Subscribe to the user's auth sessions channel BEFORE revoking
     let channel = WsChannel::UserAuthSessions(user_uuid.to_string());
@@ -1148,7 +1173,11 @@ async fn test_revoke_session_broadcasts_update_to_websocket() {
     let response = app
         .server
         .post(&format!("/accounts/sessions/{}/revoke", session_to_revoke))
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[("csrf_token", csrf_token.as_str())])
         .await;
 
     assert!(
@@ -1207,12 +1236,17 @@ async fn test_revoke_session_removes_session_from_database() {
     assert!(exists_before, "Session should exist before revocation");
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let csrf_token = app.generate_csrf_token();
 
     // Revoke the session
     let _response = app
         .server
         .post(&format!("/accounts/sessions/{}/revoke", session_uuid))
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[("csrf_token", csrf_token.as_str())])
         .await;
 
     // Verify session no longer exists
@@ -1251,11 +1285,16 @@ async fn test_logout_broadcasts_session_removal() {
     let channel = WsChannel::UserAuthSessions(user_uuid.to_string());
     let mut receiver = app.broadcast.subscribe(&channel).await;
 
-    // Logout
+    // Logout (web route)
+    let csrf_token = app.generate_csrf_token();
     let response = app
         .server
-        .post("/api/v1/auth/logout")
-        .add_header(COOKIE, format!("access_token={}", token))
+        .post("/auth/logout")
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[("csrf_token", csrf_token.as_str())])
         .await;
 
     // Logout should succeed (200) or redirect (303)
@@ -1378,6 +1417,7 @@ async fn test_multiple_sessions_all_updated_on_revoke() {
 
     // Generate token first (this creates a session)
     let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let csrf_token = app.generate_csrf_token();
 
     // Create 3 additional sessions
     let session1 = create_test_auth_session(&mut conn, user_id, false);
@@ -1402,7 +1442,11 @@ async fn test_multiple_sessions_all_updated_on_revoke() {
     let _response = app
         .server
         .post(&format!("/accounts/sessions/{}/revoke", session2))
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[("csrf_token", csrf_token.as_str())])
         .await;
 
     // Count sessions after

@@ -3,14 +3,15 @@
 /// Login, logout, MFA setup and verification.
 use axum::{
     Json,
-    extract::State,
-    http::{HeaderValue, header::HeaderMap},
+    extract::{Form, State},
+    http::{HeaderValue, StatusCode, header::HeaderMap},
     response::{Html, IntoResponse, Response},
 };
 use axum_extra::extract::CookieJar;
 use chrono::{Duration, Utc};
 use diesel::prelude::*;
 use ipnetwork::IpNetwork;
+use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_256};
 use std::net::SocketAddr;
@@ -38,6 +39,7 @@ pub struct LoginRequest {
     #[validate(length(min = 12))]
     pub password: String,
     pub mfa_code: Option<String>,
+    pub csrf_token: Option<String>,
 }
 
 /// Login response.
@@ -262,12 +264,38 @@ pub async fn login(
     Ok((jar.add(cookie), Json(response)).into_response())
 }
 
+/// Login handler for web UI (enforces CSRF).
+pub async fn login_web(
+    State(state): State<AppState>,
+    client_addr: crate::middleware::ClientAddr,
+    headers: HeaderMap,
+    jar: CookieJar,
+    Json(request): Json<LoginRequest>,
+) -> AppResult<Response> {
+    let htmx = is_htmx_request(&headers);
+    let secret = state.config.secret_key.expose_secret().as_bytes();
+    let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
+    let csrf_value = request.csrf_token.as_deref().unwrap_or("");
+    if !crate::middleware::csrf::validate_double_submit(
+        secret,
+        csrf_cookie.map(|c| c.value()),
+        csrf_value,
+    ) {
+        if htmx {
+            return Ok(Html(login_error_html(LoginErrorKind::InvalidCsrf)).into_response());
+        }
+        return Err(AppError::Validation("Invalid CSRF token".to_string()));
+    }
+    login(State(state), client_addr, headers, jar, Json(request)).await
+}
+
 #[derive(Debug, Clone, Copy)]
 enum LoginErrorKind {
     InvalidCredentials,
     AccountLocked,
     InvalidMfa,
     ValidationError,
+    InvalidCsrf,
 }
 
 impl LoginErrorKind {
@@ -277,6 +305,7 @@ impl LoginErrorKind {
             Self::AccountLocked => "Account is locked",
             Self::InvalidMfa => "Invalid MFA code",
             Self::ValidationError => "Validation error",
+            Self::InvalidCsrf => "Invalid CSRF token",
         }
     }
 }
@@ -416,6 +445,30 @@ pub async fn logout(State(state): State<AppState>, jar: CookieJar) -> Response {
     (jar.add(cookie), Redirect::to("/login")).into_response()
 }
 
+/// Logout handler for web UI (enforces CSRF).
+pub async fn logout_web(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Form(form): Form<AuthCsrfForm>,
+) -> Response {
+    let secret = state.config.secret_key.expose_secret().as_bytes();
+    let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
+    if !crate::middleware::csrf::validate_double_submit(
+        secret,
+        csrf_cookie.map(|c| c.value()),
+        &form.csrf_token,
+    ) {
+        return (StatusCode::BAD_REQUEST, "Invalid CSRF token").into_response();
+    }
+    logout(State(state), jar).await
+}
+
+/// CSRF-only form payload for web auth routes.
+#[derive(Debug, Deserialize)]
+pub struct AuthCsrfForm {
+    pub csrf_token: String,
+}
+
 /// MFA setup request.
 #[derive(Debug, Serialize)]
 pub struct MfaSetupResponse {
@@ -464,6 +517,7 @@ mod tests {
             username: "validuser".to_string(),
             password: "validpassword123".to_string(),
             mfa_code: None,
+            csrf_token: None,
         };
 
         assert!(request.validate().is_ok());
@@ -475,6 +529,7 @@ mod tests {
             username: "ab".to_string(), // Too short (min 3)
             password: "validpassword123".to_string(),
             mfa_code: None,
+            csrf_token: None,
         };
 
         assert!(request.validate().is_err());
@@ -486,6 +541,7 @@ mod tests {
             username: "validuser".to_string(),
             password: "short".to_string(), // Too short (min 12)
             mfa_code: None,
+            csrf_token: None,
         };
 
         assert!(request.validate().is_err());
@@ -497,6 +553,7 @@ mod tests {
             username: "validuser".to_string(),
             password: "validpassword123".to_string(),
             mfa_code: Some("123456".to_string()),
+            csrf_token: None,
         };
 
         assert!(request.validate().is_ok());
@@ -509,6 +566,7 @@ mod tests {
             username: "abc".to_string(), // Exactly 3 chars
             password: "validpassword123".to_string(),
             mfa_code: None,
+            csrf_token: None,
         };
 
         assert!(request.validate().is_ok());
@@ -520,6 +578,7 @@ mod tests {
             username: "validuser".to_string(),
             password: "123456789012".to_string(), // Exactly 12 chars
             mfa_code: None,
+            csrf_token: None,
         };
 
         assert!(request.validate().is_ok());
@@ -948,6 +1007,7 @@ mod tests {
             username: "testuser".to_string(),
             password: "securepassword".to_string(),
             mfa_code: Some("123456".to_string()),
+            csrf_token: None,
         };
 
         let debug_str = format!("{:?}", request);
@@ -1015,6 +1075,7 @@ mod tests {
             username: "abc".to_string(),
             password: "123456789012".to_string(),
             mfa_code: None,
+            csrf_token: None,
         };
         assert!(request.validate().is_ok());
     }
@@ -1025,6 +1086,7 @@ mod tests {
             username: "用户名".to_string(), // 3 unicode chars
             password: "validpassword123".to_string(),
             mfa_code: None,
+            csrf_token: None,
         };
         // Unicode chars count as 1 each
         assert!(request.validate().is_ok());
@@ -1036,6 +1098,7 @@ mod tests {
             username: "testuser".to_string(),
             password: "密码测试密码测试密码测试".to_string(), // 12 unicode chars
             mfa_code: None,
+            csrf_token: None,
         };
         assert!(request.validate().is_ok());
     }

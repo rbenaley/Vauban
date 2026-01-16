@@ -173,6 +173,13 @@ impl TestApp {
         token
     }
 
+    /// Generate a signed CSRF token for tests.
+    pub fn generate_csrf_token(&self) -> String {
+        vauban_web::middleware::csrf::generate_csrf_token(
+            self.config.secret_key.expose_secret().as_bytes(),
+        )
+    }
+
     /// Get a database connection.
     pub fn get_conn(
         &self,
@@ -200,6 +207,8 @@ fn build_test_router(state: AppState) -> Router {
         // Auth routes
         .route("/api/v1/auth/login", post(handlers::auth::login))
         .route("/api/v1/auth/logout", post(handlers::auth::logout))
+        .route("/auth/login", post(handlers::auth::login_web))
+        .route("/auth/logout", post(handlers::auth::logout_web))
         .route("/api/v1/auth/mfa/setup", post(handlers::auth::setup_mfa))
         // Accounts routes
         .route("/api/v1/accounts", get(handlers::accounts::list_users))
@@ -238,11 +247,17 @@ fn build_test_router(state: AppState) -> Router {
             get(handlers::web::approval_detail),
         )
         .route("/sessions/active", get(handlers::web::active_sessions))
+        .route("/sessions/{id}/terminate", post(handlers::web::terminate_session_web))
         .route(
             "/assets/{uuid}/edit",
             get(handlers::web::asset_edit).post(handlers::web::update_asset_web),
         )
+        .route(
+            "/assets/{uuid}/delete",
+            post(handlers::web::delete_asset_web),
+        )
         .route("/assets/{uuid}", get(handlers::web::asset_detail))
+        .route("/assets/search", get(handlers::web::asset_search))
         .route("/assets/groups", get(handlers::web::asset_group_list))
         .route(
             "/assets/groups/{uuid}",
@@ -272,6 +287,11 @@ fn build_test_router(state: AppState) -> Router {
         )
         // Health check
         .route("/health", get(|| async { "OK" }))
+        // CSRF cookie middleware
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            middleware::csrf::csrf_cookie_middleware,
+        ))
         // Add flash middleware
         .layer(axum::middleware::from_fn_with_state(
             middleware::flash::FlashSecretKey(state.config.secret_key.expose_secret().as_bytes().to_vec()),

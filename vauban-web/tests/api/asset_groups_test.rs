@@ -18,6 +18,7 @@ struct AssetGroupFormData {
     description: Option<String>,
     color: String,
     icon: String,
+    csrf_token: String,
 }
 
 /// Test update asset group.
@@ -32,6 +33,7 @@ async fn test_update_asset_group_success() {
     let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
 
     let group_uuid = create_test_asset_group(&mut conn, &unique_name("test-group"));
+    let csrf_token = app.generate_csrf_token();
 
     // Execute: POST /api/v1/assets/groups/{uuid} with form data
     let form = AssetGroupFormData {
@@ -40,12 +42,14 @@ async fn test_update_asset_group_success() {
         description: Some("Updated description".to_string()),
         color: "#ff5733".to_string(),
         icon: "database".to_string(),
+        csrf_token: csrf_token.clone(),
     };
 
     let response = app
         .server
         .post(&format!("/api/v1/assets/groups/{}", group_uuid))
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::COOKIE, format!("__vauban_csrf={}", csrf_token))
         .form(&form)
         .await;
 
@@ -71,6 +75,7 @@ async fn test_update_asset_group_not_found() {
     // Setup: create admin
     let admin_name = unique_name("test_admin_grp404");
     let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+    let csrf_token = app.generate_csrf_token();
 
     let fake_uuid = Uuid::new_v4();
 
@@ -81,12 +86,14 @@ async fn test_update_asset_group_not_found() {
         description: None,
         color: "#fff".to_string(),
         icon: "folder".to_string(),
+        csrf_token: csrf_token.clone(),
     };
 
     let response = app
         .server
         .post(&format!("/api/v1/assets/groups/{}", fake_uuid))
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::COOKIE, format!("__vauban_csrf={}", csrf_token))
         .form(&form)
         .await;
 
@@ -113,6 +120,7 @@ async fn test_update_asset_group_invalid_data() {
     // Setup: create admin and asset group
     let admin_name = unique_name("test_admin_inv_grp");
     let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+    let csrf_token = app.generate_csrf_token();
 
     let group_uuid = create_test_asset_group(&mut conn, &unique_name("test-invalid-group"));
 
@@ -123,12 +131,14 @@ async fn test_update_asset_group_invalid_data() {
         description: None,
         color: "".to_string(),
         icon: "".to_string(),
+        csrf_token: csrf_token.clone(),
     };
 
     let response = app
         .server
         .post(&format!("/api/v1/assets/groups/{}", group_uuid))
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::COOKIE, format!("__vauban_csrf={}", csrf_token))
         .form(&form)
         .await;
 

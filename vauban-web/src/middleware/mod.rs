@@ -2,6 +2,7 @@ pub mod audit;
 /// VAUBAN Web - Middleware module.
 pub mod auth;
 pub mod client_addr;
+pub mod csrf;
 pub mod flash;
 
 pub use audit::*;
