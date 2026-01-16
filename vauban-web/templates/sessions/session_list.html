@@ -122,10 +122,12 @@
                         </div>
                     </div>
                     <div class="flex items-center space-x-2">
+                        {% if show_view_link %}
                         <a href="/sessions/{{ session.id }}"
                            class="text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">
                             View
                         </a>
+                        {% endif %}
                         {% if session.is_active() %}
                         <form hx-post="/sessions/{{ session.id }}/terminate"
                               hx-confirm="Are you sure you want to terminate this session?"

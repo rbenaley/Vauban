@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+
+{% block title %}Create Group - Groups - {{ vauban.brand_name }}{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <!-- Header -->
+    <div class="md:flex md:items-center md:justify-between">
+        <div class="min-w-0 flex-1">
+            <nav class="flex" aria-label="Breadcrumb">
+                <ol class="flex items-center space-x-2">
+                    <li>
+                        <a href="/" class="text-gray-400 hover:text-gray-500 dark:text-gray-500 dark:hover:text-gray-400">
+                            <svg class="h-5 w-5 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd" d="M9.293 2.293a1 1 0 011.414 0l7 7A1 1 0 0117 11h-1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-3a1 1 0 00-1-1H9a1 1 0 00-1 1v3a1 1 0 01-1 1H5a1 1 0 01-1-1v-6H3a1 1 0 01-.707-1.707l7-7z" clip-rule="evenodd"/>
+                            </svg>
+                        </a>
+                    </li>
+                    <li>
+                        <div class="flex items-center">
+                            <svg class="h-5 w-5 flex-shrink-0 text-gray-300 dark:text-gray-600" viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd"/>
+                            </svg>
+                            <a href="/accounts/groups" class="ml-2 text-sm font-medium text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300">Groups</a>
+                        </div>
+                    </li>
+                    <li>
+                        <div class="flex items-center">
+                            <svg class="h-5 w-5 flex-shrink-0 text-gray-300 dark:text-gray-600" viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd"/>
+                            </svg>
+                            <span class="ml-2 text-sm font-medium text-gray-500 dark:text-gray-400">New Group</span>
+                        </div>
+                    </li>
+                </ol>
+            </nav>
+            <div class="mt-2 flex items-center">
+                <span class="inline-flex h-10 w-10 items-center justify-center rounded-lg mr-3 bg-purple-100 dark:bg-purple-900/50">
+                    <svg class="h-6 w-6 text-purple-600 dark:text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/>
+                    </svg>
+                </span>
+                <h2 class="text-2xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-3xl sm:tracking-tight">
+                    Create New Group
+                </h2>
+            </div>
+        </div>
+    </div>
+
+    <!-- Create Form -->
+    <form action="/accounts/groups" method="POST" class="space-y-6">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+
+        <!-- Group Information -->
+        <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+            <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
+                <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Group Information</h3>
+                <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">Enter the details for the new group.</p>
+            </div>
+            <div class="px-4 py-5 sm:p-6 space-y-6">
+                <div>
+                    <label for="name" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Name <span class="text-red-500">*</span></label>
+                    <input type="text" name="name" id="name"
+                           class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
+                           required maxlength="100" placeholder="Enter group name">
+                </div>
+
+                <div>
+                    <label for="description" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Description</label>
+                    <textarea name="description" id="description" rows="3"
+                              class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
+                              placeholder="Optional description for this group"></textarea>
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">Source</label>
+                    <p class="mt-1 text-sm text-gray-900 dark:text-white">
+                        <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-300">
+                            local
+                        </span>
+                    </p>
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Groups created via the web interface are always local groups.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Actions -->
+        <div class="flex justify-end space-x-3">
+            <a href="/accounts/groups"
+               class="inline-flex items-center rounded-md bg-white dark:bg-gray-700 px-4 py-2 text-sm font-semibold text-gray-900 dark:text-white shadow-sm ring-1 ring-inset ring-gray-300 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600">
+                Cancel
+            </a>
+            <button type="submit"
+                    class="inline-flex items-center rounded-md bg-vauban-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-600">
+                <svg class="-ml-0.5 mr-1.5 h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                    <path d="M10.75 4.75a.75.75 0 00-1.5 0v4.5h-4.5a.75.75 0 000 1.5h4.5v4.5a.75.75 0 001.5 0v-4.5h4.5a.75.75 0 000-1.5h-4.5v-4.5z"/>
+                </svg>
+                Create Group
+            </button>
+        </div>
+    </form>
+</div>
+{% endblock %}

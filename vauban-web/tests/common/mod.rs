@@ -211,31 +211,33 @@ fn build_test_router(state: AppState) -> Router {
         .route("/auth/logout", post(handlers::auth::logout_web))
         .route("/api/v1/auth/mfa/setup", post(handlers::auth::setup_mfa))
         // Accounts routes
-        .route("/api/v1/accounts", get(handlers::accounts::list_users))
-        .route("/api/v1/accounts", post(handlers::accounts::create_user))
-        .route("/api/v1/accounts/{uuid}", get(handlers::accounts::get_user))
+        .route("/api/v1/accounts", get(handlers::api::list_users))
+        .route("/api/v1/accounts", post(handlers::api::create_user))
+        .route("/api/v1/accounts/{uuid}", get(handlers::api::get_user))
         .route(
             "/api/v1/accounts/{uuid}",
-            put(handlers::accounts::update_user),
+            put(handlers::api::update_user),
         )
         // Assets routes
-        .route("/api/v1/assets", get(handlers::assets::list_assets))
-        .route("/api/v1/assets", post(handlers::assets::create_asset))
-        .route("/api/v1/assets/{uuid}", get(handlers::assets::get_asset))
-        .route("/api/v1/assets/{uuid}", put(handlers::assets::update_asset))
+        .route("/api/v1/assets", get(handlers::api::list_assets))
+        .route("/api/v1/assets", post(handlers::api::create_asset))
+        .route("/api/v1/assets/{uuid}", get(handlers::api::get_asset))
+        .route("/api/v1/assets/{uuid}", put(handlers::api::update_asset))
         // Asset groups routes
         .route(
             "/api/v1/assets/groups/{uuid}",
             post(handlers::web::update_asset_group),
         )
         // Sessions routes
-        .route("/api/v1/sessions", get(handlers::sessions::list_sessions))
-        .route("/api/v1/sessions", post(handlers::sessions::create_session))
+        .route("/api/v1/sessions", get(handlers::api::list_sessions))
+        .route("/api/v1/sessions", post(handlers::api::create_session))
         .route(
             "/api/v1/sessions/{uuid}",
-            get(handlers::sessions::get_session),
+            get(handlers::api::get_session),
         )
         // Web pages (HTML) - for testing raw SQL queries
+        .route("/sessions", get(handlers::web::session_list))
+        .route("/sessions/recordings", get(handlers::web::recording_list))
         .route("/sessions/{id}", get(handlers::web::session_detail))
         .route(
             "/sessions/recordings/{id}/play",
@@ -256,9 +258,19 @@ fn build_test_router(state: AppState) -> Router {
             "/assets/{uuid}/delete",
             post(handlers::web::delete_asset_web),
         )
+        .route("/assets/new", get(handlers::web::asset_create_form))
+        .route(
+            "/assets",
+            get(handlers::web::asset_list).post(handlers::web::create_asset_web),
+        )
         .route("/assets/{uuid}", get(handlers::web::asset_detail))
         .route("/assets/search", get(handlers::web::asset_search))
-        .route("/assets/groups", get(handlers::web::asset_group_list))
+        // Asset groups - literal routes MUST come before parameterized routes
+        .route("/assets/groups/new", get(handlers::web::asset_group_create_form))
+        .route(
+            "/assets/groups",
+            get(handlers::web::asset_group_list).post(handlers::web::create_asset_group_web),
+        )
         .route(
             "/assets/groups/{uuid}",
             get(handlers::web::asset_group_detail),
@@ -267,8 +279,52 @@ fn build_test_router(state: AppState) -> Router {
             "/assets/groups/{uuid}/edit",
             get(handlers::web::asset_group_edit).post(handlers::web::update_asset_group),
         )
-        .route("/accounts/groups", get(handlers::web::group_list))
-        .route("/accounts/groups/{uuid}", get(handlers::web::group_detail))
+        .route(
+            "/assets/groups/{uuid}/delete",
+            post(handlers::web::delete_asset_group_web),
+        )
+        .route(
+            "/accounts/groups",
+            get(handlers::web::group_list).post(handlers::web::create_vauban_group_web),
+        )
+        // Group management routes (literal paths before parameterized)
+        .route(
+            "/accounts/groups/new",
+            get(handlers::web::vauban_group_create_form),
+        )
+        .route(
+            "/accounts/groups/{uuid}/edit",
+            get(handlers::web::vauban_group_edit_form),
+        )
+        .route(
+            "/accounts/groups/{uuid}/members/add",
+            get(handlers::web::group_add_member_form),
+        )
+        .route(
+            "/accounts/groups/{uuid}/members/search",
+            get(handlers::web::group_member_search),
+        )
+        .route(
+            "/accounts/groups/{uuid}/members",
+            post(handlers::web::add_group_member_web),
+        )
+        .route(
+            "/accounts/groups/{uuid}/members/{user_uuid}/remove",
+            post(handlers::web::remove_group_member_web),
+        )
+        .route(
+            "/accounts/groups/{uuid}/delete",
+            post(handlers::web::delete_vauban_group_web),
+        )
+        .route(
+            "/accounts/groups/{uuid}",
+            get(handlers::web::group_detail).post(handlers::web::update_vauban_group_web),
+        )
+        // Groups API (read-only)
+        .route(
+            "/api/v1/groups/{uuid}/members",
+            get(handlers::api::list_group_members),
+        )
         // User management pages (literal paths before parameterized)
         .route("/accounts/users/new", get(handlers::web::user_create_form))
         .route(

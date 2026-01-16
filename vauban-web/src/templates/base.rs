@@ -53,6 +53,7 @@ impl BaseTemplate {
     pub fn new(title: String, user: Option<UserContext>) -> Self {
         let header_user = user.clone();
         let sidebar_content = user.as_ref().map(|u| {
+            let is_admin = u.is_superuser || u.is_staff;
             SidebarContentTemplate {
                 user: u.clone(),
                 is_dashboard: false,
@@ -63,9 +64,10 @@ impl BaseTemplate {
                 is_groups: false,
                 is_approvals: false,
                 is_access_rules: false,
-                // Superusers can view all sections
-                can_view_groups: u.is_superuser || u.is_staff,
-                can_view_access_rules: u.is_superuser || u.is_staff,
+                // Superusers and staff can view all sections
+                can_view_groups: is_admin,
+                can_view_access_rules: is_admin,
+                can_view_admin: is_admin,
             }
         });
 
@@ -92,6 +94,7 @@ impl BaseTemplate {
     pub fn with_current_path(mut self, path: &str) -> Self {
         // Update sidebar with current path if user exists
         if let Some(ref user) = self.user {
+            let is_admin = user.is_superuser || user.is_staff;
             self.sidebar_content = Some(SidebarContentTemplate {
                 user: user.clone(),
                 is_dashboard: path == "/",
@@ -104,9 +107,10 @@ impl BaseTemplate {
                 is_groups: path.contains("/groups"),
                 is_approvals: path.contains("/approvals"),
                 is_access_rules: path.contains("/access"),
-                // Superusers can view all sections
-                can_view_groups: user.is_superuser || user.is_staff,
-                can_view_access_rules: user.is_superuser || user.is_staff,
+                // Superusers and staff can view all sections
+                can_view_groups: is_admin,
+                can_view_access_rules: is_admin,
+                can_view_admin: is_admin,
             });
         }
         self

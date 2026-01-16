@@ -35,6 +35,7 @@ mod tests {
             is_access_rules: false,
             can_view_groups: false,
             can_view_access_rules: false,
+            can_view_admin: false,
         }
     }
 

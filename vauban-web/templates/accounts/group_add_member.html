@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+
+{% block title %}Add Member - {{ group.name }} - {{ vauban.brand_name }}{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <!-- Header -->
+    <div class="md:flex md:items-center md:justify-between">
+        <div class="min-w-0 flex-1">
+            <nav class="flex" aria-label="Breadcrumb">
+                <ol class="flex items-center space-x-2">
+                    <li>
+                        <a href="/" class="text-gray-400 hover:text-gray-500 dark:text-gray-500 dark:hover:text-gray-400">
+                            <svg class="h-5 w-5 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd" d="M9.293 2.293a1 1 0 011.414 0l7 7A1 1 0 0117 11h-1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-3a1 1 0 00-1-1H9a1 1 0 00-1 1v3a1 1 0 01-1 1H5a1 1 0 01-1-1v-6H3a1 1 0 01-.707-1.707l7-7z" clip-rule="evenodd"/>
+                            </svg>
+                        </a>
+                    </li>
+                    <li>
+                        <div class="flex items-center">
+                            <svg class="h-5 w-5 flex-shrink-0 text-gray-300 dark:text-gray-600" viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd"/>
+                            </svg>
+                            <a href="/accounts/groups" class="ml-2 text-sm font-medium text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300">Groups</a>
+                        </div>
+                    </li>
+                    <li>
+                        <div class="flex items-center">
+                            <svg class="h-5 w-5 flex-shrink-0 text-gray-300 dark:text-gray-600" viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd"/>
+                            </svg>
+                            <a href="/accounts/groups/{{ group.uuid }}" class="ml-2 text-sm font-medium text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300">{{ group.name }}</a>
+                        </div>
+                    </li>
+                    <li>
+                        <div class="flex items-center">
+                            <svg class="h-5 w-5 flex-shrink-0 text-gray-300 dark:text-gray-600" viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd"/>
+                            </svg>
+                            <span class="ml-2 text-sm font-medium text-gray-500 dark:text-gray-400">Add Member</span>
+                        </div>
+                    </li>
+                </ol>
+            </nav>
+            <div class="mt-2 flex items-center">
+                <span class="inline-flex h-10 w-10 items-center justify-center rounded-lg mr-3 bg-vauban-100 dark:bg-vauban-900/50">
+                    <svg class="h-6 w-6 text-vauban-600 dark:text-vauban-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z"/>
+                    </svg>
+                </span>
+                <div>
+                    <h2 class="text-2xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-3xl sm:tracking-tight">
+                        Add Member
+                    </h2>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">to {{ group.name }}</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- User Selection -->
+    <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
+            <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Select Users</h3>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">Choose users to add to this group.</p>
+        </div>
+        <div class="px-4 py-5 sm:p-6">
+            <!-- Search -->
+            <div class="mb-4">
+                <label for="user-search" class="sr-only">Search users</label>
+                <div class="relative">
+                    <div class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
+                        <svg class="h-5 w-5 text-gray-400" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clip-rule="evenodd"/>
+                        </svg>
+                    </div>
+                    <input type="text" id="user-search" placeholder="Search by username or email..."
+                           class="block w-full rounded-md border-0 py-2 pl-10 pr-3 text-gray-900 dark:text-white ring-1 ring-inset ring-gray-300 dark:ring-gray-600 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-vauban-600 dark:bg-gray-700 sm:text-sm"
+                           hx-get="/accounts/groups/{{ group.uuid }}/members/search"
+                           hx-trigger="keyup changed delay:300ms"
+                           hx-target="#user-list"
+                           hx-include="this">
+                </div>
+            </div>
+
+            <!-- User List -->
+            <div id="user-list" class="border border-gray-200 dark:border-gray-700 rounded-md divide-y divide-gray-200 dark:divide-gray-700 max-h-96 overflow-y-auto">
+                {% if available_users.is_empty() %}
+                <div class="px-4 py-8 text-center text-gray-500 dark:text-gray-400">
+                    <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"/>
+                    </svg>
+                    <p class="mt-2 text-sm">All users are already members of this group.</p>
+                </div>
+                {% else %}
+                {% for user in available_users %}
+                <div class="px-4 py-3 hover:bg-gray-50 dark:hover:bg-gray-700">
+                    <form method="post" action="/accounts/groups/{{ group.uuid }}/members" class="flex items-center justify-between">
+                        <input type="hidden" name="csrf_token" />
+                        <input type="hidden" name="user_uuid" value="{{ user.uuid }}" />
+                        <div class="flex items-center space-x-3">
+                            <div class="flex-shrink-0">
+                                <span class="inline-flex h-8 w-8 items-center justify-center rounded-full bg-gray-500">
+                                    <span class="text-xs font-medium leading-none text-white">
+                                        {{ user.username.chars().next().unwrap_or('U').to_uppercase() }}
+                                    </span>
+                                </span>
+                            </div>
+                            <div>
+                                <p class="text-sm font-medium text-gray-900 dark:text-white">{{ user.username }}</p>
+                                <p class="text-xs text-gray-500 dark:text-gray-400">{{ user.email }}</p>
+                            </div>
+                        </div>
+                        <button type="submit"
+                                class="inline-flex items-center rounded-md bg-vauban-600 px-2.5 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-vauban-500">
+                            <svg class="-ml-0.5 mr-1 h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                                <path d="M10.75 4.75a.75.75 0 00-1.5 0v4.5h-4.5a.75.75 0 000 1.5h4.5v4.5a.75.75 0 001.5 0v-4.5h4.5a.75.75 0 000-1.5h-4.5v-4.5z"/>
+                            </svg>
+                            Add
+                        </button>
+                    </form>
+                </div>
+                {% endfor %}
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Back link -->
+    <div class="flex justify-start">
+        <a href="/accounts/groups/{{ group.uuid }}"
+           class="inline-flex items-center text-sm font-medium text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300">
+            <svg class="mr-1.5 h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M17 10a.75.75 0 01-.75.75H5.612l4.158 3.96a.75.75 0 11-1.04 1.08l-5.5-5.25a.75.75 0 010-1.08l5.5-5.25a.75.75 0 111.04 1.08L5.612 9.25H16.25A.75.75 0 0117 10z" clip-rule="evenodd"/>
+            </svg>
+            Back to group
+        </a>
+    </div>
+</div>
+{% endblock %}

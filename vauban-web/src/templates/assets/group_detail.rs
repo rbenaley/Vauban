@@ -51,6 +51,7 @@ pub struct AssetGroupDetailTemplate {
         Option<crate::templates::partials::sidebar_content::SidebarContentTemplate>,
     pub header_user: Option<crate::templates::base::UserContext>,
     pub group: AssetGroupDetail,
+    pub csrf_token: String,
 }
 
 #[cfg(test)]
@@ -166,6 +167,7 @@ mod tests {
             sidebar_content: None,
             header_user: None,
             group: create_test_asset_group_detail(),
+            csrf_token: "test_csrf".to_string(),
         };
 
         let result = template.render();

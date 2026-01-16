@@ -310,11 +310,56 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             "/accounts/apikeys/{uuid}/revoke",
             post(handlers::web::revoke_api_key),
         )
-        .route("/accounts/groups", get(handlers::web::group_list))
-        .route("/accounts/groups/{uuid}", get(handlers::web::group_detail))
+        .route(
+            "/accounts/groups",
+            get(handlers::web::group_list).post(handlers::web::create_vauban_group_web),
+        )
+        // Group management routes (literal paths before parameterized)
+        .route(
+            "/accounts/groups/new",
+            get(handlers::web::vauban_group_create_form),
+        )
+        .route(
+            "/accounts/groups/{uuid}/edit",
+            get(handlers::web::vauban_group_edit_form),
+        )
+        .route(
+            "/accounts/groups/{uuid}/members/add",
+            get(handlers::web::group_add_member_form),
+        )
+        .route(
+            "/accounts/groups/{uuid}/members/search",
+            get(handlers::web::group_member_search),
+        )
+        .route(
+            "/accounts/groups/{uuid}/members",
+            post(handlers::web::add_group_member_web),
+        )
+        .route(
+            "/accounts/groups/{uuid}/members/{user_uuid}/remove",
+            post(handlers::web::remove_group_member_web),
+        )
+        .route(
+            "/accounts/groups/{uuid}/delete",
+            post(handlers::web::delete_vauban_group_web),
+        )
+        .route(
+            "/accounts/groups/{uuid}",
+            get(handlers::web::group_detail).post(handlers::web::update_vauban_group_web),
+        )
         // Assets pages - GET for viewing, POST for form submission (PRG pattern)
-        .route("/assets", get(handlers::web::asset_list))
-        .route("/assets/groups", get(handlers::web::asset_group_list))
+        // Literal routes MUST come before parameterized routes
+        .route("/assets/new", get(handlers::web::asset_create_form))
+        .route(
+            "/assets",
+            get(handlers::web::asset_list).post(handlers::web::create_asset_web),
+        )
+        // Asset groups - literal routes MUST come before parameterized routes
+        .route("/assets/groups/new", get(handlers::web::asset_group_create_form))
+        .route(
+            "/assets/groups",
+            get(handlers::web::asset_group_list).post(handlers::web::create_asset_group_web),
+        )
         .route(
             "/assets/groups/{uuid}",
             get(handlers::web::asset_group_detail),
@@ -322,6 +367,10 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
         .route(
             "/assets/groups/{uuid}/edit",
             get(handlers::web::asset_group_edit).post(handlers::web::update_asset_group),
+        )
+        .route(
+            "/assets/groups/{uuid}/delete",
+            post(handlers::web::delete_asset_group_web),
         )
         .route("/assets/access", get(handlers::web::access_rules_list))
         .route("/assets/search", get(handlers::web::asset_search))
@@ -392,6 +441,11 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             .route(
                 "/api/v1/sessions/{id}/terminate",
                 post(handlers::api::terminate_session),
+            )
+            // Groups API (read-only)
+            .route(
+                "/api/v1/groups/{uuid}/members",
+                get(handlers::api::list_group_members),
             )
     } else {
         tracing::info!("API routes disabled by configuration");
