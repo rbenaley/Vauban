@@ -392,6 +392,10 @@ pub async fn user_detail(
         created_at: created_at.format("%b %d, %Y").to_string(),
     };
 
+    // Determine if current user can edit this user
+    // Staff can edit non-superusers, superusers can edit anyone
+    let can_edit = auth_user.is_superuser || (auth_user.is_staff && !is_superuser);
+
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         base.into_fields();
     let template = UserDetailTemplate {
@@ -403,12 +407,635 @@ pub async fn user_detail(
         sidebar_content,
         header_user,
         user_detail,
+        can_edit,
     };
 
     let html = template
         .render()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
     Ok(Html(html))
+}
+
+// =============================================================================
+// User Management (Create, Edit, Delete)
+// =============================================================================
+
+/// Form data for creating a user.
+#[derive(Debug, serde::Deserialize)]
+pub struct CreateUserWebForm {
+    pub csrf_token: String,
+    pub username: String,
+    pub email: String,
+    pub password: String,
+    pub first_name: Option<String>,
+    pub last_name: Option<String>,
+    pub is_active: Option<String>,
+    pub is_staff: Option<String>,
+    pub is_superuser: Option<String>,
+}
+
+/// Form data for updating a user.
+#[derive(Debug, serde::Deserialize)]
+pub struct UpdateUserWebForm {
+    pub csrf_token: String,
+    pub username: String,
+    pub email: String,
+    pub password: Option<String>,
+    pub first_name: Option<String>,
+    pub last_name: Option<String>,
+    pub is_active: Option<String>,
+    pub is_staff: Option<String>,
+    pub is_superuser: Option<String>,
+}
+
+/// User create form page (GET /accounts/users/new).
+pub async fn user_create_form(
+    State(state): State<AppState>,
+    auth_user: WebAuthUser,
+) -> Result<impl IntoResponse, AppError> {
+    use crate::templates::accounts::UserCreateTemplate;
+
+    // Only staff or superuser can access
+    if !auth_user.is_superuser && !auth_user.is_staff {
+        return Err(AppError::Authorization(
+            "You do not have permission to create users".to_string(),
+        ));
+    }
+
+    let user = Some(user_context_from_auth(&auth_user));
+    let base =
+        BaseTemplate::new("New User".to_string(), user).with_current_path("/accounts/users");
+
+    let password_min_length = state.config.security.password_min_length;
+    let can_manage_superusers = auth_user.is_superuser;
+
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        base.into_fields();
+    let template = UserCreateTemplate {
+        title,
+        user: user_ctx,
+        vauban,
+        messages,
+        language_code,
+        sidebar_content,
+        header_user,
+        password_min_length,
+        can_manage_superusers,
+    };
+
+    let html = template
+        .render()
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
+    Ok(Html(html))
+}
+
+/// Create user handler (POST /accounts/users).
+pub async fn create_user_web(
+    State(state): State<AppState>,
+    auth_user: WebAuthUser,
+    incoming_flash: IncomingFlash,
+    jar: CookieJar,
+    Form(form): Form<CreateUserWebForm>,
+) -> Response {
+    use crate::schema::users;
+
+    let flash = incoming_flash.flash();
+
+    // CSRF validation
+    let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
+    let secret = state.config.secret_key.expose_secret().as_bytes();
+    if !crate::middleware::csrf::validate_double_submit(
+        secret,
+        csrf_cookie.map(|c| c.value()),
+        &form.csrf_token,
+    ) {
+        return flash_redirect(
+            flash.error("Invalid CSRF token. Please refresh the page and try again."),
+            "/accounts/users/new",
+        );
+    }
+
+    // Permission check
+    if !auth_user.is_superuser && !auth_user.is_staff {
+        return flash_redirect(
+            flash.error("You do not have permission to create users"),
+            "/accounts/users",
+        );
+    }
+
+    // Check if trying to create a superuser without being a superuser
+    let wants_superuser = form.is_superuser.as_deref() == Some("on");
+    if wants_superuser && !auth_user.is_superuser {
+        return flash_redirect(
+            flash.error("Only a superuser can create superuser accounts"),
+            "/accounts/users/new",
+        );
+    }
+
+    // Validate username
+    if form.username.len() < 3 || form.username.len() > 50 {
+        return flash_redirect(
+            flash.error("Username must be between 3 and 50 characters"),
+            "/accounts/users/new",
+        );
+    }
+
+    // Validate password length
+    let min_len = state.config.security.password_min_length;
+    if form.password.len() < min_len {
+        return flash_redirect(
+            flash.error(&format!(
+                "Password must be at least {} characters",
+                min_len
+            )),
+            "/accounts/users/new",
+        );
+    }
+
+    let mut conn = match get_connection(&state.db_pool) {
+        Ok(conn) => conn,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Database connection error. Please try again."),
+                "/accounts/users/new",
+            );
+        }
+    };
+
+    // Check for duplicate username or email
+    let existing: Option<i32> = users::table
+        .filter(
+            users::username
+                .eq(&form.username)
+                .or(users::email.eq(&form.email)),
+        )
+        .filter(users::is_deleted.eq(false))
+        .select(users::id)
+        .first(&mut conn)
+        .optional()
+        .unwrap_or(None);
+
+    if existing.is_some() {
+        return flash_redirect(
+            flash.error("Username or email already exists"),
+            "/accounts/users/new",
+        );
+    }
+
+    // Hash password
+    let password_hash = match state.auth_service.hash_password(&form.password) {
+        Ok(hash) => hash,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Failed to process password. Please try again."),
+                "/accounts/users/new",
+            );
+        }
+    };
+
+    let user_uuid = uuid::Uuid::new_v4();
+    let is_active = form.is_active.as_deref() == Some("on");
+    let is_staff = form.is_staff.as_deref() == Some("on");
+
+    let result = diesel::insert_into(users::table)
+        .values((
+            users::uuid.eq(user_uuid),
+            users::username.eq(&form.username),
+            users::email.eq(&form.email),
+            users::password_hash.eq(&password_hash),
+            users::first_name.eq(&form.first_name.filter(|s| !s.is_empty())),
+            users::last_name.eq(&form.last_name.filter(|s| !s.is_empty())),
+            users::is_active.eq(is_active),
+            users::is_staff.eq(is_staff),
+            users::is_superuser.eq(wants_superuser),
+            users::auth_source.eq("local"),
+            users::preferences.eq(serde_json::json!({})),
+        ))
+        .execute(&mut conn);
+
+    match result {
+        Ok(_) => flash_redirect(
+            flash.success(&format!("User '{}' created successfully", form.username)),
+            &format!("/accounts/users/{}", user_uuid),
+        ),
+        Err(_) => flash_redirect(
+            flash.error("Failed to create user. Please try again."),
+            "/accounts/users/new",
+        ),
+    }
+}
+
+/// User edit form page (GET /accounts/users/{uuid}/edit).
+pub async fn user_edit_form(
+    State(state): State<AppState>,
+    auth_user: WebAuthUser,
+    incoming_flash: IncomingFlash,
+    axum::extract::Path(user_uuid): axum::extract::Path<String>,
+) -> Result<Response, AppError> {
+    use crate::schema::users;
+    use crate::templates::accounts::{UserEditData, UserEditTemplate};
+
+    let flash = incoming_flash.flash();
+
+    // Only staff or superuser can access
+    if !auth_user.is_superuser && !auth_user.is_staff {
+        return Ok(flash_redirect(
+            flash.error("You do not have permission to edit users"),
+            "/accounts/users",
+        ));
+    }
+
+    let parsed_uuid = uuid::Uuid::parse_str(&user_uuid)
+        .map_err(|_| AppError::NotFound("Invalid UUID".to_string()))?;
+
+    let mut conn = get_connection(&state.db_pool)?;
+
+    #[allow(clippy::type_complexity)]
+    let db_user: Option<(
+        uuid::Uuid,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        bool,
+        bool,
+        bool,
+    )> = users::table
+        .filter(users::uuid.eq(parsed_uuid))
+        .filter(users::is_deleted.eq(false))
+        .select((
+            users::uuid,
+            users::username,
+            users::email,
+            users::first_name,
+            users::last_name,
+            users::is_active,
+            users::is_staff,
+            users::is_superuser,
+        ))
+        .first(&mut conn)
+        .optional()?;
+
+    let db_user = db_user.ok_or_else(|| AppError::NotFound("User not found".to_string()))?;
+
+    let (uuid, username, email, first_name, last_name, is_active, is_staff, is_superuser) = db_user;
+
+    // Staff cannot edit superusers
+    if is_superuser && !auth_user.is_superuser {
+        return Ok(flash_redirect(
+            flash.error("Only a superuser can edit superuser accounts"),
+            &format!("/accounts/users/{}", user_uuid),
+        ));
+    }
+
+    let user_data = UserEditData {
+        uuid: uuid.to_string(),
+        username,
+        email,
+        first_name,
+        last_name,
+        is_active,
+        is_staff,
+        is_superuser,
+    };
+
+    let password_min_length = state.config.security.password_min_length;
+    let can_manage_superusers = auth_user.is_superuser;
+    // Can delete if: superuser can delete anyone (except last superuser), staff can delete non-superusers
+    let can_delete = auth_user.is_superuser || (auth_user.is_staff && !is_superuser);
+
+    let user = Some(user_context_from_auth(&auth_user));
+    let base =
+        BaseTemplate::new("Edit User".to_string(), user).with_current_path("/accounts/users");
+
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        base.into_fields();
+    let template = UserEditTemplate {
+        title,
+        user: user_ctx,
+        vauban,
+        messages,
+        language_code,
+        sidebar_content,
+        header_user,
+        user_data,
+        password_min_length,
+        can_manage_superusers,
+        can_delete,
+    };
+
+    let html = template
+        .render()
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
+    Ok(Html(html).into_response())
+}
+
+/// Update user handler (POST /accounts/users/{uuid}).
+pub async fn update_user_web(
+    State(state): State<AppState>,
+    auth_user: WebAuthUser,
+    incoming_flash: IncomingFlash,
+    jar: CookieJar,
+    axum::extract::Path(user_uuid): axum::extract::Path<String>,
+    Form(form): Form<UpdateUserWebForm>,
+) -> Response {
+    use crate::schema::users;
+    use chrono::Utc;
+
+    let flash = incoming_flash.flash();
+
+    // CSRF validation
+    let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
+    let secret = state.config.secret_key.expose_secret().as_bytes();
+    if !crate::middleware::csrf::validate_double_submit(
+        secret,
+        csrf_cookie.map(|c| c.value()),
+        &form.csrf_token,
+    ) {
+        return flash_redirect(
+            flash.error("Invalid CSRF token. Please refresh the page and try again."),
+            &format!("/accounts/users/{}/edit", user_uuid),
+        );
+    }
+
+    // Permission check
+    if !auth_user.is_superuser && !auth_user.is_staff {
+        return flash_redirect(
+            flash.error("You do not have permission to edit users"),
+            "/accounts/users",
+        );
+    }
+
+    let parsed_uuid = match uuid::Uuid::parse_str(&user_uuid) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return flash_redirect(flash.error("Invalid user identifier"), "/accounts/users");
+        }
+    };
+
+    let mut conn = match get_connection(&state.db_pool) {
+        Ok(conn) => conn,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Database connection error. Please try again."),
+                &format!("/accounts/users/{}/edit", user_uuid),
+            );
+        }
+    };
+
+    // Get current user data to check permissions
+    let current_user: Option<(i32, bool)> = users::table
+        .filter(users::uuid.eq(parsed_uuid))
+        .filter(users::is_deleted.eq(false))
+        .select((users::id, users::is_superuser))
+        .first(&mut conn)
+        .optional()
+        .unwrap_or(None);
+
+    let (user_id, target_is_superuser) = match current_user {
+        Some(u) => u,
+        None => {
+            return flash_redirect(flash.error("User not found"), "/accounts/users");
+        }
+    };
+
+    // Staff cannot edit superusers
+    if target_is_superuser && !auth_user.is_superuser {
+        return flash_redirect(
+            flash.error("Only a superuser can edit superuser accounts"),
+            &format!("/accounts/users/{}", user_uuid),
+        );
+    }
+
+    // Staff cannot promote to superuser
+    let wants_superuser = form.is_superuser.as_deref() == Some("on");
+    if wants_superuser && !auth_user.is_superuser {
+        return flash_redirect(
+            flash.error("Only a superuser can grant superuser privileges"),
+            &format!("/accounts/users/{}/edit", user_uuid),
+        );
+    }
+
+    // Validate username
+    if form.username.len() < 3 || form.username.len() > 50 {
+        return flash_redirect(
+            flash.error("Username must be between 3 and 50 characters"),
+            &format!("/accounts/users/{}/edit", user_uuid),
+        );
+    }
+
+    // Check for duplicate username or email (excluding current user)
+    let existing: Option<i32> = users::table
+        .filter(
+            users::username
+                .eq(&form.username)
+                .or(users::email.eq(&form.email)),
+        )
+        .filter(users::id.ne(user_id))
+        .filter(users::is_deleted.eq(false))
+        .select(users::id)
+        .first(&mut conn)
+        .optional()
+        .unwrap_or(None);
+
+    if existing.is_some() {
+        return flash_redirect(
+            flash.error("Username or email already exists"),
+            &format!("/accounts/users/{}/edit", user_uuid),
+        );
+    }
+
+    // Validate and hash new password if provided
+    let password_hash = if let Some(ref password) = form.password {
+        if !password.is_empty() {
+            let min_len = state.config.security.password_min_length;
+            if password.len() < min_len {
+                return flash_redirect(
+                    flash.error(&format!(
+                        "Password must be at least {} characters",
+                        min_len
+                    )),
+                    &format!("/accounts/users/{}/edit", user_uuid),
+                );
+            }
+            match state.auth_service.hash_password(password) {
+                Ok(hash) => Some(hash),
+                Err(_) => {
+                    return flash_redirect(
+                        flash.error("Failed to process password. Please try again."),
+                        &format!("/accounts/users/{}/edit", user_uuid),
+                    );
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let is_active = form.is_active.as_deref() == Some("on");
+    let is_staff = form.is_staff.as_deref() == Some("on");
+    let now = Utc::now();
+
+    // Update with or without password
+    let result = if let Some(ref hash) = password_hash {
+        diesel::update(users::table.filter(users::id.eq(user_id)))
+            .set((
+                users::username.eq(&form.username),
+                users::email.eq(&form.email),
+                users::password_hash.eq(hash),
+                users::first_name.eq(&form.first_name.as_ref().filter(|s| !s.is_empty())),
+                users::last_name.eq(&form.last_name.as_ref().filter(|s| !s.is_empty())),
+                users::is_active.eq(is_active),
+                users::is_staff.eq(is_staff),
+                users::is_superuser.eq(wants_superuser),
+                users::updated_at.eq(now),
+            ))
+            .execute(&mut conn)
+    } else {
+        diesel::update(users::table.filter(users::id.eq(user_id)))
+            .set((
+                users::username.eq(&form.username),
+                users::email.eq(&form.email),
+                users::first_name.eq(&form.first_name.as_ref().filter(|s| !s.is_empty())),
+                users::last_name.eq(&form.last_name.as_ref().filter(|s| !s.is_empty())),
+                users::is_active.eq(is_active),
+                users::is_staff.eq(is_staff),
+                users::is_superuser.eq(wants_superuser),
+                users::updated_at.eq(now),
+            ))
+            .execute(&mut conn)
+    };
+
+    match result {
+        Ok(_) => flash_redirect(
+            flash.success("User updated successfully"),
+            &format!("/accounts/users/{}", user_uuid),
+        ),
+        Err(_) => flash_redirect(
+            flash.error("Failed to update user. Please try again."),
+            &format!("/accounts/users/{}/edit", user_uuid),
+        ),
+    }
+}
+
+/// Delete user handler (POST /accounts/users/{uuid}/delete).
+/// Web only - not available via API.
+pub async fn delete_user_web(
+    State(state): State<AppState>,
+    auth_user: WebAuthUser,
+    incoming_flash: IncomingFlash,
+    jar: CookieJar,
+    axum::extract::Path(user_uuid): axum::extract::Path<String>,
+    Form(form): Form<DeleteAssetForm>,
+) -> Response {
+    use crate::schema::users;
+    use chrono::Utc;
+
+    let flash = incoming_flash.flash();
+
+    // CSRF validation
+    let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
+    let secret = state.config.secret_key.expose_secret().as_bytes();
+    if !crate::middleware::csrf::validate_double_submit(
+        secret,
+        csrf_cookie.map(|c| c.value()),
+        &form.csrf_token,
+    ) {
+        return flash_redirect(
+            flash.error("Invalid CSRF token. Please refresh the page and try again."),
+            &format!("/accounts/users/{}", user_uuid),
+        );
+    }
+
+    // Permission check - must be staff or superuser
+    if !auth_user.is_superuser && !auth_user.is_staff {
+        return flash_redirect(
+            flash.error("You do not have permission to delete users"),
+            "/accounts/users",
+        );
+    }
+
+    let parsed_uuid = match uuid::Uuid::parse_str(&user_uuid) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return flash_redirect(flash.error("Invalid user identifier"), "/accounts/users");
+        }
+    };
+
+    let mut conn = match get_connection(&state.db_pool) {
+        Ok(conn) => conn,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Database connection error. Please try again."),
+                &format!("/accounts/users/{}", user_uuid),
+            );
+        }
+    };
+
+    // Get target user data
+    let target_user: Option<(i32, bool, bool)> = users::table
+        .filter(users::uuid.eq(parsed_uuid))
+        .filter(users::is_deleted.eq(false))
+        .select((users::id, users::is_superuser, users::is_active))
+        .first(&mut conn)
+        .optional()
+        .unwrap_or(None);
+
+    let (user_id, target_is_superuser, target_is_active) = match target_user {
+        Some(u) => u,
+        None => {
+            return flash_redirect(
+                flash.error("User not found or already deleted"),
+                "/accounts/users",
+            );
+        }
+    };
+
+    // Staff cannot delete superusers
+    if target_is_superuser && !auth_user.is_superuser {
+        return flash_redirect(
+            flash.error("Only a superuser can delete another superuser"),
+            &format!("/accounts/users/{}", user_uuid),
+        );
+    }
+
+    // Prevent deleting the last active superuser
+    if target_is_superuser && target_is_active {
+        let superuser_count: i64 = users::table
+            .filter(users::is_superuser.eq(true))
+            .filter(users::is_active.eq(true))
+            .filter(users::is_deleted.eq(false))
+            .count()
+            .get_result(&mut conn)
+            .unwrap_or(0);
+
+        if superuser_count <= 1 {
+            return flash_redirect(
+                flash.error("Cannot delete the last active superuser"),
+                &format!("/accounts/users/{}", user_uuid),
+            );
+        }
+    }
+
+    // Soft delete the user
+    let now = Utc::now();
+    let result = diesel::update(users::table.filter(users::id.eq(user_id)))
+        .set((
+            users::is_deleted.eq(true),
+            users::deleted_at.eq(now),
+            users::updated_at.eq(now),
+        ))
+        .execute(&mut conn);
+
+    match result {
+        Ok(_) => flash_redirect(flash.success("User deleted successfully"), "/accounts/users"),
+        Err(_) => flash_redirect(
+            flash.error("Failed to delete user. Please try again."),
+            &format!("/accounts/users/{}", user_uuid),
+        ),
+    }
 }
 
 /// User profile page.

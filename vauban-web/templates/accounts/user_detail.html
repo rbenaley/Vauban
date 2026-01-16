@@ -14,11 +14,20 @@
                 @{{ user_detail.username }}
             </p>
         </div>
-        <div class="mt-4 flex md:ml-4 md:mt-0">
+        <div class="mt-4 flex space-x-3 md:ml-4 md:mt-0">
             <a href="/accounts/users"
                class="inline-flex items-center rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-4 py-2 text-sm font-semibold text-gray-700 dark:text-gray-300 shadow-sm hover:bg-gray-50 dark:hover:bg-gray-600">
                 Back to list
             </a>
+            {% if can_edit %}
+            <a href="/accounts/users/{{ user_detail.uuid }}/edit"
+               class="inline-flex items-center rounded-md bg-vauban-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500">
+                <svg class="-ml-0.5 mr-1.5 h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                    <path d="M2.695 14.763l-1.262 3.154a.5.5 0 00.65.65l3.155-1.262a4 4 0 001.343-.885L17.5 5.5a2.121 2.121 0 00-3-3L3.58 13.42a4 4 0 00-.885 1.343z"/>
+                </svg>
+                Edit
+            </a>
+            {% endif %}
         </div>
     </div>
 

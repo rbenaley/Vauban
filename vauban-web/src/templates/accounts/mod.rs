@@ -8,7 +8,9 @@ pub mod login;
 pub mod mfa_setup;
 pub mod profile;
 pub mod session_list;
+pub mod user_create;
 pub mod user_detail;
+pub mod user_edit;
 pub mod user_list;
 
 pub use apikey_create_form::ApikeyCreateFormTemplate;
@@ -20,5 +22,7 @@ pub use login::LoginTemplate;
 pub use mfa_setup::MfaSetupTemplate;
 pub use profile::{ProfileDetail, ProfileSession, ProfileTemplate};
 pub use session_list::{AuthSessionItem, SessionListTemplate};
+pub use user_create::UserCreateTemplate;
 pub use user_detail::{UserDetail, UserDetailTemplate};
+pub use user_edit::{UserEditData, UserEditTemplate};
 pub use user_list::{Pagination, UserListTemplate};
