@@ -84,12 +84,13 @@
             </p>
         </div>
         <form class="mt-8 space-y-6" id="login-form"
-              hx-post="/api/v1/auth/login"
+              hx-post="/auth/login"
               hx-target="#login-result"
               hx-swap="innerHTML"
               hx-indicator="#loading-spinner"
               hx-disabled-elt="button[type='submit']"
               hx-ext="json-enc">
+            <input type="hidden" name="csrf_token" />
             
             <!-- Result area (errors, MFA prompt) -->
             <div id="login-result"></div>

@@ -299,70 +299,121 @@ pub fn unique_name(prefix: &str) -> String {
 // =============================================================================
 
 /// Create a simple test user and return user_id (no auth service required).
+/// Uses a unique username with UUID suffix to avoid conflicts.
 pub fn create_simple_user(conn: &mut PgConnection, username: &str) -> i32 {
-    use diesel::sql_query;
-    use diesel::sql_types::Int4;
+    let user_uuid = Uuid::new_v4();
+    // Create a truly unique username using a UUID suffix
+    let unique_username = format!("{}_{}", username, &user_uuid.to_string()[..8]);
 
-    #[derive(QueryableByName)]
-    struct UserId {
-        #[diesel(sql_type = Int4)]
-        id: i32,
-    }
+    let new_user = NewUser {
+        uuid: user_uuid,
+        username: unique_username.clone(),
+        email: format!("{}@test.vauban.io", unique_username),
+        password_hash: "hash".to_string(),
+        first_name: None,
+        last_name: None,
+        phone: None,
+        is_active: true,
+        is_staff: false,
+        is_superuser: false,
+        is_service_account: false,
+        mfa_enabled: false,
+        mfa_enforced: false,
+        mfa_secret: None,
+        preferences: serde_json::json!({}),
+        auth_source: "local".to_string(),
+        external_id: None,
+    };
 
-    let result: UserId = sql_query(format!(
-        "INSERT INTO users (uuid, username, email, password_hash, is_active, auth_source, preferences)
-         VALUES (uuid_generate_v4(), '{}', '{}@test.vauban.io', 'hash', true, 'local', '{{}}')
-         ON CONFLICT (username) DO UPDATE SET updated_at = NOW()
-         RETURNING id",
-        username, username
-    ))
-    .get_result(conn)
-    .expect("Failed to create test user");
+    let user: User = diesel::insert_into(users::table)
+        .values(&new_user)
+        .get_result(conn)
+        .expect("Failed to create test user");
 
-    result.id
+    user.id
+}
+
+/// Create a simple admin user and return user_id (no auth service required).
+/// Uses a unique username with UUID suffix to avoid conflicts.
+pub fn create_simple_admin_user(conn: &mut PgConnection, username: &str) -> i32 {
+    let user_uuid = Uuid::new_v4();
+    // Create a truly unique username using a UUID suffix
+    let unique_username = format!("{}_{}", username, &user_uuid.to_string()[..8]);
+
+    let new_user = NewUser {
+        uuid: user_uuid,
+        username: unique_username.clone(),
+        email: format!("{}@test.vauban.io", unique_username),
+        password_hash: "hash".to_string(),
+        first_name: None,
+        last_name: None,
+        phone: None,
+        is_active: true,
+        is_staff: true,
+        is_superuser: true,
+        is_service_account: false,
+        mfa_enabled: false,
+        mfa_enforced: false,
+        mfa_secret: None,
+        preferences: serde_json::json!({}),
+        auth_source: "local".to_string(),
+        external_id: None,
+    };
+
+    let user: User = diesel::insert_into(users::table)
+        .values(&new_user)
+        .get_result(conn)
+        .expect("Failed to create admin user");
+
+    user.id
 }
 
 /// Create a test SSH asset and return asset_id.
+/// Uses a unique hostname (name + UUID suffix) to avoid conflicts.
 pub fn create_simple_ssh_asset(conn: &mut PgConnection, name: &str, created_by: i32) -> i32 {
-    use diesel::sql_query;
-    use diesel::sql_types::Int4;
+    let asset_uuid = Uuid::new_v4();
+    // Create a truly unique hostname using a UUID suffix
+    let unique_hostname = format!(
+        "{}-{}.test.local",
+        name,
+        &asset_uuid.to_string()[..8]
+    );
 
-    #[derive(QueryableByName)]
-    struct AssetId {
-        #[diesel(sql_type = Int4)]
-        id: i32,
-    }
+    let new_asset = NewAsset {
+        uuid: asset_uuid,
+        name: name.to_string(),
+        hostname: unique_hostname,
+        ip_address: None,
+        port: 22,
+        asset_type: "ssh".to_string(),
+        status: "online".to_string(),
+        group_id: None,
+        description: None,
+        os_type: None,
+        os_version: None,
+        connection_config: serde_json::json!({}),
+        default_credential_id: None,
+        require_mfa: false,
+        require_justification: false,
+        max_session_duration: 3600,
+        created_by_id: Some(created_by),
+    };
 
-    let result: AssetId = sql_query(format!(
-        "INSERT INTO assets (uuid, name, hostname, port, asset_type, status, require_mfa, require_justification, connection_config, created_by_id)
-         VALUES (uuid_generate_v4(), '{}', '{}.test.local', 22, 'ssh', 'online', false, false, '{{}}', {})
-         ON CONFLICT (hostname, port) DO UPDATE SET updated_at = NOW()
-         RETURNING id",
-        name, name, created_by
-    ))
-    .get_result(conn)
-    .expect("Failed to create test SSH asset");
+    let asset: Asset = diesel::insert_into(assets::table)
+        .values(&new_asset)
+        .get_result(conn)
+        .expect("Failed to create test SSH asset");
 
-    result.id
+    asset.id
 }
 
 /// Get the UUID of an asset by its ID.
 pub fn get_asset_uuid(conn: &mut PgConnection, asset_id: i32) -> Uuid {
-    use diesel::sql_query;
-    use diesel::sql_types::Int4;
-
-    #[derive(QueryableByName)]
-    struct AssetUuid {
-        #[diesel(sql_type = diesel::sql_types::Uuid)]
-        uuid: Uuid,
-    }
-
-    let result: AssetUuid = sql_query("SELECT uuid FROM assets WHERE id = $1")
-        .bind::<Int4, _>(asset_id)
-        .get_result(conn)
-        .expect("Failed to get asset UUID");
-
-    result.uuid
+    assets::table
+        .filter(assets::id.eq(asset_id))
+        .select(assets::uuid)
+        .first(conn)
+        .expect("Failed to get asset UUID")
 }
 
 /// Create a test session and return session_id.
@@ -373,148 +424,172 @@ pub fn create_test_session(
     session_type: &str,
     status: &str,
 ) -> i32 {
-    use diesel::sql_query;
-    use diesel::sql_types::Int4;
+    use vauban_web::schema::proxy_sessions;
 
-    #[derive(QueryableByName)]
-    struct SessionId {
-        #[diesel(sql_type = Int4)]
-        id: i32,
-    }
+    let session_uuid = Uuid::new_v4();
+    let ip: ipnetwork::IpNetwork = "127.0.0.1".parse().unwrap();
 
-    let connected_at = if status == "active" {
-        "NOW()".to_string()
+    let (connected_at, disconnected_at) = if status == "active" {
+        (Some(Utc::now()), None)
     } else {
-        "NOW() - INTERVAL '1 hour'".to_string()
+        (
+            Some(Utc::now() - Duration::hours(1)),
+            Some(Utc::now()),
+        )
     };
 
-    let disconnected_at = if status == "active" {
-        "NULL".to_string()
-    } else {
-        "NOW()".to_string()
-    };
+    let session_id: i32 = diesel::insert_into(proxy_sessions::table)
+        .values((
+            proxy_sessions::uuid.eq(session_uuid),
+            proxy_sessions::user_id.eq(user_id),
+            proxy_sessions::asset_id.eq(asset_id),
+            proxy_sessions::credential_id.eq("cred-123"),
+            proxy_sessions::credential_username.eq("testuser"),
+            proxy_sessions::session_type.eq(session_type),
+            proxy_sessions::status.eq(status),
+            proxy_sessions::client_ip.eq(ip),
+            proxy_sessions::connected_at.eq(connected_at),
+            proxy_sessions::disconnected_at.eq(disconnected_at),
+            proxy_sessions::is_recorded.eq(false),
+            proxy_sessions::metadata.eq(serde_json::json!({})),
+        ))
+        .returning(proxy_sessions::id)
+        .get_result(conn)
+        .expect("Failed to create test session");
 
-    let result: SessionId = sql_query(format!(
-        "INSERT INTO proxy_sessions (uuid, user_id, asset_id, credential_id, credential_username, session_type, status, client_ip, connected_at, disconnected_at, is_recorded, metadata)
-         VALUES (uuid_generate_v4(), {}, {}, 'cred-123', 'testuser', '{}', '{}', '127.0.0.1', {}, {}, false, '{{}}')
-         RETURNING id",
-        user_id, asset_id, session_type, status, connected_at, disconnected_at
-    ))
-    .get_result(conn)
-    .expect("Failed to create test session");
-
-    result.id
+    session_id
 }
 
 /// Create a recorded session and return session_id.
 pub fn create_recorded_session(conn: &mut PgConnection, user_id: i32, asset_id: i32) -> i32 {
-    use diesel::sql_query;
-    use diesel::sql_types::Int4;
+    use vauban_web::schema::proxy_sessions;
 
-    #[derive(QueryableByName)]
-    struct SessionId {
-        #[diesel(sql_type = Int4)]
-        id: i32,
-    }
+    let session_uuid = Uuid::new_v4();
+    let ip: ipnetwork::IpNetwork = "127.0.0.1".parse().unwrap();
 
-    let result: SessionId = sql_query(format!(
-        "INSERT INTO proxy_sessions (uuid, user_id, asset_id, credential_id, credential_username, session_type, status, client_ip, connected_at, disconnected_at, is_recorded, recording_path, metadata)
-         VALUES (uuid_generate_v4(), {}, {}, 'cred-123', 'testuser', 'ssh', 'completed', '127.0.0.1', NOW() - INTERVAL '1 hour', NOW(), true, '/recordings/test.cast', '{{}}')
-         RETURNING id",
-        user_id, asset_id
-    ))
-    .get_result(conn)
-    .expect("Failed to create recorded session");
+    let session_id: i32 = diesel::insert_into(proxy_sessions::table)
+        .values((
+            proxy_sessions::uuid.eq(session_uuid),
+            proxy_sessions::user_id.eq(user_id),
+            proxy_sessions::asset_id.eq(asset_id),
+            proxy_sessions::credential_id.eq("cred-123"),
+            proxy_sessions::credential_username.eq("testuser"),
+            proxy_sessions::session_type.eq("ssh"),
+            proxy_sessions::status.eq("completed"),
+            proxy_sessions::client_ip.eq(ip),
+            proxy_sessions::connected_at.eq(Utc::now() - Duration::hours(1)),
+            proxy_sessions::disconnected_at.eq(Utc::now()),
+            proxy_sessions::is_recorded.eq(true),
+            proxy_sessions::recording_path.eq("/recordings/test.cast"),
+            proxy_sessions::metadata.eq(serde_json::json!({})),
+        ))
+        .returning(proxy_sessions::id)
+        .get_result(conn)
+        .expect("Failed to create recorded session");
 
-    result.id
+    session_id
 }
 
 /// Create an approval request (session with justification) and return session_uuid.
 pub fn create_approval_request(conn: &mut PgConnection, user_id: i32, asset_id: i32) -> Uuid {
-    use diesel::sql_query;
+    use vauban_web::schema::proxy_sessions;
 
-    #[derive(QueryableByName)]
-    struct SessionUuid {
-        #[diesel(sql_type = diesel::sql_types::Uuid)]
-        uuid: Uuid,
-    }
+    let session_uuid = Uuid::new_v4();
+    let ip: ipnetwork::IpNetwork = "127.0.0.1".parse().unwrap();
 
-    let result: SessionUuid = sql_query(format!(
-        "INSERT INTO proxy_sessions (uuid, user_id, asset_id, credential_id, credential_username, session_type, status, client_ip, is_recorded, justification, metadata)
-         VALUES (uuid_generate_v4(), {}, {}, 'cred-123', 'testuser', 'ssh', 'pending', '127.0.0.1', true, 'Need access for maintenance', '{{\"approval_required\": true}}')
-         RETURNING uuid",
-        user_id, asset_id
-    ))
-    .get_result(conn)
-    .expect("Failed to create approval request");
+    diesel::insert_into(proxy_sessions::table)
+        .values((
+            proxy_sessions::uuid.eq(session_uuid),
+            proxy_sessions::user_id.eq(user_id),
+            proxy_sessions::asset_id.eq(asset_id),
+            proxy_sessions::credential_id.eq("cred-123"),
+            proxy_sessions::credential_username.eq("testuser"),
+            proxy_sessions::session_type.eq("ssh"),
+            proxy_sessions::status.eq("pending"),
+            proxy_sessions::client_ip.eq(ip),
+            proxy_sessions::is_recorded.eq(true),
+            proxy_sessions::justification.eq("Need access for maintenance"),
+            proxy_sessions::metadata.eq(serde_json::json!({"approval_required": true})),
+        ))
+        .execute(conn)
+        .expect("Failed to create approval request");
 
-    result.uuid
+    session_uuid
 }
 
 /// Create a test vauban group (user group) and return group_uuid.
+/// Uses a unique name with UUID suffix to avoid conflicts.
 pub fn create_test_vauban_group(conn: &mut PgConnection, name: &str) -> Uuid {
-    use diesel::sql_query;
+    use vauban_web::schema::vauban_groups;
 
-    #[derive(QueryableByName)]
-    struct GroupUuid {
-        #[diesel(sql_type = diesel::sql_types::Uuid)]
-        uuid: Uuid,
-    }
+    let group_uuid = Uuid::new_v4();
+    // Create a truly unique name using a UUID suffix
+    let unique_name = format!("{}_{}", name, &group_uuid.to_string()[..8]);
 
-    let result: GroupUuid = sql_query(format!(
-        "INSERT INTO vauban_groups (uuid, name, description, source)
-         VALUES (uuid_generate_v4(), '{}', 'Test group', 'local')
-         ON CONFLICT (name) DO UPDATE SET updated_at = NOW()
-         RETURNING uuid",
-        name
-    ))
-    .get_result(conn)
-    .expect("Failed to create vauban group");
+    diesel::insert_into(vauban_groups::table)
+        .values((
+            vauban_groups::uuid.eq(group_uuid),
+            vauban_groups::name.eq(&unique_name),
+            vauban_groups::description.eq(Some("Test group")),
+            vauban_groups::source.eq("local"),
+        ))
+        .execute(conn)
+        .expect("Failed to create vauban group");
 
-    result.uuid
+    group_uuid
 }
 
 /// Create a test asset in a specific group and return asset_id.
+/// Uses a unique hostname with UUID suffix to avoid conflicts.
 pub fn create_test_asset_in_group(
     conn: &mut PgConnection,
     name: &str,
     created_by: i32,
     group_uuid: &Uuid,
 ) -> i32 {
-    use diesel::sql_query;
-    use diesel::sql_types::Int4;
-
-    #[derive(QueryableByName)]
-    struct AssetId {
-        #[diesel(sql_type = Int4)]
-        id: i32,
-    }
+    use vauban_web::schema::asset_groups;
 
     // First get the group_id from uuid
-    #[derive(QueryableByName)]
-    struct GroupId {
-        #[diesel(sql_type = Int4)]
-        id: i32,
-    }
+    let group_id: i32 = asset_groups::table
+        .filter(asset_groups::uuid.eq(group_uuid))
+        .select(asset_groups::id)
+        .first(conn)
+        .expect("Failed to find asset group");
 
-    let group: GroupId = sql_query(format!(
-        "SELECT id FROM asset_groups WHERE uuid = '{}'",
-        group_uuid
-    ))
-    .get_result(conn)
-    .expect("Failed to find asset group");
+    let asset_uuid = Uuid::new_v4();
+    // Create a truly unique hostname using a UUID suffix
+    let unique_hostname = format!(
+        "{}-{}.test.local",
+        name,
+        &asset_uuid.to_string()[..8]
+    );
 
-    let result: AssetId = sql_query(format!(
-        "INSERT INTO assets (uuid, name, hostname, port, asset_type, status, group_id, require_mfa, require_justification, connection_config, created_by_id)
-         VALUES (uuid_generate_v4(), '{}', '{}.test.local', 22, 'ssh', 'online', {}, false, false, '{{}}', {})
-         ON CONFLICT (hostname, port) DO UPDATE SET updated_at = NOW()
-         RETURNING id",
-        name, name, group.id, created_by
-    ))
-    .get_result(conn)
-    .expect("Failed to create test asset in group");
+    let new_asset = NewAsset {
+        uuid: asset_uuid,
+        name: name.to_string(),
+        hostname: unique_hostname,
+        ip_address: None,
+        port: 22,
+        asset_type: "ssh".to_string(),
+        status: "online".to_string(),
+        group_id: Some(group_id),
+        description: None,
+        os_type: None,
+        os_version: None,
+        connection_config: serde_json::json!({}),
+        default_credential_id: None,
+        require_mfa: false,
+        require_justification: false,
+        max_session_duration: 3600,
+        created_by_id: Some(created_by),
+    };
 
-    result.id
+    let asset: Asset = diesel::insert_into(assets::table)
+        .values(&new_asset)
+        .get_result(conn)
+        .expect("Failed to create test asset in group");
+
+    asset.id
 }
 
 // =============================================================================

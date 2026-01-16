@@ -5,9 +5,10 @@
 /// Since raw SQL is not checked at compile time, these tests ensure query validity.
 use crate::common::{TestApp, assertions::assert_status};
 use crate::fixtures::{
-    create_approval_request, create_recorded_session, create_simple_ssh_asset, create_simple_user,
-    create_test_asset_group, create_test_asset_in_group, create_test_session,
-    create_test_vauban_group, get_asset_uuid, unique_name,
+    create_approval_request, create_recorded_session, create_simple_admin_user,
+    create_simple_ssh_asset, create_simple_user, create_test_asset_group,
+    create_test_asset_in_group, create_test_session, create_test_vauban_group, get_asset_uuid,
+    unique_name,
 };
 use axum::http::header::COOKIE;
 use diesel::prelude::*;
@@ -182,6 +183,43 @@ async fn test_approval_list_with_status_filter() {
 }
 
 #[tokio::test]
+async fn test_approval_list_with_orphaned_status_filter() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let username = unique_name("orphaned_approval_user");
+    let user_id = create_simple_user(&mut conn, &username);
+    let asset_id = create_simple_ssh_asset(&mut conn, "orphaned-approval-asset", user_id);
+    let approval_uuid = create_approval_request(&mut conn, user_id, asset_id);
+
+    use vauban_web::schema::proxy_sessions::dsl as ps;
+    diesel::update(ps::proxy_sessions.filter(ps::uuid.eq(approval_uuid)))
+        .set(ps::status.eq("orphaned"))
+        .execute(&mut conn)
+        .expect("Failed to update approval status");
+
+    let token = app.generate_test_token(
+        &Uuid::new_v4().to_string(),
+        "test_approval_orphaned",
+        true,
+        true,
+    );
+
+    let response = app
+        .server
+        .get("/sessions/approvals?status=orphaned")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 200 || status == 303,
+        "Expected 200 or 303, got {}",
+        status
+    );
+}
+
+#[tokio::test]
 async fn test_approval_list_with_pagination() {
     let app = TestApp::spawn().await;
 
@@ -257,6 +295,150 @@ async fn test_approval_detail_not_found() {
         .await;
 
     assert_status(&response, 404);
+}
+
+// =============================================================================
+// Asset Delete Tests (soft delete + approval/session updates)
+// =============================================================================
+
+#[tokio::test]
+async fn test_asset_delete_soft_deletes_and_updates_related_data() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    // Create a regular user who owns the asset and sessions
+    let username = unique_name("delete_asset_user");
+    let user_id = create_simple_user(&mut conn, &username);
+    let asset_name = unique_name("delete-asset");
+    let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, user_id);
+    let approval_uuid = create_approval_request(&mut conn, user_id, asset_id);
+    let active_session_id = create_test_session(&mut conn, user_id, asset_id, "ssh", "active");
+    let asset_uuid = get_asset_uuid(&mut conn, asset_id);
+
+    // Create an admin user in the database to perform the deletion
+    let admin_username = unique_name("admin_delete");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_uuid = get_user_uuid(&mut conn, admin_id);
+
+    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true);
+    let csrf_token = app.generate_csrf_token();
+
+    let response = app
+        .server
+        .post(&format!("/assets/{}/delete", asset_uuid))
+        .add_header(axum::http::header::AUTHORIZATION, app.auth_header(&token))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[("csrf_token", csrf_token.as_str())])
+        .await;
+
+    let status = response.status_code().as_u16();
+
+    // For redirects, check the Location header to distinguish success from error
+    if status == 302 || status == 303 {
+        if let Some(location) = response.headers().get("location") {
+            let location_str = location.to_str().unwrap_or("");
+            // Success should redirect to /assets, error redirects back to /assets/{uuid}
+            assert!(
+                location_str == "/assets" || location_str.starts_with("/assets?"),
+                "Expected redirect to /assets (success), got redirect to '{}' (likely an error)",
+                location_str
+            );
+        }
+    } else {
+        assert!(
+            status == 200 || status == 303,
+            "Expected 200 or 303, got {}",
+            status
+        );
+    }
+
+    let mut conn = app.get_conn();
+
+    use vauban_web::schema::assets::dsl as a;
+    let (is_deleted, deleted_at): (bool, Option<chrono::DateTime<chrono::Utc>>) = a::assets
+        .filter(a::id.eq(asset_id))
+        .select((a::is_deleted, a::deleted_at))
+        .first(&mut conn)
+        .expect("Asset should exist");
+    assert!(is_deleted, "Asset should be soft deleted (asset_id={})", asset_id);
+    assert!(deleted_at.is_some(), "deleted_at should be set");
+
+    use vauban_web::schema::proxy_sessions::dsl as ps;
+    let approval_status: String = ps::proxy_sessions
+        .filter(ps::uuid.eq(approval_uuid))
+        .select(ps::status)
+        .first(&mut conn)
+        .expect("Approval session should exist");
+    assert_eq!(
+        approval_status, "orphaned",
+        "Approval status should be 'orphaned', got '{}'",
+        approval_status
+    );
+
+    let (session_status, disconnected_at): (String, Option<chrono::DateTime<chrono::Utc>>) =
+        ps::proxy_sessions
+            .filter(ps::id.eq(active_session_id))
+            .select((ps::status, ps::disconnected_at))
+            .first(&mut conn)
+            .expect("Active session should exist");
+    assert_eq!(session_status, "terminated");
+    assert!(disconnected_at.is_some(), "disconnected_at should be set");
+}
+
+#[tokio::test]
+async fn test_asset_delete_rejects_missing_csrf() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let username = unique_name("delete_asset_csrf_missing");
+    let user_id = create_simple_user(&mut conn, &username);
+    let asset_id = create_simple_ssh_asset(&mut conn, "delete-asset-csrf", user_id);
+    let asset_uuid = get_asset_uuid(&mut conn, asset_id);
+
+    // Create an admin user in the database
+    let admin_username = unique_name("admin_csrf_test");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_uuid = get_user_uuid(&mut conn, admin_id);
+    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true);
+
+    let invalid_csrf = "invalid-token";
+    let response = app
+        .server
+        .post(&format!("/assets/{}/delete", asset_uuid))
+        .add_header(axum::http::header::AUTHORIZATION, app.auth_header(&token))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, invalid_csrf),
+        )
+        .form(&[("csrf_token", invalid_csrf)])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 302 || status == 303,
+        "Expected redirect (302 or 303), got {}",
+        status
+    );
+
+    let flash_cookie = response
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .find(|c| c.to_str().unwrap().contains("__vauban_flash"));
+    if flash_cookie.is_none() {
+        let location = response
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            location.contains(&format!("/assets/{}", asset_uuid)) || location.contains("/login"),
+            "Expected flash cookie or redirect back to asset detail/login"
+        );
+    }
 }
 
 // =============================================================================
@@ -683,17 +865,22 @@ async fn test_update_asset_web_form_redirects_on_success() {
     let asset_uuid = get_asset_uuid(&mut conn, asset_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), "test_asset_form", true, true);
+    let csrf_token = app.generate_csrf_token();
 
     // Submit form with valid data
     let response = app
         .server
         .post(&format!("/assets/{}/edit", asset_uuid))
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
         .form(&[
             ("name", "Updated Asset Name"),
             ("hostname", "updated.example.com"),
             ("port", "22"),
             ("status", "online"),
+            ("csrf_token", csrf_token.as_str()),
         ])
         .await;
 
@@ -718,17 +905,22 @@ async fn test_update_asset_web_form_validation_error() {
     let asset_uuid = get_asset_uuid(&mut conn, asset_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), "test_asset_val", true, true);
+    let csrf_token = app.generate_csrf_token();
 
     // Submit form with invalid port
     let response = app
         .server
         .post(&format!("/assets/{}/edit", asset_uuid))
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
         .form(&[
             ("name", "Test Asset"),
             ("hostname", "test.example.com"),
             ("port", "99999"),  // Invalid port
             ("status", "online"),
+            ("csrf_token", csrf_token.as_str()),
         ])
         .await;
 
@@ -752,18 +944,23 @@ async fn test_update_asset_group_web_form_redirects_on_success() {
     let group_uuid = create_test_asset_group(&mut conn, "test-form-group");
 
     let token = app.generate_test_token(&user_uuid.to_string(), "test_group_form", true, true);
+    let csrf_token = app.generate_csrf_token();
 
     // Submit form with valid data
     let response = app
         .server
         .post(&format!("/assets/groups/{}/edit", group_uuid))
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
         .form(&[
             ("name", "Updated Group Name"),
             ("slug", "updated-group-slug"),
             ("description", "Updated description"),
             ("color", "#FF5733"),
             ("icon", "server"),
+            ("csrf_token", csrf_token.as_str()),
         ])
         .await;
 
@@ -787,17 +984,22 @@ async fn test_update_asset_group_web_form_validation_error() {
     let group_uuid = create_test_asset_group(&mut conn, "test-val-group");
 
     let token = app.generate_test_token(&user_uuid.to_string(), "test_group_val", true, true);
+    let csrf_token = app.generate_csrf_token();
 
     // Submit form with empty name (validation error)
     let response = app
         .server
         .post(&format!("/assets/groups/{}/edit", group_uuid))
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
         .form(&[
             ("name", ""),  // Empty name - validation error
             ("slug", "valid-slug"),
             ("color", "#FF5733"),
             ("icon", "server"),
+            ("csrf_token", csrf_token.as_str()),
         ])
         .await;
 
@@ -880,18 +1082,23 @@ async fn test_invalid_ip_address_shows_flash_error() {
     let asset_uuid = get_asset_uuid(&mut conn, asset_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), "test_ip_error", true, true);
+    let csrf_token = app.generate_csrf_token();
 
     // Submit form with invalid IP address (192.168.1.400 is invalid)
     let response = app
         .server
         .post(&format!("/assets/{}/edit", asset_uuid))
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
         .form(&[
             ("name", "Test Asset"),
             ("hostname", "test.example.com"),
             ("ip_address", "192.168.1.400"),  // Invalid IP address
             ("port", "22"),
             ("status", "online"),
+            ("csrf_token", csrf_token.as_str()),
         ])
         .await;
 
@@ -939,18 +1146,23 @@ async fn test_edit_page_displays_flash_messages() {
     let asset_uuid = get_asset_uuid(&mut conn, asset_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), "test_flash_display", true, true);
+    let csrf_token = app.generate_csrf_token();
 
     // First, submit form with invalid IP to set flash cookie
     let error_response = app
         .server
         .post(&format!("/assets/{}/edit", asset_uuid))
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
         .form(&[
             ("name", "Test Asset"),
             ("hostname", "test.example.com"),
             ("ip_address", "invalid-ip"),  // Invalid IP address
             ("port", "22"),
             ("status", "online"),
+            ("csrf_token", csrf_token.as_str()),
         ])
         .await;
 
@@ -998,17 +1210,22 @@ async fn test_asset_group_empty_name_shows_flash_error() {
     let group_uuid = create_test_asset_group(&mut conn, &unique_name("test-name-err-grp"));
 
     let token = app.generate_test_token(&user_uuid.to_string(), "test_group_name_err", true, true);
+    let csrf_token = app.generate_csrf_token();
 
     // Submit form with empty name (validation error)
     let response = app
         .server
         .post(&format!("/assets/groups/{}/edit", group_uuid))
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
         .form(&[
             ("name", ""),  // Empty name - validation error
             ("slug", "valid-slug"),
             ("color", "#FF5733"),
             ("icon", "server"),
+            ("csrf_token", csrf_token.as_str()),
         ])
         .await;
 
@@ -1055,17 +1272,22 @@ async fn test_asset_group_empty_slug_shows_flash_error() {
     let group_uuid = create_test_asset_group(&mut conn, &unique_name("test-slug-err-grp"));
 
     let token = app.generate_test_token(&user_uuid.to_string(), "test_group_slug_err", true, true);
+    let csrf_token = app.generate_csrf_token();
 
     // Submit form with empty slug (validation error)
     let response = app
         .server
         .post(&format!("/assets/groups/{}/edit", group_uuid))
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
         .form(&[
             ("name", "Valid Group Name"),
             ("slug", ""),  // Empty slug - validation error
             ("color", "#FF5733"),
             ("icon", "server"),
+            ("csrf_token", csrf_token.as_str()),
         ])
         .await;
 
@@ -1099,17 +1321,22 @@ async fn test_asset_group_edit_page_displays_flash_messages() {
     let group_uuid = create_test_asset_group(&mut conn, &unique_name("test-grp-flash-disp"));
 
     let token = app.generate_test_token(&user_uuid.to_string(), "test_group_flash", true, true);
+    let csrf_token = app.generate_csrf_token();
 
     // First, submit form with empty name to set flash cookie
     let error_response = app
         .server
         .post(&format!("/assets/groups/{}/edit", group_uuid))
-        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
         .form(&[
             ("name", ""),  // Empty name - validation error
             ("slug", "valid-slug"),
             ("color", "#FF5733"),
             ("icon", "server"),
+            ("csrf_token", csrf_token.as_str()),
         ])
         .await;
 

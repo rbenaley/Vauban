@@ -1,17 +1,46 @@
 /// VAUBAN Web - Web page handlers.
 ///
 /// Handlers for serving HTML pages using Askama templates.
+///
+/// # SQL Query Guidelines
+///
+/// This module primarily uses Diesel DSL for database operations. However, raw SQL
+/// queries (`diesel::sql_query`) are used in specific cases where Diesel DSL lacks
+/// support or would be overly complex:
+///
+/// ## Justified Uses of Raw SQL
+///
+/// 1. **Triple JOINs with PostgreSQL-specific casts**: Queries involving multiple
+///    table joins with PostgreSQL type casts like `inet::text` for IP addresses.
+///    Example: Session detail pages joining `proxy_sessions`, `users`, and `assets`.
+///
+/// 2. **Subqueries with COUNT(*)**: Aggregation subqueries in SELECT clauses, such
+///    as counting assets per group. Diesel DSL supports simple aggregates but complex
+///    correlated subqueries are clearer in raw SQL.
+///
+/// 3. **PostgreSQL-native functions**: Functions like `NOW()`, `INTERVAL`, or
+///    `uuid_generate_v4()` when needed in specific contexts not well-supported by
+///    Diesel helpers.
+///
+/// ## Best Practices
+///
+/// - Always use parameterized queries (`$1`, `$2`) with `.bind()` to prevent SQL injection
+/// - Prefer Diesel DSL for simple CRUD operations (INSERT, UPDATE, DELETE, simple SELECT)
+/// - Document why raw SQL is necessary with a `// NOTE:` comment before each `sql_query`
+/// - Test all raw SQL queries thoroughly as they are not compile-time checked
 use axum::{
-    extract::{Query, State},
+    extract::{Form, Query, State},
     response::{Html, IntoResponse, Response},
 };
 use diesel::prelude::*;
 use diesel::sql_types::{BigInt, Integer, Nullable, Text, Uuid as DieselUuid};
 use std::collections::HashMap;
+use secrecy::ExposeSecret;
+use axum_extra::extract::CookieJar;
 
 use crate::AppState;
 use crate::db::get_connection;
-use crate::error::AppError;
+use crate::error::{AppError, AppResult};
 use crate::middleware::auth::{AuthUser, OptionalAuthUser, WebAuthUser};
 use crate::middleware::flash::{IncomingFlash, flash_redirect};
 use crate::schema::{api_keys, assets, auth_sessions, proxy_sessions};
@@ -711,8 +740,19 @@ pub async fn api_keys(
 pub async fn revoke_session(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    jar: CookieJar,
     axum::extract::Path(session_uuid): axum::extract::Path<uuid::Uuid>,
-) -> Result<impl IntoResponse, AppError> {
+    Form(form): Form<CsrfOnlyForm>,
+) -> AppResult<Response> {
+    let secret = state.config.secret_key.expose_secret().as_bytes();
+    let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
+    if !crate::middleware::csrf::validate_double_submit(
+        secret,
+        csrf_cookie.map(|c| c.value()),
+        &form.csrf_token,
+    ) {
+        return Ok((axum::http::StatusCode::BAD_REQUEST, "Invalid CSRF token").into_response());
+    }
     let mut conn = get_connection(&state.db_pool)?;
 
     // Get user ID
@@ -747,7 +787,7 @@ pub async fn revoke_session(
     }
 
     // Return empty response (HTMX will remove the element via hx-target)
-    Ok(Html(""))
+    Ok(Html("").into_response())
 }
 
 /// Broadcast updated sessions list to WebSocket clients.
@@ -865,9 +905,21 @@ fn build_sessions_html(sessions: &[crate::models::AuthSession], client_token_has
 pub async fn revoke_api_key(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    jar: CookieJar,
     axum::extract::Path(key_uuid): axum::extract::Path<uuid::Uuid>,
-) -> Result<impl IntoResponse, AppError> {
+    Form(form): Form<CsrfOnlyForm>,
+) -> AppResult<Response> {
     use crate::services::broadcast::WsChannel;
+
+    let secret = state.config.secret_key.expose_secret().as_bytes();
+    let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
+    if !crate::middleware::csrf::validate_double_submit(
+        secret,
+        csrf_cookie.map(|c| c.value()),
+        &form.csrf_token,
+    ) {
+        return Ok((axum::http::StatusCode::BAD_REQUEST, "Invalid CSRF token").into_response());
+    }
 
     let mut conn = get_connection(&state.db_pool)?;
 
@@ -917,7 +969,7 @@ pub async fn revoke_api_key(
     }
 
     // Return updated row HTML for direct HTMX swap
-    Ok(Html(revoked_html))
+    Ok(Html(revoked_html).into_response())
 }
 
 /// Create API key form (returns modal HTML).
@@ -938,10 +990,21 @@ pub async fn create_api_key_form(
 pub async fn create_api_key(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    jar: CookieJar,
     axum::extract::Form(form): axum::extract::Form<CreateApiKeyForm>,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::models::{ApiKey, NewApiKey};
     use crate::templates::accounts::ApikeyCreatedTemplate;
+
+    let secret = state.config.secret_key.expose_secret().as_bytes();
+    let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
+    if !crate::middleware::csrf::validate_double_submit(
+        secret,
+        csrf_cookie.map(|c| c.value()),
+        &form.csrf_token,
+    ) {
+        return Err(AppError::Validation("Invalid CSRF token".to_string()));
+    }
 
     let mut conn = get_connection(&state.db_pool)?;
 
@@ -1017,6 +1080,7 @@ pub struct CreateApiKeyForm {
     pub name: String,
     pub scopes: Option<Vec<String>>,
     pub expires_in_days: Option<i64>,
+    pub csrf_token: String,
 }
 
 /// Asset list page.
@@ -1122,6 +1186,66 @@ pub async fn asset_list(
     let html = template
         .render()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
+    Ok(Html(html))
+}
+
+/// Asset search (header quick search).
+pub async fn asset_search(
+    State(state): State<AppState>,
+    _auth_user: WebAuthUser,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<impl IntoResponse, AppError> {
+    use crate::schema::assets::dsl as a;
+
+    let query = params.get("search").map(|s| s.trim()).unwrap_or("");
+    if query.is_empty() {
+        return Ok(Html(String::new()));
+    }
+
+    let mut conn = get_connection(&state.db_pool)?;
+    let pattern = format!("%{}%", query);
+
+    let rows: Vec<(uuid::Uuid, String, String, String, String)> = a::assets
+        .filter(a::is_deleted.eq(false))
+        .filter(a::name.ilike(&pattern).or(a::hostname.ilike(&pattern)))
+        .select((a::uuid, a::name, a::hostname, a::asset_type, a::status))
+        .order(a::name.asc())
+        .limit(8)
+        .load(&mut conn)?;
+
+    if rows.is_empty() {
+        return Ok(Html(String::new()));
+    }
+
+    let mut html = String::from(
+        r#"<div class="rounded-md bg-white dark:bg-gray-800 shadow ring-1 ring-gray-200 dark:ring-gray-700">
+<ul class="divide-y divide-gray-200 dark:divide-gray-700">"#,
+    );
+
+    for (asset_uuid, name, hostname, asset_type, status) in rows {
+        let name = askama::filters::escape(&name, askama::filters::Html)
+            .unwrap()
+            .to_string();
+        let hostname = askama::filters::escape(&hostname, askama::filters::Html)
+            .unwrap()
+            .to_string();
+        let asset_type = askama::filters::escape(&asset_type, askama::filters::Html)
+            .unwrap()
+            .to_string();
+        let status = askama::filters::escape(&status, askama::filters::Html)
+            .unwrap()
+            .to_string();
+        html.push_str(&format!(
+            r#"<li class="p-3 hover:bg-gray-50 dark:hover:bg-gray-700">
+<a class="block text-sm" href="/assets/{asset_uuid}">
+<div class="font-medium text-gray-900 dark:text-white">{name}</div>
+<div class="text-xs text-gray-500 dark:text-gray-400">{hostname} · {asset_type} · {status}</div>
+</a>
+</li>"#
+        ));
+    }
+
+    html.push_str("</ul></div>");
     Ok(Html(html))
 }
 
@@ -1512,6 +1636,7 @@ pub async fn session_list(
 
     // Exclude pending approval requests
     query = query.filter(proxy_sessions::status.ne("pending"));
+    query = query.filter(proxy_sessions::status.ne("orphaned"));
 
     if let Some(ref status) = status_filter
         && !status.is_empty()
@@ -1621,6 +1746,34 @@ pub async fn session_list(
         .render()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
     Ok(Html(html))
+}
+
+/// Terminate a session (web HTMX).
+pub async fn terminate_session_web(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    auth_user: WebAuthUser,
+    jar: CookieJar,
+    axum::extract::Path(session_id): axum::extract::Path<i32>,
+    Form(form): Form<CsrfOnlyForm>,
+) -> AppResult<Response> {
+    let secret = state.config.secret_key.expose_secret().as_bytes();
+    let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
+    if !crate::middleware::csrf::validate_double_submit(
+        secret,
+        csrf_cookie.map(|c| c.value()),
+        &form.csrf_token,
+    ) {
+        return Ok((axum::http::StatusCode::BAD_REQUEST, "Invalid CSRF token").into_response());
+    }
+
+    crate::handlers::sessions::terminate_session(
+        State(state),
+        headers,
+        auth_user.0,
+        axum::extract::Path(session_id),
+    )
+    .await
 }
 
 /// Session detail page.
@@ -2955,6 +3108,7 @@ pub struct UpdateAssetGroupForm {
     pub description: Option<String>,
     pub color: String,
     pub icon: String,
+    pub csrf_token: String,
 }
 
 /// Update asset group handler (Web form with PRG pattern).
@@ -2964,10 +3118,23 @@ pub async fn update_asset_group(
     State(state): State<AppState>,
     _auth_user: WebAuthUser,
     incoming_flash: IncomingFlash,
+    jar: CookieJar,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
     axum::extract::Form(form): axum::extract::Form<UpdateAssetGroupForm>,
 ) -> Response {
     let flash = incoming_flash.flash();
+    let secret = state.config.secret_key.expose_secret().as_bytes();
+    let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
+    if !crate::middleware::csrf::validate_double_submit(
+        secret,
+        csrf_cookie.map(|c| c.value()),
+        &form.csrf_token,
+    ) {
+        return flash_redirect(
+            flash.error("Invalid CSRF token. Please refresh the page and try again."),
+            &format!("/assets/groups/{}/edit", uuid_str),
+        );
+    }
 
     // Validate UUID
     let group_uuid = match ::uuid::Uuid::parse_str(&uuid_str) {
@@ -3037,6 +3204,131 @@ pub async fn update_asset_group(
     }
 }
 
+/// Delete asset handler (Web form with PRG pattern).
+///
+/// Soft-deletes the asset and updates related approvals/sessions.
+pub async fn delete_asset_web(
+    State(state): State<AppState>,
+    auth_user: WebAuthUser,
+    incoming_flash: IncomingFlash,
+    jar: CookieJar,
+    axum::extract::Path(uuid_str): axum::extract::Path<String>,
+    Form(form): Form<DeleteAssetForm>,
+) -> Response {
+    let flash = incoming_flash.flash();
+
+    let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
+    let secret = state.config.secret_key.expose_secret().as_bytes();
+    if !crate::middleware::csrf::validate_double_submit(
+        secret,
+        csrf_cookie.map(|c| c.value()),
+        &form.csrf_token,
+    ) {
+        return flash_redirect(
+            flash.error("Invalid CSRF token. Please refresh the page and try again."),
+            &format!("/assets/{}", uuid_str),
+        );
+    }
+
+    if !auth_user.is_superuser && !auth_user.is_staff {
+        return flash_redirect(
+            flash.error("You do not have permission to delete assets"),
+            &format!("/assets/{}", uuid_str),
+        );
+    }
+
+    let asset_uuid = match ::uuid::Uuid::parse_str(&uuid_str) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Invalid asset identifier"),
+                "/assets",
+            );
+        }
+    };
+
+    let mut conn = match get_connection(&state.db_pool) {
+        Ok(conn) => conn,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Database connection error. Please try again."),
+                &format!("/assets/{}", asset_uuid),
+            );
+        }
+    };
+
+    use crate::schema::assets::dsl as a;
+    use crate::schema::proxy_sessions::dsl as ps;
+    use chrono::Utc;
+
+    let asset_id: i32 = match a::assets
+        .filter(a::uuid.eq(asset_uuid))
+        .filter(a::is_deleted.eq(false))
+        .select(a::id)
+        .first(&mut conn)
+    {
+        Ok(id) => id,
+        Err(diesel::result::Error::NotFound) => {
+            return flash_redirect(
+                flash.error("Asset not found or already deleted"),
+                "/assets",
+            );
+        }
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Failed to delete asset. Please try again."),
+                &format!("/assets/{}", asset_uuid),
+            );
+        }
+    };
+
+    let now = Utc::now();
+    let result = conn.transaction::<_, diesel::result::Error, _>(|conn| {
+        diesel::update(a::assets.filter(a::id.eq(asset_id)))
+            .set((
+                a::is_deleted.eq(true),
+                a::deleted_at.eq(now),
+                a::updated_at.eq(now),
+            ))
+            .execute(conn)?;
+
+        diesel::update(
+            ps::proxy_sessions
+                .filter(ps::asset_id.eq(asset_id))
+                .filter(ps::status.eq("active")),
+        )
+        .set((
+            ps::status.eq("terminated"),
+            ps::disconnected_at.eq(now),
+            ps::updated_at.eq(now),
+        ))
+        .execute(conn)?;
+
+        Ok(())
+    });
+
+    match result {
+        Ok(_) => {
+            if let Err(err) = diesel::update(
+                ps::proxy_sessions
+                    .filter(ps::asset_id.eq(asset_id))
+                    .filter(ps::status.eq_any(vec!["pending", "connecting"])),
+            )
+            .set((ps::status.eq("orphaned"), ps::updated_at.eq(now)))
+            .execute(&mut conn)
+            {
+                tracing::error!("Failed to orphan approvals after delete: {}", err);
+            }
+
+            flash_redirect(flash.success("Asset deleted successfully"), "/assets")
+        }
+        Err(_) => flash_redirect(
+            flash.error("Failed to delete asset. Please try again."),
+            &format!("/assets/{}", asset_uuid),
+        ),
+    }
+}
+
 /// Form data for updating an asset (Web form).
 #[derive(Debug, serde::Deserialize)]
 pub struct UpdateAssetForm {
@@ -3050,6 +3342,19 @@ pub struct UpdateAssetForm {
     pub require_mfa: Option<String>,
     #[serde(default)]
     pub require_justification: Option<String>,
+    pub csrf_token: String,
+}
+
+/// Form data for deleting an asset.
+#[derive(Debug, serde::Deserialize)]
+pub struct DeleteAssetForm {
+    pub csrf_token: String,
+}
+
+/// CSRF-only form payload for HTMX actions.
+#[derive(Debug, serde::Deserialize)]
+pub struct CsrfOnlyForm {
+    pub csrf_token: String,
 }
 
 /// Update asset handler (Web form with PRG pattern).
@@ -3059,10 +3364,23 @@ pub async fn update_asset_web(
     State(state): State<AppState>,
     _auth_user: WebAuthUser,
     incoming_flash: IncomingFlash,
+    jar: CookieJar,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
     axum::extract::Form(form): axum::extract::Form<UpdateAssetForm>,
 ) -> Response {
     let flash = incoming_flash.flash();
+    let secret = state.config.secret_key.expose_secret().as_bytes();
+    let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
+    if !crate::middleware::csrf::validate_double_submit(
+        secret,
+        csrf_cookie.map(|c| c.value()),
+        &form.csrf_token,
+    ) {
+        return flash_redirect(
+            flash.error("Invalid CSRF token. Please refresh the page and try again."),
+            &format!("/assets/{}/edit", uuid_str),
+        );
+    }
 
     // Validate UUID
     let asset_uuid = match ::uuid::Uuid::parse_str(&uuid_str) {
@@ -3260,7 +3578,7 @@ mod tests {
 
     #[test]
     fn test_update_asset_group_form_deserialize_full() {
-        let json = r##"{"name": "Production Servers", "slug": "production-servers", "description": "All production servers", "color": "#ff5733", "icon": "server"}"##;
+        let json = r##"{"name": "Production Servers", "slug": "production-servers", "description": "All production servers", "color": "#ff5733", "icon": "server", "csrf_token": "csrf"}"##;
 
         let form: UpdateAssetGroupForm = serde_json::from_str(json).unwrap();
 
@@ -3273,7 +3591,7 @@ mod tests {
 
     #[test]
     fn test_update_asset_group_form_deserialize_minimal() {
-        let json = r##"{"name": "Test", "slug": "test", "color": "#fff", "icon": "folder"}"##;
+        let json = r##"{"name": "Test", "slug": "test", "color": "#fff", "icon": "folder", "csrf_token": "csrf"}"##;
 
         let form: UpdateAssetGroupForm = serde_json::from_str(json).unwrap();
 
@@ -3286,7 +3604,7 @@ mod tests {
 
     #[test]
     fn test_update_asset_group_form_deserialize_with_null_description() {
-        let json = r##"{"name": "Group", "slug": "group", "description": null, "color": "#000", "icon": "box"}"##;
+        let json = r##"{"name": "Group", "slug": "group", "description": null, "color": "#000", "icon": "box", "csrf_token": "csrf"}"##;
 
         let form: UpdateAssetGroupForm = serde_json::from_str(json).unwrap();
 
@@ -3295,7 +3613,7 @@ mod tests {
 
     #[test]
     fn test_update_asset_group_form_deserialize_special_chars() {
-        let json = r##"{"name": "Test's Group", "slug": "tests-group", "description": "Description with quotes", "color": "#123456", "icon": "database"}"##;
+        let json = r##"{"name": "Test's Group", "slug": "tests-group", "description": "Description with quotes", "color": "#123456", "icon": "database", "csrf_token": "csrf"}"##;
 
         let form: UpdateAssetGroupForm = serde_json::from_str(json).unwrap();
 
@@ -3311,6 +3629,7 @@ mod tests {
             description: Some("Test description".to_string()),
             color: "#abcdef".to_string(),
             icon: "cloud".to_string(),
+            csrf_token: "csrf".to_string(),
         };
 
         let debug_str = format!("{:?}", form);
@@ -3322,7 +3641,7 @@ mod tests {
     #[test]
     fn test_update_asset_group_form_missing_required_field() {
         // Missing 'icon' field
-        let json = r##"{"name": "Test", "slug": "test", "color": "#fff"}"##;
+        let json = r##"{"name": "Test", "slug": "test", "color": "#fff", "csrf_token": "csrf"}"##;
 
         let result: Result<UpdateAssetGroupForm, _> = serde_json::from_str(json);
         assert!(result.is_err());
@@ -3330,7 +3649,7 @@ mod tests {
 
     #[test]
     fn test_update_asset_group_form_empty_strings() {
-        let json = r#"{"name": "", "slug": "", "color": "", "icon": ""}"#;
+        let json = r#"{"name": "", "slug": "", "color": "", "icon": "", "csrf_token": "csrf"}"#;
 
         let form: UpdateAssetGroupForm = serde_json::from_str(json).unwrap();
 
@@ -3512,7 +3831,7 @@ mod tests {
 
     #[test]
     fn test_create_api_key_form_deserialize() {
-        let json = r#"{"name": "My API Key", "expires_in_days": 30}"#;
+        let json = r#"{"name": "My API Key", "expires_in_days": 30, "csrf_token": "csrf"}"#;
         let form: CreateApiKeyForm = serde_json::from_str(json).unwrap();
 
         assert_eq!(form.name, "My API Key");
@@ -3521,7 +3840,7 @@ mod tests {
 
     #[test]
     fn test_create_api_key_form_without_expiry() {
-        let json = r#"{"name": "Permanent Key"}"#;
+        let json = r#"{"name": "Permanent Key", "csrf_token": "csrf"}"#;
         let form: CreateApiKeyForm = serde_json::from_str(json).unwrap();
 
         assert_eq!(form.name, "Permanent Key");
@@ -3530,7 +3849,7 @@ mod tests {
 
     #[test]
     fn test_create_api_key_form_empty_name() {
-        let json = r#"{"name": "", "expires_in_days": 7}"#;
+        let json = r#"{"name": "", "expires_in_days": 7, "csrf_token": "csrf"}"#;
         let form: CreateApiKeyForm = serde_json::from_str(json).unwrap();
 
         assert_eq!(form.name, "");
@@ -3541,7 +3860,7 @@ mod tests {
 
     #[test]
     fn test_update_asset_group_form_special_characters() {
-        let json = r##"{"name": "Serveurs d'été", "slug": "serveurs-ete", "description": "Serveurs pour l'été 2024", "color": "#123abc", "icon": "sun"}"##;
+        let json = r##"{"name": "Serveurs d'été", "slug": "serveurs-ete", "description": "Serveurs pour l'été 2024", "color": "#123abc", "icon": "sun", "csrf_token": "csrf"}"##;
         let form: UpdateAssetGroupForm = serde_json::from_str(json).unwrap();
 
         assert_eq!(form.name, "Serveurs d'été");
@@ -3550,7 +3869,7 @@ mod tests {
 
     #[test]
     fn test_update_asset_group_form_unicode() {
-        let json = r##"{"name": "服务器组", "slug": "chinese-servers", "color": "#ff0000", "icon": "server"}"##;
+        let json = r##"{"name": "服务器组", "slug": "chinese-servers", "color": "#ff0000", "icon": "server", "csrf_token": "csrf"}"##;
         let form: UpdateAssetGroupForm = serde_json::from_str(json).unwrap();
 
         assert_eq!(form.name, "服务器组");
@@ -3561,7 +3880,7 @@ mod tests {
     fn test_update_asset_group_form_long_description() {
         let long_desc = "A".repeat(1000);
         let json = format!(
-            r##"{{"name": "Test", "slug": "test", "description": "{}", "color": "#fff", "icon": "folder"}}"##,
+            r##"{{"name": "Test", "slug": "test", "description": "{}", "color": "#fff", "icon": "folder", "csrf_token": "csrf"}}"##,
             long_desc
         );
         let form: UpdateAssetGroupForm = serde_json::from_str(&json).unwrap();
@@ -3732,7 +4051,7 @@ mod tests {
 
     #[test]
     fn test_update_asset_group_form_minimal() {
-        let json = r##"{"name": "Test", "slug": "test", "color": "#000", "icon": "folder"}"##;
+        let json = r##"{"name": "Test", "slug": "test", "color": "#000", "icon": "folder", "csrf_token": "csrf"}"##;
         let form: UpdateAssetGroupForm = serde_json::from_str(json).unwrap();
 
         assert_eq!(form.name, "Test");
@@ -3745,7 +4064,7 @@ mod tests {
 
         for color in colors {
             let json = format!(
-                r##"{{"name": "Test", "slug": "test", "color": "{}", "icon": "folder"}}"##,
+                r##"{{"name": "Test", "slug": "test", "color": "{}", "icon": "folder", "csrf_token": "csrf"}}"##,
                 color
             );
             let form: UpdateAssetGroupForm = serde_json::from_str(&json).unwrap();
@@ -3759,7 +4078,7 @@ mod tests {
 
         for icon in icons {
             let json = format!(
-                r##"{{"name": "Test", "slug": "test", "color": "#fff", "icon": "{}"}}"##,
+                r##"{{"name": "Test", "slug": "test", "color": "#fff", "icon": "{}", "csrf_token": "csrf"}}"##,
                 icon
             );
             let form: UpdateAssetGroupForm = serde_json::from_str(&json).unwrap();
@@ -3771,7 +4090,7 @@ mod tests {
 
     #[test]
     fn test_create_api_key_form_zero_expiry() {
-        let json = r#"{"name": "Zero Expiry", "expires_in_days": 0}"#;
+        let json = r#"{"name": "Zero Expiry", "expires_in_days": 0, "csrf_token": "csrf"}"#;
         let form: CreateApiKeyForm = serde_json::from_str(json).unwrap();
 
         assert_eq!(form.expires_in_days, Some(0));
@@ -3779,7 +4098,7 @@ mod tests {
 
     #[test]
     fn test_create_api_key_form_long_expiry() {
-        let json = r#"{"name": "Long Expiry", "expires_in_days": 365}"#;
+        let json = r#"{"name": "Long Expiry", "expires_in_days": 365, "csrf_token": "csrf"}"#;
         let form: CreateApiKeyForm = serde_json::from_str(json).unwrap();
 
         assert_eq!(form.expires_in_days, Some(365));
@@ -3787,7 +4106,7 @@ mod tests {
 
     #[test]
     fn test_create_api_key_form_unicode_name() {
-        let json = r#"{"name": "密钥名称"}"#;
+        let json = r#"{"name": "密钥名称", "csrf_token": "csrf"}"#;
         let form: CreateApiKeyForm = serde_json::from_str(json).unwrap();
 
         assert_eq!(form.name, "密钥名称");
@@ -3796,7 +4115,7 @@ mod tests {
     #[test]
     fn test_create_api_key_form_long_name() {
         let long_name = "A".repeat(100);
-        let json = format!(r#"{{"name": "{}"}}"#, long_name);
+        let json = format!(r#"{{"name": "{}", "csrf_token": "csrf"}}"#, long_name);
         let form: CreateApiKeyForm = serde_json::from_str(&json).unwrap();
 
         assert_eq!(form.name.len(), 100);

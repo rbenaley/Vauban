@@ -268,8 +268,8 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
         )
         // Authentication pages and form handlers
         .route("/login", get(handlers::web::login_page))
-        .route("/auth/login", post(handlers::auth::login))
-        .route("/auth/logout", post(handlers::auth::logout))
+        .route("/auth/login", post(handlers::auth::login_web))
+        .route("/auth/logout", post(handlers::auth::logout_web))
         // Dashboard pages
         .route("/", get(handlers::web::dashboard_home))
         .route("/dashboard", get(handlers::web::dashboard_home))
@@ -308,13 +308,19 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             get(handlers::web::asset_group_edit).post(handlers::web::update_asset_group),
         )
         .route("/assets/access", get(handlers::web::access_rules_list))
+        .route("/assets/search", get(handlers::web::asset_search))
         .route(
             "/assets/{uuid}/edit",
             get(handlers::web::asset_edit).post(handlers::web::update_asset_web),
         )
+        .route(
+            "/assets/{uuid}/delete",
+            post(handlers::web::delete_asset_web),
+        )
         .route("/assets/{uuid}", get(handlers::web::asset_detail))
         // Sessions pages
         .route("/sessions", get(handlers::web::session_list))
+        .route("/sessions/{id}/terminate", post(handlers::web::terminate_session_web))
         .route("/sessions/recordings", get(handlers::web::recording_list))
         .route(
             "/sessions/recordings/{id}/play",
@@ -390,6 +396,10 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
                     std::time::Duration::from_secs(30),
                 ))
                 .layer(cors)
+                .layer(axum::middleware::from_fn_with_state(
+                    state.clone(),
+                    middleware::csrf::csrf_cookie_middleware,
+                ))
                 .layer(axum::middleware::from_fn_with_state(
                     flash_key,
                     middleware::flash::flash_middleware,

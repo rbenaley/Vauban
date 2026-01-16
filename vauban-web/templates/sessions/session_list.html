@@ -127,14 +127,16 @@
                             View
                         </a>
                         {% if session.is_active() %}
-                        <button type="button"
-                                hx-post="/api/v1/sessions/{{ session.id }}/terminate"
-                                hx-confirm="Are you sure you want to terminate this session?"
-                                hx-target="closest li"
-                                hx-swap="outerHTML"
-                                class="rounded-md bg-red-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-red-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-600">
-                            Terminate
-                        </button>
+                        <form hx-post="/sessions/{{ session.id }}/terminate"
+                              hx-confirm="Are you sure you want to terminate this session?"
+                              hx-target="closest li"
+                              hx-swap="outerHTML">
+                            <input type="hidden" name="csrf_token" />
+                            <button type="submit"
+                                    class="rounded-md bg-red-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-red-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-600">
+                                Terminate
+                            </button>
+                        </form>
                         {% endif %}
                     </div>
                 </div>

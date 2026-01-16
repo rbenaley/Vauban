@@ -25,10 +25,12 @@
                    placeholder="Search for a server..."
                    type="search"
                    name="search"
-                   hx-get="/api/v1/assets"
+                   hx-get="/assets/search"
                    hx-trigger="keyup changed delay:300ms"
                    hx-target="#search-results"
                    hx-swap="innerHTML">
+            <div id="search-results"
+                 class="absolute left-0 right-0 top-full mt-2 z-10"></div>
         </form>
 
         <div class="flex items-center gap-x-4 lg:gap-x-6">
@@ -101,7 +103,8 @@
                         API keys
                     </a>
                     <div class="border-t border-gray-100 dark:border-gray-700 my-1"></div>
-                    <form action="/api/v1/auth/logout" method="post">
+                    <form action="/auth/logout" method="post">
+                        <input type="hidden" name="csrf_token" />
                         <button type="submit"
                                 class="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700">
                             Log out

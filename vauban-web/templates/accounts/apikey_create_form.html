@@ -1,6 +1,7 @@
 <div class="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-50" id="modal-backdrop">
     <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-md w-full mx-4">
         <form hx-post="/accounts/apikeys/create" hx-target="#create-key-modal" hx-swap="innerHTML">
+            <input type="hidden" name="csrf_token" />
             <div class="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
                 <h3 class="text-lg font-medium text-gray-900 dark:text-white">Create API Key</h3>
             </div>

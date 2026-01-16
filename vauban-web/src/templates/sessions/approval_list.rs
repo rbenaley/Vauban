@@ -24,6 +24,7 @@ impl ApprovalListItem {
             "approved" => "bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300",
             "rejected" => "bg-red-100 text-red-800 dark:bg-red-900/50 dark:text-red-300",
             "expired" => "bg-gray-100 text-gray-800 dark:bg-gray-900/50 dark:text-gray-300",
+            "orphaned" => "bg-gray-100 text-gray-800 dark:bg-gray-900/50 dark:text-gray-300",
             _ => "bg-gray-100 text-gray-800 dark:bg-gray-900/50 dark:text-gray-300",
         }
     }
@@ -113,6 +114,12 @@ mod tests {
     #[test]
     fn test_status_class_expired() {
         let item = create_test_approval_item("expired", "ssh");
+        assert!(item.status_class().contains("gray"));
+    }
+
+    #[test]
+    fn test_status_class_orphaned() {
+        let item = create_test_approval_item("orphaned", "ssh");
         assert!(item.status_class().contains("gray"));
     }
 
