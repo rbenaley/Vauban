@@ -1372,3 +1372,544 @@ async fn test_asset_group_edit_page_displays_flash_messages() {
         &body[..std::cmp::min(500, body.len())]
     );
 }
+
+// =============================================================================
+// User Management Tests (Create, Edit, Delete)
+// =============================================================================
+
+#[tokio::test]
+async fn test_user_create_form_requires_admin() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    // Create a regular user (not staff, not superuser)
+    let username = unique_name("regular_user");
+    let user_id = create_simple_user(&mut conn, &username);
+    let user_uuid = get_user_uuid(&mut conn, user_id);
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false);
+
+    let response = app
+        .server
+        .get("/accounts/users/new")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    // Should return 403 Forbidden (Authorization error)
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 403 || status == 401,
+        "Regular user should not access create form, got {}",
+        status
+    );
+}
+
+#[tokio::test]
+async fn test_user_create_form_loads_for_admin() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let admin_username = unique_name("admin_create_form");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_uuid = get_user_uuid(&mut conn, admin_id);
+    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true);
+
+    let response = app
+        .server
+        .get("/accounts/users/new")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(body.contains("Create New User") || body.contains("New User"));
+}
+
+#[tokio::test]
+async fn test_user_create_success() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let admin_username = unique_name("admin_create_user");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_uuid = get_user_uuid(&mut conn, admin_id);
+    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true);
+    let csrf_token = app.generate_csrf_token();
+
+    let new_username = unique_name("newuser");
+    let new_email = format!("{}@test.vauban.io", new_username);
+
+    let response = app
+        .server
+        .post("/accounts/users")
+        .add_header(COOKIE, format!("access_token={}; __vauban_csrf={}", token, csrf_token))
+        .form(&[
+            ("csrf_token", csrf_token.as_str()),
+            ("username", &new_username),
+            ("email", &new_email),
+            ("password", "SecurePassword123!"),
+            ("is_active", "on"),
+        ])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 303 || status == 302,
+        "Expected redirect after creation, got {}",
+        status
+    );
+
+    // Verify user was created
+    use vauban_web::schema::users;
+    let created: Option<i32> = users::table
+        .filter(users::username.eq(&new_username))
+        .filter(users::is_deleted.eq(false))
+        .select(users::id)
+        .first(&mut conn)
+        .optional()
+        .unwrap();
+
+    assert!(created.is_some(), "User should be created in database");
+}
+
+#[tokio::test]
+async fn test_user_create_validates_password_length() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let admin_username = unique_name("admin_pw_val");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_uuid = get_user_uuid(&mut conn, admin_id);
+    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true);
+    let csrf_token = app.generate_csrf_token();
+
+    let new_username = unique_name("shortpw");
+    let new_email = format!("{}@test.vauban.io", new_username);
+
+    // Password too short (less than 12 characters based on config)
+    let response = app
+        .server
+        .post("/accounts/users")
+        .add_header(COOKIE, format!("access_token={}; __vauban_csrf={}", token, csrf_token))
+        .form(&[
+            ("csrf_token", csrf_token.as_str()),
+            ("username", &new_username),
+            ("email", &new_email),
+            ("password", "short"),
+            ("is_active", "on"),
+        ])
+        .await;
+
+    // Should redirect back to form with error
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 303 || status == 302,
+        "Expected redirect, got {}",
+        status
+    );
+
+    // Verify redirect is back to the create form (error case)
+    if let Some(location) = response.headers().get("location") {
+        let loc = location.to_str().unwrap();
+        assert!(
+            loc.contains("/accounts/users/new"),
+            "Should redirect back to create form on error, got {}",
+            loc
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_user_create_staff_cannot_create_superuser() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    // Create a staff user (not superuser)
+    let staff_username = unique_name("staff_no_super");
+    let staff_id = {
+        use vauban_web::schema::users;
+        let user_uuid = uuid::Uuid::new_v4();
+        diesel::insert_into(users::table)
+            .values((
+                users::uuid.eq(user_uuid),
+                users::username.eq(&staff_username),
+                users::email.eq(format!("{}@test.vauban.io", staff_username)),
+                users::password_hash.eq("hash"),
+                users::is_active.eq(true),
+                users::is_staff.eq(true),
+                users::is_superuser.eq(false),
+                users::auth_source.eq("local"),
+                users::preferences.eq(serde_json::json!({})),
+            ))
+            .returning(users::id)
+            .get_result::<i32>(&mut conn)
+            .unwrap()
+    };
+    let staff_uuid = get_user_uuid(&mut conn, staff_id);
+    let token = app.generate_test_token(&staff_uuid.to_string(), &staff_username, false, true);
+    let csrf_token = app.generate_csrf_token();
+
+    let new_username = unique_name("wannabe_super");
+    let new_email = format!("{}@test.vauban.io", new_username);
+
+    // Try to create a superuser
+    let response = app
+        .server
+        .post("/accounts/users")
+        .add_header(COOKIE, format!("access_token={}; __vauban_csrf={}", token, csrf_token))
+        .form(&[
+            ("csrf_token", csrf_token.as_str()),
+            ("username", &new_username),
+            ("email", &new_email),
+            ("password", "SecurePassword123!"),
+            ("is_active", "on"),
+            ("is_superuser", "on"),
+        ])
+        .await;
+
+    // Should redirect back with error
+    let status = response.status_code().as_u16();
+    assert!(status == 303 || status == 302);
+
+    // Verify superuser was NOT created
+    use vauban_web::schema::users;
+    let created: Option<bool> = users::table
+        .filter(users::username.eq(&new_username))
+        .filter(users::is_deleted.eq(false))
+        .select(users::is_superuser)
+        .first(&mut conn)
+        .optional()
+        .unwrap();
+
+    assert!(created.is_none(), "Superuser should NOT be created by staff");
+}
+
+#[tokio::test]
+async fn test_user_edit_form_loads() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let admin_username = unique_name("admin_edit_form");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_uuid = get_user_uuid(&mut conn, admin_id);
+    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true);
+
+    // Create a user to edit
+    let target_username = unique_name("edit_target");
+    let target_id = create_simple_user(&mut conn, &target_username);
+    let target_uuid = get_user_uuid(&mut conn, target_id);
+
+    let response = app
+        .server
+        .get(&format!("/accounts/users/{}/edit", target_uuid))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(body.contains("Edit User") || body.contains("edit"));
+}
+
+#[tokio::test]
+async fn test_user_update_success() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let admin_username = unique_name("admin_update");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_uuid = get_user_uuid(&mut conn, admin_id);
+    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true);
+    let csrf_token = app.generate_csrf_token();
+
+    // Create a user to update
+    let target_username = unique_name("update_target");
+    let target_id = create_simple_user(&mut conn, &target_username);
+    let target_uuid = get_user_uuid(&mut conn, target_id);
+
+    let new_email = format!("updated_{}@test.vauban.io", target_username);
+
+    let response = app
+        .server
+        .post(&format!("/accounts/users/{}", target_uuid))
+        .add_header(COOKIE, format!("access_token={}; __vauban_csrf={}", token, csrf_token))
+        .form(&[
+            ("csrf_token", csrf_token.as_str()),
+            ("username", &target_username),
+            ("email", &new_email),
+            ("is_active", "on"),
+        ])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 303 || status == 302,
+        "Expected redirect, got {}",
+        status
+    );
+
+    // Verify email was updated
+    use vauban_web::schema::users;
+    let updated_email: String = users::table
+        .filter(users::id.eq(target_id))
+        .select(users::email)
+        .first(&mut conn)
+        .unwrap();
+
+    assert_eq!(updated_email, new_email, "Email should be updated");
+}
+
+#[tokio::test]
+async fn test_user_update_staff_cannot_edit_superuser() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    // Create a staff user
+    let staff_username = unique_name("staff_cant_edit");
+    let staff_id = {
+        use vauban_web::schema::users;
+        let user_uuid = uuid::Uuid::new_v4();
+        diesel::insert_into(users::table)
+            .values((
+                users::uuid.eq(user_uuid),
+                users::username.eq(&staff_username),
+                users::email.eq(format!("{}@test.vauban.io", staff_username)),
+                users::password_hash.eq("hash"),
+                users::is_active.eq(true),
+                users::is_staff.eq(true),
+                users::is_superuser.eq(false),
+                users::auth_source.eq("local"),
+                users::preferences.eq(serde_json::json!({})),
+            ))
+            .returning(users::id)
+            .get_result::<i32>(&mut conn)
+            .unwrap()
+    };
+    let staff_uuid = get_user_uuid(&mut conn, staff_id);
+    let token = app.generate_test_token(&staff_uuid.to_string(), &staff_username, false, true);
+
+    // Create a superuser to try to edit
+    let super_username = unique_name("super_target");
+    let super_id = create_simple_admin_user(&mut conn, &super_username);
+    let super_uuid = get_user_uuid(&mut conn, super_id);
+
+    // Try to access edit form
+    let response = app
+        .server
+        .get(&format!("/accounts/users/{}/edit", super_uuid))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    // Should redirect with error (staff cannot edit superuser)
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 303 || status == 302,
+        "Staff should not be able to edit superuser, got {}",
+        status
+    );
+}
+
+#[tokio::test]
+async fn test_user_delete_soft_deletes() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let admin_username = unique_name("admin_delete");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_uuid = get_user_uuid(&mut conn, admin_id);
+    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true);
+    let csrf_token = app.generate_csrf_token();
+
+    // Create a user to delete
+    let target_username = unique_name("delete_target");
+    let target_id = create_simple_user(&mut conn, &target_username);
+    let target_uuid = get_user_uuid(&mut conn, target_id);
+
+    let response = app
+        .server
+        .post(&format!("/accounts/users/{}/delete", target_uuid))
+        .add_header(COOKIE, format!("access_token={}; __vauban_csrf={}", token, csrf_token))
+        .form(&[("csrf_token", csrf_token.as_str())])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 303 || status == 302,
+        "Expected redirect, got {}",
+        status
+    );
+
+    // Verify user is soft-deleted
+    use vauban_web::schema::users;
+    let (is_deleted, deleted_at): (bool, Option<chrono::DateTime<chrono::Utc>>) = users::table
+        .filter(users::id.eq(target_id))
+        .select((users::is_deleted, users::deleted_at))
+        .first(&mut conn)
+        .unwrap();
+
+    assert!(is_deleted, "User should be soft-deleted");
+    assert!(deleted_at.is_some(), "deleted_at should be set");
+}
+
+#[tokio::test]
+#[ignore] // This test requires isolation - run with `cargo test -- --ignored` for full validation
+async fn test_user_delete_protects_last_superuser() {
+    // This test verifies that when there is only 1 active superuser,
+    // deleting them should fail. Due to test parallelism, this test
+    // is marked as ignored and should be run separately.
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+    use vauban_web::schema::users;
+    use chrono::Utc;
+
+    // Create a unique superuser for this test
+    let last_super_username = unique_name("last_super");
+    let last_super_id = create_simple_admin_user(&mut conn, &last_super_username);
+    let last_super_uuid = get_user_uuid(&mut conn, last_super_id);
+
+    // Deactivate ALL OTHER superusers
+    let now = Utc::now();
+    diesel::update(
+        users::table
+            .filter(users::is_superuser.eq(true))
+            .filter(users::is_active.eq(true))
+            .filter(users::id.ne(last_super_id)),
+    )
+    .set((users::is_active.eq(false), users::updated_at.eq(now)))
+    .execute(&mut conn)
+    .ok();
+
+    // Verify we have exactly 1 active superuser now
+    let superuser_count: i64 = users::table
+        .filter(users::is_superuser.eq(true))
+        .filter(users::is_active.eq(true))
+        .filter(users::is_deleted.eq(false))
+        .count()
+        .get_result(&mut conn)
+        .unwrap();
+    assert_eq!(superuser_count, 1, "Should have exactly 1 active superuser for this test");
+
+    let token = app.generate_test_token(&last_super_uuid.to_string(), &last_super_username, true, true);
+    let csrf_token = app.generate_csrf_token();
+
+    // Try to delete self (the last active superuser)
+    let response = app
+        .server
+        .post(&format!("/accounts/users/{}/delete", last_super_uuid))
+        .add_header(COOKIE, format!("access_token={}; __vauban_csrf={}", token, csrf_token))
+        .form(&[("csrf_token", csrf_token.as_str())])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(status == 303 || status == 302, "Expected redirect, got {}", status);
+
+    // Verify user is NOT deleted (protection worked)
+    let is_deleted: bool = users::table
+        .filter(users::id.eq(last_super_id))
+        .select(users::is_deleted)
+        .first(&mut conn)
+        .unwrap();
+
+    assert!(!is_deleted, "Last superuser should NOT be deleted");
+
+    // Cleanup: reactivate the other superusers
+    diesel::update(
+        users::table
+            .filter(users::is_superuser.eq(true))
+            .filter(users::is_active.eq(false)),
+    )
+    .set((users::is_active.eq(true), users::updated_at.eq(now)))
+    .execute(&mut conn)
+    .ok();
+}
+
+#[tokio::test]
+async fn test_user_delete_staff_cannot_delete_superuser() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    // Create a staff user
+    let staff_username = unique_name("staff_del");
+    let staff_id = {
+        use vauban_web::schema::users;
+        let user_uuid = uuid::Uuid::new_v4();
+        diesel::insert_into(users::table)
+            .values((
+                users::uuid.eq(user_uuid),
+                users::username.eq(&staff_username),
+                users::email.eq(format!("{}@test.vauban.io", staff_username)),
+                users::password_hash.eq("hash"),
+                users::is_active.eq(true),
+                users::is_staff.eq(true),
+                users::is_superuser.eq(false),
+                users::auth_source.eq("local"),
+                users::preferences.eq(serde_json::json!({})),
+            ))
+            .returning(users::id)
+            .get_result::<i32>(&mut conn)
+            .unwrap()
+    };
+    let staff_uuid = get_user_uuid(&mut conn, staff_id);
+    let token = app.generate_test_token(&staff_uuid.to_string(), &staff_username, false, true);
+    let csrf_token = app.generate_csrf_token();
+
+    // Create a superuser to try to delete
+    let super_username = unique_name("super_nodelete");
+    let super_id = create_simple_admin_user(&mut conn, &super_username);
+    let super_uuid = get_user_uuid(&mut conn, super_id);
+
+    // Try to delete the superuser
+    let response = app
+        .server
+        .post(&format!("/accounts/users/{}/delete", super_uuid))
+        .add_header(COOKIE, format!("access_token={}; __vauban_csrf={}", token, csrf_token))
+        .form(&[("csrf_token", csrf_token.as_str())])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(status == 303 || status == 302);
+
+    // Verify superuser is NOT deleted
+    use vauban_web::schema::users;
+    let is_deleted: bool = users::table
+        .filter(users::id.eq(super_id))
+        .select(users::is_deleted)
+        .first(&mut conn)
+        .unwrap();
+
+    assert!(!is_deleted, "Staff should NOT be able to delete superuser");
+}
+
+#[tokio::test]
+async fn test_user_delete_rejects_csrf_invalid() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let admin_username = unique_name("admin_csrf_del");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_uuid = get_user_uuid(&mut conn, admin_id);
+    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true);
+
+    let target_username = unique_name("csrf_del_target");
+    let target_id = create_simple_user(&mut conn, &target_username);
+    let target_uuid = get_user_uuid(&mut conn, target_id);
+
+    let invalid_csrf = "invalid-token";
+    let response = app
+        .server
+        .post(&format!("/accounts/users/{}/delete", target_uuid))
+        .add_header(COOKIE, format!("access_token={}; __vauban_csrf={}", token, invalid_csrf))
+        .form(&[("csrf_token", invalid_csrf)])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(status == 303 || status == 302);
+
+    // Verify user is NOT deleted (CSRF should have failed)
+    use vauban_web::schema::users;
+    let is_deleted: bool = users::table
+        .filter(users::id.eq(target_id))
+        .select(users::is_deleted)
+        .first(&mut conn)
+        .unwrap();
+
+    assert!(!is_deleted, "User should NOT be deleted with invalid CSRF");
+}

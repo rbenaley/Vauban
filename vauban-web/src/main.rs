@@ -276,8 +276,24 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
         .route("/dashboard/", get(handlers::web::dashboard_home))
         .route("/admin", get(handlers::web::dashboard_admin))
         // Accounts pages
-        .route("/accounts/users", get(handlers::web::user_list))
-        .route("/accounts/users/{uuid}", get(handlers::web::user_detail))
+        // User management routes - literal paths MUST come before parameterized paths
+        .route("/accounts/users/new", get(handlers::web::user_create_form))
+        .route(
+            "/accounts/users",
+            get(handlers::web::user_list).post(handlers::web::create_user_web),
+        )
+        .route(
+            "/accounts/users/{uuid}/edit",
+            get(handlers::web::user_edit_form),
+        )
+        .route(
+            "/accounts/users/{uuid}/delete",
+            post(handlers::web::delete_user_web),
+        )
+        .route(
+            "/accounts/users/{uuid}",
+            get(handlers::web::user_detail).post(handlers::web::update_user_web),
+        )
         .route("/accounts/profile", get(handlers::web::profile))
         .route("/accounts/mfa", get(handlers::web::mfa_setup))
         .route("/accounts/sessions", get(handlers::web::user_sessions))

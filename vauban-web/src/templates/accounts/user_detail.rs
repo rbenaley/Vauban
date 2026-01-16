@@ -33,6 +33,8 @@ pub struct UserDetailTemplate {
         Option<crate::templates::partials::sidebar_content::SidebarContentTemplate>,
     pub header_user: Option<crate::templates::base::UserContext>,
     pub user_detail: UserDetail,
+    /// Whether the current user can edit this user
+    pub can_edit: bool,
 }
 
 #[cfg(test)]
@@ -120,6 +122,7 @@ mod tests {
             sidebar_content: None,
             header_user: None,
             user_detail: create_test_user_detail(),
+            can_edit: true,
         };
 
         let result = template.render();

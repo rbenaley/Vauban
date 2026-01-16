@@ -269,6 +269,24 @@ fn build_test_router(state: AppState) -> Router {
         )
         .route("/accounts/groups", get(handlers::web::group_list))
         .route("/accounts/groups/{uuid}", get(handlers::web::group_detail))
+        // User management pages (literal paths before parameterized)
+        .route("/accounts/users/new", get(handlers::web::user_create_form))
+        .route(
+            "/accounts/users",
+            get(handlers::web::user_list).post(handlers::web::create_user_web),
+        )
+        .route(
+            "/accounts/users/{uuid}/edit",
+            get(handlers::web::user_edit_form),
+        )
+        .route(
+            "/accounts/users/{uuid}/delete",
+            post(handlers::web::delete_user_web),
+        )
+        .route(
+            "/accounts/users/{uuid}",
+            get(handlers::web::user_detail).post(handlers::web::update_user_web),
+        )
         // Account pages (profile, sessions and API keys)
         .route("/accounts/profile", get(handlers::web::profile))
         .route("/accounts/sessions", get(handlers::web::user_sessions))
