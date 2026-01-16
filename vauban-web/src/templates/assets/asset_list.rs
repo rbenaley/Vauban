@@ -35,6 +35,8 @@ pub struct AssetListTemplate {
     pub status_filter: Option<String>,
     pub asset_types: Vec<(String, String)>,
     pub statuses: Vec<(String, String)>,
+    /// Whether to show the "View" link (only for admin users).
+    pub show_view_link: bool,
 }
 
 #[cfg(test)]
@@ -145,9 +147,47 @@ mod tests {
             status_filter: None,
             asset_types: vec![],
             statuses: vec![],
+            show_view_link: true,
         };
 
         let result = template.render();
         assert!(result.is_ok(), "AssetListTemplate should render");
+    }
+
+    #[test]
+    fn test_asset_list_template_renders_without_view_link() {
+        use crate::templates::base::{UserContext, VaubanConfig};
+
+        let template = AssetListTemplate {
+            title: "Assets".to_string(),
+            user: Some(UserContext {
+                uuid: "test".to_string(),
+                username: "testuser".to_string(),
+                display_name: "Test User".to_string(),
+                is_superuser: false,
+                is_staff: false,
+            }),
+            vauban: VaubanConfig {
+                brand_name: "VAUBAN".to_string(),
+                brand_logo: None,
+                theme: "dark".to_string(),
+            },
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            assets: vec![create_test_asset_item()],
+            pagination: None,
+            search: None,
+            type_filter: None,
+            status_filter: None,
+            asset_types: vec![],
+            statuses: vec![],
+            show_view_link: false,
+        };
+
+        assert!(!template.show_view_link);
+        let result = template.render();
+        assert!(result.is_ok(), "AssetListTemplate should render without view link");
     }
 }

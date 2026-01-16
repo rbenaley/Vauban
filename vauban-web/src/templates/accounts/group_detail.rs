@@ -50,6 +50,7 @@ pub struct GroupDetailTemplate {
         Option<crate::templates::partials::sidebar_content::SidebarContentTemplate>,
     pub header_user: Option<crate::templates::base::UserContext>,
     pub group: GroupDetail,
+    pub csrf_token: String,
 }
 
 #[cfg(test)]
@@ -159,6 +160,7 @@ mod tests {
             sidebar_content: None,
             header_user: None,
             group: create_test_group_detail("local"),
+            csrf_token: "test-csrf-token".to_string(),
         };
 
         let result = template.render();

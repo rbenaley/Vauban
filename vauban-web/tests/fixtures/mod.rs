@@ -539,6 +539,55 @@ pub fn create_test_vauban_group(conn: &mut PgConnection, name: &str) -> Uuid {
     group_uuid
 }
 
+/// Get the internal ID of a vauban group from its UUID.
+pub fn get_vauban_group_id(conn: &mut PgConnection, group_uuid: &Uuid) -> i32 {
+    use vauban_web::schema::vauban_groups;
+
+    vauban_groups::table
+        .filter(vauban_groups::uuid.eq(group_uuid))
+        .select(vauban_groups::id)
+        .first(conn)
+        .expect("Failed to get vauban group id")
+}
+
+/// Add a user to a vauban group.
+pub fn add_user_to_vauban_group(conn: &mut PgConnection, user_id: i32, group_uuid: &Uuid) {
+    use vauban_web::schema::user_groups;
+    use vauban_web::schema::vauban_groups;
+
+    let group_id: i32 = vauban_groups::table
+        .filter(vauban_groups::uuid.eq(group_uuid))
+        .select(vauban_groups::id)
+        .first(conn)
+        .expect("Failed to get vauban group id");
+
+    diesel::insert_into(user_groups::table)
+        .values((
+            user_groups::user_id.eq(user_id),
+            user_groups::group_id.eq(group_id),
+        ))
+        .execute(conn)
+        .expect("Failed to add user to vauban group");
+}
+
+/// Count members in a vauban group.
+pub fn count_vauban_group_members(conn: &mut PgConnection, group_uuid: &Uuid) -> i64 {
+    use vauban_web::schema::user_groups;
+    use vauban_web::schema::vauban_groups;
+
+    let group_id: i32 = vauban_groups::table
+        .filter(vauban_groups::uuid.eq(group_uuid))
+        .select(vauban_groups::id)
+        .first(conn)
+        .expect("Failed to get vauban group id");
+
+    user_groups::table
+        .filter(user_groups::group_id.eq(group_id))
+        .count()
+        .get_result(conn)
+        .unwrap_or(0)
+}
+
 /// Create a test asset in a specific group and return asset_id.
 /// Uses a unique hostname with UUID suffix to avoid conflicts.
 pub fn create_test_asset_in_group(

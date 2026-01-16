@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+
+{% block title %}New Asset Group - {{ vauban.brand_name }}{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <!-- Header -->
+    <div class="md:flex md:items-center md:justify-between">
+        <div class="min-w-0 flex-1">
+            <nav class="flex" aria-label="Breadcrumb">
+                <ol class="flex items-center space-x-2">
+                    <li>
+                        <a href="/assets/groups" class="text-gray-400 hover:text-gray-500 dark:text-gray-500 dark:hover:text-gray-400">
+                            <svg class="h-5 w-5 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd" d="M9.293 2.293a1 1 0 011.414 0l7 7A1 1 0 0117 11h-1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-3a1 1 0 00-1-1H9a1 1 0 00-1 1v3a1 1 0 01-1 1H5a1 1 0 01-1-1v-6H3a1 1 0 01-.707-1.707l7-7z" clip-rule="evenodd"/>
+                            </svg>
+                        </a>
+                    </li>
+                    <li>
+                        <div class="flex items-center">
+                            <svg class="h-5 w-5 flex-shrink-0 text-gray-300 dark:text-gray-600" viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd"/>
+                            </svg>
+                            <a href="/assets/groups" class="ml-2 text-sm font-medium text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300">Asset Groups</a>
+                        </div>
+                    </li>
+                    <li>
+                        <div class="flex items-center">
+                            <svg class="h-5 w-5 flex-shrink-0 text-gray-300 dark:text-gray-600" viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd"/>
+                            </svg>
+                            <span class="ml-2 text-sm font-medium text-gray-500 dark:text-gray-400">New</span>
+                        </div>
+                    </li>
+                </ol>
+            </nav>
+            <div class="mt-2 flex items-center">
+                <span class="inline-flex h-10 w-10 items-center justify-center rounded-lg mr-3 bg-vauban-100 dark:bg-vauban-900/50">
+                    <svg class="h-6 w-6 text-vauban-600 dark:text-vauban-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                    </svg>
+                </span>
+                <h2 class="text-2xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-3xl sm:tracking-tight">
+                    New Asset Group
+                </h2>
+            </div>
+        </div>
+    </div>
+
+    <!-- Flash messages are displayed in base.html -->
+
+    <!-- Create Form -->
+    <form action="/assets/groups" method="POST" class="space-y-6">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+        <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+            <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
+                <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Group Details</h3>
+                <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">Configure the asset group information.</p>
+            </div>
+            <div class="px-4 py-5 sm:p-6 space-y-6">
+                <div class="grid grid-cols-1 gap-6 sm:grid-cols-2">
+                    <div>
+                        <label for="name" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Name *</label>
+                        <input type="text" name="name" id="name" value="{{ form.name }}"
+                               class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
+                               required placeholder="Production Servers">
+                    </div>
+                    <div>
+                        <label for="slug" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Slug *</label>
+                        <input type="text" name="slug" id="slug" value="{{ form.slug }}"
+                               class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm font-mono"
+                               required placeholder="production">
+                        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">URL-friendly identifier (lowercase, no spaces)</p>
+                    </div>
+                </div>
+
+                <div>
+                    <label for="description" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Description</label>
+                    <textarea name="description" id="description" rows="3"
+                              class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
+                              placeholder="Enter a description for this group...">{{ form.description.as_deref().unwrap_or_default() }}</textarea>
+                </div>
+
+                <div class="grid grid-cols-1 gap-6 sm:grid-cols-2">
+                    <div>
+                        <label for="color" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Color</label>
+                        <div class="mt-1 flex items-center space-x-3">
+                            <input type="color" name="color" id="color" value="{{ form.color }}"
+                                   class="h-10 w-14 rounded border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500">
+                            <span class="text-sm font-mono text-gray-500 dark:text-gray-400">{{ form.color }}</span>
+                        </div>
+                    </div>
+                    <div>
+                        <label for="icon" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Icon</label>
+                        <select name="icon" id="icon"
+                                class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
+                            <option value="server" {% if form.icon == "server" %}selected{% endif %}>Server</option>
+                            <option value="database" {% if form.icon == "database" %}selected{% endif %}>Database</option>
+                            <option value="code" {% if form.icon == "code" %}selected{% endif %}>Code</option>
+                            <option value="desktop" {% if form.icon == "desktop" %}selected{% endif %}>Desktop</option>
+                            <option value="wifi" {% if form.icon == "wifi" %}selected{% endif %}>Network</option>
+                            <option value="cloud" {% if form.icon == "cloud" %}selected{% endif %}>Cloud</option>
+                            <option value="folder" {% if form.icon == "folder" %}selected{% endif %}>Folder</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Actions -->
+        <div class="flex justify-end space-x-3">
+            <a href="/assets/groups"
+               class="inline-flex items-center rounded-md bg-white dark:bg-gray-700 px-4 py-2 text-sm font-semibold text-gray-900 dark:text-white shadow-sm ring-1 ring-inset ring-gray-300 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600">
+                Cancel
+            </a>
+            <button type="submit"
+                    class="inline-flex items-center rounded-md bg-vauban-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-600">
+                <svg class="-ml-0.5 mr-1.5 h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                    <path d="M10.75 4.75a.75.75 0 00-1.5 0v4.5h-4.5a.75.75 0 000 1.5h4.5v4.5a.75.75 0 001.5 0v-4.5h4.5a.75.75 0 000-1.5h-4.5v-4.5z"/>
+                </svg>
+                Create Group
+            </button>
+        </div>
+    </form>
+</div>
+{% endblock %}

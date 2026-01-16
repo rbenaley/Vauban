@@ -72,6 +72,8 @@ pub struct SessionListTemplate {
     pub status_filter: Option<String>,
     pub type_filter: Option<String>,
     pub asset_filter: Option<String>,
+    /// Whether to show the "View" link (only for admin users).
+    pub show_view_link: bool,
 }
 
 #[cfg(test)]
@@ -253,6 +255,7 @@ mod tests {
             status_filter: None,
             type_filter: None,
             asset_filter: None,
+            show_view_link: true,
         };
 
         let result = template.render();
@@ -285,9 +288,78 @@ mod tests {
             status_filter: None,
             type_filter: None,
             asset_filter: None,
+            show_view_link: false,
         };
 
         let result = template.render();
         assert!(result.is_ok(), "Empty SessionListTemplate should render");
+    }
+
+    #[test]
+    fn test_session_list_show_view_link_admin() {
+        use crate::templates::base::{UserContext, VaubanConfig};
+
+        let template = SessionListTemplate {
+            title: "Sessions".to_string(),
+            user: Some(UserContext {
+                uuid: "admin".to_string(),
+                username: "admin".to_string(),
+                display_name: "Admin User".to_string(),
+                is_superuser: true,
+                is_staff: true,
+            }),
+            vauban: VaubanConfig {
+                brand_name: "VAUBAN".to_string(),
+                brand_logo: None,
+                theme: "dark".to_string(),
+            },
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            sessions: vec![create_test_session_item("ssh", "active", Some(100))],
+            status_filter: None,
+            type_filter: None,
+            asset_filter: None,
+            show_view_link: true,
+        };
+
+        assert!(template.show_view_link);
+        let result = template.render();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_session_list_hide_view_link_normal_user() {
+        use crate::templates::base::{UserContext, VaubanConfig};
+
+        let template = SessionListTemplate {
+            title: "Sessions".to_string(),
+            user: Some(UserContext {
+                uuid: "test".to_string(),
+                username: "testuser".to_string(),
+                display_name: "Test User".to_string(),
+                is_superuser: false,
+                is_staff: false,
+            }),
+            vauban: VaubanConfig {
+                brand_name: "VAUBAN".to_string(),
+                brand_logo: None,
+                theme: "dark".to_string(),
+            },
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            sessions: vec![create_test_session_item("ssh", "active", Some(100))],
+            status_filter: None,
+            type_filter: None,
+            asset_filter: None,
+            show_view_link: false,
+        };
+
+        assert!(!template.show_view_link);
+        let result = template.render();
+        assert!(result.is_ok());
     }
 }

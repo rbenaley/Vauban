@@ -76,6 +76,11 @@ fn user_context_from_auth(auth_user: &AuthUser) -> UserContext {
     }
 }
 
+/// Check if the user has admin privileges (superuser or staff).
+fn is_admin(auth_user: &WebAuthUser) -> bool {
+    auth_user.is_superuser || auth_user.is_staff
+}
+
 /// Login page.
 pub async fn login_page(State(_state): State<AppState>) -> Result<impl IntoResponse, AppError> {
     let base = BaseTemplate::new("Login".to_string(), None);
@@ -1710,6 +1715,236 @@ pub struct CreateApiKeyForm {
     pub csrf_token: String,
 }
 
+/// Asset create form page.
+pub async fn asset_create_form(
+    State(_state): State<AppState>,
+    auth_user: WebAuthUser,
+    jar: CookieJar,
+) -> Result<impl IntoResponse, AppError> {
+    use crate::templates::assets::asset_create::{AssetCreateForm, AssetCreateTemplate};
+
+    // Only admin users can create assets
+    if !is_admin(&auth_user) {
+        return Err(AppError::Authorization(
+            "Only administrators can create assets".to_string(),
+        ));
+    }
+
+    let user = Some(user_context_from_auth(&auth_user));
+    let base =
+        BaseTemplate::new("New Asset".to_string(), user.clone()).with_current_path("/assets");
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        base.into_fields();
+
+    let csrf_token = jar
+        .get(crate::middleware::csrf::CSRF_COOKIE_NAME)
+        .map(|c| c.value().to_string())
+        .unwrap_or_default();
+
+    let form = AssetCreateForm {
+        port: 22, // Default SSH port
+        asset_type: "ssh".to_string(),
+        status: "online".to_string(),
+        ..Default::default()
+    };
+
+    let template = AssetCreateTemplate {
+        title,
+        user: user_ctx,
+        vauban,
+        messages,
+        language_code,
+        sidebar_content,
+        header_user,
+        form,
+        csrf_token,
+        asset_types: vec![
+            ("ssh".to_string(), "SSH".to_string()),
+            ("rdp".to_string(), "RDP".to_string()),
+            ("vnc".to_string(), "VNC".to_string()),
+        ],
+    };
+
+    let html = template
+        .render()
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
+    Ok(Html(html))
+}
+
+/// Deserialize HTML checkbox value ("on" or absent) to bool.
+fn deserialize_checkbox<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+    let opt: Option<String> = Option::deserialize(deserializer)?;
+    match opt.as_deref() {
+        Some("on") | Some("true") | Some("1") => Ok(true),
+        _ => Ok(false),
+    }
+}
+
+/// Form data for creating an asset via web form.
+#[derive(Debug, serde::Deserialize)]
+pub struct CreateAssetWebForm {
+    pub name: String,
+    pub hostname: String,
+    pub ip_address: Option<String>,
+    pub port: i32,
+    pub asset_type: String,
+    pub status: String,
+    pub description: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_checkbox")]
+    pub require_mfa: bool,
+    #[serde(default, deserialize_with = "deserialize_checkbox")]
+    pub require_justification: bool,
+    pub csrf_token: String,
+}
+
+/// Handle asset creation form submission.
+pub async fn create_asset_web(
+    State(state): State<AppState>,
+    auth_user: WebAuthUser,
+    incoming_flash: IncomingFlash,
+    jar: CookieJar,
+    Form(form): Form<CreateAssetWebForm>,
+) -> Response {
+    let flash = incoming_flash.flash();
+
+    // CSRF validation
+    let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
+    if !crate::middleware::csrf::validate_double_submit(
+        state.config.secret_key.expose_secret().as_bytes(),
+        csrf_cookie.map(|c| c.value()),
+        &form.csrf_token,
+    ) {
+        return flash_redirect(flash.error("Invalid CSRF token"), "/assets/new");
+    }
+
+    // Permission check - only admin can create assets
+    if !is_admin(&auth_user) {
+        return flash_redirect(
+            flash.error("Only administrators can create assets"),
+            "/assets",
+        );
+    }
+
+    // Validate form data
+    if form.name.trim().is_empty() {
+        return flash_redirect(flash.error("Asset name is required"), "/assets/new");
+    }
+    if form.hostname.trim().is_empty() {
+        return flash_redirect(flash.error("Hostname is required"), "/assets/new");
+    }
+    if form.port < 1 || form.port > 65535 {
+        return flash_redirect(flash.error("Port must be between 1 and 65535"), "/assets/new");
+    }
+
+    let mut conn = match get_connection(&state.db_pool) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("Database connection error: {}", e);
+            return flash_redirect(flash.error("Database connection error"), "/assets/new");
+        }
+    };
+
+    // Check if asset with same hostname+port already exists (active)
+    use crate::schema::assets::dsl as a;
+    let existing_active: Option<i32> = a::assets
+        .filter(a::hostname.eq(form.hostname.trim()))
+        .filter(a::port.eq(form.port))
+        .filter(a::is_deleted.eq(false))
+        .select(a::id)
+        .first(&mut conn)
+        .optional()
+        .unwrap_or(None);
+
+    if existing_active.is_some() {
+        return flash_redirect(
+            flash.error("An asset with this hostname and port already exists"),
+            "/assets/new",
+        );
+    }
+
+    // Check if a soft-deleted asset with same hostname+port exists - reactivate it
+    let existing_deleted: Option<(i32, ::uuid::Uuid)> = a::assets
+        .filter(a::hostname.eq(form.hostname.trim()))
+        .filter(a::port.eq(form.port))
+        .filter(a::is_deleted.eq(true))
+        .select((a::id, a::uuid))
+        .first(&mut conn)
+        .optional()
+        .unwrap_or(None);
+
+    let now = chrono::Utc::now();
+
+    if let Some((deleted_id, deleted_uuid)) = existing_deleted {
+        // Reactivate the soft-deleted asset with new data
+        let result = diesel::update(a::assets.filter(a::id.eq(deleted_id)))
+            .set((
+                a::name.eq(form.name.trim()),
+                a::asset_type.eq(&form.asset_type),
+                a::status.eq(&form.status),
+                a::description.eq(form.description.as_deref().filter(|s| !s.is_empty())),
+                a::require_mfa.eq(form.require_mfa),
+                a::require_justification.eq(form.require_justification),
+                a::is_deleted.eq(false),
+                a::deleted_at.eq(None::<chrono::DateTime<chrono::Utc>>),
+                a::updated_at.eq(now),
+            ))
+            .execute(&mut conn);
+
+        return match result {
+            Ok(_) => {
+                flash_redirect(
+                    flash.success(&format!(
+                        "Asset '{}' reactivated successfully",
+                        form.name.trim()
+                    )),
+                    &format!("/assets/{}", deleted_uuid),
+                )
+            }
+            Err(e) => {
+                tracing::error!("Failed to reactivate asset: {}", e);
+                flash_redirect(flash.error("Failed to reactivate asset"), "/assets/new")
+            }
+        };
+    }
+
+    // Create new asset
+    let new_uuid = ::uuid::Uuid::new_v4();
+
+    let result = diesel::insert_into(a::assets)
+        .values((
+            a::uuid.eq(new_uuid),
+            a::name.eq(form.name.trim()),
+            a::hostname.eq(form.hostname.trim()),
+            a::port.eq(form.port),
+            a::asset_type.eq(&form.asset_type),
+            a::status.eq(&form.status),
+            a::description.eq(form.description.as_deref().filter(|s| !s.is_empty())),
+            a::require_mfa.eq(form.require_mfa),
+            a::require_justification.eq(form.require_justification),
+            a::is_deleted.eq(false),
+            a::created_at.eq(now),
+            a::updated_at.eq(now),
+        ))
+        .execute(&mut conn);
+
+    match result {
+        Ok(_) => {
+            flash_redirect(
+                flash.success(&format!("Asset '{}' created successfully", form.name.trim())),
+                &format!("/assets/{}", new_uuid),
+            )
+        }
+        Err(e) => {
+            tracing::error!("Failed to create asset: {}", e);
+            flash_redirect(flash.error("Failed to create asset"), "/assets/new")
+        }
+    }
+}
+
 /// Asset list page.
 pub async fn asset_list(
     State(state): State<AppState>,
@@ -1720,6 +1955,9 @@ pub async fn asset_list(
     let base = BaseTemplate::new("Assets".to_string(), user.clone()).with_current_path("/assets");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         base.into_fields();
+
+    // Determine if user is admin (can view asset details)
+    let user_is_admin = is_admin(&auth_user);
 
     // Load assets from database
     let mut conn = get_connection(&state.db_pool)?;
@@ -1808,6 +2046,7 @@ pub async fn asset_list(
             ("offline".to_string(), "Offline".to_string()),
             ("maintenance".to_string(), "Maintenance".to_string()),
         ],
+        show_view_link: user_is_admin,
     };
 
     let html = template
@@ -1882,6 +2121,13 @@ pub async fn asset_detail(
     auth_user: WebAuthUser,
     axum::extract::Path(asset_uuid): axum::extract::Path<::uuid::Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
+    // Only admin users (superuser or staff) can view asset details
+    if !is_admin(&auth_user) {
+        return Err(AppError::Authorization(
+            "Only administrators can view asset details".to_string(),
+        ));
+    }
+
     let user = Some(user_context_from_auth(&auth_user));
 
     let mut conn = get_connection(&state.db_pool)?;
@@ -2259,11 +2505,35 @@ pub async fn session_list(
     let type_filter = params.get("type").cloned();
     let asset_filter = params.get("asset").cloned();
 
+    // Determine if user is admin
+    let user_is_admin = is_admin(&auth_user);
+
+    // For non-admin users, we need to get their user ID to filter sessions
+    let current_user_id: Option<i32> = if !user_is_admin {
+        let user_uuid = ::uuid::Uuid::parse_str(&auth_user.uuid)
+            .map_err(|e| AppError::Validation(format!("Invalid user UUID: {}", e)))?;
+        use crate::schema::users::dsl as u;
+        Some(
+            u::users
+                .filter(u::uuid.eq(user_uuid))
+                .select(u::id)
+                .first::<i32>(&mut conn)
+                .map_err(|_| AppError::NotFound("User not found".to_string()))?,
+        )
+    } else {
+        None
+    };
+
     let mut query = proxy_sessions::table.inner_join(assets::table).into_boxed();
 
     // Exclude pending approval requests
     query = query.filter(proxy_sessions::status.ne("pending"));
     query = query.filter(proxy_sessions::status.ne("orphaned"));
+
+    // For non-admin users, filter to only their own sessions
+    if let Some(user_id) = current_user_id {
+        query = query.filter(proxy_sessions::user_id.eq(user_id));
+    }
 
     if let Some(ref status) = status_filter
         && !status.is_empty()
@@ -2367,6 +2637,7 @@ pub async fn session_list(
         status_filter,
         type_filter,
         asset_filter,
+        show_view_link: user_is_admin,
     };
 
     let html = template
@@ -2394,7 +2665,7 @@ pub async fn terminate_session_web(
         return Ok((axum::http::StatusCode::BAD_REQUEST, "Invalid CSRF token").into_response());
     }
 
-    crate::handlers::sessions::terminate_session(
+    crate::handlers::api::sessions::terminate_session(
         State(state),
         headers,
         auth_user.0,
@@ -2413,6 +2684,7 @@ pub async fn session_detail(
 
     let user = Some(user_context_from_auth(&auth_user));
     let mut conn = get_connection(&state.db_pool)?;
+    let user_is_admin = is_admin(&auth_user);
 
     // NOTE: Raw SQL required - complex triple JOIN with PostgreSQL ::text casts
     // Cannot be migrated to Diesel DSL due to:
@@ -2437,6 +2709,13 @@ pub async fn session_detail(
         diesel::result::Error::NotFound => AppError::NotFound("Session not found".to_string()),
         _ => AppError::Database(e),
     })?;
+
+    // For non-admin users, check if they own this session
+    if !user_is_admin && session_data.user_uuid != auth_user.uuid {
+        return Err(AppError::Authorization(
+            "You can only view your own sessions".to_string(),
+        ));
+    }
 
     // Calculate duration if connected_at and disconnected_at are present
     let duration = match (session_data.connected_at, session_data.disconnected_at) {
@@ -2517,6 +2796,7 @@ pub async fn session_detail(
         sidebar_content,
         header_user,
         session,
+        show_play_recording: user_is_admin,
     };
 
     let html = template
@@ -2583,6 +2863,13 @@ pub async fn recording_list(
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::templates::sessions::recording_list::RecordingListItem;
+
+    // Only admin users (superuser or staff) can view recordings
+    if !is_admin(&auth_user) {
+        return Err(AppError::Authorization(
+            "Only administrators can view recordings".to_string(),
+        ));
+    }
 
     let user = Some(user_context_from_auth(&auth_user));
     let base = BaseTemplate::new("Recordings".to_string(), user.clone())
@@ -2697,6 +2984,13 @@ pub async fn recording_play(
     axum::extract::Path(id): axum::extract::Path<i32>,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::templates::sessions::recording_play::RecordingData;
+
+    // Only admin users (superuser or staff) can play recordings
+    if !is_admin(&auth_user) {
+        return Err(AppError::Authorization(
+            "Only administrators can play recordings".to_string(),
+        ));
+    }
 
     let user = Some(user_context_from_auth(&auth_user));
     let mut conn = get_connection(&state.db_pool)?;
@@ -2814,6 +3108,13 @@ pub async fn approval_list(
     auth_user: WebAuthUser,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
+    // Only admin users (superuser or staff) can view approvals
+    if !is_admin(&auth_user) {
+        return Err(AppError::Authorization(
+            "Only administrators can view approvals".to_string(),
+        ));
+    }
+
     let user = Some(user_context_from_auth(&auth_user));
     let base = BaseTemplate::new("Approvals".to_string(), user.clone())
         .with_current_path("/sessions/approvals");
@@ -2968,6 +3269,13 @@ pub async fn approval_detail(
     auth_user: WebAuthUser,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
+    // Only admin users (superuser or staff) can view approval details
+    if !is_admin(&auth_user) {
+        return Err(AppError::Authorization(
+            "Only administrators can view approval details".to_string(),
+        ));
+    }
+
     let user = Some(user_context_from_auth(&auth_user));
 
     let mut conn = get_connection(&state.db_pool)?;
@@ -3068,6 +3376,13 @@ pub async fn active_sessions(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
 ) -> Result<impl IntoResponse, AppError> {
+    // Only admin users (superuser or staff) can view active sessions
+    if !is_admin(&auth_user) {
+        return Err(AppError::Authorization(
+            "Only administrators can view active sessions".to_string(),
+        ));
+    }
+
     let user = Some(user_context_from_auth(&auth_user));
     let base = BaseTemplate::new("Active Sessions".to_string(), user.clone())
         .with_current_path("/sessions/active");
@@ -3265,9 +3580,27 @@ pub async fn group_list(
 pub async fn group_detail(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    incoming_flash: IncomingFlash,
+    jar: CookieJar,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
+
+    // Convert incoming flash messages to template FlashMessages
+    let flash_messages: Vec<crate::templates::base::FlashMessage> = incoming_flash
+        .messages()
+        .iter()
+        .map(|m| crate::templates::base::FlashMessage {
+            level: m.level.clone(),
+            message: m.message.clone(),
+        })
+        .collect();
+
+    // Get CSRF token from cookie
+    let csrf_token = jar
+        .get(crate::middleware::csrf::CSRF_COOKIE_NAME)
+        .map(|c| c.value().to_string())
+        .unwrap_or_default();
 
     let mut conn = get_connection(&state.db_pool)?;
     let group_uuid = ::uuid::Uuid::parse_str(&uuid_str)
@@ -3377,7 +3710,8 @@ pub async fn group_detail(
     };
 
     let base = BaseTemplate::new(format!("{} - Group", g_name), user.clone())
-        .with_current_path("/accounts/groups");
+        .with_current_path("/accounts/groups")
+        .with_messages(flash_messages);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         base.into_fields();
 
@@ -3390,6 +3724,84 @@ pub async fn group_detail(
         sidebar_content,
         header_user,
         group,
+        csrf_token,
+    };
+
+    let html = template
+        .render()
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
+
+    // Clear flash cookie after reading and return HTML
+    use crate::middleware::flash::ClearFlashCookie;
+    Ok((ClearFlashCookie, Html(html)))
+}
+
+// NOTE: GroupExtraResult and GroupMemberResult removed - migrated to Diesel DSL
+
+// =============================================================================
+// Vauban Group Management (Edit, Members)
+// =============================================================================
+
+/// Form data for updating a group.
+#[derive(Debug, serde::Deserialize)]
+pub struct UpdateGroupWebForm {
+    pub csrf_token: String,
+    pub name: String,
+    pub description: Option<String>,
+}
+
+/// Form data for adding a member to a group.
+#[derive(Debug, serde::Deserialize)]
+pub struct AddGroupMemberForm {
+    pub csrf_token: String,
+    pub user_uuid: String,
+}
+
+/// Form data for creating a new group.
+#[derive(Debug, serde::Deserialize)]
+pub struct CreateGroupWebForm {
+    pub csrf_token: String,
+    pub name: String,
+    pub description: Option<String>,
+}
+
+/// Vauban group create form page (GET /accounts/groups/new).
+pub async fn vauban_group_create_form(
+    State(_state): State<AppState>,
+    auth_user: WebAuthUser,
+    jar: CookieJar,
+) -> Result<impl IntoResponse, AppError> {
+    use crate::templates::accounts::GroupCreateTemplate;
+
+    // Only superuser can create groups
+    if !auth_user.is_superuser {
+        return Err(AppError::Authorization(
+            "Only superusers can create groups".to_string(),
+        ));
+    }
+
+    // Get CSRF token from cookie
+    let csrf_token = jar
+        .get(crate::middleware::csrf::CSRF_COOKIE_NAME)
+        .map(|c| c.value().to_string())
+        .unwrap_or_default();
+
+    let user = Some(user_context_from_auth(&auth_user));
+    let base =
+        BaseTemplate::new("Create Group".to_string(), user).with_current_path("/accounts/groups");
+
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        base.into_fields();
+
+    let template = GroupCreateTemplate {
+        title,
+        user: user_ctx,
+        vauban,
+        messages,
+        language_code,
+        sidebar_content,
+        header_user,
+        csrf_token,
     };
 
     let html = template
@@ -3398,7 +3810,814 @@ pub async fn group_detail(
     Ok(Html(html))
 }
 
-// NOTE: GroupExtraResult and GroupMemberResult removed - migrated to Diesel DSL
+/// Create vauban group handler (POST /accounts/groups).
+pub async fn create_vauban_group_web(
+    State(state): State<AppState>,
+    auth_user: WebAuthUser,
+    incoming_flash: IncomingFlash,
+    jar: CookieJar,
+    Form(form): Form<CreateGroupWebForm>,
+) -> Response {
+    use crate::schema::vauban_groups::dsl as vg;
+    use chrono::Utc;
+
+    let flash = incoming_flash.flash();
+
+    // CSRF validation
+    let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
+    let secret = state.config.secret_key.expose_secret().as_bytes();
+    if !crate::middleware::csrf::validate_double_submit(
+        secret,
+        csrf_cookie.map(|c| c.value()),
+        &form.csrf_token,
+    ) {
+        return flash_redirect(
+            flash.error("Invalid CSRF token. Please refresh the page and try again."),
+            "/accounts/groups/new",
+        );
+    }
+
+    // Only superuser can create groups
+    if !auth_user.is_superuser {
+        return flash_redirect(
+            flash.error("Only superusers can create groups"),
+            "/accounts/groups",
+        );
+    }
+
+    // Validate name
+    if form.name.trim().is_empty() || form.name.len() > 100 {
+        return flash_redirect(
+            flash.error("Group name must be between 1 and 100 characters"),
+            "/accounts/groups/new",
+        );
+    }
+
+    let mut conn = match get_connection(&state.db_pool) {
+        Ok(conn) => conn,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Database connection error. Please try again."),
+                "/accounts/groups/new",
+            );
+        }
+    };
+
+    // Check if group name already exists
+    let existing: Option<i32> = vg::vauban_groups
+        .filter(vg::name.eq(&form.name))
+        .select(vg::id)
+        .first(&mut conn)
+        .optional()
+        .unwrap_or(None);
+
+    if existing.is_some() {
+        return flash_redirect(
+            flash.error("A group with this name already exists"),
+            "/accounts/groups/new",
+        );
+    }
+
+    // Create the group
+    let new_uuid = ::uuid::Uuid::new_v4();
+    let now = Utc::now();
+    let description = form.description.filter(|d| !d.trim().is_empty());
+
+    let insert_result = diesel::insert_into(vg::vauban_groups)
+        .values((
+            vg::uuid.eq(new_uuid),
+            vg::name.eq(&form.name),
+            vg::description.eq(&description),
+            vg::source.eq("local"),
+            vg::created_at.eq(now),
+            vg::updated_at.eq(now),
+        ))
+        .execute(&mut conn);
+
+    match insert_result {
+        Ok(_) => flash_redirect(
+            flash.success(&format!("Group '{}' created successfully", form.name)),
+            &format!("/accounts/groups/{}", new_uuid),
+        ),
+        Err(e) => {
+            tracing::error!("Failed to create group: {:?}", e);
+            flash_redirect(
+                flash.error("Failed to create group. Please try again."),
+                "/accounts/groups/new",
+            )
+        }
+    }
+}
+
+/// Vauban group edit form page (GET /accounts/groups/{uuid}/edit).
+pub async fn vauban_group_edit_form(
+    State(state): State<AppState>,
+    auth_user: WebAuthUser,
+    jar: CookieJar,
+    axum::extract::Path(uuid_str): axum::extract::Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    use crate::schema::vauban_groups::dsl as vg;
+    use crate::templates::accounts::{GroupEditData, GroupEditTemplate};
+
+    // Only superuser can edit groups
+    if !auth_user.is_superuser {
+        return Err(AppError::Authorization(
+            "Only superusers can edit groups".to_string(),
+        ));
+    }
+
+    // Get CSRF token from cookie
+    let csrf_token = jar
+        .get(crate::middleware::csrf::CSRF_COOKIE_NAME)
+        .map(|c| c.value().to_string())
+        .unwrap_or_default();
+
+    let mut conn = get_connection(&state.db_pool)?;
+    let group_uuid = ::uuid::Uuid::parse_str(&uuid_str)
+        .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
+
+    let group_row: (::uuid::Uuid, String, Option<String>, String) = vg::vauban_groups
+        .filter(vg::uuid.eq(group_uuid))
+        .select((vg::uuid, vg::name, vg::description, vg::source))
+        .first(&mut conn)
+        .map_err(|e| match e {
+            diesel::result::Error::NotFound => AppError::NotFound("Group not found".to_string()),
+            _ => AppError::Database(e),
+        })?;
+
+    let (g_uuid, g_name, g_description, g_source) = group_row;
+
+    let group = GroupEditData {
+        uuid: g_uuid.to_string(),
+        name: g_name.clone(),
+        description: g_description,
+        source: g_source,
+    };
+
+    let user = Some(user_context_from_auth(&auth_user));
+    let base = BaseTemplate::new(format!("Edit {} - Group", g_name), user)
+        .with_current_path("/accounts/groups");
+
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        base.into_fields();
+
+    let template = GroupEditTemplate {
+        title,
+        user: user_ctx,
+        vauban,
+        messages,
+        language_code,
+        sidebar_content,
+        header_user,
+        group,
+        csrf_token,
+    };
+
+    let html = template
+        .render()
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
+    Ok(Html(html))
+}
+
+/// Update vauban group handler (POST /accounts/groups/{uuid}).
+pub async fn update_vauban_group_web(
+    State(state): State<AppState>,
+    auth_user: WebAuthUser,
+    incoming_flash: IncomingFlash,
+    jar: CookieJar,
+    axum::extract::Path(uuid_str): axum::extract::Path<String>,
+    Form(form): Form<UpdateGroupWebForm>,
+) -> Response {
+    use crate::schema::vauban_groups::dsl as vg;
+    use chrono::Utc;
+
+    let flash = incoming_flash.flash();
+
+    // CSRF validation
+    let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
+    let secret = state.config.secret_key.expose_secret().as_bytes();
+    if !crate::middleware::csrf::validate_double_submit(
+        secret,
+        csrf_cookie.map(|c| c.value()),
+        &form.csrf_token,
+    ) {
+        return flash_redirect(
+            flash.error("Invalid CSRF token. Please refresh the page and try again."),
+            &format!("/accounts/groups/{}/edit", uuid_str),
+        );
+    }
+
+    // Only superuser can edit groups
+    if !auth_user.is_superuser {
+        return flash_redirect(
+            flash.error("Only superusers can edit groups"),
+            "/accounts/groups",
+        );
+    }
+
+    let group_uuid = match ::uuid::Uuid::parse_str(&uuid_str) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return flash_redirect(flash.error("Invalid group identifier"), "/accounts/groups");
+        }
+    };
+
+    // Validate name
+    if form.name.trim().is_empty() || form.name.len() > 100 {
+        return flash_redirect(
+            flash.error("Group name must be between 1 and 100 characters"),
+            &format!("/accounts/groups/{}/edit", uuid_str),
+        );
+    }
+
+    let mut conn = match get_connection(&state.db_pool) {
+        Ok(conn) => conn,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Database connection error. Please try again."),
+                &format!("/accounts/groups/{}/edit", uuid_str),
+            );
+        }
+    };
+
+    let now = Utc::now();
+    let result = diesel::update(vg::vauban_groups.filter(vg::uuid.eq(group_uuid)))
+        .set((
+            vg::name.eq(form.name.trim()),
+            vg::description.eq(&form.description.as_ref().filter(|s| !s.is_empty())),
+            vg::updated_at.eq(now),
+        ))
+        .execute(&mut conn);
+
+    match result {
+        Ok(0) => flash_redirect(flash.error("Group not found"), "/accounts/groups"),
+        Ok(_) => flash_redirect(
+            flash.success("Group updated successfully"),
+            &format!("/accounts/groups/{}", uuid_str),
+        ),
+        Err(_) => flash_redirect(
+            flash.error("Failed to update group. Please try again."),
+            &format!("/accounts/groups/{}/edit", uuid_str),
+        ),
+    }
+}
+
+/// Add member form page (GET /accounts/groups/{uuid}/members/add).
+pub async fn group_add_member_form(
+    State(state): State<AppState>,
+    auth_user: WebAuthUser,
+    axum::extract::Path(uuid_str): axum::extract::Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    use crate::schema::user_groups::dsl as ug;
+    use crate::schema::users::dsl as u;
+    use crate::schema::vauban_groups::dsl as vg;
+    use crate::templates::accounts::{AvailableUser, GroupAddMemberTemplate, GroupInfo};
+
+    // Only staff or superuser can manage members
+    if !auth_user.is_superuser && !auth_user.is_staff {
+        return Err(AppError::Authorization(
+            "You do not have permission to manage group members".to_string(),
+        ));
+    }
+
+    let mut conn = get_connection(&state.db_pool)?;
+    let group_uuid = ::uuid::Uuid::parse_str(&uuid_str)
+        .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
+
+    // Get group info
+    let group_row: (::uuid::Uuid, String, i32) = vg::vauban_groups
+        .filter(vg::uuid.eq(group_uuid))
+        .select((vg::uuid, vg::name, vg::id))
+        .first(&mut conn)
+        .map_err(|e| match e {
+            diesel::result::Error::NotFound => AppError::NotFound("Group not found".to_string()),
+            _ => AppError::Database(e),
+        })?;
+
+    let (g_uuid, g_name, group_id) = group_row;
+
+    // Get users NOT in this group
+    let existing_member_ids: Vec<i32> = ug::user_groups
+        .filter(ug::group_id.eq(group_id))
+        .select(ug::user_id)
+        .load(&mut conn)
+        .map_err(AppError::Database)?;
+
+    let available_users_data: Vec<(::uuid::Uuid, String, String)> = u::users
+        .filter(u::is_deleted.eq(false))
+        .filter(u::is_active.eq(true))
+        .filter(u::id.ne_all(&existing_member_ids))
+        .order(u::username.asc())
+        .select((u::uuid, u::username, u::email))
+        .limit(50)
+        .load(&mut conn)
+        .map_err(AppError::Database)?;
+
+    let available_users: Vec<AvailableUser> = available_users_data
+        .into_iter()
+        .map(|(uuid, username, email)| AvailableUser {
+            uuid: uuid.to_string(),
+            username,
+            email,
+        })
+        .collect();
+
+    let group = GroupInfo {
+        uuid: g_uuid.to_string(),
+        name: g_name.clone(),
+    };
+
+    let user = Some(user_context_from_auth(&auth_user));
+    let base = BaseTemplate::new(format!("Add Member - {}", g_name), user)
+        .with_current_path("/accounts/groups");
+
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        base.into_fields();
+
+    let template = GroupAddMemberTemplate {
+        title,
+        user: user_ctx,
+        vauban,
+        messages,
+        language_code,
+        sidebar_content,
+        header_user,
+        group,
+        available_users,
+    };
+
+    let html = template
+        .render()
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
+    Ok(Html(html))
+}
+
+/// Search users for adding to group (HTMX endpoint).
+pub async fn group_member_search(
+    State(state): State<AppState>,
+    auth_user: WebAuthUser,
+    axum::extract::Path(uuid_str): axum::extract::Path<String>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<impl IntoResponse, AppError> {
+    use crate::schema::user_groups::dsl as ug;
+    use crate::schema::users::dsl as u;
+    use crate::schema::vauban_groups::dsl as vg;
+    use diesel::dsl::sql;
+
+    // Only staff or superuser can manage members
+    if !auth_user.is_superuser && !auth_user.is_staff {
+        return Err(AppError::Authorization(
+            "You do not have permission to manage group members".to_string(),
+        ));
+    }
+
+    let mut conn = get_connection(&state.db_pool)?;
+    let group_uuid = ::uuid::Uuid::parse_str(&uuid_str)
+        .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
+
+    let search_term = params.get("user-search").cloned().unwrap_or_default();
+
+    // Get group ID
+    let group_id: i32 = vg::vauban_groups
+        .filter(vg::uuid.eq(group_uuid))
+        .select(vg::id)
+        .first(&mut conn)
+        .map_err(|e| match e {
+            diesel::result::Error::NotFound => AppError::NotFound("Group not found".to_string()),
+            _ => AppError::Database(e),
+        })?;
+
+    // Get users NOT in this group, optionally filtered by search
+    let existing_member_ids: Vec<i32> = ug::user_groups
+        .filter(ug::group_id.eq(group_id))
+        .select(ug::user_id)
+        .load(&mut conn)
+        .map_err(AppError::Database)?;
+
+    let available_users_data: Vec<(::uuid::Uuid, String, String)> = if search_term.is_empty() {
+        u::users
+            .filter(u::is_deleted.eq(false))
+            .filter(u::is_active.eq(true))
+            .filter(u::id.ne_all(&existing_member_ids))
+            .order(u::username.asc())
+            .select((u::uuid, u::username, u::email))
+            .limit(50)
+            .load(&mut conn)
+            .map_err(AppError::Database)?
+    } else {
+        let pattern = format!("%{}%", search_term);
+        u::users
+            .filter(u::is_deleted.eq(false))
+            .filter(u::is_active.eq(true))
+            .filter(u::id.ne_all(&existing_member_ids))
+            .filter(
+                sql::<diesel::sql_types::Bool>(&format!(
+                    "(username ILIKE '{}' OR email ILIKE '{}')",
+                    pattern.replace('\'', "''"),
+                    pattern.replace('\'', "''")
+                )),
+            )
+            .order(u::username.asc())
+            .select((u::uuid, u::username, u::email))
+            .limit(50)
+            .load(&mut conn)
+            .map_err(AppError::Database)?
+    };
+
+    // Build HTML response for HTMX
+    let mut html = String::new();
+    if available_users_data.is_empty() {
+        html.push_str(r#"<div class="px-4 py-8 text-center text-gray-500 dark:text-gray-400">"#);
+        html.push_str(r#"<svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">"#);
+        html.push_str(r#"<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"/>"#);
+        html.push_str("</svg>");
+        html.push_str(r#"<p class="mt-2 text-sm">No matching users found.</p>"#);
+        html.push_str("</div>");
+    } else {
+        for (user_uuid, username, email) in available_users_data {
+            let initial = username.chars().next().unwrap_or('U').to_uppercase();
+            html.push_str(&format!(
+                r#"<div class="px-4 py-3 hover:bg-gray-50 dark:hover:bg-gray-700">
+                    <form method="post" action="/accounts/groups/{}/members" class="flex items-center justify-between">
+                        <input type="hidden" name="csrf_token" />
+                        <input type="hidden" name="user_uuid" value="{}" />
+                        <div class="flex items-center space-x-3">
+                            <div class="flex-shrink-0">
+                                <span class="inline-flex h-8 w-8 items-center justify-center rounded-full bg-gray-500">
+                                    <span class="text-xs font-medium leading-none text-white">{}</span>
+                                </span>
+                            </div>
+                            <div>
+                                <p class="text-sm font-medium text-gray-900 dark:text-white">{}</p>
+                                <p class="text-xs text-gray-500 dark:text-gray-400">{}</p>
+                            </div>
+                        </div>
+                        <button type="submit" class="inline-flex items-center rounded-md bg-vauban-600 px-2.5 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-vauban-500">
+                            <svg class="-ml-0.5 mr-1 h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                                <path d="M10.75 4.75a.75.75 0 00-1.5 0v4.5h-4.5a.75.75 0 000 1.5h4.5v4.5a.75.75 0 001.5 0v-4.5h4.5a.75.75 0 000-1.5h-4.5v-4.5z"/>
+                            </svg>
+                            Add
+                        </button>
+                    </form>
+                </div>"#,
+                uuid_str, user_uuid, initial, username, email
+            ));
+        }
+    }
+
+    Ok(Html(html))
+}
+
+/// Add member to group handler (POST /accounts/groups/{uuid}/members).
+pub async fn add_group_member_web(
+    State(state): State<AppState>,
+    auth_user: WebAuthUser,
+    incoming_flash: IncomingFlash,
+    jar: CookieJar,
+    axum::extract::Path(uuid_str): axum::extract::Path<String>,
+    Form(form): Form<AddGroupMemberForm>,
+) -> Response {
+    use crate::schema::user_groups::dsl as ug;
+    use crate::schema::users::dsl as u;
+    use crate::schema::vauban_groups::dsl as vg;
+
+    let flash = incoming_flash.flash();
+
+    // CSRF validation
+    let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
+    let secret = state.config.secret_key.expose_secret().as_bytes();
+    if !crate::middleware::csrf::validate_double_submit(
+        secret,
+        csrf_cookie.map(|c| c.value()),
+        &form.csrf_token,
+    ) {
+        return flash_redirect(
+            flash.error("Invalid CSRF token. Please refresh the page and try again."),
+            &format!("/accounts/groups/{}/members/add", uuid_str),
+        );
+    }
+
+    // Permission check
+    if !auth_user.is_superuser && !auth_user.is_staff {
+        return flash_redirect(
+            flash.error("You do not have permission to manage group members"),
+            "/accounts/groups",
+        );
+    }
+
+    let group_uuid = match ::uuid::Uuid::parse_str(&uuid_str) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return flash_redirect(flash.error("Invalid group identifier"), "/accounts/groups");
+        }
+    };
+
+    let user_uuid = match ::uuid::Uuid::parse_str(&form.user_uuid) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Invalid user identifier"),
+                &format!("/accounts/groups/{}/members/add", uuid_str),
+            );
+        }
+    };
+
+    let mut conn = match get_connection(&state.db_pool) {
+        Ok(conn) => conn,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Database connection error. Please try again."),
+                &format!("/accounts/groups/{}/members/add", uuid_str),
+            );
+        }
+    };
+
+    // Get group ID
+    let group_id: Option<i32> = vg::vauban_groups
+        .filter(vg::uuid.eq(group_uuid))
+        .select(vg::id)
+        .first(&mut conn)
+        .optional()
+        .unwrap_or(None);
+
+    let group_id = match group_id {
+        Some(id) => id,
+        None => {
+            return flash_redirect(flash.error("Group not found"), "/accounts/groups");
+        }
+    };
+
+    // Get user ID
+    let user_id: Option<i32> = u::users
+        .filter(u::uuid.eq(user_uuid))
+        .filter(u::is_deleted.eq(false))
+        .select(u::id)
+        .first(&mut conn)
+        .optional()
+        .unwrap_or(None);
+
+    let user_id = match user_id {
+        Some(id) => id,
+        None => {
+            return flash_redirect(
+                flash.error("User not found"),
+                &format!("/accounts/groups/{}/members/add", uuid_str),
+            );
+        }
+    };
+
+    // Insert membership
+    let result = diesel::insert_into(ug::user_groups)
+        .values((ug::user_id.eq(user_id), ug::group_id.eq(group_id)))
+        .execute(&mut conn);
+
+    match result {
+        Ok(_) => flash_redirect(
+            flash.success("Member added successfully"),
+            &format!("/accounts/groups/{}", uuid_str),
+        ),
+        Err(diesel::result::Error::DatabaseError(
+            diesel::result::DatabaseErrorKind::UniqueViolation,
+            _,
+        )) => flash_redirect(
+            flash.error("User is already a member of this group"),
+            &format!("/accounts/groups/{}/members/add", uuid_str),
+        ),
+        Err(_) => flash_redirect(
+            flash.error("Failed to add member. Please try again."),
+            &format!("/accounts/groups/{}/members/add", uuid_str),
+        ),
+    }
+}
+
+/// Remove member from group parameters.
+#[derive(Debug, serde::Deserialize)]
+pub struct RemoveMemberParams {
+    pub group_uuid: String,
+    pub user_uuid: String,
+}
+
+/// Remove member from group handler (POST /accounts/groups/{uuid}/members/{user_uuid}/remove).
+pub async fn remove_group_member_web(
+    State(state): State<AppState>,
+    auth_user: WebAuthUser,
+    incoming_flash: IncomingFlash,
+    jar: CookieJar,
+    axum::extract::Path((group_uuid_str, user_uuid_str)): axum::extract::Path<(String, String)>,
+    Form(form): Form<DeleteAssetForm>,
+) -> Response {
+    use crate::schema::user_groups::dsl as ug;
+    use crate::schema::users::dsl as u;
+    use crate::schema::vauban_groups::dsl as vg;
+
+    let flash = incoming_flash.flash();
+
+    // CSRF validation
+    let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
+    let secret = state.config.secret_key.expose_secret().as_bytes();
+    if !crate::middleware::csrf::validate_double_submit(
+        secret,
+        csrf_cookie.map(|c| c.value()),
+        &form.csrf_token,
+    ) {
+        return flash_redirect(
+            flash.error("Invalid CSRF token. Please refresh the page and try again."),
+            &format!("/accounts/groups/{}", group_uuid_str),
+        );
+    }
+
+    // Permission check
+    if !auth_user.is_superuser && !auth_user.is_staff {
+        return flash_redirect(
+            flash.error("You do not have permission to manage group members"),
+            "/accounts/groups",
+        );
+    }
+
+    let group_uuid = match ::uuid::Uuid::parse_str(&group_uuid_str) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return flash_redirect(flash.error("Invalid group identifier"), "/accounts/groups");
+        }
+    };
+
+    let user_uuid = match ::uuid::Uuid::parse_str(&user_uuid_str) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Invalid user identifier"),
+                &format!("/accounts/groups/{}", group_uuid_str),
+            );
+        }
+    };
+
+    let mut conn = match get_connection(&state.db_pool) {
+        Ok(conn) => conn,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Database connection error. Please try again."),
+                &format!("/accounts/groups/{}", group_uuid_str),
+            );
+        }
+    };
+
+    // Get group ID
+    let group_id: Option<i32> = vg::vauban_groups
+        .filter(vg::uuid.eq(group_uuid))
+        .select(vg::id)
+        .first(&mut conn)
+        .optional()
+        .unwrap_or(None);
+
+    let group_id = match group_id {
+        Some(id) => id,
+        None => {
+            return flash_redirect(flash.error("Group not found"), "/accounts/groups");
+        }
+    };
+
+    // Get user ID
+    let user_id: Option<i32> = u::users
+        .filter(u::uuid.eq(user_uuid))
+        .select(u::id)
+        .first(&mut conn)
+        .optional()
+        .unwrap_or(None);
+
+    let user_id = match user_id {
+        Some(id) => id,
+        None => {
+            return flash_redirect(
+                flash.error("User not found"),
+                &format!("/accounts/groups/{}", group_uuid_str),
+            );
+        }
+    };
+
+    // Delete membership
+    let result = diesel::delete(
+        ug::user_groups
+            .filter(ug::user_id.eq(user_id))
+            .filter(ug::group_id.eq(group_id)),
+    )
+    .execute(&mut conn);
+
+    match result {
+        Ok(0) => flash_redirect(
+            flash.error("User is not a member of this group"),
+            &format!("/accounts/groups/{}", group_uuid_str),
+        ),
+        Ok(_) => flash_redirect(
+            flash.success("Member removed successfully"),
+            &format!("/accounts/groups/{}", group_uuid_str),
+        ),
+        Err(_) => flash_redirect(
+            flash.error("Failed to remove member. Please try again."),
+            &format!("/accounts/groups/{}", group_uuid_str),
+        ),
+    }
+}
+
+/// Delete vauban group handler (POST /accounts/groups/{uuid}/delete).
+///
+/// A group can only be deleted if it has no members.
+pub async fn delete_vauban_group_web(
+    State(state): State<AppState>,
+    auth_user: WebAuthUser,
+    incoming_flash: IncomingFlash,
+    jar: CookieJar,
+    axum::extract::Path(uuid_str): axum::extract::Path<String>,
+    Form(form): Form<DeleteAssetForm>,
+) -> Response {
+    use crate::schema::user_groups::dsl as ug;
+    use crate::schema::vauban_groups::dsl as vg;
+
+    let flash = incoming_flash.flash();
+
+    // CSRF validation
+    let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
+    let secret = state.config.secret_key.expose_secret().as_bytes();
+    if !crate::middleware::csrf::validate_double_submit(
+        secret,
+        csrf_cookie.map(|c| c.value()),
+        &form.csrf_token,
+    ) {
+        return flash_redirect(
+            flash.error("Invalid CSRF token. Please refresh the page and try again."),
+            &format!("/accounts/groups/{}", uuid_str),
+        );
+    }
+
+    // Only superuser can delete groups
+    if !auth_user.is_superuser {
+        return flash_redirect(
+            flash.error("Only superusers can delete groups"),
+            "/accounts/groups",
+        );
+    }
+
+    let group_uuid = match ::uuid::Uuid::parse_str(&uuid_str) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return flash_redirect(flash.error("Invalid group identifier"), "/accounts/groups");
+        }
+    };
+
+    let mut conn = match get_connection(&state.db_pool) {
+        Ok(conn) => conn,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Database connection error. Please try again."),
+                &format!("/accounts/groups/{}", uuid_str),
+            );
+        }
+    };
+
+    // Get group ID
+    let group_id: Option<i32> = vg::vauban_groups
+        .filter(vg::uuid.eq(group_uuid))
+        .select(vg::id)
+        .first(&mut conn)
+        .optional()
+        .unwrap_or(None);
+
+    let group_id = match group_id {
+        Some(id) => id,
+        None => {
+            return flash_redirect(flash.error("Group not found"), "/accounts/groups");
+        }
+    };
+
+    // Check if group has members
+    let member_count: i64 = ug::user_groups
+        .filter(ug::group_id.eq(group_id))
+        .count()
+        .get_result(&mut conn)
+        .unwrap_or(0);
+
+    if member_count > 0 {
+        return flash_redirect(
+            flash.error(&format!(
+                "Cannot delete group: it still has {} member{}. Remove all members first.",
+                member_count,
+                if member_count == 1 { "" } else { "s" }
+            )),
+            &format!("/accounts/groups/{}", uuid_str),
+        );
+    }
+
+    // Delete the group
+    let result = diesel::delete(vg::vauban_groups.filter(vg::id.eq(group_id))).execute(&mut conn);
+
+    match result {
+        Ok(0) => flash_redirect(flash.error("Group not found"), "/accounts/groups"),
+        Ok(_) => flash_redirect(flash.success("Group deleted successfully"), "/accounts/groups"),
+        Err(_) => flash_redirect(
+            flash.error("Failed to delete group. Please try again."),
+            &format!("/accounts/groups/{}", uuid_str),
+        ),
+    }
+}
 
 /// Access rules list page.
 pub async fn access_rules_list(
@@ -3524,9 +4743,15 @@ struct AssetGroupQueryResult {
 pub async fn asset_group_detail(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    jar: CookieJar,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
+
+    let csrf_token = jar
+        .get(crate::middleware::csrf::CSRF_COOKIE_NAME)
+        .map(|c| c.value().to_string())
+        .unwrap_or_default();
 
     let mut conn = get_connection(&state.db_pool)?;
     let group_uuid = ::uuid::Uuid::parse_str(&uuid_str)
@@ -3593,6 +4818,7 @@ pub async fn asset_group_detail(
         sidebar_content,
         header_user,
         group,
+        csrf_token,
     };
 
     let html = template
@@ -3826,6 +5052,280 @@ pub async fn update_asset_group(
             flash_redirect(
                 flash.error("Failed to update asset group. Please try again."),
                 &format!("/assets/groups/{}/edit", group_uuid),
+            )
+        }
+    }
+}
+
+/// Asset group create form page.
+pub async fn asset_group_create_form(
+    State(_state): State<AppState>,
+    auth_user: WebAuthUser,
+    incoming_flash: IncomingFlash,
+    jar: CookieJar,
+) -> Result<impl IntoResponse, AppError> {
+    use crate::templates::assets::group_create::{AssetGroupCreateForm, AssetGroupCreateTemplate};
+
+    // Only admin users can create asset groups
+    if !is_admin(&auth_user) {
+        return Err(AppError::Authorization(
+            "Only administrators can create asset groups".to_string(),
+        ));
+    }
+
+    // Convert incoming flash messages to template FlashMessages
+    let flash_messages: Vec<crate::templates::base::FlashMessage> = incoming_flash
+        .messages()
+        .iter()
+        .map(|m| crate::templates::base::FlashMessage {
+            level: m.level.clone(),
+            message: m.message.clone(),
+        })
+        .collect();
+
+    let user = Some(user_context_from_auth(&auth_user));
+    let base = BaseTemplate::new("New Asset Group".to_string(), user.clone())
+        .with_current_path("/assets/groups")
+        .with_messages(flash_messages);
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        base.into_fields();
+
+    let csrf_token = jar
+        .get(crate::middleware::csrf::CSRF_COOKIE_NAME)
+        .map(|c| c.value().to_string())
+        .unwrap_or_default();
+
+    let form = AssetGroupCreateForm {
+        color: "#6366f1".to_string(), // Default color (indigo)
+        icon: "server".to_string(),
+        ..Default::default()
+    };
+
+    let template = AssetGroupCreateTemplate {
+        title,
+        user: user_ctx,
+        vauban,
+        messages,
+        language_code,
+        sidebar_content,
+        header_user,
+        form,
+        csrf_token,
+    };
+
+    let html = template
+        .render()
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
+
+    // Clear flash cookie after reading and return HTML
+    use crate::middleware::flash::ClearFlashCookie;
+    Ok((ClearFlashCookie, Html(html)))
+}
+
+/// Form data for creating an asset group via web form.
+#[derive(Debug, serde::Deserialize)]
+pub struct CreateAssetGroupWebForm {
+    pub name: String,
+    pub slug: String,
+    pub description: Option<String>,
+    pub color: String,
+    pub icon: String,
+    pub csrf_token: String,
+}
+
+/// Handle asset group creation form submission.
+pub async fn create_asset_group_web(
+    State(state): State<AppState>,
+    auth_user: WebAuthUser,
+    incoming_flash: IncomingFlash,
+    jar: CookieJar,
+    Form(form): Form<CreateAssetGroupWebForm>,
+) -> Response {
+    let flash = incoming_flash.flash();
+
+    // CSRF validation
+    let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
+    if !crate::middleware::csrf::validate_double_submit(
+        state.config.secret_key.expose_secret().as_bytes(),
+        csrf_cookie.map(|c| c.value()),
+        &form.csrf_token,
+    ) {
+        return flash_redirect(flash.error("Invalid CSRF token"), "/assets/groups/new");
+    }
+
+    // Permission check - only admin can create asset groups
+    if !is_admin(&auth_user) {
+        return flash_redirect(
+            flash.error("Only administrators can create asset groups"),
+            "/assets/groups",
+        );
+    }
+
+    // Validate form data
+    if form.name.trim().is_empty() {
+        return flash_redirect(flash.error("Group name is required"), "/assets/groups/new");
+    }
+    if form.slug.trim().is_empty() {
+        return flash_redirect(flash.error("Group slug is required"), "/assets/groups/new");
+    }
+
+    let mut conn = match get_connection(&state.db_pool) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("Database connection error: {}", e);
+            return flash_redirect(flash.error("Database connection error"), "/assets/groups/new");
+        }
+    };
+
+    // Check if asset group with same slug already exists
+    use crate::schema::asset_groups::dsl as ag;
+    let existing: Option<i32> = ag::asset_groups
+        .filter(ag::slug.eq(form.slug.trim()))
+        .filter(ag::is_deleted.eq(false))
+        .select(ag::id)
+        .first(&mut conn)
+        .optional()
+        .unwrap_or(None);
+
+    if existing.is_some() {
+        return flash_redirect(
+            flash.error("An asset group with this slug already exists"),
+            "/assets/groups/new",
+        );
+    }
+
+    // Create the asset group
+    let new_uuid = ::uuid::Uuid::new_v4();
+    let now = chrono::Utc::now();
+
+    let result = diesel::insert_into(ag::asset_groups)
+        .values((
+            ag::uuid.eq(new_uuid),
+            ag::name.eq(form.name.trim()),
+            ag::slug.eq(form.slug.trim()),
+            ag::description.eq(form.description.as_deref().filter(|s| !s.is_empty())),
+            ag::color.eq(&form.color),
+            ag::icon.eq(&form.icon),
+            ag::is_deleted.eq(false),
+            ag::created_at.eq(now),
+            ag::updated_at.eq(now),
+        ))
+        .execute(&mut conn);
+
+    match result {
+        Ok(_) => flash_redirect(
+            flash.success(&format!(
+                "Asset group '{}' created successfully",
+                form.name.trim()
+            )),
+            &format!("/assets/groups/{}", new_uuid),
+        ),
+        Err(e) => {
+            tracing::error!("Failed to create asset group: {}", e);
+            flash_redirect(
+                flash.error("Failed to create asset group"),
+                "/assets/groups/new",
+            )
+        }
+    }
+}
+
+/// Form data for deleting an asset group.
+#[derive(Debug, serde::Deserialize)]
+pub struct DeleteAssetGroupForm {
+    pub csrf_token: String,
+}
+
+/// Delete asset group handler (Web form with PRG pattern).
+///
+/// Hard-deletes the asset group and its asset associations.
+pub async fn delete_asset_group_web(
+    State(state): State<AppState>,
+    auth_user: WebAuthUser,
+    incoming_flash: IncomingFlash,
+    jar: CookieJar,
+    axum::extract::Path(uuid_str): axum::extract::Path<String>,
+    Form(form): Form<DeleteAssetGroupForm>,
+) -> Response {
+    let flash = incoming_flash.flash();
+
+    // CSRF validation
+    let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
+    if !crate::middleware::csrf::validate_double_submit(
+        state.config.secret_key.expose_secret().as_bytes(),
+        csrf_cookie.map(|c| c.value()),
+        &form.csrf_token,
+    ) {
+        return flash_redirect(
+            flash.error("Invalid CSRF token"),
+            &format!("/assets/groups/{}", uuid_str),
+        );
+    }
+
+    // Permission check - only admin can delete asset groups
+    if !is_admin(&auth_user) {
+        return flash_redirect(
+            flash.error("Only administrators can delete asset groups"),
+            "/assets/groups",
+        );
+    }
+
+    // Validate UUID
+    let group_uuid = match ::uuid::Uuid::parse_str(&uuid_str) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return flash_redirect(flash.error("Invalid group identifier"), "/assets/groups");
+        }
+    };
+
+    let mut conn = match get_connection(&state.db_pool) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("Database connection error: {}", e);
+            return flash_redirect(
+                flash.error("Database connection error"),
+                &format!("/assets/groups/{}", uuid_str),
+            );
+        }
+    };
+
+    // Get the group id and name for logging
+    use crate::schema::asset_groups::dsl as ag;
+    let group_data: Option<(i32, String)> = ag::asset_groups
+        .filter(ag::uuid.eq(group_uuid))
+        .filter(ag::is_deleted.eq(false))
+        .select((ag::id, ag::name))
+        .first(&mut conn)
+        .optional()
+        .unwrap_or(None);
+
+    let (group_id, group_name) = match group_data {
+        Some(data) => data,
+        None => {
+            return flash_redirect(flash.error("Asset group not found"), "/assets/groups");
+        }
+    };
+
+    // Remove group association from assets first (set group_id to NULL)
+    use crate::schema::assets::dsl as a;
+    let _ = diesel::update(a::assets.filter(a::group_id.eq(group_id)))
+        .set(a::group_id.eq(None::<i32>))
+        .execute(&mut conn);
+
+    // Hard delete the asset group
+    let result =
+        diesel::delete(ag::asset_groups.filter(ag::id.eq(group_id))).execute(&mut conn);
+
+    match result {
+        Ok(_) => flash_redirect(
+            flash.success(&format!("Asset group '{}' deleted successfully", group_name)),
+            "/assets/groups",
+        ),
+        Err(e) => {
+            tracing::error!("Failed to delete asset group: {}", e);
+            flash_redirect(
+                flash.error("Failed to delete asset group"),
+                &format!("/assets/groups/{}", uuid_str),
             )
         }
     }

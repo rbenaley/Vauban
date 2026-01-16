@@ -44,21 +44,10 @@
                             Sessions
                         </a>
                     </li>
-
-                    <!-- Recordings -->
-                    <li>
-                        <a href="/sessions/recordings"
-                           class="group flex gap-x-3 rounded-md p-2 text-sm font-semibold leading-6 {% if sc.is_recordings %}bg-gray-800 text-white{% else %}text-gray-400 hover:bg-gray-800 hover:text-white{% endif %}">
-                            <svg class="h-6 w-6 shrink-0" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.985V5.653z"/>
-                            </svg>
-                            Recordings
-                        </a>
-                    </li>
                 </ul>
             </li>
 
-            {% if sc.user.is_superuser %}
+            {% if sc.can_view_admin %}
             <li>
                 <div class="text-xs font-semibold leading-6 text-gray-400">Administration</div>
                 <ul role="list" class="-mx-2 mt-2 space-y-1">
@@ -85,6 +74,17 @@
                         </a>
                     </li>
                     {% endif %}
+
+                    <!-- Recordings (admin only) -->
+                    <li>
+                        <a href="/sessions/recordings"
+                           class="group flex gap-x-3 rounded-md p-2 text-sm font-semibold leading-6 {% if sc.is_recordings %}bg-gray-800 text-white{% else %}text-gray-400 hover:bg-gray-800 hover:text-white{% endif %}">
+                            <svg class="h-6 w-6 shrink-0" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.985V5.653z"/>
+                            </svg>
+                            Recordings
+                        </a>
+                    </li>
 
                     <!-- Approvals -->
                     <li>

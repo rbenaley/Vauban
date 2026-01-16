@@ -15,6 +15,8 @@ pub struct SidebarContentTemplate {
     pub is_access_rules: bool,
     pub can_view_groups: bool,
     pub can_view_access_rules: bool,
+    /// Whether the user can view the Administration section (superuser or staff).
+    pub can_view_admin: bool,
 }
 
 #[cfg(test)]
@@ -41,6 +43,16 @@ mod tests {
         }
     }
 
+    fn create_staff_user() -> UserContext {
+        UserContext {
+            uuid: "staff-uuid".to_string(),
+            username: "staff".to_string(),
+            display_name: "Staff User".to_string(),
+            is_superuser: false,
+            is_staff: true,
+        }
+    }
+
     #[test]
     fn test_sidebar_content_dashboard_active() {
         let sidebar = SidebarContentTemplate {
@@ -55,6 +67,7 @@ mod tests {
             is_access_rules: false,
             can_view_groups: false,
             can_view_access_rules: false,
+            can_view_admin: false,
         };
 
         assert!(sidebar.is_dashboard);
@@ -75,6 +88,7 @@ mod tests {
             is_access_rules: false,
             can_view_groups: false,
             can_view_access_rules: false,
+            can_view_admin: false,
         };
 
         assert!(!sidebar.is_dashboard);
@@ -95,10 +109,12 @@ mod tests {
             is_access_rules: false,
             can_view_groups: true,
             can_view_access_rules: true,
+            can_view_admin: true,
         };
 
         assert!(sidebar.can_view_groups);
         assert!(sidebar.can_view_access_rules);
+        assert!(sidebar.can_view_admin);
         assert!(sidebar.user.is_superuser);
     }
 
@@ -116,10 +132,12 @@ mod tests {
             is_access_rules: false,
             can_view_groups: false,
             can_view_access_rules: false,
+            can_view_admin: false,
         };
 
         assert!(!sidebar.can_view_groups);
         assert!(!sidebar.can_view_access_rules);
+        assert!(!sidebar.can_view_admin);
     }
 
     #[test]
@@ -136,11 +154,13 @@ mod tests {
             is_access_rules: false,
             can_view_groups: false,
             can_view_access_rules: false,
+            can_view_admin: false,
         };
         let cloned = sidebar.clone();
 
         assert_eq!(sidebar.user.uuid, cloned.user.uuid);
         assert_eq!(sidebar.is_dashboard, cloned.is_dashboard);
+        assert_eq!(sidebar.can_view_admin, cloned.can_view_admin);
     }
 
     #[test]
@@ -157,10 +177,77 @@ mod tests {
             is_access_rules: false,
             can_view_groups: false,
             can_view_access_rules: false,
+            can_view_admin: false,
         };
         let debug_str = format!("{:?}", sidebar);
 
         assert!(debug_str.contains("SidebarContentTemplate"));
         assert!(debug_str.contains("is_dashboard"));
+        assert!(debug_str.contains("can_view_admin"));
+    }
+
+    #[test]
+    fn test_sidebar_admin_visible_for_superuser() {
+        let sidebar = SidebarContentTemplate {
+            user: create_admin_user(),
+            is_dashboard: true,
+            is_assets: false,
+            is_sessions: false,
+            is_recordings: false,
+            is_users: false,
+            is_groups: false,
+            is_approvals: false,
+            is_access_rules: false,
+            can_view_groups: true,
+            can_view_access_rules: true,
+            can_view_admin: true,
+        };
+
+        assert!(sidebar.can_view_admin);
+        assert!(sidebar.user.is_superuser);
+    }
+
+    #[test]
+    fn test_sidebar_admin_visible_for_staff() {
+        let sidebar = SidebarContentTemplate {
+            user: create_staff_user(),
+            is_dashboard: true,
+            is_assets: false,
+            is_sessions: false,
+            is_recordings: false,
+            is_users: false,
+            is_groups: false,
+            is_approvals: false,
+            is_access_rules: false,
+            can_view_groups: true,
+            can_view_access_rules: true,
+            can_view_admin: true,
+        };
+
+        assert!(sidebar.can_view_admin);
+        assert!(sidebar.user.is_staff);
+        assert!(!sidebar.user.is_superuser);
+    }
+
+    #[test]
+    fn test_sidebar_admin_hidden_for_normal_user() {
+        let sidebar = SidebarContentTemplate {
+            user: create_test_user(),
+            is_dashboard: true,
+            is_assets: false,
+            is_sessions: false,
+            is_recordings: false,
+            is_users: false,
+            is_groups: false,
+            is_approvals: false,
+            is_access_rules: false,
+            can_view_groups: false,
+            can_view_access_rules: false,
+            can_view_admin: false,
+        };
+
+        assert!(!sidebar.can_view_admin);
+        assert!(!sidebar.user.is_staff);
+        assert!(!sidebar.user.is_superuser);
     }
 }

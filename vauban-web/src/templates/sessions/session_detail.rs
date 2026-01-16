@@ -93,6 +93,8 @@ pub struct SessionDetailTemplate {
         Option<crate::templates::partials::sidebar_content::SidebarContentTemplate>,
     pub header_user: Option<crate::templates::base::UserContext>,
     pub session: SessionDetail,
+    /// Whether to show the "Play Recording" button (only for admin users).
+    pub show_play_recording: bool,
 }
 
 #[cfg(test)]
@@ -256,9 +258,39 @@ mod tests {
             sidebar_content: None,
             header_user: None,
             session: create_test_session_detail("active", "ssh"),
+            show_play_recording: true,
         };
 
         let result = template.render();
         assert!(result.is_ok(), "SessionDetailTemplate should render");
+    }
+
+    #[test]
+    fn test_session_detail_template_renders_without_play_button() {
+        let template = SessionDetailTemplate {
+            title: "Session Detail".to_string(),
+            user: Some(UserContext {
+                uuid: "test".to_string(),
+                username: "testuser".to_string(),
+                display_name: "Test User".to_string(),
+                is_superuser: false,
+                is_staff: false,
+            }),
+            vauban: VaubanConfig {
+                brand_name: "VAUBAN".to_string(),
+                brand_logo: None,
+                theme: "dark".to_string(),
+            },
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            session: create_test_session_detail("active", "ssh"),
+            show_play_recording: false,
+        };
+
+        assert!(!template.show_play_recording);
+        let result = template.render();
+        assert!(result.is_ok(), "SessionDetailTemplate should render without play button");
     }
 }

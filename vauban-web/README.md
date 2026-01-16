@@ -197,6 +197,10 @@ cargo build --release
 - `GET /api/v1/accounts/:uuid` - Get user
 - `PUT /api/v1/accounts/:uuid` - Update user
 
+### Groups (Read-Only)
+
+- `GET /api/v1/groups/:uuid/members` - List group members
+
 ### Assets
 - `GET /api/v1/assets` - List assets
 - `POST /api/v1/assets` - Create asset
@@ -207,6 +211,7 @@ cargo build --release
 - `GET /api/v1/sessions` - List sessions
 - `POST /api/v1/sessions` - Create session
 - `GET /api/v1/sessions/:uuid` - Get session
+- `POST /api/v1/sessions/:id/terminate` - Terminate session
 
 ## Testing
 
@@ -258,8 +263,8 @@ cargo test
 # Run unit tests only
 cargo test --lib
 
-# Run integration tests only
-cargo test --test '*'
+# Run integration tests only (MUST use --test-threads=1 due to shared database)
+cargo test --test integration_tests -- --test-threads=1
 
 # Run specific test file
 cargo test --test auth_test
@@ -267,7 +272,7 @@ cargo test --test auth_test
 # Run tests with output
 cargo test -- --nocapture
 
-# Run tests sequentially (required for DB tests)
+# Run all tests sequentially (REQUIRED for integration tests - shared database)
 cargo test -- --test-threads=1
 
 # Run security tests only
