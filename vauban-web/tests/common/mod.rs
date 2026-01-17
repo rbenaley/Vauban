@@ -15,6 +15,7 @@ use vauban_web::{
     db::DbPool,
     services::auth::AuthService,
     services::broadcast::BroadcastService,
+    services::rate_limit::RateLimiter,
 };
 
 /// Test application wrapper.
@@ -64,6 +65,15 @@ impl TestApp {
         // Create user connection registry
         let user_connections = vauban_web::services::connections::UserConnectionRegistry::new();
 
+        // Create rate limiter (in-memory for tests, with higher limit)
+        // Use 1000 requests per minute in tests to avoid rate limiting interference
+        let rate_limiter = RateLimiter::new(
+            false, // Don't use Redis in tests
+            None,
+            1000, // High limit for tests
+        )
+        .expect("Failed to create rate limiter");
+
         // Create app state
         let state = AppState {
             config: config.clone(),
@@ -72,6 +82,7 @@ impl TestApp {
             auth_service: auth_service.clone(),
             broadcast: broadcast.clone(),
             user_connections: user_connections.clone(),
+            rate_limiter,
         };
 
         // Build router
@@ -361,6 +372,12 @@ fn build_test_router(state: AppState) -> Router {
         )
         // Health check
         .route("/health", get(|| async { "OK" }))
+        // Dashboard home
+        .route("/", get(handlers::web::dashboard_home))
+        // Security headers middleware
+        .layer(axum::middleware::from_fn(
+            middleware::security::security_headers_middleware,
+        ))
         // CSRF cookie middleware
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),

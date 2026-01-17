@@ -21,6 +21,7 @@ use db::DbPool;
 use services::auth::AuthService;
 use services::broadcast::BroadcastService;
 use services::connections::UserConnectionRegistry;
+use services::rate_limit::RateLimiter;
 
 /// Application state.
 #[derive(Clone)]
@@ -32,6 +33,8 @@ pub struct AppState {
     pub broadcast: BroadcastService,
     /// Registry for WebSocket connections with personalized context.
     pub user_connections: UserConnectionRegistry,
+    /// Rate limiter for login endpoints.
+    pub rate_limiter: RateLimiter,
 }
 
 #[cfg(test)]

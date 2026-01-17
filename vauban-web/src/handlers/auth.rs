@@ -65,6 +65,27 @@ pub async fn login(
     let client_addr = client_addr.addr();
     let htmx = is_htmx_request(&headers);
 
+    // Rate limiting check
+    let rate_key = client_addr.ip().to_string();
+    let rate_result = state.rate_limiter.check(&rate_key).await?;
+    if !rate_result.allowed {
+        if htmx {
+            return Ok(Html(login_error_html(LoginErrorKind::RateLimited)).into_response());
+        }
+        return Ok((
+            StatusCode::TOO_MANY_REQUESTS,
+            [
+                ("Retry-After", rate_result.reset_in_secs.to_string()),
+                ("X-RateLimit-Remaining", "0".to_string()),
+            ],
+            Json(serde_json::json!({
+                "error": "Too many login attempts. Please try again later.",
+                "retry_after": rate_result.reset_in_secs
+            })),
+        )
+            .into_response());
+    }
+
     // Validation
     if let Err(e) = validator::Validate::validate(&request) {
         if htmx {
@@ -296,6 +317,7 @@ enum LoginErrorKind {
     InvalidMfa,
     ValidationError,
     InvalidCsrf,
+    RateLimited,
 }
 
 impl LoginErrorKind {
@@ -306,6 +328,7 @@ impl LoginErrorKind {
             Self::InvalidMfa => "Invalid MFA code",
             Self::ValidationError => "Validation error",
             Self::InvalidCsrf => "Invalid CSRF token",
+            Self::RateLimited => "Too many attempts. Please wait before trying again.",
         }
     }
 }

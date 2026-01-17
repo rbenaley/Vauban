@@ -9,6 +9,52 @@ use uuid::Uuid;
 
 use crate::schema::users;
 
+// =============================================================================
+// Validation Helpers
+// =============================================================================
+
+lazy_static::lazy_static! {
+    /// Regex for valid usernames: alphanumeric, underscore, hyphen, dot.
+    /// Must start with a letter or number.
+    pub static ref RE_USERNAME: regex::Regex = regex::Regex::new(
+        r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$"
+    ).expect("Invalid username regex");
+}
+
+/// Validate password complexity.
+///
+/// Requirements:
+/// - Minimum 12 characters
+/// - At least one uppercase letter
+/// - At least one lowercase letter
+/// - At least one digit
+/// - At least one special character
+pub fn validate_password_complexity(password: &str) -> Result<(), validator::ValidationError> {
+    if password.len() < 12 {
+        return Err(validator::ValidationError::new("password_too_short"));
+    }
+
+    let has_uppercase = password.chars().any(|c| c.is_uppercase());
+    let has_lowercase = password.chars().any(|c| c.is_lowercase());
+    let has_digit = password.chars().any(|c| c.is_ascii_digit());
+    let has_special = password.chars().any(|c| !c.is_alphanumeric());
+
+    if !has_uppercase {
+        return Err(validator::ValidationError::new("password_missing_uppercase"));
+    }
+    if !has_lowercase {
+        return Err(validator::ValidationError::new("password_missing_lowercase"));
+    }
+    if !has_digit {
+        return Err(validator::ValidationError::new("password_missing_digit"));
+    }
+    if !has_special {
+        return Err(validator::ValidationError::new("password_missing_special"));
+    }
+
+    Ok(())
+}
+
 /// User authentication source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AuthSource {
@@ -185,14 +231,20 @@ impl User {
 /// User creation request.
 #[derive(Debug, Clone, Deserialize, validator::Validate)]
 pub struct CreateUserRequest {
-    #[validate(length(min = 3, max = 150))]
+    #[validate(
+        length(min = 3, max = 150, message = "Username must be 3-150 characters"),
+        regex(path = "*RE_USERNAME", message = "Username contains invalid characters (use letters, numbers, dots, underscores, hyphens)")
+    )]
     pub username: String,
-    #[validate(email)]
+    #[validate(email(message = "Invalid email address"))]
     pub email: String,
-    #[validate(length(min = 12))]
+    #[validate(custom(function = "validate_password_complexity"))]
     pub password: String,
+    #[validate(length(max = 150, message = "First name too long"))]
     pub first_name: Option<String>,
+    #[validate(length(max = 150, message = "Last name too long"))]
     pub last_name: Option<String>,
+    #[validate(length(max = 20, message = "Phone number too long"))]
     pub phone: Option<String>,
     pub is_staff: Option<bool>,
     pub is_superuser: Option<bool>,

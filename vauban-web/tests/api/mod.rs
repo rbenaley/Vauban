@@ -9,6 +9,7 @@ pub mod auth_test;
 pub mod cleanup_test;
 pub mod dashboard_pages_test;
 pub mod middleware_test;
+pub mod security_test;
 pub mod sessions_test;
 pub mod web_pages_test;
 pub mod websocket_test;
