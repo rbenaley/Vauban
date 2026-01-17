@@ -3834,6 +3834,194 @@ async fn test_asset_create_normal_user_forbidden() {
 }
 
 #[tokio::test]
+async fn test_asset_edit_page_normal_user_forbidden() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    // Create an admin and an asset
+    let admin_name = unique_name("asset_edit_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("edit-forbid-asset"), admin_id);
+
+    // Get asset UUID
+    use vauban_web::schema::assets;
+    let asset_uuid: uuid::Uuid = assets::table
+        .filter(assets::id.eq(asset_id))
+        .select(assets::uuid)
+        .first(&mut conn)
+        .unwrap();
+
+    // Create a normal user (non-admin)
+    let user_name = unique_name("asset_edit_user");
+    let user_id = create_simple_user(&mut conn, &user_name);
+    let user_uuid = get_user_uuid(&mut conn, user_id);
+
+    let token = app.generate_test_token(&user_uuid.to_string(), &user_name, false, false);
+
+    // Try to access edit page
+    let response = app
+        .server
+        .get(&format!("/assets/{}/edit", asset_uuid))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 401 || status == 403,
+        "Normal user should not access asset edit page, got {}",
+        status
+    );
+}
+
+#[tokio::test]
+async fn test_asset_update_normal_user_forbidden() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    // Create an admin and an asset
+    let admin_name = unique_name("asset_upd_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("upd-forbid-asset"), admin_id);
+
+    // Get asset UUID
+    use vauban_web::schema::assets;
+    let asset_uuid: uuid::Uuid = assets::table
+        .filter(assets::id.eq(asset_id))
+        .select(assets::uuid)
+        .first(&mut conn)
+        .unwrap();
+
+    // Create a normal user (non-admin)
+    let user_name = unique_name("asset_upd_user");
+    let user_id = create_simple_user(&mut conn, &user_name);
+    let user_uuid = get_user_uuid(&mut conn, user_id);
+
+    let token = app.generate_test_token(&user_uuid.to_string(), &user_name, false, false);
+    let csrf_token = app.generate_csrf_token();
+
+    // Try to submit update
+    let response = app
+        .server
+        .post(&format!("/assets/{}/edit", asset_uuid))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[
+            ("csrf_token", csrf_token.as_str()),
+            ("name", "Hacked Asset Name"),
+            ("hostname", "hacked.example.com"),
+            ("port", "22"),
+            ("asset_type", "ssh"),
+            ("status", "online"),
+        ])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 302 || status == 303,
+        "Expected redirect (with error flash), got {}",
+        status
+    );
+
+    // Verify asset was NOT modified
+    let asset_name: String = assets::table
+        .filter(assets::id.eq(asset_id))
+        .select(assets::name)
+        .first(&mut conn)
+        .unwrap();
+
+    assert_ne!(
+        asset_name, "Hacked Asset Name",
+        "Normal user should not modify asset"
+    );
+}
+
+#[tokio::test]
+async fn test_asset_group_edit_page_normal_user_forbidden() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    // Create an asset group
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("edit-forbid-group"));
+
+    // Create a normal user (non-admin)
+    let user_name = unique_name("grp_edit_user");
+    let user_id = create_simple_user(&mut conn, &user_name);
+    let user_uuid = get_user_uuid(&mut conn, user_id);
+
+    let token = app.generate_test_token(&user_uuid.to_string(), &user_name, false, false);
+
+    // Try to access edit page
+    let response = app
+        .server
+        .get(&format!("/assets/groups/{}/edit", group_uuid))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 401 || status == 403,
+        "Normal user should not access asset group edit page, got {}",
+        status
+    );
+}
+
+#[tokio::test]
+async fn test_asset_group_update_normal_user_forbidden() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    // Create an asset group
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("upd-forbid-group"));
+
+    // Create a normal user (non-admin)
+    let user_name = unique_name("grp_upd_user");
+    let user_id = create_simple_user(&mut conn, &user_name);
+    let user_uuid = get_user_uuid(&mut conn, user_id);
+
+    let token = app.generate_test_token(&user_uuid.to_string(), &user_name, false, false);
+    let csrf_token = app.generate_csrf_token();
+
+    // Try to submit update
+    let response = app
+        .server
+        .post(&format!("/assets/groups/{}/edit", group_uuid))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[
+            ("csrf_token", csrf_token.as_str()),
+            ("name", "Hacked Group Name"),
+            ("slug", "hacked-slug"),
+            ("color", "#ff0000"),
+            ("icon", "server"),
+        ])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 302 || status == 303,
+        "Expected redirect (with error flash), got {}",
+        status
+    );
+
+    // Verify group was NOT modified
+    use vauban_web::schema::asset_groups;
+    let group_name: String = asset_groups::table
+        .filter(asset_groups::uuid.eq(group_uuid))
+        .select(asset_groups::name)
+        .first(&mut conn)
+        .unwrap();
+
+    assert_ne!(
+        group_name, "Hacked Group Name",
+        "Normal user should not modify asset group"
+    );
+}
+
+#[tokio::test]
 async fn test_asset_create_with_checkboxes() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn();
