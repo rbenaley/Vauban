@@ -68,6 +68,12 @@ pub async fn get_user(
     Ok(Json(user.to_dto()))
 }
 
+/// Sanitize optional string fields to prevent XSS.
+/// Removes all HTML tags and attributes.
+fn sanitize_text(value: Option<String>) -> Option<String> {
+    value.map(|s| ammonia::clean(&s))
+}
+
 /// Create user handler.
 pub async fn create_user(
     State(state): State<AppState>,
@@ -82,14 +88,18 @@ pub async fn create_user(
     // Hash password
     let hashed_password = state.auth_service.hash_password(&request.password)?;
 
+    // Sanitize text fields to prevent XSS
+    let sanitized_first_name = sanitize_text(request.first_name);
+    let sanitized_last_name = sanitize_text(request.last_name);
+
     use ::uuid::Uuid as UuidType;
     let new_user = NewUser {
         uuid: UuidType::new_v4(),
         username: request.username,
         email: request.email,
         password_hash: hashed_password,
-        first_name: request.first_name,
-        last_name: request.last_name,
+        first_name: sanitized_first_name,
+        last_name: sanitized_last_name,
         phone: None,
         is_active: true,
         is_staff: request.is_staff.unwrap_or(false),

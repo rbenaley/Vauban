@@ -8,6 +8,7 @@ use axum::{
     routing::{get, post, put},
 };
 use axum_server::tls_rustls::RustlsConfig;
+use secrecy::ExposeSecret;
 use std::net::SocketAddr;
 use tower::ServiceBuilder;
 use tower_http::{
@@ -26,6 +27,7 @@ use vauban_web::{
     handlers, middleware,
     services::auth::AuthService,
     services::broadcast::BroadcastService,
+    services::rate_limit::RateLimiter,
     tasks::{start_cleanup_tasks, start_dashboard_tasks},
 };
 
@@ -99,6 +101,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let user_connections = vauban_web::services::connections::UserConnectionRegistry::new();
     tracing::info!("User connection registry initialized");
 
+    // Create rate limiter (uses Redis if cache enabled, otherwise in-memory)
+    let rate_limiter = RateLimiter::new(
+        config.cache.enabled,
+        Some(config.cache.url.expose_secret()),
+        config.security.rate_limit_per_minute,
+    )?;
+    tracing::info!(
+        "Rate limiter initialized (backend: {}, limit: {}/min)",
+        if config.cache.enabled { "Redis" } else { "in-memory" },
+        config.security.rate_limit_per_minute
+    );
+
     // Create application state
     let app_state = AppState {
         config: config.clone(),
@@ -107,6 +121,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         auth_service,
         broadcast: broadcast.clone(),
         user_connections,
+        rate_limiter,
     };
 
     // Start background tasks for WebSocket updates
@@ -464,6 +479,10 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
                 .layer(TimeoutLayer::with_status_code(
                     axum::http::StatusCode::REQUEST_TIMEOUT,
                     std::time::Duration::from_secs(30),
+                ))
+                // Security headers (XSS, clickjacking, MIME sniffing protection)
+                .layer(axum::middleware::from_fn(
+                    middleware::security::security_headers_middleware,
                 ))
                 .layer(cors)
                 .layer(axum::middleware::from_fn_with_state(

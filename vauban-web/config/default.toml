@@ -49,7 +49,7 @@ password_min_length = 12
 max_failed_login_attempts = 5
 session_max_duration_secs = 28800   # 8 hours
 session_idle_timeout_secs = 1800    # 30 minutes
-rate_limit_per_minute = 100
+rate_limit_per_minute = 10
 
 [security.argon2]
 memory_size_kb = 65536
