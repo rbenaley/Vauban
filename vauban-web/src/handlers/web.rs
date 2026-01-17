@@ -2271,6 +2271,13 @@ pub async fn asset_edit(
     incoming_flash: IncomingFlash,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
+    // Only admin users can edit assets
+    if !is_admin(&auth_user) {
+        return Err(AppError::Authorization(
+            "Only administrators can edit assets".to_string(),
+        ));
+    }
+
     let user = Some(user_context_from_auth(&auth_user));
 
     // Convert incoming flash messages to template FlashMessages
@@ -4870,6 +4877,13 @@ pub async fn asset_group_edit(
     incoming_flash: IncomingFlash,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
+    // Only admin users can edit asset groups
+    if !is_admin(&auth_user) {
+        return Err(AppError::Authorization(
+            "Only administrators can edit asset groups".to_string(),
+        ));
+    }
+
     let user = Some(user_context_from_auth(&auth_user));
 
     // Convert incoming flash messages to template FlashMessages
@@ -4969,7 +4983,7 @@ pub struct UpdateAssetGroupForm {
 /// Handles POST /assets/groups/{uuid}/edit with flash messages.
 pub async fn update_asset_group(
     State(state): State<AppState>,
-    _auth_user: WebAuthUser,
+    auth_user: WebAuthUser,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
@@ -4986,6 +5000,14 @@ pub async fn update_asset_group(
         return flash_redirect(
             flash.error("Invalid CSRF token. Please refresh the page and try again."),
             &format!("/assets/groups/{}/edit", uuid_str),
+        );
+    }
+
+    // Permission check - only admin can update asset groups
+    if !is_admin(&auth_user) {
+        return flash_redirect(
+            flash.error("Only administrators can modify asset groups"),
+            &format!("/assets/groups/{}", uuid_str),
         );
     }
 
@@ -5489,7 +5511,7 @@ pub struct CsrfOnlyForm {
 /// Handles POST /assets/{uuid}/edit with flash messages.
 pub async fn update_asset_web(
     State(state): State<AppState>,
-    _auth_user: WebAuthUser,
+    auth_user: WebAuthUser,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
@@ -5506,6 +5528,14 @@ pub async fn update_asset_web(
         return flash_redirect(
             flash.error("Invalid CSRF token. Please refresh the page and try again."),
             &format!("/assets/{}/edit", uuid_str),
+        );
+    }
+
+    // Permission check - only admin can update assets
+    if !is_admin(&auth_user) {
+        return flash_redirect(
+            flash.error("Only administrators can modify assets"),
+            &format!("/assets/{}", uuid_str),
         );
     }
 
