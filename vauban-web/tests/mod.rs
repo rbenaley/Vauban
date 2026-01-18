@@ -7,10 +7,17 @@
 /// Requirements:
 /// - PostgreSQL test database at DATABASE_URL
 /// - Run migrations: diesel migration run
-mod api;
+
+// Test modules organized by category
+mod api;        // REST API tests (/api/v1/*)
+mod middleware; // Middleware tests
+mod security;   // Security tests (auth, CSRF, rate limiting)
+mod web;        // Web page tests (HTML)
+mod ws;         // WebSocket tests
+
+// Shared test utilities
 mod common;
 mod fixtures;
-mod ws;
 
 // Re-export for test modules
 pub use common::*;
