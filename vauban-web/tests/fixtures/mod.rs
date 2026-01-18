@@ -462,10 +462,27 @@ pub fn create_test_session(
 
 /// Create a recorded session and return session_id.
 pub fn create_recorded_session(conn: &mut PgConnection, user_id: i32, asset_id: i32) -> i32 {
+    create_recorded_session_with_type(conn, user_id, asset_id, "ssh")
+}
+
+/// Create a recorded session with a specific session type and return session_id.
+pub fn create_recorded_session_with_type(
+    conn: &mut PgConnection,
+    user_id: i32,
+    asset_id: i32,
+    session_type: &str,
+) -> i32 {
     use vauban_web::schema::proxy_sessions;
 
     let session_uuid = Uuid::new_v4();
     let ip: ipnetwork::IpNetwork = "127.0.0.1".parse().unwrap();
+
+    let recording_path = match session_type {
+        "ssh" => "/recordings/test.cast",
+        "rdp" => "/recordings/test.guac",
+        "vnc" => "/recordings/test.guac",
+        _ => "/recordings/test.cast",
+    };
 
     let session_id: i32 = diesel::insert_into(proxy_sessions::table)
         .values((
@@ -474,13 +491,13 @@ pub fn create_recorded_session(conn: &mut PgConnection, user_id: i32, asset_id: 
             proxy_sessions::asset_id.eq(asset_id),
             proxy_sessions::credential_id.eq("cred-123"),
             proxy_sessions::credential_username.eq("testuser"),
-            proxy_sessions::session_type.eq("ssh"),
+            proxy_sessions::session_type.eq(session_type),
             proxy_sessions::status.eq("completed"),
             proxy_sessions::client_ip.eq(ip),
             proxy_sessions::connected_at.eq(Utc::now() - Duration::hours(1)),
             proxy_sessions::disconnected_at.eq(Utc::now()),
             proxy_sessions::is_recorded.eq(true),
-            proxy_sessions::recording_path.eq("/recordings/test.cast"),
+            proxy_sessions::recording_path.eq(recording_path),
             proxy_sessions::metadata.eq(serde_json::json!({})),
         ))
         .returning(proxy_sessions::id)

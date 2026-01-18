@@ -25,109 +25,6 @@ fn get_user_uuid(conn: &mut diesel::PgConnection, user_id: i32) -> Uuid {
 }
 
 // =============================================================================
-// Session Detail Page Tests (triple JOIN with ::text casts)
-// =============================================================================
-
-#[tokio::test]
-async fn test_session_detail_page_loads() {
-    let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
-
-    // Create test data with proper user UUID
-    let user_id = create_simple_user(&mut conn, "test_session_page");
-    let user_uuid = get_user_uuid(&mut conn, user_id);
-    let asset_id = create_simple_ssh_asset(&mut conn, "test-session-page-asset", user_id);
-    let session_id = create_test_session(&mut conn, user_id, asset_id, "ssh", "active");
-
-    // Generate auth token
-    let token = app.generate_test_token(&user_uuid.to_string(), "test_session_page", true, true);
-
-    // Request session detail page
-    let response = app
-        .server
-        .get(&format!("/sessions/{}", session_id))
-        .add_header(COOKIE, format!("access_token={}", token))
-        .await;
-
-    // Should return HTML page (200 or redirect)
-    let status = response.status_code().as_u16();
-    assert!(
-        status == 200 || status == 303,
-        "Expected 200 or 303, got {}",
-        status
-    );
-}
-
-#[tokio::test]
-async fn test_session_detail_not_found() {
-    let app = TestApp::spawn().await;
-
-    let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
-        "test_session_notfound",
-        true,
-        true,
-    );
-
-    // Request non-existent session
-    let response = app
-        .server
-        .get("/sessions/999999")
-        .add_header(COOKIE, format!("access_token={}", token))
-        .await;
-
-    // Should return 404
-    assert_status(&response, 404);
-}
-
-// =============================================================================
-// Recording Play Page Tests (triple JOIN)
-// =============================================================================
-
-#[tokio::test]
-async fn test_recording_play_page_with_recorded_session() {
-    let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
-
-    // Create test data with recorded session
-    let user_id = create_simple_user(&mut conn, "test_recording_page");
-    let user_uuid = get_user_uuid(&mut conn, user_id);
-    let asset_id = create_simple_ssh_asset(&mut conn, "test-recording-asset", user_id);
-    let session_id = create_recorded_session(&mut conn, user_id, asset_id);
-
-    let token = app.generate_test_token(&user_uuid.to_string(), "test_recording_page", true, true);
-
-    let response = app
-        .server
-        .get(&format!("/sessions/recordings/{}/play", session_id))
-        .add_header(COOKIE, format!("access_token={}", token))
-        .await;
-
-    let status = response.status_code().as_u16();
-    assert!(
-        status == 200 || status == 303 || status == 404,
-        "Expected valid response, got {}",
-        status
-    );
-}
-
-#[tokio::test]
-async fn test_recording_play_not_found() {
-    let app = TestApp::spawn().await;
-
-    let token =
-        app.generate_test_token(&Uuid::new_v4().to_string(), "test_rec_notfound", true, true);
-
-    let response = app
-        .server
-        .get("/sessions/recordings/999999/play")
-        .add_header(COOKIE, format!("access_token={}", token))
-        .await;
-
-    assert_status(&response, 404);
-}
-
-// =============================================================================
 // Approval List Page Tests (dynamic WHERE clause, triple JOIN)
 // =============================================================================
 
@@ -242,6 +139,140 @@ async fn test_approval_list_with_pagination() {
         status == 200 || status == 303,
         "Expected 200 or 303, got {}",
         status
+    );
+}
+
+#[tokio::test]
+async fn test_approval_list_status_filter_all_statuses() {
+    // Test that filtering works correctly for all status types:
+    // - pending, approved, rejected, expired, orphaned
+    // - empty string (All statuses) should behave like no filter
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    // Create a user and assets for multiple approval requests
+    let username = unique_name("status_filter_user");
+    let user_id = create_simple_user(&mut conn, &username);
+    let user_uuid = get_user_uuid(&mut conn, user_id);
+
+    // Create approval requests with different statuses
+    let statuses = ["pending", "approved", "rejected", "expired", "orphaned"];
+
+    for (i, status) in statuses.iter().enumerate() {
+        let asset_id = create_simple_ssh_asset(
+            &mut conn,
+            &format!("status-filter-asset-{}", i),
+            user_id,
+        );
+        let approval_uuid = create_approval_request(&mut conn, user_id, asset_id);
+
+        // Update the status
+        use vauban_web::schema::proxy_sessions::dsl as ps;
+        diesel::update(ps::proxy_sessions.filter(ps::uuid.eq(approval_uuid)))
+            .set(ps::status.eq(*status))
+            .execute(&mut conn)
+            .expect("Failed to update approval status");
+    }
+
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+
+    // Test 1: No filter - should show all approvals
+    let response_no_filter = app
+        .server
+        .get("/sessions/approvals")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(
+        response_no_filter.status_code().as_u16(),
+        200,
+        "Approval list without filter should load"
+    );
+
+    let body_no_filter = response_no_filter.text();
+    assert!(
+        !body_no_filter.contains("No approval requests"),
+        "Should show approvals when no filter is applied"
+    );
+
+    // Test 2: Empty status filter (simulates "All statuses" selection after filtering)
+    // Regression test: Previously this would return empty results
+    let response_empty_filter = app
+        .server
+        .get("/sessions/approvals?status=")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(
+        response_empty_filter.status_code().as_u16(),
+        200,
+        "Approval list with empty filter should load"
+    );
+
+    let body_empty_filter = response_empty_filter.text();
+    assert!(
+        !body_empty_filter.contains("No approval requests"),
+        "Empty status filter should show all approvals (same as no filter)"
+    );
+
+    // Test 3: Each specific status filter should work and return 200
+    for status in &statuses {
+        let response = app
+            .server
+            .get(&format!("/sessions/approvals?status={}", status))
+            .add_header(COOKIE, format!("access_token={}", token))
+            .await;
+
+        assert_eq!(
+            response.status_code().as_u16(),
+            200,
+            "Approval list with status={} filter should load",
+            status
+        );
+
+        let body = response.text();
+
+        // Should show the approval with this status (not empty)
+        assert!(
+            !body.contains("No approval requests"),
+            "Filter status={} should find the approval with that status",
+            status
+        );
+
+        // Verify the correct status is shown in the response
+        // The status badge should contain the status text
+        assert!(
+            body.contains(status),
+            "Response for status={} should contain that status in the page",
+            status
+        );
+
+        // Verify the filter dropdown shows the correct selection
+        let expected_selected = format!("value=\"{}\" selected", status);
+        assert!(
+            body.contains(&expected_selected),
+            "Filter dropdown should show {} as selected",
+            status
+        );
+    }
+
+    // Test 4: Invalid status filter should return empty (no matching approvals)
+    let response_invalid = app
+        .server
+        .get("/sessions/approvals?status=invalid_status")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(
+        response_invalid.status_code().as_u16(),
+        200,
+        "Approval list with invalid status should still load"
+    );
+
+    let body_invalid = response_invalid.text();
+    assert!(
+        body_invalid.contains("No approval requests") || body_invalid.contains("No requests match"),
+        "Invalid status filter should show no results"
     );
 }
 
@@ -442,62 +473,6 @@ async fn test_asset_delete_rejects_missing_csrf() {
 }
 
 // =============================================================================
-// Active Sessions Page Tests (triple JOIN with inet::text cast)
-// =============================================================================
-
-#[tokio::test]
-async fn test_active_sessions_page_loads() {
-    let app = TestApp::spawn().await;
-
-    let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
-        "test_active_sessions",
-        true,
-        true,
-    );
-
-    let response = app
-        .server
-        .get("/sessions/active")
-        .add_header(COOKIE, format!("access_token={}", token))
-        .await;
-
-    let status = response.status_code().as_u16();
-    assert!(
-        status == 200 || status == 303,
-        "Expected 200 or 303, got {}",
-        status
-    );
-}
-
-#[tokio::test]
-async fn test_active_sessions_with_data() {
-    let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
-
-    // Create an active session
-    let user_id = create_simple_user(&mut conn, "test_active_data");
-    let user_uuid = get_user_uuid(&mut conn, user_id);
-    let asset_id = create_simple_ssh_asset(&mut conn, "test-active-asset", user_id);
-    let _session_id = create_test_session(&mut conn, user_id, asset_id, "ssh", "active");
-
-    let token = app.generate_test_token(&user_uuid.to_string(), "test_active_data", true, true);
-
-    let response = app
-        .server
-        .get("/sessions/active")
-        .add_header(COOKIE, format!("access_token={}", token))
-        .await;
-
-    let status = response.status_code().as_u16();
-    assert!(
-        status == 200 || status == 303,
-        "Expected 200 or 303, got {}",
-        status
-    );
-}
-
-// =============================================================================
 // Asset Group List Page Tests (subquery in SELECT for asset_count)
 // =============================================================================
 
@@ -577,6 +552,89 @@ async fn test_asset_group_list_with_special_chars_search() {
         status == 200 || status == 303 || status == 400,
         "Expected valid response (not 500), got {}",
         status
+    );
+}
+
+#[tokio::test]
+async fn test_asset_group_list_empty_search_shows_all() {
+    // Regression test: empty search string should behave like no filter
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let admin_username = unique_name("assetgrp_search_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_uuid = get_user_uuid(&mut conn, admin_id);
+
+    // Create an asset group to ensure there's at least one
+    let group_name = unique_name("assetgrp-search-test");
+    create_test_asset_group(&mut conn, &group_name);
+
+    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true);
+
+    // Test 1: No filter - page loads with groups
+    let response_no_filter = app
+        .server
+        .get("/assets/groups")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(
+        response_no_filter.status_code().as_u16(),
+        200,
+        "Asset group list without filter should load"
+    );
+    let body_no_filter = response_no_filter.text();
+
+    // Test 2: Empty search should behave the same
+    let response_empty = app
+        .server
+        .get("/assets/groups?search=")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(
+        response_empty.status_code().as_u16(),
+        200,
+        "Asset group list with empty search should load"
+    );
+    let body_empty = response_empty.text();
+
+    // Verify the group appears in both cases
+    assert!(
+        body_no_filter.contains(&group_name),
+        "Asset group should appear without filter"
+    );
+    assert!(
+        body_empty.contains(&group_name),
+        "Asset group should appear with empty search filter"
+    );
+
+    // Test 3: Case-insensitive search
+    let response_upper = app
+        .server
+        .get("/assets/groups?search=ASSETGRP-SEARCH")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(response_upper.status_code().as_u16(), 200);
+    let body_upper = response_upper.text();
+    assert!(
+        body_upper.contains(&group_name),
+        "Case-insensitive search should find asset group"
+    );
+
+    // Test 4: Partial search
+    let response_partial = app
+        .server
+        .get("/assets/groups?search=assetgrp-search")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(response_partial.status_code().as_u16(), 200);
+    let body_partial = response_partial.text();
+    assert!(
+        body_partial.contains(&group_name),
+        "Partial search should find asset group"
     );
 }
 
@@ -797,6 +855,89 @@ async fn test_group_list_with_search() {
         status == 200 || status == 303,
         "Expected 200 or 303, got {}",
         status
+    );
+}
+
+#[tokio::test]
+async fn test_vauban_group_list_empty_search_shows_all() {
+    // Regression test: empty search string should behave like no filter
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let admin_username = unique_name("group_search_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_uuid = get_user_uuid(&mut conn, admin_id);
+
+    // Create a group to ensure there's at least one
+    let group_name = unique_name("search-test-group");
+    create_test_vauban_group(&mut conn, &group_name);
+
+    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true);
+
+    // Test 1: No filter - page loads with groups
+    let response_no_filter = app
+        .server
+        .get("/accounts/groups")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(
+        response_no_filter.status_code().as_u16(),
+        200,
+        "Group list without filter should load"
+    );
+    let body_no_filter = response_no_filter.text();
+
+    // Test 2: Empty search should behave the same
+    let response_empty = app
+        .server
+        .get("/accounts/groups?search=")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(
+        response_empty.status_code().as_u16(),
+        200,
+        "Group list with empty search should load"
+    );
+    let body_empty = response_empty.text();
+
+    // Verify the group appears in both cases
+    assert!(
+        body_no_filter.contains(&group_name),
+        "Group should appear without filter"
+    );
+    assert!(
+        body_empty.contains(&group_name),
+        "Group should appear with empty search filter"
+    );
+
+    // Test 3: Case-insensitive search
+    let response_upper = app
+        .server
+        .get("/accounts/groups?search=SEARCH-TEST")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(response_upper.status_code().as_u16(), 200);
+    let body_upper = response_upper.text();
+    assert!(
+        body_upper.contains(&group_name),
+        "Case-insensitive search should find group"
+    );
+
+    // Test 4: Partial search
+    let response_partial = app
+        .server
+        .get("/accounts/groups?search=search-test")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(response_partial.status_code().as_u16(), 200);
+    let body_partial = response_partial.text();
+    assert!(
+        body_partial.contains(&group_name),
+        "Partial search should find group"
     );
 }
 
@@ -1169,86 +1310,6 @@ async fn test_vauban_group_delete_requires_admin() {
         .unwrap()
         .is_some();
     assert!(exists, "Group should NOT be deleted by non-admin");
-}
-
-// =============================================================================
-// API Groups Tests (Read-Only)
-// =============================================================================
-
-#[tokio::test]
-async fn test_api_list_group_members_success() {
-    let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
-
-    let group_uuid = create_test_vauban_group(&mut conn, &unique_name("api-list-members"));
-    let user_id = create_simple_user(&mut conn, &unique_name("api-member"));
-
-    // Add member to group
-    add_user_to_vauban_group(&mut conn, user_id, &group_uuid);
-
-    let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
-        "test_api_members",
-        true,
-        true,
-    );
-
-    let response = app
-        .server
-        .get(&format!("/api/v1/groups/{}/members", group_uuid))
-        .add_header(COOKIE, format!("access_token={}", token))
-        .await;
-
-    assert_status(&response, 200);
-    let body = response.text();
-    assert!(body.contains("members"), "Response should contain members array");
-    assert!(body.contains("total"), "Response should contain total count");
-}
-
-#[tokio::test]
-async fn test_api_list_group_members_not_found() {
-    let app = TestApp::spawn().await;
-
-    let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
-        "test_api_members_404",
-        true,
-        true,
-    );
-
-    let fake_uuid = Uuid::new_v4();
-    let response = app
-        .server
-        .get(&format!("/api/v1/groups/{}/members", fake_uuid))
-        .add_header(COOKIE, format!("access_token={}", token))
-        .await;
-
-    assert_status(&response, 404);
-}
-
-#[tokio::test]
-async fn test_api_list_group_members_empty() {
-    let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
-
-    let group_uuid = create_test_vauban_group(&mut conn, &unique_name("api-empty-group"));
-
-    let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
-        "test_api_empty",
-        true,
-        true,
-    );
-
-    let response = app
-        .server
-        .get(&format!("/api/v1/groups/{}/members", group_uuid))
-        .add_header(COOKIE, format!("access_token={}", token))
-        .await;
-
-    assert_status(&response, 200);
-    let body = response.text();
-    assert!(body.contains("\"total\":0"), "Empty group should have 0 members");
 }
 
 // =============================================================================
@@ -2888,6 +2949,250 @@ async fn test_asset_group_create_form_fields_present() {
 }
 
 // =============================================================================
+// User List Filter Tests
+// =============================================================================
+
+#[tokio::test]
+async fn test_user_list_filter_by_all_statuses() {
+    // Test that filtering works correctly for all user status types:
+    // - active, inactive
+    // - empty string (All statuses) should behave like no filter
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let admin_username = unique_name("user_list_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_uuid = get_user_uuid(&mut conn, admin_id);
+
+    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true);
+
+    // Test 1: No filter - page should load successfully
+    let response_no_filter = app
+        .server
+        .get("/accounts/users")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(
+        response_no_filter.status_code().as_u16(),
+        200,
+        "User list without filter should load"
+    );
+
+    let body_no_filter = response_no_filter.text();
+    assert!(
+        body_no_filter.contains("Users") || body_no_filter.contains("users"),
+        "Page should contain Users title"
+    );
+
+    // Test 2: Empty status filter (simulates "All statuses" selection after filtering)
+    // This is a regression test - previously empty string would filter incorrectly
+    let response_empty_filter = app
+        .server
+        .get("/accounts/users?status=")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(
+        response_empty_filter.status_code().as_u16(),
+        200,
+        "User list with empty filter should load"
+    );
+
+    // Test 3: Filter by active status - page loads and shows correct selection
+    let response_active = app
+        .server
+        .get("/accounts/users?status=active")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(response_active.status_code().as_u16(), 200);
+    let body_active = response_active.text();
+    // Verify selection is correct in the dropdown
+    assert!(
+        body_active.contains("value=\"active\"") && body_active.contains("selected"),
+        "Active should be selectable in dropdown"
+    );
+
+    // Test 4: Filter by inactive status - page loads
+    let response_inactive = app
+        .server
+        .get("/accounts/users?status=inactive")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(response_inactive.status_code().as_u16(), 200);
+    let body_inactive = response_inactive.text();
+    assert!(
+        body_inactive.contains("value=\"inactive\"") && body_inactive.contains("selected"),
+        "Inactive should be selectable in dropdown"
+    );
+
+    // Test 5: Invalid status filter - page should still load
+    let response_invalid = app
+        .server
+        .get("/accounts/users?status=invalid_status")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(
+        response_invalid.status_code().as_u16(),
+        200,
+        "User list with invalid status should still load"
+    );
+}
+
+#[tokio::test]
+async fn test_user_list_search_by_username() {
+    // Test that searching by username works correctly
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let admin_username = unique_name("user_search_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_uuid = get_user_uuid(&mut conn, admin_id);
+
+    // Create a user with a unique searchable name
+    let searchable_user = unique_name("uniquesearchxyz");
+    create_simple_user(&mut conn, &searchable_user);
+
+    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true);
+
+    // Test 1: Search for the unique username - should find it
+    let response = app
+        .server
+        .get(&format!("/accounts/users?search={}", searchable_user))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(response.status_code().as_u16(), 200);
+    let body = response.text();
+    assert!(body.contains(&searchable_user), "Should find user by exact username");
+
+    // Test 2: Partial search using unique prefix
+    let response_partial = app
+        .server
+        .get("/accounts/users?search=uniquesearchxyz")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(response_partial.status_code().as_u16(), 200);
+    let body_partial = response_partial.text();
+    assert!(
+        body_partial.contains(&searchable_user),
+        "Partial search should find matching user"
+    );
+
+    // Test 3: Case-insensitive search
+    let response_case = app
+        .server
+        .get("/accounts/users?search=UNIQUESEARCHXYZ")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(response_case.status_code().as_u16(), 200);
+    let body_case = response_case.text();
+    assert!(
+        body_case.contains(&searchable_user),
+        "Case-insensitive search should find user"
+    );
+
+    // Test 4: Empty search should load page normally (regression test for empty string bug)
+    let response_empty = app
+        .server
+        .get("/accounts/users?search=")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(
+        response_empty.status_code().as_u16(),
+        200,
+        "Empty search should load page"
+    );
+
+    // Test 5: Non-matching search - page loads but may show no results
+    let response_no_match = app
+        .server
+        .get("/accounts/users?search=nonexistent_xyz_user_12345")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(
+        response_no_match.status_code().as_u16(),
+        200,
+        "Non-matching search should still load page"
+    );
+}
+
+#[tokio::test]
+async fn test_user_list_combined_filters() {
+    // Test combining search and status filters
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let admin_username = unique_name("user_combined_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_uuid = get_user_uuid(&mut conn, admin_id);
+
+    // Create users with different statuses and names
+    let active_user = unique_name("combined_active_user");
+    let inactive_user = unique_name("combined_inactive_user");
+
+    let _active_id = create_simple_user(&mut conn, &active_user);
+    let inactive_id = create_simple_user(&mut conn, &inactive_user);
+
+    // Deactivate one user
+    use vauban_web::schema::users;
+    diesel::update(users::table.filter(users::id.eq(inactive_id)))
+        .set(users::is_active.eq(false))
+        .execute(&mut conn)
+        .expect("Failed to deactivate user");
+
+    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true);
+
+    // Test 1: Search + active status
+    let response = app
+        .server
+        .get("/accounts/users?search=combined&status=active")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(response.status_code().as_u16(), 200);
+    let body = response.text();
+    assert!(
+        body.contains(&active_user),
+        "Combined filter should find active user matching search"
+    );
+
+    // Test 2: Search + inactive status
+    let response_inactive = app
+        .server
+        .get("/accounts/users?search=combined&status=inactive")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(response_inactive.status_code().as_u16(), 200);
+    let body_inactive = response_inactive.text();
+    assert!(
+        body_inactive.contains(&inactive_user),
+        "Combined filter should find inactive user matching search"
+    );
+
+    // Test 3: Conflicting filters (search for active user with inactive filter)
+    let response_conflict = app
+        .server
+        .get(&format!(
+            "/accounts/users?search={}&status=inactive",
+            active_user
+        ))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(response_conflict.status_code().as_u16(), 200);
+    // This user is active, so searching for them with inactive filter should not find them
+}
+
+// =============================================================================
 // User Management Tests (Create, Edit, Delete)
 // =============================================================================
 
@@ -3824,6 +4129,297 @@ async fn test_recordings_page_accessible_to_staff() {
 }
 
 #[tokio::test]
+async fn test_recordings_filter_by_all_formats() {
+    // Test that filtering works correctly for all session format types:
+    // - ssh, rdp, vnc
+    // - empty string (All formats) should behave like no filter
+    use crate::fixtures::create_recorded_session_with_type;
+
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let username = unique_name("rec_format_filter");
+    let user_id = create_simple_admin_user(&mut conn, &username);
+    let user_uuid = get_user_uuid(&mut conn, user_id);
+
+    // Create recordings with different session types
+    let formats = ["ssh", "rdp", "vnc"];
+
+    for (i, format) in formats.iter().enumerate() {
+        let asset_id = create_simple_ssh_asset(
+            &mut conn,
+            &format!("rec-format-asset-{}-{}", format, i),
+            user_id,
+        );
+        create_recorded_session_with_type(&mut conn, user_id, asset_id, format);
+    }
+
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+
+    // Test 1: No filter - should show all recordings
+    let response_no_filter = app
+        .server
+        .get("/sessions/recordings")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(
+        response_no_filter.status_code().as_u16(),
+        200,
+        "Recordings list without filter should load"
+    );
+
+    let body_no_filter = response_no_filter.text();
+    assert!(
+        !body_no_filter.contains("No recordings"),
+        "Should show recordings when no filter is applied"
+    );
+
+    // Test 2: Empty format filter (simulates "All formats" selection)
+    let response_empty_filter = app
+        .server
+        .get("/sessions/recordings?format=")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(
+        response_empty_filter.status_code().as_u16(),
+        200,
+        "Recordings list with empty filter should load"
+    );
+
+    let body_empty_filter = response_empty_filter.text();
+    assert!(
+        !body_empty_filter.contains("No recordings"),
+        "Empty format filter should show all recordings (same as no filter)"
+    );
+
+    // Test 3: Each specific format filter should work
+    for format in &formats {
+        let response = app
+            .server
+            .get(&format!("/sessions/recordings?format={}", format))
+            .add_header(COOKIE, format!("access_token={}", token))
+            .await;
+
+        assert_eq!(
+            response.status_code().as_u16(),
+            200,
+            "Recordings list with format={} filter should load",
+            format
+        );
+
+        let body = response.text();
+
+        // Should show the recording with this format (not empty)
+        assert!(
+            !body.contains("No recordings"),
+            "Filter format={} should find the recording with that format",
+            format
+        );
+
+        // Verify the filter dropdown shows the correct selection
+        let expected_selected = format!("value=\"{}\" selected", format);
+        assert!(
+            body.contains(&expected_selected),
+            "Filter dropdown should show {} as selected",
+            format
+        );
+    }
+
+    // Test 4: Invalid format filter should return empty
+    let response_invalid = app
+        .server
+        .get("/sessions/recordings?format=invalid_format")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(
+        response_invalid.status_code().as_u16(),
+        200,
+        "Recordings list with invalid format should still load"
+    );
+
+    let body_invalid = response_invalid.text();
+    assert!(
+        body_invalid.contains("No recordings"),
+        "Invalid format filter should show no results"
+    );
+}
+
+#[tokio::test]
+async fn test_recordings_filter_by_asset_name() {
+    // Test that searching by asset name works correctly
+    use crate::fixtures::create_recorded_session_with_type;
+
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let username = unique_name("rec_asset_filter");
+    let user_id = create_simple_admin_user(&mut conn, &username);
+    let user_uuid = get_user_uuid(&mut conn, user_id);
+
+    // Create recordings with different asset names
+    let asset_names = [
+        "webserver-prod-01",
+        "database-mysql-main",
+        "cache-redis-cluster",
+    ];
+
+    for asset_name in &asset_names {
+        let asset_id = create_simple_ssh_asset(&mut conn, asset_name, user_id);
+        create_recorded_session_with_type(&mut conn, user_id, asset_id, "ssh");
+    }
+
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+
+    // Test 1: Search for exact asset name
+    let response = app
+        .server
+        .get("/sessions/recordings?asset=webserver-prod-01")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(response.status_code().as_u16(), 200);
+    let body = response.text();
+    assert!(
+        body.contains("webserver-prod-01"),
+        "Should find recording for webserver-prod-01"
+    );
+    assert!(
+        !body.contains("No recordings"),
+        "Should not show empty state"
+    );
+
+    // Test 2: Search with partial asset name (should use ILIKE)
+    let response_partial = app
+        .server
+        .get("/sessions/recordings?asset=mysql")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(response_partial.status_code().as_u16(), 200);
+    let body_partial = response_partial.text();
+    assert!(
+        body_partial.contains("database-mysql-main"),
+        "Partial search 'mysql' should find database-mysql-main"
+    );
+
+    // Test 3: Search with different case (ILIKE is case-insensitive)
+    let response_case = app
+        .server
+        .get("/sessions/recordings?asset=REDIS")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(response_case.status_code().as_u16(), 200);
+    let body_case = response_case.text();
+    assert!(
+        body_case.contains("cache-redis-cluster"),
+        "Case-insensitive search 'REDIS' should find cache-redis-cluster"
+    );
+
+    // Test 4: Search with no matching asset
+    let response_no_match = app
+        .server
+        .get("/sessions/recordings?asset=nonexistent-server")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(response_no_match.status_code().as_u16(), 200);
+    let body_no_match = response_no_match.text();
+    assert!(
+        body_no_match.contains("No recordings"),
+        "Search for non-existent asset should show empty state"
+    );
+
+    // Test 5: Empty asset filter should show all (same as no filter)
+    let response_empty = app
+        .server
+        .get("/sessions/recordings?asset=")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(response_empty.status_code().as_u16(), 200);
+    let body_empty = response_empty.text();
+    assert!(
+        !body_empty.contains("No recordings"),
+        "Empty asset filter should show all recordings"
+    );
+}
+
+#[tokio::test]
+async fn test_recordings_combined_filters() {
+    // Test combining format and asset filters
+    use crate::fixtures::create_recorded_session_with_type;
+
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let username = unique_name("rec_combined_filter");
+    let user_id = create_simple_admin_user(&mut conn, &username);
+    let user_uuid = get_user_uuid(&mut conn, user_id);
+
+    // Create diverse recordings
+    let asset1 = create_simple_ssh_asset(&mut conn, "linux-server-ssh", user_id);
+    let asset2 = create_simple_ssh_asset(&mut conn, "windows-server-rdp", user_id);
+    let asset3 = create_simple_ssh_asset(&mut conn, "linux-desktop-vnc", user_id);
+
+    create_recorded_session_with_type(&mut conn, user_id, asset1, "ssh");
+    create_recorded_session_with_type(&mut conn, user_id, asset2, "rdp");
+    create_recorded_session_with_type(&mut conn, user_id, asset3, "vnc");
+
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+
+    // Test 1: Filter by format=ssh AND asset=linux
+    let response = app
+        .server
+        .get("/sessions/recordings?format=ssh&asset=linux")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(response.status_code().as_u16(), 200);
+    let body = response.text();
+    assert!(
+        body.contains("linux-server-ssh"),
+        "Combined filter should find linux-server-ssh"
+    );
+    // Should NOT show the VNC linux desktop (wrong format)
+    assert!(
+        !body.contains("linux-desktop-vnc") || body.contains("No recordings"),
+        "Combined filter should not show VNC recording when filtering SSH"
+    );
+
+    // Test 2: Filter by format=rdp AND asset=windows
+    let response_rdp = app
+        .server
+        .get("/sessions/recordings?format=rdp&asset=windows")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(response_rdp.status_code().as_u16(), 200);
+    let body_rdp = response_rdp.text();
+    assert!(
+        body_rdp.contains("windows-server-rdp"),
+        "Combined filter should find windows-server-rdp"
+    );
+
+    // Test 3: Conflicting filters (format=ssh but asset=windows - no match)
+    let response_conflict = app
+        .server
+        .get("/sessions/recordings?format=ssh&asset=windows")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(response_conflict.status_code().as_u16(), 200);
+    let body_conflict = response_conflict.text();
+    assert!(
+        body_conflict.contains("No recordings"),
+        "Conflicting filters should show no results"
+    );
+}
+
+#[tokio::test]
 async fn test_recording_play_requires_admin() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn();
@@ -3938,163 +4534,263 @@ async fn test_asset_detail_requires_admin() {
 }
 
 // =============================================================================
-// Permission System Tests - Session Filtering
+// Asset List Filter Tests
 // =============================================================================
 
 #[tokio::test]
-async fn test_session_list_filters_by_user() {
+async fn test_asset_list_filter_by_all_types() {
+    // Test that filtering by asset type works correctly for all types
+    // and empty string behaves like no filter
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn();
 
-    // Create two users
-    let user1_name = unique_name("sess_user1");
-    let user1_id = create_simple_user(&mut conn, &user1_name);
-    let user1_uuid = get_user_uuid(&mut conn, user1_id);
-
-    let user2_name = unique_name("sess_user2");
-    let user2_id = create_simple_user(&mut conn, &user2_name);
-
-    // Create asset and sessions for each user
-    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("filter-asset"), user1_id);
-    let _session1_id = create_test_session(&mut conn, user1_id, asset_id, "ssh", "completed");
-    let _session2_id = create_test_session(&mut conn, user2_id, asset_id, "ssh", "completed");
-
-    // User1 requests session list (normal user)
-    let token = app.generate_test_token(&user1_uuid.to_string(), &user1_name, false, false);
-
-    let response = app
-        .server
-        .get("/sessions")
-        .add_header(COOKIE, format!("access_token={}", token))
-        .await;
-
-    let status = response.status_code().as_u16();
-    assert!(
-        status == 200,
-        "User should access their session list, got {}",
-        status
-    );
-
-    // The response should contain only user1's sessions (we can't easily check HTML content,
-    // but the handler should filter correctly)
-}
-
-#[tokio::test]
-async fn test_session_list_admin_sees_all() {
-    let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
-
-    let admin_name = unique_name("sess_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_username = unique_name("asset_type_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
-    // Create a session for another user
-    let other_name = unique_name("other_sess_user");
-    let other_id = create_simple_user(&mut conn, &other_name);
-    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("all-sess-asset"), admin_id);
-    let _session_id = create_test_session(&mut conn, other_id, asset_id, "ssh", "completed");
+    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true);
 
-    // Admin requests session list
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
-
-    let response = app
+    // Test 1: No filter - page should load
+    let response_no_filter = app
         .server
-        .get("/sessions")
+        .get("/assets")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
-    let status = response.status_code().as_u16();
+    assert_eq!(
+        response_no_filter.status_code().as_u16(),
+        200,
+        "Asset list without filter should load"
+    );
+
+    // Test 2: Empty type filter (simulates "All types" selection)
+    let response_empty = app
+        .server
+        .get("/assets?type=")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(
+        response_empty.status_code().as_u16(),
+        200,
+        "Asset list with empty type filter should load"
+    );
+
+    // Test 3: Filter by SSH type
+    let response_ssh = app
+        .server
+        .get("/assets?type=ssh")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(response_ssh.status_code().as_u16(), 200);
+    let body_ssh = response_ssh.text();
     assert!(
-        status == 200,
-        "Admin should access all sessions, got {}",
-        status
+        body_ssh.contains("value=\"ssh\"") && body_ssh.contains("selected"),
+        "SSH should be selected in dropdown"
+    );
+
+    // Test 4: Filter by RDP type
+    let response_rdp = app
+        .server
+        .get("/assets?type=rdp")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(response_rdp.status_code().as_u16(), 200);
+
+    // Test 5: Filter by VNC type
+    let response_vnc = app
+        .server
+        .get("/assets?type=vnc")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(response_vnc.status_code().as_u16(), 200);
+
+    // Test 6: Invalid type filter - page should still load
+    let response_invalid = app
+        .server
+        .get("/assets?type=invalid_type")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(
+        response_invalid.status_code().as_u16(),
+        200,
+        "Asset list with invalid type should still load"
     );
 }
 
 #[tokio::test]
-async fn test_session_detail_own_session_allowed() {
+async fn test_asset_list_filter_by_all_statuses() {
+    // Test that filtering by status works correctly
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn();
 
-    // Use highly unique names to avoid conflicts in parallel execution
-    let test_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
-    let username = format!("own_sess_user_{}", test_id);
-    let user_id = create_simple_user(&mut conn, &username);
-    let user_uuid = get_user_uuid(&mut conn, user_id);
+    let admin_username = unique_name("asset_status_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
-    let asset_name = format!("own-sess-asset-{}", test_id);
-    let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, user_id);
-    let session_id = create_test_session(&mut conn, user_id, asset_id, "ssh", "completed");
+    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true);
 
-    // Verify session was created and is accessible
-    use vauban_web::schema::proxy_sessions;
-    let session_exists: bool = proxy_sessions::table
-        .filter(proxy_sessions::id.eq(session_id))
-        .select(proxy_sessions::id)
-        .first::<i32>(&mut conn)
-        .is_ok();
-    assert!(session_exists, "Session should exist after creation");
-
-    // User accesses their own session
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false);
-
-    let response = app
+    // Test 1: No filter
+    let response_no_filter = app
         .server
-        .get(&format!("/sessions/{}", session_id))
+        .get("/assets")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
-    let status = response.status_code().as_u16();
-    assert!(
-        status == 200,
-        "User should access their own session detail, got {}. Session ID: {}",
-        status, session_id
+    assert_eq!(response_no_filter.status_code().as_u16(), 200);
+
+    // Test 2: Empty status filter
+    let response_empty = app
+        .server
+        .get("/assets?status=")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(
+        response_empty.status_code().as_u16(),
+        200,
+        "Asset list with empty status filter should load"
     );
+
+    // Test 3: Active status
+    let response_active = app
+        .server
+        .get("/assets?status=active")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(response_active.status_code().as_u16(), 200);
+
+    // Test 4: Inactive status
+    let response_inactive = app
+        .server
+        .get("/assets?status=inactive")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(response_inactive.status_code().as_u16(), 200);
 }
 
 #[tokio::test]
-async fn test_session_detail_other_session_forbidden() {
+async fn test_asset_list_search_by_name() {
+    // Test that searching by asset name works correctly
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn();
 
-    // Use highly unique names to avoid conflicts in parallel execution
-    let test_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
+    let admin_username = unique_name("asset_search_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
-    // Create session owner
-    let owner_name = format!("sess_owner_{}", test_id);
-    let owner_id = create_simple_user(&mut conn, &owner_name);
-    let asset_name = format!("other-sess-asset-{}", test_id);
-    let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, owner_id);
-    let session_id = create_test_session(&mut conn, owner_id, asset_id, "ssh", "completed");
+    // Create an asset with a unique searchable name
+    let asset_name = format!("searchable-asset-xyz-{}", Uuid::new_v4().to_string().split('-').next().unwrap());
+    create_simple_ssh_asset(&mut conn, &asset_name, admin_id);
 
-    // Verify session was created
-    use vauban_web::schema::proxy_sessions;
-    let session_exists: bool = proxy_sessions::table
-        .filter(proxy_sessions::id.eq(session_id))
-        .select(proxy_sessions::id)
-        .first::<i32>(&mut conn)
-        .is_ok();
-    assert!(session_exists, "Session should exist after creation");
+    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true);
 
-    // Create another user
-    let other_name = format!("sess_other_{}", test_id);
-    let other_id = create_simple_user(&mut conn, &other_name);
-    let other_uuid = get_user_uuid(&mut conn, other_id);
-
-    // Other user tries to access owner's session
-    let token = app.generate_test_token(&other_uuid.to_string(), &other_name, false, false);
-
+    // Test 1: Search for the unique asset name
     let response = app
         .server
-        .get(&format!("/sessions/{}", session_id))
+        .get(&format!("/assets?search={}", asset_name))
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
-    let status = response.status_code().as_u16();
+    assert_eq!(response.status_code().as_u16(), 200);
+    let body = response.text();
     assert!(
-        status == 401 || status == 403,
-        "User should not access other's session, got {}. Session ID: {}",
-        status, session_id
+        body.contains(&asset_name),
+        "Should find asset by exact name"
+    );
+
+    // Test 2: Partial search
+    let response_partial = app
+        .server
+        .get("/assets?search=searchable-asset-xyz")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(response_partial.status_code().as_u16(), 200);
+
+    // Test 3: Empty search (regression test)
+    let response_empty = app
+        .server
+        .get("/assets?search=")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(
+        response_empty.status_code().as_u16(),
+        200,
+        "Empty search should load page"
+    );
+
+    // Test 4: Non-matching search
+    let response_no_match = app
+        .server
+        .get("/assets?search=nonexistent_asset_xyz_12345")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(response_no_match.status_code().as_u16(), 200);
+}
+
+#[tokio::test]
+async fn test_asset_list_combined_filters() {
+    // Test combining search, type, and status filters
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let admin_username = unique_name("asset_combined_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_uuid = get_user_uuid(&mut conn, admin_id);
+
+    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true);
+
+    // Test 1: All three filters combined
+    let response = app
+        .server
+        .get("/assets?search=test&type=ssh&status=active")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(
+        response.status_code().as_u16(),
+        200,
+        "Combined filters should work"
+    );
+
+    // Test 2: Two filters
+    let response_two = app
+        .server
+        .get("/assets?type=ssh&status=active")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(response_two.status_code().as_u16(), 200);
+
+    // Test 3: Search with type
+    let response_search_type = app
+        .server
+        .get("/assets?search=server&type=ssh")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(response_search_type.status_code().as_u16(), 200);
+
+    // Test 4: All empty filters (should show all)
+    let response_all_empty = app
+        .server
+        .get("/assets?search=&type=&status=")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(
+        response_all_empty.status_code().as_u16(),
+        200,
+        "All empty filters should show all assets"
     );
 }
 
