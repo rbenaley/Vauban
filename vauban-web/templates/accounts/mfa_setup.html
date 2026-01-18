@@ -1,37 +1,86 @@
 {% extends "base.html" %}
 
-{% block title %}MFA Setup - {{ vauban.brand_name }}{% endblock %}
+{% block title %}Multi-Factor Authentication Setup - {{ vauban.brand_name }}{% endblock %}
 
 {% block content %}
-<div class="space-y-6">
-    <!-- Header -->
-    <div class="md:flex md:items-center md:justify-between">
-        <div class="min-w-0 flex-1">
-            <h2 class="text-2xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-3xl sm:tracking-tight">
-                Multi-Factor Authentication
-            </h2>
-            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
-                Secure your account with two-factor authentication
-            </p>
-        </div>
-    </div>
-
-    <div class="bg-white dark:bg-gray-800 shadow rounded-lg">
-        <div class="px-6 py-5 border-b border-gray-200 dark:border-gray-700">
-            <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Setup MFA</h3>
-        </div>
-        <div class="px-6 py-5">
-            <div class="text-center">
-                <img src="{{ qr_code_url }}" alt="QR Code" class="mx-auto mb-4">
-                <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">
-                    Scan this QR code with your authenticator app
+<div class="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900 py-12 px-4 sm:px-6 lg:px-8">
+    <div class="max-w-md w-full space-y-8">
+        <div class="bg-white dark:bg-gray-800 shadow rounded-lg p-6 space-y-6">
+            <!-- Step 1: Scan QR Code -->
+            <div>
+                <h3 class="text-lg font-medium text-gray-900 dark:text-white mb-2">
+                    1. Scan this QR code
+                </h3>
+                <p class="text-sm text-gray-600 dark:text-gray-400 mb-4">
+                    Use an authenticator app like Google Authenticator, Microsoft Authenticator, or Authy to scan this QR code.
                 </p>
-                <div class="bg-gray-100 dark:bg-gray-700 rounded p-4 font-mono text-sm">
-                    {{ secret }}
+                <div class="flex justify-center bg-white p-4 rounded-lg">
+                    <img src="data:image/png;base64,{{ qr_code_base64 }}" alt="QR Code for MFA setup" class="w-48 h-48">
                 </div>
             </div>
+
+            <!-- Step 2: Manual Entry -->
+            <div>
+                <h3 class="text-lg font-medium text-gray-900 dark:text-white mb-2">
+                    2. Or enter the key manually
+                </h3>
+                <p class="text-sm text-gray-600 dark:text-gray-400 mb-2">
+                    If you can't scan the QR code, enter this key in your authenticator app:
+                </p>
+                <div class="flex items-center space-x-2" x-data="{ copied: false }">
+                    <code class="flex-1 bg-gray-100 dark:bg-gray-700 rounded px-3 py-2 font-mono text-sm text-gray-900 dark:text-gray-100 break-all">{{ secret }}</code>
+                    <button type="button"
+                            @click="navigator.clipboard.writeText('{{ secret }}'); copied = true; setTimeout(() => copied = false, 2000)"
+                            class="p-2 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 focus:outline-none focus:ring-2 focus:ring-vauban-500 rounded"
+                            title="Copy to clipboard">
+                        <!-- Copy icon (double square) -->
+                        <svg x-show="!copied" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                        </svg>
+                        <!-- Check icon (after copy) -->
+                        <svg x-show="copied" x-cloak class="h-5 w-5 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                        </svg>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Step 3: Verify -->
+            <div>
+                <h3 class="text-lg font-medium text-gray-900 dark:text-white mb-2">
+                    3. Enter verification code
+                </h3>
+                <p class="text-sm text-gray-600 dark:text-gray-400 mb-4">
+                    Enter the 6-digit code from your authenticator app to complete setup.
+                </p>
+                <form action="/mfa/setup" method="POST" class="space-y-4">
+                    <input type="hidden" name="csrf_token" />
+                    <div>
+                        <label for="totp_code" class="sr-only">Verification Code</label>
+                        <input id="totp_code" 
+                               name="totp_code" 
+                               type="text" 
+                               inputmode="numeric"
+                               pattern="[0-9]{6}" 
+                               maxlength="6" 
+                               required
+                               autocomplete="one-time-code"
+                               class="appearance-none relative block w-full px-3 py-3 border border-gray-300 dark:border-gray-600 placeholder-gray-500 dark:placeholder-gray-400 text-gray-900 dark:text-white rounded-md focus:outline-none focus:ring-2 focus:ring-vauban-500 focus:border-vauban-500 text-center text-2xl font-mono tracking-widest dark:bg-gray-700"
+                               placeholder="000000">
+                    </div>
+                    <button type="submit"
+                            class="group relative w-full flex justify-center py-3 px-4 border border-transparent text-sm font-medium rounded-md text-white bg-vauban-600 hover:bg-vauban-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-vauban-500 disabled:opacity-50 disabled:cursor-not-allowed">
+                        <span class="absolute left-0 inset-y-0 flex items-center pl-3">
+                            <svg class="h-5 w-5 text-vauban-500 group-hover:text-vauban-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                            </svg>
+                        </span>
+                        Activate Two-Factor Authentication
+                    </button>
+                </form>
+            </div>
         </div>
+
     </div>
 </div>
 {% endblock %}
-

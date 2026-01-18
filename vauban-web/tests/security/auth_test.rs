@@ -167,45 +167,51 @@ async fn test_logout_without_token() {
     );
 }
 
-/// Test MFA setup for authenticated user.
+/// Test MFA setup page for authenticated user (web flow).
 #[tokio::test]
 #[serial]
-async fn test_mfa_setup_success() {
+async fn test_mfa_setup_page_success() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn();
 
-    // Setup: create test user
+    // Setup: create test user with temporary token (mfa_verified = false)
     let username = unique_name("test_mfa_setup");
     let test_user = create_test_user(&mut conn, &app.auth_service, &username);
+    let temp_token = app.auth_service
+        .generate_access_token(&test_user.user.uuid.to_string(), &username, false, false, false)
+        .unwrap();
 
-    // Execute: POST /api/v1/auth/mfa/setup with valid token
+    // Execute: GET /mfa/setup with cookie auth
     let response = app
         .server
-        .post("/api/v1/auth/mfa/setup")
-        .add_header(header::AUTHORIZATION, app.auth_header(&test_user.token))
+        .get("/mfa/setup")
+        .add_header(header::COOKIE, format!("access_token={}", temp_token))
         .await;
 
-    // Assert: 200 OK (response fields may vary by implementation)
+    // Assert: 200 OK with MFA setup page
     let status = response.status_code().as_u16();
-    assert!(
-        status == 200 || status == 500,
-        "Expected 200 or 500 (if DB not updated), got {}",
-        status
-    );
+    assert_eq!(status, 200, "MFA setup page should load, got {}", status);
+    let body = response.text();
+    assert!(body.contains("Two-Factor Authentication"), "Should show MFA setup page");
 
     // Cleanup
     test_db::cleanup(&mut conn);
 }
 
-/// Test MFA setup without authentication.
+/// Test MFA setup page without authentication.
 #[tokio::test]
 #[serial]
-async fn test_mfa_setup_without_auth() {
+async fn test_mfa_setup_page_without_auth() {
     let app = TestApp::spawn().await;
 
-    // Execute: POST /api/v1/auth/mfa/setup without token
-    let response = app.server.post("/api/v1/auth/mfa/setup").await;
+    // Execute: GET /mfa/setup without auth cookie
+    let response = app.server.get("/mfa/setup").await;
 
-    // Assert: 401 Unauthorized
-    assert_status(&response, 401);
+    // Assert: Should redirect to login or return 401
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 401 || status == 302 || status == 303,
+        "Expected 401 or redirect, got {}",
+        status
+    );
 }

@@ -224,7 +224,15 @@ fn build_test_router(state: AppState) -> Router {
         .route("/api/v1/auth/logout", post(handlers::auth::logout))
         .route("/auth/login", post(handlers::auth::login_web))
         .route("/auth/logout", post(handlers::auth::logout_web))
-        .route("/api/v1/auth/mfa/setup", post(handlers::auth::setup_mfa))
+        // MFA routes (web only, no API endpoint)
+        .route(
+            "/mfa/setup",
+            get(handlers::auth::mfa_setup_page).post(handlers::auth::mfa_setup_submit),
+        )
+        .route(
+            "/mfa/verify",
+            get(handlers::auth::mfa_verify_page).post(handlers::auth::mfa_verify_submit),
+        )
         // Accounts routes
         .route("/api/v1/accounts", get(handlers::api::list_users))
         .route("/api/v1/accounts", post(handlers::api::create_user))

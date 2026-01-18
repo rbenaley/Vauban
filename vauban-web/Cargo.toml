@@ -131,6 +131,10 @@ path = "src/bin/reset_password.rs"
 name = "create_superuser"
 path = "src/bin/create_superuser.rs"
 
+[[bin]]
+name = "reset_2FA"
+path = "src/bin/reset_2FA.rs"
+
 [profile.release]
 opt-level = 3
 lto = true

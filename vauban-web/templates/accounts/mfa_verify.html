@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+
+{% block title %}Verify Identity - {{ vauban.brand_name }}{% endblock %}
+
+{% block content %}
+<div class="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900 py-12 px-4 sm:px-6 lg:px-8">
+    <div class="max-w-md w-full space-y-8 -mt-32">
+        <div>
+            <!-- VAUBAN Logo -->
+            <div class="flex justify-center">
+                <svg class="h-24 w-auto text-vauban-600 dark:text-vauban-400" viewBox="0 0 308 230" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <g transform="translate(-11.3741,-23.1679)">
+                        <path d="M58.893,236.106L80.112,215.658L78.954,209.485L100.22,185.269" stroke="currentColor" stroke-width="4" fill="none"/>
+                        <path d="M106.732,181.707L138.368,183.251L141.454,187.88L191.223,188.266L193.923,182.865L225.992,180.936" stroke="currentColor" stroke-width="4" fill="none"/>
+                        <path d="M232.48,183.703L256.038,207.556L254.109,212.186L274.556,233.019" stroke="currentColor" stroke-width="4" fill="none"/>
+                        <path d="M26.871,225.689L46.161,216.43L55.42,195.211" stroke="currentColor" stroke-width="4" fill="none"/>
+                        <path d="M70.852,197.525L62.751,184.408L84.356,141.584L132.967,157.016L134.51,170.519" stroke="currentColor" stroke-width="4" fill="none"/>
+                        <path d="M196.238,170.905L197.974,157.016L248.322,140.041L271.084,182.093L262.21,194.825" stroke="currentColor" stroke-width="4" fill="none"/>
+                        <path d="M277.257,192.51L288.445,214.886L304.649,222.988" stroke="currentColor" stroke-width="4" fill="none"/>
+                        <path d="M155.729,142.422L155.729,138.757L165.374,127.761L175.156,138.578L175.019,142.619" stroke="currentColor" stroke-width="4" fill="none"/>
+                        <path d="M191.03,137.726L190.644,131.167L165.499,104.195L140.297,131.167L139.911,137.726" stroke="currentColor" stroke-width="4" fill="none"/>
+                    </g>
+                </svg>
+            </div>
+            <h2 class="mt-6 text-center text-3xl font-extrabold text-gray-900 dark:text-white">
+                Two-Factor Authentication
+            </h2>
+            <p class="mt-2 text-center text-sm text-gray-600 dark:text-gray-400">
+                Enter the code from your authenticator app
+            </p>
+        </div>
+
+        <form action="/mfa/verify" method="POST" class="mt-8 space-y-6">
+            <input type="hidden" name="csrf_token" />
+
+            <div class="space-y-4">
+                <div>
+                    <label for="totp_code" class="sr-only">Verification Code</label>
+                    <input id="totp_code" 
+                           name="totp_code" 
+                           type="text" 
+                           inputmode="numeric"
+                           pattern="[0-9]{6}" 
+                           maxlength="6" 
+                           required
+                           autofocus
+                           autocomplete="one-time-code"
+                           class="appearance-none relative block w-full px-3 py-4 border border-gray-300 dark:border-gray-600 placeholder-gray-500 dark:placeholder-gray-400 text-gray-900 dark:text-white rounded-md focus:outline-none focus:ring-2 focus:ring-vauban-500 focus:border-vauban-500 text-center text-3xl font-mono tracking-widest dark:bg-gray-700"
+                           placeholder="000000">
+                </div>
+                <p class="text-center text-sm text-gray-500 dark:text-gray-400">
+                    Open your authenticator app and enter the 6-digit code.
+                </p>
+            </div>
+
+            <div>
+                <button type="submit"
+                        class="group relative w-full flex justify-center py-3 px-4 border border-transparent text-sm font-medium rounded-md text-white bg-vauban-600 hover:bg-vauban-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-vauban-500 disabled:opacity-50 disabled:cursor-not-allowed">
+                    <span class="absolute left-0 inset-y-0 flex items-center pl-3">
+                        <svg class="h-5 w-5 text-vauban-500 group-hover:text-vauban-400" fill="currentColor" viewBox="0 0 20 20">
+                            <path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd" />
+                        </svg>
+                    </span>
+                    Verify
+                </button>
+            </div>
+        </form>
+
+        <div class="text-center">
+            <p class="text-sm text-gray-600 dark:text-gray-400">
+                Having trouble? Contact your administrator for assistance.
+            </p>
+        </div>
+    </div>
+</div>
+{% endblock %}
