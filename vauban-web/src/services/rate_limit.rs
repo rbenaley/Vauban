@@ -190,7 +190,13 @@ impl RateLimiter {
         }
 
         let count = entry.count;
-        let reset_in_secs = (window_duration - elapsed).as_secs();
+
+        // Calculate time until reset using saturating_sub to prevent overflow panic.
+        // After window reset, we need to recalculate elapsed from the new window_start.
+        // Use saturating_sub as a safety net in case of timing edge cases.
+        let current_elapsed = now.duration_since(entry.window_start);
+        let reset_in_secs = window_duration.saturating_sub(current_elapsed).as_secs();
+
         let allowed = count <= limit;
         let remaining = if count >= limit { 0 } else { limit - count };
 
@@ -317,5 +323,109 @@ mod tests {
             assert!(store.contains_key("recent_ip"));
             assert!(!store.contains_key("old_ip"));
         }
+    }
+
+    // ==================== Duration Overflow Prevention Tests ====================
+
+    #[tokio::test]
+    async fn test_reset_in_secs_does_not_overflow_after_window_reset() {
+        // This test ensures that reset_in_secs calculation doesn't panic
+        // when the window has been reset (elapsed was >= window_duration)
+        let limiter = RateLimiter::new(false, None, 10).unwrap();
+
+        if let RateLimiter::InMemory { store, .. } = &limiter {
+            // Simulate an entry with an old window that will trigger a reset
+            store.insert(
+                "old_window_ip".to_string(),
+                RateLimitEntry {
+                    count: 5,
+                    window_start: Instant::now() - Duration::from_secs(120), // 2 minutes ago
+                },
+            );
+
+            // This should not panic - the window will be reset and reset_in_secs calculated safely
+            let result = limiter.check("old_window_ip").await.unwrap();
+
+            // After reset, count should be 1 and we should have ~60 seconds until next reset
+            assert!(result.allowed);
+            assert_eq!(result.remaining, 9); // limit (10) - count (1) = 9
+            // reset_in_secs should be close to 60 (the full window)
+            assert!(result.reset_in_secs <= 60);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_reset_in_secs_with_very_old_entry() {
+        // Test with an extremely old entry to ensure no overflow
+        let limiter = RateLimiter::new(false, None, 5).unwrap();
+
+        if let RateLimiter::InMemory { store, .. } = &limiter {
+            // Entry from a very long time ago (1 hour)
+            store.insert(
+                "very_old_ip".to_string(),
+                RateLimitEntry {
+                    count: 100,
+                    window_start: Instant::now() - Duration::from_secs(3600),
+                },
+            );
+
+            // Should not panic
+            let result = limiter.check("very_old_ip").await.unwrap();
+
+            assert!(result.allowed);
+            assert_eq!(result.remaining, 4); // After reset, count is 1
+        }
+    }
+
+    #[test]
+    fn test_saturating_sub_behavior() {
+        // Verify that saturating_sub returns Duration::ZERO instead of panicking
+        let small = Duration::from_secs(10);
+        let large = Duration::from_secs(100);
+
+        // This would panic with regular subtraction: small - large
+        let result = small.saturating_sub(large);
+        assert_eq!(result, Duration::ZERO);
+
+        // Normal case works as expected
+        let normal = large.saturating_sub(small);
+        assert_eq!(normal, Duration::from_secs(90));
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_reset_in_secs_is_reasonable() {
+        let limiter = RateLimiter::new(false, None, 10).unwrap();
+
+        // First request
+        let result = limiter.check("new_ip").await.unwrap();
+
+        // reset_in_secs should be between 0 and 60 (the window size)
+        assert!(
+            result.reset_in_secs <= 60,
+            "reset_in_secs should be <= 60, got {}",
+            result.reset_in_secs
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_multiple_requests_reset_time_decreases() {
+        let limiter = RateLimiter::new(false, None, 100).unwrap();
+
+        let result1 = limiter.check("timing_ip").await.unwrap();
+        let first_reset = result1.reset_in_secs;
+
+        // Wait a tiny bit
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let result2 = limiter.check("timing_ip").await.unwrap();
+        let second_reset = result2.reset_in_secs;
+
+        // Second reset time should be <= first (time has passed)
+        assert!(
+            second_reset <= first_reset,
+            "Reset time should decrease or stay same: {} vs {}",
+            second_reset,
+            first_reset
+        );
     }
 }

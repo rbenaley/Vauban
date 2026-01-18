@@ -183,8 +183,9 @@ pub async fn user_list(
     // Load users from database
     let mut conn = get_connection(&state.db_pool)?;
 
-    let search_filter = params.get("search").cloned();
-    let status_filter = params.get("status").cloned();
+    // Filter out empty strings - form sends empty string when "All" is selected
+    let search_filter = params.get("search").filter(|s| !s.is_empty()).cloned();
+    let status_filter = params.get("status").filter(|s| !s.is_empty()).cloned();
 
     let mut query = users::table
         .filter(users::is_deleted.eq(false))
@@ -1962,9 +1963,10 @@ pub async fn asset_list(
     // Load assets from database
     let mut conn = get_connection(&state.db_pool)?;
 
-    let search_filter = params.get("search").cloned();
-    let type_filter = params.get("type").cloned();
-    let status_filter = params.get("status").cloned();
+    // Filter out empty strings - form sends empty string when "All" is selected
+    let search_filter = params.get("search").filter(|s| !s.is_empty()).cloned();
+    let type_filter = params.get("type").filter(|s| !s.is_empty()).cloned();
+    let status_filter = params.get("status").filter(|s| !s.is_empty()).cloned();
 
     let mut query = assets::table
         .filter(assets::is_deleted.eq(false))
@@ -2508,9 +2510,10 @@ pub async fn session_list(
     // Load sessions from database
     let mut conn = get_connection(&state.db_pool)?;
 
-    let status_filter = params.get("status").cloned();
-    let type_filter = params.get("type").cloned();
-    let asset_filter = params.get("asset").cloned();
+    // Filter out empty strings - form sends empty string when "All" is selected
+    let status_filter = params.get("status").filter(|s| !s.is_empty()).cloned();
+    let type_filter = params.get("type").filter(|s| !s.is_empty()).cloned();
+    let asset_filter = params.get("asset").filter(|s| !s.is_empty()).cloned();
 
     // Determine if user is admin
     let user_is_admin = is_admin(&auth_user);
@@ -3129,7 +3132,8 @@ pub async fn approval_list(
         base.into_fields();
 
     let mut conn = get_connection(&state.db_pool)?;
-    let status_filter = params.get("status").cloned();
+    // Filter out empty strings - "All statuses" sends status="" which should be treated as None
+    let status_filter = params.get("status").filter(|s| !s.is_empty()).cloned();
     let page = params
         .get("page")
         .and_then(|s| s.parse::<i32>().ok())
@@ -3490,7 +3494,8 @@ pub async fn group_list(
         base.into_fields();
 
     let mut conn = get_connection(&state.db_pool)?;
-    let search_filter = params.get("search").cloned();
+    // Filter out empty strings - form sends empty string when search is cleared
+    let search_filter = params.get("search").filter(|s| !s.is_empty()).cloned();
 
     // Query groups with member count
     // Groups list query - migrated to Diesel DSL
@@ -4666,7 +4671,8 @@ pub async fn asset_group_list(
         base.into_fields();
 
     let mut conn = get_connection(&state.db_pool)?;
-    let search_filter = params.get("search").cloned();
+    // Filter out empty strings - form sends empty string when search is cleared
+    let search_filter = params.get("search").filter(|s| !s.is_empty()).cloned();
 
     // NOTE: Raw SQL required - subquery in SELECT (asset_count) not supported by Diesel DSL
     let groups_data: Vec<AssetGroupQueryResult> = if let Some(ref s) = search_filter {
