@@ -281,6 +281,10 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             "/ws/notifications",
             get(handlers::websocket::notifications_ws),
         )
+        .route(
+            "/ws/sessions/active",
+            get(handlers::websocket::active_sessions_ws),
+        )
         // Authentication pages and form handlers
         .route("/login", get(handlers::web::login_page))
         .route("/auth/login", post(handlers::auth::login_web))

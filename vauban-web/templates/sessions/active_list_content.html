@@ -1,0 +1,64 @@
+<!-- Active sessions list content (WebSocket partial) -->
+{% if !sessions.is_empty() %}
+<ul role="list" class="divide-y divide-gray-200 dark:divide-gray-700">
+    {% for session in sessions %}
+    <li class="px-6 py-4 hover:bg-gray-50 dark:hover:bg-gray-700">
+        <div class="flex items-center justify-between">
+            <div class="flex items-center space-x-4">
+                <div class="flex-shrink-0">
+                    <span class="inline-flex h-10 w-10 items-center justify-center rounded-full bg-green-100 dark:bg-green-900/50">
+                        <svg class="h-5 w-5 text-green-600 dark:text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5.636 18.364a9 9 0 010-12.728m12.728 0a9 9 0 010 12.728m-9.9-2.829a5 5 0 010-7.07m7.072 0a5 5 0 010 7.07M13 12a1 1 0 11-2 0 1 1 0 012 0z"/>
+                        </svg>
+                    </span>
+                </div>
+                <div class="flex-1 min-w-0">
+                    <div class="flex items-center space-x-2">
+                        <p class="text-sm font-medium text-gray-900 dark:text-white truncate">
+                            {{ session.username }}
+                        </p>
+                        <span class="text-gray-400 dark:text-gray-500">→</span>
+                        <p class="text-sm font-medium text-gray-900 dark:text-white truncate">
+                            {{ session.asset_name }}
+                        </p>
+                        <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {{ session.session_type_class() }}">
+                            {{ session.session_type|upper }}
+                        </span>
+                    </div>
+                    <div class="mt-1 flex items-center text-sm text-gray-500 dark:text-gray-400">
+                        <span>{{ session.asset_hostname }}</span>
+                        <span class="mx-2">•</span>
+                        <span>{{ session.client_ip }}</span>
+                        <span class="mx-2">•</span>
+                        <span>Connected {{ session.connected_at }}</span>
+                    </div>
+                </div>
+            </div>
+            <div class="flex items-center space-x-4">
+                <div class="text-right">
+                    <p class="text-sm font-medium text-gray-900 dark:text-white">{{ session.duration }}</p>
+                    <p class="text-xs text-gray-500 dark:text-gray-400">Duration</p>
+                </div>
+                <button type="button"
+                        class="inline-flex items-center rounded-md bg-red-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-red-500">
+                    <svg class="-ml-0.5 mr-1 h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd" d="M4.28 4.28a.75.75 0 011.06 0L10 8.94l4.66-4.66a.75.75 0 111.06 1.06L11.06 10l4.66 4.66a.75.75 0 11-1.06 1.06L10 11.06l-4.66 4.66a.75.75 0 01-1.06-1.06L8.94 10 4.28 5.34a.75.75 0 010-1.06z" clip-rule="evenodd"/>
+                    </svg>
+                    Disconnect
+                </button>
+            </div>
+        </div>
+    </li>
+    {% endfor %}
+</ul>
+{% else %}
+<div class="px-6 py-12 text-center">
+    <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+    </svg>
+    <h3 class="mt-2 text-sm font-semibold text-gray-900 dark:text-white">No active sessions</h3>
+    <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+        There are no active sessions at this time.
+    </p>
+</div>
+{% endif %}

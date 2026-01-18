@@ -215,6 +215,10 @@ fn build_test_router(state: AppState) -> Router {
             "/ws/notifications",
             get(handlers::websocket::notifications_ws),
         )
+        .route(
+            "/ws/sessions/active",
+            get(handlers::websocket::active_sessions_ws),
+        )
         // Auth routes
         .route("/api/v1/auth/login", post(handlers::auth::login))
         .route("/api/v1/auth/logout", post(handlers::auth::logout))
