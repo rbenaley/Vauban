@@ -14,8 +14,10 @@ const DEFAULT_CHANNEL_CAPACITY: usize = 100;
 pub enum WsChannel {
     /// Dashboard statistics updates.
     DashboardStats,
-    /// Active sessions list updates.
+    /// Active sessions list updates (dashboard widget).
     ActiveSessions,
+    /// Active sessions full list updates (dedicated page).
+    ActiveSessionsList,
     /// Recent activity feed updates.
     RecentActivity,
     /// User notifications.
@@ -34,6 +36,7 @@ impl WsChannel {
         match self {
             WsChannel::DashboardStats => "dashboard:stats".to_string(),
             WsChannel::ActiveSessions => "dashboard:active-sessions".to_string(),
+            WsChannel::ActiveSessionsList => "sessions:active-list".to_string(),
             WsChannel::RecentActivity => "dashboard:recent-activity".to_string(),
             WsChannel::Notifications => "notifications".to_string(),
             WsChannel::SessionLive(id) => format!("session:{}", id),
@@ -47,6 +50,7 @@ impl WsChannel {
         match s {
             "dashboard:stats" => Some(WsChannel::DashboardStats),
             "dashboard:active-sessions" => Some(WsChannel::ActiveSessions),
+            "sessions:active-list" => Some(WsChannel::ActiveSessionsList),
             "dashboard:recent-activity" => Some(WsChannel::RecentActivity),
             "notifications" => Some(WsChannel::Notifications),
             s if s.starts_with("session:") => {
@@ -313,6 +317,7 @@ mod tests {
         let channels = vec![
             WsChannel::DashboardStats,
             WsChannel::ActiveSessions,
+            WsChannel::ActiveSessionsList,
             WsChannel::RecentActivity,
             WsChannel::Notifications,
             WsChannel::SessionLive("test-id".to_string()),
@@ -323,6 +328,20 @@ mod tests {
             let parsed = WsChannel::parse(&str_val);
             assert_eq!(parsed, Some(channel));
         }
+    }
+
+    #[test]
+    fn test_ws_channel_active_sessions_list() {
+        let channel = WsChannel::ActiveSessionsList;
+        assert_eq!(channel.as_str(), "sessions:active-list");
+    }
+
+    #[test]
+    fn test_ws_channel_parse_active_sessions_list() {
+        assert_eq!(
+            WsChannel::parse("sessions:active-list"),
+            Some(WsChannel::ActiveSessionsList)
+        );
     }
 
     #[test]

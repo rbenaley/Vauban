@@ -181,6 +181,62 @@ async fn test_notifications_ws_requires_auth() {
     );
 }
 
+// ==================== Active Sessions List WebSocket Tests ====================
+
+/// Test active sessions list WebSocket endpoint exists.
+#[tokio::test]
+#[serial]
+async fn test_active_sessions_ws_endpoint_exists() {
+    let app = TestApp::spawn().await;
+    let admin = create_admin_user(
+        &mut app.get_conn(),
+        &app.auth_service,
+        &unique_name("wsactivesessions"),
+    );
+    test_db::cleanup(&mut app.get_conn());
+
+    let response = app
+        .server
+        .get("/ws/sessions/active")
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::UPGRADE, "websocket")
+        .add_header(header::CONNECTION, "Upgrade")
+        .add_header(header::SEC_WEBSOCKET_KEY, "dGhlIHNhbXBsZSBub25jZQ==")
+        .add_header(header::SEC_WEBSOCKET_VERSION, "13")
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 101 || status == 400 || status == 426,
+        "Expected 101, 400, or 426, got {}",
+        status
+    );
+}
+
+/// Test active sessions list WebSocket requires authentication.
+#[tokio::test]
+#[serial]
+async fn test_active_sessions_ws_requires_auth() {
+    let app = TestApp::spawn().await;
+    test_db::cleanup(&mut app.get_conn());
+
+    let response = app
+        .server
+        .get("/ws/sessions/active")
+        .add_header(header::UPGRADE, "websocket")
+        .add_header(header::CONNECTION, "Upgrade")
+        .add_header(header::SEC_WEBSOCKET_KEY, "dGhlIHNhbXBsZSBub25jZQ==")
+        .add_header(header::SEC_WEBSOCKET_VERSION, "13")
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 401 || status == 303 || status == 400 || status == 426,
+        "Expected 401, 303, 400, or 426, got {}",
+        status
+    );
+}
+
 // ==================== Broadcast Service Tests ====================
 
 /// Test that broadcast service is functional.
@@ -286,6 +342,10 @@ async fn test_ws_channel_string_conversion() {
     assert_eq!(
         WsChannel::ActiveSessions.as_str(),
         "dashboard:active-sessions"
+    );
+    assert_eq!(
+        WsChannel::ActiveSessionsList.as_str(),
+        "sessions:active-list"
     );
     assert_eq!(
         WsChannel::RecentActivity.as_str(),

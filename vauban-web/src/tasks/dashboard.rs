@@ -15,6 +15,10 @@ use crate::templates::dashboard::widgets::{
     ActiveSessionItem, ActiveSessionsWidget, ActivityItem, RecentActivityWidget, StatsData,
     StatsWidget,
 };
+use crate::templates::sessions::{
+    ActiveListContentWidget, ActiveListStatsWidget,
+    ActiveSessionItem as FullActiveSessionItem,
+};
 
 /// Interval for stats updates (30 seconds).
 const STATS_INTERVAL_SECS: u64 = 30;
@@ -86,6 +90,7 @@ async fn sessions_updater(broadcast: Arc<BroadcastService>, db_pool: Arc<DbPool>
     loop {
         ticker.tick().await;
 
+        // Update dashboard widget (ActiveSessions channel)
         match fetch_active_sessions(&db_pool) {
             Ok(sessions) => {
                 let template = ActiveSessionsWidget { sessions };
@@ -100,6 +105,40 @@ async fn sessions_updater(broadcast: Arc<BroadcastService>, db_pool: Arc<DbPool>
                 }
             }
             Err(e) => error!(error = %e, "Failed to fetch active sessions"),
+        }
+
+        // Update full active sessions list page (ActiveSessionsList channel)
+        match fetch_active_sessions_full(&db_pool) {
+            Ok(sessions) => {
+                // Send stats update
+                let stats_widget = ActiveListStatsWidget {
+                    sessions: sessions.clone(),
+                };
+                if let Ok(html) = stats_widget.render() {
+                    let msg = WsMessage::new("ws-sessions-stats", html);
+                    if broadcast
+                        .send(&WsChannel::ActiveSessionsList, msg)
+                        .await
+                        .is_err()
+                    {
+                        debug!("No subscribers for sessions list stats channel");
+                    }
+                }
+
+                // Send list content update
+                let content_widget = ActiveListContentWidget { sessions };
+                if let Ok(html) = content_widget.render() {
+                    let msg = WsMessage::new("ws-sessions-list", html);
+                    if broadcast
+                        .send(&WsChannel::ActiveSessionsList, msg)
+                        .await
+                        .is_err()
+                    {
+                        debug!("No subscribers for sessions list content channel");
+                    }
+                }
+            }
+            Err(e) => error!(error = %e, "Failed to fetch active sessions for list page"),
         }
     }
 }
@@ -199,6 +238,54 @@ fn fetch_active_sessions(db_pool: &DbPool) -> Result<Vec<ActiveSessionItem>, Str
             }
         })
         .collect())
+}
+
+/// Fetch active sessions with full details for the dedicated page.
+fn fetch_active_sessions_full(db_pool: &DbPool) -> Result<Vec<FullActiveSessionItem>, String> {
+    let mut conn = get_connection(db_pool).map_err(|e| e.to_string())?;
+
+    use crate::models::session::ProxySession;
+    use crate::schema::proxy_sessions::dsl::*;
+
+    let sessions: Vec<ProxySession> = proxy_sessions
+        .filter(status.eq("active"))
+        .order(created_at.desc())
+        .load(&mut conn)
+        .unwrap_or_default();
+
+    let now = Utc::now();
+    Ok(sessions
+        .into_iter()
+        .map(|s| {
+            let duration_secs = now.signed_duration_since(s.created_at).num_seconds();
+            let duration_str = format_duration(duration_secs);
+            FullActiveSessionItem {
+                uuid: s.uuid.to_string(),
+                username: format!("User {}", s.user_id),
+                asset_name: format!("Asset {}", s.asset_id),
+                asset_hostname: s.client_ip.to_string(),
+                session_type: s.session_type.clone(),
+                client_ip: s.client_ip.to_string(),
+                connected_at: s.created_at.format("%Y-%m-%d %H:%M").to_string(),
+                duration: duration_str,
+            }
+        })
+        .collect())
+}
+
+/// Format duration in seconds to human-readable string.
+fn format_duration(seconds: i64) -> String {
+    if seconds < 60 {
+        format!("{}s", seconds)
+    } else if seconds < 3600 {
+        let mins = seconds / 60;
+        let secs = seconds % 60;
+        format!("{}m {}s", mins, secs)
+    } else {
+        let hours = seconds / 3600;
+        let mins = (seconds % 3600) / 60;
+        format!("{}h {}m", hours, mins)
+    }
 }
 
 /// Fetch recent activity from database.

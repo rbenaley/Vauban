@@ -1,0 +1,18 @@
+<!-- Active sessions stats (WebSocket partial) -->
+<div class="bg-white dark:bg-gray-800 overflow-hidden shadow rounded-lg">
+    <div class="p-5">
+        <div class="flex items-center">
+            <div class="flex-shrink-0">
+                <svg class="h-6 w-6 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+            </div>
+            <div class="ml-5 w-0 flex-1">
+                <dl>
+                    <dt class="text-sm font-medium text-gray-500 dark:text-gray-400 truncate">Active Sessions</dt>
+                    <dd class="text-lg font-medium text-gray-900 dark:text-white">{{ sessions.len() }}</dd>
+                </dl>
+            </div>
+        </div>
+    </div>
+</div>

@@ -545,6 +545,193 @@ async fn handle_notifications_socket(
     );
 }
 
+/// Active sessions list WebSocket handler.
+///
+/// Establishes a WebSocket connection for real-time active sessions list updates.
+/// Used by the /sessions/active page.
+pub async fn active_sessions_ws(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+    user: AuthUser,
+) -> impl IntoResponse {
+    info!(user = %user.username, "Active sessions list WebSocket connection requested");
+    ws.on_upgrade(move |socket| handle_active_sessions_socket(socket, state, user))
+}
+
+/// Handle active sessions list WebSocket connection.
+async fn handle_active_sessions_socket(socket: WebSocket, state: AppState, user: AuthUser) {
+    let (mut sender, mut receiver) = socket.split();
+
+    info!(user = %user.username, "Active sessions list WebSocket connected");
+
+    // Send initial data immediately on connection
+    if let Err(e) = send_initial_active_sessions_data(&mut sender, &state).await {
+        error!(user = %user.username, error = %e, "Failed to send initial active sessions data");
+        return;
+    }
+    debug!(user = %user.username, "Initial active sessions data sent");
+
+    // Subscribe to active sessions list channel for future updates
+    let mut sessions_rx = state
+        .broadcast
+        .subscribe(&WsChannel::ActiveSessionsList)
+        .await;
+
+    // Create ping interval to keep connection alive
+    let mut ping_interval = interval(Duration::from_secs(PING_INTERVAL_SECS));
+
+    // Flag to track if connection should close
+    let mut should_close = false;
+
+    // Main loop: handle incoming messages, broadcast updates, and keep-alive pings
+    loop {
+        tokio::select! {
+            // Handle incoming messages from client
+            msg = receiver.next() => {
+                match msg {
+                    Some(Ok(Message::Text(text))) => {
+                        debug!(user = %user.username, message = %text, "Received WS text message");
+                    }
+                    Some(Ok(Message::Ping(_))) => {
+                        debug!(user = %user.username, "Received WS ping");
+                    }
+                    Some(Ok(Message::Pong(_))) => {
+                        debug!(user = %user.username, "Received WS pong");
+                    }
+                    Some(Ok(Message::Close(_))) => {
+                        info!(user = %user.username, "Client requested close");
+                        should_close = true;
+                    }
+                    Some(Err(e)) => {
+                        error!(user = %user.username, error = %e, "WebSocket error");
+                        should_close = true;
+                    }
+                    None => {
+                        info!(user = %user.username, "WebSocket stream ended");
+                        should_close = true;
+                    }
+                    _ => {}
+                }
+            }
+
+            // Send periodic ping to keep connection alive
+            _ = ping_interval.tick() => {
+                if sender.send(Message::Ping(vec![].into())).await.is_err() {
+                    warn!(user = %user.username, "Failed to send ping, closing");
+                    should_close = true;
+                } else {
+                    debug!(user = %user.username, "Sent WS ping");
+                }
+            }
+
+            // Active sessions list channel updates
+            result = sessions_rx.recv() => {
+                if let Ok(html) = result
+                    && sender.send(Message::Text(html.into())).await.is_err()
+                {
+                    should_close = true;
+                }
+            }
+        }
+
+        if should_close {
+            break;
+        }
+    }
+
+    info!(user = %user.username, "Active sessions list WebSocket disconnected");
+}
+
+/// Send initial active sessions data immediately on WebSocket connection.
+async fn send_initial_active_sessions_data(
+    sender: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    state: &AppState,
+) -> Result<(), String> {
+    use crate::services::broadcast::WsMessage;
+    use crate::templates::sessions::{ActiveListContentWidget, ActiveListStatsWidget};
+
+    // Fetch active sessions
+    let sessions = fetch_active_sessions_list(state)?;
+
+    // Send stats widget
+    let stats_widget = ActiveListStatsWidget {
+        sessions: sessions.clone(),
+    };
+    if let Ok(html) = stats_widget.render() {
+        let msg = WsMessage::new("ws-sessions-stats", html);
+        sender
+            .send(Message::Text(msg.to_htmx_html().into()))
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    // Send sessions list content
+    let content_widget = ActiveListContentWidget { sessions };
+    if let Ok(html) = content_widget.render() {
+        let msg = WsMessage::new("ws-sessions-list", html);
+        sender
+            .send(Message::Text(msg.to_htmx_html().into()))
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+/// Fetch active sessions list for the dedicated page.
+fn fetch_active_sessions_list(
+    state: &AppState,
+) -> Result<Vec<crate::templates::sessions::ActiveSessionItem>, String> {
+    use crate::models::session::ProxySession;
+    use crate::templates::sessions::ActiveSessionItem;
+    use chrono::Utc;
+    use diesel::prelude::*;
+
+    let mut conn = get_connection(&state.db_pool).map_err(|e| e.to_string())?;
+
+    use crate::schema::proxy_sessions::dsl::*;
+
+    let sessions: Vec<ProxySession> = proxy_sessions
+        .filter(status.eq("active"))
+        .order(created_at.desc())
+        .load(&mut conn)
+        .unwrap_or_default();
+
+    let now = Utc::now();
+    Ok(sessions
+        .into_iter()
+        .map(|s| {
+            let duration_secs = now.signed_duration_since(s.created_at).num_seconds();
+            let duration_str = format_duration(duration_secs);
+            ActiveSessionItem {
+                uuid: s.uuid.to_string(),
+                username: format!("User {}", s.user_id),
+                asset_name: format!("Asset {}", s.asset_id),
+                asset_hostname: s.client_ip.to_string(),
+                session_type: s.session_type.clone(),
+                client_ip: s.client_ip.to_string(),
+                connected_at: s.created_at.format("%Y-%m-%d %H:%M").to_string(),
+                duration: duration_str,
+            }
+        })
+        .collect())
+}
+
+/// Format duration in seconds to human-readable string.
+fn format_duration(seconds: i64) -> String {
+    if seconds < 60 {
+        format!("{}s", seconds)
+    } else if seconds < 3600 {
+        let mins = seconds / 60;
+        let secs = seconds % 60;
+        format!("{}m {}s", mins, secs)
+    } else {
+        let hours = seconds / 3600;
+        let mins = (seconds % 3600) / 60;
+        format!("{}h {}m", hours, mins)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -570,9 +757,39 @@ mod tests {
     }
 
     #[test]
+    fn test_ws_channel_active_sessions_list() {
+        let channel = WsChannel::ActiveSessionsList;
+        assert_eq!(channel.as_str(), "sessions:active-list");
+    }
+
+    #[test]
     fn test_ws_channel_recent_activity() {
         let channel = WsChannel::RecentActivity;
         assert_eq!(channel.as_str(), "dashboard:recent-activity");
+    }
+
+    // ==================== format_duration Tests ====================
+
+    #[test]
+    fn test_format_duration_seconds() {
+        assert_eq!(format_duration(0), "0s");
+        assert_eq!(format_duration(30), "30s");
+        assert_eq!(format_duration(59), "59s");
+    }
+
+    #[test]
+    fn test_format_duration_minutes() {
+        assert_eq!(format_duration(60), "1m 0s");
+        assert_eq!(format_duration(90), "1m 30s");
+        assert_eq!(format_duration(3599), "59m 59s");
+    }
+
+    #[test]
+    fn test_format_duration_hours() {
+        assert_eq!(format_duration(3600), "1h 0m");
+        assert_eq!(format_duration(3660), "1h 1m");
+        assert_eq!(format_duration(7200), "2h 0m");
+        assert_eq!(format_duration(7325), "2h 2m");
     }
 
     #[test]

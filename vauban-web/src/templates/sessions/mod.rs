@@ -8,7 +8,9 @@ pub mod session_detail;
 /// VAUBAN Web - Sessions templates.
 pub mod session_list;
 
-pub use active_list::ActiveListTemplate;
+pub use active_list::{
+    ActiveListContentWidget, ActiveListStatsWidget, ActiveListTemplate, ActiveSessionItem,
+};
 pub use approval_detail::ApprovalDetailTemplate;
 pub use approval_list::ApprovalListTemplate;
 pub use recording_list::RecordingListTemplate;

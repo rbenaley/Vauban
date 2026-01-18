@@ -41,6 +41,20 @@ pub struct ActiveListTemplate {
     pub sessions: Vec<ActiveSessionItem>,
 }
 
+/// WebSocket widget for active sessions list content.
+#[derive(Template)]
+#[template(path = "sessions/active_list_content.html")]
+pub struct ActiveListContentWidget {
+    pub sessions: Vec<ActiveSessionItem>,
+}
+
+/// WebSocket widget for active sessions stats.
+#[derive(Template)]
+#[template(path = "sessions/active_list_stats.html")]
+pub struct ActiveListStatsWidget {
+    pub sessions: Vec<ActiveSessionItem>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,5 +140,91 @@ mod tests {
 
         let result = template.render();
         assert!(result.is_ok(), "ActiveListTemplate should render");
+    }
+
+    // Tests for ActiveListContentWidget (WebSocket partial)
+    #[test]
+    fn test_active_list_content_widget_renders() {
+        let widget = ActiveListContentWidget {
+            sessions: vec![create_test_active_session_item("ssh")],
+        };
+        let result = widget.render();
+        assert!(result.is_ok(), "ActiveListContentWidget should render");
+
+        let html = result.unwrap();
+        assert!(html.contains("testuser"));
+        assert!(html.contains("Test Server"));
+    }
+
+    #[test]
+    fn test_active_list_content_widget_empty() {
+        let widget = ActiveListContentWidget {
+            sessions: Vec::new(),
+        };
+        let result = widget.render();
+        assert!(result.is_ok(), "ActiveListContentWidget should render empty");
+
+        let html = result.unwrap();
+        assert!(html.contains("No active sessions"));
+    }
+
+    #[test]
+    fn test_active_list_content_widget_multiple_sessions() {
+        let widget = ActiveListContentWidget {
+            sessions: vec![
+                create_test_active_session_item("ssh"),
+                create_test_active_session_item("rdp"),
+                create_test_active_session_item("vnc"),
+            ],
+        };
+        let result = widget.render();
+        assert!(result.is_ok());
+
+        let html = result.unwrap();
+        assert!(html.contains("SSH"));
+        assert!(html.contains("RDP"));
+        assert!(html.contains("VNC"));
+    }
+
+    // Tests for ActiveListStatsWidget (WebSocket partial)
+    #[test]
+    fn test_active_list_stats_widget_renders() {
+        let widget = ActiveListStatsWidget {
+            sessions: vec![create_test_active_session_item("ssh")],
+        };
+        let result = widget.render();
+        assert!(result.is_ok(), "ActiveListStatsWidget should render");
+
+        let html = result.unwrap();
+        assert!(html.contains("Active Sessions"));
+        assert!(html.contains("1")); // 1 session
+    }
+
+    #[test]
+    fn test_active_list_stats_widget_empty() {
+        let widget = ActiveListStatsWidget {
+            sessions: Vec::new(),
+        };
+        let result = widget.render();
+        assert!(result.is_ok(), "ActiveListStatsWidget should render with 0");
+
+        let html = result.unwrap();
+        assert!(html.contains("0"));
+    }
+
+    #[test]
+    fn test_active_list_stats_widget_count() {
+        let widget = ActiveListStatsWidget {
+            sessions: vec![
+                create_test_active_session_item("ssh"),
+                create_test_active_session_item("rdp"),
+                create_test_active_session_item("vnc"),
+            ],
+        };
+        let result = widget.render();
+        assert!(result.is_ok());
+
+        let html = result.unwrap();
+        assert!(html.contains("3")); // 3 sessions
     }
 }
