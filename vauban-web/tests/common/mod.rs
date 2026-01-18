@@ -234,6 +234,15 @@ fn build_test_router(state: AppState) -> Router {
         .route("/api/v1/assets", post(handlers::api::create_asset))
         .route("/api/v1/assets/{uuid}", get(handlers::api::get_asset))
         .route("/api/v1/assets/{uuid}", put(handlers::api::update_asset))
+        // Asset Groups API
+        .route(
+            "/api/v1/assets/groups",
+            get(handlers::api::list_asset_groups),
+        )
+        .route(
+            "/api/v1/assets/groups/{uuid}/assets",
+            get(handlers::api::list_group_assets),
+        )
         // Asset groups routes
         .route(
             "/api/v1/assets/groups/{uuid}",
@@ -293,6 +302,15 @@ fn build_test_router(state: AppState) -> Router {
         .route(
             "/assets/groups/{uuid}/delete",
             post(handlers::web::delete_asset_group_web),
+        )
+        .route(
+            "/assets/groups/{uuid}/add-asset",
+            get(handlers::web::asset_group_add_asset_form)
+                .post(handlers::web::asset_group_add_asset),
+        )
+        .route(
+            "/assets/groups/{uuid}/remove-asset",
+            post(handlers::web::asset_group_remove_asset),
         )
         .route(
             "/accounts/groups",

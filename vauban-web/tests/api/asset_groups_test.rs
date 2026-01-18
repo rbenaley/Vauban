@@ -7,7 +7,7 @@ use serial_test::serial;
 use uuid::Uuid;
 
 use crate::common::{TestApp, test_db};
-use crate::fixtures::{create_admin_user, create_test_asset_group, unique_name};
+use crate::fixtures::{create_admin_user, create_simple_admin_user, create_test_asset_group, create_test_asset_in_group, unique_name};
 
 /// Form data for asset group update.
 #[derive(Serialize)]
@@ -150,6 +150,183 @@ async fn test_update_asset_group_invalid_data() {
         "Expected 303, 400, 422, or 500, got {}",
         status
     );
+
+    // Cleanup
+    test_db::cleanup(&mut conn);
+}
+
+// =============================================================================
+// Asset Groups API - GET endpoints
+// =============================================================================
+
+/// Test list asset groups API.
+#[tokio::test]
+#[serial]
+async fn test_api_list_asset_groups() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    // Setup: create admin
+    let admin_name = unique_name("api_list_grp_admin");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+
+    // Create a test group to ensure at least one exists
+    let _group_uuid = create_test_asset_group(&mut conn, &unique_name("api-list-grp"));
+
+    // Execute: GET /api/v1/assets/groups
+    let response = app
+        .server
+        .get("/api/v1/assets/groups")
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .await;
+
+    // Assert: 200 OK with JSON array
+    let status = response.status_code().as_u16();
+    assert_eq!(status, 200, "Expected 200, got {}", status);
+
+    let body = response.text();
+    
+    // Verify response is a valid JSON array with expected fields
+    assert!(body.starts_with("["), "Response should be a JSON array");
+    assert!(body.contains("\"uuid\""), "Response should contain uuid field");
+    assert!(body.contains("\"name\""), "Response should contain name field");
+    assert!(body.contains("\"slug\""), "Response should contain slug field");
+    assert!(body.contains("\"asset_count\""), "Response should contain asset_count field");
+
+    // Cleanup
+    test_db::cleanup(&mut conn);
+}
+
+/// Test list asset groups API requires authentication.
+#[tokio::test]
+#[serial]
+async fn test_api_list_asset_groups_requires_auth() {
+    let app = TestApp::spawn().await;
+
+    // Execute: GET /api/v1/assets/groups without auth
+    let response = app
+        .server
+        .get("/api/v1/assets/groups")
+        .await;
+
+    // Assert: 401 Unauthorized
+    let status = response.status_code().as_u16();
+    assert_eq!(status, 401, "Expected 401 without auth, got {}", status);
+}
+
+/// Test list assets in a group API.
+#[tokio::test]
+#[serial]
+async fn test_api_list_group_assets() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    // Setup: create admin, group, and assets
+    let admin_name = unique_name("api_grp_assets_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("api-grp-assets"));
+    let _asset1_id = create_test_asset_in_group(&mut conn, &unique_name("api-asset1"), admin_id, &group_uuid);
+    let _asset2_id = create_test_asset_in_group(&mut conn, &unique_name("api-asset2"), admin_id, &group_uuid);
+
+    // Execute: GET /api/v1/assets/groups/{uuid}/assets
+    let response = app
+        .server
+        .get(&format!("/api/v1/assets/groups/{}/assets", group_uuid))
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .await;
+
+    // Assert: 200 OK with JSON array
+    let status = response.status_code().as_u16();
+    assert_eq!(status, 200, "Expected 200, got {}", status);
+
+    let body = response.text();
+    assert!(body.contains("api-asset1") || body.contains("api-asset2"), "Response should contain assets");
+    assert!(body.contains("hostname"), "Response should contain hostname field");
+    assert!(body.contains("asset_type"), "Response should contain asset_type field");
+
+    // Cleanup
+    test_db::cleanup(&mut conn);
+}
+
+/// Test list assets in a group API - group not found.
+#[tokio::test]
+#[serial]
+async fn test_api_list_group_assets_not_found() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    // Setup: create admin
+    let admin_name = unique_name("api_grp_assets_404");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+
+    let fake_uuid = Uuid::new_v4();
+
+    // Execute: GET /api/v1/assets/groups/{fake_uuid}/assets
+    let response = app
+        .server
+        .get(&format!("/api/v1/assets/groups/{}/assets", fake_uuid))
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .await;
+
+    // Assert: 404 Not Found
+    let status = response.status_code().as_u16();
+    assert_eq!(status, 404, "Expected 404 for non-existent group, got {}", status);
+
+    // Cleanup
+    test_db::cleanup(&mut conn);
+}
+
+/// Test list assets in a group API requires authentication.
+#[tokio::test]
+#[serial]
+async fn test_api_list_group_assets_requires_auth() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("api-grp-auth"));
+
+    // Execute: GET /api/v1/assets/groups/{uuid}/assets without auth
+    let response = app
+        .server
+        .get(&format!("/api/v1/assets/groups/{}/assets", group_uuid))
+        .await;
+
+    // Assert: 401 Unauthorized
+    let status = response.status_code().as_u16();
+    assert_eq!(status, 401, "Expected 401 without auth, got {}", status);
+
+    // Cleanup
+    test_db::cleanup(&mut conn);
+}
+
+/// Test list assets in an empty group.
+#[tokio::test]
+#[serial]
+async fn test_api_list_group_assets_empty() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    // Setup: create admin and empty group
+    let admin_name = unique_name("api_grp_empty_admin");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("api-grp-empty"));
+
+    // Execute: GET /api/v1/assets/groups/{uuid}/assets
+    let response = app
+        .server
+        .get(&format!("/api/v1/assets/groups/{}/assets", group_uuid))
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .await;
+
+    // Assert: 200 OK with empty array
+    let status = response.status_code().as_u16();
+    assert_eq!(status, 200, "Expected 200, got {}", status);
+
+    let body = response.text();
+    assert_eq!(body.trim(), "[]", "Expected empty array for empty group");
 
     // Cleanup
     test_db::cleanup(&mut conn);

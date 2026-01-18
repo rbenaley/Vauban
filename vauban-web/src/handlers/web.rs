@@ -4870,6 +4870,399 @@ struct GroupAssetResult {
     status: String,
 }
 
+/// Asset group add asset form page.
+pub async fn asset_group_add_asset_form(
+    State(state): State<AppState>,
+    auth_user: WebAuthUser,
+    incoming_flash: IncomingFlash,
+    jar: CookieJar,
+    axum::extract::Path(uuid_str): axum::extract::Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    use crate::templates::assets::group_add_asset::{
+        AssetGroupAddAssetTemplate, AvailableAsset, GroupSummary,
+    };
+
+    // Only admin users can add assets to groups
+    if !is_admin(&auth_user) {
+        return Err(AppError::Authorization(
+            "Only administrators can manage asset group membership".to_string(),
+        ));
+    }
+
+    let user = Some(user_context_from_auth(&auth_user));
+
+    let flash_messages: Vec<crate::templates::base::FlashMessage> = incoming_flash
+        .messages()
+        .iter()
+        .map(|m| crate::templates::base::FlashMessage {
+            level: m.level.clone(),
+            message: m.message.clone(),
+        })
+        .collect();
+
+    let mut conn = get_connection(&state.db_pool)?;
+    let group_uuid = ::uuid::Uuid::parse_str(&uuid_str)
+        .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
+
+    // Get the group details
+    use crate::schema::asset_groups::dsl as ag;
+    let group_row: (::uuid::Uuid, String) = ag::asset_groups
+        .filter(ag::uuid.eq(group_uuid))
+        .filter(ag::is_deleted.eq(false))
+        .select((ag::uuid, ag::name))
+        .first(&mut conn)
+        .map_err(|e| match e {
+            diesel::result::Error::NotFound => {
+                AppError::NotFound("Asset group not found".to_string())
+            }
+            _ => AppError::Database(e),
+        })?;
+
+    let group = GroupSummary {
+        uuid: group_row.0.to_string(),
+        name: group_row.1,
+    };
+
+    // Get ALL assets (not deleted) with their current group name if assigned
+    // Assets already in a group will be displayed as grayed out and non-selectable
+    use crate::schema::assets::dsl as a;
+    let available_asset_rows: Vec<(
+        ::uuid::Uuid,
+        String,
+        String,
+        String,
+        String,
+        Option<i32>,
+    )> = a::assets
+        .filter(a::is_deleted.eq(false))
+        .select((
+            a::uuid,
+            a::name,
+            a::hostname,
+            a::asset_type,
+            a::status,
+            a::group_id,
+        ))
+        .order(a::name.asc())
+        .load(&mut conn)
+        .map_err(|e| AppError::Database(e))?;
+
+    // Get all group names for lookup
+    let group_names: std::collections::HashMap<i32, String> = ag::asset_groups
+        .filter(ag::is_deleted.eq(false))
+        .select((ag::id, ag::name))
+        .load::<(i32, String)>(&mut conn)
+        .map_err(|e| AppError::Database(e))?
+        .into_iter()
+        .collect();
+
+    let available_assets: Vec<AvailableAsset> = available_asset_rows
+        .into_iter()
+        .map(|(uuid, name, hostname, asset_type, status, group_id)| {
+            let current_group_name = group_id.and_then(|gid| group_names.get(&gid).cloned());
+            AvailableAsset {
+                uuid: uuid.to_string(),
+                name,
+                hostname,
+                asset_type,
+                status,
+                current_group_name,
+            }
+        })
+        .collect();
+
+    // Count assets that are available (not assigned to any group)
+    let available_count = available_assets.iter().filter(|a| a.is_available()).count();
+
+    let csrf_token = jar
+        .get(crate::middleware::csrf::CSRF_COOKIE_NAME)
+        .map(|c| c.value().to_string())
+        .unwrap_or_default();
+
+    let base = BaseTemplate::new(format!("Add Asset to {} - Asset Group", group.name), user.clone())
+        .with_current_path("/assets/groups")
+        .with_messages(flash_messages);
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        base.into_fields();
+
+    let template = AssetGroupAddAssetTemplate {
+        title,
+        user: user_ctx,
+        vauban,
+        messages,
+        language_code,
+        sidebar_content,
+        header_user,
+        group,
+        available_assets,
+        available_count,
+        csrf_token,
+    };
+
+    let html = template
+        .render()
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
+    Ok(Html(html).into_response())
+}
+
+/// Parsed form data for adding assets to a group.
+/// This struct is populated by manual parsing to support multiple checkbox values.
+#[derive(Debug)]
+pub struct AddAssetToGroupForm {
+    pub asset_uuids: Vec<String>,
+    pub csrf_token: String,
+}
+
+impl AddAssetToGroupForm {
+    /// Parse form data from raw bytes, supporting multiple values for asset_uuids.
+    /// HTML forms with multiple checkboxes send: asset_uuids=uuid1&asset_uuids=uuid2
+    fn from_bytes(bytes: &[u8]) -> Self {
+        let mut asset_uuids = Vec::new();
+        let mut csrf_token = String::new();
+
+        for (key, value) in url::form_urlencoded::parse(bytes) {
+            match key.as_ref() {
+                "asset_uuids" => asset_uuids.push(value.to_string()),
+                "csrf_token" => csrf_token = value.to_string(),
+                _ => {}
+            }
+        }
+
+        Self {
+            asset_uuids,
+            csrf_token,
+        }
+    }
+}
+
+/// Handle adding assets to a group (supports multiple selection).
+pub async fn asset_group_add_asset(
+    State(state): State<AppState>,
+    auth_user: WebAuthUser,
+    incoming_flash: IncomingFlash,
+    jar: CookieJar,
+    axum::extract::Path(uuid_str): axum::extract::Path<String>,
+    body: axum::body::Bytes,
+) -> Response {
+    let flash = incoming_flash.flash();
+
+    // Parse form data manually to support multiple checkbox values
+    let form = AddAssetToGroupForm::from_bytes(&body);
+
+    // CSRF validation
+    let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
+    if !crate::middleware::csrf::validate_double_submit(
+        state.config.secret_key.expose_secret().as_bytes(),
+        csrf_cookie.map(|c| c.value()),
+        &form.csrf_token,
+    ) {
+        return flash_redirect(
+            flash.error("Invalid CSRF token. Please refresh the page and try again."),
+            &format!("/assets/groups/{}/add-asset", uuid_str),
+        );
+    }
+
+    // Permission check
+    if !is_admin(&auth_user) {
+        return flash_redirect(
+            flash.error("Only administrators can manage asset group membership"),
+            &format!("/assets/groups/{}", uuid_str),
+        );
+    }
+
+    // Parse group UUID
+    let group_uuid = match ::uuid::Uuid::parse_str(&uuid_str) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return flash_redirect(flash.error("Invalid group identifier"), "/assets/groups");
+        }
+    };
+
+    // Check if any assets were selected
+    if form.asset_uuids.is_empty() {
+        return flash_redirect(
+            flash.error("Please select at least one asset to add"),
+            &format!("/assets/groups/{}/add-asset", uuid_str),
+        );
+    }
+
+    // Parse all asset UUIDs
+    let mut asset_uuids: Vec<::uuid::Uuid> = Vec::new();
+    for uuid_str_item in &form.asset_uuids {
+        match ::uuid::Uuid::parse_str(uuid_str_item) {
+            Ok(uuid) => asset_uuids.push(uuid),
+            Err(_) => {
+                return flash_redirect(
+                    flash.error("Invalid asset identifier"),
+                    &format!("/assets/groups/{}/add-asset", uuid_str),
+                );
+            }
+        }
+    }
+
+    let mut conn = match get_connection(&state.db_pool) {
+        Ok(conn) => conn,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Database connection error. Please try again."),
+                &format!("/assets/groups/{}/add-asset", uuid_str),
+            );
+        }
+    };
+
+    // Get the group's internal ID
+    use crate::schema::asset_groups::dsl as ag;
+    let group_id: i32 = match ag::asset_groups
+        .filter(ag::uuid.eq(group_uuid))
+        .filter(ag::is_deleted.eq(false))
+        .select(ag::id)
+        .first(&mut conn)
+    {
+        Ok(id) => id,
+        Err(diesel::result::Error::NotFound) => {
+            return flash_redirect(
+                flash.error("Asset group not found"),
+                "/assets/groups",
+            );
+        }
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Database error. Please try again."),
+                &format!("/assets/groups/{}/add-asset", uuid_str),
+            );
+        }
+    };
+
+    // Update all selected assets to set their group_id
+    use crate::schema::assets::dsl as a;
+    let updated = diesel::update(a::assets)
+        .filter(a::uuid.eq_any(&asset_uuids))
+        .filter(a::is_deleted.eq(false))
+        .filter(a::group_id.is_null()) // Only update if not already in a group
+        .set((
+            a::group_id.eq(Some(group_id)),
+            a::updated_at.eq(chrono::Utc::now()),
+        ))
+        .execute(&mut conn);
+
+    match updated {
+        Ok(0) => {
+            // No rows updated - either assets not found or already in groups
+            flash_redirect(
+                flash.error("No assets were added. They may already be assigned to groups."),
+                &format!("/assets/groups/{}/add-asset", uuid_str),
+            )
+        }
+        Ok(count) => {
+            let message = if count == 1 {
+                "1 asset added to group successfully".to_string()
+            } else {
+                format!("{} assets added to group successfully", count)
+            };
+            flash_redirect(flash.success(&message), &format!("/assets/groups/{}", uuid_str))
+        }
+        Err(_) => flash_redirect(
+            flash.error("Failed to add assets to group. Please try again."),
+            &format!("/assets/groups/{}/add-asset", uuid_str),
+        ),
+    }
+}
+
+/// Form data for removing an asset from a group.
+#[derive(Debug, serde::Deserialize)]
+pub struct RemoveAssetFromGroupForm {
+    pub asset_uuid: String,
+    pub csrf_token: String,
+}
+
+/// Handle removing an asset from a group.
+pub async fn asset_group_remove_asset(
+    State(state): State<AppState>,
+    auth_user: WebAuthUser,
+    incoming_flash: IncomingFlash,
+    jar: CookieJar,
+    axum::extract::Path(uuid_str): axum::extract::Path<String>,
+    Form(form): Form<RemoveAssetFromGroupForm>,
+) -> Response {
+    let flash = incoming_flash.flash();
+
+    // CSRF validation
+    let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
+    if !crate::middleware::csrf::validate_double_submit(
+        state.config.secret_key.expose_secret().as_bytes(),
+        csrf_cookie.map(|c| c.value()),
+        &form.csrf_token,
+    ) {
+        return flash_redirect(
+            flash.error("Invalid CSRF token. Please refresh the page and try again."),
+            &format!("/assets/groups/{}", uuid_str),
+        );
+    }
+
+    // Permission check
+    if !is_admin(&auth_user) {
+        return flash_redirect(
+            flash.error("Only administrators can manage asset group membership"),
+            &format!("/assets/groups/{}", uuid_str),
+        );
+    }
+
+    // Parse group UUID (for redirect)
+    let group_uuid = match ::uuid::Uuid::parse_str(&uuid_str) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return flash_redirect(flash.error("Invalid group identifier"), "/assets/groups");
+        }
+    };
+
+    // Parse asset UUID
+    let asset_uuid = match ::uuid::Uuid::parse_str(&form.asset_uuid) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Invalid asset identifier"),
+                &format!("/assets/groups/{}", group_uuid),
+            );
+        }
+    };
+
+    let mut conn = match get_connection(&state.db_pool) {
+        Ok(conn) => conn,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Database connection error. Please try again."),
+                &format!("/assets/groups/{}", group_uuid),
+            );
+        }
+    };
+
+    // Update the asset to remove its group_id
+    use crate::schema::assets::dsl as a;
+    let updated = diesel::update(a::assets)
+        .filter(a::uuid.eq(asset_uuid))
+        .filter(a::is_deleted.eq(false))
+        .set((
+            a::group_id.eq(None::<i32>),
+            a::updated_at.eq(chrono::Utc::now()),
+        ))
+        .execute(&mut conn);
+
+    match updated {
+        Ok(0) => flash_redirect(
+            flash.error("Asset not found"),
+            &format!("/assets/groups/{}", group_uuid),
+        ),
+        Ok(_) => flash_redirect(
+            flash.success("Asset removed from group successfully"),
+            &format!("/assets/groups/{}", group_uuid),
+        ),
+        Err(_) => flash_redirect(
+            flash.error("Failed to remove asset from group. Please try again."),
+            &format!("/assets/groups/{}", group_uuid),
+        ),
+    }
+}
+
 /// Asset group edit page.
 pub async fn asset_group_edit(
     State(state): State<AppState>,

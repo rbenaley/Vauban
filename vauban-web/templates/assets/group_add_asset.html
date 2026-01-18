@@ -1,0 +1,197 @@
+{% extends "base.html" %}
+
+{% block title %}Add Asset to {{ group.name }} - {{ vauban.brand_name }}{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <!-- Header -->
+    <div class="md:flex md:items-center md:justify-between">
+        <div class="min-w-0 flex-1">
+            <nav class="flex" aria-label="Breadcrumb">
+                <ol class="flex items-center space-x-2">
+                    <li>
+                        <a href="/assets/groups" class="text-gray-400 hover:text-gray-500 dark:text-gray-500 dark:hover:text-gray-400">
+                            <svg class="h-5 w-5 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd" d="M9.293 2.293a1 1 0 011.414 0l7 7A1 1 0 0117 11h-1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-3a1 1 0 00-1-1H9a1 1 0 00-1 1v3a1 1 0 01-1 1H5a1 1 0 01-1-1v-6H3a1 1 0 01-.707-1.707l7-7z" clip-rule="evenodd"/>
+                            </svg>
+                        </a>
+                    </li>
+                    <li>
+                        <div class="flex items-center">
+                            <svg class="h-5 w-5 flex-shrink-0 text-gray-300 dark:text-gray-600" viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd"/>
+                            </svg>
+                            <a href="/assets/groups" class="ml-2 text-sm font-medium text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300">Asset Groups</a>
+                        </div>
+                    </li>
+                    <li>
+                        <div class="flex items-center">
+                            <svg class="h-5 w-5 flex-shrink-0 text-gray-300 dark:text-gray-600" viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd"/>
+                            </svg>
+                            <a href="/assets/groups/{{ group.uuid }}" class="ml-2 text-sm font-medium text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300">{{ group.name }}</a>
+                        </div>
+                    </li>
+                    <li>
+                        <div class="flex items-center">
+                            <svg class="h-5 w-5 flex-shrink-0 text-gray-300 dark:text-gray-600" viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd"/>
+                            </svg>
+                            <span class="ml-2 text-sm font-medium text-gray-500 dark:text-gray-400">Add Asset</span>
+                        </div>
+                    </li>
+                </ol>
+            </nav>
+            <h2 class="mt-2 text-2xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-3xl sm:tracking-tight">
+                Add Asset to {{ group.name }}
+            </h2>
+        </div>
+    </div>
+
+    <!-- Form -->
+    <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
+            <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Select Asset</h3>
+            <p class="mt-1 max-w-2xl text-sm text-gray-500 dark:text-gray-400">
+                Choose an asset to add to this group. Assets already assigned to another group are shown grayed out.
+            </p>
+        </div>
+
+        {% if available_assets.is_empty() %}
+        <div class="px-6 py-12 text-center">
+            <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+            </svg>
+            <h3 class="mt-2 text-sm font-semibold text-gray-900 dark:text-white">No available assets</h3>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                All assets are already assigned to a group or there are no assets in the system.
+            </p>
+            <div class="mt-6">
+                <a href="/assets/groups/{{ group.uuid }}"
+                   class="inline-flex items-center rounded-md bg-white dark:bg-gray-700 px-3 py-2 text-sm font-semibold text-gray-900 dark:text-white shadow-sm ring-1 ring-inset ring-gray-300 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600">
+                    <svg class="-ml-0.5 mr-1.5 h-5 w-5 text-gray-400" viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd" d="M17 10a.75.75 0 01-.75.75H5.612l4.158 3.96a.75.75 0 11-1.04 1.08l-5.5-5.25a.75.75 0 010-1.08l5.5-5.25a.75.75 0 111.04 1.08L5.612 9.25H16.25A.75.75 0 0117 10z" clip-rule="evenodd"/>
+                    </svg>
+                    Back to Group
+                </a>
+            </div>
+        </div>
+        {% else %}
+        <form action="/assets/groups/{{ group.uuid }}/add-asset" method="POST"
+              x-data="{ search: '' }">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+            
+            <div class="px-4 py-5 sm:p-6">
+                <div class="space-y-4">
+                    <!-- Search/Filter -->
+                    <div>
+                        <label for="asset-search" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                            Search Assets
+                        </label>
+                        <div class="mt-1 relative rounded-md shadow-sm">
+                            <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                <svg class="h-5 w-5 text-gray-400" viewBox="0 0 20 20" fill="currentColor">
+                                    <path fill-rule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clip-rule="evenodd"/>
+                                </svg>
+                            </div>
+                            <input type="text" 
+                                   id="asset-search" 
+                                   x-model="search"
+                                   placeholder="Filter by name, hostname, or type..."
+                                   class="block w-full pl-10 pr-3 py-2 rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white dark:placeholder-gray-400 sm:text-sm">
+                        </div>
+                        <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                            {{ available_count }} available of {{ available_assets.len() }} total assets
+                            <span x-show="search !== ''" class="text-vauban-600 dark:text-vauban-400">(filtered)</span>
+                        </p>
+                    </div>
+
+                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                        Assets
+                    </label>
+                    <div id="assets-grid" class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                        {% for asset in available_assets %}
+                        {% if asset.is_available() %}
+                        <!-- Available asset - selectable (checkbox for multi-select) -->
+                        <label class="asset-card available-asset relative flex cursor-pointer rounded-lg border bg-white dark:bg-gray-700 p-4 shadow-sm focus:outline-none hover:border-vauban-500 dark:hover:border-vauban-400 border-gray-300 dark:border-gray-600 has-[:checked]:border-vauban-600 has-[:checked]:ring-2 has-[:checked]:ring-vauban-600"
+                               x-show="search === '' || '{{ asset.name|lower }}'.includes(search.toLowerCase()) || '{{ asset.hostname|lower }}'.includes(search.toLowerCase()) || '{{ asset.asset_type|lower }}'.includes(search.toLowerCase())">
+                            <input type="checkbox" name="asset_uuids" value="{{ asset.uuid }}" class="sr-only peer" />
+                            <span class="flex flex-1">
+                                <span class="flex flex-col">
+                                    <span class="flex items-center">
+                                        <span class="inline-flex h-8 w-8 items-center justify-center rounded-full mr-2
+                                            {% if asset.asset_type == "ssh" %}bg-green-100 dark:bg-green-900/50
+                                            {% else if asset.asset_type == "rdp" %}bg-blue-100 dark:bg-blue-900/50
+                                            {% else %}bg-purple-100 dark:bg-purple-900/50{% endif %}">
+                                            <span class="text-xs font-medium
+                                                {% if asset.asset_type == "ssh" %}text-green-600 dark:text-green-400
+                                                {% else if asset.asset_type == "rdp" %}text-blue-600 dark:text-blue-400
+                                                {% else %}text-purple-600 dark:text-purple-400{% endif %}">
+                                                {{ asset.asset_type|upper }}
+                                            </span>
+                                        </span>
+                                        <span class="block text-sm font-medium text-gray-900 dark:text-white">{{ asset.name }}</span>
+                                    </span>
+                                    <span class="mt-1 flex items-center text-sm text-gray-500 dark:text-gray-400">{{ asset.hostname }}</span>
+                                    <span class="mt-1 flex items-center text-sm">
+                                        <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {{ asset.status_class() }}">
+                                            {{ asset.status }}
+                                        </span>
+                                    </span>
+                                </span>
+                            </span>
+                            <!-- Checkmark icon - visible when selected (peer-checked) -->
+                            <svg class="h-5 w-5 text-vauban-600 hidden peer-checked:block" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                                <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.857-9.809a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z" clip-rule="evenodd"/>
+                            </svg>
+                        </label>
+                        {% else %}
+                        <!-- Assigned asset - non-selectable, grayed out -->
+                        <div class="asset-card assigned-asset relative flex rounded-lg border p-4 shadow-sm bg-gray-100 dark:bg-gray-800 border-gray-200 dark:border-gray-700 opacity-60 cursor-not-allowed"
+                             x-show="search === '' || '{{ asset.name|lower }}'.includes(search.toLowerCase()) || '{{ asset.hostname|lower }}'.includes(search.toLowerCase()) || '{{ asset.asset_type|lower }}'.includes(search.toLowerCase())">
+                            <span class="flex flex-1">
+                                <span class="flex flex-col">
+                                    <span class="flex items-center">
+                                        <span class="inline-flex h-8 w-8 items-center justify-center rounded-full mr-2 bg-gray-200 dark:bg-gray-700">
+                                            <span class="text-xs font-medium text-gray-500 dark:text-gray-400">
+                                                {{ asset.asset_type|upper }}
+                                            </span>
+                                        </span>
+                                        <span class="block text-sm font-medium text-gray-500 dark:text-gray-400">{{ asset.name }}</span>
+                                    </span>
+                                    <span class="mt-1 flex items-center text-sm text-gray-400 dark:text-gray-500">{{ asset.hostname }}</span>
+                                    <span class="mt-1 flex items-center text-sm">
+                                        <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-400">
+                                            {{ asset.status }}
+                                        </span>
+                                    </span>
+                                    <span class="mt-2 flex items-center text-xs text-amber-600 dark:text-amber-400">
+                                        <svg class="mr-1 h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                                            <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a.75.75 0 000 1.5h.253a.25.25 0 01.244.304l-.459 2.066A1.75 1.75 0 0010.747 15H11a.75.75 0 000-1.5h-.253a.25.25 0 01-.244-.304l.459-2.066A1.75 1.75 0 009.253 9H9z" clip-rule="evenodd"/>
+                                        </svg>
+                                        Already in: {{ asset.current_group_name.as_ref().unwrap() }}
+                                    </span>
+                                </span>
+                            </span>
+                        </div>
+                        {% endif %}
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+
+            <div class="bg-gray-50 dark:bg-gray-700/50 px-4 py-3 flex justify-end space-x-3 sm:px-6">
+                <a href="/assets/groups/{{ group.uuid }}"
+                   class="inline-flex justify-center rounded-md bg-white dark:bg-gray-600 px-3 py-2 text-sm font-semibold text-gray-900 dark:text-white shadow-sm ring-1 ring-inset ring-gray-300 dark:ring-gray-500 hover:bg-gray-50 dark:hover:bg-gray-500">
+                    Cancel
+                </a>
+                <button type="submit"
+                        class="inline-flex justify-center rounded-md bg-vauban-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-600">
+                    Add to Group
+                </button>
+            </div>
+        </form>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
