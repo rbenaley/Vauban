@@ -2145,6 +2145,522 @@ async fn test_asset_group_delete_with_assets() {
     }
 }
 
+// =============================================================================
+// Asset Group Membership Tests
+// =============================================================================
+
+#[tokio::test]
+async fn test_asset_group_add_asset_form_loads() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let admin_name = unique_name("add_asset_form_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_uuid = get_user_uuid(&mut conn, admin_id);
+
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("add-asset-form-grp"));
+
+    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
+
+    let response = app
+        .server
+        .get(&format!("/assets/groups/{}/add-asset", group_uuid))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(body.contains("Add Asset"), "Page should show 'Add Asset' title");
+    assert!(body.contains("asset-search"), "Page should have search input");
+    assert!(body.contains("x-model=\"search\""), "Page should use Alpine.js for filtering");
+}
+
+#[tokio::test]
+async fn test_asset_group_add_asset_form_requires_admin() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let username = unique_name("add_asset_form_user");
+    let user_id = create_simple_user(&mut conn, &username);
+    let user_uuid = get_user_uuid(&mut conn, user_id);
+
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("add-asset-form-denied"));
+
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false);
+
+    let response = app
+        .server
+        .get(&format!("/assets/groups/{}/add-asset", group_uuid))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 401 || status == 403,
+        "Normal user should not access add asset form, got {}",
+        status
+    );
+}
+
+#[tokio::test]
+async fn test_asset_group_add_asset_success() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let admin_name = unique_name("add_asset_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_uuid = get_user_uuid(&mut conn, admin_id);
+
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("add-asset-grp"));
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("asset-to-add"), admin_id);
+
+    // Get asset UUID
+    use vauban_web::schema::assets;
+    let asset_uuid: uuid::Uuid = assets::table
+        .filter(assets::id.eq(asset_id))
+        .select(assets::uuid)
+        .first(&mut conn)
+        .unwrap();
+
+    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
+    let csrf_token = app.generate_csrf_token();
+
+    let response = app
+        .server
+        .post(&format!("/assets/groups/{}/add-asset", group_uuid))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[
+            ("csrf_token", csrf_token.as_str()),
+            ("asset_uuids", &asset_uuid.to_string()),
+        ])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 302 || status == 303,
+        "Expected redirect after adding asset, got {}",
+        status
+    );
+
+    // Verify asset was added to group
+    use vauban_web::schema::asset_groups;
+    let group_id: i32 = asset_groups::table
+        .filter(asset_groups::uuid.eq(group_uuid))
+        .select(asset_groups::id)
+        .first(&mut conn)
+        .unwrap();
+
+    let asset_group_id: Option<i32> = assets::table
+        .filter(assets::id.eq(asset_id))
+        .select(assets::group_id)
+        .first(&mut conn)
+        .unwrap();
+
+    assert_eq!(
+        asset_group_id,
+        Some(group_id),
+        "Asset should be assigned to the group"
+    );
+}
+
+/// Test adding multiple assets to a group at once (multi-select checkboxes)
+#[tokio::test]
+async fn test_asset_group_add_multiple_assets_success() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let admin_name = unique_name("add_multi_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_uuid = get_user_uuid(&mut conn, admin_id);
+
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("add-multi-grp"));
+
+    // Create multiple assets
+    let asset1_id = create_simple_ssh_asset(&mut conn, &unique_name("multi-asset1"), admin_id);
+    let asset2_id = create_simple_ssh_asset(&mut conn, &unique_name("multi-asset2"), admin_id);
+    let asset3_id = create_simple_ssh_asset(&mut conn, &unique_name("multi-asset3"), admin_id);
+
+    // Get asset UUIDs
+    use vauban_web::schema::assets;
+    let asset1_uuid: uuid::Uuid = assets::table
+        .filter(assets::id.eq(asset1_id))
+        .select(assets::uuid)
+        .first(&mut conn)
+        .unwrap();
+    let asset2_uuid: uuid::Uuid = assets::table
+        .filter(assets::id.eq(asset2_id))
+        .select(assets::uuid)
+        .first(&mut conn)
+        .unwrap();
+    let asset3_uuid: uuid::Uuid = assets::table
+        .filter(assets::id.eq(asset3_id))
+        .select(assets::uuid)
+        .first(&mut conn)
+        .unwrap();
+
+    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
+    let csrf_token = app.generate_csrf_token();
+
+    // Submit form with multiple asset_uuids (simulating multiple checkboxes)
+    let form_body = format!(
+        "csrf_token={}&asset_uuids={}&asset_uuids={}&asset_uuids={}",
+        csrf_token, asset1_uuid, asset2_uuid, asset3_uuid
+    );
+
+    let response = app
+        .server
+        .post(&format!("/assets/groups/{}/add-asset", group_uuid))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .content_type("application/x-www-form-urlencoded")
+        .text(form_body)
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 302 || status == 303,
+        "Expected redirect after adding assets, got {}",
+        status
+    );
+
+    // Verify all assets were added to group
+    use vauban_web::schema::asset_groups;
+    let group_id: i32 = asset_groups::table
+        .filter(asset_groups::uuid.eq(group_uuid))
+        .select(asset_groups::id)
+        .first(&mut conn)
+        .unwrap();
+
+    for asset_id in [asset1_id, asset2_id, asset3_id] {
+        let asset_group_id: Option<i32> = assets::table
+            .filter(assets::id.eq(asset_id))
+            .select(assets::group_id)
+            .first(&mut conn)
+            .unwrap();
+
+        assert_eq!(
+            asset_group_id,
+            Some(group_id),
+            "Asset {} should be assigned to the group",
+            asset_id
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_asset_group_add_asset_normal_user_forbidden() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let username = unique_name("add_asset_user");
+    let user_id = create_simple_user(&mut conn, &username);
+    let user_uuid = get_user_uuid(&mut conn, user_id);
+
+    let admin_id = create_simple_admin_user(&mut conn, &unique_name("add_asset_admin2"));
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("add-asset-denied"));
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("asset-add-denied"), admin_id);
+
+    // Get asset UUID
+    use vauban_web::schema::assets;
+    let asset_uuid: uuid::Uuid = assets::table
+        .filter(assets::id.eq(asset_id))
+        .select(assets::uuid)
+        .first(&mut conn)
+        .unwrap();
+
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false);
+    let csrf_token = app.generate_csrf_token();
+
+    let response = app
+        .server
+        .post(&format!("/assets/groups/{}/add-asset", group_uuid))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[
+            ("csrf_token", csrf_token.as_str()),
+            ("asset_uuids", &asset_uuid.to_string()),
+        ])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 302 || status == 303,
+        "Expected redirect (with error), got {}",
+        status
+    );
+
+    // Verify asset was NOT added to group
+    let asset_group_id: Option<i32> = assets::table
+        .filter(assets::id.eq(asset_id))
+        .select(assets::group_id)
+        .first(&mut conn)
+        .unwrap();
+
+    assert!(
+        asset_group_id.is_none(),
+        "Normal user should not add asset to group"
+    );
+}
+
+#[tokio::test]
+async fn test_asset_group_add_asset_already_in_group() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let admin_name = unique_name("add_asset_dup_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_uuid = get_user_uuid(&mut conn, admin_id);
+
+    // Create first group and add asset to it
+    let group1_uuid = create_test_asset_group(&mut conn, &unique_name("add-asset-grp1"));
+    let asset_id = create_test_asset_in_group(&mut conn, &unique_name("asset-in-grp1"), admin_id, &group1_uuid);
+
+    // Get asset UUID
+    use vauban_web::schema::assets;
+    let asset_uuid: uuid::Uuid = assets::table
+        .filter(assets::id.eq(asset_id))
+        .select(assets::uuid)
+        .first(&mut conn)
+        .unwrap();
+
+    // Create second group and try to add the same asset
+    let group2_uuid = create_test_asset_group(&mut conn, &unique_name("add-asset-grp2"));
+
+    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
+    let csrf_token = app.generate_csrf_token();
+
+    let response = app
+        .server
+        .post(&format!("/assets/groups/{}/add-asset", group2_uuid))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[
+            ("csrf_token", csrf_token.as_str()),
+            ("asset_uuids", &asset_uuid.to_string()),
+        ])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 302 || status == 303,
+        "Expected redirect (with error), got {}",
+        status
+    );
+
+    // Verify asset is still in group1 (not moved to group2)
+    use vauban_web::schema::asset_groups;
+    let group1_id: i32 = asset_groups::table
+        .filter(asset_groups::uuid.eq(group1_uuid))
+        .select(asset_groups::id)
+        .first(&mut conn)
+        .unwrap();
+
+    let asset_group_id: Option<i32> = assets::table
+        .filter(assets::id.eq(asset_id))
+        .select(assets::group_id)
+        .first(&mut conn)
+        .unwrap();
+
+    assert_eq!(
+        asset_group_id,
+        Some(group1_id),
+        "Asset should still be in original group"
+    );
+}
+
+#[tokio::test]
+async fn test_asset_group_remove_asset_success() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let admin_name = unique_name("rem_asset_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_uuid = get_user_uuid(&mut conn, admin_id);
+
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("rem-asset-grp"));
+    let asset_id = create_test_asset_in_group(&mut conn, &unique_name("asset-to-rem"), admin_id, &group_uuid);
+
+    // Get asset UUID
+    use vauban_web::schema::assets;
+    let asset_uuid: uuid::Uuid = assets::table
+        .filter(assets::id.eq(asset_id))
+        .select(assets::uuid)
+        .first(&mut conn)
+        .unwrap();
+
+    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
+    let csrf_token = app.generate_csrf_token();
+
+    let response = app
+        .server
+        .post(&format!("/assets/groups/{}/remove-asset", group_uuid))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[
+            ("csrf_token", csrf_token.as_str()),
+            ("asset_uuid", &asset_uuid.to_string()),
+        ])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 302 || status == 303,
+        "Expected redirect after removing asset, got {}",
+        status
+    );
+
+    // Verify asset was removed from group
+    let asset_group_id: Option<i32> = assets::table
+        .filter(assets::id.eq(asset_id))
+        .select(assets::group_id)
+        .first(&mut conn)
+        .unwrap();
+
+    assert!(
+        asset_group_id.is_none(),
+        "Asset should be removed from group"
+    );
+}
+
+#[tokio::test]
+async fn test_asset_group_remove_asset_normal_user_forbidden() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let username = unique_name("rem_asset_user");
+    let user_id = create_simple_user(&mut conn, &username);
+    let user_uuid = get_user_uuid(&mut conn, user_id);
+
+    let admin_id = create_simple_admin_user(&mut conn, &unique_name("rem_asset_admin2"));
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("rem-asset-denied"));
+    let asset_id = create_test_asset_in_group(&mut conn, &unique_name("asset-rem-denied"), admin_id, &group_uuid);
+
+    // Get asset UUID
+    use vauban_web::schema::assets;
+    let asset_uuid: uuid::Uuid = assets::table
+        .filter(assets::id.eq(asset_id))
+        .select(assets::uuid)
+        .first(&mut conn)
+        .unwrap();
+
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false);
+    let csrf_token = app.generate_csrf_token();
+
+    let response = app
+        .server
+        .post(&format!("/assets/groups/{}/remove-asset", group_uuid))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[
+            ("csrf_token", csrf_token.as_str()),
+            ("asset_uuid", &asset_uuid.to_string()),
+        ])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 302 || status == 303,
+        "Expected redirect (with error), got {}",
+        status
+    );
+
+    // Verify asset was NOT removed from group
+    use vauban_web::schema::asset_groups;
+    let group_id: i32 = asset_groups::table
+        .filter(asset_groups::uuid.eq(group_uuid))
+        .select(asset_groups::id)
+        .first(&mut conn)
+        .unwrap();
+
+    let asset_group_id: Option<i32> = assets::table
+        .filter(assets::id.eq(asset_id))
+        .select(assets::group_id)
+        .first(&mut conn)
+        .unwrap();
+
+    assert_eq!(
+        asset_group_id,
+        Some(group_id),
+        "Normal user should not remove asset from group"
+    );
+}
+
+#[tokio::test]
+async fn test_asset_group_detail_shows_add_asset_button() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let admin_name = unique_name("det_add_btn_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_uuid = get_user_uuid(&mut conn, admin_id);
+
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("det-add-btn-grp"));
+
+    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
+
+    let response = app
+        .server
+        .get(&format!("/assets/groups/{}", group_uuid))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains("Add Asset"),
+        "Group detail page should show 'Add Asset' button"
+    );
+    assert!(
+        body.contains(&format!("/assets/groups/{}/add-asset", group_uuid)),
+        "Page should contain link to add asset form"
+    );
+}
+
+#[tokio::test]
+async fn test_asset_group_detail_shows_remove_button() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let admin_name = unique_name("det_rem_btn_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_uuid = get_user_uuid(&mut conn, admin_id);
+
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("det-rem-btn-grp"));
+    let _asset_id = create_test_asset_in_group(&mut conn, &unique_name("asset-rem-btn"), admin_id, &group_uuid);
+
+    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
+
+    let response = app
+        .server
+        .get(&format!("/assets/groups/{}", group_uuid))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains("Remove"),
+        "Group detail page should show 'Remove' button for assets"
+    );
+    assert!(
+        body.contains(&format!("/assets/groups/{}/remove-asset", group_uuid)),
+        "Page should contain form action for removing asset"
+    );
+}
+
 #[tokio::test]
 async fn test_asset_group_delete_normal_user_forbidden() {
     let app = TestApp::spawn().await;

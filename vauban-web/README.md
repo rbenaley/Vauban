@@ -207,6 +207,10 @@ cargo build --release
 - `GET /api/v1/assets/:uuid` - Get asset
 - `PUT /api/v1/assets/:uuid` - Update asset
 
+### Asset Groups (Read-Only)
+- `GET /api/v1/assets/groups` - List asset groups
+- `GET /api/v1/assets/groups/:uuid/assets` - List assets in a group
+
 ### Sessions
 - `GET /api/v1/sessions` - List sessions
 - `POST /api/v1/sessions` - Create session

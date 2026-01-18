@@ -387,6 +387,15 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             "/assets/groups/{uuid}/delete",
             post(handlers::web::delete_asset_group_web),
         )
+        .route(
+            "/assets/groups/{uuid}/add-asset",
+            get(handlers::web::asset_group_add_asset_form)
+                .post(handlers::web::asset_group_add_asset),
+        )
+        .route(
+            "/assets/groups/{uuid}/remove-asset",
+            post(handlers::web::asset_group_remove_asset),
+        )
         .route("/assets/access", get(handlers::web::access_rules_list))
         .route("/assets/search", get(handlers::web::asset_search))
         .route(
@@ -444,6 +453,15 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             .route(
                 "/api/v1/assets/{uuid}",
                 axum::routing::delete(|| async { "Not implemented" }),
+            )
+            // Asset Groups API
+            .route(
+                "/api/v1/assets/groups",
+                get(handlers::api::list_asset_groups),
+            )
+            .route(
+                "/api/v1/assets/groups/{uuid}/assets",
+                get(handlers::api::list_group_assets),
             )
             // Sessions API
             .route("/api/v1/sessions", get(handlers::api::list_sessions))

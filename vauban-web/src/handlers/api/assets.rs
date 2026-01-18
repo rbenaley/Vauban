@@ -234,6 +234,148 @@ pub async fn update_asset(
     }
 }
 
+// =============================================================================
+// Asset Groups API
+// =============================================================================
+
+use crate::models::asset::AssetGroup;
+
+/// Query parameters for list asset groups.
+#[derive(Debug, Deserialize)]
+pub struct ListAssetGroupsParams {
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+/// Asset group response for API.
+#[derive(Debug, serde::Serialize)]
+pub struct AssetGroupResponse {
+    pub uuid: Uuid,
+    pub name: String,
+    pub slug: String,
+    pub description: Option<String>,
+    pub color: String,
+    pub icon: String,
+    pub asset_count: i64,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// List asset groups handler.
+pub async fn list_asset_groups(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    Query(params): Query<ListAssetGroupsParams>,
+) -> AppResult<Json<Vec<AssetGroupResponse>>> {
+    use crate::schema::asset_groups::dsl as ag;
+    use crate::schema::assets::dsl as a;
+
+    let mut conn = get_connection(&state.db_pool)?;
+
+    // Get all non-deleted asset groups
+    let groups: Vec<AssetGroup> = ag::asset_groups
+        .filter(ag::is_deleted.eq(false))
+        .order(ag::name.asc())
+        .limit(params.limit.unwrap_or(100))
+        .offset(params.offset.unwrap_or(0))
+        .load(&mut conn)?;
+
+    // Build response with asset counts
+    let mut response: Vec<AssetGroupResponse> = Vec::with_capacity(groups.len());
+    for group in groups {
+        let asset_count: i64 = a::assets
+            .filter(a::group_id.eq(group.id))
+            .filter(a::is_deleted.eq(false))
+            .count()
+            .get_result(&mut conn)?;
+
+        response.push(AssetGroupResponse {
+            uuid: group.uuid,
+            name: group.name,
+            slug: group.slug,
+            description: group.description,
+            color: group.color,
+            icon: group.icon,
+            asset_count,
+            created_at: group.created_at,
+            updated_at: group.updated_at,
+        });
+    }
+
+    Ok(Json(response))
+}
+
+/// Asset summary for group assets list.
+#[derive(Debug, serde::Serialize)]
+pub struct GroupAssetResponse {
+    pub uuid: Uuid,
+    pub name: String,
+    pub hostname: String,
+    pub ip_address: Option<String>,
+    pub port: i32,
+    pub asset_type: String,
+    pub status: String,
+    pub description: Option<String>,
+    pub require_mfa: bool,
+    pub require_justification: bool,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// List assets in a specific asset group.
+pub async fn list_group_assets(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    Path(group_uuid): Path<Uuid>,
+    Query(params): Query<ListAssetsParams>,
+) -> AppResult<Json<Vec<GroupAssetResponse>>> {
+    use crate::schema::asset_groups::dsl as ag;
+    use crate::schema::assets::dsl as a;
+
+    let mut conn = get_connection(&state.db_pool)?;
+
+    // Get the group to verify it exists
+    let group: AssetGroup = ag::asset_groups
+        .filter(ag::uuid.eq(group_uuid))
+        .filter(ag::is_deleted.eq(false))
+        .first(&mut conn)
+        .map_err(|e| match e {
+            diesel::result::Error::NotFound => {
+                AppError::NotFound("Asset group not found".to_string())
+            }
+            _ => AppError::Database(e),
+        })?;
+
+    // Get assets in this group
+    let group_assets: Vec<Asset> = a::assets
+        .filter(a::group_id.eq(group.id))
+        .filter(a::is_deleted.eq(false))
+        .order(a::name.asc())
+        .limit(params.limit.unwrap_or(100))
+        .offset(params.offset.unwrap_or(0))
+        .load(&mut conn)?;
+
+    let response: Vec<GroupAssetResponse> = group_assets
+        .into_iter()
+        .map(|asset| GroupAssetResponse {
+            uuid: asset.uuid,
+            name: asset.name,
+            hostname: asset.hostname,
+            ip_address: asset.ip_address.map(|ip| ip.ip().to_string()),
+            port: asset.port,
+            asset_type: asset.asset_type,
+            status: asset.status,
+            description: asset.description,
+            require_mfa: asset.require_mfa,
+            require_justification: asset.require_justification,
+            created_at: asset.created_at,
+            updated_at: asset.updated_at,
+        })
+        .collect();
+
+    Ok(Json(response))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
