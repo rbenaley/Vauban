@@ -17,14 +17,18 @@ use sha3::{Digest, Sha3_256};
 use std::net::SocketAddr;
 use validator::Validate;
 
+use askama::Template;
+
 use crate::AppState;
 use crate::db::get_connection;
 use crate::error::{AppError, AppResult};
-use crate::middleware::auth::AuthUser;
+use crate::middleware::flash::{flash_redirect, IncomingFlash};
 use crate::models::auth_session::{AuthSession, NewAuthSession};
 use crate::models::user::User;
 use crate::schema::{auth_sessions, users::dsl::*};
 use crate::services::auth::AuthService;
+use crate::templates::accounts::{MfaSetupTemplate, MfaVerifyTemplate};
+use crate::templates::base::BaseTemplate;
 
 /// Check if request is from HTMX (has HX-Request header)
 fn is_htmx_request(headers: &HeaderMap) -> bool {
@@ -156,19 +160,107 @@ pub async fn login(
         return Err(AppError::Auth("Invalid credentials".to_string()));
     }
 
-    // Check MFA
+    // MFA handling - for web (HTMX), redirect to MFA pages
+    // For API (JSON), handle inline or return mfa_required
+    if htmx {
+        // Web flow: always generate temporary token and redirect to MFA page
+        // Reset failed attempts first
+        diesel::update(users.find(user.id))
+            .set((
+                failed_login_attempts.eq(0),
+                locked_until.eq(None::<chrono::DateTime<chrono::Utc>>),
+                last_login.eq(chrono::Utc::now()),
+            ))
+            .execute(&mut conn)
+            .map_err(AppError::Database)?;
+
+        // Generate temporary token with mfa_verified = false
+        let temp_token = state.auth_service.generate_access_token(
+            &user.uuid.to_string(),
+            &user.username,
+            false, // mfa_verified = false
+            user.is_superuser,
+            user.is_staff,
+        )?;
+
+        // Create auth session with temporary token
+        let token_hash = hash_token(&temp_token);
+        let client_ip = extract_client_ip(&headers, client_addr);
+        let user_agent_str = headers
+            .get("User-Agent")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        let device_info = user_agent_str
+            .as_ref()
+            .map(|ua| AuthSession::parse_device_info(ua));
+
+        // Mark any existing "current" sessions as not current
+        diesel::update(
+            auth_sessions::table
+                .filter(auth_sessions::user_id.eq(user.id))
+                .filter(auth_sessions::is_current.eq(true)),
+        )
+        .set(auth_sessions::is_current.eq(false))
+        .execute(&mut conn)
+        .ok();
+
+        // Insert new session
+        let new_session = NewAuthSession {
+            uuid: ::uuid::Uuid::new_v4(),
+            user_id: user.id,
+            token_hash,
+            ip_address: client_ip,
+            user_agent: user_agent_str,
+            device_info,
+            expires_at: Utc::now()
+                + Duration::minutes(state.auth_service.access_token_lifetime_minutes() as i64),
+            is_current: true,
+        };
+
+        diesel::insert_into(auth_sessions::table)
+            .values(&new_session)
+            .execute(&mut conn)
+            .ok();
+
+        // Set cookie with temporary token
+        use axum_extra::extract::cookie::{Cookie, SameSite};
+        let cookie = Cookie::build(("access_token", temp_token))
+            .path("/")
+            .http_only(true)
+            .secure(true)
+            .same_site(SameSite::Lax)
+            .build();
+
+        // Redirect based on MFA state
+        let redirect_url = if user.mfa_enabled {
+            "/mfa/verify" // MFA enabled: verify code
+        } else {
+            "/mfa/setup" // MFA not enabled: setup required
+        };
+
+        let mut response = Html("").into_response();
+        response
+            .headers_mut()
+            .insert("HX-Redirect", HeaderValue::from_str(redirect_url).unwrap());
+        return Ok((jar.add(cookie), response).into_response());
+    }
+
+    // API flow: handle MFA inline (legacy behavior for M2M compatibility)
+    // Note: This is a temporary inconsistency - API users can bypass MFA setup requirement.
+    // This will be addressed when MFA moves to vauban-auth service.
     let mfa_verified = if user.mfa_enabled {
         if let Some(code) = request.mfa_code {
             if let Some(secret) = &user.mfa_secret {
-                AuthService::verify_totp(secret, &code)
+                if AuthService::verify_totp(secret, &code) {
+                    true
+                } else {
+                    return Err(AppError::Auth("Invalid MFA code".to_string()));
+                }
             } else {
-                false
+                return Err(AppError::Auth("MFA configuration error".to_string()));
             }
         } else {
-            // MFA required - for HTMX, reveal MFA section
-            if htmx {
-                return Ok(Html(login_mfa_required_html()).into_response());
-            }
+            // MFA required but no code provided
             return Ok(Json(LoginResponse {
                 access_token: String::new(),
                 refresh_token: String::new(),
@@ -178,17 +270,12 @@ pub async fn login(
             .into_response());
         }
     } else {
+        // MFA not enabled - API login proceeds without MFA
+        // (temporary inconsistency: API users don't need to set up MFA)
         true
     };
 
-    if user.mfa_enabled && !mfa_verified {
-        if htmx {
-            return Ok(Html(login_error_html(LoginErrorKind::InvalidMfa)).into_response());
-        }
-        return Err(AppError::Auth("Invalid MFA code".to_string()));
-    }
-
-    // Generate tokens
+    // Generate tokens (API flow with MFA verified)
     let access_token = state.auth_service.generate_access_token(
         &user.uuid.to_string(),
         &user.username,
@@ -314,7 +401,6 @@ pub async fn login_web(
 enum LoginErrorKind {
     InvalidCredentials,
     AccountLocked,
-    InvalidMfa,
     ValidationError,
     InvalidCsrf,
     RateLimited,
@@ -325,7 +411,6 @@ impl LoginErrorKind {
         match self {
             Self::InvalidCredentials => "Invalid credentials",
             Self::AccountLocked => "Account is locked",
-            Self::InvalidMfa => "Invalid MFA code",
             Self::ValidationError => "Validation error",
             Self::InvalidCsrf => "Invalid CSRF token",
             Self::RateLimited => "Too many attempts. Please wait before trying again.",
@@ -351,22 +436,6 @@ fn login_error_html(kind: LoginErrorKind) -> String {
         </div>"#,
         friendly
     )
-}
-
-/// Generate MFA required HTML for HTMX login response.
-fn login_mfa_required_html() -> String {
-    r#"<div id="login-result"></div>
-    <div id="mfa-section" hx-swap-oob="outerHTML:#mfa-section" class="space-y-4">
-        <div>
-            <label for="mfa_code" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                MFA Code
-            </label>
-            <input id="mfa_code" name="mfa_code" type="text"
-                   class="mt-1 appearance-none relative block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 placeholder-gray-500 dark:placeholder-gray-400 text-gray-900 dark:text-white rounded-md focus:outline-none focus:ring-vauban-500 focus:border-vauban-500 focus:z-10 sm:text-sm dark:bg-gray-700"
-                   placeholder="000000" autocomplete="one-time-code" autofocus>
-        </div>
-        <p class="text-sm text-gray-600 dark:text-gray-400">Enter the code from your authenticator app.</p>
-    </div>"#.to_string()
 }
 
 /// Hash a token using SHA3-256 for secure storage.
@@ -492,40 +561,358 @@ pub struct AuthCsrfForm {
     pub csrf_token: String,
 }
 
-/// MFA setup request.
-#[derive(Debug, Serialize)]
-pub struct MfaSetupResponse {
-    pub secret: String,
-    pub qr_code_url: String,
-    pub qr_code_base64: Option<String>,
+// =============================================================================
+// MFA Web Handlers (for human users)
+// =============================================================================
+
+use axum::response::Redirect;
+
+/// Form for MFA code submission.
+#[derive(Debug, Deserialize)]
+pub struct MfaCodeForm {
+    pub totp_code: String,
+    pub csrf_token: String,
 }
 
-/// Setup MFA handler.
-pub async fn setup_mfa(
+/// MFA setup page handler (GET /mfa/setup).
+///
+/// Displays the MFA setup page with QR code for users who haven't enabled MFA yet.
+pub async fn mfa_setup_page(
     State(state): State<AppState>,
-    user: AuthUser,
-) -> AppResult<Json<MfaSetupResponse>> {
-    // Generate TOTP secret with provisioning URI
-    let (secret, qr_code_url) = AuthService::generate_totp_secret(&user.username, "VAUBAN")?;
+    jar: CookieJar,
+    incoming_flash: IncomingFlash,
+) -> AppResult<Response> {
+    // Verify user is authenticated (via cookie)
+    let token = jar
+        .get("access_token")
+        .map(|c| c.value().to_string())
+        .ok_or_else(|| AppError::Auth("Not authenticated".to_string()))?;
 
-    // Generate QR code as base64 PNG for direct embedding
-    let qr_code_base64 = AuthService::generate_totp_qr_code(&secret, &user.username, "VAUBAN").ok();
+    let claims = state.auth_service.verify_token(&token)?;
 
-    // Save secret to database
     let mut conn = get_connection(&state.db_pool)?;
     use ::uuid::Uuid as UuidType;
-    let user_uuid = UuidType::parse_str(&user.uuid)
+    let user_uuid = UuidType::parse_str(&claims.sub)
         .map_err(|_| AppError::Validation("Invalid user UUID".to_string()))?;
-    diesel::update(users.filter(uuid.eq(user_uuid)))
-        .set(mfa_secret.eq(Some(secret.clone())))
+
+    // Get user's current MFA secret (or generate new one)
+    let user_data: (i32, String, Option<String>) = users
+        .filter(uuid.eq(user_uuid))
+        .filter(is_deleted.eq(false))
+        .select((
+            crate::schema::users::id,
+            crate::schema::users::username,
+            crate::schema::users::mfa_secret,
+        ))
+        .first(&mut conn)
+        .map_err(AppError::Database)?;
+
+    let (user_id, user_username, existing_secret) = user_data;
+
+    // Generate or use existing secret
+    let secret = if let Some(s) = existing_secret {
+        s
+    } else {
+        // Generate new secret and save to database
+        let (new_secret, _uri) = AuthService::generate_totp_secret(&user_username, "VAUBAN")?;
+        diesel::update(users.filter(crate::schema::users::id.eq(user_id)))
+            .set(mfa_secret.eq(Some(&new_secret)))
+            .execute(&mut conn)
+            .map_err(AppError::Database)?;
+        new_secret
+    };
+
+    // Generate QR code as base64
+    let qr_code_base64 =
+        AuthService::generate_totp_qr_code(&secret, &user_username, "VAUBAN")?;
+
+    // Build template without sidebar (user not fully authenticated yet)
+    // Convert incoming flash messages to template FlashMessages
+    let flash_messages: Vec<crate::templates::base::FlashMessage> = incoming_flash
+        .messages()
+        .iter()
+        .map(|m| crate::templates::base::FlashMessage {
+            level: m.level.clone(),
+            message: m.message.clone(),
+        })
+        .collect();
+    let base = BaseTemplate::new("MFA Setup".to_string(), None).with_messages(flash_messages);
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        base.into_fields();
+
+    let template = MfaSetupTemplate {
+        title,
+        user: user_ctx,
+        vauban,
+        messages,
+        language_code,
+        sidebar_content,
+        header_user,
+        secret,
+        qr_code_base64,
+    };
+
+    let html = template
+        .render()
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
+    Ok(Html(html).into_response())
+}
+
+/// MFA setup submit handler (POST /mfa/setup).
+///
+/// Validates the TOTP code and enables MFA for the user.
+pub async fn mfa_setup_submit(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    incoming_flash: IncomingFlash,
+    Form(form): Form<MfaCodeForm>,
+) -> AppResult<Response> {
+    let flash = incoming_flash.flash();
+
+    // Validate CSRF
+    let secret_key = state.config.secret_key.expose_secret().as_bytes();
+    let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
+    if !crate::middleware::csrf::validate_double_submit(
+        secret_key,
+        csrf_cookie.map(|c| c.value()),
+        &form.csrf_token,
+    ) {
+        return Ok(flash_redirect(flash.error("Invalid CSRF token"), "/mfa/setup"));
+    }
+
+    // Verify user is authenticated
+    let token = jar
+        .get("access_token")
+        .map(|c| c.value().to_string())
+        .ok_or_else(|| AppError::Auth("Not authenticated".to_string()))?;
+
+    let claims = state.auth_service.verify_token(&token)?;
+
+    let mut conn = get_connection(&state.db_pool)?;
+    use ::uuid::Uuid as UuidType;
+    let user_uuid = UuidType::parse_str(&claims.sub)
+        .map_err(|_| AppError::Validation("Invalid user UUID".to_string()))?;
+
+    // Get user's MFA secret
+    let user_data: (i32, String, Option<String>, bool, bool) = users
+        .filter(uuid.eq(user_uuid))
+        .filter(is_deleted.eq(false))
+        .select((
+            crate::schema::users::id,
+            crate::schema::users::username,
+            crate::schema::users::mfa_secret,
+            crate::schema::users::is_superuser,
+            crate::schema::users::is_staff,
+        ))
+        .first(&mut conn)
+        .map_err(AppError::Database)?;
+
+    let (user_id, user_username, secret_opt, is_super, is_staff_user) = user_data;
+
+    let secret = secret_opt.ok_or_else(|| {
+        AppError::Internal(anyhow::anyhow!("MFA secret not found"))
+    })?;
+
+    // Validate TOTP code
+    let code = form.totp_code.trim();
+    if !AuthService::verify_totp(&secret, code) {
+        return Ok(flash_redirect(
+            flash.error("Invalid verification code. Please try again."),
+            "/mfa/setup",
+        ));
+    }
+
+    // Enable MFA for user
+    diesel::update(users.filter(crate::schema::users::id.eq(user_id)))
+        .set((
+            crate::schema::users::mfa_enabled.eq(true),
+            crate::schema::users::updated_at.eq(chrono::Utc::now()),
+        ))
         .execute(&mut conn)
         .map_err(AppError::Database)?;
 
-    Ok(Json(MfaSetupResponse {
-        secret,
-        qr_code_url,
-        qr_code_base64,
-    }))
+    // Generate new JWT with mfa_verified = true
+    let new_token = state.auth_service.generate_access_token(
+        &claims.sub,
+        &user_username,
+        true, // mfa_verified
+        is_super,
+        is_staff_user,
+    )?;
+
+    // Update the session in database with new token hash
+    // The old token hash won't work anymore, we need to update to the new one
+    let old_token_hash = hash_token(&token);
+    let new_token_hash = hash_token(&new_token);
+
+    diesel::update(
+        auth_sessions::table
+            .filter(auth_sessions::token_hash.eq(&old_token_hash))
+    )
+    .set(auth_sessions::token_hash.eq(&new_token_hash))
+    .execute(&mut conn)
+    .ok(); // Ignore errors - session will be recreated on next login if needed
+
+    // Set new cookie
+    use axum_extra::extract::cookie::{Cookie, SameSite};
+    let cookie = Cookie::build(("access_token", new_token))
+        .path("/")
+        .http_only(true)
+        .secure(true)
+        .same_site(SameSite::Lax)
+        .build();
+
+    Ok((
+        jar.add(cookie),
+        flash_redirect(
+            flash.success("Two-factor authentication has been enabled successfully."),
+            "/dashboard",
+        ),
+    )
+        .into_response())
+}
+
+/// MFA verify page handler (GET /mfa/verify).
+///
+/// Displays the MFA verification page for users who have MFA enabled.
+pub async fn mfa_verify_page(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    incoming_flash: IncomingFlash,
+) -> AppResult<Response> {
+    // Verify user is authenticated (via cookie)
+    let token = jar
+        .get("access_token")
+        .map(|c| c.value().to_string())
+        .ok_or_else(|| AppError::Auth("Not authenticated".to_string()))?;
+
+    let _claims = state.auth_service.verify_token(&token)?;
+
+    // Build template without sidebar (user not fully authenticated yet)
+    // Convert incoming flash messages to template FlashMessages
+    let flash_messages: Vec<crate::templates::base::FlashMessage> = incoming_flash
+        .messages()
+        .iter()
+        .map(|m| crate::templates::base::FlashMessage {
+            level: m.level.clone(),
+            message: m.message.clone(),
+        })
+        .collect();
+    let base = BaseTemplate::new("Verify Identity".to_string(), None).with_messages(flash_messages);
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        base.into_fields();
+
+    let template = MfaVerifyTemplate {
+        title,
+        user: user_ctx,
+        vauban,
+        messages,
+        language_code,
+        sidebar_content,
+        header_user,
+    };
+
+    let html = template
+        .render()
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
+    Ok(Html(html).into_response())
+}
+
+/// MFA verify submit handler (POST /mfa/verify).
+///
+/// Validates the TOTP code and completes authentication.
+pub async fn mfa_verify_submit(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    incoming_flash: IncomingFlash,
+    Form(form): Form<MfaCodeForm>,
+) -> AppResult<Response> {
+    let flash = incoming_flash.flash();
+
+    // Validate CSRF
+    let secret_key = state.config.secret_key.expose_secret().as_bytes();
+    let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
+    if !crate::middleware::csrf::validate_double_submit(
+        secret_key,
+        csrf_cookie.map(|c| c.value()),
+        &form.csrf_token,
+    ) {
+        return Ok(flash_redirect(flash.error("Invalid CSRF token"), "/mfa/verify"));
+    }
+
+    // Verify user is authenticated
+    let token = jar
+        .get("access_token")
+        .map(|c| c.value().to_string())
+        .ok_or_else(|| AppError::Auth("Not authenticated".to_string()))?;
+
+    let claims = state.auth_service.verify_token(&token)?;
+
+    let mut conn = get_connection(&state.db_pool)?;
+    use ::uuid::Uuid as UuidType;
+    let user_uuid = UuidType::parse_str(&claims.sub)
+        .map_err(|_| AppError::Validation("Invalid user UUID".to_string()))?;
+
+    // Get user's MFA secret
+    let user_data: (String, Option<String>, bool, bool) = users
+        .filter(uuid.eq(user_uuid))
+        .filter(is_deleted.eq(false))
+        .select((
+            crate::schema::users::username,
+            crate::schema::users::mfa_secret,
+            crate::schema::users::is_superuser,
+            crate::schema::users::is_staff,
+        ))
+        .first(&mut conn)
+        .map_err(AppError::Database)?;
+
+    let (user_username, secret_opt, is_super, is_staff_user) = user_data;
+
+    let secret = secret_opt.ok_or_else(|| {
+        AppError::Internal(anyhow::anyhow!("MFA secret not found"))
+    })?;
+
+    // Validate TOTP code
+    let code = form.totp_code.trim();
+    if !AuthService::verify_totp(&secret, code) {
+        return Ok(flash_redirect(
+            flash.error("Invalid verification code. Please try again."),
+            "/mfa/verify",
+        ));
+    }
+
+    // Generate new JWT with mfa_verified = true
+    let new_token = state.auth_service.generate_access_token(
+        &claims.sub,
+        &user_username,
+        true, // mfa_verified
+        is_super,
+        is_staff_user,
+    )?;
+
+    // Update the session in database with new token hash
+    // The old token hash won't work anymore, we need to update to the new one
+    let old_token_hash = hash_token(&token);
+    let new_token_hash = hash_token(&new_token);
+
+    diesel::update(
+        auth_sessions::table
+            .filter(auth_sessions::token_hash.eq(&old_token_hash))
+    )
+    .set(auth_sessions::token_hash.eq(&new_token_hash))
+    .execute(&mut conn)
+    .ok(); // Ignore errors - session will be recreated on next login if needed
+
+    // Set new cookie
+    use axum_extra::extract::cookie::{Cookie, SameSite};
+    let cookie = Cookie::build(("access_token", new_token))
+        .path("/")
+        .http_only(true)
+        .secure(true)
+        .same_site(SameSite::Lax)
+        .build();
+
+    Ok((jar.add(cookie), Redirect::to("/dashboard")).into_response())
 }
 
 #[cfg(test)]
@@ -681,37 +1068,6 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
 
         assert_eq!(parsed["mfa_required"], true);
-    }
-
-    // ==================== MfaSetupResponse Tests ====================
-
-    #[test]
-    fn test_mfa_setup_response_serialize() {
-        let response = MfaSetupResponse {
-            secret: "JBSWY3DPEHPK3PXP".to_string(),
-            qr_code_url: "otpauth://totp/VAUBAN:testuser".to_string(),
-            qr_code_base64: Some("base64data...".to_string()),
-        };
-
-        let json = serde_json::to_string(&response).unwrap();
-
-        assert!(json.contains("JBSWY3DPEHPK3PXP"));
-        assert!(json.contains("otpauth://"));
-        assert!(json.contains("qr_code_base64"));
-    }
-
-    #[test]
-    fn test_mfa_setup_response_without_qr_code() {
-        let response = MfaSetupResponse {
-            secret: "TESTSECRET".to_string(),
-            qr_code_url: "otpauth://totp/TEST:user".to_string(),
-            qr_code_base64: None,
-        };
-
-        let json = serde_json::to_string(&response).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-
-        assert!(parsed["qr_code_base64"].is_null());
     }
 
     // ==================== extract_client_ip Tests ====================
@@ -969,25 +1325,6 @@ mod tests {
         assert!(html.contains("login-result"));
     }
 
-    // ==================== login_mfa_required_html Tests ====================
-
-    #[test]
-    fn test_login_mfa_required_html_structure() {
-        let html = login_mfa_required_html();
-
-        assert!(html.contains("mfa_code"));
-        assert!(html.contains("mfa-section"));
-        assert!(html.contains("hx-swap-oob"));
-        assert!(html.contains("MFA Code"));
-    }
-
-    #[test]
-    fn test_login_mfa_required_html_autofocus() {
-        let html = login_mfa_required_html();
-
-        assert!(html.contains("autofocus"));
-    }
-
     // ==================== lockout_duration_for_attempts Tests ====================
 
     #[test]
@@ -1073,20 +1410,6 @@ mod tests {
 
         let debug_str = format!("{:?}", response);
         assert!(debug_str.contains("LoginResponse"));
-    }
-
-    // ==================== MfaSetupResponse Debug Tests ====================
-
-    #[test]
-    fn test_mfa_setup_response_debug() {
-        let response = MfaSetupResponse {
-            secret: "SECRET".to_string(),
-            qr_code_url: "otpauth://".to_string(),
-            qr_code_base64: None,
-        };
-
-        let debug_str = format!("{:?}", response);
-        assert!(debug_str.contains("MfaSetupResponse"));
     }
 
     // ==================== Validation Edge Cases ====================

@@ -92,20 +92,8 @@
               hx-ext="json-enc">
             <input type="hidden" name="csrf_token" />
             
-            <!-- Result area (errors, MFA prompt) -->
+            <!-- Result area (errors) -->
             <div id="login-result"></div>
-
-            <!-- MFA section (hidden by default, revealed by server via hx-swap-oob) -->
-            <div id="mfa-section" class="hidden space-y-4">
-                <div>
-                    <label for="mfa_code" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                        MFA Code
-                    </label>
-                    <input id="mfa_code" name="mfa_code" type="text"
-                           class="mt-1 appearance-none relative block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 placeholder-gray-500 dark:placeholder-gray-400 text-gray-900 dark:text-white rounded-md focus:outline-none focus:ring-vauban-500 focus:border-vauban-500 focus:z-10 sm:text-sm dark:bg-gray-700"
-                           placeholder="000000" autocomplete="one-time-code">
-                </div>
-            </div>
 
             <div class="rounded-md shadow-sm -space-y-px">
                 <div>

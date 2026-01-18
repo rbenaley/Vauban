@@ -1171,18 +1171,54 @@ pub async fn profile(
     Ok(Html(html))
 }
 
-/// MFA setup page.
+/// MFA setup page (for authenticated users viewing their MFA status).
 pub async fn mfa_setup(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     auth_user: WebAuthUser,
 ) -> Result<impl IntoResponse, AppError> {
+    use crate::services::auth::AuthService;
+    use ::uuid::Uuid as UuidType;
+
     let user = Some(user_context_from_auth(&auth_user));
     let base =
         BaseTemplate::new("MFA Setup".to_string(), user.clone()).with_current_path("/accounts/mfa");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         base.into_fields();
 
-    // TODO: Generate secret and QR code
+    let mut conn = get_connection(&state.db_pool)?;
+    let user_uuid = UuidType::parse_str(&auth_user.uuid)
+        .map_err(|_| AppError::Validation("Invalid user UUID".to_string()))?;
+
+    // Get user's MFA secret or generate a new one
+    let user_data: (i32, String, Option<String>) = crate::schema::users::table
+        .filter(crate::schema::users::uuid.eq(user_uuid))
+        .filter(crate::schema::users::is_deleted.eq(false))
+        .select((
+            crate::schema::users::id,
+            crate::schema::users::username,
+            crate::schema::users::mfa_secret,
+        ))
+        .first(&mut conn)
+        .map_err(AppError::Database)?;
+
+    let (user_id, user_username, existing_secret) = user_data;
+
+    // Generate or use existing secret
+    let secret = if let Some(s) = existing_secret {
+        s
+    } else {
+        // Generate new secret and save to database
+        let (new_secret, _uri) = AuthService::generate_totp_secret(&user_username, "VAUBAN")?;
+        diesel::update(crate::schema::users::table.filter(crate::schema::users::id.eq(user_id)))
+            .set(crate::schema::users::mfa_secret.eq(Some(&new_secret)))
+            .execute(&mut conn)
+            .map_err(AppError::Database)?;
+        new_secret
+    };
+
+    // Generate QR code as base64
+    let qr_code_base64 = AuthService::generate_totp_qr_code(&secret, &user_username, "VAUBAN")?;
+
     let template = MfaSetupTemplate {
         title,
         user: user_ctx,
@@ -1191,8 +1227,8 @@ pub async fn mfa_setup(
         language_code,
         sidebar_content,
         header_user,
-        secret: "SECRET123456".to_string(),
-        qr_code_url: "/static/qr.png".to_string(),
+        secret,
+        qr_code_base64,
     };
 
     let html = template

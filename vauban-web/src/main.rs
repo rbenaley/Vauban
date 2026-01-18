@@ -289,6 +289,15 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
         .route("/login", get(handlers::web::login_page))
         .route("/auth/login", post(handlers::auth::login_web))
         .route("/auth/logout", post(handlers::auth::logout_web))
+        // MFA setup and verification (after login, before dashboard access)
+        .route(
+            "/mfa/setup",
+            get(handlers::auth::mfa_setup_page).post(handlers::auth::mfa_setup_submit),
+        )
+        .route(
+            "/mfa/verify",
+            get(handlers::auth::mfa_verify_page).post(handlers::auth::mfa_verify_submit),
+        )
         // Dashboard pages
         .route("/", get(handlers::web::dashboard_home))
         .route("/dashboard", get(handlers::web::dashboard_home))
@@ -439,7 +448,7 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             // Authentication API
             .route("/api/v1/auth/login", post(handlers::auth::login))
             .route("/api/v1/auth/logout", post(handlers::auth::logout))
-            .route("/api/v1/auth/mfa/setup", post(handlers::auth::setup_mfa))
+            // Note: MFA setup is only available via web interface (/mfa/setup), not API
             // Accounts API
             .route("/api/v1/accounts", get(handlers::api::list_users))
             .route("/api/v1/accounts", post(handlers::api::create_user))
