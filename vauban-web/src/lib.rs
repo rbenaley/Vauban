@@ -3,6 +3,7 @@ pub mod cache;
 ///
 /// This file makes modules available for integration tests.
 pub mod config;
+pub mod utils;
 pub mod crypto;
 pub mod db;
 pub mod error;

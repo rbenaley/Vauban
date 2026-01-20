@@ -18,9 +18,9 @@
             </div>
         </div>
         <div class="ml-4 flex items-center space-x-2">
-            {% if session.duration_seconds.is_some() %}
+            {% if session.duration.is_some() %}
             <span class="text-xs text-gray-500 dark:text-gray-400">
-                {{ session.duration_seconds.as_ref().unwrap() }}s
+                {{ session.duration.as_ref().unwrap() }}
             </span>
             {% endif %}
             <a href="/sessions/{{ session.id }}"

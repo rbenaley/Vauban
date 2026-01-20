@@ -7,7 +7,8 @@ pub struct ActiveSessionItem {
     pub asset_name: String,
     pub asset_hostname: String,
     pub session_type: String,
-    pub duration_seconds: Option<i64>,
+    /// Formatted duration string (e.g., "5m 30s", "2h 15m", "1j 3h 20m").
+    pub duration: Option<String>,
 }
 
 #[derive(Template)]
@@ -26,7 +27,7 @@ mod tests {
             asset_name: "Test Server".to_string(),
             asset_hostname: "test.example.com".to_string(),
             session_type: "ssh".to_string(),
-            duration_seconds: Some(3600),
+            duration: Some("1h 0m".to_string()),
         }
     }
 
@@ -40,8 +41,8 @@ mod tests {
     #[test]
     fn test_active_session_item_without_duration() {
         let mut item = create_test_session_item();
-        item.duration_seconds = None;
-        assert!(item.duration_seconds.is_none());
+        item.duration = None;
+        assert!(item.duration.is_none());
     }
 
     #[test]

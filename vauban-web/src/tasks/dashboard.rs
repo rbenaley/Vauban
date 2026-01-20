@@ -9,6 +9,8 @@ use std::time::Duration;
 use tokio::time::interval;
 use tracing::{debug, error, info};
 
+use crate::utils::format_duration;
+
 use crate::db::{DbPool, get_connection};
 use crate::services::broadcast::{BroadcastService, WsChannel, WsMessage};
 use crate::templates::dashboard::widgets::{
@@ -228,13 +230,13 @@ fn fetch_active_sessions(db_pool: &DbPool) -> Result<Vec<ActiveSessionItem>, Str
     Ok(sessions
         .into_iter()
         .map(|s| {
-            let duration = now.signed_duration_since(s.created_at).num_seconds();
+            let duration_secs = now.signed_duration_since(s.created_at).num_seconds();
             ActiveSessionItem {
                 id: s.id,
                 asset_name: format!("Asset {}", s.asset_id),
                 asset_hostname: s.client_ip.to_string(),
                 session_type: s.session_type,
-                duration_seconds: Some(duration),
+                duration: Some(format_duration(duration_secs)),
             }
         })
         .collect())
@@ -273,20 +275,6 @@ fn fetch_active_sessions_full(db_pool: &DbPool) -> Result<Vec<FullActiveSessionI
         .collect())
 }
 
-/// Format duration in seconds to human-readable string.
-fn format_duration(seconds: i64) -> String {
-    if seconds < 60 {
-        format!("{}s", seconds)
-    } else if seconds < 3600 {
-        let mins = seconds / 60;
-        let secs = seconds % 60;
-        format!("{}m {}s", mins, secs)
-    } else {
-        let hours = seconds / 3600;
-        let mins = (seconds % 3600) / 60;
-        format!("{}h {}m", hours, mins)
-    }
-}
 
 /// Fetch recent activity from database.
 fn fetch_recent_activity(db_pool: &DbPool) -> Result<Vec<ActivityItem>, String> {

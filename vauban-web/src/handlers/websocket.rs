@@ -16,6 +16,8 @@ use std::time::Duration;
 use tokio::time::interval;
 use tracing::{debug, error, info, warn};
 
+use crate::utils::format_duration;
+
 use crate::AppState;
 use crate::db::get_connection;
 use crate::middleware::auth::AuthUser;
@@ -263,13 +265,13 @@ fn fetch_initial_sessions(
     Ok(sessions
         .into_iter()
         .map(|s| {
-            let duration = now.signed_duration_since(s.created_at).num_seconds();
+            let duration_secs = now.signed_duration_since(s.created_at).num_seconds();
             ActiveSessionItem {
                 id: s.id,
                 asset_name: format!("Asset {}", s.asset_id),
                 asset_hostname: s.client_ip.to_string(),
                 session_type: s.session_type,
-                duration_seconds: Some(duration),
+                duration: Some(format_duration(duration_secs)),
             }
         })
         .collect())
@@ -717,20 +719,6 @@ fn fetch_active_sessions_list(
         .collect())
 }
 
-/// Format duration in seconds to human-readable string.
-fn format_duration(seconds: i64) -> String {
-    if seconds < 60 {
-        format!("{}s", seconds)
-    } else if seconds < 3600 {
-        let mins = seconds / 60;
-        let secs = seconds % 60;
-        format!("{}m {}s", mins, secs)
-    } else {
-        let hours = seconds / 3600;
-        let mins = (seconds % 3600) / 60;
-        format!("{}h {}m", hours, mins)
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -766,30 +754,6 @@ mod tests {
     fn test_ws_channel_recent_activity() {
         let channel = WsChannel::RecentActivity;
         assert_eq!(channel.as_str(), "dashboard:recent-activity");
-    }
-
-    // ==================== format_duration Tests ====================
-
-    #[test]
-    fn test_format_duration_seconds() {
-        assert_eq!(format_duration(0), "0s");
-        assert_eq!(format_duration(30), "30s");
-        assert_eq!(format_duration(59), "59s");
-    }
-
-    #[test]
-    fn test_format_duration_minutes() {
-        assert_eq!(format_duration(60), "1m 0s");
-        assert_eq!(format_duration(90), "1m 30s");
-        assert_eq!(format_duration(3599), "59m 59s");
-    }
-
-    #[test]
-    fn test_format_duration_hours() {
-        assert_eq!(format_duration(3600), "1h 0m");
-        assert_eq!(format_duration(3660), "1h 1m");
-        assert_eq!(format_duration(7200), "2h 0m");
-        assert_eq!(format_duration(7325), "2h 2m");
     }
 
     #[test]

@@ -44,6 +44,7 @@ use crate::error::{AppError, AppResult};
 use crate::middleware::auth::{AuthUser, OptionalAuthUser, WebAuthUser};
 use crate::middleware::flash::{IncomingFlash, flash_redirect};
 use crate::schema::{api_keys, assets, auth_sessions, proxy_sessions};
+use crate::utils::format_duration;
 use crate::templates::accounts::{
     ApiKeyItem, ApikeyListTemplate, AuthSessionItem, GroupDetailTemplate, GroupListTemplate,
     LoginTemplate, MfaSetupTemplate, ProfileDetail, ProfileSession, ProfileTemplate,
@@ -2493,13 +2494,13 @@ pub async fn dashboard_widget_active_sessions(
         .into_iter()
         .map(
             |(id, asset_name, asset_hostname, session_type, started_at)| {
-                let duration = chrono::Utc::now().signed_duration_since(started_at);
+                let duration_secs = chrono::Utc::now().signed_duration_since(started_at).num_seconds();
                 ActiveSessionItem {
                     id,
                     asset_name,
                     asset_hostname,
                     session_type,
-                    duration_seconds: Some(duration.num_seconds()),
+                    duration: Some(format_duration(duration_secs)),
                 }
             },
         )
