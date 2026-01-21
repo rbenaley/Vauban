@@ -285,6 +285,8 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             "/ws/sessions/active",
             get(handlers::websocket::active_sessions_ws),
         )
+        // HTMX utility routes
+        .route("/htmx/empty", get(handlers::web::htmx_empty))
         // Authentication pages and form handlers
         .route("/login", get(handlers::web::login_page))
         .route("/auth/login", post(handlers::auth::login_web))

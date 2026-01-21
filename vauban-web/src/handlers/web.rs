@@ -82,6 +82,12 @@ fn is_admin(auth_user: &WebAuthUser) -> bool {
     auth_user.is_superuser || auth_user.is_staff
 }
 
+/// Empty response for HTMX modal close and similar use cases.
+/// Returns an empty HTML fragment to clear a target element.
+pub async fn htmx_empty() -> Html<&'static str> {
+    Html("")
+}
+
 /// Login page.
 pub async fn login_page(
     State(state): State<AppState>,
