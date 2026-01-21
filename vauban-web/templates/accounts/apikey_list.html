@@ -126,8 +126,9 @@
                         <form hx-post="/accounts/apikeys/{{ key.uuid }}/revoke"
                               hx-confirm="Are you sure you want to revoke this API key? This action cannot be undone."
                               hx-target="#api-key-{{ key.uuid }}"
-                              hx-swap="outerHTML">
-                            <input type="hidden" name="csrf_token" />
+                              hx-swap="outerHTML"
+                              x-data="csrf">
+                            <input type="hidden" name="csrf_token" x-model="token" />
                             <button type="submit"
                                     class="text-red-600 hover:text-red-900 dark:text-red-400 dark:hover:text-red-300">
                                 Revoke

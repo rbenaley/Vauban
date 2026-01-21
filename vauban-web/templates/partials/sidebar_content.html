@@ -152,8 +152,8 @@
                             API keys
                         </a>
                         <div class="border-t border-gray-700 my-1"></div>
-                        <form action="/auth/logout" method="post" class="block">
-                            <input type="hidden" name="csrf_token" />
+                        <form action="/auth/logout" method="post" class="block" x-data="csrf">
+                            <input type="hidden" name="csrf_token" x-model="token" />
                             <button type="submit"
                                     class="w-full rounded-md py-2 pl-11 pr-2 text-left text-sm leading-6 text-gray-400 hover:bg-gray-700 hover:text-white">
                                 Log out

@@ -90,7 +90,7 @@
               hx-indicator="#loading-spinner"
               hx-disabled-elt="button[type='submit']"
               hx-ext="json-enc">
-            <input type="hidden" name="csrf_token" />
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
             
             <!-- Result area (errors) -->
             <div id="login-result"></div>

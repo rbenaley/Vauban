@@ -48,8 +48,8 @@
     </div>
 
     <!-- Create Form -->
-    <form action="/accounts/users" method="POST" class="space-y-6">
-        <input type="hidden" name="csrf_token" />
+    <form action="/accounts/users" method="POST" class="space-y-6" x-data="csrf">
+        <input type="hidden" name="csrf_token" x-model="token" />
 
         <!-- Account Information -->
         <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">

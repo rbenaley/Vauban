@@ -30,8 +30,8 @@
             </p>
         </div>
 
-        <form action="/mfa/verify" method="POST" class="mt-8 space-y-6">
-            <input type="hidden" name="csrf_token" />
+        <form action="/mfa/verify" method="POST" class="mt-8 space-y-6" x-data="csrf">
+            <input type="hidden" name="csrf_token" x-model="token" />
 
             <div class="space-y-4">
                 <div>

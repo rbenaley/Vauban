@@ -64,8 +64,8 @@
     <!-- Flash messages are displayed in base.html -->
 
     <!-- Edit Form - Native HTML form with PRG pattern -->
-    <form action="/assets/{{ asset.uuid }}/edit" method="POST" class="space-y-6">
-    <input type="hidden" name="csrf_token" />
+    <form action="/assets/{{ asset.uuid }}/edit" method="POST" class="space-y-6" x-data="csrf">
+    <input type="hidden" name="csrf_token" x-model="token" />
 
         <!-- Connection Details -->
         <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">

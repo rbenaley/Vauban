@@ -53,8 +53,8 @@
                 <p class="text-sm text-gray-600 dark:text-gray-400 mb-4">
                     Enter the 6-digit code from your authenticator app to complete setup.
                 </p>
-                <form action="/mfa/setup" method="POST" class="space-y-4">
-                    <input type="hidden" name="csrf_token" />
+                <form action="/mfa/setup" method="POST" class="space-y-4" x-data="csrf">
+                    <input type="hidden" name="csrf_token" x-model="token" />
                     <div>
                         <label for="totp_code" class="sr-only">Verification Code</label>
                         <input id="totp_code" 

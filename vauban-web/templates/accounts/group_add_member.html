@@ -95,8 +95,8 @@
                 {% else %}
                 {% for user in available_users %}
                 <div class="px-4 py-3 hover:bg-gray-50 dark:hover:bg-gray-700">
-                    <form method="post" action="/accounts/groups/{{ group.uuid }}/members" class="flex items-center justify-between">
-                        <input type="hidden" name="csrf_token" />
+                    <form method="post" action="/accounts/groups/{{ group.uuid }}/members" class="flex items-center justify-between" x-data="csrf">
+                        <input type="hidden" name="csrf_token" x-model="token" />
                         <input type="hidden" name="user_uuid" value="{{ user.uuid }}" />
                         <div class="flex items-center space-x-3">
                             <div class="flex-shrink-0">

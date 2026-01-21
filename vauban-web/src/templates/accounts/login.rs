@@ -13,6 +13,8 @@ pub struct LoginTemplate {
     pub sidebar_content:
         Option<crate::templates::partials::sidebar_content::SidebarContentTemplate>,
     pub header_user: Option<crate::templates::base::UserContext>,
+    /// CSRF token for form submission (server-side injected).
+    pub csrf_token: String,
 }
 
 #[cfg(test)]
@@ -37,6 +39,7 @@ mod tests {
             language_code: "en".to_string(),
             sidebar_content: None,
             header_user: None,
+            csrf_token: "test-csrf-token".to_string(),
         };
 
         assert_eq!(template.title, "Login");
@@ -56,6 +59,7 @@ mod tests {
             language_code: "en".to_string(),
             sidebar_content: None,
             header_user: None,
+            csrf_token: "test-csrf-token".to_string(),
         };
 
         assert_eq!(template.messages.len(), 1);
@@ -72,6 +76,7 @@ mod tests {
             language_code: "en".to_string(),
             sidebar_content: None,
             header_user: None,
+            csrf_token: "test-csrf-token".to_string(),
         };
 
         let result = template.render();

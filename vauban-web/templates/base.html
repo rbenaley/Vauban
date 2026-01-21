@@ -41,32 +41,25 @@
     <script src="https://unpkg.com/htmx.org@1.9.12"></script>
     <script src="https://unpkg.com/htmx.org@1.9.12/dist/ext/ws.js"></script>
     <script src="https://unpkg.com/htmx.org@1.9.12/dist/ext/json-enc.js"></script>
-    <script>
-        function getCookieValue(name) {
-            const value = `; ${document.cookie}`;
-            const parts = value.split(`; ${name}=`);
-            if (parts.length === 2) {
-                return parts.pop().split(';').shift();
-            }
-            return null;
-        }
-
-        function ensureCsrfInputs() {
-            const token = getCookieValue('__vauban_csrf');
-            if (!token) return;
-            document.querySelectorAll('input[name="csrf_token"]').forEach((input) => {
-                if (!input.value) {
-                    input.value = token;
-                }
-            });
-        }
-
-        document.addEventListener('DOMContentLoaded', ensureCsrfInputs);
-        document.addEventListener('htmx:afterSwap', ensureCsrfInputs);
-    </script>
 
     <!-- Alpine.js -->
     <script defer src="https://unpkg.com/alpinejs@3.14.0/dist/cdn.min.js"></script>
+
+    <!-- Alpine.js CSRF helper: reads token from cookie and keeps inputs synced -->
+    <script>
+        document.addEventListener('alpine:init', () => {
+            Alpine.data('csrf', () => ({
+                token: '',
+                init() {
+                    this.refreshToken();
+                },
+                refreshToken() {
+                    const match = document.cookie.match(/(?:^|;\s*)__vauban_csrf=([^;]*)/);
+                    this.token = match ? match[1] : '';
+                }
+            }));
+        });
+    </script>
 
     <!-- Custom styles -->
     <style>

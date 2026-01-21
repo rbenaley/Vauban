@@ -83,10 +83,17 @@ fn is_admin(auth_user: &WebAuthUser) -> bool {
 }
 
 /// Login page.
-pub async fn login_page(State(_state): State<AppState>) -> Result<impl IntoResponse, AppError> {
+pub async fn login_page(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<impl IntoResponse, AppError> {
     let base = BaseTemplate::new("Login".to_string(), None);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         base.into_fields();
+
+    // Get or generate CSRF token
+    let secret = state.config.secret_key.expose_secret().as_bytes();
+    let (csrf_token, new_cookie) = get_or_create_csrf_token(&jar, secret);
 
     let template = LoginTemplate {
         title,
@@ -96,12 +103,43 @@ pub async fn login_page(State(_state): State<AppState>) -> Result<impl IntoRespo
         language_code,
         sidebar_content,
         header_user,
+        csrf_token,
     };
 
     let html = template
         .render()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
-    Ok(Html(html))
+
+    // Return response with updated cookie if a new token was generated
+    if let Some(cookie) = new_cookie {
+        Ok((jar.add(cookie), Html(html)).into_response())
+    } else {
+        Ok(Html(html).into_response())
+    }
+}
+
+/// Get the CSRF token from cookie or generate a new one.
+/// Returns the token and optionally a new cookie to set.
+fn get_or_create_csrf_token(
+    jar: &CookieJar,
+    secret: &[u8],
+) -> (String, Option<axum_extra::extract::cookie::Cookie<'static>>) {
+    use crate::middleware::csrf::{
+        build_csrf_cookie, generate_csrf_token, verify_csrf_token, CSRF_COOKIE_NAME,
+    };
+
+    // Check if we have a valid existing token
+    if let Some(cookie) = jar.get(CSRF_COOKIE_NAME) {
+        let token = cookie.value().to_string();
+        if verify_csrf_token(secret, &token) {
+            return (token, None);
+        }
+    }
+
+    // Generate new token
+    let token = generate_csrf_token(secret);
+    let cookie = build_csrf_cookie(&token);
+    (token, Some(cookie))
 }
 
 /// Dashboard home page - requires authentication.

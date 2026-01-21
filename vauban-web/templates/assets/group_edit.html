@@ -51,8 +51,8 @@
     <!-- Flash messages are displayed in base.html -->
 
     <!-- Edit Form - Native HTML form with PRG pattern -->
-    <form action="/assets/groups/{{ group.uuid }}/edit" method="POST" class="space-y-6">
-        <input type="hidden" name="csrf_token" />
+    <form action="/assets/groups/{{ group.uuid }}/edit" method="POST" class="space-y-6" x-data="csrf">
+        <input type="hidden" name="csrf_token" x-model="token" />
         <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
             <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
                 <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Group Details</h3>
