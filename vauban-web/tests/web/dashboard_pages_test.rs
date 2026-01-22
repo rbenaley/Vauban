@@ -13,7 +13,7 @@ use axum::http::header::COOKIE;
 use serial_test::serial;
 use uuid::Uuid;
 
-use crate::common::{TestApp, assertions::assert_status};
+use crate::common::{TestApp, assertions::assert_status, unwrap_ok};
 use crate::fixtures::{
     create_recorded_session, create_simple_ssh_asset, create_simple_user, create_test_session,
     get_asset_uuid, unique_name,
@@ -23,11 +23,10 @@ use diesel::prelude::*;
 /// Helper to get user UUID from user ID.
 fn get_user_uuid(conn: &mut diesel::PgConnection, user_id: i32) -> Uuid {
     use vauban_web::schema::users;
-    users::table
+    unwrap_ok!(users::table
         .filter(users::id.eq(user_id))
         .select(users::uuid)
-        .first(conn)
-        .expect("User should exist")
+        .first(conn))
 }
 
 // =============================================================================

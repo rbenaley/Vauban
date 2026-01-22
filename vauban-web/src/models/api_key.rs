@@ -205,6 +205,7 @@ pub struct CreateApiKeyRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::unwrap_ok;
 
     #[test]
     fn test_generate_key_format() {
@@ -408,14 +409,14 @@ mod tests {
     #[test]
     fn test_api_key_scope_serialize() {
         let scope = ApiKeyScope::Read;
-        let json = serde_json::to_string(&scope).unwrap();
+        let json = unwrap_ok!(serde_json::to_string(&scope));
         assert!(json.contains("read"));
     }
 
     #[test]
     fn test_api_key_scope_deserialize() {
         let json = r#""write""#;
-        let scope: ApiKeyScope = serde_json::from_str(json).unwrap();
+        let scope: ApiKeyScope = unwrap_ok!(serde_json::from_str(json));
         assert_eq!(scope, ApiKeyScope::Write);
     }
 
@@ -457,7 +458,7 @@ mod tests {
     #[test]
     fn test_api_key_serialize() {
         let key = create_test_api_key();
-        let json = serde_json::to_string(&key).unwrap();
+        let json = unwrap_ok!(serde_json::to_string(&key));
         assert!(json.contains("Test Key"));
         // key_hash and last_used_ip should be skipped
         assert!(!json.contains("key_hash"));
@@ -688,7 +689,7 @@ mod tests {
             expires_at: None,
         };
 
-        let json = serde_json::to_string(&created).unwrap();
+        let json = unwrap_ok!(serde_json::to_string(&created));
         assert!(json.contains("Serialize Key"));
         assert!(json.contains("vbn_serialize"));
     }
@@ -722,7 +723,7 @@ mod tests {
     #[test]
     fn test_create_api_key_request_deserialize() {
         let json = r#"{"name": "Test", "scopes": ["read"], "expires_in_days": 90}"#;
-        let request: CreateApiKeyRequest = serde_json::from_str(json).unwrap();
+        let request: CreateApiKeyRequest = unwrap_ok!(serde_json::from_str(json));
 
         assert_eq!(request.name, "Test");
         assert_eq!(request.scopes, vec!["read"]);
@@ -732,7 +733,7 @@ mod tests {
     #[test]
     fn test_create_api_key_request_deserialize_defaults() {
         let json = r#"{"name": "Test"}"#;
-        let request: CreateApiKeyRequest = serde_json::from_str(json).unwrap();
+        let request: CreateApiKeyRequest = unwrap_ok!(serde_json::from_str(json));
 
         assert_eq!(request.name, "Test");
         assert!(request.scopes.is_empty()); // Default

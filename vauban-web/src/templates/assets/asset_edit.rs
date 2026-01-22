@@ -35,6 +35,7 @@ pub struct AssetEditTemplate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{unwrap_ok, unwrap_some};
 
     fn create_test_asset_edit() -> AssetEdit {
         AssetEdit {
@@ -137,7 +138,7 @@ mod tests {
         };
 
         assert!(template.user.is_some());
-        assert_eq!(template.user.as_ref().unwrap().username, "admin");
+        assert_eq!(unwrap_some!(template.user.as_ref()).username, "admin");
     }
 
     #[test]

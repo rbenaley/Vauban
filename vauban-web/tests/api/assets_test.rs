@@ -7,7 +7,7 @@ use serde_json::json;
 use serial_test::serial;
 use uuid::Uuid;
 
-use crate::common::{TestApp, assertions::*, test_db};
+use crate::common::{TestApp, assertions::*, test_db, unwrap_ok};
 use crate::fixtures::{
     create_admin_user, create_test_rdp_asset, create_test_ssh_asset, create_test_user, unique_name,
 };
@@ -328,11 +328,10 @@ async fn test_update_asset_with_ipv4_persists_to_database() {
 
     // Verify IP was persisted in database
     use vauban_web::schema::assets::dsl::{assets, ip_address, uuid};
-    let db_ip: Option<ipnetwork::IpNetwork> = assets
+    let db_ip: Option<ipnetwork::IpNetwork> = unwrap_ok!(assets
         .filter(uuid.eq(asset.asset.uuid))
         .select(ip_address)
-        .first(&mut conn)
-        .expect("Asset should exist in database");
+        .first(&mut conn));
 
     assert_eq!(
         db_ip.map(|ip| ip.to_string()),
@@ -372,11 +371,10 @@ async fn test_update_asset_with_ipv6_persists_to_database() {
 
     // Verify IPv6 was persisted in database
     use vauban_web::schema::assets::dsl::{assets, ip_address, uuid};
-    let db_ip: Option<ipnetwork::IpNetwork> = assets
+    let db_ip: Option<ipnetwork::IpNetwork> = unwrap_ok!(assets
         .filter(uuid.eq(asset.asset.uuid))
         .select(ip_address)
-        .first(&mut conn)
-        .expect("Asset should exist in database");
+        .first(&mut conn));
 
     assert_eq!(
         db_ip.map(|ip| ip.to_string()),
@@ -435,11 +433,10 @@ async fn test_update_asset_with_multiple_fields_persists_to_database() {
 
     // Verify IP was persisted in database (ip_address is not serialized in response for security)
     use vauban_web::schema::assets::dsl::{assets, ip_address, uuid};
-    let db_ip: Option<ipnetwork::IpNetwork> = assets
+    let db_ip: Option<ipnetwork::IpNetwork> = unwrap_ok!(assets
         .filter(uuid.eq(asset.asset.uuid))
         .select(ip_address)
-        .first(&mut conn)
-        .expect("Asset should exist in database");
+        .first(&mut conn));
 
     assert_eq!(
         db_ip.map(|ip| ip.to_string()),
@@ -516,11 +513,10 @@ async fn test_update_asset_with_string_port() {
 
     // Verify port was updated in database
     use vauban_web::schema::assets::dsl::{assets, port, uuid};
-    let db_port: i32 = assets
+    let db_port: i32 = unwrap_ok!(assets
         .filter(uuid.eq(asset.asset.uuid))
         .select(port)
-        .first(&mut conn)
-        .expect("Asset should exist in database");
+        .first(&mut conn));
 
     assert_eq!(db_port, 2222, "Database should contain the updated port");
 
@@ -556,11 +552,10 @@ async fn test_update_asset_with_checkbox_on() {
 
     // Verify require_mfa was updated in database
     use vauban_web::schema::assets::dsl::{assets, require_mfa, uuid};
-    let db_mfa: bool = assets
+    let db_mfa: bool = unwrap_ok!(assets
         .filter(uuid.eq(asset.asset.uuid))
         .select(require_mfa)
-        .first(&mut conn)
-        .expect("Asset should exist in database");
+        .first(&mut conn));
 
     assert!(db_mfa, "Database should have require_mfa set to true");
 
@@ -614,11 +609,10 @@ async fn test_update_asset_full_form_submission() {
         String,
         bool,
         bool,
-    ) = assets
+    ) = unwrap_ok!(assets
         .filter(uuid.eq(asset.asset.uuid))
         .select((name, hostname, port, status, require_mfa, require_justification))
-        .first(&mut conn)
-        .expect("Asset should exist in database");
+        .first(&mut conn));
 
     assert!(db_name.starts_with("updated-server"), "Name should start with 'updated-server'");
     assert!(db_hostname.contains("updated"), "Hostname should contain 'updated'");

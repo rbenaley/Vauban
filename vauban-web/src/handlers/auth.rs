@@ -239,9 +239,11 @@ pub async fn login(
         };
 
         let mut response = Html("").into_response();
-        response
-            .headers_mut()
-            .insert("HX-Redirect", HeaderValue::from_str(redirect_url).unwrap());
+        // SAFETY: redirect_url is a static string literal, always valid ASCII
+        #[allow(clippy::expect_used)]
+        let header_value = HeaderValue::from_str(redirect_url)
+            .expect("redirect URL is a valid header value");
+        response.headers_mut().insert("HX-Redirect", header_value);
         return Ok((jar.add(cookie), response).into_response());
     }
 
@@ -918,6 +920,7 @@ pub async fn mfa_verify_submit(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{unwrap_ok, unwrap_some};
 
     // ==================== LoginRequest Tests ====================
 
@@ -1026,7 +1029,7 @@ mod tests {
             mfa_required: false,
         };
 
-        let json = serde_json::to_string(&response).unwrap();
+        let json = unwrap_ok!(serde_json::to_string(&response));
 
         assert!(json.contains("token123"));
         assert!(json.contains("refresh456"));
@@ -1064,8 +1067,8 @@ mod tests {
             mfa_required: true,
         };
 
-        let json = serde_json::to_string(&response).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let json = unwrap_ok!(serde_json::to_string(&response));
+        let parsed: serde_json::Value = unwrap_ok!(serde_json::from_str(&json));
 
         assert_eq!(parsed["mfa_required"], true);
     }
@@ -1077,10 +1080,10 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(
             "X-Forwarded-For",
-            "203.0.113.50, 70.41.3.18, 150.172.238.178".parse().unwrap(),
+            unwrap_ok!("203.0.113.50, 70.41.3.18, 150.172.238.178".parse()),
         );
 
-        let fallback_addr: SocketAddr = "192.168.1.1:12345".parse().unwrap();
+        let fallback_addr: SocketAddr = unwrap_ok!("192.168.1.1:12345".parse());
         let ip = extract_client_ip(&headers, fallback_addr);
 
         // Should return the first IP in X-Forwarded-For (the original client)
@@ -1090,9 +1093,9 @@ mod tests {
     #[test]
     fn test_extract_client_ip_from_x_forwarded_for_single() {
         let mut headers = HeaderMap::new();
-        headers.insert("X-Forwarded-For", "8.8.8.8".parse().unwrap());
+        headers.insert("X-Forwarded-For", unwrap_ok!("8.8.8.8".parse()));
 
-        let fallback_addr: SocketAddr = "192.168.1.1:12345".parse().unwrap();
+        let fallback_addr: SocketAddr = unwrap_ok!("192.168.1.1:12345".parse());
         let ip = extract_client_ip(&headers, fallback_addr);
 
         assert_eq!(ip.ip().to_string(), "8.8.8.8");
@@ -1101,9 +1104,9 @@ mod tests {
     #[test]
     fn test_extract_client_ip_from_x_real_ip() {
         let mut headers = HeaderMap::new();
-        headers.insert("X-Real-IP", "1.2.3.4".parse().unwrap());
+        headers.insert("X-Real-IP", unwrap_ok!("1.2.3.4".parse()));
 
-        let fallback_addr: SocketAddr = "192.168.1.1:12345".parse().unwrap();
+        let fallback_addr: SocketAddr = unwrap_ok!("192.168.1.1:12345".parse());
         let ip = extract_client_ip(&headers, fallback_addr);
 
         assert_eq!(ip.ip().to_string(), "1.2.3.4");
@@ -1112,10 +1115,10 @@ mod tests {
     #[test]
     fn test_extract_client_ip_x_forwarded_for_takes_priority() {
         let mut headers = HeaderMap::new();
-        headers.insert("X-Forwarded-For", "203.0.113.50".parse().unwrap());
-        headers.insert("X-Real-IP", "1.2.3.4".parse().unwrap());
+        headers.insert("X-Forwarded-For", unwrap_ok!("203.0.113.50".parse()));
+        headers.insert("X-Real-IP", unwrap_ok!("1.2.3.4".parse()));
 
-        let fallback_addr: SocketAddr = "192.168.1.1:12345".parse().unwrap();
+        let fallback_addr: SocketAddr = unwrap_ok!("192.168.1.1:12345".parse());
         let ip = extract_client_ip(&headers, fallback_addr);
 
         // X-Forwarded-For should take priority
@@ -1126,7 +1129,7 @@ mod tests {
     fn test_extract_client_ip_fallback_to_connect_addr() {
         let headers = HeaderMap::new(); // No proxy headers
 
-        let fallback_addr: SocketAddr = "85.123.45.67:54321".parse().unwrap();
+        let fallback_addr: SocketAddr = unwrap_ok!("85.123.45.67:54321".parse());
         let ip = extract_client_ip(&headers, fallback_addr);
 
         // Should use the TCP connection address
@@ -1136,9 +1139,9 @@ mod tests {
     #[test]
     fn test_extract_client_ip_ipv6() {
         let mut headers = HeaderMap::new();
-        headers.insert("X-Forwarded-For", "2001:db8::1".parse().unwrap());
+        headers.insert("X-Forwarded-For", unwrap_ok!("2001:db8::1".parse()));
 
-        let fallback_addr: SocketAddr = "[::1]:12345".parse().unwrap();
+        let fallback_addr: SocketAddr = unwrap_ok!("[::1]:12345".parse());
         let ip = extract_client_ip(&headers, fallback_addr);
 
         assert_eq!(ip.ip().to_string(), "2001:db8::1");
@@ -1148,7 +1151,7 @@ mod tests {
     fn test_extract_client_ip_fallback_ipv6() {
         let headers = HeaderMap::new();
 
-        let fallback_addr: SocketAddr = "[2001:db8::abcd]:443".parse().unwrap();
+        let fallback_addr: SocketAddr = unwrap_ok!("[2001:db8::abcd]:443".parse());
         let ip = extract_client_ip(&headers, fallback_addr);
 
         assert_eq!(ip.ip().to_string(), "2001:db8::abcd");
@@ -1157,9 +1160,9 @@ mod tests {
     #[test]
     fn test_extract_client_ip_invalid_x_forwarded_for() {
         let mut headers = HeaderMap::new();
-        headers.insert("X-Forwarded-For", "not-an-ip-address".parse().unwrap());
+        headers.insert("X-Forwarded-For", unwrap_ok!("not-an-ip-address".parse()));
 
-        let fallback_addr: SocketAddr = "10.0.0.1:8080".parse().unwrap();
+        let fallback_addr: SocketAddr = unwrap_ok!("10.0.0.1:8080".parse());
         let ip = extract_client_ip(&headers, fallback_addr);
 
         // Should fallback to connection address when header is invalid
@@ -1228,9 +1231,9 @@ mod tests {
     #[test]
     fn test_extract_client_ip_xff_with_spaces() {
         let mut headers = HeaderMap::new();
-        headers.insert("X-Forwarded-For", "  1.2.3.4  , 5.6.7.8".parse().unwrap());
+        headers.insert("X-Forwarded-For", unwrap_ok!("  1.2.3.4  , 5.6.7.8".parse()));
 
-        let fallback: SocketAddr = "10.0.0.1:8080".parse().unwrap();
+        let fallback: SocketAddr = unwrap_ok!("10.0.0.1:8080".parse());
         let ip = extract_client_ip(&headers, fallback);
 
         assert_eq!(ip.ip().to_string(), "1.2.3.4");
@@ -1241,10 +1244,10 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(
             "X-Forwarded-For",
-            "::ffff:192.168.1.1, 10.0.0.1".parse().unwrap(),
+            unwrap_ok!("::ffff:192.168.1.1, 10.0.0.1".parse()),
         );
 
-        let fallback: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+        let fallback: SocketAddr = unwrap_ok!("127.0.0.1:8080".parse());
         let ip = extract_client_ip(&headers, fallback);
 
         assert!(
@@ -1255,9 +1258,9 @@ mod tests {
     #[test]
     fn test_extract_client_ip_x_real_ip_invalid_fallback() {
         let mut headers = HeaderMap::new();
-        headers.insert("X-Real-IP", "not-valid".parse().unwrap());
+        headers.insert("X-Real-IP", unwrap_ok!("not-valid".parse()));
 
-        let fallback: SocketAddr = "172.16.0.1:443".parse().unwrap();
+        let fallback: SocketAddr = unwrap_ok!("172.16.0.1:443".parse());
         let ip = extract_client_ip(&headers, fallback);
 
         assert_eq!(ip.ip().to_string(), "172.16.0.1");
@@ -1267,7 +1270,7 @@ mod tests {
     fn test_extract_client_ip_localhost() {
         let headers = HeaderMap::new();
 
-        let fallback: SocketAddr = "127.0.0.1:3000".parse().unwrap();
+        let fallback: SocketAddr = unwrap_ok!("127.0.0.1:3000".parse());
         let ip = extract_client_ip(&headers, fallback);
 
         assert_eq!(ip.ip().to_string(), "127.0.0.1");
@@ -1278,7 +1281,7 @@ mod tests {
     #[test]
     fn test_is_htmx_request_true() {
         let mut headers = HeaderMap::new();
-        headers.insert("HX-Request", "true".parse().unwrap());
+        headers.insert("HX-Request", unwrap_ok!("true".parse()));
 
         assert!(is_htmx_request(&headers));
     }
@@ -1292,7 +1295,7 @@ mod tests {
     #[test]
     fn test_is_htmx_request_any_value() {
         let mut headers = HeaderMap::new();
-        headers.insert("HX-Request", "1".parse().unwrap());
+        headers.insert("HX-Request", unwrap_ok!("1".parse()));
 
         // Any value should be considered true (just presence check)
         assert!(is_htmx_request(&headers));
@@ -1335,26 +1338,26 @@ mod tests {
 
     #[test]
     fn test_lockout_duration_first_stage() {
-        let duration = lockout_duration_for_attempts(3, 3).unwrap();
+        let duration = unwrap_some!(lockout_duration_for_attempts(3, 3));
         assert_eq!(duration, Duration::minutes(5));
     }
 
     #[test]
     fn test_lockout_duration_progressive_stages() {
         assert_eq!(
-            lockout_duration_for_attempts(4, 3).unwrap(),
+            unwrap_some!(lockout_duration_for_attempts(4, 3)),
             Duration::minutes(15)
         );
         assert_eq!(
-            lockout_duration_for_attempts(5, 3).unwrap(),
+            unwrap_some!(lockout_duration_for_attempts(5, 3)),
             Duration::hours(1)
         );
         assert_eq!(
-            lockout_duration_for_attempts(6, 3).unwrap(),
+            unwrap_some!(lockout_duration_for_attempts(6, 3)),
             Duration::hours(24)
         );
         assert_eq!(
-            lockout_duration_for_attempts(10, 3).unwrap(),
+            unwrap_some!(lockout_duration_for_attempts(10, 3)),
             Duration::hours(24)
         );
     }

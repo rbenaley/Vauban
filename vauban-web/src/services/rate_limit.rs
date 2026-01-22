@@ -232,13 +232,14 @@ impl RateLimiter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::unwrap_ok;
 
     #[tokio::test]
     async fn test_in_memory_rate_limiter_allows_within_limit() {
-        let limiter = RateLimiter::new(false, None, 5).unwrap();
+        let limiter = unwrap_ok!(RateLimiter::new(false, None, 5));
 
         for i in 1..=5 {
-            let result = limiter.check("test_ip").await.unwrap();
+            let result = unwrap_ok!(limiter.check("test_ip").await);
             assert!(result.allowed, "Request {} should be allowed", i);
             assert_eq!(result.remaining, 5 - i);
         }
@@ -246,36 +247,36 @@ mod tests {
 
     #[tokio::test]
     async fn test_in_memory_rate_limiter_blocks_over_limit() {
-        let limiter = RateLimiter::new(false, None, 3).unwrap();
+        let limiter = unwrap_ok!(RateLimiter::new(false, None, 3));
 
         // Use up the limit
         for _ in 0..3 {
-            let result = limiter.check("test_ip").await.unwrap();
+            let result = unwrap_ok!(limiter.check("test_ip").await);
             assert!(result.allowed);
         }
 
         // Next request should be blocked
-        let result = limiter.check("test_ip").await.unwrap();
+        let result = unwrap_ok!(limiter.check("test_ip").await);
         assert!(!result.allowed);
         assert_eq!(result.remaining, 0);
     }
 
     #[tokio::test]
     async fn test_in_memory_rate_limiter_different_keys() {
-        let limiter = RateLimiter::new(false, None, 2).unwrap();
+        let limiter = unwrap_ok!(RateLimiter::new(false, None, 2));
 
         // First IP
-        let result1 = limiter.check("ip1").await.unwrap();
+        let result1 = unwrap_ok!(limiter.check("ip1").await);
         assert!(result1.allowed);
         assert_eq!(result1.remaining, 1);
 
         // Second IP (separate limit)
-        let result2 = limiter.check("ip2").await.unwrap();
+        let result2 = unwrap_ok!(limiter.check("ip2").await);
         assert!(result2.allowed);
         assert_eq!(result2.remaining, 1);
 
         // First IP again
-        let result3 = limiter.check("ip1").await.unwrap();
+        let result3 = unwrap_ok!(limiter.check("ip1").await);
         assert!(result3.allowed);
         assert_eq!(result3.remaining, 0);
     }
@@ -285,14 +286,14 @@ mod tests {
         let limiter = RateLimiter::disabled();
 
         for _ in 0..100 {
-            let result = limiter.check("any_ip").await.unwrap();
+            let result = unwrap_ok!(limiter.check("any_ip").await);
             assert!(result.allowed);
         }
     }
 
     #[test]
     fn test_cleanup_expired_entries() {
-        let limiter = RateLimiter::new(false, None, 10).unwrap();
+        let limiter = unwrap_ok!(RateLimiter::new(false, None, 10));
 
         if let RateLimiter::InMemory { store, .. } = &limiter {
             // Add an entry with old timestamp
@@ -331,7 +332,7 @@ mod tests {
     async fn test_reset_in_secs_does_not_overflow_after_window_reset() {
         // This test ensures that reset_in_secs calculation doesn't panic
         // when the window has been reset (elapsed was >= window_duration)
-        let limiter = RateLimiter::new(false, None, 10).unwrap();
+        let limiter = unwrap_ok!(RateLimiter::new(false, None, 10));
 
         if let RateLimiter::InMemory { store, .. } = &limiter {
             // Simulate an entry with an old window that will trigger a reset
@@ -344,7 +345,7 @@ mod tests {
             );
 
             // This should not panic - the window will be reset and reset_in_secs calculated safely
-            let result = limiter.check("old_window_ip").await.unwrap();
+            let result = unwrap_ok!(limiter.check("old_window_ip").await);
 
             // After reset, count should be 1 and we should have ~60 seconds until next reset
             assert!(result.allowed);
@@ -357,7 +358,7 @@ mod tests {
     #[tokio::test]
     async fn test_reset_in_secs_with_very_old_entry() {
         // Test with an extremely old entry to ensure no overflow
-        let limiter = RateLimiter::new(false, None, 5).unwrap();
+        let limiter = unwrap_ok!(RateLimiter::new(false, None, 5));
 
         if let RateLimiter::InMemory { store, .. } = &limiter {
             // Entry from a very long time ago (1 hour)
@@ -370,7 +371,7 @@ mod tests {
             );
 
             // Should not panic
-            let result = limiter.check("very_old_ip").await.unwrap();
+            let result = unwrap_ok!(limiter.check("very_old_ip").await);
 
             assert!(result.allowed);
             assert_eq!(result.remaining, 4); // After reset, count is 1
@@ -394,10 +395,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_rate_limiter_reset_in_secs_is_reasonable() {
-        let limiter = RateLimiter::new(false, None, 10).unwrap();
+        let limiter = unwrap_ok!(RateLimiter::new(false, None, 10));
 
         // First request
-        let result = limiter.check("new_ip").await.unwrap();
+        let result = unwrap_ok!(limiter.check("new_ip").await);
 
         // reset_in_secs should be between 0 and 60 (the window size)
         assert!(
@@ -409,15 +410,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_rate_limiter_multiple_requests_reset_time_decreases() {
-        let limiter = RateLimiter::new(false, None, 100).unwrap();
+        let limiter = unwrap_ok!(RateLimiter::new(false, None, 100));
 
-        let result1 = limiter.check("timing_ip").await.unwrap();
+        let result1 = unwrap_ok!(limiter.check("timing_ip").await);
         let first_reset = result1.reset_in_secs;
 
         // Wait a tiny bit
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        let result2 = limiter.check("timing_ip").await.unwrap();
+        let result2 = unwrap_ok!(limiter.check("timing_ip").await);
         let second_reset = result2.reset_in_secs;
 
         // Second reset time should be <= first (time has passed)

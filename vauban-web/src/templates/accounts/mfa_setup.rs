@@ -27,6 +27,7 @@ pub struct MfaSetupTemplate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::unwrap_ok;
 
     fn create_test_vauban_config() -> VaubanConfig {
         VaubanConfig {
@@ -68,7 +69,7 @@ mod tests {
         };
         let result = template.render();
         assert!(result.is_ok());
-        let html = result.unwrap();
+        let html = unwrap_ok!(result);
         assert!(html.contains("ABCDEF"));
         assert!(html.contains("data:image/png;base64,"));
     }
@@ -88,7 +89,7 @@ mod tests {
         };
         let result = template.render();
         assert!(result.is_ok());
-        let html = result.unwrap();
+        let html = unwrap_ok!(result);
         assert!(html.contains("TESTSECRET"));
         assert!(html.contains("base64data"));
     }

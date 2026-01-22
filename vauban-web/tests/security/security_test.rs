@@ -20,7 +20,7 @@ use axum::http::header;
 use serde_json::json;
 use serial_test::serial;
 
-use crate::common::{TestApp, assertions::*, test_db};
+use crate::common::{TestApp, assertions::*, test_db, unwrap_ok, unwrap_some};
 use crate::fixtures::{create_test_user, unique_name};
 
 // =============================================================================
@@ -519,11 +519,11 @@ async fn test_rate_limiting() {
     use vauban_web::services::rate_limit::RateLimiter;
 
     // Create a rate limiter with a low limit for testing
-    let limiter = RateLimiter::new(false, None, 3).expect("Failed to create rate limiter");
+    let limiter = unwrap_ok!(RateLimiter::new(false, None, 3));
 
     // First 3 requests should be allowed
     for i in 1..=3 {
-        let result = limiter.check("test_ip").await.expect("Rate limit check failed");
+        let result = unwrap_ok!(limiter.check("test_ip").await);
         assert!(
             result.allowed,
             "Request {} should be allowed, remaining: {}",
@@ -532,7 +532,7 @@ async fn test_rate_limiting() {
     }
 
     // 4th request should be blocked
-    let result = limiter.check("test_ip").await.expect("Rate limit check failed");
+    let result = unwrap_ok!(limiter.check("test_ip").await);
     assert!(
         !result.allowed,
         "Request 4 should be blocked (rate limited)"
@@ -567,7 +567,7 @@ async fn test_secure_cookie_settings() {
     // Check that Set-Cookie header is present
     let headers = response.headers();
     if headers.contains_key("set-cookie") {
-        let cookie = headers.get("set-cookie").unwrap().to_str().unwrap();
+        let cookie = unwrap_ok!(unwrap_some!(headers.get("set-cookie")).to_str());
         // In production, cookies should have Secure, HttpOnly, and SameSite
         // Note: These may not be set in test environment
         assert!(
@@ -633,7 +633,7 @@ async fn test_jwt_expiration() {
     assert!(body.get("access_token").is_some());
 
     // Token should be valid immediately after login
-    let token = body["access_token"].as_str().unwrap();
+    let token = unwrap_some!(body["access_token"].as_str());
     let response = app
         .server
         .get("/api/v1/accounts")
@@ -968,12 +968,11 @@ async fn test_csrf_token_form_matches_cookie() {
             }
         });
 
-    let cookie_token = csrf_cookie.expect("CSRF cookie should be set in response");
+    let cookie_token = unwrap_some!(csrf_cookie, "CSRF cookie should be set in response");
 
     // Extract CSRF token from HTML form
     let body = response.text();
-    let form_token = extract_csrf_token_from_html(&body)
-        .expect("CSRF token should be present in login form HTML");
+    let form_token = unwrap_some!(extract_csrf_token_from_html(&body), "CSRF token should be present in login form HTML");
 
     // The cookie and form token MUST match
     assert_eq!(
@@ -1046,12 +1045,11 @@ async fn test_csrf_login_flow_end_to_end() {
                 None
             }
         })
-        .expect("CSRF cookie should be set");
+        .unwrap_or_else(|| panic!("CSRF cookie should be set"));
 
     // Extract token from HTML
     let body = login_page.text();
-    let form_token = extract_csrf_token_from_html(&body)
-        .expect("CSRF token should be in form");
+    let form_token = unwrap_some!(extract_csrf_token_from_html(&body), "CSRF token should be in form");
 
     // Step 2: Submit login with the CSRF token
     let response = app

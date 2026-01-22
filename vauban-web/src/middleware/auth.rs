@@ -233,6 +233,7 @@ pub async fn require_mfa(
 mod tests {
     use super::*;
     use axum::http::Request as HttpRequest;
+    use crate::{unwrap_ok, unwrap_some};
 
     // ==================== AuthUser Tests ====================
 
@@ -270,7 +271,7 @@ mod tests {
     #[test]
     fn test_auth_user_serialize() {
         let user = create_test_user();
-        let json = serde_json::to_string(&user).unwrap();
+        let json = unwrap_ok!(serde_json::to_string(&user));
 
         assert!(json.contains("test-uuid-123"));
         assert!(json.contains("testuser"));
@@ -287,7 +288,7 @@ mod tests {
             "is_staff": true
         }"#;
 
-        let user: AuthUser = serde_json::from_str(json).unwrap();
+        let user: AuthUser = unwrap_ok!(serde_json::from_str(json));
 
         assert_eq!(user.uuid, "abc-123");
         assert_eq!(user.username, "admin");
@@ -310,20 +311,19 @@ mod tests {
         let opt = OptionalAuthUser(Some(user));
 
         assert!(opt.0.is_some());
-        assert_eq!(opt.0.unwrap().username, "testuser");
+        assert_eq!(unwrap_some!(opt.0).username, "testuser");
     }
 
     // ==================== extract_token Tests ====================
 
     #[test]
     fn test_extract_token_from_bearer_header() {
-        let request = HttpRequest::builder()
+        let request = unwrap_ok!(HttpRequest::builder()
             .header("Authorization", "Bearer my-jwt-token-123")
-            .body(axum::body::Body::empty())
-            .unwrap();
+            .body(axum::body::Body::empty()));
 
         let jar = CookieJar::new();
-        let result = extract_token(&jar, &request).unwrap();
+        let result = unwrap_ok!(extract_token(&jar, &request));
 
         assert_eq!(result, Some("my-jwt-token-123".to_string()));
     }
@@ -331,13 +331,12 @@ mod tests {
     #[test]
     fn test_extract_token_bearer_case_sensitive() {
         // "bearer" lowercase should not match
-        let request = HttpRequest::builder()
+        let request = unwrap_ok!(HttpRequest::builder()
             .header("Authorization", "bearer lowercase-token")
-            .body(axum::body::Body::empty())
-            .unwrap();
+            .body(axum::body::Body::empty()));
 
         let jar = CookieJar::new();
-        let result = extract_token(&jar, &request).unwrap();
+        let result = unwrap_ok!(extract_token(&jar, &request));
 
         // Should not extract because it's "bearer" not "Bearer"
         assert!(result.is_none());
@@ -345,25 +344,23 @@ mod tests {
 
     #[test]
     fn test_extract_token_no_auth_returns_none() {
-        let request = HttpRequest::builder()
-            .body(axum::body::Body::empty())
-            .unwrap();
+        let request = unwrap_ok!(HttpRequest::builder()
+            .body(axum::body::Body::empty()));
 
         let jar = CookieJar::new();
-        let result = extract_token(&jar, &request).unwrap();
+        let result = unwrap_ok!(extract_token(&jar, &request));
 
         assert!(result.is_none());
     }
 
     #[test]
     fn test_extract_token_invalid_auth_scheme() {
-        let request = HttpRequest::builder()
+        let request = unwrap_ok!(HttpRequest::builder()
             .header("Authorization", "Basic dXNlcjpwYXNz")
-            .body(axum::body::Body::empty())
-            .unwrap();
+            .body(axum::body::Body::empty()));
 
         let jar = CookieJar::new();
-        let result = extract_token(&jar, &request).unwrap();
+        let result = unwrap_ok!(extract_token(&jar, &request));
 
         // Basic auth should not be extracted
         assert!(result.is_none());
@@ -371,13 +368,12 @@ mod tests {
 
     #[test]
     fn test_extract_token_empty_bearer() {
-        let request = HttpRequest::builder()
+        let request = unwrap_ok!(HttpRequest::builder()
             .header("Authorization", "Bearer ")
-            .body(axum::body::Body::empty())
-            .unwrap();
+            .body(axum::body::Body::empty()));
 
         let jar = CookieJar::new();
-        let result = extract_token(&jar, &request).unwrap();
+        let result = unwrap_ok!(extract_token(&jar, &request));
 
         // Should return empty string (the code after "Bearer ")
         assert_eq!(result, Some("".to_string()));
@@ -477,13 +473,12 @@ mod tests {
     #[test]
     fn test_extract_token_bearer_with_long_token() {
         let long_token = "a".repeat(1000);
-        let request = HttpRequest::builder()
+        let request = unwrap_ok!(HttpRequest::builder()
             .header("Authorization", format!("Bearer {}", long_token))
-            .body(axum::body::Body::empty())
-            .unwrap();
+            .body(axum::body::Body::empty()));
 
         let jar = CookieJar::new();
-        let result = extract_token(&jar, &request).unwrap();
+        let result = unwrap_ok!(extract_token(&jar, &request));
 
         assert_eq!(result, Some(long_token));
     }
@@ -491,26 +486,24 @@ mod tests {
     #[test]
     fn test_extract_token_bearer_with_special_chars() {
         let token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc123-_";
-        let request = HttpRequest::builder()
+        let request = unwrap_ok!(HttpRequest::builder()
             .header("Authorization", format!("Bearer {}", token))
-            .body(axum::body::Body::empty())
-            .unwrap();
+            .body(axum::body::Body::empty()));
 
         let jar = CookieJar::new();
-        let result = extract_token(&jar, &request).unwrap();
+        let result = unwrap_ok!(extract_token(&jar, &request));
 
         assert_eq!(result, Some(token.to_string()));
     }
 
     #[test]
     fn test_extract_token_no_auth_header() {
-        let request = HttpRequest::builder()
+        let request = unwrap_ok!(HttpRequest::builder()
             .header("Content-Type", "application/json")
-            .body(axum::body::Body::empty())
-            .unwrap();
+            .body(axum::body::Body::empty()));
 
         let jar = CookieJar::new();
-        let result = extract_token(&jar, &request).unwrap();
+        let result = unwrap_ok!(extract_token(&jar, &request));
 
         assert!(result.is_none());
     }
@@ -520,8 +513,8 @@ mod tests {
     #[test]
     fn test_auth_user_json_roundtrip() {
         let user = create_test_user();
-        let json = serde_json::to_string(&user).unwrap();
-        let deserialized: AuthUser = serde_json::from_str(&json).unwrap();
+        let json = unwrap_ok!(serde_json::to_string(&user));
+        let deserialized: AuthUser = unwrap_ok!(serde_json::from_str(&json));
 
         assert_eq!(user.uuid, deserialized.uuid);
         assert_eq!(user.username, deserialized.username);

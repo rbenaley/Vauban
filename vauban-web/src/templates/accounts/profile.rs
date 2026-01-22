@@ -84,6 +84,7 @@ pub struct ProfileTemplate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::unwrap_ok;
 
     fn create_test_vauban_config() -> VaubanConfig {
         VaubanConfig {
@@ -411,7 +412,7 @@ mod tests {
         let result = template.render();
         assert!(result.is_ok());
 
-        let html = result.unwrap();
+        let html = unwrap_ok!(result);
         assert!(
             html.contains("Active") || html.contains("Enabled"),
             "Should show MFA enabled status"
@@ -455,7 +456,7 @@ mod tests {
         let result = template.render();
         assert!(result.is_ok());
 
-        let html = result.unwrap();
+        let html = unwrap_ok!(result);
         assert!(html.contains("Chrome on macOS"));
         assert!(html.contains("Firefox on Windows"));
         assert!(html.contains("Current"));
@@ -483,7 +484,7 @@ mod tests {
         let result = template.render();
         assert!(result.is_ok());
 
-        let html = result.unwrap();
+        let html = unwrap_ok!(result);
         assert!(html.contains("Admin"), "Should show Admin badge");
         assert!(html.contains("Staff"), "Should show Staff badge");
     }
@@ -509,7 +510,7 @@ mod tests {
         let result = template.render();
         assert!(result.is_ok());
 
-        let html = result.unwrap();
+        let html = unwrap_ok!(result);
         assert!(html.contains("LDAP"), "Should show LDAP auth source");
     }
 
@@ -536,7 +537,7 @@ mod tests {
         let result = template.render();
         assert!(result.is_ok());
 
-        let html = result.unwrap();
+        let html = unwrap_ok!(result);
         // Should fall back to username
         assert!(html.contains("testuser"));
     }
@@ -563,7 +564,7 @@ mod tests {
         let result = template.render();
         assert!(result.is_ok());
 
-        let html = result.unwrap();
+        let html = unwrap_ok!(result);
         assert!(
             html.contains("required") || html.contains("MFA"),
             "Should show MFA requirement"

@@ -193,6 +193,7 @@ impl CacheOps for MockCache {
 mod tests {
     use super::*;
     use serde::{Deserialize, Serialize};
+    use crate::unwrap_ok;
 
     // ==================== MockCache Tests ====================
 
@@ -229,7 +230,7 @@ mod tests {
     #[tokio::test]
     async fn test_mock_cache_get_returns_none() {
         let cache = MockCache::new();
-        let result: Option<TestData> = cache.get("any_key").await.unwrap();
+        let result: Option<TestData> = unwrap_ok!(cache.get("any_key").await);
         assert!(result.is_none());
     }
 
@@ -237,9 +238,9 @@ mod tests {
     async fn test_mock_cache_get_with_different_keys() {
         let cache = MockCache::new();
 
-        let result1: Option<String> = cache.get("key1").await.unwrap();
-        let result2: Option<i32> = cache.get("key2").await.unwrap();
-        let result3: Option<TestData> = cache.get("key3").await.unwrap();
+        let result1: Option<String> = unwrap_ok!(cache.get("key1").await);
+        let result2: Option<i32> = unwrap_ok!(cache.get("key2").await);
+        let result3: Option<TestData> = unwrap_ok!(cache.get("key3").await);
 
         assert!(result1.is_none());
         assert!(result2.is_none());
@@ -282,7 +283,7 @@ mod tests {
     async fn test_mock_cache_exists_returns_false() {
         let cache = MockCache::new();
 
-        let result = cache.exists("any_key").await.unwrap();
+        let result = unwrap_ok!(cache.exists("any_key").await);
         assert!(!result);
     }
 
@@ -295,8 +296,8 @@ mod tests {
             name: "important".to_string(),
         };
 
-        cache.set("my_key", &data, None).await.unwrap();
-        let result: Option<TestData> = cache.get("my_key").await.unwrap();
+        unwrap_ok!(cache.set("my_key", &data, None).await);
+        let result: Option<TestData> = unwrap_ok!(cache.get("my_key").await);
 
         // Mock always returns None even after set
         assert!(result.is_none());
@@ -307,7 +308,7 @@ mod tests {
     #[tokio::test]
     async fn test_cache_connection_mock_get() {
         let conn = CacheConnection::Mock(Arc::new(MockCache::new()));
-        let result: Option<String> = conn.get("test").await.unwrap();
+        let result: Option<String> = unwrap_ok!(conn.get("test").await);
         assert!(result.is_none());
     }
 
@@ -328,7 +329,7 @@ mod tests {
     #[tokio::test]
     async fn test_cache_connection_mock_exists() {
         let conn = CacheConnection::Mock(Arc::new(MockCache::new()));
-        let result = conn.exists("key").await.unwrap();
+        let result = unwrap_ok!(conn.exists("key").await);
         assert!(!result);
     }
 
@@ -338,8 +339,8 @@ mod tests {
         let cloned = conn.clone();
 
         // Both should work independently
-        let result1 = conn.exists("key").await.unwrap();
-        let result2 = cloned.exists("key").await.unwrap();
+        let result1 = unwrap_ok!(conn.exists("key").await);
+        let result2 = unwrap_ok!(cloned.exists("key").await);
 
         assert!(!result1);
         assert!(!result2);
@@ -357,9 +358,9 @@ mod tests {
     async fn test_mock_cache_get_primitives() {
         let cache = MockCache::new();
 
-        let str_result: Option<String> = cache.get("key").await.unwrap();
-        let int_result: Option<i64> = cache.get("key").await.unwrap();
-        let bool_result: Option<bool> = cache.get("key").await.unwrap();
+        let str_result: Option<String> = unwrap_ok!(cache.get("key").await);
+        let int_result: Option<i64> = unwrap_ok!(cache.get("key").await);
+        let bool_result: Option<bool> = unwrap_ok!(cache.get("key").await);
 
         assert!(str_result.is_none());
         assert!(int_result.is_none());
@@ -391,8 +392,8 @@ mod tests {
         let cache = MockCache::new();
 
         // Set a value, but exists should still return false
-        cache.set("key", &"value", None).await.unwrap();
-        assert!(!cache.exists("key").await.unwrap());
+        unwrap_ok!(cache.set("key", &"value", None).await);
+        assert!(!unwrap_ok!(cache.exists("key").await));
     }
 
     // ==================== CacheConnection Pattern Tests ====================

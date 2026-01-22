@@ -144,6 +144,7 @@ impl BaseTemplate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{unwrap_ok, unwrap_some};
 
     // ==================== FlashMessage Tests ====================
 
@@ -333,7 +334,7 @@ mod tests {
         let user = create_test_user();
         let base = BaseTemplate::new("Dashboard".to_string(), Some(user)).with_current_path("/");
 
-        let sidebar = base.sidebar_content.unwrap();
+        let sidebar = unwrap_some!(base.sidebar_content);
         assert!(sidebar.is_dashboard);
         assert!(!sidebar.is_assets);
         assert!(!sidebar.is_sessions);
@@ -344,7 +345,7 @@ mod tests {
         let user = create_test_user();
         let base = BaseTemplate::new("Assets".to_string(), Some(user)).with_current_path("/assets");
 
-        let sidebar = base.sidebar_content.unwrap();
+        let sidebar = unwrap_some!(base.sidebar_content);
         assert!(!sidebar.is_dashboard);
         assert!(sidebar.is_assets);
     }
@@ -355,7 +356,7 @@ mod tests {
         let base =
             BaseTemplate::new("Sessions".to_string(), Some(user)).with_current_path("/sessions");
 
-        let sidebar = base.sidebar_content.unwrap();
+        let sidebar = unwrap_some!(base.sidebar_content);
         assert!(sidebar.is_sessions);
         assert!(!sidebar.is_recordings);
     }
@@ -366,7 +367,7 @@ mod tests {
         let base = BaseTemplate::new("Recordings".to_string(), Some(user))
             .with_current_path("/sessions/recordings");
 
-        let sidebar = base.sidebar_content.unwrap();
+        let sidebar = unwrap_some!(base.sidebar_content);
         assert!(sidebar.is_recordings);
     }
 
@@ -381,7 +382,7 @@ mod tests {
         };
         let base = BaseTemplate::new("Admin".to_string(), Some(user));
 
-        let sidebar = base.sidebar_content.unwrap();
+        let sidebar = unwrap_some!(base.sidebar_content);
         assert!(sidebar.can_view_groups);
         assert!(sidebar.can_view_access_rules);
     }
@@ -406,7 +407,7 @@ mod tests {
         let base = BaseTemplate::new("Test Page".to_string(), None);
         let result = base.render();
         assert!(result.is_ok(), "BaseTemplate should render successfully");
-        let html = result.unwrap();
+        let html = unwrap_ok!(result);
         // Template renders successfully - content verification depends on HTML structure
         assert!(!html.is_empty(), "Rendered HTML should not be empty");
     }

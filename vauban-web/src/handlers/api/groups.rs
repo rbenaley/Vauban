@@ -112,6 +112,7 @@ pub async fn list_group_members(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::unwrap_ok;
 
     #[test]
     fn test_group_member_response_serialization() {
@@ -124,7 +125,7 @@ mod tests {
             is_active: true,
         };
 
-        let json = serde_json::to_string(&member).unwrap();
+        let json = unwrap_ok!(serde_json::to_string(&member));
         assert!(json.contains("testuser"));
         assert!(json.contains("test@example.com"));
     }
@@ -138,7 +139,7 @@ mod tests {
             total: 0,
         };
 
-        let json = serde_json::to_string(&response).unwrap();
+        let json = unwrap_ok!(serde_json::to_string(&response));
         assert!(json.contains("Test Group"));
         assert!(json.contains("\"total\":0"));
     }

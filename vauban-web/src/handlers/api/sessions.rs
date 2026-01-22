@@ -94,6 +94,8 @@ pub async fn create_session(
     // TODO: Call proxy service to establish connection
 
     // TODO: Get real client IP from request headers
+    // SAFETY: "127.0.0.1" is a valid IP address literal, parsing cannot fail
+    #[allow(clippy::unwrap_used)]
     let client_ip_network: ipnetwork::IpNetwork = "127.0.0.1"
         .parse::<std::net::IpAddr>()
         .map(ipnetwork::IpNetwork::from)

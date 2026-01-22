@@ -5,7 +5,7 @@ use axum::http::header;
 use serde_json::json;
 use serial_test::serial;
 
-use crate::common::{TestApp, assertions::*, test_db};
+use crate::common::{TestApp, assertions::*, test_db, unwrap_ok};
 use crate::fixtures::{create_mfa_user, create_test_user, unique_name};
 
 /// Test successful login with valid credentials.
@@ -177,9 +177,8 @@ async fn test_mfa_setup_page_success() {
     // Setup: create test user with temporary token (mfa_verified = false)
     let username = unique_name("test_mfa_setup");
     let test_user = create_test_user(&mut conn, &app.auth_service, &username);
-    let temp_token = app.auth_service
-        .generate_access_token(&test_user.user.uuid.to_string(), &username, false, false, false)
-        .unwrap();
+    let temp_token = unwrap_ok!(app.auth_service
+        .generate_access_token(&test_user.user.uuid.to_string(), &username, false, false, false));
 
     // Execute: GET /mfa/setup with cookie auth
     let response = app

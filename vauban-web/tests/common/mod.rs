@@ -1,6 +1,10 @@
 /// VAUBAN Web - Test infrastructure.
 ///
 /// Common utilities for integration tests.
+
+// Re-export test macros for all test files
+pub use vauban_web::{assert_err, assert_none, assert_ok, assert_some, unwrap_ok, unwrap_some};
+
 use axum::{Router, http::HeaderValue};
 use axum_test::TestServer;
 use diesel::prelude::*;
@@ -42,19 +46,17 @@ impl TestApp {
     /// Create test app (internal).
     async fn create() -> Self {
         // Load test configuration from config/testing.toml
-        let config = Config::load_with_environment("config", Environment::Testing)
-            .expect("Failed to load test config from config/testing.toml");
+        let config = unwrap_ok!(Config::load_with_environment("config", Environment::Testing));
 
         // Create database pool
         let manager =
             ConnectionManager::<diesel::PgConnection>::new(config.database.url.expose_secret());
-        let db_pool = Pool::builder()
+        let db_pool = unwrap_ok!(Pool::builder()
             .max_size(config.database.max_connections)
-            .build(manager)
-            .expect("Failed to create test database pool");
+            .build(manager));
 
         // Create auth service
-        let auth_service = AuthService::new(config.clone()).expect("Failed to create auth service");
+        let auth_service = unwrap_ok!(AuthService::new(config.clone()));
 
         // Create cache (mock for tests since cache.enabled = false in testing.toml)
         let cache = CacheConnection::Mock(std::sync::Arc::new(vauban_web::cache::MockCache::new()));
@@ -67,12 +69,11 @@ impl TestApp {
 
         // Create rate limiter (in-memory for tests, with higher limit)
         // Use 1000 requests per minute in tests to avoid rate limiting interference
-        let rate_limiter = RateLimiter::new(
+        let rate_limiter = unwrap_ok!(RateLimiter::new(
             false, // Don't use Redis in tests
             None,
             1000, // High limit for tests
-        )
-        .expect("Failed to create rate limiter");
+        ));
 
         // Create app state
         let state = AppState {
@@ -89,7 +90,7 @@ impl TestApp {
         let app = build_test_router(state);
 
         // Create test server
-        let server = TestServer::new(app).expect("Failed to create test server");
+        let server = unwrap_ok!(TestServer::new(app));
 
         Self {
             server,
@@ -103,7 +104,7 @@ impl TestApp {
 
     /// Generate authorization header with JWT token.
     pub fn auth_header(&self, token: &str) -> HeaderValue {
-        HeaderValue::from_str(&format!("Bearer {}", token)).unwrap()
+        unwrap_ok!(HeaderValue::from_str(&format!("Bearer {}", token)))
     }
 
     /// Generate a valid JWT for a test user and create a session in database.
@@ -121,10 +122,9 @@ impl TestApp {
         use vauban_web::models::NewAuthSession;
         use vauban_web::schema::{auth_sessions, users};
 
-        let token = self
+        let token = unwrap_ok!(self
             .auth_service
-            .generate_access_token(user_uuid, username, true, is_superuser, is_staff)
-            .expect("Failed to generate test token");
+            .generate_access_token(user_uuid, username, true, is_superuser, is_staff));
 
         // Create session in database for this token
         let mut conn = self.get_conn();
@@ -163,7 +163,7 @@ impl TestApp {
         hasher.update(token.as_bytes());
         let token_hash = format!("{:x}", hasher.finalize());
 
-        let ip: ipnetwork::IpNetwork = "127.0.0.1".parse().unwrap();
+        let ip: ipnetwork::IpNetwork = unwrap_ok!("127.0.0.1".parse());
         let new_session = NewAuthSession {
             uuid: uuid::Uuid::new_v4(),
             user_id,
@@ -195,7 +195,7 @@ impl TestApp {
     pub fn get_conn(
         &self,
     ) -> diesel::r2d2::PooledConnection<ConnectionManager<diesel::PgConnection>> {
-        self.db_pool.get().expect("Failed to get DB connection")
+        unwrap_ok!(self.db_pool.get())
     }
 }
 

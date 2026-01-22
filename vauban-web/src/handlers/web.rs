@@ -2172,15 +2172,20 @@ pub async fn asset_search(
     );
 
     for (asset_uuid, name, hostname, asset_type, status) in rows {
+        // SAFETY: askama HTML escape infallible for valid UTF-8 strings
+        #[allow(clippy::unwrap_used)]
         let name = askama::filters::escape(&name, askama::filters::Html)
             .unwrap()
             .to_string();
+        #[allow(clippy::unwrap_used)]
         let hostname = askama::filters::escape(&hostname, askama::filters::Html)
             .unwrap()
             .to_string();
+        #[allow(clippy::unwrap_used)]
         let asset_type = askama::filters::escape(&asset_type, askama::filters::Html)
             .unwrap()
             .to_string();
+        #[allow(clippy::unwrap_used)]
         let status = askama::filters::escape(&status, askama::filters::Html)
             .unwrap()
             .to_string();
@@ -2482,6 +2487,8 @@ pub async fn dashboard_widget_stats(
         .get_result(&mut conn)?;
 
     // Count today's sessions
+    // SAFETY: 0, 0, 0 are always valid hour, minute, second values
+    #[allow(clippy::unwrap_used)]
     let today_start = Utc::now().date_naive().and_hms_opt(0, 0, 0).unwrap();
     let today_sessions: i64 = proxy_sessions::table
         .filter(proxy_sessions::created_at.ge(today_start.and_utc()))
@@ -6142,6 +6149,7 @@ pub async fn update_asset_web(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{unwrap_ok, unwrap_some};
 
     // ==================== user_context_from_auth Tests ====================
 
@@ -6217,7 +6225,7 @@ mod tests {
     fn test_update_asset_group_form_deserialize_full() {
         let json = r##"{"name": "Production Servers", "slug": "production-servers", "description": "All production servers", "color": "#ff5733", "icon": "server", "csrf_token": "csrf"}"##;
 
-        let form: UpdateAssetGroupForm = serde_json::from_str(json).unwrap();
+        let form: UpdateAssetGroupForm = unwrap_ok!(serde_json::from_str(json));
 
         assert_eq!(form.name, "Production Servers");
         assert_eq!(form.slug, "production-servers");
@@ -6230,7 +6238,7 @@ mod tests {
     fn test_update_asset_group_form_deserialize_minimal() {
         let json = r##"{"name": "Test", "slug": "test", "color": "#fff", "icon": "folder", "csrf_token": "csrf"}"##;
 
-        let form: UpdateAssetGroupForm = serde_json::from_str(json).unwrap();
+        let form: UpdateAssetGroupForm = unwrap_ok!(serde_json::from_str(json));
 
         assert_eq!(form.name, "Test");
         assert_eq!(form.slug, "test");
@@ -6243,7 +6251,7 @@ mod tests {
     fn test_update_asset_group_form_deserialize_with_null_description() {
         let json = r##"{"name": "Group", "slug": "group", "description": null, "color": "#000", "icon": "box", "csrf_token": "csrf"}"##;
 
-        let form: UpdateAssetGroupForm = serde_json::from_str(json).unwrap();
+        let form: UpdateAssetGroupForm = unwrap_ok!(serde_json::from_str(json));
 
         assert!(form.description.is_none());
     }
@@ -6252,10 +6260,10 @@ mod tests {
     fn test_update_asset_group_form_deserialize_special_chars() {
         let json = r##"{"name": "Test's Group", "slug": "tests-group", "description": "Description with quotes", "color": "#123456", "icon": "database", "csrf_token": "csrf"}"##;
 
-        let form: UpdateAssetGroupForm = serde_json::from_str(json).unwrap();
+        let form: UpdateAssetGroupForm = unwrap_ok!(serde_json::from_str(json));
 
         assert_eq!(form.name, "Test's Group");
-        assert!(form.description.unwrap().contains("quotes"));
+        assert!(unwrap_some!(form.description).contains("quotes"));
     }
 
     #[test]
@@ -6288,7 +6296,7 @@ mod tests {
     fn test_update_asset_group_form_empty_strings() {
         let json = r#"{"name": "", "slug": "", "color": "", "icon": "", "csrf_token": "csrf"}"#;
 
-        let form: UpdateAssetGroupForm = serde_json::from_str(json).unwrap();
+        let form: UpdateAssetGroupForm = unwrap_ok!(serde_json::from_str(json));
 
         // Empty strings are valid for deserialization (validation is separate)
         assert_eq!(form.name, "");
@@ -6315,7 +6323,7 @@ mod tests {
             uuid: Uuid::new_v4(),
             user_id: 1,
             token_hash: "matching-hash".to_string(),
-            ip_address: "192.168.1.1".parse::<IpNetwork>().unwrap(),
+            ip_address: unwrap_ok!("192.168.1.1".parse::<IpNetwork>()),
             user_agent: Some("Chrome on macOS".to_string()),
             device_info: Some("Chrome on macOS".to_string()),
             is_current: false, // DB flag doesn't matter
@@ -6348,7 +6356,7 @@ mod tests {
                 uuid: Uuid::new_v4(),
                 user_id: 1,
                 token_hash: "hash-a".to_string(),
-                ip_address: "192.168.1.1".parse::<IpNetwork>().unwrap(),
+                ip_address: unwrap_ok!("192.168.1.1".parse::<IpNetwork>()),
                 user_agent: Some("Safari on macOS".to_string()),
                 device_info: Some("Safari on macOS".to_string()),
                 is_current: false,
@@ -6361,7 +6369,7 @@ mod tests {
                 uuid: Uuid::new_v4(),
                 user_id: 1,
                 token_hash: "hash-b".to_string(),
-                ip_address: "10.0.0.1".parse::<IpNetwork>().unwrap(),
+                ip_address: unwrap_ok!("10.0.0.1".parse::<IpNetwork>()),
                 user_agent: Some("Chrome on iPhone".to_string()),
                 device_info: Some("Chrome on iPhone".to_string()),
                 is_current: false,
@@ -6397,7 +6405,7 @@ mod tests {
             uuid: Uuid::new_v4(),
             user_id: 1,
             token_hash: "hash".to_string(),
-            ip_address: "192.168.1.1".parse::<IpNetwork>().unwrap(),
+            ip_address: unwrap_ok!("192.168.1.1".parse::<IpNetwork>()),
             user_agent: Some("Mozilla/5.0 <script>alert('xss')</script>".to_string()),
             device_info: Some("Unknown Browser".to_string()),
             is_current: false,
@@ -6423,7 +6431,7 @@ mod tests {
             uuid: Uuid::new_v4(),
             user_id: 1,
             token_hash: "hash".to_string(),
-            ip_address: "2001:db8::1".parse::<IpNetwork>().unwrap(),
+            ip_address: unwrap_ok!("2001:db8::1".parse::<IpNetwork>()),
             user_agent: Some("Chrome".to_string()),
             device_info: Some("Chrome on Linux".to_string()),
             is_current: false,
@@ -6449,7 +6457,7 @@ mod tests {
             uuid: Uuid::new_v4(),
             user_id: 1,
             token_hash: "hash".to_string(),
-            ip_address: "10.0.0.1".parse::<IpNetwork>().unwrap(),
+            ip_address: unwrap_ok!("10.0.0.1".parse::<IpNetwork>()),
             user_agent: None,
             device_info: None,
             is_current: false,
@@ -6469,7 +6477,7 @@ mod tests {
     #[test]
     fn test_create_api_key_form_deserialize() {
         let json = r#"{"name": "My API Key", "expires_in_days": 30, "csrf_token": "csrf"}"#;
-        let form: CreateApiKeyForm = serde_json::from_str(json).unwrap();
+        let form: CreateApiKeyForm = unwrap_ok!(serde_json::from_str(json));
 
         assert_eq!(form.name, "My API Key");
         assert_eq!(form.expires_in_days, Some(30));
@@ -6478,7 +6486,7 @@ mod tests {
     #[test]
     fn test_create_api_key_form_without_expiry() {
         let json = r#"{"name": "Permanent Key", "csrf_token": "csrf"}"#;
-        let form: CreateApiKeyForm = serde_json::from_str(json).unwrap();
+        let form: CreateApiKeyForm = unwrap_ok!(serde_json::from_str(json));
 
         assert_eq!(form.name, "Permanent Key");
         assert!(form.expires_in_days.is_none());
@@ -6487,7 +6495,7 @@ mod tests {
     #[test]
     fn test_create_api_key_form_empty_name() {
         let json = r#"{"name": "", "expires_in_days": 7, "csrf_token": "csrf"}"#;
-        let form: CreateApiKeyForm = serde_json::from_str(json).unwrap();
+        let form: CreateApiKeyForm = unwrap_ok!(serde_json::from_str(json));
 
         assert_eq!(form.name, "");
         assert_eq!(form.expires_in_days, Some(7));
@@ -6498,16 +6506,16 @@ mod tests {
     #[test]
     fn test_update_asset_group_form_special_characters() {
         let json = r##"{"name": "Serveurs d'été", "slug": "serveurs-ete", "description": "Serveurs pour l'été 2024", "color": "#123abc", "icon": "sun", "csrf_token": "csrf"}"##;
-        let form: UpdateAssetGroupForm = serde_json::from_str(json).unwrap();
+        let form: UpdateAssetGroupForm = unwrap_ok!(serde_json::from_str(json));
 
         assert_eq!(form.name, "Serveurs d'été");
-        assert!(form.description.unwrap().contains("été"));
+        assert!(unwrap_some!(form.description).contains("été"));
     }
 
     #[test]
     fn test_update_asset_group_form_unicode() {
         let json = r##"{"name": "服务器组", "slug": "chinese-servers", "color": "#ff0000", "icon": "server", "csrf_token": "csrf"}"##;
-        let form: UpdateAssetGroupForm = serde_json::from_str(json).unwrap();
+        let form: UpdateAssetGroupForm = unwrap_ok!(serde_json::from_str(json));
 
         assert_eq!(form.name, "服务器组");
         assert_eq!(form.slug, "chinese-servers");
@@ -6520,9 +6528,9 @@ mod tests {
             r##"{{"name": "Test", "slug": "test", "description": "{}", "color": "#fff", "icon": "folder", "csrf_token": "csrf"}}"##,
             long_desc
         );
-        let form: UpdateAssetGroupForm = serde_json::from_str(&json).unwrap();
+        let form: UpdateAssetGroupForm = unwrap_ok!(serde_json::from_str(&json));
 
-        assert_eq!(form.description.unwrap().len(), 1000);
+        assert_eq!(unwrap_some!(form.description).len(), 1000);
     }
 
     // ==================== user_context_from_auth Additional Tests ====================
@@ -6639,6 +6647,8 @@ mod tests {
                 uuid: Uuid::new_v4(),
                 user_id: 1,
                 token_hash: format!("hash-{}", i),
+                // SAFETY: format! produces valid IP address strings
+                #[allow(clippy::unwrap_used)]
                 ip_address: format!("192.168.1.{}", i).parse::<IpNetwork>().unwrap(),
                 user_agent: Some(format!("Browser {}", i)),
                 device_info: Some(format!("Device {}", i)),
@@ -6671,7 +6681,7 @@ mod tests {
             uuid: Uuid::new_v4(),
             user_id: 1,
             token_hash: "expired-hash".to_string(),
-            ip_address: "10.0.0.1".parse::<IpNetwork>().unwrap(),
+            ip_address: unwrap_ok!("10.0.0.1".parse::<IpNetwork>()),
             user_agent: Some("Old Browser".to_string()),
             device_info: Some("Old Device".to_string()),
             is_current: false,
@@ -6689,7 +6699,7 @@ mod tests {
     #[test]
     fn test_update_asset_group_form_minimal() {
         let json = r##"{"name": "Test", "slug": "test", "color": "#000", "icon": "folder", "csrf_token": "csrf"}"##;
-        let form: UpdateAssetGroupForm = serde_json::from_str(json).unwrap();
+        let form: UpdateAssetGroupForm = unwrap_ok!(serde_json::from_str(json));
 
         assert_eq!(form.name, "Test");
         assert!(form.description.is_none());
@@ -6704,7 +6714,7 @@ mod tests {
                 r##"{{"name": "Test", "slug": "test", "color": "{}", "icon": "folder", "csrf_token": "csrf"}}"##,
                 color
             );
-            let form: UpdateAssetGroupForm = serde_json::from_str(&json).unwrap();
+            let form: UpdateAssetGroupForm = unwrap_ok!(serde_json::from_str(&json));
             assert_eq!(form.color, color);
         }
     }
@@ -6718,7 +6728,7 @@ mod tests {
                 r##"{{"name": "Test", "slug": "test", "color": "#fff", "icon": "{}", "csrf_token": "csrf"}}"##,
                 icon
             );
-            let form: UpdateAssetGroupForm = serde_json::from_str(&json).unwrap();
+            let form: UpdateAssetGroupForm = unwrap_ok!(serde_json::from_str(&json));
             assert_eq!(form.icon, icon);
         }
     }
@@ -6728,7 +6738,7 @@ mod tests {
     #[test]
     fn test_create_api_key_form_zero_expiry() {
         let json = r#"{"name": "Zero Expiry", "expires_in_days": 0, "csrf_token": "csrf"}"#;
-        let form: CreateApiKeyForm = serde_json::from_str(json).unwrap();
+        let form: CreateApiKeyForm = unwrap_ok!(serde_json::from_str(json));
 
         assert_eq!(form.expires_in_days, Some(0));
     }
@@ -6736,7 +6746,7 @@ mod tests {
     #[test]
     fn test_create_api_key_form_long_expiry() {
         let json = r#"{"name": "Long Expiry", "expires_in_days": 365, "csrf_token": "csrf"}"#;
-        let form: CreateApiKeyForm = serde_json::from_str(json).unwrap();
+        let form: CreateApiKeyForm = unwrap_ok!(serde_json::from_str(json));
 
         assert_eq!(form.expires_in_days, Some(365));
     }
@@ -6744,7 +6754,7 @@ mod tests {
     #[test]
     fn test_create_api_key_form_unicode_name() {
         let json = r#"{"name": "密钥名称", "csrf_token": "csrf"}"#;
-        let form: CreateApiKeyForm = serde_json::from_str(json).unwrap();
+        let form: CreateApiKeyForm = unwrap_ok!(serde_json::from_str(json));
 
         assert_eq!(form.name, "密钥名称");
     }
@@ -6753,7 +6763,7 @@ mod tests {
     fn test_create_api_key_form_long_name() {
         let long_name = "A".repeat(100);
         let json = format!(r#"{{"name": "{}", "csrf_token": "csrf"}}"#, long_name);
-        let form: CreateApiKeyForm = serde_json::from_str(&json).unwrap();
+        let form: CreateApiKeyForm = unwrap_ok!(serde_json::from_str(&json));
 
         assert_eq!(form.name.len(), 100);
     }

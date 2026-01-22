@@ -12,6 +12,8 @@ use vauban_web::models::user::{NewUser, User};
 use vauban_web::schema::{assets, auth_sessions, users};
 use vauban_web::services::auth::AuthService;
 
+use crate::common::{unwrap_ok, unwrap_some};
+
 /// Helper to create an auth session for a token in the database.
 fn create_session_for_token(conn: &mut PgConnection, user_id: i32, token: &str) {
     // Hash the token using SHA3-256
@@ -19,7 +21,7 @@ fn create_session_for_token(conn: &mut PgConnection, user_id: i32, token: &str) 
     hasher.update(token.as_bytes());
     let token_hash = format!("{:x}", hasher.finalize());
 
-    let ip: ipnetwork::IpNetwork = "127.0.0.1".parse().unwrap();
+    let ip: ipnetwork::IpNetwork = unwrap_ok!("127.0.0.1".parse());
     let new_session = NewAuthSession {
         uuid: Uuid::new_v4(),
         user_id,
@@ -51,7 +53,7 @@ pub fn create_test_user(
     username: &str,
 ) -> TestUser {
     let password = "TestPassword123!";
-    let password_hash = auth_service.hash_password(password).unwrap();
+    let password_hash = unwrap_ok!(auth_service.hash_password(password));
     let user_uuid = Uuid::new_v4();
 
     let new_user = NewUser {
@@ -74,14 +76,12 @@ pub fn create_test_user(
         external_id: None,
     };
 
-    let user: User = diesel::insert_into(users::table)
+    let user: User = unwrap_ok!(diesel::insert_into(users::table)
         .values(&new_user)
-        .get_result(conn)
-        .expect("Failed to create test user");
+        .get_result(conn));
 
-    let token = auth_service
-        .generate_access_token(&user.uuid.to_string(), &user.username, true, false, false)
-        .unwrap();
+    let token = unwrap_ok!(auth_service
+        .generate_access_token(&user.uuid.to_string(), &user.username, true, false, false));
 
     // Create session in database for middleware validation
     create_session_for_token(conn, user.id, &token);
@@ -100,7 +100,7 @@ pub fn create_admin_user(
     username: &str,
 ) -> TestUser {
     let password = "AdminPassword123!";
-    let password_hash = auth_service.hash_password(password).unwrap();
+    let password_hash = unwrap_ok!(auth_service.hash_password(password));
     let user_uuid = Uuid::new_v4();
 
     let new_user = NewUser {
@@ -123,14 +123,12 @@ pub fn create_admin_user(
         external_id: None,
     };
 
-    let user: User = diesel::insert_into(users::table)
+    let user: User = unwrap_ok!(diesel::insert_into(users::table)
         .values(&new_user)
-        .get_result(conn)
-        .expect("Failed to create admin user");
+        .get_result(conn));
 
-    let token = auth_service
-        .generate_access_token(&user.uuid.to_string(), &user.username, true, true, true)
-        .unwrap();
+    let token = unwrap_ok!(auth_service
+        .generate_access_token(&user.uuid.to_string(), &user.username, true, true, true));
 
     // Create session in database for middleware validation
     create_session_for_token(conn, user.id, &token);
@@ -149,9 +147,9 @@ pub fn create_mfa_user(
     username: &str,
 ) -> TestUser {
     let password = "MfaPassword123!";
-    let password_hash = auth_service.hash_password(password).unwrap();
+    let password_hash = unwrap_ok!(auth_service.hash_password(password));
     let user_uuid = Uuid::new_v4();
-    let (mfa_secret, _) = AuthService::generate_totp_secret(username, "VAUBAN").unwrap();
+    let (mfa_secret, _) = unwrap_ok!(AuthService::generate_totp_secret(username, "VAUBAN"));
 
     let new_user = NewUser {
         uuid: user_uuid,
@@ -173,15 +171,13 @@ pub fn create_mfa_user(
         external_id: None,
     };
 
-    let user: User = diesel::insert_into(users::table)
+    let user: User = unwrap_ok!(diesel::insert_into(users::table)
         .values(&new_user)
-        .get_result(conn)
-        .expect("Failed to create MFA user");
+        .get_result(conn));
 
     // Token without MFA verified
-    let token = auth_service
-        .generate_access_token(&user.uuid.to_string(), &user.username, false, false, false)
-        .unwrap();
+    let token = unwrap_ok!(auth_service
+        .generate_access_token(&user.uuid.to_string(), &user.username, false, false, false));
 
     // Create session in database for middleware validation
     create_session_for_token(conn, user.id, &token);
@@ -201,7 +197,7 @@ pub struct TestAsset {
 /// Create a test SSH asset.
 pub fn create_test_ssh_asset(conn: &mut PgConnection, name: &str) -> TestAsset {
     let asset_uuid = Uuid::new_v4();
-    let ip: ipnetwork::IpNetwork = "192.168.1.100".parse().unwrap();
+    let ip: ipnetwork::IpNetwork = unwrap_ok!("192.168.1.100".parse());
 
     let new_asset = NewAsset {
         uuid: asset_uuid,
@@ -223,10 +219,9 @@ pub fn create_test_ssh_asset(conn: &mut PgConnection, name: &str) -> TestAsset {
         created_by_id: None,
     };
 
-    let asset: Asset = diesel::insert_into(assets::table)
+    let asset: Asset = unwrap_ok!(diesel::insert_into(assets::table)
         .values(&new_asset)
-        .get_result(conn)
-        .expect("Failed to create test asset");
+        .get_result(conn));
 
     TestAsset { asset }
 }
@@ -234,7 +229,7 @@ pub fn create_test_ssh_asset(conn: &mut PgConnection, name: &str) -> TestAsset {
 /// Create a test RDP asset.
 pub fn create_test_rdp_asset(conn: &mut PgConnection, name: &str) -> TestAsset {
     let asset_uuid = Uuid::new_v4();
-    let ip: ipnetwork::IpNetwork = "192.168.1.101".parse().unwrap();
+    let ip: ipnetwork::IpNetwork = unwrap_ok!("192.168.1.101".parse());
 
     let new_asset = NewAsset {
         uuid: asset_uuid,
@@ -256,10 +251,9 @@ pub fn create_test_rdp_asset(conn: &mut PgConnection, name: &str) -> TestAsset {
         created_by_id: None,
     };
 
-    let asset: Asset = diesel::insert_into(assets::table)
+    let asset: Asset = unwrap_ok!(diesel::insert_into(assets::table)
         .values(&new_asset)
-        .get_result(conn)
-        .expect("Failed to create test RDP asset");
+        .get_result(conn));
 
     TestAsset { asset }
 }
@@ -271,7 +265,7 @@ pub fn create_test_asset_group(conn: &mut PgConnection, group_name: &str) -> Uui
     let group_uuid = Uuid::new_v4();
     let group_slug = group_name.to_lowercase().replace(" ", "-");
 
-    diesel::insert_into(dsl::asset_groups)
+    unwrap_ok!(diesel::insert_into(dsl::asset_groups)
         .values((
             dsl::uuid.eq(group_uuid),
             dsl::name.eq(group_name),
@@ -279,8 +273,7 @@ pub fn create_test_asset_group(conn: &mut PgConnection, group_name: &str) -> Uui
             dsl::color.eq("#10b981"),
             dsl::icon.eq("server"),
         ))
-        .execute(conn)
-        .expect("Failed to create test asset group");
+        .execute(conn));
 
     group_uuid
 }
@@ -290,7 +283,7 @@ pub fn unique_name(prefix: &str) -> String {
     format!(
         "{}_{}",
         prefix,
-        Uuid::new_v4().to_string().split('-').next().unwrap()
+        unwrap_some!(Uuid::new_v4().to_string().split('-').next())
     )
 }
 
@@ -325,10 +318,9 @@ pub fn create_simple_user(conn: &mut PgConnection, username: &str) -> i32 {
         external_id: None,
     };
 
-    let user: User = diesel::insert_into(users::table)
+    let user: User = unwrap_ok!(diesel::insert_into(users::table)
         .values(&new_user)
-        .get_result(conn)
-        .expect("Failed to create test user");
+        .get_result(conn));
 
     user.id
 }
@@ -360,10 +352,9 @@ pub fn create_simple_admin_user(conn: &mut PgConnection, username: &str) -> i32 
         external_id: None,
     };
 
-    let user: User = diesel::insert_into(users::table)
+    let user: User = unwrap_ok!(diesel::insert_into(users::table)
         .values(&new_user)
-        .get_result(conn)
-        .expect("Failed to create admin user");
+        .get_result(conn));
 
     user.id
 }
@@ -399,21 +390,19 @@ pub fn create_simple_ssh_asset(conn: &mut PgConnection, name: &str, created_by: 
         created_by_id: Some(created_by),
     };
 
-    let asset: Asset = diesel::insert_into(assets::table)
+    let asset: Asset = unwrap_ok!(diesel::insert_into(assets::table)
         .values(&new_asset)
-        .get_result(conn)
-        .expect("Failed to create test SSH asset");
+        .get_result(conn));
 
     asset.id
 }
 
 /// Get the UUID of an asset by its ID.
 pub fn get_asset_uuid(conn: &mut PgConnection, asset_id: i32) -> Uuid {
-    assets::table
+    unwrap_ok!(assets::table
         .filter(assets::id.eq(asset_id))
         .select(assets::uuid)
-        .first(conn)
-        .expect("Failed to get asset UUID")
+        .first(conn))
 }
 
 /// Create a test session and return session_id.
@@ -427,7 +416,7 @@ pub fn create_test_session(
     use vauban_web::schema::proxy_sessions;
 
     let session_uuid = Uuid::new_v4();
-    let ip: ipnetwork::IpNetwork = "127.0.0.1".parse().unwrap();
+    let ip: ipnetwork::IpNetwork = unwrap_ok!("127.0.0.1".parse());
 
     let (connected_at, disconnected_at) = if status == "active" {
         (Some(Utc::now()), None)
@@ -438,7 +427,7 @@ pub fn create_test_session(
         )
     };
 
-    let session_id: i32 = diesel::insert_into(proxy_sessions::table)
+    let session_id: i32 = unwrap_ok!(diesel::insert_into(proxy_sessions::table)
         .values((
             proxy_sessions::uuid.eq(session_uuid),
             proxy_sessions::user_id.eq(user_id),
@@ -454,8 +443,7 @@ pub fn create_test_session(
             proxy_sessions::metadata.eq(serde_json::json!({})),
         ))
         .returning(proxy_sessions::id)
-        .get_result(conn)
-        .expect("Failed to create test session");
+        .get_result(conn));
 
     session_id
 }
@@ -475,7 +463,7 @@ pub fn create_recorded_session_with_type(
     use vauban_web::schema::proxy_sessions;
 
     let session_uuid = Uuid::new_v4();
-    let ip: ipnetwork::IpNetwork = "127.0.0.1".parse().unwrap();
+    let ip: ipnetwork::IpNetwork = unwrap_ok!("127.0.0.1".parse());
 
     let recording_path = match session_type {
         "ssh" => "/recordings/test.cast",
@@ -484,7 +472,7 @@ pub fn create_recorded_session_with_type(
         _ => "/recordings/test.cast",
     };
 
-    let session_id: i32 = diesel::insert_into(proxy_sessions::table)
+    let session_id: i32 = unwrap_ok!(diesel::insert_into(proxy_sessions::table)
         .values((
             proxy_sessions::uuid.eq(session_uuid),
             proxy_sessions::user_id.eq(user_id),
@@ -501,8 +489,7 @@ pub fn create_recorded_session_with_type(
             proxy_sessions::metadata.eq(serde_json::json!({})),
         ))
         .returning(proxy_sessions::id)
-        .get_result(conn)
-        .expect("Failed to create recorded session");
+        .get_result(conn));
 
     session_id
 }
@@ -512,9 +499,9 @@ pub fn create_approval_request(conn: &mut PgConnection, user_id: i32, asset_id: 
     use vauban_web::schema::proxy_sessions;
 
     let session_uuid = Uuid::new_v4();
-    let ip: ipnetwork::IpNetwork = "127.0.0.1".parse().unwrap();
+    let ip: ipnetwork::IpNetwork = unwrap_ok!("127.0.0.1".parse());
 
-    diesel::insert_into(proxy_sessions::table)
+    unwrap_ok!(diesel::insert_into(proxy_sessions::table)
         .values((
             proxy_sessions::uuid.eq(session_uuid),
             proxy_sessions::user_id.eq(user_id),
@@ -528,8 +515,7 @@ pub fn create_approval_request(conn: &mut PgConnection, user_id: i32, asset_id: 
             proxy_sessions::justification.eq("Need access for maintenance"),
             proxy_sessions::metadata.eq(serde_json::json!({"approval_required": true})),
         ))
-        .execute(conn)
-        .expect("Failed to create approval request");
+        .execute(conn));
 
     session_uuid
 }
@@ -543,15 +529,14 @@ pub fn create_test_vauban_group(conn: &mut PgConnection, name: &str) -> Uuid {
     // Create a truly unique name using a UUID suffix
     let unique_name = format!("{}_{}", name, &group_uuid.to_string()[..8]);
 
-    diesel::insert_into(vauban_groups::table)
+    unwrap_ok!(diesel::insert_into(vauban_groups::table)
         .values((
             vauban_groups::uuid.eq(group_uuid),
             vauban_groups::name.eq(&unique_name),
             vauban_groups::description.eq(Some("Test group")),
             vauban_groups::source.eq("local"),
         ))
-        .execute(conn)
-        .expect("Failed to create vauban group");
+        .execute(conn));
 
     group_uuid
 }
@@ -560,11 +545,10 @@ pub fn create_test_vauban_group(conn: &mut PgConnection, name: &str) -> Uuid {
 pub fn get_vauban_group_id(conn: &mut PgConnection, group_uuid: &Uuid) -> i32 {
     use vauban_web::schema::vauban_groups;
 
-    vauban_groups::table
+    unwrap_ok!(vauban_groups::table
         .filter(vauban_groups::uuid.eq(group_uuid))
         .select(vauban_groups::id)
-        .first(conn)
-        .expect("Failed to get vauban group id")
+        .first(conn))
 }
 
 /// Add a user to a vauban group.
@@ -572,19 +556,17 @@ pub fn add_user_to_vauban_group(conn: &mut PgConnection, user_id: i32, group_uui
     use vauban_web::schema::user_groups;
     use vauban_web::schema::vauban_groups;
 
-    let group_id: i32 = vauban_groups::table
+    let group_id: i32 = unwrap_ok!(vauban_groups::table
         .filter(vauban_groups::uuid.eq(group_uuid))
         .select(vauban_groups::id)
-        .first(conn)
-        .expect("Failed to get vauban group id");
+        .first(conn));
 
-    diesel::insert_into(user_groups::table)
+    unwrap_ok!(diesel::insert_into(user_groups::table)
         .values((
             user_groups::user_id.eq(user_id),
             user_groups::group_id.eq(group_id),
         ))
-        .execute(conn)
-        .expect("Failed to add user to vauban group");
+        .execute(conn));
 }
 
 /// Count members in a vauban group.
@@ -592,11 +574,10 @@ pub fn count_vauban_group_members(conn: &mut PgConnection, group_uuid: &Uuid) ->
     use vauban_web::schema::user_groups;
     use vauban_web::schema::vauban_groups;
 
-    let group_id: i32 = vauban_groups::table
+    let group_id: i32 = unwrap_ok!(vauban_groups::table
         .filter(vauban_groups::uuid.eq(group_uuid))
         .select(vauban_groups::id)
-        .first(conn)
-        .expect("Failed to get vauban group id");
+        .first(conn));
 
     user_groups::table
         .filter(user_groups::group_id.eq(group_id))
@@ -616,11 +597,10 @@ pub fn create_test_asset_in_group(
     use vauban_web::schema::asset_groups;
 
     // First get the group_id from uuid
-    let group_id: i32 = asset_groups::table
+    let group_id: i32 = unwrap_ok!(asset_groups::table
         .filter(asset_groups::uuid.eq(group_uuid))
         .select(asset_groups::id)
-        .first(conn)
-        .expect("Failed to find asset group");
+        .first(conn));
 
     let asset_uuid = Uuid::new_v4();
     // Create a truly unique hostname using a UUID suffix
@@ -650,10 +630,9 @@ pub fn create_test_asset_in_group(
         created_by_id: Some(created_by),
     };
 
-    let asset: Asset = diesel::insert_into(assets::table)
+    let asset: Asset = unwrap_ok!(diesel::insert_into(assets::table)
         .values(&new_asset)
-        .get_result(conn)
-        .expect("Failed to create test asset in group");
+        .get_result(conn));
 
     asset.id
 }
@@ -669,7 +648,7 @@ pub fn create_test_auth_session(conn: &mut PgConnection, user_id: i32, is_curren
     use vauban_web::schema::auth_sessions;
 
     let session_uuid = Uuid::new_v4();
-    let ip: ipnetwork::IpNetwork = "127.0.0.1".parse().unwrap();
+    let ip: ipnetwork::IpNetwork = unwrap_ok!("127.0.0.1".parse());
     let token_hash = format!(
         "hash_{}_{}",
         user_id,
@@ -687,10 +666,9 @@ pub fn create_test_auth_session(conn: &mut PgConnection, user_id: i32, is_curren
         is_current,
     };
 
-    diesel::insert_into(auth_sessions::table)
+    unwrap_ok!(diesel::insert_into(auth_sessions::table)
         .values(&new_session)
-        .execute(conn)
-        .expect("Failed to create auth session");
+        .execute(conn));
 
     session_uuid
 }
@@ -706,7 +684,7 @@ pub fn create_test_api_key(
 
     let key_uuid = Uuid::new_v4();
 
-    diesel::insert_into(api_keys::table)
+    unwrap_ok!(diesel::insert_into(api_keys::table)
         .values((
             api_keys::uuid.eq(key_uuid),
             api_keys::user_id.eq(user_id),
@@ -716,8 +694,7 @@ pub fn create_test_api_key(
             api_keys::scopes.eq(serde_json::json!(["read"])),
             api_keys::is_active.eq(is_active),
         ))
-        .execute(conn)
-        .expect("Failed to create API key");
+        .execute(conn));
 
     key_uuid
 }
@@ -729,7 +706,7 @@ pub fn create_expired_api_key(conn: &mut PgConnection, user_id: i32, name: &str)
 
     let key_uuid = Uuid::new_v4();
 
-    diesel::insert_into(api_keys::table)
+    unwrap_ok!(diesel::insert_into(api_keys::table)
         .values((
             api_keys::uuid.eq(key_uuid),
             api_keys::user_id.eq(user_id),
@@ -740,8 +717,7 @@ pub fn create_expired_api_key(conn: &mut PgConnection, user_id: i32, name: &str)
             api_keys::is_active.eq(true),
             api_keys::expires_at.eq(Utc::now() - Duration::days(1)),
         ))
-        .execute(conn)
-        .expect("Failed to create expired API key");
+        .execute(conn));
 
     key_uuid
 }
@@ -760,7 +736,7 @@ pub fn create_auth_session_with_token(
     use vauban_web::schema::auth_sessions;
 
     let session_uuid = Uuid::new_v4();
-    let ip: ipnetwork::IpNetwork = "127.0.0.1".parse().unwrap();
+    let ip: ipnetwork::IpNetwork = unwrap_ok!("127.0.0.1".parse());
 
     // Hash the token using SHA3-256 (same as production code)
     let mut hasher = Sha3_256::new();
@@ -778,10 +754,9 @@ pub fn create_auth_session_with_token(
         is_current,
     };
 
-    diesel::insert_into(auth_sessions::table)
+    unwrap_ok!(diesel::insert_into(auth_sessions::table)
         .values(&new_session)
-        .execute(conn)
-        .expect("Failed to create auth session with token");
+        .execute(conn));
 
     session_uuid
 }
@@ -795,7 +770,7 @@ pub fn create_expired_auth_session(conn: &mut PgConnection, user_id: i32, token:
     use vauban_web::schema::auth_sessions;
 
     let session_uuid = Uuid::new_v4();
-    let ip: ipnetwork::IpNetwork = "127.0.0.1".parse().unwrap();
+    let ip: ipnetwork::IpNetwork = unwrap_ok!("127.0.0.1".parse());
 
     // Hash the token using SHA3-256
     let mut hasher = Sha3_256::new();
@@ -813,10 +788,9 @@ pub fn create_expired_auth_session(conn: &mut PgConnection, user_id: i32, token:
         is_current: false,
     };
 
-    diesel::insert_into(auth_sessions::table)
+    unwrap_ok!(diesel::insert_into(auth_sessions::table)
         .values(&new_session)
-        .execute(conn)
-        .expect("Failed to create expired auth session");
+        .execute(conn));
 
     session_uuid
 }

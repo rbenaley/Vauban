@@ -2,6 +2,7 @@
 ///
 /// Interactive CLI tool to reset a user's password.
 /// No secrets are stored in code - all input is provided interactively.
+use anyhow::{anyhow, Context, Result};
 use argon2::{Algorithm, Argon2, Params, PasswordHasher, Version, password_hash::SaltString};
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
@@ -11,22 +12,21 @@ use secrecy::ExposeSecret;
 use std::io::{self, Write};
 use vauban_web::config::Config;
 
-fn main() {
+fn main() -> Result<()> {
     println!("🔐 VAUBAN Password Reset Utility");
     println!("================================\n");
 
     // Load configuration from TOML files
-    let config = Config::load().expect("Failed to load configuration from config/*.toml");
+    let config = Config::load().context("Failed to load configuration from config/*.toml")?;
 
     let mut conn = PgConnection::establish(config.database.url.expose_secret())
-        .expect("Failed to connect to database");
+        .context("Failed to connect to database")?;
 
     // Prompt for username
-    let username = prompt("Enter username: ").expect("Failed to read username");
+    let username = prompt("Enter username: ").context("Failed to read username")?;
 
     if username.trim().is_empty() {
-        eprintln!("❌ Username cannot be empty");
-        std::process::exit(1);
+        return Err(anyhow!("Username cannot be empty"));
     }
 
     // Check if user exists
@@ -39,26 +39,23 @@ fn main() {
     .unwrap_or(false);
 
     if !user_exists {
-        eprintln!("❌ User '{}' not found", username.trim());
-        std::process::exit(1);
+        return Err(anyhow!("User '{}' not found", username.trim()));
     }
 
     // Prompt for new password
     let password =
-        prompt_password("Enter new password (min 12 chars): ").expect("Failed to read password");
+        prompt_password("Enter new password (min 12 chars): ").context("Failed to read password")?;
 
     if password.len() < 12 {
-        eprintln!("❌ Password must be at least 12 characters");
-        std::process::exit(1);
+        return Err(anyhow!("Password must be at least 12 characters"));
     }
 
     // Confirm password
     let password_confirm =
-        prompt_password("Confirm new password: ").expect("Failed to read password confirmation");
+        prompt_password("Confirm new password: ").context("Failed to read password confirmation")?;
 
     if password != password_confirm {
-        eprintln!("❌ Passwords do not match");
-        std::process::exit(1);
+        return Err(anyhow!("Passwords do not match"));
     }
 
     // Hash the password
@@ -69,12 +66,12 @@ fn main() {
         config.security.argon2.parallelism,
         Some(32),
     )
-    .expect("Failed to create Argon2 parameters");
+    .map_err(|e| anyhow!("Failed to create Argon2 parameters: {}", e))?;
 
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
     let hash = argon2
         .hash_password(password.as_bytes(), &salt)
-        .expect("Failed to hash password")
+        .map_err(|e| anyhow!("Failed to hash password: {}", e))?
         .to_string();
 
     // Update user password
@@ -84,7 +81,7 @@ fn main() {
     .bind::<Text, _>(&hash)
     .bind::<Text, _>(username.trim())
     .execute(&mut conn)
-    .expect("Failed to update password");
+    .context("Failed to update password")?;
 
     if rows_affected > 0 {
         println!(
@@ -92,9 +89,10 @@ fn main() {
             username.trim()
         );
     } else {
-        eprintln!("\n❌ Failed to update password");
-        std::process::exit(1);
+        return Err(anyhow!("Failed to update password"));
     }
+
+    Ok(())
 }
 
 /// Prompt user for input (visible).

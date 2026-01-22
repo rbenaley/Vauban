@@ -143,6 +143,7 @@ impl UserConnectionRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::unwrap_ok;
 
     #[tokio::test]
     async fn test_register_connection() {
@@ -207,8 +208,8 @@ mod tests {
             .await;
 
         // Verify each receiver got personalized content
-        let msg1 = rx1.recv().await.unwrap();
-        let msg2 = rx2.recv().await.unwrap();
+        let msg1 = unwrap_some!(rx1.recv().await);
+        let msg2 = unwrap_some!(rx2.recv().await);
 
         assert!(msg1.contains("hash-a"));
         assert!(msg2.contains("hash-b"));
@@ -335,8 +336,8 @@ mod tests {
             })
             .await;
 
-        let msg1 = rx1.recv().await.unwrap();
-        let msg2 = rx2.recv().await.unwrap();
+        let msg1 = unwrap_some!(rx1.recv().await);
+        let msg2 = unwrap_some!(rx2.recv().await);
 
         assert_eq!(msg1, "Message for A");
         assert_eq!(msg2, "Message for B");
@@ -356,7 +357,7 @@ mod tests {
 
         // Should be able to receive all
         for i in 0..10 {
-            let msg = rx.recv().await.unwrap();
+            let msg = unwrap_some!(rx.recv().await);
             assert_eq!(msg, format!("msg-{}", i));
         }
     }
@@ -395,7 +396,7 @@ mod tests {
             })
             .await;
 
-        let msg = rx.recv().await.unwrap();
+        let msg = unwrap_some!(rx.recv().await);
         assert_eq!(msg, "Hash is empty: true");
     }
 
@@ -442,8 +443,8 @@ mod tests {
             }
         });
 
-        handle1.await.unwrap();
-        handle2.await.unwrap();
+        unwrap_ok!(handle1.await);
+        unwrap_ok!(handle2.await);
 
         assert_eq!(registry.connection_count("user-1").await, 20);
     }
@@ -512,7 +513,7 @@ mod tests {
             .await;
 
         // rx2 should still receive
-        let msg = rx2.recv().await.unwrap();
+        let msg = unwrap_some!(rx2.recv().await);
         assert_eq!(msg, "msg for hash-2");
     }
 

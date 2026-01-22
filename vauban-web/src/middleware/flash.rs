@@ -105,6 +105,8 @@ impl Flash {
 
     /// Sign a message using HMAC-SHA3-256.
     fn sign(&self, data: &[u8]) -> String {
+        // SAFETY: HMAC accepts any key size per RFC 2104
+        #[allow(clippy::expect_used)]
         let mut mac =
             HmacSha3::new_from_slice(&self.secret_key).expect("HMAC can take key of any size");
         mac.update(data);
@@ -209,6 +211,8 @@ impl IncomingFlash {
         let json = base64_decode(encoded)?;
 
         // Verify signature
+        // SAFETY: HMAC accepts any key size per RFC 2104
+        #[allow(clippy::expect_used)]
         let mut mac =
             HmacSha3::new_from_slice(secret_key).expect("HMAC can take key of any size");
         mac.update(json.as_bytes());
@@ -354,6 +358,7 @@ fn constant_time_compare(a: &str, b: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{unwrap_ok, unwrap_some};
 
     #[test]
     fn test_flash_message_success() {
@@ -400,7 +405,7 @@ mod tests {
         let signed = flash.create_signed_value();
         assert!(signed.is_some());
 
-        let value = signed.unwrap();
+        let value = unwrap_some!(signed);
         assert!(value.contains('.'));
     }
 
@@ -409,11 +414,11 @@ mod tests {
         let secret = b"test-secret-key";
         let flash = Flash::new(secret).success("Test message");
 
-        let signed = flash.create_signed_value().unwrap();
+        let signed = unwrap_some!(flash.create_signed_value());
         let decoded = IncomingFlash::verify_and_decode(secret, &signed);
 
         assert!(decoded.is_some());
-        let messages = decoded.unwrap();
+        let messages = unwrap_some!(decoded);
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].message, "Test message");
     }
@@ -424,7 +429,7 @@ mod tests {
         let wrong_secret = b"wrong-secret-key";
         let flash = Flash::new(secret).success("Test message");
 
-        let signed = flash.create_signed_value().unwrap();
+        let signed = unwrap_some!(flash.create_signed_value());
         let decoded = IncomingFlash::verify_and_decode(wrong_secret, &signed);
 
         assert!(decoded.is_none());
@@ -435,7 +440,7 @@ mod tests {
         let secret = b"test-secret-key";
         let flash = Flash::new(secret).success("Test message");
 
-        let signed = flash.create_signed_value().unwrap();
+        let signed = unwrap_some!(flash.create_signed_value());
         let tampered = format!("{}tampered", signed);
         let decoded = IncomingFlash::verify_and_decode(secret, &tampered);
 

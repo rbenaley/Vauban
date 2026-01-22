@@ -233,6 +233,7 @@ impl Default for BroadcastService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::unwrap_ok;
 
     // ==================== WsChannel Tests ====================
 
@@ -445,10 +446,10 @@ mod tests {
         let msg = WsMessage::new("ws-stats", "<p>Test</p>".to_string());
         let result = service.send(&WsChannel::DashboardStats, msg).await;
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 1); // 1 receiver
+        assert_eq!(unwrap_ok!(result), 1); // 1 receiver
 
         // Receive the message
-        let received = receiver.recv().await.unwrap();
+        let received = unwrap_ok!(receiver.recv().await);
         assert!(received.contains("ws-stats"));
         assert!(received.contains("<p>Test</p>"));
     }
@@ -512,7 +513,7 @@ mod tests {
             .await;
         assert!(result.is_ok());
 
-        let received = receiver.recv().await.unwrap();
+        let received = unwrap_ok!(receiver.recv().await);
         assert_eq!(received, "<div>Raw HTML</div>");
     }
 
@@ -561,7 +562,7 @@ mod tests {
 
         // Should succeed with 0 receivers
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 0);
+        assert_eq!(unwrap_ok!(result), 0);
     }
 
     #[tokio::test]
@@ -586,7 +587,7 @@ mod tests {
         let msg = WsMessage::new("session-view", "<p>Session data</p>".to_string());
         let _ = service.send(&channel, msg).await;
 
-        let received = receiver.recv().await.unwrap();
+        let received = unwrap_ok!(receiver.recv().await);
         assert!(received.contains("session-view"));
     }
 
@@ -826,8 +827,8 @@ mod tests {
             }
         });
 
-        handle1.await.unwrap();
-        handle2.await.unwrap();
+        unwrap_ok!(handle1.await);
+        unwrap_ok!(handle2.await);
 
         // Channel should exist and have been created only once
         let channels = service.channels.read().await;
@@ -874,7 +875,7 @@ mod tests {
         let msg = WsMessage::new("test", "content".to_string());
         let _ = service.send(&WsChannel::DashboardStats, msg).await;
 
-        let received = rx.recv().await.unwrap();
+        let received = unwrap_ok!(rx.recv().await);
         assert!(received.contains("test"));
     }
 

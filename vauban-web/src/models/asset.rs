@@ -262,6 +262,7 @@ pub struct UpdateAssetRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{unwrap_ok, unwrap_some};
 
     /// Helper to create a test asset
     fn create_test_asset() -> Asset {
@@ -270,7 +271,7 @@ mod tests {
             uuid: Uuid::new_v4(),
             name: "Test Server".to_string(),
             hostname: "test.example.com".to_string(),
-            ip_address: Some("192.168.1.100/32".parse().unwrap()),
+            ip_address: Some(unwrap_ok!("192.168.1.100/32".parse())),
             port: 22,
             asset_type: "ssh".to_string(),
             status: "online".to_string(),
@@ -530,14 +531,14 @@ mod tests {
     #[test]
     fn test_asset_type_serialize() {
         let asset_type = AssetType::Ssh;
-        let json = serde_json::to_string(&asset_type).unwrap();
+        let json = unwrap_ok!(serde_json::to_string(&asset_type));
         assert!(json.contains("Ssh"));
     }
 
     #[test]
     fn test_asset_type_deserialize() {
         let json = r#""Rdp""#;
-        let asset_type: AssetType = serde_json::from_str(json).unwrap();
+        let asset_type: AssetType = unwrap_ok!(serde_json::from_str(json));
         assert_eq!(asset_type, AssetType::Rdp);
     }
 
@@ -567,7 +568,7 @@ mod tests {
     #[test]
     fn test_asset_status_serialize() {
         let status = AssetStatus::Unknown;
-        let json = serde_json::to_string(&status).unwrap();
+        let json = unwrap_ok!(serde_json::to_string(&status));
         assert!(json.contains("Unknown"));
     }
 
@@ -592,7 +593,7 @@ mod tests {
     #[test]
     fn test_asset_serialize() {
         let asset = create_test_asset();
-        let json = serde_json::to_string(&asset).unwrap();
+        let json = unwrap_ok!(serde_json::to_string(&asset));
         assert!(json.contains("Test Server"));
         // ip_address should be skipped
         assert!(!json.contains("192.168.1.100"));
@@ -660,7 +661,7 @@ mod tests {
             uuid: Uuid::new_v4(),
             name: "Clone Asset".to_string(),
             hostname: "clone.example.com".to_string(),
-            ip_address: Some("10.0.0.1".parse().unwrap()),
+            ip_address: Some(unwrap_ok!("10.0.0.1".parse())),
             port: 3389,
             asset_type: "rdp".to_string(),
             status: "online".to_string(),
@@ -747,7 +748,7 @@ mod tests {
             deleted_at: None,
         };
 
-        let json = serde_json::to_string(&group).unwrap();
+        let json = unwrap_ok!(serde_json::to_string(&group));
         assert!(json.contains("Serialize Group"));
     }
 
@@ -868,56 +869,56 @@ mod tests {
     #[test]
     fn test_update_asset_request_port_as_string() {
         let json = r#"{"port": "22"}"#;
-        let request: UpdateAssetRequest = serde_json::from_str(json).unwrap();
+        let request: UpdateAssetRequest = unwrap_ok!(serde_json::from_str(json));
         assert_eq!(request.port, Some(22));
     }
 
     #[test]
     fn test_update_asset_request_port_as_integer() {
         let json = r#"{"port": 22}"#;
-        let request: UpdateAssetRequest = serde_json::from_str(json).unwrap();
+        let request: UpdateAssetRequest = unwrap_ok!(serde_json::from_str(json));
         assert_eq!(request.port, Some(22));
     }
 
     #[test]
     fn test_update_asset_request_port_empty_string() {
         let json = r#"{"port": ""}"#;
-        let request: UpdateAssetRequest = serde_json::from_str(json).unwrap();
+        let request: UpdateAssetRequest = unwrap_ok!(serde_json::from_str(json));
         assert_eq!(request.port, None);
     }
 
     #[test]
     fn test_update_asset_request_port_null() {
         let json = r#"{"port": null}"#;
-        let request: UpdateAssetRequest = serde_json::from_str(json).unwrap();
+        let request: UpdateAssetRequest = unwrap_ok!(serde_json::from_str(json));
         assert_eq!(request.port, None);
     }
 
     #[test]
     fn test_update_asset_request_bool_as_string_true() {
         let json = r#"{"require_mfa": "true"}"#;
-        let request: UpdateAssetRequest = serde_json::from_str(json).unwrap();
+        let request: UpdateAssetRequest = unwrap_ok!(serde_json::from_str(json));
         assert_eq!(request.require_mfa, Some(true));
     }
 
     #[test]
     fn test_update_asset_request_bool_as_string_on() {
         let json = r#"{"require_mfa": "on"}"#;
-        let request: UpdateAssetRequest = serde_json::from_str(json).unwrap();
+        let request: UpdateAssetRequest = unwrap_ok!(serde_json::from_str(json));
         assert_eq!(request.require_mfa, Some(true));
     }
 
     #[test]
     fn test_update_asset_request_bool_as_boolean() {
         let json = r#"{"require_mfa": true}"#;
-        let request: UpdateAssetRequest = serde_json::from_str(json).unwrap();
+        let request: UpdateAssetRequest = unwrap_ok!(serde_json::from_str(json));
         assert_eq!(request.require_mfa, Some(true));
     }
 
     #[test]
     fn test_update_asset_request_bool_as_string_false() {
         let json = r#"{"require_justification": "false"}"#;
-        let request: UpdateAssetRequest = serde_json::from_str(json).unwrap();
+        let request: UpdateAssetRequest = unwrap_ok!(serde_json::from_str(json));
         assert_eq!(request.require_justification, Some(false));
     }
 
@@ -934,7 +935,7 @@ mod tests {
             "require_mfa": "on",
             "require_justification": "on"
         }"#;
-        let request: UpdateAssetRequest = serde_json::from_str(json).unwrap();
+        let request: UpdateAssetRequest = unwrap_ok!(serde_json::from_str(json));
         assert_eq!(request.name, Some("test-server".to_string()));
         assert_eq!(request.port, Some(22));
         assert_eq!(request.require_mfa, Some(true));
@@ -950,7 +951,7 @@ mod tests {
             "port": "22",
             "status": "online"
         }"#;
-        let request: UpdateAssetRequest = serde_json::from_str(json).unwrap();
+        let request: UpdateAssetRequest = unwrap_ok!(serde_json::from_str(json));
         assert_eq!(request.port, Some(22));
         assert_eq!(request.require_mfa, None);
         assert_eq!(request.require_justification, None);

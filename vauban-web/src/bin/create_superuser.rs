@@ -1,7 +1,13 @@
-/// VAUBAN CLI - Create Superuser
-///
-/// Interactive command to create the initial superuser account.
-/// Usage: cargo run --bin create_superuser
+// SAFETY: This is an interactive CLI tool where expect()/unwrap() on I/O is acceptable
+// for user prompts - failures should terminate the tool.
+#![allow(clippy::expect_used)]
+#![allow(clippy::unwrap_used)]
+
+//! VAUBAN CLI - Create Superuser
+//!
+//! Interactive command to create the initial superuser account.
+//! Usage: cargo run --bin create_superuser
+
 use argon2::{Algorithm, Argon2, Params, PasswordHasher, Version, password_hash::SaltString};
 use diesel::pg::PgConnection;
 use diesel::prelude::*;

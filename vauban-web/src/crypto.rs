@@ -173,6 +173,7 @@ impl HybridSigPublicKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::unwrap_ok;
     use pqcrypto_traits::kem::{PublicKey as _, SecretKey as _};
 
     #[test]
@@ -192,10 +193,10 @@ mod tests {
     fn test_combine_shared_secrets() {
         let classical = [1u8; 32];
         let pq = [2u8; 32];
-        let combined = combine_shared_secrets(&classical, &pq).unwrap();
+        let combined = unwrap_ok!(combine_shared_secrets(&classical, &pq));
         assert_ne!(combined, [0u8; 32]);
 
-        let combined2 = combine_shared_secrets(&classical, &pq).unwrap();
+        let combined2 = unwrap_ok!(combine_shared_secrets(&classical, &pq));
         assert_eq!(combined, combined2);
     }
 

@@ -94,6 +94,7 @@ mod tests {
     use super::*;
     use axum::{Router, routing::get, body::Body, http::Request};
     use tower::ServiceExt;
+    use crate::unwrap_ok;
 
     async fn test_handler() -> &'static str {
         "OK"
@@ -105,23 +106,22 @@ mod tests {
             .route("/", get(test_handler))
             .layer(axum::middleware::from_fn(security_headers_middleware));
 
-        let response = app
-            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
-            .await
-            .unwrap();
+        let response = unwrap_ok!(app
+            .oneshot(unwrap_ok!(Request::builder().uri("/").body(Body::empty())))
+            .await);
 
         let headers = response.headers();
 
         assert_eq!(
-            headers.get("x-content-type-options").unwrap(),
+            unwrap_ok!(headers.get("x-content-type-options").ok_or("missing header")),
             "nosniff"
         );
         assert_eq!(
-            headers.get("x-frame-options").unwrap(),
+            unwrap_ok!(headers.get("x-frame-options").ok_or("missing header")),
             "DENY"
         );
         assert_eq!(
-            headers.get("x-xss-protection").unwrap(),
+            unwrap_ok!(headers.get("x-xss-protection").ok_or("missing header")),
             "1; mode=block"
         );
         assert!(headers.get("content-security-policy").is_some());
@@ -136,17 +136,15 @@ mod tests {
             .route("/", get(test_handler))
             .layer(axum::middleware::from_fn(security_headers_middleware));
 
-        let response = app
-            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
-            .await
-            .unwrap();
+        let response = unwrap_ok!(app
+            .oneshot(unwrap_ok!(Request::builder().uri("/").body(Body::empty())))
+            .await);
 
-        let csp = response
+        let csp = unwrap_ok!(unwrap_ok!(response
             .headers()
             .get("content-security-policy")
-            .unwrap()
-            .to_str()
-            .unwrap();
+            .ok_or("missing header"))
+            .to_str());
 
         assert!(csp.contains("default-src 'self'"));
         assert!(csp.contains("script-src"));
@@ -159,17 +157,15 @@ mod tests {
             .route("/", get(test_handler))
             .layer(axum::middleware::from_fn(security_headers_middleware));
 
-        let response = app
-            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
-            .await
-            .unwrap();
+        let response = unwrap_ok!(app
+            .oneshot(unwrap_ok!(Request::builder().uri("/").body(Body::empty())))
+            .await);
 
-        let hsts = response
+        let hsts = unwrap_ok!(unwrap_ok!(response
             .headers()
             .get("strict-transport-security")
-            .unwrap()
-            .to_str()
-            .unwrap();
+            .ok_or("missing header"))
+            .to_str());
 
         assert!(hsts.contains("max-age="));
         assert!(hsts.contains("includeSubDomains"));

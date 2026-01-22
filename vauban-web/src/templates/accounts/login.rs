@@ -20,6 +20,7 @@ pub struct LoginTemplate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{unwrap_ok, unwrap_some};
 
     fn create_test_vauban_config() -> VaubanConfig {
         VaubanConfig {
@@ -81,7 +82,7 @@ mod tests {
 
         let result = template.render();
         assert!(result.is_ok());
-        let html = result.unwrap();
+        let html = unwrap_ok!(result);
         assert!(html.contains("Login"));
     }
 }

@@ -35,6 +35,8 @@ use vauban_web::{
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Install the default crypto provider for rustls (aws-lc-rs)
     // This must be done before any TLS operations
+    // SAFETY: This is a startup invariant - the app cannot run without TLS
+    #[allow(clippy::expect_used)]
     rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
         .expect("Failed to install rustls crypto provider");
@@ -567,6 +569,7 @@ async fn serve_static(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vauban_web::unwrap_ok;
 
     // ==================== health_check Tests ====================
 
@@ -599,7 +602,7 @@ mod tests {
     fn test_socket_addr_parsing() {
         let addr: Result<SocketAddr, _> = "127.0.0.1:8080".parse();
         assert!(addr.is_ok());
-        assert_eq!(addr.unwrap().port(), 8080);
+        assert_eq!(unwrap_ok!(addr).port(), 8080);
     }
 
     #[test]
@@ -652,7 +655,7 @@ mod tests {
         let host = "127.0.0.1";
         let port = 8443u16;
         let addr_str = format!("{}:{}", host, port);
-        let addr: SocketAddr = addr_str.parse().unwrap();
+        let addr: SocketAddr = unwrap_ok!(addr_str.parse());
         assert_eq!(addr.port(), 8443);
     }
 
@@ -664,16 +667,16 @@ mod tests {
 
     #[test]
     fn test_socket_addr_any_interface() {
-        let addr: SocketAddr = "0.0.0.0:8080".parse().unwrap();
+        let addr: SocketAddr = unwrap_ok!("0.0.0.0:8080".parse());
         assert!(addr.ip().is_unspecified());
     }
 
     #[test]
     fn test_socket_addr_localhost_variations() {
-        let localhost: SocketAddr = "127.0.0.1:80".parse().unwrap();
+        let localhost: SocketAddr = unwrap_ok!("127.0.0.1:80".parse());
         assert!(localhost.ip().is_loopback());
 
-        let ipv6_localhost: SocketAddr = "[::1]:80".parse().unwrap();
+        let ipv6_localhost: SocketAddr = unwrap_ok!("[::1]:80".parse());
         assert!(ipv6_localhost.ip().is_loopback());
     }
 
@@ -681,19 +684,19 @@ mod tests {
 
     #[test]
     fn test_common_https_port() {
-        let addr: SocketAddr = "0.0.0.0:443".parse().unwrap();
+        let addr: SocketAddr = unwrap_ok!("0.0.0.0:443".parse());
         assert_eq!(addr.port(), 443);
     }
 
     #[test]
     fn test_development_port() {
-        let addr: SocketAddr = "127.0.0.1:3000".parse().unwrap();
+        let addr: SocketAddr = unwrap_ok!("127.0.0.1:3000".parse());
         assert_eq!(addr.port(), 3000);
     }
 
     #[test]
     fn test_high_port() {
-        let addr: SocketAddr = "127.0.0.1:65535".parse().unwrap();
+        let addr: SocketAddr = unwrap_ok!("127.0.0.1:65535".parse());
         assert_eq!(addr.port(), 65535);
     }
 

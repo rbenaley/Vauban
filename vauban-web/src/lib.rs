@@ -1,9 +1,21 @@
+//! VAUBAN Web - Library crate exposing all modules.
+//!
+//! This file makes modules available for integration tests.
+
+// Clippy lints to enforce proper error handling
+// Note: Using warn instead of deny to allow #[allow] annotations to work
+// with code generation macros like lazy_static!
+#![warn(clippy::unwrap_used)]
+#![warn(clippy::expect_used)]
+#![warn(clippy::panic)]
+#![warn(clippy::todo)]
+
+// Test utilities - macros for replacing unwrap/expect in tests
+#[macro_use]
+pub mod test_utils;
+
 pub mod cache;
-/// VAUBAN Web - Library crate exposing all modules.
-///
-/// This file makes modules available for integration tests.
 pub mod config;
-pub mod utils;
 pub mod crypto;
 pub mod db;
 pub mod error;
@@ -15,6 +27,7 @@ pub mod schema;
 pub mod services;
 pub mod tasks;
 pub mod templates;
+pub mod utils;
 
 use cache::CacheConnection;
 use config::Config;

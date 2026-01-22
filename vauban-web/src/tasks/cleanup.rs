@@ -100,6 +100,7 @@ fn cleanup_expired_api_keys(db_pool: &DbPool) -> Result<usize, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{unwrap_ok, unwrap_some};
 
     // ==================== Constants Tests ====================
 
@@ -139,14 +140,14 @@ mod tests {
     fn test_cleanup_result_ok() {
         let result: Result<usize, String> = Ok(5);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 5);
+        assert_eq!(unwrap_ok!(result), 5);
     }
 
     #[test]
     fn test_cleanup_result_err() {
         let result: Result<usize, String> = Err("Database error".to_string());
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Database"));
+        assert!(result.err().map(|e| e.contains("Database")).unwrap_or(false));
     }
 
     #[test]
@@ -154,7 +155,7 @@ mod tests {
         let result: Result<usize, String> = Ok(0);
         assert!(result.is_ok());
         // Zero deleted is a valid result (no expired items)
-        assert_eq!(result.unwrap(), 0);
+        assert_eq!(unwrap_ok!(result), 0);
     }
 
     // ==================== Duration Tests ====================
@@ -178,7 +179,7 @@ mod tests {
         let result: Result<usize, String> = Err(error);
 
         assert!(result.is_err());
-        let err_msg = result.unwrap_err();
+        let err_msg = unwrap_some!(result.err());
         assert!(err_msg.contains("Database"));
         assert!(err_msg.contains("timeout"));
     }
@@ -187,7 +188,7 @@ mod tests {
     fn test_cleanup_error_empty_message() {
         let result: Result<usize, String> = Err("".to_string());
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "");
+        assert_eq!(unwrap_some!(result.err()), "");
     }
 
     // ==================== Count Tests ====================
@@ -196,7 +197,7 @@ mod tests {
     fn test_cleanup_large_count() {
         let result: Result<usize, String> = Ok(1_000_000);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 1_000_000);
+        assert_eq!(unwrap_ok!(result), 1_000_000);
     }
 
     #[test]
@@ -211,7 +212,7 @@ mod tests {
     #[test]
     fn test_utc_now_not_unix_epoch() {
         let now = Utc::now();
-        let epoch = chrono::DateTime::<Utc>::from_timestamp(0, 0).unwrap();
+        let epoch = unwrap_some!(chrono::DateTime::<Utc>::from_timestamp(0, 0));
         assert!(now > epoch);
     }
 
@@ -286,8 +287,8 @@ mod tests {
 
     #[test]
     fn test_utc_timestamp_ordering() {
-        let t1 = chrono::DateTime::<Utc>::from_timestamp(1000, 0).unwrap();
-        let t2 = chrono::DateTime::<Utc>::from_timestamp(2000, 0).unwrap();
+        let t1 = unwrap_some!(chrono::DateTime::<Utc>::from_timestamp(1000, 0));
+        let t2 = unwrap_some!(chrono::DateTime::<Utc>::from_timestamp(2000, 0));
 
         assert!(t1 < t2);
         assert!(t2 > t1);
@@ -304,7 +305,7 @@ mod tests {
         let result: Result<(), String> = operation().map_err(|e| e.to_string());
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("test error"));
+        assert!(unwrap_some!(result.err()).contains("test error"));
     }
 
     #[test]
@@ -370,7 +371,7 @@ mod tests {
     async fn test_tokio_spawn_completes() {
         let handle = tokio::spawn(async { 42 });
 
-        let result = handle.await.unwrap();
+        let result = unwrap_ok!(handle.await);
         assert_eq!(result, 42);
     }
 
@@ -383,7 +384,7 @@ mod tests {
             value_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         });
 
-        handle.await.unwrap();
+        unwrap_ok!(handle.await);
         assert_eq!(value.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 

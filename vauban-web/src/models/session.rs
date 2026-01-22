@@ -165,6 +165,7 @@ pub struct CreateSessionRequest {
 mod tests {
     use super::*;
     use chrono::Duration;
+    use crate::{unwrap_ok, unwrap_some};
 
     /// Helper to create a test session
     fn create_test_session() -> ProxySession {
@@ -177,7 +178,7 @@ mod tests {
             credential_username: "admin".to_string(),
             session_type: "ssh".to_string(),
             status: "active".to_string(),
-            client_ip: "192.168.1.10/32".parse().unwrap(),
+            client_ip: unwrap_ok!("192.168.1.10/32".parse()),
             client_user_agent: Some("Mozilla/5.0".to_string()),
             proxy_instance: Some("proxy-01".to_string()),
             connected_at: Some(Utc::now() - Duration::hours(1)),
@@ -349,7 +350,7 @@ mod tests {
 
         assert!(duration.is_some());
         // Duration should be approximately 1 hour (3600 seconds), give or take
-        let dur = duration.unwrap();
+        let dur = unwrap_some!(duration);
         assert!(dur >= 3590 && dur <= 3610);
     }
 
@@ -370,7 +371,7 @@ mod tests {
         session.connected_at = Some(connect_time);
         session.disconnected_at = Some(disconnect_time);
 
-        let duration = session.duration().unwrap();
+        let duration = unwrap_some!(session.duration());
         // Should be approximately 1 hour (3600 seconds)
         assert!(duration >= 3590 && duration <= 3610);
     }
@@ -401,14 +402,14 @@ mod tests {
     #[test]
     fn test_session_type_serialize() {
         let session_type = SessionType::Ssh;
-        let json = serde_json::to_string(&session_type).unwrap();
+        let json = unwrap_ok!(serde_json::to_string(&session_type));
         assert!(json.contains("Ssh"));
     }
 
     #[test]
     fn test_session_type_deserialize() {
         let json = r#""Rdp""#;
-        let session_type: SessionType = serde_json::from_str(json).unwrap();
+        let session_type: SessionType = unwrap_ok!(serde_json::from_str(json));
         assert_eq!(session_type, SessionType::Rdp);
     }
 
@@ -438,7 +439,7 @@ mod tests {
     #[test]
     fn test_session_status_serialize() {
         let status = SessionStatus::Terminated;
-        let json = serde_json::to_string(&status).unwrap();
+        let json = unwrap_ok!(serde_json::to_string(&status));
         assert!(json.contains("Terminated"));
     }
 
@@ -462,7 +463,7 @@ mod tests {
     #[test]
     fn test_proxy_session_serialize() {
         let session = create_test_session();
-        let json = serde_json::to_string(&session).unwrap();
+        let json = unwrap_ok!(serde_json::to_string(&session));
         assert!(json.contains("active"));
         // client_ip should be skipped
         assert!(!json.contains("192.168.1.10"));
@@ -512,7 +513,7 @@ mod tests {
             credential_username: "admin".to_string(),
             session_type: "ssh".to_string(),
             status: "pending".to_string(),
-            client_ip: "10.0.0.1".parse().unwrap(),
+            client_ip: unwrap_ok!("10.0.0.1".parse()),
             client_user_agent: Some("Mozilla/5.0".to_string()),
             proxy_instance: None,
             justification: Some("Maintenance".to_string()),
@@ -534,7 +535,7 @@ mod tests {
             credential_username: "root".to_string(),
             session_type: "rdp".to_string(),
             status: "connecting".to_string(),
-            client_ip: "192.168.1.1".parse().unwrap(),
+            client_ip: unwrap_ok!("192.168.1.1".parse()),
             client_user_agent: None,
             proxy_instance: Some("proxy-02".to_string()),
             justification: None,
@@ -597,7 +598,7 @@ mod tests {
         session.connected_at = Some(now);
         session.disconnected_at = Some(now);
 
-        let duration = session.duration().unwrap();
+        let duration = unwrap_some!(session.duration());
         assert_eq!(duration, 0);
     }
 
@@ -608,7 +609,7 @@ mod tests {
         session.connected_at = Some(Utc::now());
         session.disconnected_at = Some(Utc::now() - Duration::hours(1));
 
-        let duration = session.duration().unwrap();
+        let duration = unwrap_some!(session.duration());
         // Duration would be negative
         assert!(duration < 0);
     }

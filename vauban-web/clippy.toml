@@ -1,0 +1,11 @@
+# Clippy configuration for VAUBAN
+# See: https://doc.rust-lang.org/clippy/configuration.html
+
+# Maximum cognitive complexity allowed for functions
+cognitive-complexity-threshold = 15
+
+# Maximum number of function arguments before triggering too_many_arguments
+too-many-arguments-threshold = 7
+
+# Maximum type complexity threshold
+type-complexity-threshold = 250

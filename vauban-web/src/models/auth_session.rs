@@ -149,6 +149,7 @@ impl AuthSession {
 mod tests {
     use super::*;
     use std::net::IpAddr;
+    use crate::unwrap_ok;
 
     fn create_test_session() -> AuthSession {
         AuthSession {
@@ -156,7 +157,7 @@ mod tests {
             uuid: Uuid::new_v4(),
             user_id: 1,
             token_hash: "abc123".to_string(),
-            ip_address: IpNetwork::new(IpAddr::from([127, 0, 0, 1]), 32).unwrap(),
+            ip_address: unwrap_ok!(IpNetwork::new(IpAddr::from([127, 0, 0, 1]), 32)),
             user_agent: Some("Mozilla/5.0".to_string()),
             device_info: Some("Chrome on macOS".to_string()),
             last_activity: Utc::now(),
@@ -237,7 +238,7 @@ mod tests {
     #[test]
     fn test_to_dto_ipv6() {
         let mut session = create_test_session();
-        session.ip_address = IpNetwork::new(IpAddr::from([0, 0, 0, 0, 0, 0, 0, 1]), 128).unwrap();
+        session.ip_address = unwrap_ok!(IpNetwork::new(IpAddr::from([0, 0, 0, 0, 0, 0, 0, 1]), 128));
 
         let dto = session.to_dto();
         assert_eq!(dto.ip_address, "::1");
@@ -419,7 +420,7 @@ mod tests {
         let session = create_test_session();
         let dto = session.to_dto();
 
-        let json = serde_json::to_string(&dto).unwrap();
+        let json = unwrap_ok!(serde_json::to_string(&dto));
         assert!(json.contains("127.0.0.1"));
     }
 
@@ -431,7 +432,7 @@ mod tests {
             uuid: Uuid::new_v4(),
             user_id: 1,
             token_hash: "newhash".to_string(),
-            ip_address: IpNetwork::new(IpAddr::from([192, 168, 1, 1]), 32).unwrap(),
+            ip_address: unwrap_ok!(IpNetwork::new(IpAddr::from([192, 168, 1, 1]), 32)),
             user_agent: Some("Test/1.0".to_string()),
             device_info: Some("Test Device".to_string()),
             expires_at: Utc::now() + chrono::Duration::hours(24),
@@ -448,7 +449,7 @@ mod tests {
             uuid: Uuid::new_v4(),
             user_id: 2,
             token_hash: "clonehash".to_string(),
-            ip_address: IpNetwork::new(IpAddr::from([10, 0, 0, 1]), 32).unwrap(),
+            ip_address: unwrap_ok!(IpNetwork::new(IpAddr::from([10, 0, 0, 1]), 32)),
             user_agent: None,
             device_info: None,
             expires_at: Utc::now() + chrono::Duration::hours(48),

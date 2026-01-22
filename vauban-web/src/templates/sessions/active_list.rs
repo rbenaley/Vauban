@@ -58,6 +58,7 @@ pub struct ActiveListStatsWidget {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::unwrap_ok;
 
     fn create_test_active_session_item(session_type: &str) -> ActiveSessionItem {
         ActiveSessionItem {
@@ -151,7 +152,7 @@ mod tests {
         let result = widget.render();
         assert!(result.is_ok(), "ActiveListContentWidget should render");
 
-        let html = result.unwrap();
+        let html = unwrap_ok!(result);
         assert!(html.contains("testuser"));
         assert!(html.contains("Test Server"));
     }
@@ -164,7 +165,7 @@ mod tests {
         let result = widget.render();
         assert!(result.is_ok(), "ActiveListContentWidget should render empty");
 
-        let html = result.unwrap();
+        let html = unwrap_ok!(result);
         assert!(html.contains("No active sessions"));
     }
 
@@ -180,7 +181,7 @@ mod tests {
         let result = widget.render();
         assert!(result.is_ok());
 
-        let html = result.unwrap();
+        let html = unwrap_ok!(result);
         assert!(html.contains("SSH"));
         assert!(html.contains("RDP"));
         assert!(html.contains("VNC"));
@@ -195,7 +196,7 @@ mod tests {
         let result = widget.render();
         assert!(result.is_ok(), "ActiveListStatsWidget should render");
 
-        let html = result.unwrap();
+        let html = unwrap_ok!(result);
         assert!(html.contains("Active Sessions"));
         assert!(html.contains("1")); // 1 session
     }
@@ -208,7 +209,7 @@ mod tests {
         let result = widget.render();
         assert!(result.is_ok(), "ActiveListStatsWidget should render with 0");
 
-        let html = result.unwrap();
+        let html = unwrap_ok!(result);
         assert!(html.contains("0"));
     }
 
@@ -224,7 +225,7 @@ mod tests {
         let result = widget.render();
         assert!(result.is_ok());
 
-        let html = result.unwrap();
+        let html = unwrap_ok!(result);
         assert!(html.contains("3")); // 3 sessions
     }
 }

@@ -11,6 +11,7 @@ pub struct ApikeyCreatedTemplate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::unwrap_ok;
 
     #[test]
     fn test_apikey_created_renders() {
@@ -28,7 +29,7 @@ mod tests {
             name: "My Production Key".to_string(),
             key: "vbn_abc123xyz".to_string(),
         };
-        let html = template.render().unwrap();
+        let html = unwrap_ok!(template.render());
         assert!(html.contains("My Production Key"));
     }
 
@@ -38,7 +39,7 @@ mod tests {
             name: "Test".to_string(),
             key: "vbn_secret_key_value".to_string(),
         };
-        let html = template.render().unwrap();
+        let html = unwrap_ok!(template.render());
         assert!(html.contains("vbn_secret_key_value"));
     }
 

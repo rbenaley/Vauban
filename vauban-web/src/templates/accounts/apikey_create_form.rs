@@ -8,6 +8,7 @@ pub struct ApikeyCreateFormTemplate {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::unwrap_ok;
 
     #[test]
     fn test_apikey_create_form_renders() {
@@ -19,7 +20,7 @@ mod tests {
     #[test]
     fn test_apikey_create_form_contains_form_elements() {
         let template = ApikeyCreateFormTemplate {};
-        let html = template.render().unwrap();
+        let html = unwrap_ok!(template.render());
         // Form should contain input fields
         assert!(html.contains("form") || html.contains("input") || html.contains("button"));
     }

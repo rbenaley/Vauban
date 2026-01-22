@@ -188,6 +188,7 @@ pub fn htmx_error_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{unwrap_ok, unwrap_some};
 
     // ==================== AppError Display Tests ====================
 
@@ -248,7 +249,7 @@ mod tests {
         let response = error.into_response();
         let location = response.headers().get("location");
         assert!(location.is_some());
-        assert_eq!(location.unwrap().to_str().unwrap(), "/login");
+        assert_eq!(unwrap_ok!(unwrap_some!(location).to_str()), "/login");
     }
 
     #[test]
@@ -321,7 +322,7 @@ mod tests {
     fn test_app_result_ok() {
         let result: AppResult<i32> = Ok(42);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 42);
+        assert_eq!(unwrap_ok!(result), 42);
     }
 
     #[test]
@@ -493,7 +494,7 @@ mod tests {
     #[test]
     fn test_is_htmx_request_with_header() {
         let mut headers = axum::http::HeaderMap::new();
-        headers.insert("HX-Request", "true".parse().unwrap());
+        headers.insert("HX-Request", unwrap_ok!("true".parse()));
         assert!(is_htmx_request(&headers));
     }
 

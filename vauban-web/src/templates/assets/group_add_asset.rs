@@ -63,6 +63,7 @@ pub struct AssetGroupAddAssetTemplate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{unwrap_ok, unwrap_some};
 
     fn create_test_available_asset(status: &str) -> AvailableAsset {
         AvailableAsset {
@@ -256,7 +257,7 @@ mod tests {
             "AssetGroupAddAssetTemplate should render with mixed assets"
         );
 
-        let html = result.unwrap();
+        let html = unwrap_ok!(result);
         // Check that both types of assets are rendered
         assert!(html.contains("available-asset")); // Available asset has this class
         assert!(html.contains("assigned-asset")); // Assigned asset has this class
@@ -300,7 +301,7 @@ mod tests {
         assert!(!asset.is_available());
         assert!(asset.current_group_name.is_some());
         assert_eq!(
-            asset.current_group_name.as_ref().unwrap(),
+            unwrap_some!(asset.current_group_name.as_ref()),
             "Production Servers"
         );
     }

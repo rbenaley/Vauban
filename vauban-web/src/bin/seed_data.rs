@@ -1,12 +1,19 @@
-/// VAUBAN - Seed Data Generator
-///
-/// Creates test data for development (idempotent):
-/// - 5 users (1 admin, 2 staff, 2 regular)
-/// - 30 assets (SSH, RDP, VNC)
-/// - 30 sessions (including 20 recordings)
-/// - 20 approval requests
-///
-/// This script can be run multiple times without creating duplicates.
+// SAFETY: This is a development-only seed script where expect() is acceptable
+// for database operations - failures should terminate the script.
+#![allow(clippy::expect_used)]
+#![allow(clippy::unwrap_used)]
+
+//! VAUBAN - Seed Data Generator
+//!
+//! Creates test data for development (idempotent):
+//! - 5 users (1 admin, 2 staff, 2 regular)
+//! - 30 assets (SSH, RDP, VNC)
+//! - 30 sessions (including 20 recordings)
+//! - 20 approval requests
+//!
+//! This script can be run multiple times without creating duplicates.
+
+use anyhow::{Context, Result};
 use argon2::{Algorithm, Argon2, Params, PasswordHasher, Version, password_hash::SaltString};
 use chrono::{Duration, Utc};
 use diesel::PgConnection;
@@ -24,20 +31,20 @@ mod schema {
     include!("../schema.rs");
 }
 
-fn main() {
+fn main() -> Result<()> {
     println!("🚀 VAUBAN Seed Data Generator (Idempotent)");
     println!("==========================================\n");
 
     // Load configuration from TOML files
-    let config = Config::load().expect("Failed to load configuration from config/*.toml");
+    let config = Config::load().context("Failed to load configuration from config/*.toml")?;
 
     // Create connection pool
     let manager = ConnectionManager::<PgConnection>::new(config.database.url.expose_secret());
     let pool = Pool::builder()
         .build(manager)
-        .expect("Failed to create database pool");
+        .context("Failed to create database pool")?;
 
-    let mut conn = pool.get().expect("Failed to get database connection");
+    let mut conn = pool.get().context("Failed to get database connection")?;
 
     // Create users
     println!("👥 Creating users...");
@@ -123,11 +130,18 @@ fn main() {
     println!("  - {} assets", asset_ids.len());
     println!("  - {} user groups", group_count);
     println!("  - {} asset groups", asset_group_count);
+
+    Ok(())
 }
 
 /// Hash a password using Argon2.
+/// 
+/// # Panics
+/// Panics if Argon2 parameters are invalid (configuration error).
+#[allow(clippy::expect_used)]
 fn hash_password(password: &str, config: &Config) -> String {
     let salt = SaltString::generate(&mut OsRng);
+    // SAFETY: Config is validated at load time, these params are always valid
     let params = Params::new(
         config.security.argon2.memory_size_kb,
         config.security.argon2.iterations,

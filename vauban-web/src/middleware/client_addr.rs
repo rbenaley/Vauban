@@ -31,12 +31,15 @@ where
 {
     type Rejection = std::convert::Infallible;
 
+    #[allow(clippy::unwrap_used)]
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         // Try to extract ConnectInfo if available
         match ConnectInfo::<SocketAddr>::from_request_parts(parts, state).await {
             Ok(ConnectInfo(addr)) => Ok(ClientAddr(addr)),
             Err(_) => {
                 // ConnectInfo not available (e.g., in tests), use default
+                // SAFETY: DEFAULT_ADDR is a compile-time constant, parsing cannot fail
+                #[allow(clippy::unwrap_used)]
                 Ok(ClientAddr(DEFAULT_ADDR.parse().unwrap()))
             }
         }
@@ -46,6 +49,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::unwrap_ok;
 
     // ==================== DEFAULT_ADDR Constant Tests ====================
 
@@ -64,14 +68,14 @@ mod tests {
 
     #[test]
     fn test_client_addr_default() {
-        let addr: SocketAddr = DEFAULT_ADDR.parse().unwrap();
+        let addr: SocketAddr = unwrap_ok!(DEFAULT_ADDR.parse());
         let client_addr = ClientAddr(addr);
         assert_eq!(client_addr.addr().ip().to_string(), "127.0.0.1");
     }
 
     #[test]
     fn test_client_addr_custom() {
-        let addr: SocketAddr = "192.168.1.100:12345".parse().unwrap();
+        let addr: SocketAddr = unwrap_ok!("192.168.1.100:12345".parse());
         let client_addr = ClientAddr(addr);
         assert_eq!(client_addr.addr().ip().to_string(), "192.168.1.100");
         assert_eq!(client_addr.addr().port(), 12345);
@@ -79,14 +83,14 @@ mod tests {
 
     #[test]
     fn test_client_addr_ipv6() {
-        let addr: SocketAddr = "[2001:db8::1]:443".parse().unwrap();
+        let addr: SocketAddr = unwrap_ok!("[2001:db8::1]:443".parse());
         let client_addr = ClientAddr(addr);
         assert_eq!(client_addr.addr().ip().to_string(), "2001:db8::1");
     }
 
     #[test]
     fn test_client_addr_debug() {
-        let addr: SocketAddr = "10.0.0.1:8080".parse().unwrap();
+        let addr: SocketAddr = unwrap_ok!("10.0.0.1:8080".parse());
         let client_addr = ClientAddr(addr);
         let debug_str = format!("{:?}", client_addr);
         assert!(debug_str.contains("ClientAddr"));
@@ -95,7 +99,7 @@ mod tests {
 
     #[test]
     fn test_client_addr_clone() {
-        let addr: SocketAddr = "172.16.0.1:9000".parse().unwrap();
+        let addr: SocketAddr = unwrap_ok!("172.16.0.1:9000".parse());
         let client_addr = ClientAddr(addr);
         let cloned = client_addr.clone();
         assert_eq!(client_addr.addr(), cloned.addr());
@@ -103,7 +107,7 @@ mod tests {
 
     #[test]
     fn test_client_addr_copy() {
-        let addr: SocketAddr = "192.168.0.1:443".parse().unwrap();
+        let addr: SocketAddr = unwrap_ok!("192.168.0.1:443".parse());
         let client_addr = ClientAddr(addr);
         let copied = client_addr;
         assert_eq!(client_addr.addr(), copied.addr());
@@ -111,30 +115,29 @@ mod tests {
 
     #[test]
     fn test_client_addr_port_zero() {
-        let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let addr: SocketAddr = unwrap_ok!("127.0.0.1:0".parse());
         let client_addr = ClientAddr(addr);
         assert_eq!(client_addr.addr().port(), 0);
     }
 
     #[test]
     fn test_client_addr_high_port() {
-        let addr: SocketAddr = "127.0.0.1:65535".parse().unwrap();
+        let addr: SocketAddr = unwrap_ok!("127.0.0.1:65535".parse());
         let client_addr = ClientAddr(addr);
         assert_eq!(client_addr.addr().port(), 65535);
     }
 
     #[test]
     fn test_client_addr_ipv6_localhost() {
-        let addr: SocketAddr = "[::1]:8443".parse().unwrap();
+        let addr: SocketAddr = unwrap_ok!("[::1]:8443".parse());
         let client_addr = ClientAddr(addr);
         assert_eq!(client_addr.addr().ip().to_string(), "::1");
     }
 
     #[test]
     fn test_client_addr_ipv6_full() {
-        let addr: SocketAddr = "[2001:0db8:85a3:0000:0000:8a2e:0370:7334]:80"
-            .parse()
-            .unwrap();
+        let addr: SocketAddr = unwrap_ok!("[2001:0db8:85a3:0000:0000:8a2e:0370:7334]:80"
+            .parse());
         let client_addr = ClientAddr(addr);
         assert!(client_addr.addr().ip().is_ipv6());
     }

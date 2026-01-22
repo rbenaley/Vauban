@@ -115,6 +115,8 @@ pub async fn csrf_cookie_middleware(
 
 /// Sign data using HMAC-SHA3-256.
 fn sign(secret_key: &[u8], data: &[u8]) -> String {
+    // SAFETY: HMAC accepts any key size per RFC 2104
+    #[allow(clippy::expect_used)]
     let mut mac = HmacSha3::new_from_slice(secret_key).expect("HMAC can take key of any size");
     mac.update(data);
     let result = mac.finalize();

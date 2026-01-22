@@ -6,6 +6,7 @@
 /// Usage: cargo run --bin reset_2FA
 ///
 /// The tool will prompt for the username and confirm before disabling MFA.
+use anyhow::{anyhow, Context, Result};
 use diesel::prelude::*;
 use diesel::pg::PgConnection;
 use secrecy::ExposeSecret;
@@ -29,25 +30,24 @@ mod schema {
 
 use schema::users;
 
-fn main() {
+fn main() -> Result<()> {
     println!("🔐 VAUBAN 2FA Reset Utility");
     println!("===========================\n");
     println!("⚠️  WARNING: This tool will disable two-factor authentication for a user.");
     println!("⚠️  The user will need to set up MFA again on their next login.\n");
 
     // Load configuration from TOML files
-    let config = Config::load().expect("Failed to load configuration from config/*.toml");
+    let config = Config::load().context("Failed to load configuration from config/*.toml")?;
 
     let mut conn = PgConnection::establish(config.database.url.expose_secret())
-        .expect("Failed to connect to database");
+        .context("Failed to connect to database")?;
 
     // Prompt for username
-    let username_input = prompt("Enter username: ").expect("Failed to read username");
+    let username_input = prompt("Enter username: ").context("Failed to read username")?;
     let username_input = username_input.trim();
 
     if username_input.is_empty() {
-        eprintln!("❌ Username cannot be empty");
-        std::process::exit(1);
+        return Err(anyhow!("Username cannot be empty"));
     }
 
     // Check if user exists and get MFA status
@@ -60,29 +60,27 @@ fn main() {
     let (user_id, mfa_enabled) = match user_result {
         Ok(data) => data,
         Err(diesel::result::Error::NotFound) => {
-            eprintln!("❌ User '{}' not found", username_input);
-            std::process::exit(1);
+            return Err(anyhow!("User '{}' not found", username_input));
         }
         Err(e) => {
-            eprintln!("❌ Database error: {}", e);
-            std::process::exit(1);
+            return Err(anyhow!("Database error: {}", e));
         }
     };
 
     if !mfa_enabled {
         println!("ℹ️  User '{}' does not have MFA enabled.", username_input);
         println!("   No action needed.");
-        std::process::exit(0);
+        return Ok(());
     }
 
     // Confirm action
     println!("\n⚠️  User '{}' has MFA enabled.", username_input);
     let confirm = prompt("Are you sure you want to disable MFA? (yes/no): ")
-        .expect("Failed to read confirmation");
+        .context("Failed to read confirmation")?;
 
     if confirm.trim().to_lowercase() != "yes" {
         println!("❌ Operation cancelled.");
-        std::process::exit(0);
+        return Ok(());
     }
 
     // Disable MFA using Diesel DSL
@@ -93,7 +91,7 @@ fn main() {
             users::updated_at.eq(chrono::Utc::now()),
         ))
         .execute(&mut conn)
-        .expect("Failed to update user");
+        .context("Failed to update user")?;
 
     if rows_affected > 0 {
         println!(
@@ -102,9 +100,10 @@ fn main() {
         );
         println!("   The user will need to set up MFA again on their next login.");
     } else {
-        eprintln!("\n❌ Failed to disable MFA");
-        std::process::exit(1);
+        return Err(anyhow!("Failed to disable MFA"));
     }
+
+    Ok(())
 }
 
 /// Prompt user for input (visible).

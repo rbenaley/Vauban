@@ -221,12 +221,12 @@ pub async fn update_asset(
     if is_htmx {
         // Return empty body with HX-Redirect header for HTMX
         let mut response_headers = HeaderMap::new();
-        response_headers.insert(
-            "HX-Redirect",
-            format!("/assets/{}", asset_uuid)
-                .parse()
-                .expect("Valid header value"),
-        );
+        // SAFETY: asset_uuid is a valid UUID which produces valid ASCII when formatted
+        #[allow(clippy::expect_used)]
+        let redirect_value = format!("/assets/{}", asset_uuid)
+            .parse()
+            .expect("UUID format produces valid header value");
+        response_headers.insert("HX-Redirect", redirect_value);
         (response_headers, Json(asset)).into_response()
     } else {
         // Regular API response

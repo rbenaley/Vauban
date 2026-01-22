@@ -7,7 +7,7 @@
 /// - /accounts/apikeys - User's API keys
 /// - /accounts/apikeys/create - Create a new API key
 /// - /accounts/apikeys/{uuid}/revoke - Revoke an API key
-use crate::common::TestApp;
+use crate::common::{TestApp, unwrap_ok, unwrap_some};
 use crate::fixtures::{
     create_expired_api_key, create_simple_user, create_test_api_key, create_test_auth_session,
     unique_name,
@@ -19,11 +19,10 @@ use uuid::Uuid;
 /// Helper to get user UUID from user_id.
 fn get_user_uuid(conn: &mut diesel::PgConnection, user_id: i32) -> Uuid {
     use vauban_web::schema::users;
-    users::table
+    unwrap_ok!(users::table
         .filter(users::id.eq(user_id))
         .select(users::uuid)
-        .first(conn)
-        .expect("User should exist")
+        .first(conn))
 }
 
 // =============================================================================
@@ -102,12 +101,11 @@ async fn test_profile_page_displays_user_info() {
 
     // Create user with first/last name
     let user_uuid = Uuid::new_v4();
-    let password_hash = app
+    let password_hash = unwrap_ok!(app
         .auth_service
-        .hash_password("test_password_123!")
-        .expect("Password hashing should succeed");
+        .hash_password("test_password_123!"));
 
-    diesel::insert_into(users::table)
+    unwrap_ok!(diesel::insert_into(users::table)
         .values((
             users::uuid.eq(user_uuid),
             users::username.eq(&username),
@@ -121,8 +119,7 @@ async fn test_profile_page_displays_user_info() {
             users::auth_source.eq("local"),
             users::preferences.eq(serde_json::json!({})),
         ))
-        .execute(&mut conn)
-        .expect("User creation should succeed");
+        .execute(&mut conn));
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
 

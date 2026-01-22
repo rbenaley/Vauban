@@ -7,7 +7,7 @@
 use axum::http::header::{AUTHORIZATION, COOKIE};
 use serial_test::serial;
 
-use crate::common::{TestApp, assertions::assert_status};
+use crate::common::{TestApp, assertions::assert_status, unwrap_ok};
 use crate::fixtures::{create_simple_user, create_test_user, unique_name};
 
 // =============================================================================
@@ -40,11 +40,10 @@ async fn test_auth_middleware_extracts_user_from_bearer_token() {
     let user_uuid: uuid::Uuid = {
         use diesel::prelude::*;
         use vauban_web::schema::users;
-        users::table
+        unwrap_ok!(users::table
             .filter(users::id.eq(user_id))
             .select(users::uuid)
-            .first(&mut conn)
-            .expect("User should exist")
+            .first(&mut conn))
     };
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
@@ -72,11 +71,10 @@ async fn test_auth_middleware_extracts_user_from_cookie() {
     let user_uuid: uuid::Uuid = {
         use diesel::prelude::*;
         use vauban_web::schema::users;
-        users::table
+        unwrap_ok!(users::table
             .filter(users::id.eq(user_id))
             .select(users::uuid)
-            .first(&mut conn)
-            .expect("User should exist")
+            .first(&mut conn))
     };
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
@@ -126,11 +124,10 @@ async fn test_auth_middleware_rejects_expired_token() {
     let user_uuid: uuid::Uuid = {
         use diesel::prelude::*;
         use vauban_web::schema::users;
-        users::table
+        unwrap_ok!(users::table
             .filter(users::id.eq(user_id))
             .select(users::uuid)
-            .first(&mut conn)
-            .expect("User should exist")
+            .first(&mut conn))
     };
 
     // Generate token but then expire all sessions
@@ -142,10 +139,9 @@ async fn test_auth_middleware_rejects_expired_token() {
         use diesel::prelude::*;
         use vauban_web::schema::auth_sessions;
 
-        diesel::update(auth_sessions::table.filter(auth_sessions::user_id.eq(user_id)))
+        unwrap_ok!(diesel::update(auth_sessions::table.filter(auth_sessions::user_id.eq(user_id)))
             .set(auth_sessions::expires_at.eq(Utc::now() - Duration::hours(1)))
-            .execute(&mut conn)
-            .expect("Should expire sessions");
+            .execute(&mut conn));
     }
 
     // Request with expired session
@@ -177,11 +173,10 @@ async fn test_auth_middleware_rejects_revoked_session() {
     let user_uuid: uuid::Uuid = {
         use diesel::prelude::*;
         use vauban_web::schema::users;
-        users::table
+        unwrap_ok!(users::table
             .filter(users::id.eq(user_id))
             .select(users::uuid)
-            .first(&mut conn)
-            .expect("User should exist")
+            .first(&mut conn))
     };
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
@@ -191,9 +186,8 @@ async fn test_auth_middleware_rejects_revoked_session() {
         use diesel::prelude::*;
         use vauban_web::schema::auth_sessions;
 
-        diesel::delete(auth_sessions::table.filter(auth_sessions::user_id.eq(user_id)))
-            .execute(&mut conn)
-            .expect("Should delete sessions");
+        unwrap_ok!(diesel::delete(auth_sessions::table.filter(auth_sessions::user_id.eq(user_id)))
+            .execute(&mut conn));
     }
 
     // Request with revoked session
@@ -232,21 +226,19 @@ async fn test_bearer_token_takes_priority_over_cookie() {
     let user1_uuid: uuid::Uuid = {
         use diesel::prelude::*;
         use vauban_web::schema::users;
-        users::table
+        unwrap_ok!(users::table
             .filter(users::id.eq(user1_id))
             .select(users::uuid)
-            .first(&mut conn)
-            .expect("User should exist")
+            .first(&mut conn))
     };
 
     let user2_uuid: uuid::Uuid = {
         use diesel::prelude::*;
         use vauban_web::schema::users;
-        users::table
+        unwrap_ok!(users::table
             .filter(users::id.eq(user2_id))
             .select(users::uuid)
-            .first(&mut conn)
-            .expect("User should exist")
+            .first(&mut conn))
     };
 
     let token1 = app.generate_test_token(&user1_uuid.to_string(), &user1_name, true, true);
@@ -340,11 +332,10 @@ async fn test_superuser_flag_extracted() {
     let user_uuid: uuid::Uuid = {
         use diesel::prelude::*;
         use vauban_web::schema::users;
-        users::table
+        unwrap_ok!(users::table
             .filter(users::id.eq(user_id))
             .select(users::uuid)
-            .first(&mut conn)
-            .expect("User should exist")
+            .first(&mut conn))
     };
 
     // Generate token with superuser=true

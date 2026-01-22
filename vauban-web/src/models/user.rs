@@ -16,9 +16,12 @@ use crate::schema::users;
 lazy_static::lazy_static! {
     /// Regex for valid usernames: alphanumeric, underscore, hyphen, dot.
     /// Must start with a letter or number.
-    pub static ref RE_USERNAME: regex::Regex = regex::Regex::new(
-        r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$"
-    ).expect("Invalid username regex");
+    // SAFETY: Regex pattern is a compile-time constant, parsing cannot fail
+    pub static ref RE_USERNAME: regex::Regex = {
+        #[allow(clippy::expect_used)]
+        regex::Regex::new(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
+            .expect("Invalid username regex")
+    };
 }
 
 /// Validate password complexity.
@@ -268,6 +271,7 @@ pub struct UpdateUserRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::unwrap_ok;
     use chrono::Duration;
 
     /// Helper to create a test user
@@ -385,7 +389,7 @@ mod tests {
         let dto = user.to_dto();
 
         // DTO should not have password_hash or mfa_secret fields
-        let dto_json = serde_json::to_value(&dto).unwrap();
+        let dto_json = unwrap_ok!(serde_json::to_value(&dto));
         assert!(dto_json.get("password_hash").is_none());
         assert!(dto_json.get("mfa_secret").is_none());
     }
@@ -557,14 +561,14 @@ mod tests {
     #[test]
     fn test_auth_source_serialize() {
         let source = AuthSource::Saml;
-        let json = serde_json::to_string(&source).unwrap();
+        let json = unwrap_ok!(serde_json::to_string(&source));
         assert!(json.contains("Saml"));
     }
 
     #[test]
     fn test_auth_source_deserialize() {
         let json = r#""Local""#;
-        let source: AuthSource = serde_json::from_str(json).unwrap();
+        let source: AuthSource = unwrap_ok!(serde_json::from_str(json));
         assert_eq!(source, AuthSource::Local);
     }
 
@@ -589,7 +593,7 @@ mod tests {
     #[test]
     fn test_user_to_dto_with_last_login_ip() {
         let mut user = create_test_user();
-        user.last_login_ip = Some("192.168.1.100/32".parse().unwrap());
+        user.last_login_ip = Some(unwrap_ok!("192.168.1.100/32".parse()));
 
         let dto = user.to_dto();
         // IpNetwork::to_string includes the CIDR notation
@@ -611,7 +615,7 @@ mod tests {
     fn test_user_dto_serialize() {
         let user = create_test_user();
         let dto = user.to_dto();
-        let json = serde_json::to_string(&dto).unwrap();
+        let json = unwrap_ok!(serde_json::to_string(&dto));
 
         assert!(json.contains("testuser"));
         assert!(json.contains("test@example.com"));
