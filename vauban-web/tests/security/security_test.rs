@@ -930,3 +930,235 @@ async fn test_mfa_enforcement() {
 
     test_db::cleanup(&mut conn);
 }
+
+// =============================================================================
+// CSRF Token Consistency Tests
+// =============================================================================
+
+/// Test that the CSRF token in the login form matches the cookie.
+///
+/// This test prevents a bug where the middleware and handler generate
+/// different CSRF tokens, causing the form token to not match the cookie.
+#[tokio::test]
+#[serial]
+async fn test_csrf_token_form_matches_cookie() {
+    let app = TestApp::spawn().await;
+
+    // Load the login page
+    let response = app.server.get("/login").await;
+
+    assert_status(&response, 200);
+
+    // Extract CSRF cookie from response
+    let csrf_cookie = response
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .find_map(|v| {
+            let s = v.to_str().ok()?;
+            if s.starts_with("__vauban_csrf=") {
+                // Extract token value from "name=value; ..."
+                let token = s
+                    .split(';')
+                    .next()?
+                    .strip_prefix("__vauban_csrf=")?;
+                Some(token.to_string())
+            } else {
+                None
+            }
+        });
+
+    let cookie_token = csrf_cookie.expect("CSRF cookie should be set in response");
+
+    // Extract CSRF token from HTML form
+    let body = response.text();
+    let form_token = extract_csrf_token_from_html(&body)
+        .expect("CSRF token should be present in login form HTML");
+
+    // The cookie and form token MUST match
+    assert_eq!(
+        cookie_token, form_token,
+        "CSRF token in form ({}) must match cookie ({}). \
+         This indicates the middleware and handler are generating different tokens.",
+        form_token, cookie_token
+    );
+}
+
+/// Test that only one CSRF cookie is set in the response.
+///
+/// This prevents a bug where both middleware and handler set different cookies.
+#[tokio::test]
+#[serial]
+async fn test_csrf_no_duplicate_cookies() {
+    let app = TestApp::spawn().await;
+
+    // Load the login page
+    let response = app.server.get("/login").await;
+
+    assert_status(&response, 200);
+
+    // Count CSRF cookies in response
+    let csrf_cookie_count = response
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter(|v| {
+            v.to_str()
+                .map(|s| s.starts_with("__vauban_csrf="))
+                .unwrap_or(false)
+        })
+        .count();
+
+    assert_eq!(
+        csrf_cookie_count, 1,
+        "Expected exactly 1 CSRF cookie, found {}. \
+         Multiple cookies indicate middleware/handler conflict.",
+        csrf_cookie_count
+    );
+}
+
+/// Test the complete login flow with CSRF token from page load.
+///
+/// This is an end-to-end test that:
+/// 1. Loads the login page
+/// 2. Extracts the CSRF token from the response
+/// 3. Submits the login form with that token
+/// 4. Verifies the CSRF validation passes (even if credentials are wrong)
+#[tokio::test]
+#[serial]
+async fn test_csrf_login_flow_end_to_end() {
+    let app = TestApp::spawn().await;
+
+    // Step 1: Load the login page to get CSRF token
+    let login_page = app.server.get("/login").await;
+    assert_status(&login_page, 200);
+
+    // Extract CSRF cookie
+    let csrf_cookie = login_page
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .find_map(|v| {
+            let s = v.to_str().ok()?;
+            if s.starts_with("__vauban_csrf=") {
+                Some(s.split(';').next()?.to_string())
+            } else {
+                None
+            }
+        })
+        .expect("CSRF cookie should be set");
+
+    // Extract token from HTML
+    let body = login_page.text();
+    let form_token = extract_csrf_token_from_html(&body)
+        .expect("CSRF token should be in form");
+
+    // Step 2: Submit login with the CSRF token
+    let response = app
+        .server
+        .post("/auth/login")
+        .add_header("Cookie", csrf_cookie)
+        .add_header("HX-Request", "true")
+        .json(&json!({
+            "username": "nonexistent_user",
+            "password": "wrongpassword1",
+            "csrf_token": form_token
+        }))
+        .await;
+
+    // The response should NOT be "Invalid CSRF token"
+    // It should be "Invalid credentials" or similar
+    let response_body = response.text();
+
+    assert!(
+        !response_body.contains("Invalid CSRF token"),
+        "CSRF validation failed! The token from the form did not match the cookie. \
+         Response: {}",
+        response_body
+    );
+
+    // Should get invalid credentials error (not CSRF error)
+    assert!(
+        response_body.contains("Invalid credentials") || response_body.contains("Validation error"),
+        "Expected 'Invalid credentials' or 'Validation error', got: {}",
+        response_body
+    );
+}
+
+/// Test that CSRF token works after cookie expiration simulation.
+///
+/// Simulates the scenario where a user's CSRF cookie has expired
+/// and they load the login page fresh.
+#[tokio::test]
+#[serial]
+async fn test_csrf_fresh_session_works() {
+    let app = TestApp::spawn().await;
+
+    // Load login page without any existing cookies (fresh session)
+    let response = app.server.get("/login").await;
+    assert_status(&response, 200);
+
+    // Verify we get a CSRF cookie
+    let has_csrf_cookie = response
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .any(|v| {
+            v.to_str()
+                .map(|s| s.starts_with("__vauban_csrf="))
+                .unwrap_or(false)
+        });
+
+    assert!(
+        has_csrf_cookie,
+        "Fresh login page should set a CSRF cookie"
+    );
+
+    // Verify the form has a matching token
+    let body = response.text();
+    assert!(
+        body.contains("name=\"csrf_token\"") && body.contains("value=\""),
+        "Login form should have a csrf_token input with a value"
+    );
+}
+
+/// Helper function to extract CSRF token from HTML.
+fn extract_csrf_token_from_html(html: &str) -> Option<String> {
+    // Look for: <input type="hidden" name="csrf_token" value="TOKEN" />
+    // or: <input name="csrf_token" ... value="TOKEN" ...>
+    let patterns = [
+        r#"name="csrf_token" value=""#,
+        r#"name="csrf_token"[^>]*value=""#,
+    ];
+
+    for pattern in patterns {
+        if let Some(start_idx) = html.find(pattern) {
+            let after_pattern = &html[start_idx..];
+            if let Some(value_start) = after_pattern.find("value=\"") {
+                let value_content = &after_pattern[value_start + 7..];
+                if let Some(value_end) = value_content.find('"') {
+                    let token = &value_content[..value_end];
+                    if !token.is_empty() {
+                        return Some(token.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback: simpler regex-like search
+    if let Some(idx) = html.find("csrf_token") {
+        let substring = &html[idx..];
+        if let Some(value_idx) = substring.find("value=\"") {
+            let value_start = &substring[value_idx + 7..];
+            if let Some(end_idx) = value_start.find('"') {
+                let token = &value_start[..end_idx];
+                if !token.is_empty() {
+                    return Some(token.to_string());
+                }
+            }
+        }
+    }
+
+    None
+}

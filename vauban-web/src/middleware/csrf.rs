@@ -59,6 +59,13 @@ pub fn validate_double_submit(
 }
 
 /// Middleware to ensure a CSRF cookie exists on responses.
+///
+/// Only adds a cookie if:
+/// 1. The incoming request doesn't have a valid CSRF cookie, AND
+/// 2. The handler hasn't already set a CSRF cookie in the response
+///
+/// This prevents conflicts where both middleware and handler generate
+/// different tokens, causing validation failures.
 pub async fn csrf_cookie_middleware(
     axum::extract::State(state): axum::extract::State<crate::AppState>,
     req: axum::http::Request<axum::body::Body>,
@@ -66,26 +73,43 @@ pub async fn csrf_cookie_middleware(
 ) -> axum::response::Response {
     let jar = axum_extra::extract::CookieJar::from_headers(req.headers());
     let secret = state.config.secret_key.expose_secret().as_bytes();
-    let mut set_cookie = None;
 
-    let _token = jar
+    // Check if request already has a valid CSRF cookie
+    let needs_cookie = jar
         .get(CSRF_COOKIE_NAME)
-        .map(|c| c.value().to_string())
+        .map(|c| c.value())
         .filter(|val| verify_csrf_token(secret, val))
-        .unwrap_or_else(|| {
-            let token = generate_csrf_token(secret);
-            set_cookie = Some(build_csrf_cookie(&token));
-            token
-        });
+        .is_none();
 
-    let mut response = next.run(req).await;
-    if let Some(cookie) = set_cookie {
-        if let Ok(value) = cookie.to_string().parse() {
-            response
-                .headers_mut()
-                .append(axum::http::header::SET_COOKIE, value);
+    let response = next.run(req).await;
+
+    // Only add cookie if request didn't have one AND response doesn't already set one
+    if needs_cookie {
+        // Check if the handler already set a CSRF cookie in the response
+        let handler_set_cookie = response
+            .headers()
+            .get_all(axum::http::header::SET_COOKIE)
+            .iter()
+            .any(|v| {
+                v.to_str()
+                    .map(|s| s.starts_with(CSRF_COOKIE_NAME))
+                    .unwrap_or(false)
+            });
+
+        if !handler_set_cookie {
+            // Handler didn't set a CSRF cookie, so we add one
+            let token = generate_csrf_token(secret);
+            let cookie = build_csrf_cookie(&token);
+            let mut response = response;
+            if let Ok(value) = cookie.to_string().parse() {
+                response
+                    .headers_mut()
+                    .append(axum::http::header::SET_COOKIE, value);
+            }
+            return response;
         }
     }
+
     response
 }
 
