@@ -111,7 +111,7 @@ async fn test_auth_middleware_ignores_invalid_token() {
     );
 }
 
-/// Test that auth_middleware rejects expired tokens.
+/// Test that auth_middleware rejects sessions that have been idle too long.
 #[tokio::test]
 #[serial]
 async fn test_auth_middleware_rejects_expired_token() {
@@ -130,21 +130,21 @@ async fn test_auth_middleware_rejects_expired_token() {
             .first(&mut conn))
     };
 
-    // Generate token but then expire all sessions
+    // Generate token but then make the session idle for too long
     let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
 
-    // Expire all sessions for this user
+    // Set last_activity to 2 hours ago (exceeds session_idle_timeout_secs)
     {
         use chrono::{Duration, Utc};
         use diesel::prelude::*;
         use vauban_web::schema::auth_sessions;
 
         unwrap_ok!(diesel::update(auth_sessions::table.filter(auth_sessions::user_id.eq(user_id)))
-            .set(auth_sessions::expires_at.eq(Utc::now() - Duration::hours(1)))
+            .set(auth_sessions::last_activity.eq(Utc::now() - Duration::hours(2)))
             .execute(&mut conn));
     }
 
-    // Request with expired session
+    // Request with idle-expired session
     let response = app
         .server
         .get("/accounts/sessions")
@@ -155,7 +155,7 @@ async fn test_auth_middleware_rejects_expired_token() {
     let status = response.status_code().as_u16();
     assert!(
         status == 303 || status == 401,
-        "Expected redirect or unauthorized for expired token, got {}",
+        "Expected redirect or unauthorized for idle-expired session, got {}",
         status
     );
 }
@@ -372,5 +372,196 @@ async fn test_regular_user_access() {
         .await;
 
     // Regular users should still be able to access their own sessions
+    assert_status(&response, 200);
+}
+
+// =============================================================================
+// Session Timeout Tests
+// =============================================================================
+
+/// Test that session is rejected when max duration is exceeded.
+#[tokio::test]
+#[serial]
+async fn test_session_rejected_when_max_duration_exceeded() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let username = unique_name("max_duration_user");
+    let user_id = create_simple_user(&mut conn, &username);
+
+    let user_uuid: uuid::Uuid = {
+        use diesel::prelude::*;
+        use vauban_web::schema::users;
+        unwrap_ok!(users::table
+            .filter(users::id.eq(user_id))
+            .select(users::uuid)
+            .first(&mut conn))
+    };
+
+    // Generate token
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+
+    // Set created_at to 10 hours ago (exceeds session_max_duration_secs which is 8h by default)
+    {
+        use chrono::{Duration, Utc};
+        use diesel::prelude::*;
+        use vauban_web::schema::auth_sessions;
+
+        unwrap_ok!(diesel::update(auth_sessions::table.filter(auth_sessions::user_id.eq(user_id)))
+            .set(auth_sessions::created_at.eq(Utc::now() - Duration::hours(10)))
+            .execute(&mut conn));
+    }
+
+    // Request should fail - session max duration exceeded
+    let response = app
+        .server
+        .get("/accounts/sessions")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 303 || status == 401,
+        "Expected redirect or unauthorized for max-duration-exceeded session, got {}",
+        status
+    );
+}
+
+/// Test that session is valid when within both timeout limits.
+#[tokio::test]
+#[serial]
+async fn test_session_valid_within_timeout_limits() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let username = unique_name("valid_timeout_user");
+    let user_id = create_simple_user(&mut conn, &username);
+
+    let user_uuid: uuid::Uuid = {
+        use diesel::prelude::*;
+        use vauban_web::schema::users;
+        unwrap_ok!(users::table
+            .filter(users::id.eq(user_id))
+            .select(users::uuid)
+            .first(&mut conn))
+    };
+
+    // Generate token - session is created with current timestamps
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+
+    // Request should succeed - session is fresh
+    let response = app
+        .server
+        .get("/accounts/sessions")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+}
+
+/// Test that last_activity is updated on each authenticated request.
+#[tokio::test]
+#[serial]
+async fn test_last_activity_updated_on_request() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let username = unique_name("last_activity_user");
+    let user_id = create_simple_user(&mut conn, &username);
+
+    let user_uuid: uuid::Uuid = {
+        use diesel::prelude::*;
+        use vauban_web::schema::users;
+        unwrap_ok!(users::table
+            .filter(users::id.eq(user_id))
+            .select(users::uuid)
+            .first(&mut conn))
+    };
+
+    // Generate token
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+
+    // Get initial last_activity
+    let initial_last_activity: chrono::DateTime<chrono::Utc> = {
+        use diesel::prelude::*;
+        use vauban_web::schema::auth_sessions;
+        unwrap_ok!(auth_sessions::table
+            .filter(auth_sessions::user_id.eq(user_id))
+            .select(auth_sessions::last_activity)
+            .first(&mut conn))
+    };
+
+    // Wait a bit and make a request
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    let response = app
+        .server
+        .get("/accounts/sessions")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+
+    // Check that last_activity was updated
+    let updated_last_activity: chrono::DateTime<chrono::Utc> = {
+        use diesel::prelude::*;
+        use vauban_web::schema::auth_sessions;
+        unwrap_ok!(auth_sessions::table
+            .filter(auth_sessions::user_id.eq(user_id))
+            .select(auth_sessions::last_activity)
+            .first(&mut conn))
+    };
+
+    assert!(
+        updated_last_activity > initial_last_activity,
+        "last_activity should be updated after authenticated request"
+    );
+}
+
+/// Test that session with recent activity but old creation is still valid
+/// if within max_duration (8 hours by default).
+#[tokio::test]
+#[serial]
+async fn test_session_valid_with_old_but_active_session() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let username = unique_name("old_active_user");
+    let user_id = create_simple_user(&mut conn, &username);
+
+    let user_uuid: uuid::Uuid = {
+        use diesel::prelude::*;
+        use vauban_web::schema::users;
+        unwrap_ok!(users::table
+            .filter(users::id.eq(user_id))
+            .select(users::uuid)
+            .first(&mut conn))
+    };
+
+    // Generate token
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+
+    // Set created_at to 4 hours ago (within max_duration of 8h from default.toml)
+    // but keep last_activity recent
+    {
+        use chrono::{Duration, Utc};
+        use diesel::prelude::*;
+        use vauban_web::schema::auth_sessions;
+
+        unwrap_ok!(diesel::update(auth_sessions::table.filter(auth_sessions::user_id.eq(user_id)))
+            .set((
+                auth_sessions::created_at.eq(Utc::now() - Duration::hours(4)),
+                auth_sessions::last_activity.eq(Utc::now()),
+            ))
+            .execute(&mut conn));
+    }
+
+    // Request should succeed - session is old but active and within max_duration
+    let response = app
+        .server
+        .get("/accounts/sessions")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
     assert_status(&response, 200);
 }

@@ -72,7 +72,10 @@ async fn test_session_detail_not_found() {
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
-    assert_status(&response, 404);
+    // Not found redirects to list page with flash message
+    assert_status(&response, 303);
+    let location = response.headers().get("location").and_then(|v| v.to_str().ok());
+    assert_eq!(location, Some("/sessions"));
 }
 
 // =============================================================================
@@ -118,7 +121,10 @@ async fn test_recording_play_not_found() {
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
-    assert_status(&response, 404);
+    // Not found redirects to list page with flash message
+    assert_status(&response, 303);
+    let location = response.headers().get("location").and_then(|v| v.to_str().ok());
+    assert_eq!(location, Some("/sessions/recordings"));
 }
 
 // =============================================================================
@@ -551,10 +557,204 @@ async fn test_session_detail_other_session_forbidden() {
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
+    // User trying to view another's session is redirected with flash message
     let status = response.status_code().as_u16();
     assert!(
-        status == 401 || status == 403,
-        "User should not access other's session, got {}. Session ID: {}",
+        status == 303,
+        "User should be redirected from other's session, got {}. Session ID: {}",
         status, session_id
     );
+    let location = response.headers().get("location").and_then(|v| v.to_str().ok());
+    assert_eq!(location, Some("/sessions"));
+}
+
+// =============================================================================
+// Session Error Handling Tests
+// =============================================================================
+
+#[tokio::test]
+async fn test_session_detail_invalid_id_format() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let admin_name = unique_name("invalid_id_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_uuid = get_user_uuid(&mut conn, admin_id);
+
+    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
+
+    // Session ID should be an integer, try with invalid formats
+    // All should redirect gracefully to /sessions instead of showing error page
+    let invalid_ids = ["abc", "not-a-number", "12.34", "{wqeqwE}", "invalid"];
+
+    for invalid_id in invalid_ids {
+        let response = app
+            .server
+            .get(&format!("/sessions/{}", invalid_id))
+            .add_header(COOKIE, format!("access_token={}", token))
+            .await;
+
+        let status = response.status_code().as_u16();
+        let location = response.headers().get("location").and_then(|v| v.to_str().ok());
+        
+        assert!(
+            status == 303 && location == Some("/sessions"),
+            "Invalid session ID '{}' should redirect to /sessions with 303, got status {} location {:?}",
+            invalid_id,
+            status,
+            location
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_recording_play_invalid_id() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let admin_name = unique_name("rec_invalid_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_uuid = get_user_uuid(&mut conn, admin_id);
+
+    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
+
+    // Test various invalid recording IDs - all should redirect gracefully
+    let invalid_ids = ["abc", "{wqeqwE}", "not-a-number", "12.34"];
+
+    for invalid_id in invalid_ids {
+        let response = app
+            .server
+            .get(&format!("/sessions/recordings/{}/play", invalid_id))
+            .add_header(COOKIE, format!("access_token={}", token))
+            .await;
+
+        let status = response.status_code().as_u16();
+        let location = response.headers().get("location").and_then(|v| v.to_str().ok());
+
+        assert!(
+            status == 303 && location == Some("/sessions/recordings"),
+            "Invalid recording ID '{}' should redirect to /sessions/recordings with 303, got status {} location {:?}",
+            invalid_id,
+            status,
+            location
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_session_detail_negative_id() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let admin_name = unique_name("neg_id_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_uuid = get_user_uuid(&mut conn, admin_id);
+
+    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
+
+    // Negative IDs are valid integers but don't exist - should redirect
+    let response = app
+        .server
+        .get("/sessions/-999")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    // Should redirect gracefully since -999 doesn't exist
+    assert!(
+        status == 303,
+        "Non-existent session ID should redirect, got {}",
+        status
+    );
+    let location = response.headers().get("location").and_then(|v| v.to_str().ok());
+    assert_eq!(location, Some("/sessions"));
+}
+
+#[tokio::test]
+async fn test_session_detail_very_large_id() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let admin_name = unique_name("large_id_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_uuid = get_user_uuid(&mut conn, admin_id);
+
+    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
+
+    // Very large ID that doesn't exist
+    let response = app
+        .server
+        .get("/sessions/2147483647")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    // Should redirect to sessions list
+    assert_status(&response, 303);
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok());
+    assert_eq!(location, Some("/sessions"));
+}
+
+#[tokio::test]
+async fn test_recording_play_non_recorded_session() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let admin_name = unique_name("rec_non_recorded");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_uuid = get_user_uuid(&mut conn, admin_id);
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("non-rec-asset"), admin_id);
+    
+    // Create a non-recorded session
+    let session_id = create_test_session(&mut conn, admin_id, asset_id, "ssh", "completed");
+
+    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
+
+    // Try to play a non-recorded session
+    let response = app
+        .server
+        .get(&format!("/sessions/recordings/{}/play", session_id))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    // Should redirect since there's no recording
+    assert_status(&response, 303);
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok());
+    assert_eq!(location, Some("/sessions/recordings"));
+}
+
+#[tokio::test]
+async fn test_admin_can_view_any_session() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let test_id = Uuid::new_v4().to_string()[..8].to_string();
+
+    // Create a user and their session
+    let owner_name = format!("sess_owner2_{}", test_id);
+    let owner_id = create_simple_user(&mut conn, &owner_name);
+    let asset_name = format!("admin-view-asset-{}", test_id);
+    let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, owner_id);
+    let session_id = create_test_session(&mut conn, owner_id, asset_id, "ssh", "completed");
+
+    // Create admin user
+    let admin_name = format!("admin_viewer_{}", test_id);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_uuid = get_user_uuid(&mut conn, admin_id);
+
+    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
+
+    // Admin should be able to view any session
+    let response = app
+        .server
+        .get(&format!("/sessions/{}", session_id))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
 }

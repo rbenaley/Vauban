@@ -93,6 +93,7 @@ where
 
 /// Extract authenticated user from request.
 /// Validates JWT token and verifies session exists in database (for revocation support).
+/// Also updates last_activity on each authenticated request.
 pub async fn auth_middleware(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -105,8 +106,8 @@ pub async fn auth_middleware(
     if let Some(token) = token {
         match state.auth_service.verify_token(&token) {
             Ok(claims) => {
-                // Verify session exists in database (supports revocation)
-                if verify_session_exists(&state, &token) {
+                // Verify session exists in database and check timeouts
+                if let Some(token_hash) = verify_session_with_timeouts(&state, &token) {
                     let user = AuthUser {
                         uuid: claims.sub,
                         username: claims.username,
@@ -115,6 +116,9 @@ pub async fn auth_middleware(
                         is_staff: claims.is_staff,
                     };
                     request.extensions_mut().insert(user);
+
+                    // Update last_activity in the background
+                    update_last_activity(&state, &token_hash);
                 } else {
                     tracing::debug!("Session not found in database (revoked or expired)");
                 }
@@ -130,9 +134,14 @@ pub async fn auth_middleware(
     Ok(next.run(request).await)
 }
 
-/// Verify that the session exists in the database.
-/// Returns false if the session has been revoked or doesn't exist.
-fn verify_session_exists(state: &AppState, token: &str) -> bool {
+/// Verify that the session exists in the database and check timeout constraints.
+/// Returns the token_hash if valid, None if session is invalid or expired.
+///
+/// Checks:
+/// 1. Session exists and has not been revoked
+/// 2. Session has not exceeded max_duration (created_at + session_max_duration_secs)
+/// 3. Session has not exceeded idle timeout (last_activity + session_idle_timeout_secs)
+fn verify_session_with_timeouts(state: &AppState, token: &str) -> Option<String> {
     // Hash the token
     let mut hasher = Sha3_256::new();
     hasher.update(token.as_bytes());
@@ -140,17 +149,45 @@ fn verify_session_exists(state: &AppState, token: &str) -> bool {
 
     // Check database
     if let Ok(mut conn) = get_connection(&state.db_pool) {
+        let now = chrono::Utc::now();
+        let idle_timeout_secs = state.config.security.session_idle_timeout_secs as i64;
+        let max_duration_secs = state.config.security.session_max_duration_secs as i64;
+
+        // Calculate the cutoff times
+        let idle_cutoff = now - chrono::Duration::seconds(idle_timeout_secs);
+        let max_duration_cutoff = now - chrono::Duration::seconds(max_duration_secs);
+
+        // Check if session exists and is within both timeout constraints
         let exists: Result<i64, _> = auth_sessions::table
             .filter(auth_sessions::token_hash.eq(&token_hash))
-            .filter(auth_sessions::expires_at.gt(chrono::Utc::now()))
+            // Session must not be past its max lifetime
+            .filter(auth_sessions::created_at.gt(max_duration_cutoff))
+            // Session must have been active recently
+            .filter(auth_sessions::last_activity.gt(idle_cutoff))
             .count()
             .get_result(&mut conn);
 
-        matches!(exists, Ok(count) if count > 0)
+        if matches!(exists, Ok(count) if count > 0) {
+            Some(token_hash)
+        } else {
+            None
+        }
     } else {
         // Fail closed: if session verification cannot be performed, deny auth.
         tracing::warn!("Database unavailable for session verification; denying token");
-        false
+        None
+    }
+}
+
+/// Update the last_activity timestamp for the session.
+/// This is called on each authenticated request to track user activity.
+fn update_last_activity(state: &AppState, token_hash: &str) {
+    if let Ok(mut conn) = get_connection(&state.db_pool) {
+        let _ = diesel::update(
+            auth_sessions::table.filter(auth_sessions::token_hash.eq(token_hash)),
+        )
+        .set(auth_sessions::last_activity.eq(chrono::Utc::now()))
+        .execute(&mut conn);
     }
 }
 

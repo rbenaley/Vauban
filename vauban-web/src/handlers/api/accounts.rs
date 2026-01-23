@@ -53,8 +53,12 @@ pub async fn list_users(
 pub async fn get_user(
     State(state): State<AppState>,
     _user: AuthUser,
-    Path(user_uuid): Path<Uuid>,
+    Path(user_uuid_str): Path<String>,
 ) -> AppResult<Json<UserDto>> {
+    // Parse UUID manually for better error messages
+    let user_uuid = Uuid::parse_str(&user_uuid_str)
+        .map_err(|_| AppError::Validation("Invalid UUID format".to_string()))?;
+
     let mut conn = get_connection(&state.db_pool)?;
     let user = users
         .filter(uuid.eq(user_uuid))
@@ -124,9 +128,13 @@ pub async fn create_user(
 pub async fn update_user(
     State(state): State<AppState>,
     _user: AuthUser,
-    Path(user_uuid): Path<Uuid>,
+    Path(user_uuid_str): Path<String>,
     Json(request): Json<UpdateUserRequest>,
 ) -> AppResult<Json<UserDto>> {
+    // Parse UUID manually for better error messages
+    let user_uuid = Uuid::parse_str(&user_uuid_str)
+        .map_err(|_| AppError::Validation("Invalid UUID format".to_string()))?;
+
     validator::Validate::validate(&request)
         .map_err(|e| AppError::Validation(format!("Validation failed: {:?}", e)))?;
 

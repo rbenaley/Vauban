@@ -404,6 +404,8 @@ fn build_test_router(state: AppState) -> Router {
         .route("/health", get(|| async { "OK" }))
         // Dashboard home
         .route("/", get(handlers::web::dashboard_home))
+        // Fallback handler for unmatched routes
+        .fallback(handlers::web::fallback_handler)
         // Security headers middleware
         .layer(axum::middleware::from_fn(
             middleware::security::security_headers_middleware,

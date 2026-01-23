@@ -1110,13 +1110,14 @@ async fn test_expired_session_is_rejected() {
     // Generate a token for this user (this creates a valid session)
     let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
 
-    // Expire ALL sessions for this user by setting expires_at to past
+    // Make the session idle for too long by setting last_activity to 2 hours ago
+    // (exceeds session_idle_timeout_secs which is typically 30 min / 1800 secs)
     diesel::update(auth_sessions::table.filter(auth_sessions::user_id.eq(user_id)))
-        .set(auth_sessions::expires_at.eq(Utc::now() - Duration::hours(1)))
+        .set(auth_sessions::last_activity.eq(Utc::now() - Duration::hours(2)))
         .execute(&mut conn)
-        .expect("Should update sessions to expired");
+        .expect("Should update sessions to idle-expired");
 
-    // Try to use the token - should be rejected (session expired)
+    // Try to use the token - should be rejected (session idle-expired)
     let response = app
         .server
         .get("/accounts/sessions")
@@ -1127,7 +1128,7 @@ async fn test_expired_session_is_rejected() {
     let status = response.status_code().as_u16();
     assert!(
         status == 303 || status == 401,
-        "Expected redirect (303) or unauthorized (401) for expired session, got {}",
+        "Expected redirect (303) or unauthorized (401) for idle-expired session, got {}",
         status
     );
 }

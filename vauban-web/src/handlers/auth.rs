@@ -205,6 +205,7 @@ pub async fn login(
         .ok();
 
         // Insert new session
+        // expires_at is set to session_max_duration_secs from config (absolute max lifetime)
         let new_session = NewAuthSession {
             uuid: ::uuid::Uuid::new_v4(),
             user_id: user.id,
@@ -213,7 +214,7 @@ pub async fn login(
             user_agent: user_agent_str,
             device_info,
             expires_at: Utc::now()
-                + Duration::minutes(state.auth_service.access_token_lifetime_minutes() as i64),
+                + Duration::seconds(state.config.security.session_max_duration_secs as i64),
             is_current: true,
         };
 
@@ -318,6 +319,7 @@ pub async fn login(
     .ok(); // Ignore errors - not critical
 
     // Insert new session
+    // expires_at is set to session_max_duration_secs from config (absolute max lifetime)
     let new_session = NewAuthSession {
         uuid: ::uuid::Uuid::new_v4(),
         user_id: user.id,
@@ -326,7 +328,7 @@ pub async fn login(
         user_agent: user_agent_str,
         device_info,
         expires_at: Utc::now()
-            + Duration::minutes(state.auth_service.access_token_lifetime_minutes() as i64),
+            + Duration::seconds(state.config.security.session_max_duration_secs as i64),
         is_current: true,
     };
 

@@ -64,8 +64,12 @@ pub async fn list_sessions(
 pub async fn get_session(
     State(state): State<AppState>,
     _user: AuthUser,
-    Path(session_uuid): Path<Uuid>,
+    Path(session_uuid_str): Path<String>,
 ) -> AppResult<Json<ProxySession>> {
+    // Parse UUID manually for better error messages
+    let session_uuid = Uuid::parse_str(&session_uuid_str)
+        .map_err(|_| AppError::Validation("Invalid UUID format".to_string()))?;
+
     let mut conn = get_connection(&state.db_pool)?;
     let session = proxy_sessions
         .filter(uuid.eq(session_uuid))
@@ -131,8 +135,13 @@ pub async fn terminate_session(
     State(state): State<AppState>,
     headers: HeaderMap,
     _user: AuthUser,
-    Path(session_id): Path<i32>,
+    Path(session_id_str): Path<String>,
 ) -> AppResult<Response> {
+    // Parse session ID manually for better error messages
+    let session_id: i32 = session_id_str
+        .parse()
+        .map_err(|_| AppError::Validation("Invalid session ID format".to_string()))?;
+
     let htmx = is_htmx_request(&headers);
     let mut conn = get_connection(&state.db_pool)?;
 

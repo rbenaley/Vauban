@@ -25,6 +25,317 @@ fn get_user_uuid(conn: &mut diesel::PgConnection, user_id: i32) -> Uuid {
 }
 
 // =============================================================================
+// Fallback Route Tests
+// =============================================================================
+
+#[tokio::test]
+async fn test_fallback_route_redirects_to_home() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let admin_name = unique_name("fallback_test_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_uuid = get_user_uuid(&mut conn, admin_id);
+
+    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
+
+    // Try to access a non-existent route
+    let response = app
+        .server
+        .get("/this-route-does-not-exist-xyz123")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    // Should redirect to home page
+    assert_status(&response, 303);
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok());
+    assert_eq!(location, Some("/"));
+}
+
+#[tokio::test]
+async fn test_fallback_route_with_random_path() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let admin_name = unique_name("fallback_rand_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_uuid = get_user_uuid(&mut conn, admin_id);
+
+    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
+
+    // Try various non-existent paths
+    let paths = [
+        "/sdlakd324324",
+        "/random/nested/path",
+        "/foo/bar/baz",
+        "/not-a-real-endpoint",
+    ];
+
+    for path in paths {
+        let response = app
+            .server
+            .get(path)
+            .add_header(COOKIE, format!("access_token={}", token))
+            .await;
+
+        let status = response.status_code().as_u16();
+        let location = response
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok());
+
+        assert!(
+            status == 303 && location == Some("/"),
+            "Path {} should redirect to /, got status {} location {:?}",
+            path,
+            status,
+            location
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_fallback_route_unauthenticated() {
+    let app = TestApp::spawn().await;
+
+    // Even without auth, random paths should redirect to /
+    let response = app.server.get("/random-path-no-auth").await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 303,
+        "Unauthenticated access to unknown path should redirect, got {}",
+        status
+    );
+}
+
+// =============================================================================
+// Malformed UUID Tests
+// =============================================================================
+
+#[tokio::test]
+async fn test_asset_detail_with_malformed_uuid() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let admin_name = unique_name("malformed_uuid_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_uuid = get_user_uuid(&mut conn, admin_id);
+
+    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
+
+    // Try various malformed UUIDs - all should redirect gracefully to /assets
+    let malformed_uuids = [
+        "not-a-uuid",
+        "12345",
+        "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+        "123e4567-e89b-12d3-a456",  // Too short
+        "123e4567-e89b-12d3-a456-4266141740001234",  // Too long
+        "24d3cc30-d6c0-ooo7-be9a-978dd250ae3e",  // Invalid character 'o' in hex
+    ];
+
+    for bad_uuid in malformed_uuids {
+        let response = app
+            .server
+            .get(&format!("/assets/{}", bad_uuid))
+            .add_header(COOKIE, format!("access_token={}", token))
+            .await;
+
+        let status = response.status_code().as_u16();
+        let location = response.headers().get("location").and_then(|v| v.to_str().ok());
+
+        assert!(
+            status == 303 && location == Some("/assets"),
+            "Malformed UUID '{}' should redirect to /assets with 303, got status {} location {:?}",
+            bad_uuid,
+            status,
+            location
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_user_detail_with_malformed_uuid() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let admin_name = unique_name("user_malformed_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_uuid = get_user_uuid(&mut conn, admin_id);
+
+    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
+
+    let response = app
+        .server
+        .get("/accounts/users/not-a-valid-uuid")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 303);
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok());
+    assert_eq!(location, Some("/accounts/users"));
+}
+
+#[tokio::test]
+async fn test_group_detail_with_malformed_uuid() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let admin_name = unique_name("grp_malformed_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_uuid = get_user_uuid(&mut conn, admin_id);
+
+    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
+
+    let response = app
+        .server
+        .get("/accounts/groups/invalid-uuid-here")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 303);
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok());
+    assert_eq!(location, Some("/accounts/groups"));
+}
+
+#[tokio::test]
+async fn test_asset_group_detail_with_malformed_uuid() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let admin_name = unique_name("agrp_malformed_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_uuid = get_user_uuid(&mut conn, admin_id);
+
+    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
+
+    let response = app
+        .server
+        .get("/assets/groups/totally-not-uuid")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 303);
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok());
+    assert_eq!(location, Some("/assets/groups"));
+}
+
+#[tokio::test]
+async fn test_approval_detail_with_malformed_uuid() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let admin_name = unique_name("appr_malformed_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_uuid = get_user_uuid(&mut conn, admin_id);
+
+    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
+
+    let response = app
+        .server
+        .get("/sessions/approvals/bad-uuid-format")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 303);
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok());
+    assert_eq!(location, Some("/sessions/approvals"));
+}
+
+// =============================================================================
+// Flash Message Tests (verify redirects include flash cookies)
+// =============================================================================
+
+#[tokio::test]
+async fn test_not_found_redirect_sets_flash_cookie() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let admin_name = unique_name("flash_test_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_uuid = get_user_uuid(&mut conn, admin_id);
+
+    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
+
+    let fake_uuid = Uuid::new_v4();
+    let response = app
+        .server
+        .get(&format!("/assets/{}", fake_uuid))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 303);
+
+    // Check that flash cookie is set
+    let set_cookie = response
+        .headers()
+        .get("set-cookie")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    
+    assert!(
+        set_cookie.contains("flash="),
+        "Response should set flash cookie, got: {}",
+        set_cookie
+    );
+}
+
+#[tokio::test]
+async fn test_authorization_error_redirect_sets_flash() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    // Create an asset
+    let admin_name = unique_name("flash_auth_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("flash-asset"), admin_id);
+    let asset_uuid = get_asset_uuid(&mut conn, asset_id);
+
+    // Create a normal user
+    let user_name = unique_name("flash_auth_user");
+    let user_id = create_simple_user(&mut conn, &user_name);
+    let user_uuid = get_user_uuid(&mut conn, user_id);
+
+    let token = app.generate_test_token(&user_uuid.to_string(), &user_name, false, false);
+
+    // Normal user tries to access asset (forbidden)
+    let response = app
+        .server
+        .get(&format!("/assets/{}", asset_uuid))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 303);
+
+    // Check flash cookie is set with error
+    let set_cookie = response
+        .headers()
+        .get("set-cookie")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    
+    assert!(
+        set_cookie.contains("flash="),
+        "Authorization error should set flash cookie"
+    );
+}
+
+// =============================================================================
 // Approval List Page Tests (dynamic WHERE clause, triple JOIN)
 // =============================================================================
 
@@ -325,7 +636,10 @@ async fn test_approval_detail_not_found() {
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
-    assert_status(&response, 404);
+    // Not found redirects to list page with flash message
+    assert_status(&response, 303);
+    let location = response.headers().get("location").and_then(|v| v.to_str().ok());
+    assert_eq!(location, Some("/sessions/approvals"));
 }
 
 // =============================================================================
@@ -689,7 +1003,10 @@ async fn test_asset_group_detail_not_found() {
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
-    assert_status(&response, 404);
+    // Not found redirects to list page with flash message
+    assert_status(&response, 303);
+    let location = response.headers().get("location").and_then(|v| v.to_str().ok());
+    assert_eq!(location, Some("/assets/groups"));
 }
 
 // =============================================================================
@@ -810,7 +1127,10 @@ async fn test_asset_detail_not_found() {
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
-    assert_status(&response, 404);
+    // Not found redirects to list page with flash message
+    assert_status(&response, 303);
+    let location = response.headers().get("location").and_then(|v| v.to_str().ok());
+    assert_eq!(location, Some("/assets"));
 }
 
 // =============================================================================
@@ -987,7 +1307,10 @@ async fn test_group_detail_not_found() {
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
-    assert_status(&response, 404);
+    // Not found redirects to list page with flash message
+    assert_status(&response, 303);
+    let location = response.headers().get("location").and_then(|v| v.to_str().ok());
+    assert_eq!(location, Some("/accounts/groups"));
 }
 
 // =============================================================================
@@ -3052,8 +3375,9 @@ async fn test_user_list_search_by_username() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_username);
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
-    // Create a user with a unique searchable name
-    let searchable_user = unique_name("uniquesearchxyz");
+    // Create a user with a unique searchable name - use full UUID for uniqueness
+    let unique_suffix = uuid::Uuid::new_v4().to_string().replace('-', "");
+    let searchable_user = format!("searchuser{}", &unique_suffix[..16]);
     create_simple_user(&mut conn, &searchable_user);
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true);
@@ -3069,10 +3393,11 @@ async fn test_user_list_search_by_username() {
     let body = response.text();
     assert!(body.contains(&searchable_user), "Should find user by exact username");
 
-    // Test 2: Partial search using unique prefix
+    // Test 2: Partial search using the first 12 chars of the unique name
+    let partial_search = &searchable_user[..12];
     let response_partial = app
         .server
-        .get("/accounts/users?search=uniquesearchxyz")
+        .get(&format!("/accounts/users?search={}", partial_search))
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -3080,13 +3405,14 @@ async fn test_user_list_search_by_username() {
     let body_partial = response_partial.text();
     assert!(
         body_partial.contains(&searchable_user),
-        "Partial search should find matching user"
+        "Partial search '{}' should find user '{}'", partial_search, searchable_user
     );
 
-    // Test 3: Case-insensitive search
+    // Test 3: Case-insensitive search using uppercase of the partial
+    let uppercase_search = partial_search.to_uppercase();
     let response_case = app
         .server
-        .get("/accounts/users?search=UNIQUESEARCHXYZ")
+        .get(&format!("/accounts/users?search={}", uppercase_search))
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -3094,7 +3420,7 @@ async fn test_user_list_search_by_username() {
     let body_case = response_case.text();
     assert!(
         body_case.contains(&searchable_user),
-        "Case-insensitive search should find user"
+        "Case-insensitive search '{}' should find user '{}'", uppercase_search, searchable_user
     );
 
     // Test 4: Empty search should load page normally (regression test for empty string bug)
@@ -3574,22 +3900,30 @@ async fn test_user_delete_soft_deletes() {
 }
 
 #[tokio::test]
-#[ignore] // This test requires isolation - run with `cargo test -- --ignored` for full validation
+#[serial_test::serial]
 async fn test_user_delete_protects_last_superuser() {
     // This test verifies that when there is only 1 active superuser,
-    // deleting them should fail. Due to test parallelism, this test
-    // is marked as ignored and should be run separately.
+    // deleting them should fail. Uses serial_test to run in isolation.
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn();
     use vauban_web::schema::users;
     use chrono::Utc;
+
+    // First, record IDs of users we modify so we can restore them
+    let other_superuser_ids: Vec<i32> = users::table
+        .filter(users::is_superuser.eq(true))
+        .filter(users::is_active.eq(true))
+        .filter(users::is_deleted.eq(false))
+        .select(users::id)
+        .load(&mut conn)
+        .unwrap_or_default();
 
     // Create a unique superuser for this test
     let last_super_username = unique_name("last_super");
     let last_super_id = create_simple_admin_user(&mut conn, &last_super_username);
     let last_super_uuid = get_user_uuid(&mut conn, last_super_id);
 
-    // Deactivate ALL OTHER superusers
+    // Deactivate ALL OTHER superusers (we'll restore them at the end)
     let now = Utc::now();
     diesel::update(
         users::table
@@ -3634,15 +3968,15 @@ async fn test_user_delete_protects_last_superuser() {
 
     assert!(!is_deleted, "Last superuser should NOT be deleted");
 
-    // Cleanup: reactivate the other superusers
-    diesel::update(
-        users::table
-            .filter(users::is_superuser.eq(true))
-            .filter(users::is_active.eq(false)),
-    )
-    .set((users::is_active.eq(true), users::updated_at.eq(now)))
-    .execute(&mut conn)
-    .ok();
+    // Cleanup: reactivate ONLY the superusers we deactivated
+    if !other_superuser_ids.is_empty() {
+        diesel::update(
+            users::table.filter(users::id.eq_any(&other_superuser_ids)),
+        )
+        .set((users::is_active.eq(true), users::updated_at.eq(now)))
+        .execute(&mut conn)
+        .ok();
+    }
 }
 
 #[tokio::test]
@@ -4448,12 +4782,15 @@ async fn test_recording_play_requires_admin() {
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
+    // Non-admin users are redirected with flash message
     let status = response.status_code().as_u16();
     assert!(
-        status == 401 || status == 403,
-        "Normal user should not play recordings, got {}",
+        status == 303,
+        "Normal user should be redirected from recordings, got {}",
         status
     );
+    let location = response.headers().get("location").and_then(|v| v.to_str().ok());
+    assert_eq!(location, Some("/sessions/recordings"));
 }
 
 #[tokio::test]
@@ -4530,12 +4867,15 @@ async fn test_asset_detail_requires_admin() {
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
+    // Non-admin users are redirected with flash message
     let status = response.status_code().as_u16();
     assert!(
-        status == 401 || status == 403,
-        "Normal user should not access asset details, got {}",
+        status == 303,
+        "Normal user should be redirected from asset details, got {}",
         status
     );
+    let location = response.headers().get("location").and_then(|v| v.to_str().ok());
+    assert_eq!(location, Some("/assets"));
 }
 
 // =============================================================================
@@ -5082,12 +5422,15 @@ async fn test_asset_edit_page_normal_user_forbidden() {
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
+    // Non-admin users are redirected with flash message
     let status = response.status_code().as_u16();
     assert!(
-        status == 401 || status == 403,
-        "Normal user should not access asset edit page, got {}",
+        status == 303,
+        "Normal user should be redirected from asset edit page, got {}",
         status
     );
+    let location = response.headers().get("location").and_then(|v| v.to_str().ok());
+    assert_eq!(location, Some("/assets"));
 }
 
 #[tokio::test]
@@ -5176,12 +5519,15 @@ async fn test_asset_group_edit_page_normal_user_forbidden() {
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
+    // Non-admin users are redirected with flash message
     let status = response.status_code().as_u16();
     assert!(
-        status == 401 || status == 403,
-        "Normal user should not access asset group edit page, got {}",
+        status == 303,
+        "Normal user should be redirected from asset group edit page, got {}",
         status
     );
+    let location = response.headers().get("location").and_then(|v| v.to_str().ok());
+    assert_eq!(location, Some("/assets/groups"));
 }
 
 #[tokio::test]

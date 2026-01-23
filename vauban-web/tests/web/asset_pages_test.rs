@@ -81,7 +81,7 @@ async fn test_asset_edit_page_unauthenticated() {
     test_db::cleanup(&mut conn);
 }
 
-/// Test asset edit page with non-existent asset returns 404.
+/// Test asset edit page with non-existent asset redirects to list.
 #[tokio::test]
 #[serial]
 async fn test_asset_edit_page_not_found() {
@@ -101,8 +101,10 @@ async fn test_asset_edit_page_not_found() {
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .await;
 
-    // Assert: 404 Not Found
-    assert_status(&response, 404);
+    // Assert: redirects to asset list with flash message
+    assert_status(&response, 303);
+    let location = response.headers().get("location").and_then(|v| v.to_str().ok());
+    assert_eq!(location, Some("/assets"));
 
     // Cleanup
     test_db::cleanup(&mut conn);
@@ -241,14 +243,17 @@ async fn test_asset_detail_accepts_uuid_not_integer_id() {
         status
     );
 
-    // Integer ID should NOT work (returns 400 Bad Request for invalid UUID)
+    // Integer ID should NOT work - redirects to /assets with error message
     let id_response = app
         .server
         .get("/assets/123")
         .add_header(header::COOKIE, format!("access_token={}", admin.token))
         .await;
 
-    assert_status(&id_response, 400);
+    // Should redirect gracefully instead of returning raw error
+    assert_status(&id_response, 303);
+    let location = id_response.headers().get("location").and_then(|v| v.to_str().ok());
+    assert_eq!(location, Some("/assets"), "Invalid UUID should redirect to /assets");
 
     // Cleanup
     test_db::cleanup(&mut conn);

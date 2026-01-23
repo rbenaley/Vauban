@@ -30,7 +30,7 @@
 /// - Test all raw SQL queries thoroughly as they are not compile-time checked
 use axum::{
     extract::{Form, Query, State},
-    response::{Html, IntoResponse, Response},
+    response::{Html, IntoResponse, Redirect, Response},
 };
 use diesel::prelude::*;
 use diesel::sql_types::{BigInt, Integer, Nullable, Text, Uuid as DieselUuid};
@@ -86,6 +86,12 @@ fn is_admin(auth_user: &WebAuthUser) -> bool {
 /// Returns an empty HTML fragment to clear a target element.
 pub async fn htmx_empty() -> Html<&'static str> {
     Html("")
+}
+
+/// Fallback handler for unmatched routes.
+/// Redirects to the home page instead of returning a 404.
+pub async fn fallback_handler() -> Redirect {
+    Redirect::to("/")
 }
 
 /// Login page.
@@ -349,21 +355,36 @@ pub async fn user_list(
 /// User detail page.
 pub async fn user_detail(
     State(state): State<AppState>,
+    incoming_flash: IncomingFlash,
     auth_user: WebAuthUser,
     axum::extract::Path(user_uuid): axum::extract::Path<String>,
-) -> Result<impl IntoResponse, AppError> {
+) -> Response {
     use crate::schema::users;
     use crate::templates::accounts::user_detail::UserDetail;
+
+    let flash = incoming_flash.flash();
 
     let user = Some(user_context_from_auth(&auth_user));
     let base =
         BaseTemplate::new("User Details".to_string(), user).with_current_path("/accounts/users");
 
     // Load user from database
-    let mut conn = get_connection(&state.db_pool)?;
+    let mut conn = match get_connection(&state.db_pool) {
+        Ok(conn) => conn,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Database connection error. Please try again."),
+                "/accounts/users",
+            );
+        }
+    };
 
-    let parsed_uuid = uuid::Uuid::parse_str(&user_uuid)
-        .map_err(|_| AppError::NotFound("Invalid UUID".to_string()))?;
+    let parsed_uuid = match uuid::Uuid::parse_str(&user_uuid) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return flash_redirect(flash.error("Invalid user identifier"), "/accounts/users");
+        }
+    };
 
     #[allow(clippy::type_complexity)]
     let db_user: Option<(
@@ -380,7 +401,7 @@ pub async fn user_detail(
         bool,
         Option<chrono::DateTime<chrono::Utc>>,
         chrono::DateTime<chrono::Utc>,
-    )> = users::table
+    )> = match users::table
         .filter(users::uuid.eq(parsed_uuid))
         .filter(users::is_deleted.eq(false))
         .select((
@@ -399,9 +420,23 @@ pub async fn user_detail(
             users::created_at,
         ))
         .first(&mut conn)
-        .optional()?;
+        .optional()
+    {
+        Ok(user) => user,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Database error. Please try again."),
+                "/accounts/users",
+            );
+        }
+    };
 
-    let db_user = db_user.ok_or_else(|| AppError::NotFound("User not found".to_string()))?;
+    let db_user = match db_user {
+        Some(u) => u,
+        None => {
+            return flash_redirect(flash.error("User not found"), "/accounts/users");
+        }
+    };
 
     let (
         uuid,
@@ -461,10 +496,10 @@ pub async fn user_detail(
         can_edit,
     };
 
-    let html = template
-        .render()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
-    Ok(Html(html))
+    match template.render() {
+        Ok(html) => Html(html).into_response(),
+        Err(_) => flash_redirect(flash.error("Failed to render page"), "/accounts/users"),
+    }
 }
 
 // =============================================================================
@@ -682,7 +717,7 @@ pub async fn user_edit_form(
     auth_user: WebAuthUser,
     incoming_flash: IncomingFlash,
     axum::extract::Path(user_uuid): axum::extract::Path<String>,
-) -> Result<Response, AppError> {
+) -> Response {
     use crate::schema::users;
     use crate::templates::accounts::{UserEditData, UserEditTemplate};
 
@@ -690,16 +725,28 @@ pub async fn user_edit_form(
 
     // Only staff or superuser can access
     if !auth_user.is_superuser && !auth_user.is_staff {
-        return Ok(flash_redirect(
+        return flash_redirect(
             flash.error("You do not have permission to edit users"),
             "/accounts/users",
-        ));
+        );
     }
 
-    let parsed_uuid = uuid::Uuid::parse_str(&user_uuid)
-        .map_err(|_| AppError::NotFound("Invalid UUID".to_string()))?;
+    let parsed_uuid = match uuid::Uuid::parse_str(&user_uuid) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return flash_redirect(flash.error("Invalid user identifier"), "/accounts/users");
+        }
+    };
 
-    let mut conn = get_connection(&state.db_pool)?;
+    let mut conn = match get_connection(&state.db_pool) {
+        Ok(conn) => conn,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Database connection error. Please try again."),
+                "/accounts/users",
+            );
+        }
+    };
 
     #[allow(clippy::type_complexity)]
     let db_user: Option<(
@@ -711,7 +758,7 @@ pub async fn user_edit_form(
         bool,
         bool,
         bool,
-    )> = users::table
+    )> = match users::table
         .filter(users::uuid.eq(parsed_uuid))
         .filter(users::is_deleted.eq(false))
         .select((
@@ -725,18 +772,32 @@ pub async fn user_edit_form(
             users::is_superuser,
         ))
         .first(&mut conn)
-        .optional()?;
+        .optional()
+    {
+        Ok(user) => user,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Database error. Please try again."),
+                "/accounts/users",
+            );
+        }
+    };
 
-    let db_user = db_user.ok_or_else(|| AppError::NotFound("User not found".to_string()))?;
+    let db_user = match db_user {
+        Some(u) => u,
+        None => {
+            return flash_redirect(flash.error("User not found"), "/accounts/users");
+        }
+    };
 
     let (uuid, username, email, first_name, last_name, is_active, is_staff, is_superuser) = db_user;
 
     // Staff cannot edit superusers
     if is_superuser && !auth_user.is_superuser {
-        return Ok(flash_redirect(
+        return flash_redirect(
             flash.error("Only a superuser can edit superuser accounts"),
             &format!("/accounts/users/{}", user_uuid),
-        ));
+        );
     }
 
     let user_data = UserEditData {
@@ -775,10 +836,10 @@ pub async fn user_edit_form(
         can_delete,
     };
 
-    let html = template
-        .render()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
-    Ok(Html(html).into_response())
+    match template.render() {
+        Ok(html) => Html(html).into_response(),
+        Err(_) => flash_redirect(flash.error("Failed to render page"), "/accounts/users"),
+    }
 }
 
 /// Update user handler (POST /accounts/users/{uuid}).
@@ -1455,7 +1516,7 @@ pub async fn revoke_session(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
     jar: CookieJar,
-    axum::extract::Path(session_uuid): axum::extract::Path<uuid::Uuid>,
+    axum::extract::Path(session_uuid_str): axum::extract::Path<String>,
     Form(form): Form<CsrfOnlyForm>,
 ) -> AppResult<Response> {
     let secret = state.config.secret_key.expose_secret().as_bytes();
@@ -1467,6 +1528,15 @@ pub async fn revoke_session(
     ) {
         return Ok((axum::http::StatusCode::BAD_REQUEST, "Invalid CSRF token").into_response());
     }
+
+    // Parse UUID manually for graceful error handling
+    let session_uuid = match uuid::Uuid::parse_str(&session_uuid_str) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return Ok(Redirect::to("/accounts/sessions").into_response());
+        }
+    };
+
     let mut conn = get_connection(&state.db_pool)?;
 
     // Get user ID
@@ -1620,7 +1690,7 @@ pub async fn revoke_api_key(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
     jar: CookieJar,
-    axum::extract::Path(key_uuid): axum::extract::Path<uuid::Uuid>,
+    axum::extract::Path(key_uuid_str): axum::extract::Path<String>,
     Form(form): Form<CsrfOnlyForm>,
 ) -> AppResult<Response> {
     use crate::services::broadcast::WsChannel;
@@ -1634,6 +1704,14 @@ pub async fn revoke_api_key(
     ) {
         return Ok((axum::http::StatusCode::BAD_REQUEST, "Invalid CSRF token").into_response());
     }
+
+    // Parse UUID manually for graceful error handling
+    let key_uuid = match uuid::Uuid::parse_str(&key_uuid_str) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return Ok(Redirect::to("/accounts/apikeys").into_response());
+        }
+    };
 
     let mut conn = get_connection(&state.db_pool)?;
 
@@ -2206,19 +2284,42 @@ pub async fn asset_search(
 /// Asset detail page.
 pub async fn asset_detail(
     State(state): State<AppState>,
+    incoming_flash: IncomingFlash,
     auth_user: WebAuthUser,
-    axum::extract::Path(asset_uuid): axum::extract::Path<::uuid::Uuid>,
-) -> Result<impl IntoResponse, AppError> {
+    axum::extract::Path(asset_uuid_str): axum::extract::Path<String>,
+) -> Response {
+    let flash = incoming_flash.flash();
+
+    // Parse UUID manually to provide graceful redirect on malformed input
+    let asset_uuid = match ::uuid::Uuid::parse_str(&asset_uuid_str) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Invalid asset identifier"),
+                "/assets",
+            );
+        }
+    };
+
     // Only admin users (superuser or staff) can view asset details
     if !is_admin(&auth_user) {
-        return Err(AppError::Authorization(
-            "Only administrators can view asset details".to_string(),
-        ));
+        return flash_redirect(
+            flash.error("Only administrators can view asset details"),
+            "/assets",
+        );
     }
 
     let user = Some(user_context_from_auth(&auth_user));
 
-    let mut conn = get_connection(&state.db_pool)?;
+    let mut conn = match get_connection(&state.db_pool) {
+        Ok(conn) => conn,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Database connection error. Please try again."),
+                "/assets",
+            );
+        }
+    };
 
     // Query asset details with optional group info - migrated to Diesel DSL
     use crate::schema::asset_groups::dsl as ag;
@@ -2244,7 +2345,7 @@ pub async fn asset_detail(
         Option<chrono::DateTime<chrono::Utc>>,
         chrono::DateTime<chrono::Utc>,
         chrono::DateTime<chrono::Utc>,
-    ) = a::assets
+    ) = match a::assets
         .filter(a::uuid.eq(asset_uuid))
         .filter(a::is_deleted.eq(false))
         .select((
@@ -2267,10 +2368,15 @@ pub async fn asset_detail(
             a::updated_at,
         ))
         .first(&mut conn)
-        .map_err(|e| match e {
-            diesel::result::Error::NotFound => AppError::NotFound("Asset not found".to_string()),
-            _ => AppError::Database(e),
-        })?;
+    {
+        Ok(row) => row,
+        Err(diesel::result::Error::NotFound) => {
+            return flash_redirect(flash.error("Asset not found"), "/assets");
+        }
+        Err(_) => {
+            return flash_redirect(flash.error("Database error. Please try again."), "/assets");
+        }
+    };
 
     let (
         asset_uuid,
@@ -2295,14 +2401,15 @@ pub async fn asset_detail(
     // Get group info if group_id is set
     let (group_name, group_uuid): (Option<String>, Option<String>) =
         if let Some(gid) = asset_group_id {
-            ag::asset_groups
+            match ag::asset_groups
                 .filter(ag::id.eq(gid))
                 .select((ag::name, ag::uuid))
                 .first::<(String, ::uuid::Uuid)>(&mut conn)
                 .optional()
-                .map_err(AppError::Database)?
-                .map(|(n, u)| (Some(n), Some(u.to_string())))
-                .unwrap_or((None, None))
+            {
+                Ok(Some((n, u))) => (Some(n), Some(u.to_string())),
+                _ => (None, None),
+            }
         } else {
             (None, None)
         };
@@ -2344,10 +2451,10 @@ pub async fn asset_detail(
         asset,
     };
 
-    let html = template
-        .render()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
-    Ok(Html(html))
+    match template.render() {
+        Ok(html) => Html(html).into_response(),
+        Err(_) => flash_redirect(flash.error("Failed to render page"), "/assets"),
+    }
 }
 
 // NOTE: AssetQueryDetailResult removed - migrated to Diesel DSL tuple query
@@ -2358,12 +2465,15 @@ pub async fn asset_edit(
     auth_user: WebAuthUser,
     incoming_flash: IncomingFlash,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
-) -> Result<impl IntoResponse, AppError> {
+) -> Response {
+    let flash = incoming_flash.flash();
+
     // Only admin users can edit assets
     if !is_admin(&auth_user) {
-        return Err(AppError::Authorization(
-            "Only administrators can edit assets".to_string(),
-        ));
+        return flash_redirect(
+            flash.error("Only administrators can edit assets"),
+            "/assets",
+        );
     }
 
     let user = Some(user_context_from_auth(&auth_user));
@@ -2378,9 +2488,22 @@ pub async fn asset_edit(
         })
         .collect();
 
-    let mut conn = get_connection(&state.db_pool)?;
-    let asset_uuid = ::uuid::Uuid::parse_str(&uuid_str)
-        .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
+    let mut conn = match get_connection(&state.db_pool) {
+        Ok(conn) => conn,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Database connection error. Please try again."),
+                "/assets",
+            );
+        }
+    };
+
+    let asset_uuid = match ::uuid::Uuid::parse_str(&uuid_str) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return flash_redirect(flash.error("Invalid asset identifier"), "/assets");
+        }
+    };
 
     use crate::schema::assets::dsl as a;
 
@@ -2397,7 +2520,7 @@ pub async fn asset_edit(
         Option<String>,
         bool,
         bool,
-    ) = a::assets
+    ) = match a::assets
         .filter(a::uuid.eq(asset_uuid))
         .filter(a::is_deleted.eq(false))
         .select((
@@ -2413,10 +2536,15 @@ pub async fn asset_edit(
             a::require_justification,
         ))
         .first(&mut conn)
-        .map_err(|e| match e {
-            diesel::result::Error::NotFound => AppError::NotFound("Asset not found".to_string()),
-            _ => AppError::Database(e),
-        })?;
+    {
+        Ok(row) => row,
+        Err(diesel::result::Error::NotFound) => {
+            return flash_redirect(flash.error("Asset not found"), "/assets");
+        }
+        Err(_) => {
+            return flash_redirect(flash.error("Database error. Please try again."), "/assets");
+        }
+    };
 
     let (
         asset_uuid_val,
@@ -2461,13 +2589,12 @@ pub async fn asset_edit(
         asset,
     };
 
-    let html = template
-        .render()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
-
     // Clear flash cookie after reading and return HTML
     use crate::middleware::flash::ClearFlashCookie;
-    Ok((ClearFlashCookie, Html(html)))
+    match template.render() {
+        Ok(html) => (ClearFlashCookie, Html(html)).into_response(),
+        Err(_) => flash_redirect(flash.error("Failed to render page"), "/assets"),
+    }
 }
 
 /// Dashboard stats widget.
@@ -2750,7 +2877,7 @@ pub async fn terminate_session_web(
     headers: axum::http::HeaderMap,
     auth_user: WebAuthUser,
     jar: CookieJar,
-    axum::extract::Path(session_id): axum::extract::Path<i32>,
+    axum::extract::Path(session_id_str): axum::extract::Path<String>,
     Form(form): Form<CsrfOnlyForm>,
 ) -> AppResult<Response> {
     let secret = state.config.secret_key.expose_secret().as_bytes();
@@ -2763,11 +2890,16 @@ pub async fn terminate_session_web(
         return Ok((axum::http::StatusCode::BAD_REQUEST, "Invalid CSRF token").into_response());
     }
 
+    // Validate session ID format for graceful error handling
+    if session_id_str.parse::<i32>().is_err() {
+        return Ok(Redirect::to("/sessions/active").into_response());
+    }
+
     crate::handlers::api::sessions::terminate_session(
         State(state),
         headers,
         auth_user.0,
-        axum::extract::Path(session_id),
+        axum::extract::Path(session_id_str),
     )
     .await
 }
@@ -2775,13 +2907,35 @@ pub async fn terminate_session_web(
 /// Session detail page.
 pub async fn session_detail(
     State(state): State<AppState>,
+    incoming_flash: IncomingFlash,
     auth_user: WebAuthUser,
-    axum::extract::Path(id): axum::extract::Path<i32>,
-) -> Result<impl IntoResponse, AppError> {
+    axum::extract::Path(id_str): axum::extract::Path<String>,
+) -> Response {
     use crate::templates::sessions::session_detail::SessionDetail;
 
+    let flash = incoming_flash.flash();
+
+    // Parse session ID manually for graceful error handling
+    let id: i32 = match id_str.parse() {
+        Ok(parsed_id) => parsed_id,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Invalid session identifier"),
+                "/sessions",
+            );
+        }
+    };
+
     let user = Some(user_context_from_auth(&auth_user));
-    let mut conn = get_connection(&state.db_pool)?;
+    let mut conn = match get_connection(&state.db_pool) {
+        Ok(conn) => conn,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Database connection error. Please try again."),
+                "/sessions",
+            );
+        }
+    };
     let user_is_admin = is_admin(&auth_user);
 
     // NOTE: Raw SQL required - complex triple JOIN with PostgreSQL ::text casts
@@ -2789,7 +2943,7 @@ pub async fn session_detail(
     // 1. uuid::text casts for string representation
     // 2. inet::text cast for client_ip
     // 3. Triple JOIN (proxy_sessions -> users -> assets)
-    let session_data: SessionQueryDetailResult = diesel::sql_query(
+    let session_data: SessionQueryDetailResult = match diesel::sql_query(
         "SELECT ps.id, ps.uuid, u.username, u.uuid::text as user_uuid,
                 a.name as asset_name, a.hostname as asset_hostname, a.uuid::text as asset_uuid, a.asset_type,
                 ps.session_type, ps.status, ps.credential_username, ps.client_ip::text as client_ip,
@@ -2799,20 +2953,26 @@ pub async fn session_detail(
          FROM proxy_sessions ps
          INNER JOIN users u ON u.id = ps.user_id
          INNER JOIN assets a ON a.id = ps.asset_id
-         WHERE ps.id = $1"
+         WHERE ps.id = $1",
     )
     .bind::<Integer, _>(id)
     .get_result(&mut conn)
-    .map_err(|e| match e {
-        diesel::result::Error::NotFound => AppError::NotFound("Session not found".to_string()),
-        _ => AppError::Database(e),
-    })?;
+    {
+        Ok(data) => data,
+        Err(diesel::result::Error::NotFound) => {
+            return flash_redirect(flash.error("Session not found"), "/sessions");
+        }
+        Err(_) => {
+            return flash_redirect(flash.error("Database error. Please try again."), "/sessions");
+        }
+    };
 
     // For non-admin users, check if they own this session
     if !user_is_admin && session_data.user_uuid != auth_user.uuid {
-        return Err(AppError::Authorization(
-            "You can only view your own sessions".to_string(),
-        ));
+        return flash_redirect(
+            flash.error("You can only view your own sessions"),
+            "/sessions",
+        );
     }
 
     // Calculate duration if connected_at and disconnected_at are present
@@ -2897,10 +3057,10 @@ pub async fn session_detail(
         show_play_recording: user_is_admin,
     };
 
-    let html = template
-        .render()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
-    Ok(Html(html))
+    match template.render() {
+        Ok(html) => Html(html).into_response(),
+        Err(_) => flash_redirect(flash.error("Failed to render page"), "/sessions"),
+    }
 }
 
 /// Helper struct for session detail query.
@@ -3078,23 +3238,46 @@ pub async fn recording_list(
 /// Recording play page.
 pub async fn recording_play(
     State(state): State<AppState>,
+    incoming_flash: IncomingFlash,
     auth_user: WebAuthUser,
-    axum::extract::Path(id): axum::extract::Path<i32>,
-) -> Result<impl IntoResponse, AppError> {
+    axum::extract::Path(id_str): axum::extract::Path<String>,
+) -> Response {
     use crate::templates::sessions::recording_play::RecordingData;
+
+    let flash = incoming_flash.flash();
+
+    // Parse recording ID manually for graceful error handling
+    let id: i32 = match id_str.parse() {
+        Ok(parsed_id) => parsed_id,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Invalid recording identifier"),
+                "/sessions/recordings",
+            );
+        }
+    };
 
     // Only admin users (superuser or staff) can play recordings
     if !is_admin(&auth_user) {
-        return Err(AppError::Authorization(
-            "Only administrators can play recordings".to_string(),
-        ));
+        return flash_redirect(
+            flash.error("Only administrators can play recordings"),
+            "/sessions/recordings",
+        );
     }
 
     let user = Some(user_context_from_auth(&auth_user));
-    let mut conn = get_connection(&state.db_pool)?;
+    let mut conn = match get_connection(&state.db_pool) {
+        Ok(conn) => conn,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Database connection error. Please try again."),
+                "/sessions/recordings",
+            );
+        }
+    };
 
     // NOTE: Raw SQL required - triple JOIN with PostgreSQL-specific features
-    let recording_data: RecordingQueryResult = diesel::sql_query(
+    let recording_data: RecordingQueryResult = match diesel::sql_query(
         "SELECT ps.id, ps.uuid, u.username, a.name as asset_name, a.hostname as asset_hostname,
                 ps.session_type, ps.connected_at, ps.disconnected_at, ps.recording_path,
                 ps.bytes_sent, ps.bytes_received, ps.commands_count
@@ -3105,10 +3288,18 @@ pub async fn recording_play(
     )
     .bind::<Integer, _>(id)
     .get_result(&mut conn)
-    .map_err(|e| match e {
-        diesel::result::Error::NotFound => AppError::NotFound("Recording not found".to_string()),
-        _ => AppError::Database(e),
-    })?;
+    {
+        Ok(data) => data,
+        Err(diesel::result::Error::NotFound) => {
+            return flash_redirect(flash.error("Recording not found"), "/sessions/recordings");
+        }
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Database error. Please try again."),
+                "/sessions/recordings",
+            );
+        }
+    };
 
     // Calculate duration
     let duration = match (recording_data.connected_at, recording_data.disconnected_at) {
@@ -3165,10 +3356,10 @@ pub async fn recording_play(
         recording,
     };
 
-    let html = template
-        .render()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
-    Ok(Html(html))
+    match template.render() {
+        Ok(html) => Html(html).into_response(),
+        Err(_) => flash_redirect(flash.error("Failed to render page"), "/sessions/recordings"),
+    }
 }
 
 /// Helper struct for recording query.
@@ -3365,38 +3556,69 @@ struct ApprovalQueryResult {
 /// Approval detail page.
 pub async fn approval_detail(
     State(state): State<AppState>,
+    incoming_flash: IncomingFlash,
     auth_user: WebAuthUser,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
-) -> Result<impl IntoResponse, AppError> {
+) -> Response {
+    let flash = incoming_flash.flash();
+
     // Only admin users (superuser or staff) can view approval details
     if !is_admin(&auth_user) {
-        return Err(AppError::Authorization(
-            "Only administrators can view approval details".to_string(),
-        ));
+        return flash_redirect(
+            flash.error("Only administrators can view approval details"),
+            "/sessions/approvals",
+        );
     }
 
     let user = Some(user_context_from_auth(&auth_user));
 
-    let mut conn = get_connection(&state.db_pool)?;
-    let approval_uuid = ::uuid::Uuid::parse_str(&uuid_str)
-        .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
+    let mut conn = match get_connection(&state.db_pool) {
+        Ok(conn) => conn,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Database connection error. Please try again."),
+                "/sessions/approvals",
+            );
+        }
+    };
+
+    let approval_uuid = match ::uuid::Uuid::parse_str(&uuid_str) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Invalid approval identifier"),
+                "/sessions/approvals",
+            );
+        }
+    };
 
     // NOTE: Raw SQL required - triple JOIN with inet::text cast
-    let approval_data: ApprovalDetailResult = diesel::sql_query(
+    let approval_data: ApprovalDetailResult = match diesel::sql_query(
         "SELECT ps.uuid, u.username, u.email as user_email, a.name as asset_name, a.asset_type, 
                 a.hostname as asset_hostname, ps.session_type, ps.status, ps.justification, 
                 ps.client_ip::text as client_ip, ps.credential_username, ps.created_at, ps.is_recorded
          FROM proxy_sessions ps
          INNER JOIN users u ON u.id = ps.user_id
          INNER JOIN assets a ON a.id = ps.asset_id
-         WHERE ps.uuid = $1"
+         WHERE ps.uuid = $1",
     )
     .bind::<DieselUuid, _>(approval_uuid)
     .get_result(&mut conn)
-    .map_err(|e| match e {
-        diesel::result::Error::NotFound => AppError::NotFound("Approval request not found".to_string()),
-        _ => AppError::Database(e),
-    })?;
+    {
+        Ok(data) => data,
+        Err(diesel::result::Error::NotFound) => {
+            return flash_redirect(
+                flash.error("Approval request not found"),
+                "/sessions/approvals",
+            );
+        }
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Database error. Please try again."),
+                "/sessions/approvals",
+            );
+        }
+    };
 
     let approval = crate::templates::sessions::approval_detail::ApprovalDetail {
         uuid: approval_data.uuid.to_string(),
@@ -3433,10 +3655,10 @@ pub async fn approval_detail(
         approval,
     };
 
-    let html = template
-        .render()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
-    Ok(Html(html))
+    match template.render() {
+        Ok(html) => Html(html).into_response(),
+        Err(_) => flash_redirect(flash.error("Failed to render page"), "/sessions/approvals"),
+    }
 }
 
 /// Helper struct for approval detail query results.
@@ -3683,7 +3905,8 @@ pub async fn group_detail(
     incoming_flash: IncomingFlash,
     jar: CookieJar,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
-) -> Result<impl IntoResponse, AppError> {
+) -> Response {
+    let flash = incoming_flash.flash();
     let user = Some(user_context_from_auth(&auth_user));
 
     // Convert incoming flash messages to template FlashMessages
@@ -3702,9 +3925,22 @@ pub async fn group_detail(
         .map(|c| c.value().to_string())
         .unwrap_or_default();
 
-    let mut conn = get_connection(&state.db_pool)?;
-    let group_uuid = ::uuid::Uuid::parse_str(&uuid_str)
-        .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
+    let mut conn = match get_connection(&state.db_pool) {
+        Ok(conn) => conn,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Database connection error. Please try again."),
+                "/accounts/groups",
+            );
+        }
+    };
+
+    let group_uuid = match ::uuid::Uuid::parse_str(&uuid_str) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return flash_redirect(flash.error("Invalid group identifier"), "/accounts/groups");
+        }
+    };
 
     // Query group details - migrated to Diesel DSL (combined into single query)
     use crate::schema::vauban_groups::dsl as vg;
@@ -3718,7 +3954,7 @@ pub async fn group_detail(
         Option<String>,
         chrono::DateTime<chrono::Utc>,
         Option<chrono::DateTime<chrono::Utc>>,
-    ) = vg::vauban_groups
+    ) = match vg::vauban_groups
         .filter(vg::uuid.eq(group_uuid))
         .select((
             vg::uuid,
@@ -3731,10 +3967,18 @@ pub async fn group_detail(
             vg::last_synced,
         ))
         .first(&mut conn)
-        .map_err(|e| match e {
-            diesel::result::Error::NotFound => AppError::NotFound("Group not found".to_string()),
-            _ => AppError::Database(e),
-        })?;
+    {
+        Ok(row) => row,
+        Err(diesel::result::Error::NotFound) => {
+            return flash_redirect(flash.error("Group not found"), "/accounts/groups");
+        }
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Database error. Please try again."),
+                "/accounts/groups",
+            );
+        }
+    };
 
     // Unpack the combined result
     let (
@@ -3759,7 +4003,7 @@ pub async fn group_detail(
         Option<String>,
         Option<String>,
         bool,
-    )> = u::users
+    )> = match u::users
         .inner_join(ug::user_groups.on(ug::user_id.eq(u::id)))
         .inner_join(vg::vauban_groups.on(vg::id.eq(ug::group_id)))
         .filter(vg::uuid.eq(group_uuid))
@@ -3774,7 +4018,15 @@ pub async fn group_detail(
             u::is_active,
         ))
         .load(&mut conn)
-        .map_err(AppError::Database)?;
+    {
+        Ok(data) => data,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Database error. Please try again."),
+                "/accounts/groups",
+            );
+        }
+    };
 
     let members: Vec<crate::templates::accounts::group_detail::GroupMember> = members_data
         .into_iter()
@@ -3827,13 +4079,12 @@ pub async fn group_detail(
         csrf_token,
     };
 
-    let html = template
-        .render()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
-
     // Clear flash cookie after reading and return HTML
     use crate::middleware::flash::ClearFlashCookie;
-    Ok((ClearFlashCookie, Html(html)))
+    match template.render() {
+        Ok(html) => (ClearFlashCookie, Html(html)).into_response(),
+        Err(_) => flash_redirect(flash.error("Failed to render page"), "/accounts/groups"),
+    }
 }
 
 // NOTE: GroupExtraResult and GroupMemberResult removed - migrated to Diesel DSL
@@ -4843,10 +5094,12 @@ struct AssetGroupQueryResult {
 /// Asset group detail page.
 pub async fn asset_group_detail(
     State(state): State<AppState>,
+    incoming_flash: IncomingFlash,
     auth_user: WebAuthUser,
     jar: CookieJar,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
-) -> Result<impl IntoResponse, AppError> {
+) -> Response {
+    let flash = incoming_flash.flash();
     let user = Some(user_context_from_auth(&auth_user));
 
     let csrf_token = jar
@@ -4854,24 +5107,45 @@ pub async fn asset_group_detail(
         .map(|c| c.value().to_string())
         .unwrap_or_default();
 
-    let mut conn = get_connection(&state.db_pool)?;
-    let group_uuid = ::uuid::Uuid::parse_str(&uuid_str)
-        .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
+    let mut conn = match get_connection(&state.db_pool) {
+        Ok(conn) => conn,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Database connection error. Please try again."),
+                "/assets/groups",
+            );
+        }
+    };
+
+    let group_uuid = match ::uuid::Uuid::parse_str(&uuid_str) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return flash_redirect(flash.error("Invalid group identifier"), "/assets/groups");
+        }
+    };
 
     // NOTE: Raw SQL - simple query but kept for consistency with related code
-    let group_data: AssetGroupDetailResult = diesel::sql_query(
+    let group_data: AssetGroupDetailResult = match diesel::sql_query(
         "SELECT uuid, name, slug, description, color, icon, created_at, updated_at
          FROM asset_groups WHERE uuid = $1 AND is_deleted = false",
     )
     .bind::<DieselUuid, _>(group_uuid)
     .get_result(&mut conn)
-    .map_err(|e| match e {
-        diesel::result::Error::NotFound => AppError::NotFound("Asset group not found".to_string()),
-        _ => AppError::Database(e),
-    })?;
+    {
+        Ok(data) => data,
+        Err(diesel::result::Error::NotFound) => {
+            return flash_redirect(flash.error("Asset group not found"), "/assets/groups");
+        }
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Database error. Please try again."),
+                "/assets/groups",
+            );
+        }
+    };
 
     // NOTE: Raw SQL - kept for consistency with asset_group_detail page
-    let assets_data: Vec<GroupAssetResult> = diesel::sql_query(
+    let assets_data: Vec<GroupAssetResult> = match diesel::sql_query(
         "SELECT a.uuid, a.name, a.hostname, a.asset_type, a.status
          FROM assets a
          INNER JOIN asset_groups g ON g.id = a.group_id
@@ -4880,7 +5154,15 @@ pub async fn asset_group_detail(
     )
     .bind::<DieselUuid, _>(group_uuid)
     .load(&mut conn)
-    .map_err(AppError::Database)?;
+    {
+        Ok(data) => data,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Database error. Please try again."),
+                "/assets/groups",
+            );
+        }
+    };
 
     let assets: Vec<crate::templates::assets::group_detail::GroupAssetItem> = assets_data
         .into_iter()
@@ -4922,10 +5204,10 @@ pub async fn asset_group_detail(
         csrf_token,
     };
 
-    let html = template
-        .render()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
-    Ok(Html(html))
+    match template.render() {
+        Ok(html) => Html(html).into_response(),
+        Err(_) => flash_redirect(flash.error("Failed to render page"), "/assets/groups"),
+    }
 }
 
 /// Helper struct for asset group detail query results.
@@ -5363,12 +5645,15 @@ pub async fn asset_group_edit(
     auth_user: WebAuthUser,
     incoming_flash: IncomingFlash,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
-) -> Result<impl IntoResponse, AppError> {
+) -> Response {
+    let flash = incoming_flash.flash();
+
     // Only admin users can edit asset groups
     if !is_admin(&auth_user) {
-        return Err(AppError::Authorization(
-            "Only administrators can edit asset groups".to_string(),
-        ));
+        return flash_redirect(
+            flash.error("Only administrators can edit asset groups"),
+            "/assets/groups",
+        );
     }
 
     let user = Some(user_context_from_auth(&auth_user));
@@ -5383,21 +5668,42 @@ pub async fn asset_group_edit(
         })
         .collect();
 
-    let mut conn = get_connection(&state.db_pool)?;
-    let group_uuid = ::uuid::Uuid::parse_str(&uuid_str)
-        .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
+    let mut conn = match get_connection(&state.db_pool) {
+        Ok(conn) => conn,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Database connection error. Please try again."),
+                "/assets/groups",
+            );
+        }
+    };
+
+    let group_uuid = match ::uuid::Uuid::parse_str(&uuid_str) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return flash_redirect(flash.error("Invalid group identifier"), "/assets/groups");
+        }
+    };
 
     // NOTE: Raw SQL - kept for consistency with asset_group pages
-    let group_data: AssetGroupEditResult = diesel::sql_query(
+    let group_data: AssetGroupEditResult = match diesel::sql_query(
         "SELECT uuid, name, slug, description, color, icon
          FROM asset_groups WHERE uuid = $1 AND is_deleted = false",
     )
     .bind::<DieselUuid, _>(group_uuid)
     .get_result(&mut conn)
-    .map_err(|e| match e {
-        diesel::result::Error::NotFound => AppError::NotFound("Asset group not found".to_string()),
-        _ => AppError::Database(e),
-    })?;
+    {
+        Ok(data) => data,
+        Err(diesel::result::Error::NotFound) => {
+            return flash_redirect(flash.error("Asset group not found"), "/assets/groups");
+        }
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Database error. Please try again."),
+                "/assets/groups",
+            );
+        }
+    };
 
     let group = crate::templates::assets::group_edit::AssetGroupEdit {
         uuid: group_data.uuid.to_string(),
@@ -5428,13 +5734,12 @@ pub async fn asset_group_edit(
         group,
     };
 
-    let html = template
-        .render()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
-
     // Clear flash cookie after reading and return HTML
     use crate::middleware::flash::ClearFlashCookie;
-    Ok((ClearFlashCookie, Html(html)))
+    match template.render() {
+        Ok(html) => (ClearFlashCookie, Html(html)).into_response(),
+        Err(_) => flash_redirect(flash.error("Failed to render page"), "/assets/groups"),
+    }
 }
 
 /// Helper struct for asset group edit query results.

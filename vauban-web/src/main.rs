@@ -508,6 +508,7 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
     let flash_key = middleware::flash::FlashSecretKey(flash_secret);
     let app = web_routes
         .merge(api_routes)
+        .fallback(handlers::web::fallback_handler)
         .layer(
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())

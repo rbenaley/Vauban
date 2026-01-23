@@ -56,8 +56,12 @@ pub async fn list_assets(
 pub async fn get_asset(
     State(state): State<AppState>,
     _user: AuthUser,
-    Path(asset_uuid): Path<Uuid>,
+    Path(asset_uuid_str): Path<String>,
 ) -> AppResult<Json<Asset>> {
+    // Parse UUID manually for better error messages
+    let asset_uuid = Uuid::parse_str(&asset_uuid_str)
+        .map_err(|_| AppError::Validation("Invalid UUID format".to_string()))?;
+
     let mut conn = get_connection(&state.db_pool)?;
     let asset = assets
         .filter(uuid.eq(asset_uuid))
@@ -131,7 +135,7 @@ pub async fn update_asset(
     State(state): State<AppState>,
     _user: AuthUser,
     headers: HeaderMap,
-    Path(asset_uuid): Path<Uuid>,
+    Path(asset_uuid_str): Path<String>,
     Json(request): Json<UpdateAssetRequest>,
 ) -> Response {
     use crate::error::{htmx_error_response, is_htmx_request};
@@ -148,6 +152,14 @@ pub async fn update_asset(
             }
         };
     }
+
+    // Parse UUID manually for better error messages
+    let asset_uuid = match Uuid::parse_str(&asset_uuid_str) {
+        Ok(parsed_uuid) => parsed_uuid,
+        Err(_) => {
+            handle_error!(StatusCode::BAD_REQUEST, "Invalid UUID format");
+        }
+    };
 
     // Validate request
     if let Err(e) = validator::Validate::validate(&request) {
@@ -326,11 +338,15 @@ pub struct GroupAssetResponse {
 pub async fn list_group_assets(
     State(state): State<AppState>,
     _user: AuthUser,
-    Path(group_uuid): Path<Uuid>,
+    Path(group_uuid_str): Path<String>,
     Query(params): Query<ListAssetsParams>,
 ) -> AppResult<Json<Vec<GroupAssetResponse>>> {
     use crate::schema::asset_groups::dsl as ag;
     use crate::schema::assets::dsl as a;
+
+    // Parse UUID manually for better error messages
+    let group_uuid = Uuid::parse_str(&group_uuid_str)
+        .map_err(|_| AppError::Validation("Invalid UUID format".to_string()))?;
 
     let mut conn = get_connection(&state.db_pool)?;
 

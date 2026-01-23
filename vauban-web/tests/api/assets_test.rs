@@ -624,3 +624,71 @@ async fn test_update_asset_full_form_submission() {
     // Cleanup
     test_db::cleanup(&mut conn);
 }
+
+// =============================================================================
+// Malformed UUID Tests
+// =============================================================================
+
+/// Test get asset with malformed UUID returns validation error.
+#[tokio::test]
+#[serial]
+async fn test_get_asset_malformed_uuid_returns_validation_error() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("asset_malformed"));
+
+    // Try various malformed UUIDs
+    let malformed_uuids = [
+        "not-a-uuid",
+        "12345",
+        "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+        "24d3cc30-d6c0-ooo7-be9a-978dd250ae3e",  // Invalid character 'o'
+    ];
+
+    for bad_uuid in malformed_uuids {
+        let response = app
+            .server
+            .get(&format!("/api/v1/assets/{}", bad_uuid))
+            .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+            .await;
+
+        let status = response.status_code().as_u16();
+        assert!(
+            status == 400 || status == 422,
+            "Malformed UUID '{}' should return 400 or 422, got {}",
+            bad_uuid,
+            status
+        );
+    }
+
+    test_db::cleanup(&mut conn);
+}
+
+/// Test update asset with malformed UUID returns validation error.
+#[tokio::test]
+#[serial]
+async fn test_update_asset_malformed_uuid_returns_validation_error() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn();
+
+    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("asset_upd_malformed"));
+
+    let response = app
+        .server
+        .put("/api/v1/assets/invalid-uuid-here")
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .json(&serde_json::json!({
+            "name": "Test Asset"
+        }))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 400 || status == 422,
+        "Malformed UUID should return 400 or 422, got {}",
+        status
+    );
+
+    test_db::cleanup(&mut conn);
+}
