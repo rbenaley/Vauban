@@ -540,6 +540,10 @@ pub async fn logout(State(state): State<AppState>, jar: CookieJar) -> Response {
 }
 
 /// Logout handler for web UI (enforces CSRF).
+///
+/// If CSRF validation fails (e.g., expired session/cookie), we gracefully
+/// redirect to login instead of showing an error. The user's intent is clear
+/// and there's nothing to protect if the session is already expired.
 pub async fn logout_web(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -552,7 +556,9 @@ pub async fn logout_web(
         csrf_cookie.map(|c| c.value()),
         &form.csrf_token,
     ) {
-        return (StatusCode::BAD_REQUEST, "Invalid CSRF token").into_response();
+        // CSRF validation failed - likely expired session/cookie.
+        // Gracefully redirect to login instead of showing an error.
+        return Redirect::to("/login").into_response();
     }
     logout(State(state), jar).await
 }

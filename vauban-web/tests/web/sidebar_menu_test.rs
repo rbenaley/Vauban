@@ -423,11 +423,25 @@ async fn test_logout_requires_csrf_token() {
         .await;
 
     let status = response.status_code().as_u16();
-    // Should fail with 403 (CSRF validation failed) or 400 (bad request)
+    // With invalid CSRF, logout gracefully redirects to login (303)
+    // instead of showing an error. This is intentional because:
+    // - The user's intent is clear (they want to log out)
+    // - If the session is expired, there's nothing to protect
     assert!(
-        status == 403 || status == 400,
-        "Logout with invalid CSRF should fail with 403 or 400, got {}",
+        status == 303,
+        "Logout with invalid CSRF should redirect to login (303), got {}",
         status
+    );
+
+    // Verify it redirects to login
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok());
+    assert_eq!(
+        location,
+        Some("/login"),
+        "Should redirect to /login on invalid CSRF"
     );
 }
 
