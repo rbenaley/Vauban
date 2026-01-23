@@ -58,7 +58,7 @@ pub struct ActiveListStatsWidget {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::unwrap_ok;
+    
 
     fn create_test_active_session_item(session_type: &str) -> ActiveSessionItem {
         ActiveSessionItem {

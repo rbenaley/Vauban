@@ -358,7 +358,7 @@ fn constant_time_compare(a: &str, b: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{unwrap_ok, unwrap_some};
+    
 
     #[test]
     fn test_flash_message_success() {

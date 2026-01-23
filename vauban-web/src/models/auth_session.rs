@@ -149,7 +149,7 @@ impl AuthSession {
 mod tests {
     use super::*;
     use std::net::IpAddr;
-    use crate::unwrap_ok;
+    
 
     fn create_test_session() -> AuthSession {
         AuthSession {

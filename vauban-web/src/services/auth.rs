@@ -238,7 +238,7 @@ impl AuthService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::unwrap_ok;
+    
 
     /// Helper to load test config from TOML files.
     fn load_test_config() -> Config {

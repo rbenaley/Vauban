@@ -232,7 +232,7 @@ impl RateLimiter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::unwrap_ok;
+    
 
     #[tokio::test]
     async fn test_in_memory_rate_limiter_allows_within_limit() {

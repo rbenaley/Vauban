@@ -144,7 +144,7 @@ impl BaseTemplate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{unwrap_ok, unwrap_some};
+    
 
     // ==================== FlashMessage Tests ====================
 

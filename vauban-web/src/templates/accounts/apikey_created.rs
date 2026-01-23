@@ -11,7 +11,7 @@ pub struct ApikeyCreatedTemplate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::unwrap_ok;
+    
 
     #[test]
     fn test_apikey_created_renders() {

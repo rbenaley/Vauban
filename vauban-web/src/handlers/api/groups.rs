@@ -112,7 +112,7 @@ pub async fn list_group_members(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::unwrap_ok;
+    
 
     #[test]
     fn test_group_member_response_serialization() {

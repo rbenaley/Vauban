@@ -94,7 +94,7 @@ mod tests {
     use super::*;
     use axum::{Router, routing::get, body::Body, http::Request};
     use tower::ServiceExt;
-    use crate::unwrap_ok;
+    
 
     async fn test_handler() -> &'static str {
         "OK"

@@ -188,7 +188,7 @@ pub fn htmx_error_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{unwrap_ok, unwrap_some};
+    
 
     // ==================== AppError Display Tests ====================
 

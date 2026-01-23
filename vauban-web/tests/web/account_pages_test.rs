@@ -7,7 +7,7 @@
 /// - /accounts/apikeys - User's API keys
 /// - /accounts/apikeys/create - Create a new API key
 /// - /accounts/apikeys/{uuid}/revoke - Revoke an API key
-use crate::common::{TestApp, unwrap_ok, unwrap_some};
+use crate::common::{TestApp, unwrap_ok};
 use crate::fixtures::{
     create_expired_api_key, create_simple_user, create_test_api_key, create_test_auth_session,
     unique_name,

@@ -271,7 +271,7 @@ pub struct UpdateUserRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::unwrap_ok;
+    
     use chrono::Duration;
 
     /// Helper to create a test user

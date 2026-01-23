@@ -205,7 +205,7 @@ pub struct CreateApiKeyRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::unwrap_ok;
+    
 
     #[test]
     fn test_generate_key_format() {

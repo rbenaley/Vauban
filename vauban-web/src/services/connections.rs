@@ -143,7 +143,7 @@ impl UserConnectionRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::unwrap_ok;
+    
 
     #[tokio::test]
     async fn test_register_connection() {

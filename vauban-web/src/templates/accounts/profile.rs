@@ -84,7 +84,7 @@ pub struct ProfileTemplate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::unwrap_ok;
+    
 
     fn create_test_vauban_config() -> VaubanConfig {
         VaubanConfig {
