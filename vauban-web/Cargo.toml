@@ -2,6 +2,7 @@
 name = "vauban-web"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.89"
 authors = ["Richard Ben Aleya"]
 description = "VAUBAN - Security Bastion - Web Interface and API (Rust)"
 license = "MIT"
@@ -87,7 +88,6 @@ libc = "0.2"
 
 # Security
 dashmap = "6"       # Concurrent HashMap for in-memory rate limiting
-lazy_static = "1.5" # Static regex for validation
 ammonia = "4"       # HTML sanitization
 regex = "1"         # Regular expressions for input validation
 

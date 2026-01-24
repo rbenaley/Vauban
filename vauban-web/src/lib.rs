@@ -4,7 +4,7 @@
 
 // Clippy lints to enforce proper error handling
 // Note: Using warn instead of deny to allow #[allow] annotations to work
-// with code generation macros like lazy_static!
+// with code that requires expect (e.g., regex compilation in static initializers)
 #![warn(clippy::unwrap_used)]
 #![warn(clippy::expect_used)]
 #![warn(clippy::panic)]

@@ -1,16 +1,16 @@
-/// VAUBAN Web - API handlers module.
-///
-/// Pure M2M (Machine-to-Machine) API handlers returning JSON only.
-/// These handlers are separate from web handlers and can be disabled
-/// via configuration without affecting web functionality.
-///
-/// Key differences from web handlers:
-/// - Accept and return JSON only (no HTML, no HTMX)
-/// - Use `Json<T>` extractor/response instead of `Form<T>`
-/// - Return structured error responses, not flash messages
-/// - Authenticated via API keys or JWT tokens
-///
-/// These handlers are conditionally mounted based on `config.api.enabled`.
+//! VAUBAN Web - API handlers module.
+//!
+//! Pure M2M (Machine-to-Machine) API handlers returning JSON only.
+//! These handlers are separate from web handlers and can be disabled
+//! via configuration without affecting web functionality.
+//!
+//! Key differences from web handlers:
+//! - Accept and return JSON only (no HTML, no HTMX)
+//! - Use `Json<T>` extractor/response instead of `Form<T>`
+//! - Return structured error responses, not flash messages
+//! - Authenticated via API keys or JWT tokens
+//!
+//! These handlers are conditionally mounted based on `config.api.enabled`.
 
 pub mod accounts;
 pub mod assets;

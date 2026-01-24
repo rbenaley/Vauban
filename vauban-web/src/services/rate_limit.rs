@@ -58,19 +58,19 @@ impl RateLimiter {
         redis_url: Option<&str>,
         limit_per_minute: u32,
     ) -> AppResult<Self> {
-        if cache_enabled {
-            if let Some(url) = redis_url {
-                match redis::Client::open(url) {
-                    Ok(client) => {
-                        debug!("Rate limiter using Redis backend");
-                        return Ok(Self::Redis {
-                            client,
-                            limit_per_minute,
-                        });
-                    }
-                    Err(e) => {
-                        warn!("Failed to connect to Redis for rate limiting: {}. Falling back to in-memory.", e);
-                    }
+        if cache_enabled
+            && let Some(url) = redis_url
+        {
+            match redis::Client::open(url) {
+                Ok(client) => {
+                    debug!("Rate limiter using Redis backend");
+                    return Ok(Self::Redis {
+                        client,
+                        limit_per_minute,
+                    });
+                }
+                Err(e) => {
+                    warn!("Failed to connect to Redis for rate limiting: {}. Falling back to in-memory.", e);
                 }
             }
         }
@@ -122,32 +122,32 @@ impl RateLimiter {
         let mut conn = client
             .get_multiplexed_async_connection()
             .await
-            .map_err(|e| AppError::Cache(e))?;
+            .map_err(AppError::Cache)?;
 
         // Increment counter and set TTL atomically using MULTI/EXEC
         let count: u32 = redis::cmd("INCR")
             .arg(&redis_key)
             .query_async(&mut conn)
             .await
-            .map_err(|e| AppError::Cache(e))?;
+            .map_err(AppError::Cache)?;
 
         // Set TTL only on first request (when count is 1)
         if count == 1 {
             let _: () = conn
                 .expire(&redis_key, window_secs as i64)
                 .await
-                .map_err(|e| AppError::Cache(e))?;
+                .map_err(AppError::Cache)?;
         }
 
         // Get TTL for reset time
         let ttl: i64 = conn
             .ttl(&redis_key)
             .await
-            .map_err(|e| AppError::Cache(e))?;
+            .map_err(AppError::Cache)?;
 
         let reset_in_secs = if ttl > 0 { ttl as u64 } else { window_secs };
         let allowed = count <= limit;
-        let remaining = if count >= limit { 0 } else { limit - count };
+        let remaining = limit.saturating_sub(count);
 
         if !allowed {
             debug!(
@@ -198,7 +198,7 @@ impl RateLimiter {
         let reset_in_secs = window_duration.saturating_sub(current_elapsed).as_secs();
 
         let allowed = count <= limit;
-        let remaining = if count >= limit { 0 } else { limit - count };
+        let remaining = limit.saturating_sub(count);
 
         if !allowed {
             debug!(
@@ -222,9 +222,17 @@ impl RateLimiter {
             let now = Instant::now();
             let window_duration = Duration::from_secs(60);
 
+            // Count entries before cleanup for metrics
+            let before_count = store.len();
+
             store.retain(|_, entry| {
                 now.duration_since(entry.window_start) < window_duration * 2
             });
+
+            let expired_count = before_count.saturating_sub(store.len());
+            if expired_count > 0 {
+                debug!("Cleaned up {} expired rate limit entries", expired_count);
+            }
         }
     }
 }

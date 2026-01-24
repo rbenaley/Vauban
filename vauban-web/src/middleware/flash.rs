@@ -255,9 +255,7 @@ where
         let flash_value = cookies
             .iter()
             .filter_map(|c| {
-                let mut cookie_parts = c.splitn(2, '=');
-                let name = cookie_parts.next()?;
-                let value = cookie_parts.next()?;
+                let (name, value) = c.split_once('=')?;
                 if name.trim() == FLASH_COOKIE_NAME {
                     Some(value.trim().to_string())
                 } else {

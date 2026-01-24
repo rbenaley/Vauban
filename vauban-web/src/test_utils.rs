@@ -5,10 +5,9 @@
 //!
 //! # Usage
 //!
-//! ```rust
+//! ```rust,ignore
 //! use vauban_web::{unwrap_ok, unwrap_some, assert_ok, assert_some};
 //!
-//! #[test]
 //! fn test_example() {
 //!     let result: Result<i32, &str> = Ok(42);
 //!     let value = unwrap_ok!(result);

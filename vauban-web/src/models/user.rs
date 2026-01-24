@@ -1,6 +1,8 @@
 /// VAUBAN Web - User model.
 ///
 /// User model with MFA support, authentication tracking, and RBAC integration.
+use std::sync::LazyLock;
+
 use chrono::{DateTime, Utc};
 use diesel::prelude::*;
 use ipnetwork::IpNetwork;
@@ -13,16 +15,13 @@ use crate::schema::users;
 // Validation Helpers
 // =============================================================================
 
-lazy_static::lazy_static! {
-    /// Regex for valid usernames: alphanumeric, underscore, hyphen, dot.
-    /// Must start with a letter or number.
-    // SAFETY: Regex pattern is a compile-time constant, parsing cannot fail
-    pub static ref RE_USERNAME: regex::Regex = {
-        #[allow(clippy::expect_used)]
-        regex::Regex::new(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
-            .expect("Invalid username regex")
-    };
-}
+/// Regex for valid usernames: alphanumeric, underscore, hyphen, dot.
+/// Must start with a letter or number.
+// SAFETY: Regex pattern is a compile-time constant, parsing cannot fail
+pub static RE_USERNAME: LazyLock<regex::Regex> = LazyLock::new(|| {
+    #[allow(clippy::expect_used)]
+    regex::Regex::new(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$").expect("Invalid username regex")
+});
 
 /// Validate password complexity.
 ///

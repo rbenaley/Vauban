@@ -141,11 +141,10 @@ fn get_or_create_csrf_token(
     };
 
     // Check if we have a valid existing token
-    if let Some(cookie) = jar.get(CSRF_COOKIE_NAME) {
-        let token = cookie.value().to_string();
-        if verify_csrf_token(secret, &token) {
-            return (token, None);
-        }
+    if let Some(cookie) = jar.get(CSRF_COOKIE_NAME)
+        && verify_csrf_token(secret, cookie.value())
+    {
+        return (cookie.value().to_string(), None);
     }
 
     // Generate new token
@@ -630,7 +629,7 @@ pub async fn create_user_web(
     let min_len = state.config.security.password_min_length;
     if form.password.len() < min_len {
         return flash_redirect(
-            flash.error(&format!(
+            flash.error(format!(
                 "Password must be at least {} characters",
                 min_len
             )),
@@ -701,7 +700,7 @@ pub async fn create_user_web(
 
     match result {
         Ok(_) => flash_redirect(
-            flash.success(&format!("User '{}' created successfully", form.username)),
+            flash.success(format!("User '{}' created successfully", form.username)),
             &format!("/accounts/users/{}", user_uuid),
         ),
         Err(_) => flash_redirect(
@@ -963,7 +962,7 @@ pub async fn update_user_web(
             let min_len = state.config.security.password_min_length;
             if password.len() < min_len {
                 return flash_redirect(
-                    flash.error(&format!(
+                    flash.error(format!(
                         "Password must be at least {} characters",
                         min_len
                     )),
@@ -2057,7 +2056,7 @@ pub async fn create_asset_web(
         return match result {
             Ok(_) => {
                 flash_redirect(
-                    flash.success(&format!(
+                    flash.success(format!(
                         "Asset '{}' reactivated successfully",
                         form.name.trim()
                     )),
@@ -2094,7 +2093,7 @@ pub async fn create_asset_web(
     match result {
         Ok(_) => {
             flash_redirect(
-                flash.success(&format!("Asset '{}' created successfully", form.name.trim())),
+                flash.success(format!("Asset '{}' created successfully", form.name.trim())),
                 &format!("/assets/{}", new_uuid),
             )
         }
@@ -4247,7 +4246,7 @@ pub async fn create_vauban_group_web(
 
     match insert_result {
         Ok(_) => flash_redirect(
-            flash.success(&format!("Group '{}' created successfully", form.name)),
+            flash.success(format!("Group '{}' created successfully", form.name)),
             &format!("/accounts/groups/{}", new_uuid),
         ),
         Err(e) => {
@@ -4948,7 +4947,7 @@ pub async fn delete_vauban_group_web(
 
     if member_count > 0 {
         return flash_redirect(
-            flash.error(&format!(
+            flash.error(format!(
                 "Cannot delete group: it still has {} member{}. Remove all members first.",
                 member_count,
                 if member_count == 1 { "" } else { "s" }
@@ -5321,14 +5320,14 @@ pub async fn asset_group_add_asset_form(
         ))
         .order(a::name.asc())
         .load(&mut conn)
-        .map_err(|e| AppError::Database(e))?;
+        .map_err(AppError::Database)?;
 
     // Get all group names for lookup
     let group_names: std::collections::HashMap<i32, String> = ag::asset_groups
         .filter(ag::is_deleted.eq(false))
         .select((ag::id, ag::name))
         .load::<(i32, String)>(&mut conn)
-        .map_err(|e| AppError::Database(e))?
+        .map_err(AppError::Database)?
         .into_iter()
         .collect();
 
@@ -6028,7 +6027,7 @@ pub async fn create_asset_group_web(
 
     match result {
         Ok(_) => flash_redirect(
-            flash.success(&format!(
+            flash.success(format!(
                 "Asset group '{}' created successfully",
                 form.name.trim()
             )),
@@ -6132,7 +6131,7 @@ pub async fn delete_asset_group_web(
 
     match result {
         Ok(_) => flash_redirect(
-            flash.success(&format!("Asset group '{}' deleted successfully", group_name)),
+            flash.success(format!("Asset group '{}' deleted successfully", group_name)),
             "/assets/groups",
         ),
         Err(e) => {
