@@ -2,6 +2,10 @@
 //!
 //! Capsicum is a capability-based security framework that allows processes
 //! to enter a sandbox where they can only access pre-opened file descriptors.
+//!
+//! On FreeBSD, this module uses the `capsicum` crate to limit file descriptor
+//! rights and enter capability mode. On other platforms, stub implementations
+//! are provided for development.
 
 use std::os::unix::io::RawFd;
 use thiserror::Error;
@@ -124,6 +128,24 @@ impl CapRights {
             ..Default::default()
         }
     }
+
+    /// Create rights for a TCP connection (database, cache, etc.).
+    ///
+    /// This is similar to `connected_socket()` but explicitly for
+    /// established TCP connections used for database or cache access.
+    pub fn tcp_connection() -> Self {
+        Self {
+            read: true,
+            write: true,
+            event: true,
+            fstat: true,
+            getsockopt: true,
+            setsockopt: true,
+            getpeername: true,
+            getsockname: true,
+            ..Default::default()
+        }
+    }
 }
 
 /// Enter capability mode (point of no return).
@@ -163,11 +185,71 @@ pub fn in_capability_mode() -> bool {
 ///
 /// This must be called BEFORE entering capability mode.
 /// Once rights are limited, they cannot be expanded.
+///
+/// # Safety
+/// The file descriptor must be valid and open.
 #[cfg(target_os = "freebsd")]
-pub fn limit_fd_rights(_fd: RawFd, _rights: &CapRights) -> Result<()> {
-    // Use the capsicum crate for the actual implementation
-    // This is a placeholder - the actual implementation would use capsicum::CapRights
-    tracing::debug!("Limiting fd rights (placeholder - use capsicum crate)");
+pub fn limit_fd_rights(fd: RawFd, rights: &CapRights) -> Result<()> {
+    use capsicum::{FileRights, Right};
+    use std::os::unix::io::BorrowedFd;
+
+    // Build FileRights from our CapRights
+    let mut file_rights = FileRights::new();
+
+    if rights.read {
+        file_rights.allow(Right::Read);
+    }
+    if rights.write {
+        file_rights.allow(Right::Write);
+    }
+    if rights.seek {
+        file_rights.allow(Right::Seek);
+    }
+    if rights.mmap {
+        file_rights.allow(Right::Mmap);
+    }
+    if rights.event {
+        file_rights.allow(Right::Event);
+    }
+    if rights.fcntl {
+        file_rights.allow(Right::Fcntl);
+    }
+    if rights.fstat {
+        file_rights.allow(Right::Fstat);
+    }
+    if rights.connect {
+        file_rights.allow(Right::Connect);
+    }
+    if rights.accept {
+        file_rights.allow(Right::Accept);
+    }
+    if rights.listen {
+        file_rights.allow(Right::Listen);
+    }
+    if rights.bind {
+        file_rights.allow(Right::Bind);
+    }
+    if rights.getpeername {
+        file_rights.allow(Right::Getpeername);
+    }
+    if rights.getsockname {
+        file_rights.allow(Right::Getsockname);
+    }
+    if rights.getsockopt {
+        file_rights.allow(Right::Getsockopt);
+    }
+    if rights.setsockopt {
+        file_rights.allow(Right::Setsockopt);
+    }
+
+    // SAFETY: The caller guarantees the fd is valid
+    let borrowed_fd = unsafe { BorrowedFd::borrow_raw(fd) };
+
+    file_rights
+        .limit(&borrowed_fd)
+        .map_err(|e| CapsicumError::LimitFailed(std::io::Error::from_raw_os_error(e.raw_os_error().unwrap_or(libc::EINVAL))))?;
+
+    tracing::debug!("Limited rights on fd {}", fd);
     Ok(())
 }
 
@@ -431,5 +513,22 @@ mod tests {
         assert!(rights.mmap);
         assert!(!rights.event);
         assert!(!rights.fcntl);
+    }
+
+    #[test]
+    fn test_cap_rights_tcp_connection() {
+        let rights = CapRights::tcp_connection();
+        assert!(rights.read);
+        assert!(rights.write);
+        assert!(rights.event);
+        assert!(rights.fstat);
+        assert!(rights.getsockopt);
+        assert!(rights.setsockopt);
+        assert!(rights.getpeername);
+        assert!(rights.getsockname);
+        assert!(!rights.accept);
+        assert!(!rights.listen);
+        assert!(!rights.bind);
+        assert!(!rights.connect);
     }
 }

@@ -313,6 +313,97 @@ pub fn enter_capability_mode() -> Result<()> {
 }
 ```
 
+### 5.5 vauban-web Sandboxing
+
+`vauban-web` is an async web server using Tokio and Axum. It requires special handling for Capsicum sandboxing due to its use of connection pools and multiplexed connections.
+
+#### 5.5.1 Pre-sandbox Resource Acquisition
+
+Before entering capability mode, vauban-web must:
+
+1. **Bind the HTTPS listening socket** - Network namespace access required
+2. **Load TLS certificates** - File system access required
+3. **Pre-establish all database connections** - Fixed-size pool
+4. **Establish Redis/Valkey connection** - Multiplexed connection
+5. **Initialize rate limiter** - May use Redis
+
+```rust
+// Simplified startup sequence
+async fn main() -> Result<()> {
+    // 1. Bind socket BEFORE sandbox
+    let listener = TcpListener::bind(addr).await?;
+    
+    // 2. Load TLS configuration (opens certificate files)
+    let tls_config = load_tls_config(&config).await?;
+    
+    // 3. Create fixed-size database pool (all connections pre-established)
+    let db_pool = create_pool_sandboxed(&config)?;
+    
+    // 4. Create and validate cache connection
+    let cache = create_cache_client(&config).await?;
+    cache.validate_connection().await?;
+    
+    // 5. Enter sandbox
+    enter_sandbox(&listener)?;
+    
+    // 6. Serve requests (no new FDs can be opened)
+    serve(listener, tls_config, app).await
+}
+```
+
+#### 5.5.2 Fixed-Size Database Pool
+
+Unlike the standard dynamic pool, the sandboxed pool:
+
+- Sets `max_size = min_idle` to pre-establish all connections
+- Uses `test_on_check_out(true)` to detect dead connections
+- Validates all connections at startup before `cap_enter()`
+
+```rust
+pub fn create_pool_sandboxed(config: &Config) -> AppResult<DbPool> {
+    let pool_size = config.database.max_connections;
+    
+    Pool::builder()
+        .max_size(pool_size)
+        .min_idle(Some(pool_size))  // Pre-establish ALL connections
+        .test_on_check_out(true)
+        .build(manager)?
+}
+```
+
+#### 5.5.3 Connection Loss Handling
+
+If a database or cache connection is lost after `cap_enter()`:
+
+1. The health check endpoint (`/health`) returns 503 Service Unavailable
+2. The service continues to operate with degraded functionality
+3. If connection cannot be recovered, exit with code 100 for respawn
+
+```rust
+pub fn get_connection_or_exit(pool: &DbPool) -> DbConnection {
+    match pool.get() {
+        Ok(conn) => conn,
+        Err(e) => {
+            tracing::error!("DB connection lost in sandbox mode: {}", e);
+            std::process::exit(100);  // Trigger supervisor respawn
+        }
+    }
+}
+```
+
+#### 5.5.4 Sandboxed Services Summary
+
+| Service | Sandboxed | Notes |
+|---------|-----------|-------|
+| `vauban-supervisor` | No | Needs to spawn/manage children |
+| `vauban-web` | **Yes** | Fixed pool, multiplexed cache, pre-bound socket |
+| `vauban-auth` | Yes | IPC + optional DB |
+| `vauban-rbac` | Yes | IPC only |
+| `vauban-vault` | Yes | IPC + HSM |
+| `vauban-audit` | Yes | IPC + audit storage |
+| `vauban-proxy-ssh` | Yes | IPC + pre-bound socket |
+| `vauban-proxy-rdp` | Yes | IPC + pre-bound socket |
+
 ---
 
 ## 6. Database Connections

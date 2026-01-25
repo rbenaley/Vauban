@@ -1,8 +1,13 @@
-use redis::AsyncCommands;
 /// VAUBAN Web - Cache (Valkey/Redis) connection.
 ///
 /// Provides Redis client for caching and session storage.
 /// Supports a no-op mock cache when cache is disabled.
+///
+/// For Capsicum sandbox mode, connections must be established before
+/// entering capability mode. Use `validate_connection()` to verify
+/// the connection is working, and `check_or_exit()` for periodic
+/// health checks that exit on failure.
+use redis::AsyncCommands;
 use redis::Client;
 use secrecy::ExposeSecret;
 use std::sync::Arc;
@@ -12,11 +17,88 @@ use tracing::warn;
 use crate::config::Config;
 use crate::error::{AppError, AppResult};
 
+/// Exit code used when cache connection is lost in sandbox mode.
+/// The supervisor will respawn the service when it sees this exit code.
+pub const EXIT_CODE_CONNECTION_LOST: i32 = 100;
+
 /// Cache connection enum - can be real Redis or mock.
 #[derive(Clone)]
 pub enum CacheConnection {
     Redis(Arc<Mutex<redis::aio::MultiplexedConnection>>),
     Mock(Arc<MockCache>),
+}
+
+impl CacheConnection {
+    /// Validate that the cache connection is working.
+    ///
+    /// This sends a PING command to Redis and verifies the response.
+    /// For mock cache, this always succeeds.
+    ///
+    /// Call this after creating the cache client but before entering
+    /// Capsicum capability mode to ensure the connection is established.
+    pub async fn validate_connection(&self) -> AppResult<()> {
+        match self {
+            CacheConnection::Redis(conn) => {
+                let mut conn = conn.lock().await;
+                let pong: String = redis::cmd("PING")
+                    .query_async(&mut *conn)
+                    .await
+                    .map_err(AppError::Cache)?;
+
+                if pong != "PONG" {
+                    return Err(AppError::Internal(anyhow::anyhow!(
+                        "Unexpected PING response from cache: expected 'PONG', got '{}'",
+                        pong
+                    )));
+                }
+
+                tracing::debug!("Cache connection validated (PING/PONG successful)");
+                Ok(())
+            }
+            CacheConnection::Mock(_) => {
+                tracing::debug!("Mock cache connection validated (always succeeds)");
+                Ok(())
+            }
+        }
+    }
+
+    /// Check if the cache connection is still alive, exit if not (sandbox mode).
+    ///
+    /// This is designed for Capsicum sandbox mode where the service cannot
+    /// recover from a lost cache connection. If the connection check fails,
+    /// the process exits with code 100 to trigger a respawn by the supervisor.
+    ///
+    /// For mock cache, this always succeeds without exiting.
+    pub async fn check_or_exit(&self) {
+        match self {
+            CacheConnection::Redis(conn) => {
+                let mut conn = conn.lock().await;
+                if let Err(e) = redis::cmd("PING")
+                    .query_async::<String>(&mut *conn)
+                    .await
+                {
+                    tracing::error!(
+                        "Cache connection lost in sandbox mode: {}. Exiting for respawn.",
+                        e
+                    );
+                    std::process::exit(EXIT_CODE_CONNECTION_LOST);
+                }
+            }
+            CacheConnection::Mock(_) => {
+                // Mock cache never fails
+            }
+        }
+    }
+
+    /// Check if this is a real Redis connection or a mock.
+    pub fn is_redis(&self) -> bool {
+        matches!(self, CacheConnection::Redis(_))
+    }
+
+    /// Check if this is a mock cache.
+    pub fn is_mock(&self) -> bool {
+        matches!(self, CacheConnection::Mock(_))
+    }
 }
 
 /// Mock cache implementation (no-op) for development.
@@ -461,5 +543,41 @@ mod tests {
 
         assert!(cache.get::<String>(unicode_key).await.is_ok());
         assert!(cache.set(unicode_key, &"value", None).await.is_ok());
+    }
+
+    // ==================== Sandbox Mode Tests ====================
+
+    #[test]
+    fn test_exit_code_connection_lost_value() {
+        assert_eq!(EXIT_CODE_CONNECTION_LOST, 100);
+    }
+
+    #[tokio::test]
+    async fn test_mock_cache_validate_connection() {
+        let conn = CacheConnection::Mock(Arc::new(MockCache::new()));
+        let result = conn.validate_connection().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_mock_cache_check_or_exit() {
+        let conn = CacheConnection::Mock(Arc::new(MockCache::new()));
+        // This should not exit for mock cache
+        conn.check_or_exit().await;
+        // If we reach here, the test passed
+    }
+
+    #[test]
+    fn test_cache_connection_is_redis() {
+        let mock_conn = CacheConnection::Mock(Arc::new(MockCache::new()));
+        assert!(!mock_conn.is_redis());
+        assert!(mock_conn.is_mock());
+    }
+
+    #[test]
+    fn test_cache_connection_is_mock() {
+        let mock_conn = CacheConnection::Mock(Arc::new(MockCache::new()));
+        assert!(mock_conn.is_mock());
+        assert!(!mock_conn.is_redis());
     }
 }
