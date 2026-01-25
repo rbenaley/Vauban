@@ -1,0 +1,17 @@
+[package]
+name = "vauban-proxy-rdp"
+description = "Vauban - RDP proxy service (IronRDP)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+shared.workspace = true
+libc.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+serde.workspace = true

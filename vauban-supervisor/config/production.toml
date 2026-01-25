@@ -1,0 +1,85 @@
+# Vauban Supervisor Configuration - Production Mode
+#
+# In production mode, each service runs with its own dedicated UID/GID
+# for maximum privilege separation and security.
+#
+# IMPORTANT: The supervisor must be started as root to drop privileges.
+
+[supervisor]
+# Environment: "development" or "production"
+environment = "production"
+
+# Path to service binaries (absolute path recommended for production)
+bin_path = "/usr/local/libexec/vauban"
+
+# Log level: "trace", "debug", "info", "warn", "error"
+log_level = "info"
+
+# Watchdog configuration
+[supervisor.watchdog]
+heartbeat_interval_secs = 5
+heartbeat_timeout_secs = 2
+max_missed_heartbeats = 3
+max_respawns_per_hour = 10
+
+# Default credentials (not used in production - each service has its own)
+[defaults]
+uid = 0
+gid = 0
+
+# Service configurations with dedicated UID/GID for each service.
+#
+# On FreeBSD, create these users/groups:
+#   pw groupadd -n vauban_audit -g 901
+#   pw useradd -n vauban_audit -u 901 -g 901 -d /nonexistent -s /usr/sbin/nologin
+#   (repeat for each service)
+
+[services.audit]
+name = "vauban-audit"
+binary = "vauban-audit"
+uid = 901
+gid = 901
+# Working directory for this service
+workdir = "/var/vauban/audit"
+
+[services.vault]
+name = "vauban-vault"
+binary = "vauban-vault"
+uid = 902
+gid = 902
+workdir = "/var/vauban/vault"
+
+[services.rbac]
+name = "vauban-rbac"
+binary = "vauban-rbac"
+uid = 903
+gid = 903
+workdir = "/var/vauban/rbac"
+
+[services.auth]
+name = "vauban-auth"
+binary = "vauban-auth"
+uid = 904
+gid = 904
+workdir = "/var/vauban/auth"
+
+[services.proxy_ssh]
+name = "vauban-proxy-ssh"
+binary = "vauban-proxy-ssh"
+uid = 905
+gid = 905
+workdir = "/var/vauban/proxy-ssh"
+
+[services.proxy_rdp]
+name = "vauban-proxy-rdp"
+binary = "vauban-proxy-rdp"
+uid = 906
+gid = 906
+workdir = "/var/vauban/proxy-rdp"
+
+[services.web]
+name = "vauban-web"
+binary = "vauban-web"
+uid = 907
+gid = 907
+workdir = "/var/vauban/web"

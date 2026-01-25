@@ -1,0 +1,24 @@
+[package]
+name = "shared"
+description = "Vauban - Shared IPC protocol, messages, and Capsicum sandboxing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+libc.workspace = true
+tracing.workspace = true
+
+# Binary serialization for IPC
+bincode = "1.3"
+
+# Capsicum bindings for FreeBSD
+[target.'cfg(target_os = "freebsd")'.dependencies]
+capsicum = "0.4"
+
+[dev-dependencies]
+tempfile = "3"

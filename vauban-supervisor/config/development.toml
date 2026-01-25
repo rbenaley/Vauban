@@ -1,0 +1,61 @@
+# Vauban Supervisor Configuration - Development Mode
+#
+# In development mode, all services run as the current user.
+# This allows running without root privileges and simplifies debugging.
+
+[supervisor]
+# Environment: "development" or "production"
+environment = "development"
+
+# Path to service binaries (relative to supervisor binary or absolute)
+bin_path = "./target/debug"
+
+# Log level: "trace", "debug", "info", "warn", "error"
+log_level = "debug"
+
+# Watchdog configuration
+[supervisor.watchdog]
+heartbeat_interval_secs = 5
+heartbeat_timeout_secs = 2
+max_missed_heartbeats = 3
+max_respawns_per_hour = 10
+
+# Default credentials for development (current user)
+# When uid/gid are not specified or set to 0, the current user is used.
+[defaults]
+# Use current user's UID (0 = don't change)
+uid = 0
+# Use current user's GID (0 = don't change)  
+gid = 0
+
+# Service configurations
+# In development mode, uid/gid from [defaults] are used if not specified.
+
+[services.audit]
+name = "vauban-audit"
+binary = "vauban-audit"
+# uid and gid inherited from [defaults]
+
+[services.vault]
+name = "vauban-vault"
+binary = "vauban-vault"
+
+[services.rbac]
+name = "vauban-rbac"
+binary = "vauban-rbac"
+
+[services.auth]
+name = "vauban-auth"
+binary = "vauban-auth"
+
+[services.proxy_ssh]
+name = "vauban-proxy-ssh"
+binary = "vauban-proxy-ssh"
+
+[services.proxy_rdp]
+name = "vauban-proxy-rdp"
+binary = "vauban-proxy-rdp"
+
+[services.web]
+name = "vauban-web"
+binary = "vauban-web"

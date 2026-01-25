@@ -1,0 +1,41 @@
+[workspace]
+resolver = "2"
+members = [
+    "shared",
+    "vauban-supervisor",
+    "vauban-web",
+    "vauban-auth",
+    "vauban-rbac",
+    "vauban-proxy-ssh",
+    "vauban-proxy-rdp",
+    "vauban-vault",
+    "vauban-audit",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+authors = ["Richard Ben Aleya"]
+license = "BSD-2-Clause"
+
+[workspace.dependencies]
+# Shared dependencies (minimalist, no async runtime)
+shared = { path = "shared" }
+serde = { version = "1.0", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2.0"
+anyhow = "1.0"
+libc = "0.2"
+
+# Tokio is used ONLY by vauban-web (not shared)
+
+[profile.release]
+opt-level = 3
+lto = true
+debug = false
+strip = true
+
+[profile.release.package."*"]
+opt-level = 3

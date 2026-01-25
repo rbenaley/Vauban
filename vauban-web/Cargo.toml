@@ -1,15 +1,18 @@
 [package]
 name = "vauban-web"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.89"
-authors = ["Richard Ben Aleya"]
 description = "VAUBAN - Security Bastion - Web Interface and API (Rust)"
-license = "MIT"
 readme = "README.md"
 default-run = "vauban-web"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
 
 [dependencies]
+# Shared IPC library
+shared.workspace = true
+
 # Web framework
 axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["full"] }
@@ -40,11 +43,6 @@ tower-sessions = "0.14"
 # Validation
 validator = { version = "0.20", features = ["derive"] }
 
-# gRPC
-tonic = "0.14"
-tonic-tls = "0.6"
-prost = "0.14"
-
 # Cryptography (Post-Quantum)
 pqcrypto-mlkem = "0.1"
 pqcrypto-mldsa = "0.1"
@@ -62,15 +60,15 @@ subtle = "2.5"
 redis = { version = "1.0", features = ["tokio-comp"] }
 
 # Logging
-tracing = "0.1"
+tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 
 # Error handling
-thiserror = "2.0"
-anyhow = "1.0"
+thiserror.workspace = true
+anyhow.workspace = true
 
 # Serialization
-serde = { version = "1.0", features = ["derive"] }
+serde.workspace = true
 serde_json = "1.0"
 
 # Utilities
@@ -84,7 +82,7 @@ hex = "0.4"
 url = "2.5"
 base32 = "0.5"
 base64 = "0.22"
-libc = "0.2"
+libc.workspace = true
 
 # Security
 dashmap = "6"       # Concurrent HashMap for in-memory rate limiting
@@ -134,12 +132,3 @@ path = "src/bin/create_superuser.rs"
 [[bin]]
 name = "reset_2FA"
 path = "src/bin/reset_2FA.rs"
-
-[profile.release]
-opt-level = 3
-lto = true
-debug = false
-strip = true
-
-[profile.release.package."*"]
-opt-level = 3

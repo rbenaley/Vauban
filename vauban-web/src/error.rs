@@ -33,8 +33,8 @@ pub enum AppError {
     #[error("Internal server error: {0}")]
     Internal(#[from] anyhow::Error),
 
-    #[error("gRPC error: {0}")]
-    Grpc(#[from] tonic::Status),
+    #[error("IPC error: {0}")]
+    Ipc(String),
 
     #[error("Cache error: {0}")]
     Cache(#[from] redis::RedisError),
@@ -70,8 +70,8 @@ impl IntoResponse for AppError {
                     "Internal server error".to_string(),
                 )
             }
-            AppError::Grpc(e) => {
-                tracing::error!("gRPC error: {}", e);
+            AppError::Ipc(e) => {
+                tracing::error!("IPC error: {}", e);
                 (StatusCode::BAD_GATEWAY, "Service unavailable".to_string())
             }
             AppError::Cache(e) => {
@@ -378,23 +378,10 @@ mod tests {
     // ==================== Response Body Tests ====================
 
     #[test]
-    fn test_app_error_into_response_grpc_status() {
-        let error = AppError::Grpc(tonic::Status::unavailable("service down"));
+    fn test_app_error_into_response_ipc_status() {
+        let error = AppError::Ipc("service unavailable".to_string());
         let response = error.into_response();
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-    }
-
-    // ==================== Error Source Tests ====================
-
-    #[test]
-    fn test_app_error_from_tonic_status() {
-        let status = tonic::Status::not_found("resource not found");
-        let app_error: AppError = status.into();
-
-        match app_error {
-            AppError::Grpc(_) => (),
-            _ => panic!("Expected Grpc error"),
-        }
     }
 
     // ==================== Display Tests ====================
@@ -407,10 +394,10 @@ mod tests {
     }
 
     #[test]
-    fn test_app_error_display_grpc() {
-        let error = AppError::Grpc(tonic::Status::unknown("unknown"));
+    fn test_app_error_display_ipc() {
+        let error = AppError::Ipc("connection closed".to_string());
         let display = error.to_string();
-        assert!(display.contains("gRPC error"));
+        assert!(display.contains("IPC error"));
     }
 
     // ==================== User-Friendly Message Tests ====================

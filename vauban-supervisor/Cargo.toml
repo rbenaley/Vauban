@@ -1,0 +1,23 @@
+[package]
+name = "vauban-supervisor"
+description = "Vauban - Process supervisor with privilege separation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+shared.workspace = true
+libc.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+
+# Configuration
+toml = "0.8"
+
+# Signal handling
+signal-hook = "0.3"
