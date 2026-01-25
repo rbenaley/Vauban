@@ -8,7 +8,7 @@
 use diesel::pg::PgConnection;
 use diesel::r2d2::{ConnectionManager, Pool, PooledConnection};
 use secrecy::ExposeSecret;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::config::Config;
 use crate::error::{AppError, AppResult};
@@ -64,8 +64,13 @@ pub fn create_pool_sandboxed(config: &Config) -> AppResult<DbPool> {
     // Validate that all connections are established and working
     validate_all_connections(&pool, pool_size)?;
 
+    // Wait for r2d2 background workers to finish establishing idle connections.
+    // This is critical for Capsicum: if we enter cap_enter() before the pool
+    // is stable, the workers will try to create connections and fail.
+    wait_for_pool_ready(&pool, pool_size, Duration::from_secs(30))?;
+
     tracing::info!(
-        "Database pool initialized for sandbox mode: {} connections pre-established",
+        "Database pool ready for sandbox mode: {} connections pre-established",
         pool_size
     );
 
@@ -93,6 +98,32 @@ fn validate_all_connections(pool: &DbPool, count: u32) -> AppResult<()> {
 
     tracing::debug!("All {} database connections validated", count);
     Ok(())
+}
+
+/// Wait for the pool to have all idle connections ready.
+///
+/// This ensures r2d2's background workers have finished creating connections
+/// before we enter Capsicum sandbox mode.
+fn wait_for_pool_ready(pool: &DbPool, expected: u32, timeout: Duration) -> AppResult<()> {
+    let start = Instant::now();
+    loop {
+        let state = pool.state();
+        if state.idle_connections >= expected {
+            tracing::debug!(
+                "Pool ready: {}/{} idle connections",
+                state.idle_connections,
+                expected
+            );
+            return Ok(());
+        }
+        if start.elapsed() > timeout {
+            return Err(AppError::Config(format!(
+                "Timeout waiting for pool: {}/{} connections after {:?}",
+                state.idle_connections, expected, timeout
+            )));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 /// Get a connection from the pool.
