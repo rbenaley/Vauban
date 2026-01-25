@@ -26,7 +26,7 @@
 
 ### 1.1 Background
 
-Vauban is a security bastion (PAM - Privileged Access Management) designed to provide secure access to IT infrastructure. The initial architecture used gRPC with mTLS for inter-service communication.
+Vauban is a security bastion (PAM - Privileged Access Management) designed to provide secure access to IT/OT/Military infrastructure. The initial architecture used gRPC with mTLS for inter-service communication.
 
 ### 1.2 Motivation for Change
 
@@ -785,5 +785,3 @@ sequenceDiagram
 ```
 
 ---
-
-*Document generated: January 2026*

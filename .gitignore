@@ -13,7 +13,7 @@ Cargo.lock
 # IDE
 .idea/
 .vscode/
-.cursor/
+.cursor*
 *.swp
 *.swo
 *~
