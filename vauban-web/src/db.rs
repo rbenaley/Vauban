@@ -8,7 +8,7 @@
 use diesel::pg::PgConnection;
 use diesel::r2d2::{ConnectionManager, Pool, PooledConnection};
 use secrecy::ExposeSecret;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::config::Config;
 use crate::error::{AppError, AppResult};
@@ -50,24 +50,23 @@ pub fn create_pool(config: &Config) -> AppResult<DbPool> {
 pub fn create_pool_sandboxed(config: &Config) -> AppResult<DbPool> {
     let manager = ConnectionManager::<PgConnection>::new(config.database.url.expose_secret());
 
-    // Use max_connections as both min and max to create a fixed-size pool
+    // Use max_connections as the pool size
     let pool_size = config.database.max_connections;
 
+    // IMPORTANT: Use min_idle(None) to disable automatic idle connection creation.
+    // This prevents r2d2's background threads from trying to create connections
+    // after we enter Capsicum sandbox mode.
     let pool = Pool::builder()
         .max_size(pool_size)
-        .min_idle(Some(pool_size)) // Pre-establish all connections
+        .min_idle(None) // Disable automatic idle connection creation
         .connection_timeout(Duration::from_secs(config.database.connect_timeout_secs))
-        .test_on_check_out(true) // Validate connections when borrowed
+        .test_on_check_out(false) // Disable test on checkout to avoid reconnection attempts
         .build(manager)
         .map_err(|e| AppError::Config(format!("Failed to create sandboxed database pool: {}", e)))?;
 
-    // Validate that all connections are established and working
-    validate_all_connections(&pool, pool_size)?;
-
-    // Wait for r2d2 background workers to finish establishing idle connections.
-    // This is critical for Capsicum: if we enter cap_enter() before the pool
-    // is stable, the workers will try to create connections and fail.
-    wait_for_pool_ready(&pool, pool_size, Duration::from_secs(30))?;
+    // Force creation of all connections by borrowing them simultaneously.
+    // This ensures all connections are established BEFORE cap_enter().
+    force_create_all_connections(&pool, pool_size)?;
 
     tracing::info!(
         "Database pool ready for sandbox mode: {} connections pre-established",
@@ -77,15 +76,22 @@ pub fn create_pool_sandboxed(config: &Config) -> AppResult<DbPool> {
     Ok(pool)
 }
 
-/// Validate that all connections in the pool are established and working.
+/// Force creation of all connections by borrowing them simultaneously.
 ///
-/// This function borrows and returns each connection to ensure they are all valid.
-/// Called during startup before entering capability mode.
-fn validate_all_connections(pool: &DbPool, count: u32) -> AppResult<()> {
-    tracing::debug!("Validating {} database connections...", count);
+/// This function borrows all connections at once, forcing r2d2 to create them
+/// in the calling thread (not background threads). The connections are then
+/// returned to the pool and become idle.
+///
+/// This is essential for Capsicum sandbox mode: all connections must be
+/// established BEFORE cap_enter(), and we cannot rely on r2d2's background
+/// threads which would try to create connections after the sandbox is active.
+fn force_create_all_connections(pool: &DbPool, count: u32) -> AppResult<()> {
+    tracing::debug!("Force-creating {} database connections...", count);
 
+    // Borrow all connections simultaneously to force their creation
+    let mut connections = Vec::with_capacity(count as usize);
     for i in 0..count {
-        let _conn = pool.get().map_err(|e| {
+        let conn = pool.get().map_err(|e| {
             AppError::Config(format!(
                 "Failed to establish DB connection {}/{}: {}",
                 i + 1,
@@ -93,37 +99,24 @@ fn validate_all_connections(pool: &DbPool, count: u32) -> AppResult<()> {
                 e
             ))
         })?;
-        tracing::trace!("DB connection {}/{} validated", i + 1, count);
+        connections.push(conn);
+        tracing::trace!("DB connection {}/{} created", i + 1, count);
     }
 
-    tracing::debug!("All {} database connections validated", count);
+    tracing::debug!("All {} database connections created and validated", count);
+
+    // Connections are dropped here, returning them to the pool as idle connections
+    drop(connections);
+
+    // Verify the pool state
+    let state = pool.state();
+    tracing::debug!(
+        "Pool state after creation: {} total, {} idle",
+        state.connections,
+        state.idle_connections
+    );
+
     Ok(())
-}
-
-/// Wait for the pool to have all idle connections ready.
-///
-/// This ensures r2d2's background workers have finished creating connections
-/// before we enter Capsicum sandbox mode.
-fn wait_for_pool_ready(pool: &DbPool, expected: u32, timeout: Duration) -> AppResult<()> {
-    let start = Instant::now();
-    loop {
-        let state = pool.state();
-        if state.idle_connections >= expected {
-            tracing::debug!(
-                "Pool ready: {}/{} idle connections",
-                state.idle_connections,
-                expected
-            );
-            return Ok(());
-        }
-        if start.elapsed() > timeout {
-            return Err(AppError::Config(format!(
-                "Timeout waiting for pool: {}/{} connections after {:?}",
-                state.idle_connections, expected, timeout
-            )));
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
 }
 
 /// Get a connection from the pool.
