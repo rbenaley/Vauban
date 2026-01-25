@@ -16,10 +16,11 @@
 use anyhow::{Context, Result};
 use argon2::{Algorithm, Argon2, Params, PasswordHasher, Version, password_hash::SaltString};
 use chrono::{Duration, Utc};
-use diesel::PgConnection;
-use diesel::prelude::*;
-use diesel::r2d2::{ConnectionManager, Pool};
+use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel::sql_types::{BigInt, Bool, Integer, Nullable, Text};
+use diesel_async::pooled_connection::deadpool::Pool;
+use diesel_async::pooled_connection::AsyncDieselConnectionManager;
+use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use rand::Rng;
 use rand::rngs::OsRng;
 use secrecy::ExposeSecret;
@@ -31,32 +32,36 @@ mod schema {
     include!("../schema.rs");
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     println!("🚀 VAUBAN Seed Data Generator (Idempotent)");
     println!("==========================================\n");
 
     // Load configuration from TOML files
     let config = Config::load().context("Failed to load configuration from config/*.toml")?;
 
-    // Create connection pool
-    let manager = ConnectionManager::<PgConnection>::new(config.database.url.expose_secret());
-    let pool = Pool::builder()
-        .build(manager)
+    // Create async connection pool
+    let manager = AsyncDieselConnectionManager::<AsyncPgConnection>::new(
+        config.database.url.expose_secret(),
+    );
+    let pool = Pool::builder(manager)
+        .max_size(5)
+        .build()
         .context("Failed to create database pool")?;
 
-    let mut conn = pool.get().context("Failed to get database connection")?;
+    let mut conn = pool.get().await.context("Failed to get database connection")?;
 
     // Create users
     println!("👥 Creating users...");
-    let user_ids = create_users(&mut conn, &config);
+    let user_ids = create_users(&mut conn, &config).await;
     println!("   ✅ {} users ready\n", user_ids.len());
 
     // Get first user id for ownership
-    let owner_id = user_ids.first().copied().unwrap_or(1);
+    let owner_id = user_ids.get(0).copied().unwrap_or(1);
 
     // Create assets
     println!("📦 Creating assets...");
-    let asset_ids = create_assets(&mut conn, owner_id);
+    let asset_ids = create_assets(&mut conn, owner_id).await;
     println!("   ✅ {} assets ready\n", asset_ids.len());
 
     // Check existing sessions count
@@ -65,6 +70,7 @@ fn main() -> Result<()> {
         .filter(status.ne("pending"))
         .count()
         .get_result(&mut conn)
+        .await
         .unwrap_or(0);
 
     if existing_sessions < 30 {
@@ -74,7 +80,7 @@ fn main() -> Result<()> {
             &user_ids,
             &asset_ids,
             30 - existing_sessions as i32,
-        );
+        ).await;
         println!(
             "   ✅ Created {} new sessions (total: {})\n",
             session_count,
@@ -92,6 +98,7 @@ fn main() -> Result<()> {
         .filter(status.eq("pending"))
         .count()
         .get_result(&mut conn)
+        .await
         .unwrap_or(0);
 
     if existing_approvals < 20 {
@@ -101,7 +108,7 @@ fn main() -> Result<()> {
             &user_ids,
             &asset_ids,
             20 - existing_approvals as i32,
-        );
+        ).await;
         println!(
             "   ✅ Created {} new approval requests (total: {})\n",
             approval_count,
@@ -116,12 +123,12 @@ fn main() -> Result<()> {
 
     // Create user groups
     println!("👥 Creating user groups...");
-    let group_count = create_groups(&mut conn);
+    let group_count = create_groups(&mut conn).await;
     println!("   ✅ {} user groups ready\n", group_count);
 
     // Create asset groups
     println!("📦 Creating asset groups...");
-    let asset_group_count = create_asset_groups(&mut conn);
+    let asset_group_count = create_asset_groups(&mut conn).await;
     println!("   ✅ {} asset groups ready\n", asset_group_count);
 
     println!("🎉 Seed data generation complete!");
@@ -158,7 +165,9 @@ fn hash_password(password: &str, config: &Config) -> String {
 }
 
 /// Create test users (idempotent).
-fn create_users(conn: &mut PgConnection, config: &Config) -> Vec<i32> {
+async fn create_users(conn: &mut AsyncPgConnection, config: &Config) -> Vec<i32> {
+    use diesel::BoolExpressionMethods;
+    
     let mut user_ids = Vec::new();
 
     // Define users: (username, email, first_name, last_name, is_staff, is_superuser)
@@ -210,6 +219,7 @@ fn create_users(conn: &mut PgConnection, config: &Config) -> Vec<i32> {
             .filter(user_username.eq(username).or(user_email.eq(email)))
             .select(user_id)
             .first(conn)
+            .await
             .optional()
             .expect("Failed to query users");
 
@@ -240,7 +250,8 @@ fn create_users(conn: &mut PgConnection, config: &Config) -> Vec<i32> {
         .bind::<Text, _>(last_name)
         .bind::<Bool, _>(is_staff)
         .bind::<Bool, _>(is_superuser)
-        .get_result::<UserId>(conn);
+        .get_result::<UserId>(conn)
+        .await;
 
         match result {
             Ok(u) => {
@@ -266,6 +277,7 @@ fn create_users(conn: &mut PgConnection, config: &Config) -> Vec<i32> {
         .filter(user_username.eq("mnemonic"))
         .select(user_id)
         .first(conn)
+        .await
         .optional()
         .expect("Failed to query users");
 
@@ -282,7 +294,7 @@ fn create_users(conn: &mut PgConnection, config: &Config) -> Vec<i32> {
 /// Create test assets (idempotent).
 /// NOTE: Uses raw SQL for INSERT with uuid_generate_v4(), ON CONFLICT (UPSERT),
 /// and NOW() - INTERVAL which cannot be expressed in Diesel DSL.
-fn create_assets(conn: &mut PgConnection, admin_id: i32) -> Vec<i32> {
+async fn create_assets(conn: &mut AsyncPgConnection, admin_id: i32) -> Vec<i32> {
     let mut rng = rand::thread_rng();
     let mut asset_ids = Vec::new();
     let mut created_count = 0;
@@ -333,7 +345,8 @@ fn create_assets(conn: &mut PgConnection, admin_id: i32) -> Vec<i32> {
         .bind::<Integer, _>(admin_id)
         .bind::<Bool, _>(require_mfa)
         .bind::<Bool, _>(require_justification)
-        .get_result::<AssetId>(conn);
+        .get_result::<AssetId>(conn)
+        .await;
 
         if let Ok(asset) = result {
             asset_ids.push(asset.id);
@@ -343,6 +356,7 @@ fn create_assets(conn: &mut PgConnection, admin_id: i32) -> Vec<i32> {
             )
             .bind::<Integer, _>(asset.id)
             .get_result::<ExistedCheck>(conn)
+            .await
             .map(|r| r.existed)
             .unwrap_or(false);
 
@@ -395,7 +409,8 @@ fn create_assets(conn: &mut PgConnection, admin_id: i32) -> Vec<i32> {
         .bind::<Integer, _>(admin_id)
         .bind::<Bool, _>(require_mfa)
         .bind::<Bool, _>(require_justification)
-        .get_result::<AssetId>(conn);
+        .get_result::<AssetId>(conn)
+        .await;
 
         if let Ok(asset) = result {
             asset_ids.push(asset.id);
@@ -404,6 +419,7 @@ fn create_assets(conn: &mut PgConnection, admin_id: i32) -> Vec<i32> {
             )
             .bind::<Integer, _>(asset.id)
             .get_result::<ExistedCheck>(conn)
+            .await
             .map(|r| r.existed)
             .unwrap_or(false);
 
@@ -447,7 +463,8 @@ fn create_assets(conn: &mut PgConnection, admin_id: i32) -> Vec<i32> {
         .bind::<Text, _>(*os)
         .bind::<Text, _>(*desc)
         .bind::<Integer, _>(admin_id)
-        .get_result::<AssetId>(conn);
+        .get_result::<AssetId>(conn)
+        .await;
 
         if let Ok(asset) = result {
             asset_ids.push(asset.id);
@@ -456,6 +473,7 @@ fn create_assets(conn: &mut PgConnection, admin_id: i32) -> Vec<i32> {
             )
             .bind::<Integer, _>(asset.id)
             .get_result::<ExistedCheck>(conn)
+            .await
             .map(|r| r.existed)
             .unwrap_or(false);
 
@@ -480,8 +498,8 @@ fn create_assets(conn: &mut PgConnection, admin_id: i32) -> Vec<i32> {
 
 /// Create test sessions.
 /// NOTE: Uses raw SQL for INSERT with uuid_generate_v4() and complex date formatting.
-fn create_sessions(
-    conn: &mut PgConnection,
+async fn create_sessions(
+    conn: &mut AsyncPgConnection,
     user_ids: &[i32],
     asset_ids: &[i32],
     count: i32,
@@ -571,7 +589,8 @@ fn create_sessions(
         .bind::<BigInt, _>(bytes_received)
         .bind::<Integer, _>(commands_count)
         .bind::<Nullable<Text>, _>(justification)
-        .execute(conn);
+        .execute(conn)
+        .await;
 
         if result.is_ok() {
             created += 1;
@@ -585,8 +604,8 @@ fn create_sessions(
 
 /// Create approval requests.
 /// NOTE: Uses raw SQL for INSERT with uuid_generate_v4().
-fn create_approval_requests(
-    conn: &mut PgConnection,
+async fn create_approval_requests(
+    conn: &mut AsyncPgConnection,
     user_ids: &[i32],
     asset_ids: &[i32],
     count: i32,
@@ -646,7 +665,8 @@ fn create_approval_requests(
         .bind::<Text, _>(session_type)
         .bind::<Text, _>(client_ip)
         .bind::<Text, _>(justification)
-        .execute(conn);
+        .execute(conn)
+        .await;
 
         if result.is_ok() {
             created += 1;
@@ -664,7 +684,7 @@ fn create_approval_requests(
 /// Create user groups (idempotent).
 /// NOTE: Uses raw SQL for INSERT with uuid_generate_v4() and ON CONFLICT.
 /// EXISTS check has been migrated to Diesel DSL.
-fn create_groups(conn: &mut PgConnection) -> i32 {
+async fn create_groups(conn: &mut AsyncPgConnection) -> i32 {
     let mut count = 0;
 
     // Define groups: (name, description, source)
@@ -698,6 +718,7 @@ fn create_groups(conn: &mut PgConnection) -> i32 {
         use schema::vauban_groups::dsl::{name as group_name, vauban_groups};
         let existing: bool = diesel::select(exists(vauban_groups.filter(group_name.eq(name))))
             .get_result(conn)
+            .await
             .unwrap_or(false);
 
         if existing {
@@ -715,7 +736,8 @@ fn create_groups(conn: &mut PgConnection) -> i32 {
         .bind::<Text, _>(name)
         .bind::<Text, _>(description)
         .bind::<Text, _>(source)
-        .execute(conn);
+        .execute(conn)
+        .await;
 
         match result {
             Ok(rows) if rows > 0 => {
@@ -737,7 +759,7 @@ fn create_groups(conn: &mut PgConnection) -> i32 {
 
 /// Create asset groups (idempotent).
 /// NOTE: Uses raw SQL for INSERT with uuid_generate_v4() and ON CONFLICT.
-fn create_asset_groups(conn: &mut PgConnection) -> i32 {
+async fn create_asset_groups(conn: &mut AsyncPgConnection) -> i32 {
     let mut count = 0;
 
     // Define asset groups: (name, slug, description, color, icon)
@@ -789,6 +811,7 @@ fn create_asset_groups(conn: &mut PgConnection) -> i32 {
                 .filter(is_deleted.eq(false)),
         ))
         .get_result(conn)
+        .await
         .unwrap_or(false);
 
         if existing {
@@ -808,7 +831,8 @@ fn create_asset_groups(conn: &mut PgConnection) -> i32 {
         .bind::<Text, _>(description)
         .bind::<Text, _>(color)
         .bind::<Text, _>(icon)
-        .execute(conn);
+        .execute(conn)
+        .await;
 
         match result {
             Ok(rows) if rows > 0 => {
@@ -829,13 +853,13 @@ fn create_asset_groups(conn: &mut PgConnection) -> i32 {
 }
 
 // Helper structs for returning data
-#[derive(QueryableByName)]
+#[derive(diesel::QueryableByName)]
 struct AssetId {
     #[diesel(sql_type = diesel::sql_types::Int4)]
     id: i32,
 }
 
-#[derive(QueryableByName)]
+#[derive(diesel::QueryableByName)]
 struct UserId {
     #[diesel(sql_type = diesel::sql_types::Int4)]
     id: i32,
@@ -843,7 +867,7 @@ struct UserId {
 
 // NOTE: CountResult and ExistsResult removed - migrated to Diesel DSL
 
-#[derive(QueryableByName)]
+#[derive(diesel::QueryableByName)]
 struct ExistedCheck {
     #[diesel(sql_type = diesel::sql_types::Bool)]
     existed: bool,

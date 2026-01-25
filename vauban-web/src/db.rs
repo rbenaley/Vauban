@@ -1,14 +1,15 @@
 /// VAUBAN Web - Database connection pool setup.
 ///
-/// Uses Diesel with connection pooling for PostgreSQL.
+/// Uses diesel-async with deadpool for async PostgreSQL connection pooling.
+/// This eliminates background threads, making it fully compatible with Capsicum sandbox.
 ///
-/// This module provides two pool creation strategies:
-/// - `create_pool()`: Standard dynamic pool for development
-/// - `create_pool_sandboxed()`: Fixed-size pool for Capsicum sandbox mode
-use diesel::pg::PgConnection;
-use diesel::r2d2::{ConnectionManager, Pool, PooledConnection};
+/// This module provides:
+/// - `create_pool()`: Async pool for production use
+/// - `create_pool_sandboxed()`: Pre-establishes all connections for Capsicum sandbox mode
+use diesel_async::pooled_connection::deadpool::{Object, Pool};
+use diesel_async::pooled_connection::AsyncDieselConnectionManager;
+use diesel_async::AsyncPgConnection;
 use secrecy::ExposeSecret;
-use std::time::Duration;
 
 use crate::config::Config;
 use crate::error::{AppError, AppResult};
@@ -17,56 +18,59 @@ use crate::error::{AppError, AppResult};
 /// The supervisor will respawn the service when it sees this exit code.
 pub const EXIT_CODE_CONNECTION_LOST: i32 = 100;
 
-/// Database connection pool type.
-pub type DbPool = Pool<ConnectionManager<PgConnection>>;
-pub type DbConnection = PooledConnection<ConnectionManager<PgConnection>>;
+/// Database connection pool type (async, no background threads).
+pub type DbPool = Pool<AsyncPgConnection>;
 
-/// Create a new database connection pool (standard mode).
+/// Database connection type (pooled async connection).
+pub type DbConnection = Object<AsyncPgConnection>;
+
+/// Create a new database connection pool.
 ///
-/// This creates a dynamic pool that can grow/shrink between min and max connections.
-/// Use this for development or when not running in Capsicum sandbox mode.
-pub fn create_pool(config: &Config) -> AppResult<DbPool> {
-    let manager = ConnectionManager::<PgConnection>::new(config.database.url.expose_secret());
+/// This creates an async pool using deadpool-diesel.
+/// No background threads are spawned, making it Capsicum-compatible.
+pub async fn create_pool(config: &Config) -> AppResult<DbPool> {
+    let manager = AsyncDieselConnectionManager::<AsyncPgConnection>::new(
+        config.database.url.expose_secret(),
+    );
 
-    Pool::builder()
-        .max_size(config.database.max_connections)
-        .min_idle(Some(config.database.min_connections))
-        .connection_timeout(Duration::from_secs(config.database.connect_timeout_secs))
-        .build(manager)
-        .map_err(|e| AppError::Config(format!("Failed to create database pool: {}", e)))
+    let pool = Pool::builder(manager)
+        .max_size(config.database.max_connections as usize)
+        .build()
+        .map_err(|e| AppError::Config(format!("Failed to create database pool: {}", e)))?;
+
+    tracing::info!(
+        "Database pool created with max {} connections",
+        config.database.max_connections
+    );
+
+    Ok(pool)
 }
 
 /// Create a database connection pool for Capsicum sandbox mode.
 ///
-/// This creates a fixed-size pool where all connections are pre-established
-/// before entering capability mode. The pool size is fixed at `max_connections`,
-/// and all connections are validated at startup.
+/// This creates a pool where all connections are pre-established
+/// before entering capability mode. No background threads are used.
 ///
 /// After `cap_enter()`, no new connections can be opened. If a connection is lost,
 /// the service must exit and be respawned by the supervisor.
 ///
 /// # Errors
 /// Returns an error if the pool cannot be created or if any connection fails validation.
-pub fn create_pool_sandboxed(config: &Config) -> AppResult<DbPool> {
-    let manager = ConnectionManager::<PgConnection>::new(config.database.url.expose_secret());
+pub async fn create_pool_sandboxed(config: &Config) -> AppResult<DbPool> {
+    let manager = AsyncDieselConnectionManager::<AsyncPgConnection>::new(
+        config.database.url.expose_secret(),
+    );
 
-    // Use max_connections as the pool size
-    let pool_size = config.database.max_connections;
+    let pool_size = config.database.max_connections as usize;
 
-    // IMPORTANT: Use min_idle(None) to disable automatic idle connection creation.
-    // This prevents r2d2's background threads from trying to create connections
-    // after we enter Capsicum sandbox mode.
-    let pool = Pool::builder()
+    let pool = Pool::builder(manager)
         .max_size(pool_size)
-        .min_idle(None) // Disable automatic idle connection creation
-        .connection_timeout(Duration::from_secs(config.database.connect_timeout_secs))
-        .test_on_check_out(false) // Disable test on checkout to avoid reconnection attempts
-        .build(manager)
+        .build()
         .map_err(|e| AppError::Config(format!("Failed to create sandboxed database pool: {}", e)))?;
 
     // Force creation of all connections by borrowing them simultaneously.
     // This ensures all connections are established BEFORE cap_enter().
-    force_create_all_connections(&pool, pool_size)?;
+    force_create_all_connections(&pool, pool_size).await?;
 
     tracing::info!(
         "Database pool ready for sandbox mode: {} connections pre-established",
@@ -78,20 +82,18 @@ pub fn create_pool_sandboxed(config: &Config) -> AppResult<DbPool> {
 
 /// Force creation of all connections by borrowing them simultaneously.
 ///
-/// This function borrows all connections at once, forcing r2d2 to create them
-/// in the calling thread (not background threads). The connections are then
-/// returned to the pool and become idle.
+/// This function borrows all connections at once, forcing the pool to create them.
+/// The connections are then returned to the pool and become available.
 ///
 /// This is essential for Capsicum sandbox mode: all connections must be
-/// established BEFORE cap_enter(), and we cannot rely on r2d2's background
-/// threads which would try to create connections after the sandbox is active.
-fn force_create_all_connections(pool: &DbPool, count: u32) -> AppResult<()> {
+/// established BEFORE cap_enter().
+async fn force_create_all_connections(pool: &DbPool, count: usize) -> AppResult<()> {
     tracing::debug!("Force-creating {} database connections...", count);
 
     // Borrow all connections simultaneously to force their creation
-    let mut connections = Vec::with_capacity(count as usize);
+    let mut connections = Vec::with_capacity(count);
     for i in 0..count {
-        let conn = pool.get().map_err(|e| {
+        let conn = pool.get().await.map_err(|e| {
             AppError::Config(format!(
                 "Failed to establish DB connection {}/{}: {}",
                 i + 1,
@@ -105,15 +107,15 @@ fn force_create_all_connections(pool: &DbPool, count: u32) -> AppResult<()> {
 
     tracing::debug!("All {} database connections created and validated", count);
 
-    // Connections are dropped here, returning them to the pool as idle connections
+    // Connections are dropped here, returning them to the pool
     drop(connections);
 
     // Verify the pool state
-    let state = pool.state();
+    let status = pool.status();
     tracing::debug!(
-        "Pool state after creation: {} total, {} idle",
-        state.connections,
-        state.idle_connections
+        "Pool state after creation: {} size, {} available",
+        status.size,
+        status.available
     );
 
     Ok(())
@@ -122,12 +124,9 @@ fn force_create_all_connections(pool: &DbPool, count: u32) -> AppResult<()> {
 /// Get a connection from the pool.
 ///
 /// Returns an error that can be handled by the caller.
-pub fn get_connection(pool: &DbPool) -> AppResult<DbConnection> {
-    pool.get().map_err(|e| {
-        AppError::Database(diesel::result::Error::DatabaseError(
-            diesel::result::DatabaseErrorKind::SerializationFailure,
-            Box::new(e.to_string()),
-        ))
+pub async fn get_connection(pool: &DbPool) -> AppResult<DbConnection> {
+    pool.get().await.map_err(|e| {
+        AppError::Internal(anyhow::anyhow!("Failed to get database connection: {}", e))
     })
 }
 
@@ -137,11 +136,8 @@ pub fn get_connection(pool: &DbPool) -> AppResult<DbConnection> {
 /// cannot recover from a lost database connection. If the connection cannot
 /// be obtained, the process exits with code 100 to trigger a respawn by
 /// the supervisor.
-///
-/// # Panics
-/// This function never panics - it exits the process instead.
-pub fn get_connection_or_exit(pool: &DbPool) -> DbConnection {
-    match pool.get() {
+pub async fn get_connection_or_exit(pool: &DbPool) -> DbConnection {
+    match pool.get().await {
         Ok(conn) => conn,
         Err(e) => {
             let error_msg = e.to_string();
@@ -193,188 +189,6 @@ mod tests {
     fn test_db_connection_type_exists() {
         // Verify DbConnection type alias compiles correctly
         fn _check_type(_conn: &DbConnection) {}
-    }
-
-    // ==================== Error Handling Tests ====================
-
-    #[test]
-    fn test_get_connection_error_is_database_error() {
-        // We can't test with a real pool without a database,
-        // but we can verify the error type mapping
-        let error = AppError::Database(diesel::result::Error::DatabaseError(
-            diesel::result::DatabaseErrorKind::SerializationFailure,
-            Box::new("Test error".to_string()),
-        ));
-
-        match error {
-            AppError::Database(_) => (), // Expected
-            _ => panic!("Expected Database error"),
-        }
-    }
-
-    #[test]
-    fn test_create_pool_error_is_config_error() {
-        // Verify that pool creation errors are wrapped as Config errors
-        let error = AppError::Config("Failed to create database pool: test".to_string());
-
-        match error {
-            AppError::Config(msg) => {
-                assert!(msg.contains("Failed to create database pool"));
-            }
-            _ => panic!("Expected Config error"),
-        }
-    }
-
-    // ==================== Additional Error Mapping Tests ====================
-
-    #[test]
-    fn test_database_error_serialization_failure() {
-        let error = diesel::result::Error::DatabaseError(
-            diesel::result::DatabaseErrorKind::SerializationFailure,
-            Box::new("Connection pool timeout".to_string()),
-        );
-
-        match error {
-            diesel::result::Error::DatabaseError(kind, _) => {
-                assert!(matches!(
-                    kind,
-                    diesel::result::DatabaseErrorKind::SerializationFailure
-                ));
-            }
-            _ => panic!("Expected DatabaseError"),
-        }
-    }
-
-    #[test]
-    fn test_config_error_message_format() {
-        let msg = format!("Failed to create database pool: {}", "connection refused");
-        let error = AppError::Config(msg.clone());
-
-        if let AppError::Config(inner) = error {
-            assert!(inner.contains("connection refused"));
-            assert!(inner.starts_with("Failed to create database pool:"));
-        } else {
-            panic!("Expected Config error");
-        }
-    }
-
-    // ==================== Database Error Kind Tests ====================
-
-    #[test]
-    fn test_database_error_unique_violation() {
-        let error = diesel::result::Error::DatabaseError(
-            diesel::result::DatabaseErrorKind::UniqueViolation,
-            Box::new("duplicate key".to_string()),
-        );
-
-        match error {
-            diesel::result::Error::DatabaseError(kind, _) => {
-                assert!(matches!(
-                    kind,
-                    diesel::result::DatabaseErrorKind::UniqueViolation
-                ));
-            }
-            _ => panic!("Expected DatabaseError"),
-        }
-    }
-
-    #[test]
-    fn test_database_error_foreign_key_violation() {
-        let error = diesel::result::Error::DatabaseError(
-            diesel::result::DatabaseErrorKind::ForeignKeyViolation,
-            Box::new("foreign key constraint".to_string()),
-        );
-
-        match error {
-            diesel::result::Error::DatabaseError(kind, _) => {
-                assert!(matches!(
-                    kind,
-                    diesel::result::DatabaseErrorKind::ForeignKeyViolation
-                ));
-            }
-            _ => panic!("Expected DatabaseError"),
-        }
-    }
-
-    #[test]
-    fn test_database_error_not_null_violation() {
-        let error = diesel::result::Error::DatabaseError(
-            diesel::result::DatabaseErrorKind::NotNullViolation,
-            Box::new("null value".to_string()),
-        );
-
-        match error {
-            diesel::result::Error::DatabaseError(kind, _) => {
-                assert!(matches!(
-                    kind,
-                    diesel::result::DatabaseErrorKind::NotNullViolation
-                ));
-            }
-            _ => panic!("Expected DatabaseError"),
-        }
-    }
-
-    #[test]
-    fn test_database_error_check_violation() {
-        let error = diesel::result::Error::DatabaseError(
-            diesel::result::DatabaseErrorKind::CheckViolation,
-            Box::new("check constraint".to_string()),
-        );
-
-        match error {
-            diesel::result::Error::DatabaseError(kind, _) => {
-                assert!(matches!(
-                    kind,
-                    diesel::result::DatabaseErrorKind::CheckViolation
-                ));
-            }
-            _ => panic!("Expected DatabaseError"),
-        }
-    }
-
-    // ==================== Error Conversion Tests ====================
-
-    #[test]
-    fn test_app_error_from_diesel_not_found() {
-        let diesel_error = diesel::result::Error::NotFound;
-        let app_error: AppError = diesel_error.into();
-
-        match app_error {
-            AppError::Database(_) => (),
-            _ => panic!("Expected Database error"),
-        }
-    }
-
-    #[test]
-    fn test_app_error_database_display() {
-        let diesel_error = diesel::result::Error::NotFound;
-        let app_error: AppError = diesel_error.into();
-        let display = app_error.to_string();
-
-        assert!(display.contains("Database error"));
-    }
-
-    // ==================== Pool Configuration Tests ====================
-
-    #[test]
-    fn test_connection_timeout_duration() {
-        let timeout_secs: u64 = 5;
-        let duration = std::time::Duration::from_secs(timeout_secs);
-        assert_eq!(duration.as_secs(), 5);
-    }
-
-    #[test]
-    fn test_max_connections_reasonable() {
-        let max_connections: u32 = 10;
-        assert!(max_connections > 0);
-        assert!(max_connections <= 100);
-    }
-
-    #[test]
-    fn test_min_connections_less_than_max() {
-        let max_connections: u32 = 10;
-        let min_connections: u32 = 2;
-        assert!(min_connections <= max_connections);
     }
 
     // ==================== Sandbox Mode Tests ====================

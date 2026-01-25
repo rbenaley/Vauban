@@ -246,7 +246,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 3. Create database pool with all connections pre-established (sandbox mode)
     // Uses fixed-size pool where all connections are validated at startup
-    let db_pool = create_pool_sandboxed(&config).map_err(|e| {
+    let db_pool = create_pool_sandboxed(&config).await.map_err(|e| {
         eprintln!("Failed to create database pool: {}", e);
         e
     })?;
@@ -786,7 +786,7 @@ async fn health_check(
     use axum::http::StatusCode;
 
     // Check database connectivity
-    if let Err(e) = vauban_web::db::get_connection(&state.db_pool) {
+    if let Err(e) = state.db_pool.get().await {
         tracing::warn!("Health check failed: database unavailable: {}", e);
         return (StatusCode::SERVICE_UNAVAILABLE, "DB unavailable");
     }

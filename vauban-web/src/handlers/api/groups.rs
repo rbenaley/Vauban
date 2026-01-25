@@ -8,10 +8,10 @@ use axum::{
     response::IntoResponse,
 };
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use serde::Serialize;
 
 use crate::AppState;
-use crate::db::get_connection;
 use crate::error::AppError;
 use crate::middleware::auth::AuthUser;
 
@@ -48,7 +48,7 @@ pub async fn list_group_members(
     use crate::schema::users::dsl as u;
     use crate::schema::vauban_groups::dsl as vg;
 
-    let mut conn = get_connection(&state.db_pool)?;
+    let mut conn = state.db_pool.get().await.map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
     let group_uuid = uuid::Uuid::parse_str(&uuid_str)
         .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
@@ -57,7 +57,7 @@ pub async fn list_group_members(
     let group_row: (uuid::Uuid, String) = vg::vauban_groups
         .filter(vg::uuid.eq(group_uuid))
         .select((vg::uuid, vg::name))
-        .first(&mut conn)
+        .first(&mut conn).await
         .map_err(|e| match e {
             diesel::result::Error::NotFound => AppError::NotFound("Group not found".to_string()),
             _ => AppError::Database(e),
@@ -82,7 +82,7 @@ pub async fn list_group_members(
                 u::last_name,
                 u::is_active,
             ))
-            .load(&mut conn)
+            .load(&mut conn).await
             .map_err(AppError::Database)?;
 
     let members: Vec<GroupMemberResponse> = members_data

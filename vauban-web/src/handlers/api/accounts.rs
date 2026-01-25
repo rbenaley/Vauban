@@ -7,10 +7,10 @@ use axum::{
     extract::{Path, Query, State},
 };
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use serde::Deserialize;
 
 use crate::AppState;
-use crate::db::get_connection;
 use crate::error::{AppError, AppResult};
 use crate::middleware::auth::AuthUser;
 use crate::models::user::{CreateUserRequest, NewUser, UpdateUserRequest, User, UserDto};
@@ -30,7 +30,7 @@ pub async fn list_users(
     _user: AuthUser,
     Query(params): Query<ListUsersParams>,
 ) -> AppResult<Json<Vec<UserDto>>> {
-    let mut conn = get_connection(&state.db_pool)?;
+    let mut conn = state.db_pool.get().await.map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
     let mut query = users.filter(is_deleted.eq(false)).into_boxed();
 
     if let Some(search) = params.search {
@@ -44,7 +44,7 @@ pub async fn list_users(
     let users_list = query
         .limit(params.limit.unwrap_or(50))
         .offset(params.offset.unwrap_or(0))
-        .load::<User>(&mut conn)?;
+        .load::<User>(&mut conn).await?;
 
     Ok(Json(users_list.iter().map(|u| u.to_dto()).collect()))
 }
@@ -59,11 +59,12 @@ pub async fn get_user(
     let user_uuid = Uuid::parse_str(&user_uuid_str)
         .map_err(|_| AppError::Validation("Invalid UUID format".to_string()))?;
 
-    let mut conn = get_connection(&state.db_pool)?;
+    let mut conn = state.db_pool.get().await.map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
     let user = users
         .filter(uuid.eq(user_uuid))
         .filter(is_deleted.eq(false))
         .first::<User>(&mut conn)
+        .await
         .map_err(|e| match e {
             diesel::result::Error::NotFound => AppError::NotFound("User not found".to_string()),
             _ => AppError::Database(e),
@@ -87,7 +88,7 @@ pub async fn create_user(
     validator::Validate::validate(&request)
         .map_err(|e| AppError::Validation(format!("Validation failed: {:?}", e)))?;
 
-    let mut conn = get_connection(&state.db_pool)?;
+    let mut conn = state.db_pool.get().await.map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
     // Hash password
     let hashed_password = state.auth_service.hash_password(&request.password)?;
@@ -119,7 +120,7 @@ pub async fn create_user(
 
     let user: User = diesel::insert_into(users)
         .values(&new_user)
-        .get_result(&mut conn)?;
+        .get_result(&mut conn).await?;
 
     Ok(Json(user.to_dto()))
 }
@@ -138,7 +139,7 @@ pub async fn update_user(
     validator::Validate::validate(&request)
         .map_err(|e| AppError::Validation(format!("Validation failed: {:?}", e)))?;
 
-    let mut conn = get_connection(&state.db_pool)?;
+    let mut conn = state.db_pool.get().await.map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
     use crate::models::user::UserUpdate;
     use crate::schema::users::dsl::{users, uuid};
@@ -156,6 +157,7 @@ pub async fn update_user(
     let user: User = diesel::update(users.filter(uuid.eq(user_uuid)))
         .set(&update_data)
         .get_result(&mut conn)
+        .await
         .map_err(|e| match e {
             diesel::result::Error::NotFound => AppError::NotFound("User not found".to_string()),
             _ => AppError::Database(e),

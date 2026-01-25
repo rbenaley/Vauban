@@ -10,6 +10,7 @@ use axum::{
 use axum_extra::extract::CookieJar;
 use chrono::{Duration, Utc};
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use ipnetwork::IpNetwork;
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
@@ -20,7 +21,6 @@ use validator::Validate;
 use askama::Template;
 
 use crate::AppState;
-use crate::db::get_connection;
 use crate::error::{AppError, AppResult};
 use crate::middleware::flash::{flash_redirect, IncomingFlash};
 use crate::models::auth_session::{AuthSession, NewAuthSession};
@@ -98,13 +98,16 @@ pub async fn login(
         return Err(AppError::Validation(format!("Validation failed: {:?}", e)));
     }
 
-    let mut conn = get_connection(&state.db_pool)?;
+    let mut conn = state.db_pool.get().await.map_err(|e| {
+        AppError::Internal(anyhow::anyhow!("Database connection error: {}", e))
+    })?;
 
     // Find user by username
     let user = match users
         .filter(username.eq(&request.username))
         .filter(is_deleted.eq(false))
         .first::<User>(&mut conn)
+        .await
         .optional()
         .map_err(AppError::Database)?
     {
@@ -144,7 +147,7 @@ pub async fn login(
                 failed_login_attempts.eq(new_failed_attempts),
                 locked_until.eq(locked_until_value),
             ))
-            .execute(&mut conn)
+            .execute(&mut conn).await
             .map_err(AppError::Database)?;
 
         if locked_until_value.is_some() && new_failed_attempts >= max_failed_attempts {
@@ -171,7 +174,7 @@ pub async fn login(
                 locked_until.eq(None::<chrono::DateTime<chrono::Utc>>),
                 last_login.eq(chrono::Utc::now()),
             ))
-            .execute(&mut conn)
+            .execute(&mut conn).await
             .map_err(AppError::Database)?;
 
         // Generate temporary token with mfa_verified = false
@@ -201,7 +204,7 @@ pub async fn login(
                 .filter(auth_sessions::is_current.eq(true)),
         )
         .set(auth_sessions::is_current.eq(false))
-        .execute(&mut conn)
+        .execute(&mut conn).await
         .ok();
 
         // Insert new session
@@ -220,7 +223,7 @@ pub async fn login(
 
         diesel::insert_into(auth_sessions::table)
             .values(&new_session)
-            .execute(&mut conn)
+            .execute(&mut conn).await
             .ok();
 
         // Set cookie with temporary token
@@ -294,7 +297,7 @@ pub async fn login(
             locked_until.eq(None::<chrono::DateTime<chrono::Utc>>),
             last_login.eq(chrono::Utc::now()),
         ))
-        .execute(&mut conn)
+        .execute(&mut conn).await
         .map_err(AppError::Database)?;
 
     // Create auth session record for session management
@@ -315,7 +318,7 @@ pub async fn login(
             .filter(auth_sessions::is_current.eq(true)),
     )
     .set(auth_sessions::is_current.eq(false))
-    .execute(&mut conn)
+    .execute(&mut conn).await
     .ok(); // Ignore errors - not critical
 
     // Insert new session
@@ -334,7 +337,7 @@ pub async fn login(
 
     let session_created = diesel::insert_into(auth_sessions::table)
         .values(&new_session)
-        .execute(&mut conn)
+        .execute(&mut conn).await
         .map_err(|e| {
             tracing::warn!("Failed to create auth session: {}", e);
             e
@@ -502,20 +505,20 @@ pub async fn logout(State(state): State<AppState>, jar: CookieJar) -> Response {
     // Try to invalidate session in database and broadcast update
     if let Some(token_cookie) = jar.get("access_token") {
         let token_hash = hash_token(token_cookie.value());
-        if let Ok(mut conn) = get_connection(&state.db_pool) {
+        if let Ok(mut conn) = state.db_pool.get().await {
             // First, get the user info from the session before deleting
             let user_info: Option<(i32, ::uuid::Uuid)> = auth_sessions::table
                 .inner_join(crate::schema::users::table)
                 .filter(auth_sessions::token_hash.eq(&token_hash))
                 .select((crate::schema::users::id, crate::schema::users::uuid))
-                .first(&mut conn)
+                .first(&mut conn).await
                 .ok();
 
             // Delete session by token hash
             let deleted = diesel::delete(
                 auth_sessions::table.filter(auth_sessions::token_hash.eq(&token_hash)),
             )
-            .execute(&mut conn)
+            .execute(&mut conn).await
             .unwrap_or(0);
 
             // Broadcast session update to other connected clients
@@ -600,7 +603,9 @@ pub async fn mfa_setup_page(
 
     let claims = state.auth_service.verify_token(&token)?;
 
-    let mut conn = get_connection(&state.db_pool)?;
+    let mut conn = state.db_pool.get().await.map_err(|e| {
+        AppError::Internal(anyhow::anyhow!("Database connection error: {}", e))
+    })?;
     use ::uuid::Uuid as UuidType;
     let user_uuid = UuidType::parse_str(&claims.sub)
         .map_err(|_| AppError::Validation("Invalid user UUID".to_string()))?;
@@ -614,7 +619,7 @@ pub async fn mfa_setup_page(
             crate::schema::users::username,
             crate::schema::users::mfa_secret,
         ))
-        .first(&mut conn)
+        .first(&mut conn).await
         .map_err(AppError::Database)?;
 
     let (user_id, user_username, existing_secret) = user_data;
@@ -627,7 +632,7 @@ pub async fn mfa_setup_page(
         let (new_secret, _uri) = AuthService::generate_totp_secret(&user_username, "VAUBAN")?;
         diesel::update(users.filter(crate::schema::users::id.eq(user_id)))
             .set(mfa_secret.eq(Some(&new_secret)))
-            .execute(&mut conn)
+            .execute(&mut conn).await
             .map_err(AppError::Database)?;
         new_secret
     };
@@ -698,7 +703,9 @@ pub async fn mfa_setup_submit(
 
     let claims = state.auth_service.verify_token(&token)?;
 
-    let mut conn = get_connection(&state.db_pool)?;
+    let mut conn = state.db_pool.get().await.map_err(|e| {
+        AppError::Internal(anyhow::anyhow!("Database connection error: {}", e))
+    })?;
     use ::uuid::Uuid as UuidType;
     let user_uuid = UuidType::parse_str(&claims.sub)
         .map_err(|_| AppError::Validation("Invalid user UUID".to_string()))?;
@@ -714,7 +721,7 @@ pub async fn mfa_setup_submit(
             crate::schema::users::is_superuser,
             crate::schema::users::is_staff,
         ))
-        .first(&mut conn)
+        .first(&mut conn).await
         .map_err(AppError::Database)?;
 
     let (user_id, user_username, secret_opt, is_super, is_staff_user) = user_data;
@@ -738,7 +745,7 @@ pub async fn mfa_setup_submit(
             crate::schema::users::mfa_enabled.eq(true),
             crate::schema::users::updated_at.eq(chrono::Utc::now()),
         ))
-        .execute(&mut conn)
+        .execute(&mut conn).await
         .map_err(AppError::Database)?;
 
     // Generate new JWT with mfa_verified = true
@@ -760,7 +767,7 @@ pub async fn mfa_setup_submit(
             .filter(auth_sessions::token_hash.eq(&old_token_hash))
     )
     .set(auth_sessions::token_hash.eq(&new_token_hash))
-    .execute(&mut conn)
+    .execute(&mut conn).await
     .ok(); // Ignore errors - session will be recreated on next login if needed
 
     // Set new cookie
@@ -858,7 +865,9 @@ pub async fn mfa_verify_submit(
 
     let claims = state.auth_service.verify_token(&token)?;
 
-    let mut conn = get_connection(&state.db_pool)?;
+    let mut conn = state.db_pool.get().await.map_err(|e| {
+        AppError::Internal(anyhow::anyhow!("Database connection error: {}", e))
+    })?;
     use ::uuid::Uuid as UuidType;
     let user_uuid = UuidType::parse_str(&claims.sub)
         .map_err(|_| AppError::Validation("Invalid user UUID".to_string()))?;
@@ -873,7 +882,7 @@ pub async fn mfa_verify_submit(
             crate::schema::users::is_superuser,
             crate::schema::users::is_staff,
         ))
-        .first(&mut conn)
+        .first(&mut conn).await
         .map_err(AppError::Database)?;
 
     let (user_username, secret_opt, is_super, is_staff_user) = user_data;
@@ -910,7 +919,7 @@ pub async fn mfa_verify_submit(
             .filter(auth_sessions::token_hash.eq(&old_token_hash))
     )
     .set(auth_sessions::token_hash.eq(&new_token_hash))
-    .execute(&mut conn)
+    .execute(&mut conn).await
     .ok(); // Ignore errors - session will be recreated on next login if needed
 
     // Set new cookie

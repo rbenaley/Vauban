@@ -1,6 +1,7 @@
 use askama::Template;
 use chrono::Utc;
-use diesel::prelude::*;
+use diesel::{ExpressionMethods, QueryDsl};
+use diesel_async::RunQueryDsl;
 /// VAUBAN Web - Dashboard update tasks.
 ///
 /// Background tasks that push dashboard updates via WebSocket.
@@ -11,7 +12,7 @@ use tracing::{debug, error, info};
 
 use crate::utils::format_duration;
 
-use crate::db::{DbPool, get_connection};
+use crate::db::DbPool;
 use crate::services::broadcast::{BroadcastService, WsChannel, WsMessage};
 use crate::templates::dashboard::widgets::{
     ActiveSessionItem, ActiveSessionsWidget, ActivityItem, RecentActivityWidget, StatsData,
@@ -67,7 +68,7 @@ async fn stats_updater(broadcast: Arc<BroadcastService>, db_pool: Arc<DbPool>) {
     loop {
         ticker.tick().await;
 
-        match fetch_stats(&db_pool) {
+        match fetch_stats(&db_pool).await {
             Ok(stats) => {
                 let template = StatsWidget { stats };
                 match template.render() {
@@ -93,7 +94,7 @@ async fn sessions_updater(broadcast: Arc<BroadcastService>, db_pool: Arc<DbPool>
         ticker.tick().await;
 
         // Update dashboard widget (ActiveSessions channel)
-        match fetch_active_sessions(&db_pool) {
+        match fetch_active_sessions(&db_pool).await {
             Ok(sessions) => {
                 let template = ActiveSessionsWidget { sessions };
                 match template.render() {
@@ -110,7 +111,7 @@ async fn sessions_updater(broadcast: Arc<BroadcastService>, db_pool: Arc<DbPool>
         }
 
         // Update full active sessions list page (ActiveSessionsList channel)
-        match fetch_active_sessions_full(&db_pool) {
+        match fetch_active_sessions_full(&db_pool).await {
             Ok(sessions) => {
                 // Send stats update
                 let stats_widget = ActiveListStatsWidget {
@@ -152,7 +153,7 @@ async fn activity_updater(broadcast: Arc<BroadcastService>, db_pool: Arc<DbPool>
     loop {
         ticker.tick().await;
 
-        match fetch_recent_activity(&db_pool) {
+        match fetch_recent_activity(&db_pool).await {
             Ok(activities) => {
                 let template = RecentActivityWidget { activities };
                 match template.render() {
@@ -171,15 +172,15 @@ async fn activity_updater(broadcast: Arc<BroadcastService>, db_pool: Arc<DbPool>
 }
 
 /// Fetch dashboard statistics from database.
-fn fetch_stats(db_pool: &DbPool) -> Result<StatsData, String> {
-    let mut conn = get_connection(db_pool).map_err(|e| e.to_string())?;
+async fn fetch_stats(db_pool: &DbPool) -> Result<StatsData, String> {
+    let mut conn = db_pool.get().await.map_err(|e| e.to_string())?;
 
     // Count active sessions
     use crate::schema::proxy_sessions::dsl::*;
     let active_sessions_count: i64 = proxy_sessions
         .filter(status.eq("active"))
         .count()
-        .get_result(&mut conn)
+        .get_result(&mut conn).await
         .unwrap_or(0);
 
     // Count today's sessions
@@ -192,7 +193,7 @@ fn fetch_stats(db_pool: &DbPool) -> Result<StatsData, String> {
     let today_sessions_count: i64 = proxy_sessions
         .filter(created_at.ge(today_start))
         .count()
-        .get_result(&mut conn)
+        .get_result(&mut conn).await
         .unwrap_or(0);
 
     // Count this week's sessions
@@ -200,7 +201,7 @@ fn fetch_stats(db_pool: &DbPool) -> Result<StatsData, String> {
     let week_sessions_count: i64 = proxy_sessions
         .filter(created_at.ge(week_start))
         .count()
-        .get_result(&mut conn)
+        .get_result(&mut conn).await
         .unwrap_or(0);
 
     Ok(StatsData {
@@ -211,8 +212,8 @@ fn fetch_stats(db_pool: &DbPool) -> Result<StatsData, String> {
 }
 
 /// Fetch active sessions from database.
-fn fetch_active_sessions(db_pool: &DbPool) -> Result<Vec<ActiveSessionItem>, String> {
-    let mut conn = get_connection(db_pool).map_err(|e| e.to_string())?;
+async fn fetch_active_sessions(db_pool: &DbPool) -> Result<Vec<ActiveSessionItem>, String> {
+    let mut conn = db_pool.get().await.map_err(|e| e.to_string())?;
 
     use crate::models::session::ProxySession;
     use crate::schema::proxy_sessions::dsl::*;
@@ -221,7 +222,7 @@ fn fetch_active_sessions(db_pool: &DbPool) -> Result<Vec<ActiveSessionItem>, Str
         .filter(status.eq("active"))
         .order(created_at.desc())
         .limit(10)
-        .load(&mut conn)
+        .load(&mut conn).await
         .unwrap_or_default();
 
     // Calculate duration for each session
@@ -243,8 +244,8 @@ fn fetch_active_sessions(db_pool: &DbPool) -> Result<Vec<ActiveSessionItem>, Str
 }
 
 /// Fetch active sessions with full details for the dedicated page.
-fn fetch_active_sessions_full(db_pool: &DbPool) -> Result<Vec<FullActiveSessionItem>, String> {
-    let mut conn = get_connection(db_pool).map_err(|e| e.to_string())?;
+async fn fetch_active_sessions_full(db_pool: &DbPool) -> Result<Vec<FullActiveSessionItem>, String> {
+    let mut conn = db_pool.get().await.map_err(|e| e.to_string())?;
 
     use crate::models::session::ProxySession;
     use crate::schema::proxy_sessions::dsl::*;
@@ -252,7 +253,7 @@ fn fetch_active_sessions_full(db_pool: &DbPool) -> Result<Vec<FullActiveSessionI
     let sessions: Vec<ProxySession> = proxy_sessions
         .filter(status.eq("active"))
         .order(created_at.desc())
-        .load(&mut conn)
+        .load(&mut conn).await
         .unwrap_or_default();
 
     let now = Utc::now();
@@ -277,8 +278,8 @@ fn fetch_active_sessions_full(db_pool: &DbPool) -> Result<Vec<FullActiveSessionI
 
 
 /// Fetch recent activity from database.
-fn fetch_recent_activity(db_pool: &DbPool) -> Result<Vec<ActivityItem>, String> {
-    let mut conn = get_connection(db_pool).map_err(|e| e.to_string())?;
+async fn fetch_recent_activity(db_pool: &DbPool) -> Result<Vec<ActivityItem>, String> {
+    let mut conn = db_pool.get().await.map_err(|e| e.to_string())?;
 
     use crate::models::session::ProxySession;
     use crate::schema::proxy_sessions::dsl::*;
@@ -286,7 +287,7 @@ fn fetch_recent_activity(db_pool: &DbPool) -> Result<Vec<ActivityItem>, String> 
     let sessions: Vec<ProxySession> = proxy_sessions
         .order(created_at.desc())
         .limit(10)
-        .load(&mut conn)
+        .load(&mut conn).await
         .unwrap_or_default();
 
     Ok(sessions

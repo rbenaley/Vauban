@@ -10,11 +10,11 @@ use axum::{
 };
 use axum_extra::extract::CookieJar;
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_256};
 
 use crate::AppState;
-use crate::db::get_connection;
 use crate::error::AppError;
 use crate::schema::auth_sessions;
 use crate::services::auth::AuthService;
@@ -107,7 +107,7 @@ pub async fn auth_middleware(
         match state.auth_service.verify_token(&token) {
             Ok(claims) => {
                 // Verify session exists in database and check timeouts
-                if let Some(token_hash) = verify_session_with_timeouts(&state, &token) {
+                if let Some(token_hash) = verify_session_with_timeouts(&state, &token).await {
                     let user = AuthUser {
                         uuid: claims.sub,
                         username: claims.username,
@@ -118,7 +118,7 @@ pub async fn auth_middleware(
                     request.extensions_mut().insert(user);
 
                     // Update last_activity in the background
-                    update_last_activity(&state, &token_hash);
+                    update_last_activity(&state, &token_hash).await;
                 } else {
                     tracing::debug!("Session not found in database (revoked or expired)");
                 }
@@ -141,14 +141,14 @@ pub async fn auth_middleware(
 /// 1. Session exists and has not been revoked
 /// 2. Session has not exceeded max_duration (created_at + session_max_duration_secs)
 /// 3. Session has not exceeded idle timeout (last_activity + session_idle_timeout_secs)
-fn verify_session_with_timeouts(state: &AppState, token: &str) -> Option<String> {
+async fn verify_session_with_timeouts(state: &AppState, token: &str) -> Option<String> {
     // Hash the token
     let mut hasher = Sha3_256::new();
     hasher.update(token.as_bytes());
     let token_hash = format!("{:x}", hasher.finalize());
 
     // Check database
-    if let Ok(mut conn) = get_connection(&state.db_pool) {
+    if let Ok(mut conn) = state.db_pool.get().await {
         let now = chrono::Utc::now();
         let idle_timeout_secs = state.config.security.session_idle_timeout_secs as i64;
         let max_duration_secs = state.config.security.session_max_duration_secs as i64;
@@ -165,7 +165,7 @@ fn verify_session_with_timeouts(state: &AppState, token: &str) -> Option<String>
             // Session must have been active recently
             .filter(auth_sessions::last_activity.gt(idle_cutoff))
             .count()
-            .get_result(&mut conn);
+            .get_result(&mut conn).await;
 
         if matches!(exists, Ok(count) if count > 0) {
             Some(token_hash)
@@ -181,13 +181,13 @@ fn verify_session_with_timeouts(state: &AppState, token: &str) -> Option<String>
 
 /// Update the last_activity timestamp for the session.
 /// This is called on each authenticated request to track user activity.
-fn update_last_activity(state: &AppState, token_hash: &str) {
-    if let Ok(mut conn) = get_connection(&state.db_pool) {
+async fn update_last_activity(state: &AppState, token_hash: &str) {
+    if let Ok(mut conn) = state.db_pool.get().await {
         let _ = diesel::update(
             auth_sessions::table.filter(auth_sessions::token_hash.eq(token_hash)),
         )
         .set(auth_sessions::last_activity.eq(chrono::Utc::now()))
-        .execute(&mut conn);
+        .execute(&mut conn).await;
     }
 }
 

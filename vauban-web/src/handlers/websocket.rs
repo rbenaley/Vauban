@@ -19,7 +19,6 @@ use tracing::{debug, error, info, warn};
 use crate::utils::format_duration;
 
 use crate::AppState;
-use crate::db::get_connection;
 use crate::middleware::auth::AuthUser;
 use crate::services::broadcast::WsChannel;
 
@@ -162,7 +161,7 @@ async fn send_initial_dashboard_data(
     };
 
     // Fetch and send stats
-    let stats = fetch_initial_stats(state)?;
+    let stats = fetch_initial_stats(state).await?;
     let stats_widget = StatsWidget { stats };
     if let Ok(html) = stats_widget.render() {
         let msg = WsMessage::new("ws-stats", html);
@@ -173,7 +172,7 @@ async fn send_initial_dashboard_data(
     }
 
     // Fetch and send active sessions
-    let sessions = fetch_initial_sessions(state)?;
+    let sessions = fetch_initial_sessions(state).await?;
     let sessions_widget = ActiveSessionsWidget { sessions };
     if let Ok(html) = sessions_widget.render() {
         let msg = WsMessage::new("ws-active-sessions", html);
@@ -184,7 +183,7 @@ async fn send_initial_dashboard_data(
     }
 
     // Fetch and send recent activity
-    let activities = fetch_initial_activity(state)?;
+    let activities = fetch_initial_activity(state).await?;
     let activity_widget = RecentActivityWidget { activities };
     if let Ok(html) = activity_widget.render() {
         let msg = WsMessage::new("ws-recent-activity", html);
@@ -198,21 +197,22 @@ async fn send_initial_dashboard_data(
 }
 
 /// Fetch initial stats data.
-fn fetch_initial_stats(
+async fn fetch_initial_stats(
     state: &AppState,
 ) -> Result<crate::templates::dashboard::widgets::StatsData, String> {
     use crate::templates::dashboard::widgets::StatsData;
     use chrono::Utc;
-    use diesel::prelude::*;
+    use diesel::{ExpressionMethods, QueryDsl};
+    use diesel_async::RunQueryDsl;
 
-    let mut conn = get_connection(&state.db_pool).map_err(|e| e.to_string())?;
+    let mut conn = state.db_pool.get().await.map_err(|e| e.to_string())?;
 
     use crate::schema::proxy_sessions::dsl::*;
 
     let active_count: i64 = proxy_sessions
         .filter(status.eq("active"))
         .count()
-        .get_result(&mut conn)
+        .get_result(&mut conn).await
         .unwrap_or(0);
 
     let today_start = Utc::now()
@@ -224,14 +224,14 @@ fn fetch_initial_stats(
     let today_count: i64 = proxy_sessions
         .filter(created_at.ge(today_start))
         .count()
-        .get_result(&mut conn)
+        .get_result(&mut conn).await
         .unwrap_or(0);
 
     let week_start = Utc::now() - chrono::Duration::days(7);
     let week_count: i64 = proxy_sessions
         .filter(created_at.ge(week_start))
         .count()
-        .get_result(&mut conn)
+        .get_result(&mut conn).await
         .unwrap_or(0);
 
     Ok(StatsData {
@@ -242,15 +242,16 @@ fn fetch_initial_stats(
 }
 
 /// Fetch initial active sessions.
-fn fetch_initial_sessions(
+async fn fetch_initial_sessions(
     state: &AppState,
 ) -> Result<Vec<crate::templates::dashboard::widgets::ActiveSessionItem>, String> {
     use crate::models::session::ProxySession;
     use crate::templates::dashboard::widgets::ActiveSessionItem;
     use chrono::Utc;
-    use diesel::prelude::*;
+    use diesel::{ExpressionMethods, QueryDsl};
+    use diesel_async::RunQueryDsl;
 
-    let mut conn = get_connection(&state.db_pool).map_err(|e| e.to_string())?;
+    let mut conn = state.db_pool.get().await.map_err(|e| e.to_string())?;
 
     use crate::schema::proxy_sessions::dsl::*;
 
@@ -258,7 +259,7 @@ fn fetch_initial_sessions(
         .filter(status.eq("active"))
         .order(created_at.desc())
         .limit(10)
-        .load(&mut conn)
+        .load(&mut conn).await
         .unwrap_or_default();
 
     let now = Utc::now();
@@ -278,21 +279,22 @@ fn fetch_initial_sessions(
 }
 
 /// Fetch initial recent activity.
-fn fetch_initial_activity(
+async fn fetch_initial_activity(
     state: &AppState,
 ) -> Result<Vec<crate::templates::dashboard::widgets::ActivityItem>, String> {
     use crate::models::session::ProxySession;
     use crate::templates::dashboard::widgets::ActivityItem;
-    use diesel::prelude::*;
+    use diesel::{ExpressionMethods, QueryDsl};
+    use diesel_async::RunQueryDsl;
 
-    let mut conn = get_connection(&state.db_pool).map_err(|e| e.to_string())?;
+    let mut conn = state.db_pool.get().await.map_err(|e| e.to_string())?;
 
     use crate::schema::proxy_sessions::dsl::*;
 
     let sessions: Vec<ProxySession> = proxy_sessions
         .order(created_at.desc())
         .limit(10)
-        .load(&mut conn)
+        .load(&mut conn).await
         .unwrap_or_default();
 
     Ok(sessions
@@ -653,7 +655,7 @@ async fn send_initial_active_sessions_data(
     use crate::templates::sessions::{ActiveListContentWidget, ActiveListStatsWidget};
 
     // Fetch active sessions
-    let sessions = fetch_active_sessions_list(state)?;
+    let sessions = fetch_active_sessions_list(state).await?;
 
     // Send stats widget
     let stats_widget = ActiveListStatsWidget {
@@ -681,22 +683,23 @@ async fn send_initial_active_sessions_data(
 }
 
 /// Fetch active sessions list for the dedicated page.
-fn fetch_active_sessions_list(
+async fn fetch_active_sessions_list(
     state: &AppState,
 ) -> Result<Vec<crate::templates::sessions::ActiveSessionItem>, String> {
     use crate::models::session::ProxySession;
     use crate::templates::sessions::ActiveSessionItem;
     use chrono::Utc;
-    use diesel::prelude::*;
+    use diesel::{ExpressionMethods, QueryDsl};
+    use diesel_async::RunQueryDsl;
 
-    let mut conn = get_connection(&state.db_pool).map_err(|e| e.to_string())?;
+    let mut conn = state.db_pool.get().await.map_err(|e| e.to_string())?;
 
     use crate::schema::proxy_sessions::dsl::*;
 
     let sessions: Vec<ProxySession> = proxy_sessions
         .filter(status.eq("active"))
         .order(created_at.desc())
-        .load(&mut conn)
+        .load(&mut conn).await
         .unwrap_or_default();
 
     let now = Utc::now();

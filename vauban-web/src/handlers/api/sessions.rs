@@ -9,10 +9,10 @@ use axum::{
     response::{Html, IntoResponse, Response},
 };
 use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use serde::Deserialize;
 
 use crate::AppState;
-use crate::db::get_connection;
 use crate::error::{AppError, AppResult};
 use crate::middleware::auth::AuthUser;
 use crate::models::session::{CreateSessionRequest, NewProxySession, ProxySession};
@@ -39,7 +39,7 @@ pub async fn list_sessions(
     user: AuthUser,
     Query(params): Query<ListSessionsParams>,
 ) -> AppResult<Json<Vec<ProxySession>>> {
-    let mut conn = get_connection(&state.db_pool)?;
+    let mut conn = state.db_pool.get().await.map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
     let query = proxy_sessions.into_boxed();
 
     // Filter by user if not admin
@@ -55,7 +55,7 @@ pub async fn list_sessions(
         .limit(params.limit.unwrap_or(50))
         .offset(params.offset.unwrap_or(0))
         .order(created_at.desc())
-        .load::<ProxySession>(&mut conn)?;
+        .load::<ProxySession>(&mut conn).await?;
 
     Ok(Json(sessions_list))
 }
@@ -70,10 +70,10 @@ pub async fn get_session(
     let session_uuid = Uuid::parse_str(&session_uuid_str)
         .map_err(|_| AppError::Validation("Invalid UUID format".to_string()))?;
 
-    let mut conn = get_connection(&state.db_pool)?;
+    let mut conn = state.db_pool.get().await.map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
     let session = proxy_sessions
         .filter(uuid.eq(session_uuid))
-        .first::<ProxySession>(&mut conn)
+        .first::<ProxySession>(&mut conn).await
         .map_err(|e| match e {
             diesel::result::Error::NotFound => AppError::NotFound("Session not found".to_string()),
             _ => AppError::Database(e),
@@ -91,7 +91,7 @@ pub async fn create_session(
     validator::Validate::validate(&request)
         .map_err(|e| AppError::Validation(format!("Validation failed: {:?}", e)))?;
 
-    let mut conn = get_connection(&state.db_pool)?;
+    let mut conn = state.db_pool.get().await.map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
     // TODO: Verify user has access to asset via RBAC
     // TODO: Get asset and credential details
@@ -123,7 +123,7 @@ pub async fn create_session(
 
     let session: ProxySession = diesel::insert_into(proxy_sessions)
         .values(&new_session)
-        .get_result(&mut conn)?;
+        .get_result(&mut conn).await?;
 
     Ok(Json(session))
 }
@@ -143,7 +143,7 @@ pub async fn terminate_session(
         .map_err(|_| AppError::Validation("Invalid session ID format".to_string()))?;
 
     let htmx = is_htmx_request(&headers);
-    let mut conn = get_connection(&state.db_pool)?;
+    let mut conn = state.db_pool.get().await.map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
     // Update the session status to "terminated"
     let updated_session = diesel::update(proxy_sessions.filter(id.eq(session_id)))
@@ -151,7 +151,7 @@ pub async fn terminate_session(
             status.eq("terminated"),
             disconnected_at.eq(chrono::Utc::now()),
         ))
-        .get_result::<ProxySession>(&mut conn)
+        .get_result::<ProxySession>(&mut conn).await
         .map_err(|e| match e {
             diesel::result::Error::NotFound => AppError::NotFound("Session not found".to_string()),
             _ => AppError::Database(e),
