@@ -43,10 +43,18 @@ impl TestApp {
             .await
     }
 
+    /// Get the path to the workspace root config/ directory.
+    fn config_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("Failed to get workspace root")
+            .join("config")
+    }
+
     /// Create test app (internal).
     async fn create() -> Self {
-        // Load test configuration from config/testing.toml
-        let config = unwrap_ok!(Config::load_with_environment("config", Environment::Testing));
+        // Load test configuration from workspace root config/testing.toml
+        let config = unwrap_ok!(Config::load_with_environment(Self::config_dir(), Environment::Testing));
 
         // Create database pool
         let manager =

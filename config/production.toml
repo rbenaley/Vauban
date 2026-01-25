@@ -1,0 +1,123 @@
+# VAUBAN - Production configuration
+# Overrides default.toml values for the production environment.
+#
+# IMPORTANT: This file is a template. In production:
+# - Set secret_key via the VAUBAN_SECRET_KEY environment variable
+# - Or use a local.toml file (not versioned) for secrets
+
+environment = "production"
+# secret_key must be set via VAUBAN_SECRET_KEY or local.toml
+
+# ==============================================================================
+# SUPERVISOR OVERRIDES
+# ==============================================================================
+
+[supervisor]
+# Production mode
+environment = "production"
+# Production: binaries in /usr/local/libexec/vauban
+bin_path = "/usr/local/libexec/vauban"
+log_level = "info"
+
+# Production mode: each service has its own UID/GID
+# The supervisor must be started as root to drop privileges.
+[defaults]
+uid = 0
+gid = 0
+
+# Service configurations with dedicated UID/GID for each service.
+#
+# On FreeBSD, create these users/groups:
+#   pw groupadd -n vauban_audit -g 901
+#   pw useradd -n vauban_audit -u 901 -g 901 -d /nonexistent -s /usr/sbin/nologin
+#   (repeat for each service)
+
+[services.audit]
+name = "vauban-audit"
+binary = "vauban-audit"
+uid = 901
+gid = 901
+workdir = "/var/vauban/audit"
+
+[services.vault]
+name = "vauban-vault"
+binary = "vauban-vault"
+uid = 902
+gid = 902
+workdir = "/var/vauban/vault"
+
+[services.rbac]
+name = "vauban-rbac"
+binary = "vauban-rbac"
+uid = 903
+gid = 903
+workdir = "/var/vauban/rbac"
+
+[services.auth]
+name = "vauban-auth"
+binary = "vauban-auth"
+uid = 904
+gid = 904
+workdir = "/var/vauban/auth"
+
+[services.proxy_ssh]
+name = "vauban-proxy-ssh"
+binary = "vauban-proxy-ssh"
+uid = 905
+gid = 905
+workdir = "/var/vauban/proxy-ssh"
+
+[services.proxy_rdp]
+name = "vauban-proxy-rdp"
+binary = "vauban-proxy-rdp"
+uid = 906
+gid = 906
+workdir = "/var/vauban/proxy-rdp"
+
+[services.web]
+name = "vauban-web"
+binary = "vauban-web"
+uid = 907
+gid = 907
+workdir = "/var/vauban/web"
+
+# ==============================================================================
+# WEB OVERRIDES (vauban-web)
+# ==============================================================================
+
+[server]
+host = "0.0.0.0"
+port = 8443
+
+# Production TLS certificates (FreeBSD paths)
+# For Let's Encrypt:
+#   cert_path = "/usr/local/etc/letsencrypt/live/example.com/fullchain.pem"
+#   key_path = "/usr/local/etc/letsencrypt/live/example.com/privkey.pem"
+# For Enterprise PKI, also set ca_chain_path for intermediate certs
+[server.tls]
+cert_path = "/usr/local/etc/vauban/certs/server.crt"
+key_path = "/usr/local/etc/vauban/certs/server.key"
+# ca_chain_path = "/usr/local/etc/vauban/certs/ca-chain.crt"
+
+[database]
+max_connections = 20
+min_connections = 5
+connect_timeout_secs = 5
+
+[cache]
+enabled = true
+default_ttl_secs = 7200
+
+[logging]
+level = "info"
+format = "text"
+
+[security]
+password_min_length = 14
+max_failed_login_attempts = 3
+session_max_duration_secs = 14400   # 4 hours
+session_idle_timeout_secs = 900     # 15 minutes
+rate_limit_per_minute = 60
+
+[grpc.mtls]
+enabled = true

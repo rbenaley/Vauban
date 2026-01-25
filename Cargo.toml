@@ -12,6 +12,10 @@ members = [
     "vauban-audit",
 ]
 
+# Default package for `cargo run` from workspace root
+# vauban-supervisor is the main entry point that orchestrates all services
+default-members = ["vauban-supervisor"]
+
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
@@ -28,6 +32,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2.0"
 anyhow = "1.0"
 libc = "0.2"
+
+# Configuration loading
+config = { version = "0.15", default-features = false, features = ["toml"] }
 
 # Tokio is used ONLY by vauban-web (not shared)
 

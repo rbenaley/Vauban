@@ -191,6 +191,17 @@ mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr};
 
+    // Helper functions for bincode 3.0 serialization
+    fn serialize<T: serde::Serialize>(value: &T) -> Vec<u8> {
+        bincode::serde::encode_to_vec(value, bincode::config::standard()).unwrap()
+    }
+
+    fn deserialize<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> T {
+        let (value, _): (T, _) =
+            bincode::serde::decode_from_slice(bytes, bincode::config::standard()).unwrap();
+        value
+    }
+
     // ==================== Service Tests ====================
 
     #[test]
@@ -227,8 +238,8 @@ mod tests {
     #[test]
     fn test_service_serialization() {
         let service = Service::Auth;
-        let serialized = bincode::serialize(&service).unwrap();
-        let deserialized: Service = bincode::deserialize(&serialized).unwrap();
+        let serialized = serialize(&service);
+        let deserialized: Service = deserialize(&serialized);
         assert_eq!(service, deserialized);
     }
 
@@ -237,16 +248,16 @@ mod tests {
     #[test]
     fn test_control_message_drain() {
         let msg = ControlMessage::Drain;
-        let serialized = bincode::serialize(&msg).unwrap();
-        let deserialized: ControlMessage = bincode::deserialize(&serialized).unwrap();
+        let serialized = serialize(&msg);
+        let deserialized: ControlMessage = deserialize(&serialized);
         assert!(matches!(deserialized, ControlMessage::Drain));
     }
 
     #[test]
     fn test_control_message_drain_complete() {
         let msg = ControlMessage::DrainComplete { pending_requests: 5 };
-        let serialized = bincode::serialize(&msg).unwrap();
-        let deserialized: ControlMessage = bincode::deserialize(&serialized).unwrap();
+        let serialized = serialize(&msg);
+        let deserialized: ControlMessage = deserialize(&serialized);
         if let ControlMessage::DrainComplete { pending_requests } = deserialized {
             assert_eq!(pending_requests, 5);
         } else {
@@ -266,11 +277,11 @@ mod tests {
         };
         let pong = ControlMessage::Pong { seq: 42, stats };
 
-        let ping_serialized = bincode::serialize(&ping).unwrap();
-        let pong_serialized = bincode::serialize(&pong).unwrap();
+        let ping_serialized = serialize(&ping);
+        let pong_serialized = serialize(&pong);
 
-        let ping_deser: ControlMessage = bincode::deserialize(&ping_serialized).unwrap();
-        let pong_deser: ControlMessage = bincode::deserialize(&pong_serialized).unwrap();
+        let ping_deser: ControlMessage = deserialize(&ping_serialized);
+        let pong_deser: ControlMessage = deserialize(&pong_serialized);
 
         if let ControlMessage::Ping { seq } = ping_deser {
             assert_eq!(seq, 42);
@@ -290,8 +301,8 @@ mod tests {
     #[test]
     fn test_control_message_shutdown() {
         let msg = ControlMessage::Shutdown;
-        let serialized = bincode::serialize(&msg).unwrap();
-        let deserialized: ControlMessage = bincode::deserialize(&serialized).unwrap();
+        let serialized = serialize(&msg);
+        let deserialized: ControlMessage = deserialize(&serialized);
         assert!(matches!(deserialized, ControlMessage::Shutdown));
     }
 
@@ -316,8 +327,8 @@ mod tests {
             active_connections: 25,
             pending_requests: 3,
         };
-        let serialized = bincode::serialize(&stats).unwrap();
-        let deserialized: ServiceStats = bincode::deserialize(&serialized).unwrap();
+        let serialized = serialize(&stats);
+        let deserialized: ServiceStats = deserialize(&serialized);
         assert_eq!(stats.uptime_secs, deserialized.uptime_secs);
         assert_eq!(stats.requests_processed, deserialized.requests_processed);
     }
@@ -331,8 +342,8 @@ mod tests {
             session_id: "sess456".to_string(),
             roles: vec!["admin".to_string(), "user".to_string()],
         };
-        let serialized = bincode::serialize(&result).unwrap();
-        let deserialized: AuthResult = bincode::deserialize(&serialized).unwrap();
+        let serialized = serialize(&result);
+        let deserialized: AuthResult = deserialize(&serialized);
         if let AuthResult::Success { user_id, roles, .. } = deserialized {
             assert_eq!(user_id, "user123");
             assert_eq!(roles.len(), 2);
@@ -346,8 +357,8 @@ mod tests {
         let result = AuthResult::Failure {
             reason: "Invalid password".to_string(),
         };
-        let serialized = bincode::serialize(&result).unwrap();
-        let deserialized: AuthResult = bincode::deserialize(&serialized).unwrap();
+        let serialized = serialize(&result);
+        let deserialized: AuthResult = deserialize(&serialized);
         if let AuthResult::Failure { reason } = deserialized {
             assert_eq!(reason, "Invalid password");
         } else {
@@ -360,8 +371,8 @@ mod tests {
         let result = AuthResult::MfaRequired {
             challenge_id: "chal789".to_string(),
         };
-        let serialized = bincode::serialize(&result).unwrap();
-        let deserialized: AuthResult = bincode::deserialize(&serialized).unwrap();
+        let serialized = serialize(&result);
+        let deserialized: AuthResult = deserialize(&serialized);
         if let AuthResult::MfaRequired { challenge_id } = deserialized {
             assert_eq!(challenge_id, "chal789");
         } else {
@@ -377,8 +388,8 @@ mod tests {
             allowed: true,
             reason: None,
         };
-        let serialized = bincode::serialize(&result).unwrap();
-        let deserialized: RbacResult = bincode::deserialize(&serialized).unwrap();
+        let serialized = serialize(&result);
+        let deserialized: RbacResult = deserialize(&serialized);
         assert!(deserialized.allowed);
         assert!(deserialized.reason.is_none());
     }
@@ -389,8 +400,8 @@ mod tests {
             allowed: false,
             reason: Some("Insufficient permissions".to_string()),
         };
-        let serialized = bincode::serialize(&result).unwrap();
-        let deserialized: RbacResult = bincode::deserialize(&serialized).unwrap();
+        let serialized = serialize(&result);
+        let deserialized: RbacResult = deserialize(&serialized);
         assert!(!deserialized.allowed);
         assert_eq!(deserialized.reason.unwrap(), "Insufficient permissions");
     }
@@ -411,8 +422,8 @@ mod tests {
         assert_eq!(events.len(), 7);
 
         for event in events {
-            let serialized = bincode::serialize(&event).unwrap();
-            let _: AuditEventType = bincode::deserialize(&serialized).unwrap();
+            let serialized = serialize(&event);
+            let _: AuditEventType = deserialize(&serialized);
         }
     }
 
@@ -434,8 +445,8 @@ mod tests {
         };
         assert_eq!(msg.request_id(), Some(100));
         
-        let serialized = bincode::serialize(&msg).unwrap();
-        let deserialized: Message = bincode::deserialize(&serialized).unwrap();
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
         if let Message::AuthRequest { username, source_ip, .. } = deserialized {
             assert_eq!(username, "testuser");
             assert_eq!(source_ip, IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
@@ -506,8 +517,8 @@ mod tests {
         // SessionRecordingChunk has no request_id
         assert!(msg.request_id().is_none());
         
-        let serialized = bincode::serialize(&msg).unwrap();
-        let deserialized: Message = bincode::deserialize(&serialized).unwrap();
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
         if let Message::SessionRecordingChunk { session_id, sequence, data } = deserialized {
             assert_eq!(session_id, "sess123");
             assert_eq!(sequence, 42);
@@ -552,7 +563,7 @@ mod tests {
     #[test]
     fn test_message_serialization_size_ping() {
         let msg = Message::Control(ControlMessage::Ping { seq: u64::MAX });
-        let serialized = bincode::serialize(&msg).unwrap();
+        let serialized = serialize(&msg);
         // Ping should be small
         assert!(serialized.len() < 32);
     }
@@ -586,8 +597,8 @@ mod tests {
         ];
 
         for msg in messages {
-            let serialized = bincode::serialize(&msg).unwrap();
-            let deserialized: Message = bincode::deserialize(&serialized).unwrap();
+            let serialized = serialize(&msg);
+            let deserialized: Message = deserialize(&serialized);
             // Just verify it doesn't panic
             let _ = deserialized.request_id();
         }

@@ -1,13 +1,21 @@
 //! Configuration module for vauban-supervisor.
 //!
+//! Uses the centralized configuration from the workspace root `config/` directory.
+//! Configuration is shared with vauban-web and other components.
+//!
 //! Supports two modes:
 //! - Development: All services run as current user
 //! - Production: Each service runs with dedicated UID/GID
+//!
+//! Configuration directory lookup order:
+//! 1. VAUBAN_CONFIG_DIR environment variable (if set)
+//! 2. Workspace root config/ directory (based on CARGO_MANIFEST_DIR)
+//! 3. /usr/local/etc/vauban/ (production on FreeBSD)
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Main configuration structure.
 #[derive(Debug, Deserialize)]
@@ -87,6 +95,8 @@ pub struct ServiceConfig {
 
 impl SupervisorConfig {
     /// Load configuration from a TOML file.
+    /// Used by tests and for loading from specific paths.
+    #[allow(dead_code)]
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref();
         let contents = std::fs::read_to_string(path)
@@ -98,33 +108,107 @@ impl SupervisorConfig {
         Ok(config)
     }
 
-    /// Load configuration based on environment.
+    /// Load configuration from the centralized config directory.
     ///
-    /// Looks for config files in this order:
-    /// 1. Path specified in VAUBAN_CONFIG environment variable
-    /// 2. ./config/{environment}.toml
-    /// 3. /usr/local/etc/vauban/supervisor.toml (production)
-    /// 4. Default embedded configuration
+    /// Uses the same directory lookup as vauban-web:
+    /// 1. VAUBAN_CONFIG_DIR environment variable (if set)
+    /// 2. Workspace root config/ directory (based on CARGO_MANIFEST_DIR)
+    /// 3. /usr/local/etc/vauban/ (production on FreeBSD)
+    ///
+    /// Loads configuration files in order:
+    /// 1. config/default.toml (required)
+    /// 2. config/{environment}.toml (development, testing, production)
     pub fn load_auto() -> Result<Self> {
-        // Check environment variable first
-        if let Ok(config_path) = std::env::var("VAUBAN_CONFIG") {
-            return Self::load(&config_path);
+        let config_dir = Self::find_config_dir()?;
+        Self::load_from_dir(&config_dir)
+    }
+
+    /// Find the configuration directory.
+    ///
+    /// Searches in the following order:
+    /// 1. VAUBAN_CONFIG_DIR environment variable (if set)
+    /// 2. Workspace root config/ directory (based on CARGO_MANIFEST_DIR)
+    /// 3. /usr/local/etc/vauban/ (production on FreeBSD)
+    fn find_config_dir() -> Result<PathBuf> {
+        // 1. Check for explicit VAUBAN_CONFIG_DIR environment variable
+        if let Ok(path) = std::env::var("VAUBAN_CONFIG_DIR") {
+            let config_path = PathBuf::from(&path);
+            if config_path.exists() {
+                return Ok(config_path);
+            }
+            anyhow::bail!("VAUBAN_CONFIG_DIR points to non-existent directory: {}", path);
         }
 
-        // Check for development config
-        let dev_config = Path::new("config/development.toml");
-        if dev_config.exists() {
-            return Self::load(dev_config);
+        // 2. Check workspace root config/ directory (development)
+        // CARGO_MANIFEST_DIR is set at compile time to the crate's directory (vauban-supervisor/)
+        // We go up one level to reach the workspace root
+        let workspace_config = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .map(|p| p.join("config"));
+        if let Some(ref config_path) = workspace_config
+            && config_path.exists()
+        {
+            return Ok(config_path.clone());
         }
 
-        // Check for production config
-        let prod_config = Path::new("/usr/local/etc/vauban/supervisor.toml");
-        if prod_config.exists() {
-            return Self::load(prod_config);
+        // 3. Check system configuration directory (production on FreeBSD)
+        let system_config = Path::new("/usr/local/etc/vauban");
+        if system_config.exists() {
+            return Ok(system_config.to_path_buf());
         }
 
-        // Fall back to embedded default (development)
-        Self::default_development()
+        // No configuration directory found, fall back to embedded default
+        anyhow::bail!(
+            "Configuration directory not found. Searched:\n\
+             - VAUBAN_CONFIG_DIR environment variable\n\
+             - Workspace root config/ directory\n\
+             - /usr/local/etc/vauban/"
+        )
+    }
+
+    /// Load configuration from a directory containing TOML files.
+    ///
+    /// Loads default.toml first, then overlays environment-specific config.
+    fn load_from_dir(config_dir: &Path) -> Result<Self> {
+        // Determine environment from VAUBAN_ENVIRONMENT or default to development
+        let environment = std::env::var("VAUBAN_ENVIRONMENT")
+            .map(|e| match e.to_lowercase().as_str() {
+                "production" | "prod" => Environment::Production,
+                _ => Environment::Development,
+            })
+            .unwrap_or(Environment::Development);
+
+        // Load default.toml (required)
+        let default_path = config_dir.join("default.toml");
+        if !default_path.exists() {
+            anyhow::bail!("Configuration file not found: {}", default_path.display());
+        }
+        let default_contents = std::fs::read_to_string(&default_path)
+            .with_context(|| format!("Failed to read config file: {}", default_path.display()))?;
+
+        // Load environment-specific config
+        let env_name = match environment {
+            Environment::Development => "development",
+            Environment::Production => "production",
+        };
+        let env_path = config_dir.join(format!("{}.toml", env_name));
+        let env_contents = if env_path.exists() {
+            std::fs::read_to_string(&env_path)
+                .with_context(|| format!("Failed to read config file: {}", env_path.display()))?
+        } else {
+            String::new()
+        };
+
+        // Merge configurations using the config crate
+        let settings = config::Config::builder()
+            .add_source(config::File::from_str(&default_contents, config::FileFormat::Toml))
+            .add_source(config::File::from_str(&env_contents, config::FileFormat::Toml))
+            .build()
+            .with_context(|| "Failed to build configuration")?;
+
+        settings
+            .try_deserialize()
+            .with_context(|| "Failed to deserialize supervisor configuration")
     }
 
     /// Get effective UID for a service.
@@ -177,26 +261,25 @@ impl SupervisorConfig {
 
     /// Get effective working directory for a service.
     ///
-    /// In development mode, uses the service's source directory (e.g., "vauban-web").
+    /// In development mode, returns None (services run from workspace root).
+    /// This ensures all relative paths in configuration work correctly.
     /// In production mode, uses the configured workdir if set.
     pub fn effective_workdir(&self, service_key: &str) -> Option<String> {
         let service = self.services.get(service_key)?;
         
-        // Use explicit workdir if configured
+        // Use explicit workdir if configured (production)
         if let Some(ref workdir) = service.workdir {
             return Some(workdir.clone());
         }
         
-        // In development mode, use the service's source directory
-        if self.supervisor.environment.is_development() {
-            // Convert service name to directory (e.g., "vauban-web" -> "vauban-web")
-            Some(service.name.clone())
-        } else {
-            None
-        }
+        // In development mode, don't change working directory
+        // All services run from workspace root where config paths are relative to
+        None
     }
 
     /// Create default development configuration.
+    /// Used by tests and as fallback when no config file is found.
+    #[allow(dead_code)]
     pub fn default_development() -> Result<Self> {
         let toml_str = r#"
 [supervisor]
@@ -388,30 +471,25 @@ mod tests {
     fn test_effective_workdir_development() {
         let config = SupervisorConfig::default_development().unwrap();
         
-        // In development, workdir should be the service directory name
+        // In development, workdir should be None (run from workspace root)
+        // This ensures all relative paths in configuration work correctly
         let workdir = config.effective_workdir("audit");
-        assert!(workdir.is_some());
-        assert_eq!(workdir.unwrap(), "vauban-audit");
+        assert!(workdir.is_none(), "Development workdir should be None");
     }
 
     #[test]
-    fn test_effective_workdir_all_services() {
+    fn test_effective_workdir_all_services_development() {
         let config = SupervisorConfig::default_development().unwrap();
         
-        let expected = [
-            ("audit", "vauban-audit"),
-            ("vault", "vauban-vault"),
-            ("rbac", "vauban-rbac"),
-            ("auth", "vauban-auth"),
-            ("proxy_ssh", "vauban-proxy-ssh"),
-            ("proxy_rdp", "vauban-proxy-rdp"),
-            ("web", "vauban-web"),
-        ];
+        let services = ["audit", "vault", "rbac", "auth", "proxy_ssh", "proxy_rdp", "web"];
         
-        for (key, expected_workdir) in expected {
+        for key in services {
             let workdir = config.effective_workdir(key);
-            assert!(workdir.is_some(), "workdir for {} should be Some", key);
-            assert_eq!(workdir.unwrap(), expected_workdir, "workdir mismatch for {}", key);
+            assert!(
+                workdir.is_none(),
+                "Development workdir for {} should be None to run from workspace root",
+                key
+            );
         }
     }
 
@@ -421,6 +499,26 @@ mod tests {
         
         let workdir = config.effective_workdir("nonexistent");
         assert!(workdir.is_none());
+    }
+
+    /// Regression test: ensure development workdir is None so relative paths work.
+    ///
+    /// When services run from workspace root, relative paths like "vauban-web/certs/..."
+    /// resolve correctly. If workdir were set to "vauban-web", the path would become
+    /// "vauban-web/vauban-web/certs/..." which is incorrect.
+    #[test]
+    fn test_development_workdir_none_prevents_path_doubling() {
+        let config = SupervisorConfig::default_development().unwrap();
+        
+        // Critical: web service must NOT have a workdir in development
+        // Otherwise paths like "vauban-web/certs/..." would fail
+        let web_workdir = config.effective_workdir("web");
+        assert!(
+            web_workdir.is_none(),
+            "Web service workdir must be None in development to prevent path doubling. \
+             If workdir is 'vauban-web', then paths like 'vauban-web/certs/...' in config \
+             would resolve to 'vauban-web/vauban-web/certs/...' which doesn't exist."
+        );
     }
 
     // ==================== Startup Order Tests ====================
@@ -494,13 +592,21 @@ mod tests {
 
     // ==================== Load Config Tests ====================
 
+    /// Get the path to the workspace root config/ directory for tests.
+    fn test_config_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("Failed to get workspace root")
+            .join("config")
+    }
+
     #[test]
-    fn test_load_from_development_toml() {
-        // Load from actual config file if it exists
-        let path = "config/development.toml";
-        if std::path::Path::new(path).exists() {
-            let config = SupervisorConfig::load(path);
-            assert!(config.is_ok());
+    fn test_load_from_config_dir() {
+        // Load from the centralized config directory
+        let config_dir = test_config_dir();
+        if config_dir.exists() {
+            let config = SupervisorConfig::load_from_dir(&config_dir);
+            assert!(config.is_ok(), "Failed to load config: {:?}", config.err());
             let config = config.unwrap();
             assert!(config.supervisor.environment.is_development());
         }

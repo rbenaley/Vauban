@@ -240,12 +240,20 @@ mod tests {
     use super::*;
     
 
+    /// Get the path to the workspace root config/ directory.
+    fn config_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("Failed to get workspace root")
+            .join("config")
+    }
+
     /// Helper to load test config from TOML files.
     fn load_test_config() -> Config {
         // SAFETY: Test config must exist for tests to run
         #[allow(clippy::expect_used)]
-        Config::load_with_environment("config", crate::config::Environment::Testing)
-            .expect("Failed to load test config from config/testing.toml")
+        Config::load_with_environment(config_dir(), crate::config::Environment::Testing)
+            .expect("Failed to load test config from workspace config/testing.toml")
     }
 
     // ==================== Password Hashing Tests ====================

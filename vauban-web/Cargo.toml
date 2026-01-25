@@ -34,8 +34,8 @@ secrecy = { version = "0.10", features = ["serde"] }
 zeroize = { version = "1.8", features = ["derive"] }
 
 # OAuth2 / OpenID Connect
-oauth2 = "4"
-openidconnect = "3"
+oauth2 = "5"
+openidconnect = "4"
 
 # Sessions
 tower-sessions = "0.14"
@@ -76,7 +76,7 @@ uuid = { version = "1.11", features = ["v4", "serde"] }
 ipnetwork = "0.21"
 chrono = { version = "0.4", features = ["serde"] }
 time = "0.3"
-bcrypt = "0.17"
+bcrypt = "0.18"
 rand = "0.8"
 hex = "0.4"
 url = "2.5"
@@ -95,27 +95,27 @@ dotenvy = "0.15"
 rpassword = "7"
 
 # HTTP client
-reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+reqwest = { version = "0.13", features = ["json", "rustls"] }
 
 # WebSocket & Cookies
 axum-extra = { version = "0.12", features = ["cookie", "typed-header"] }
 futures-util = "0.3"
 
 # TLS (HTTPS only, TLS 1.3)
-axum-server = { version = "0.7", features = ["tls-rustls"] }
+axum-server = { version = "0.8", features = ["tls-rustls"] }
 rustls = "0.23"
 rustls-pki-types = "1"
 
 [dev-dependencies]
 tokio-test = "0.4"
 mockall = "0.14"
-axum-test = "17"
+axum-test = "18"
 diesel_migrations = "2.2"
 tempfile = "3"
 serial_test = "3"
 once_cell = "1.19"
 insta = { version = "1.40", features = ["yaml"] }
-tokio-tungstenite = "0.26"
+tokio-tungstenite = "0.28"
 
 [[bin]]
 name = "seed_data"

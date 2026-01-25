@@ -17,7 +17,8 @@ anyhow.workspace = true
 serde.workspace = true
 
 # Configuration
-toml = "0.8"
+config.workspace = true
+toml = "0.9"
 
 # Signal handling
-signal-hook = "0.3"
+signal-hook = "0.4"

@@ -10,6 +10,9 @@ use axum::{
 use axum_server::tls_rustls::RustlsConfig;
 use secrecy::ExposeSecret;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::Instant;
 use tower::ServiceBuilder;
 use tower_http::{
     cors::{AllowOrigin, CorsLayer},
@@ -17,6 +20,141 @@ use tower_http::{
     trace::TraceLayer,
 };
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+// IPC imports for supervisor heartbeat
+use shared::ipc::{poll_readable, IpcChannel};
+use shared::messages::{ControlMessage, Message, ServiceStats};
+
+/// Shared state for heartbeat reporting.
+/// Uses atomics for lock-free access from the heartbeat thread.
+struct HeartbeatState {
+    start_time: Instant,
+    requests_processed: AtomicU64,
+    requests_failed: AtomicU64,
+}
+
+impl HeartbeatState {
+    fn new() -> Self {
+        Self {
+            start_time: Instant::now(),
+            requests_processed: AtomicU64::new(0),
+            requests_failed: AtomicU64::new(0),
+        }
+    }
+}
+
+/// Start the heartbeat responder thread if running under supervisor.
+///
+/// Returns the shared heartbeat state if IPC is available, None otherwise.
+/// The heartbeat thread runs in the background and responds to Ping messages
+/// from vauban-supervisor with Pong messages containing service statistics.
+fn start_heartbeat_responder() -> Option<Arc<HeartbeatState>> {
+    use std::os::unix::io::RawFd;
+
+    // Check if we're running under supervisor (IPC environment variables set)
+    let ipc_read_fd: RawFd = match std::env::var("VAUBAN_IPC_READ") {
+        Ok(val) => match val.parse() {
+            Ok(fd) => fd,
+            Err(_) => return None,
+        },
+        Err(_) => return None,
+    };
+
+    let ipc_write_fd: RawFd = match std::env::var("VAUBAN_IPC_WRITE") {
+        Ok(val) => match val.parse() {
+            Ok(fd) => fd,
+            Err(_) => return None,
+        },
+        Err(_) => return None,
+    };
+
+    // Clear environment variables immediately for security
+    // SAFETY: We are early in startup, before spawning async tasks
+    unsafe {
+        std::env::remove_var("VAUBAN_IPC_READ");
+        std::env::remove_var("VAUBAN_IPC_WRITE");
+    }
+
+    // Create IPC channel from file descriptors
+    // SAFETY: FDs are passed from supervisor and are valid
+    let channel = unsafe { IpcChannel::from_raw_fds(ipc_read_fd, ipc_write_fd) };
+
+    // Create shared state
+    let state = Arc::new(HeartbeatState::new());
+    let thread_state = Arc::clone(&state);
+
+    // Spawn dedicated thread for heartbeat handling
+    // We use a standard thread (not Tokio) because IPC uses blocking poll()
+    std::thread::Builder::new()
+        .name("heartbeat-responder".to_string())
+        .spawn(move || {
+            heartbeat_loop(channel, thread_state);
+        })
+        .expect("Failed to spawn heartbeat thread");
+
+    tracing::info!("Heartbeat responder started (running under supervisor)");
+    Some(state)
+}
+
+/// Main loop for heartbeat responder thread.
+fn heartbeat_loop(channel: IpcChannel, state: Arc<HeartbeatState>) {
+    let fds = [channel.read_fd()];
+
+    loop {
+        // Wait for incoming messages with poll() - 1 second timeout
+        let ready = match poll_readable(&fds, 1000) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("Heartbeat poll error: {}", e);
+                continue;
+            }
+        };
+
+        if ready.is_empty() {
+            // Timeout - continue loop
+            continue;
+        }
+
+        // Read and handle message
+        match channel.recv() {
+            Ok(Message::Control(ControlMessage::Ping { seq })) => {
+                let stats = ServiceStats {
+                    uptime_secs: state.start_time.elapsed().as_secs(),
+                    requests_processed: state.requests_processed.load(Ordering::Relaxed),
+                    requests_failed: state.requests_failed.load(Ordering::Relaxed),
+                    active_connections: 0, // TODO: track WebSocket connections
+                    pending_requests: 0,
+                };
+                let pong = Message::Control(ControlMessage::Pong { seq, stats });
+                if let Err(e) = channel.send(&pong) {
+                    tracing::warn!("Failed to send Pong: {}", e);
+                }
+            }
+            Ok(Message::Control(ControlMessage::Shutdown)) => {
+                tracing::info!("Shutdown requested by supervisor");
+                std::process::exit(0);
+            }
+            Ok(Message::Control(ControlMessage::Drain)) => {
+                tracing::info!("Drain requested by supervisor");
+                // TODO: implement graceful drain
+                let response = Message::Control(ControlMessage::DrainComplete {
+                    pending_requests: 0,
+                });
+                let _ = channel.send(&response);
+            }
+            Ok(_) => {
+                // Other messages - ignore
+            }
+            Err(shared::ipc::IpcError::ConnectionClosed) => {
+                tracing::info!("IPC connection closed, supervisor exited");
+                std::process::exit(0);
+            }
+            Err(e) => {
+                tracing::warn!("Heartbeat recv error: {}", e);
+            }
+        }
+    }
+}
 
 use vauban_web::{
     AppState,
@@ -33,6 +171,10 @@ use vauban_web::{
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Start heartbeat responder if running under supervisor
+    // This must be done early, before any async runtime setup
+    let _heartbeat_state = start_heartbeat_responder();
+
     // Install the default crypto provider for rustls (aws-lc-rs)
     // This must be done before any TLS operations
     // SAFETY: This is a startup invariant - the app cannot run without TLS
@@ -743,5 +885,188 @@ mod tests {
         let origin = "https://other.example.com";
         let host = "example.com";
         assert!(!is_same_origin(origin, host));
+    }
+
+    // ==================== HeartbeatState Tests ====================
+
+    #[test]
+    fn test_heartbeat_state_new() {
+        let state = HeartbeatState::new();
+        assert_eq!(state.requests_processed.load(Ordering::Relaxed), 0);
+        assert_eq!(state.requests_failed.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_heartbeat_state_uptime() {
+        let state = HeartbeatState::new();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        // Uptime should be > 0 after sleeping
+        assert!(state.start_time.elapsed().as_millis() >= 10);
+    }
+
+    #[test]
+    fn test_heartbeat_state_atomic_counters() {
+        let state = Arc::new(HeartbeatState::new());
+        
+        state.requests_processed.fetch_add(42, Ordering::Relaxed);
+        state.requests_failed.fetch_add(3, Ordering::Relaxed);
+        
+        assert_eq!(state.requests_processed.load(Ordering::Relaxed), 42);
+        assert_eq!(state.requests_failed.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn test_start_heartbeat_responder_without_env_vars() {
+        // Without IPC environment variables, should return None
+        // (service not running under supervisor)
+        let result = start_heartbeat_responder();
+        assert!(result.is_none());
+    }
+
+    /// Test Ping/Pong cycle without spawning a persistent thread.
+    /// We manually simulate the heartbeat response logic.
+    #[test]
+    fn test_heartbeat_responds_to_ping() {
+        let (supervisor_channel, service_channel) = IpcChannel::pair().unwrap();
+        
+        let state = Arc::new(HeartbeatState::new());
+        state.requests_processed.store(100, Ordering::Relaxed);
+        state.requests_failed.store(5, Ordering::Relaxed);
+        
+        // Send Ping from "supervisor"
+        let ping = Message::Control(ControlMessage::Ping { seq: 42 });
+        supervisor_channel.send(&ping).unwrap();
+        
+        // Manually handle the message (simulating heartbeat_loop behavior)
+        let msg = service_channel.recv().unwrap();
+        if let Message::Control(ControlMessage::Ping { seq }) = msg {
+            let stats = ServiceStats {
+                uptime_secs: state.start_time.elapsed().as_secs(),
+                requests_processed: state.requests_processed.load(Ordering::Relaxed),
+                requests_failed: state.requests_failed.load(Ordering::Relaxed),
+                active_connections: 0,
+                pending_requests: 0,
+            };
+            let pong = Message::Control(ControlMessage::Pong { seq, stats });
+            service_channel.send(&pong).unwrap();
+        }
+        
+        // Verify response on supervisor side
+        let response = supervisor_channel.recv().unwrap();
+        if let Message::Control(ControlMessage::Pong { seq, stats }) = response {
+            assert_eq!(seq, 42, "Pong seq should match Ping seq");
+            assert_eq!(stats.requests_processed, 100);
+            assert_eq!(stats.requests_failed, 5);
+        } else {
+            panic!("Expected Pong message");
+        }
+    }
+
+    #[test]
+    fn test_heartbeat_handles_multiple_pings() {
+        let (supervisor_channel, service_channel) = IpcChannel::pair().unwrap();
+        let state = Arc::new(HeartbeatState::new());
+        
+        // Send and handle multiple Pings
+        for seq in 1..=5u64 {
+            let ping = Message::Control(ControlMessage::Ping { seq });
+            supervisor_channel.send(&ping).unwrap();
+            
+            // Handle on service side
+            let msg = service_channel.recv().unwrap();
+            if let Message::Control(ControlMessage::Ping { seq: recv_seq }) = msg {
+                let stats = ServiceStats {
+                    uptime_secs: state.start_time.elapsed().as_secs(),
+                    requests_processed: state.requests_processed.load(Ordering::Relaxed),
+                    requests_failed: state.requests_failed.load(Ordering::Relaxed),
+                    active_connections: 0,
+                    pending_requests: 0,
+                };
+                service_channel.send(&Message::Control(ControlMessage::Pong { seq: recv_seq, stats })).unwrap();
+            }
+            
+            // Verify on supervisor side
+            let response = supervisor_channel.recv().unwrap();
+            if let Message::Control(ControlMessage::Pong { seq: resp_seq, .. }) = response {
+                assert_eq!(resp_seq, seq, "Pong seq should match Ping seq #{}", seq);
+            } else {
+                panic!("Expected Pong for seq {}", seq);
+            }
+        }
+    }
+
+    #[test]
+    fn test_heartbeat_stats_update_live() {
+        let (supervisor_channel, service_channel) = IpcChannel::pair().unwrap();
+        let state = Arc::new(HeartbeatState::new());
+        
+        // First ping - counters at 0
+        supervisor_channel.send(&Message::Control(ControlMessage::Ping { seq: 1 })).unwrap();
+        
+        let msg = service_channel.recv().unwrap();
+        if let Message::Control(ControlMessage::Ping { seq }) = msg {
+            let stats = ServiceStats {
+                uptime_secs: 0,
+                requests_processed: state.requests_processed.load(Ordering::Relaxed),
+                requests_failed: state.requests_failed.load(Ordering::Relaxed),
+                active_connections: 0,
+                pending_requests: 0,
+            };
+            service_channel.send(&Message::Control(ControlMessage::Pong { seq, stats })).unwrap();
+        }
+        
+        let response = supervisor_channel.recv().unwrap();
+        if let Message::Control(ControlMessage::Pong { stats, .. }) = response {
+            assert_eq!(stats.requests_processed, 0);
+        }
+        
+        // Update counters (simulating request processing)
+        state.requests_processed.store(50, Ordering::Relaxed);
+        state.requests_failed.store(2, Ordering::Relaxed);
+        
+        // Second ping - should see updated counters
+        supervisor_channel.send(&Message::Control(ControlMessage::Ping { seq: 2 })).unwrap();
+        
+        let msg = service_channel.recv().unwrap();
+        if let Message::Control(ControlMessage::Ping { seq }) = msg {
+            let stats = ServiceStats {
+                uptime_secs: 0,
+                requests_processed: state.requests_processed.load(Ordering::Relaxed),
+                requests_failed: state.requests_failed.load(Ordering::Relaxed),
+                active_connections: 0,
+                pending_requests: 0,
+            };
+            service_channel.send(&Message::Control(ControlMessage::Pong { seq, stats })).unwrap();
+        }
+        
+        let response = supervisor_channel.recv().unwrap();
+        if let Message::Control(ControlMessage::Pong { stats, .. }) = response {
+            assert_eq!(stats.requests_processed, 50, "Stats should reflect live updates");
+            assert_eq!(stats.requests_failed, 2);
+        }
+    }
+
+    #[test]
+    fn test_heartbeat_handles_drain_message() {
+        let (supervisor_channel, service_channel) = IpcChannel::pair().unwrap();
+        
+        // Send Drain message
+        let drain = Message::Control(ControlMessage::Drain);
+        supervisor_channel.send(&drain).unwrap();
+        
+        // Handle on service side
+        let msg = service_channel.recv().unwrap();
+        if let Message::Control(ControlMessage::Drain) = msg {
+            let response = Message::Control(ControlMessage::DrainComplete { pending_requests: 0 });
+            service_channel.send(&response).unwrap();
+        }
+        
+        // Verify DrainComplete on supervisor side
+        let response = supervisor_channel.recv().unwrap();
+        if let Message::Control(ControlMessage::DrainComplete { pending_requests }) = response {
+            assert_eq!(pending_requests, 0, "No pending requests during drain");
+        } else {
+            panic!("Expected DrainComplete message");
+        }
     }
 }

@@ -1,15 +1,22 @@
 /// VAUBAN Web - Configuration management.
 ///
 /// Loads configuration from TOML files with multi-environment support.
+/// Configuration is loaded from the workspace root `config/` directory.
+///
 /// Loading order:
 /// 1. config/default.toml - default values
 /// 2. config/{environment}.toml - environment-specific values
 /// 3. config/local.toml - local overrides (not versioned)
 /// 4. Environment variables prefixed with VAUBAN_ (for secrets only)
+///
+/// Configuration directory lookup order:
+/// 1. VAUBAN_CONFIG_DIR environment variable (if set)
+/// 2. Workspace root config/ directory (development)
+/// 3. /usr/local/etc/vauban/ (production on FreeBSD)
 use config::{Config as ConfigBuilder, ConfigError, File};
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 // ==================== Optional Secret Wrapper ====================
 
@@ -378,13 +385,106 @@ impl Default for ApiConfig {
 impl Config {
     /// Load configuration from TOML files.
     ///
-    /// Loads configuration in the following order:
+    /// Automatically finds the configuration directory in this order:
+    /// 1. VAUBAN_CONFIG_DIR environment variable (if set)
+    /// 2. Workspace root config/ directory (development)
+    /// 3. /usr/local/etc/vauban/ (production on FreeBSD)
+    ///
+    /// Then loads configuration files in the following order:
     /// 1. config/default.toml
     /// 2. config/{environment}.toml (development, testing, production)
     /// 3. config/local.toml (optional, for local overrides)
     /// 4. VAUBAN_SECRET_KEY environment variable (for secrets only)
     pub fn load() -> Result<Self, crate::error::AppError> {
-        Self::load_from_path("config")
+        let config_path = Self::find_config_dir()?;
+        Self::load_from_path(config_path)
+    }
+
+    /// Find the configuration directory.
+    ///
+    /// Searches in the following order:
+    /// 1. VAUBAN_CONFIG_DIR environment variable (if set)
+    /// 2. Workspace root config/ directory (based on CARGO_MANIFEST_DIR)
+    /// 3. /usr/local/etc/vauban/ (production on FreeBSD)
+    fn find_config_dir() -> Result<PathBuf, crate::error::AppError> {
+        // 1. Check for explicit VAUBAN_CONFIG_DIR environment variable
+        if let Ok(path) = std::env::var("VAUBAN_CONFIG_DIR") {
+            let config_path = PathBuf::from(&path);
+            if config_path.exists() {
+                return Ok(config_path);
+            }
+            return Err(crate::error::AppError::Config(format!(
+                "VAUBAN_CONFIG_DIR points to non-existent directory: {}",
+                path
+            )));
+        }
+
+        // 2. Check workspace root config/ directory (development)
+        // CARGO_MANIFEST_DIR is set at compile time to the crate's directory (vauban-web/)
+        // We go up one level to reach the workspace root
+        let workspace_config = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .map(|p| p.join("config"));
+        if let Some(ref config_path) = workspace_config
+            && config_path.exists()
+        {
+            return Ok(config_path.clone());
+        }
+
+        // 3. Check system configuration directory (production on FreeBSD)
+        let system_config = Path::new("/usr/local/etc/vauban");
+        if system_config.exists() {
+            return Ok(system_config.to_path_buf());
+        }
+
+        // No configuration directory found
+        Err(crate::error::AppError::Config(
+            "Configuration directory not found. Searched:\n\
+             - VAUBAN_CONFIG_DIR environment variable\n\
+             - Workspace root config/ directory\n\
+             - /usr/local/etc/vauban/".to_string()
+        ))
+    }
+
+    /// Get the workspace root directory.
+    ///
+    /// Uses CARGO_MANIFEST_DIR (set at compile time) to find the vauban-web crate,
+    /// then goes up one level to get the workspace root.
+    fn workspace_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("vauban-web should be in a workspace")
+            .to_path_buf()
+    }
+
+    /// Resolve relative paths in configuration to absolute paths.
+    ///
+    /// This ensures paths work correctly regardless of the current working directory.
+    /// Paths starting with "/" are considered absolute and left unchanged.
+    /// Relative paths are resolved relative to the workspace root.
+    fn resolve_paths(&mut self) {
+        let workspace_root = Self::workspace_root();
+
+        // Resolve TLS certificate paths
+        self.server.tls.cert_path = Self::resolve_path(&workspace_root, &self.server.tls.cert_path);
+        self.server.tls.key_path = Self::resolve_path(&workspace_root, &self.server.tls.key_path);
+        if let Some(ref ca_path) = self.server.tls.ca_chain_path {
+            self.server.tls.ca_chain_path = Some(Self::resolve_path(&workspace_root, ca_path));
+        }
+    }
+
+    /// Resolve a single path relative to the workspace root.
+    ///
+    /// - Absolute paths (starting with "/") are returned unchanged.
+    /// - Relative paths are joined with the workspace root.
+    fn resolve_path(workspace_root: &Path, path: &str) -> String {
+        if path.starts_with('/') {
+            // Absolute path, leave unchanged
+            path.to_string()
+        } else {
+            // Relative path, resolve from workspace root
+            workspace_root.join(path).to_string_lossy().to_string()
+        }
     }
 
     /// Load configuration from a specific directory path.
@@ -449,6 +549,9 @@ impl Config {
         // Force environment in case it's not in the file
         config.environment = environment;
 
+        // Resolve relative paths to absolute paths based on workspace root
+        config.resolve_paths();
+
         // Validate that secret_key is set
         if config.secret_key.expose_secret().is_empty() {
             return Err(crate::error::AppError::Config(
@@ -509,15 +612,27 @@ impl Config {
 /// Provides test fixtures loaded from config files.
 #[cfg(test)]
 pub mod test_fixtures {
+    use std::path::PathBuf;
+
+    /// Get the path to the workspace root config/ directory.
+    /// Uses CARGO_MANIFEST_DIR to locate the workspace root.
+    pub fn config_dir() -> PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("Failed to get workspace root")
+            .join("config")
+    }
+
     /// Base configuration TOML for tests (mirrors config/default.toml).
     /// This is loaded from the actual config file at test time.
+    /// Path is relative to workspace root (../../config/ from vauban-web/src/).
     pub fn base_config() -> &'static str {
-        include_str!("../config/default.toml")
+        include_str!("../../config/default.toml")
     }
 
     /// Testing environment configuration.
     pub fn testing_config() -> &'static str {
-        include_str!("../config/testing.toml")
+        include_str!("../../config/testing.toml")
     }
 }
 
@@ -632,7 +747,7 @@ mod tests {
     #[test]
     fn test_config_load_from_config_dir() {
         // Load configuration from config/ directory
-        let config = unwrap_ok!(Config::load_with_environment("config", Environment::Testing));
+        let config = unwrap_ok!(Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing));
 
         assert_eq!(config.environment, Environment::Testing);
         assert!(!config.secret_key.expose_secret().is_empty());
@@ -661,7 +776,7 @@ mod tests {
 
     #[test]
     fn test_config_values_from_testing_toml() {
-        let config = unwrap_ok!(Config::load_with_environment("config", Environment::Testing));
+        let config = unwrap_ok!(Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing));
 
         // Values should come from config/testing.toml
         assert_eq!(config.logging.level, "warn");
@@ -670,7 +785,7 @@ mod tests {
 
     #[test]
     fn test_config_values_from_default_toml() {
-        let config = unwrap_ok!(Config::load_with_environment("config", Environment::Development));
+        let config = unwrap_ok!(Config::load_with_environment(test_fixtures::config_dir(), Environment::Development));
 
         // Server values should come from config/default.toml (or development.toml)
         assert!(config.server.port > 0);
@@ -679,7 +794,7 @@ mod tests {
 
     #[test]
     fn test_config_database_values() {
-        let config = unwrap_ok!(Config::load_with_environment("config", Environment::Testing));
+        let config = unwrap_ok!(Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing));
 
         // Database URL should be set
         assert!(!config.database.url.expose_secret().is_empty());
@@ -688,7 +803,7 @@ mod tests {
 
     #[test]
     fn test_config_grpc_values() {
-        let config = unwrap_ok!(Config::load_with_environment("config", Environment::Testing));
+        let config = unwrap_ok!(Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing));
 
         // gRPC URLs should be set
         assert!(!config.grpc.rbac_url.is_empty());
@@ -698,7 +813,7 @@ mod tests {
 
     #[test]
     fn test_config_security_values() {
-        let config = unwrap_ok!(Config::load_with_environment("config", Environment::Testing));
+        let config = unwrap_ok!(Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing));
 
         // Security values should be reasonable
         assert!(config.security.password_min_length >= 8);
@@ -707,7 +822,7 @@ mod tests {
 
     #[test]
     fn test_config_jwt_values() {
-        let config = unwrap_ok!(Config::load_with_environment("config", Environment::Testing));
+        let config = unwrap_ok!(Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing));
 
         // JWT values should be set
         assert!(config.jwt.access_token_lifetime_minutes > 0);
@@ -780,14 +895,14 @@ mod tests {
 
     #[test]
     fn test_config_clone() {
-        let config = unwrap_ok!(Config::load_with_environment("config", Environment::Testing));
+        let config = unwrap_ok!(Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing));
         let cloned = config.clone();
         assert_eq!(config.environment, cloned.environment);
     }
 
     #[test]
     fn test_config_debug() {
-        let config = unwrap_ok!(Config::load_with_environment("config", Environment::Testing));
+        let config = unwrap_ok!(Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing));
         let debug_str = format!("{:?}", config);
         assert!(debug_str.contains("Config"));
     }
@@ -796,71 +911,180 @@ mod tests {
 
     #[test]
     fn test_database_config_debug() {
-        let config = unwrap_ok!(Config::load_with_environment("config", Environment::Testing));
+        let config = unwrap_ok!(Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing));
         let debug_str = format!("{:?}", config.database);
         assert!(debug_str.contains("DatabaseConfig"));
     }
 
     #[test]
     fn test_server_config_debug() {
-        let config = unwrap_ok!(Config::load_with_environment("config", Environment::Testing));
+        let config = unwrap_ok!(Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing));
         let debug_str = format!("{:?}", config.server);
         assert!(debug_str.contains("ServerConfig"));
     }
 
     #[test]
     fn test_cache_config_debug() {
-        let config = unwrap_ok!(Config::load_with_environment("config", Environment::Testing));
+        let config = unwrap_ok!(Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing));
         let debug_str = format!("{:?}", config.cache);
         assert!(debug_str.contains("CacheConfig"));
     }
 
     #[test]
     fn test_jwt_config_debug() {
-        let config = unwrap_ok!(Config::load_with_environment("config", Environment::Testing));
+        let config = unwrap_ok!(Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing));
         let debug_str = format!("{:?}", config.jwt);
         assert!(debug_str.contains("JwtConfig"));
     }
 
     #[test]
     fn test_security_config_debug() {
-        let config = unwrap_ok!(Config::load_with_environment("config", Environment::Testing));
+        let config = unwrap_ok!(Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing));
         let debug_str = format!("{:?}", config.security);
         assert!(debug_str.contains("SecurityConfig"));
     }
 
     #[test]
     fn test_logging_config_debug() {
-        let config = unwrap_ok!(Config::load_with_environment("config", Environment::Testing));
+        let config = unwrap_ok!(Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing));
         let debug_str = format!("{:?}", config.logging);
         assert!(debug_str.contains("LoggingConfig"));
     }
 
     #[test]
     fn test_grpc_config_debug() {
-        let config = unwrap_ok!(Config::load_with_environment("config", Environment::Testing));
+        let config = unwrap_ok!(Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing));
         let debug_str = format!("{:?}", config.grpc);
         assert!(debug_str.contains("GrpcConfig"));
     }
 
     #[test]
     fn test_tls_config_debug() {
-        let config = unwrap_ok!(Config::load_with_environment("config", Environment::Testing));
+        let config = unwrap_ok!(Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing));
         let debug_str = format!("{:?}", config.server.tls);
         assert!(debug_str.contains("TlsConfig"));
     }
 
     #[test]
     fn test_mtls_config_debug() {
-        let config = unwrap_ok!(Config::load_with_environment("config", Environment::Testing));
+        let config = unwrap_ok!(Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing));
         let debug_str = format!("{:?}", config.grpc.mtls);
         assert!(debug_str.contains("MtlsConfig"));
     }
 
     #[test]
     fn test_argon2_config_debug() {
-        let config = unwrap_ok!(Config::load_with_environment("config", Environment::Testing));
+        let config = unwrap_ok!(Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing));
         let debug_str = format!("{:?}", config.security.argon2);
         assert!(debug_str.contains("Argon2Config"));
+    }
+
+    // ==================== TLS Certificate Path Tests ====================
+    // These tests prevent regressions where certificate paths become invalid
+    // after configuration changes (e.g., moving config files).
+
+    /// Get the workspace root directory.
+    fn workspace_root() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("Failed to get workspace root")
+            .to_path_buf()
+    }
+
+    #[test]
+    fn test_tls_cert_paths_exist_in_development() {
+        let config = unwrap_ok!(Config::load_with_environment(
+            test_fixtures::config_dir(),
+            Environment::Development
+        ));
+
+        let workspace = workspace_root();
+        let cert_path = workspace.join(&config.server.tls.cert_path);
+        let key_path = workspace.join(&config.server.tls.key_path);
+
+        assert!(
+            cert_path.exists(),
+            "Development TLS certificate not found at: {}. \
+             Run ./vauban-web/scripts/generate-dev-certs.sh to generate.",
+            cert_path.display()
+        );
+        assert!(
+            key_path.exists(),
+            "Development TLS private key not found at: {}. \
+             Run ./vauban-web/scripts/generate-dev-certs.sh to generate.",
+            key_path.display()
+        );
+    }
+
+    #[test]
+    fn test_tls_cert_paths_exist_in_testing() {
+        let config = unwrap_ok!(Config::load_with_environment(
+            test_fixtures::config_dir(),
+            Environment::Testing
+        ));
+
+        let workspace = workspace_root();
+        let cert_path = workspace.join(&config.server.tls.cert_path);
+        let key_path = workspace.join(&config.server.tls.key_path);
+
+        assert!(
+            cert_path.exists(),
+            "Testing TLS certificate not found at: {}. \
+             Run ./vauban-web/scripts/generate-dev-certs.sh to generate.",
+            cert_path.display()
+        );
+        assert!(
+            key_path.exists(),
+            "Testing TLS private key not found at: {}. \
+             Run ./vauban-web/scripts/generate-dev-certs.sh to generate.",
+            key_path.display()
+        );
+    }
+
+    #[test]
+    fn test_tls_cert_paths_are_resolved_to_absolute() {
+        // Verify that development/testing cert paths are resolved to absolute paths
+        // This ensures they work regardless of the current working directory
+        let dev_config = unwrap_ok!(Config::load_with_environment(
+            test_fixtures::config_dir(),
+            Environment::Development
+        ));
+
+        // Paths should be absolute (start with /)
+        assert!(
+            dev_config.server.tls.cert_path.starts_with('/'),
+            "Development cert_path should be resolved to absolute path, got: {}",
+            dev_config.server.tls.cert_path
+        );
+        assert!(
+            dev_config.server.tls.key_path.starts_with('/'),
+            "Development key_path should be resolved to absolute path, got: {}",
+            dev_config.server.tls.key_path
+        );
+
+        // Paths should contain the workspace structure
+        assert!(
+            dev_config.server.tls.cert_path.contains("vauban-web/certs/"),
+            "Development cert_path should be in vauban-web/certs/, got: {}",
+            dev_config.server.tls.cert_path
+        );
+    }
+
+    #[test]
+    fn test_production_tls_paths_are_absolute() {
+        // Production paths should be absolute (FreeBSD standard paths)
+        // We read the TOML directly because production.toml doesn't have secret_key
+        // (it's set via environment variable in production)
+        let production_toml = include_str!("../../config/production.toml");
+
+        // Verify production config uses absolute FreeBSD paths
+        assert!(
+            production_toml.contains("cert_path = \"/usr/local/"),
+            "Production cert_path should use FreeBSD /usr/local/ path"
+        );
+        assert!(
+            production_toml.contains("key_path = \"/usr/local/"),
+            "Production key_path should use FreeBSD /usr/local/ path"
+        );
     }
 }

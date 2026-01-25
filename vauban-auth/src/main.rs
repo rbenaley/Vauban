@@ -420,7 +420,8 @@ mod tests {
         if let Message::Control(ControlMessage::Pong { stats, .. }) = response {
             assert_eq!(stats.requests_processed, 42);
             assert_eq!(stats.requests_failed, 3);
-            assert!(stats.uptime_secs >= 0);
+            // uptime_secs is u64, so always valid - just verify it exists
+            let _ = stats.uptime_secs;
         } else {
             panic!("Expected Pong");
         }

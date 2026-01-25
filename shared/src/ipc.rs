@@ -15,7 +15,10 @@ pub enum IpcError {
     Io(#[from] io::Error),
 
     #[error("Serialization error: {0}")]
-    Serialization(#[from] bincode::Error),
+    Encode(#[from] bincode::error::EncodeError),
+
+    #[error("Deserialization error: {0}")]
+    Decode(#[from] bincode::error::DecodeError),
 
     #[error("Message too large: {size} bytes (max {MAX_MESSAGE_SIZE})")]
     MessageTooLarge { size: usize },
@@ -102,7 +105,7 @@ impl IpcChannel {
 
     /// Send a message through the channel.
     pub fn send(&self, msg: &Message) -> Result<()> {
-        let data = bincode::serialize(msg)?;
+        let data = bincode::serde::encode_to_vec(msg, bincode::config::standard())?;
 
         if data.len() > MAX_MESSAGE_SIZE {
             return Err(IpcError::MessageTooLarge { size: data.len() });
@@ -141,7 +144,8 @@ impl IpcChannel {
         let mut data = vec![0u8; len];
         read_exact_fd(self.read_fd.as_raw_fd(), &mut data)?;
 
-        let msg = bincode::deserialize(&data)?;
+        let (msg, _): (Message, _) =
+            bincode::serde::decode_from_slice(&data, bincode::config::standard())?;
         Ok(msg)
     }
 }

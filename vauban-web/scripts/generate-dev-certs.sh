@@ -4,13 +4,19 @@
 # This script generates a self-signed TLS certificate for local development.
 # These certificates should NOT be used in production.
 #
-# Usage: ./scripts/generate-dev-certs.sh
+# Usage: ./vauban-web/scripts/generate-dev-certs.sh (from workspace root)
+#    or: ./scripts/generate-dev-certs.sh (from vauban-web directory)
 #
-# The generated certificates will be placed in the certs/ directory.
+# The generated certificates will be placed in vauban-web/certs/ directory.
 
 set -e
 
-CERT_DIR="certs"
+# Determine script directory and workspace root
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VAUBAN_WEB_DIR="$(dirname "$SCRIPT_DIR")"
+
+# Certificates go in vauban-web/certs/
+CERT_DIR="$VAUBAN_WEB_DIR/certs"
 CERT_NAME="dev-server"
 DAYS_VALID=365
 

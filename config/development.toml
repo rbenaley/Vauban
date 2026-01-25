@@ -1,0 +1,41 @@
+# VAUBAN - Development configuration
+# Overrides default.toml values for the development environment.
+
+environment = "development"
+secret_key = "CHANGE-ME-IN-PRODUCTION-32-CHARS!"
+
+# ==============================================================================
+# SUPERVISOR OVERRIDES
+# ==============================================================================
+
+[supervisor]
+# Development mode
+environment = "development"
+# Development: binaries in target/debug
+bin_path = "./target/debug"
+log_level = "debug"
+
+# Development mode: run as current user (uid=0 means don't change)
+[defaults]
+uid = 0
+gid = 0
+
+# ==============================================================================
+# WEB OVERRIDES (vauban-web)
+# ==============================================================================
+
+[logging]
+level = "debug"
+format = "text"
+
+[cache]
+enabled = false
+
+[grpc.mtls]
+enabled = false
+
+# Development TLS certificates (self-signed)
+# Generate with: ./vauban-web/scripts/generate-dev-certs.sh
+[server.tls]
+cert_path = "vauban-web/certs/dev-server.crt"
+key_path = "vauban-web/certs/dev-server.key"

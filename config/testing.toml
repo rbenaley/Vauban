@@ -1,0 +1,50 @@
+# VAUBAN - Testing configuration
+# Overrides default.toml values for tests.
+
+environment = "testing"
+secret_key = "test-secret-key-for-integration-tests!"
+
+# ==============================================================================
+# SUPERVISOR OVERRIDES
+# ==============================================================================
+
+[supervisor]
+# Testing mode (uses development behavior)
+environment = "development"
+# Testing: binaries in target/debug
+bin_path = "./target/debug"
+log_level = "warn"
+
+# Testing mode: run as current user
+[defaults]
+uid = 0
+gid = 0
+
+# ==============================================================================
+# WEB OVERRIDES (vauban-web)
+# ==============================================================================
+
+[database]
+url = "postgresql://vauban_test:vauban_test@localhost/vauban_test"
+max_connections = 30
+
+[logging]
+level = "warn"
+format = "text"
+
+[cache]
+enabled = false
+
+[grpc.mtls]
+enabled = false
+
+# Testing TLS certificates (use dev certs for tests)
+[server.tls]
+cert_path = "vauban-web/certs/dev-server.crt"
+key_path = "vauban-web/certs/dev-server.key"
+
+# Lightweight Argon2 parameters for faster tests
+[security.argon2]
+memory_size_kb = 1024
+iterations = 1
+parallelism = 1
