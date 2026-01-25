@@ -350,21 +350,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// On non-FreeBSD platforms, this is a no-op with a warning.
 #[cfg(target_os = "freebsd")]
 fn enter_sandbox(
-    listener: &std::net::TcpListener,
+    _listener: &std::net::TcpListener,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use shared::capsicum::{self, CapRights};
-    use std::os::unix::io::AsRawFd;
-
-    let listen_fd = listener.as_raw_fd();
-    tracing::debug!("Listening socket fd: {}", listen_fd);
-
-    // Limit rights on the listening socket
-    // TODO: Temporarily disabled to debug - uncomment after testing
-    // capsicum::limit_fd_rights(listen_fd, &CapRights::listening_socket())
-    //     .map_err(|e| format!("Failed to limit socket rights: {}", e))?;
-    tracing::warn!("Socket rights limitation DISABLED for debugging");
+    use shared::capsicum;
 
     // Enter capability mode - point of no return
+    // After this, no new file descriptors can be opened from global namespace.
+    //
+    // Note: We do NOT limit rights on the listening socket because tokio/axum
+    // require capabilities that are difficult to enumerate precisely (accept,
+    // fcntl, ioctl, poll events, etc.). The primary security comes from
+    // cap_enter() itself which prevents opening new files/sockets.
     capsicum::enter_capability_mode()
         .map_err(|e| format!("Failed to enter capability mode: {}", e))?;
 
