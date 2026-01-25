@@ -116,11 +116,16 @@ impl CapRights {
     }
 
     /// Create rights for a listening socket.
+    ///
+    /// Includes rights needed for async I/O (tokio/mio):
+    /// - CAP_FCNTL for non-blocking mode
+    /// - CAP_EVENT for kqueue/poll
     pub fn listening_socket() -> Self {
         Self {
             accept: true,
             listen: true,
             event: true,
+            fcntl: true, // Required for async I/O (non-blocking mode)
             fstat: true,
             getsockname: true,
             getsockopt: true,

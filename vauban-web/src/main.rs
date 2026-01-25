@@ -224,8 +224,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .parse()
         .map_err(|e| format!("Invalid address: {}", e))?;
 
-    let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| {
+    let tokio_listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| {
         eprintln!("Failed to bind to {}: {}", addr, e);
+        e
+    })?;
+
+    // Convert to std listener BEFORE entering sandbox
+    // This must be done before cap_enter() as the conversion may require syscalls
+    let std_listener = tokio_listener.into_std().map_err(|e| {
+        eprintln!("Failed to convert listener: {}", e);
         e
     })?;
     tracing::info!(address = %addr, "Socket bound for HTTPS");
@@ -292,7 +299,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // After this, no new file descriptors can be opened.
     // ========================================================================
 
-    enter_sandbox(&listener)?;
+    enter_sandbox(&std_listener)?;
 
     // ========================================================================
     // PHASE 3: Build application and serve requests
@@ -326,12 +333,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "HTTPS server listening (TLS 1.3 only)"
     );
 
-    // Convert tokio TcpListener to std for axum_server
-    let std_listener = listener.into_std().map_err(|e| {
-        eprintln!("Failed to convert listener: {}", e);
-        e
-    })?;
-
     axum_server::from_tcp_rustls(std_listener, tls_config)?
         .serve(app.into_make_service_with_connect_info::<SocketAddr>())
         .await?;
@@ -349,7 +350,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// On non-FreeBSD platforms, this is a no-op with a warning.
 #[cfg(target_os = "freebsd")]
 fn enter_sandbox(
-    listener: &tokio::net::TcpListener,
+    listener: &std::net::TcpListener,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use shared::capsicum::{self, CapRights};
     use std::os::unix::io::AsRawFd;
@@ -370,7 +371,7 @@ fn enter_sandbox(
 
 #[cfg(not(target_os = "freebsd"))]
 fn enter_sandbox(
-    _listener: &tokio::net::TcpListener,
+    _listener: &std::net::TcpListener,
 ) -> Result<(), Box<dyn std::error::Error>> {
     tracing::warn!("Capsicum not available on this platform - running without sandbox");
     Ok(())
