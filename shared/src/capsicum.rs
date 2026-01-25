@@ -190,6 +190,7 @@ pub fn in_capability_mode() -> bool {
 /// The file descriptor must be valid and open.
 #[cfg(target_os = "freebsd")]
 pub fn limit_fd_rights(fd: RawFd, rights: &CapRights) -> Result<()> {
+    use capsicum::CapRights as CapsicumCapRights; // Trait needed for .limit()
     use capsicum::{FileRights, Right};
     use std::os::unix::io::BorrowedFd;
 
