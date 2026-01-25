@@ -356,10 +356,13 @@ fn enter_sandbox(
     use std::os::unix::io::AsRawFd;
 
     let listen_fd = listener.as_raw_fd();
+    tracing::debug!("Listening socket fd: {}", listen_fd);
 
     // Limit rights on the listening socket
-    capsicum::limit_fd_rights(listen_fd, &CapRights::listening_socket())
-        .map_err(|e| format!("Failed to limit socket rights: {}", e))?;
+    // TODO: Temporarily disabled to debug - uncomment after testing
+    // capsicum::limit_fd_rights(listen_fd, &CapRights::listening_socket())
+    //     .map_err(|e| format!("Failed to limit socket rights: {}", e))?;
+    tracing::warn!("Socket rights limitation DISABLED for debugging");
 
     // Enter capability mode - point of no return
     capsicum::enter_capability_mode()
