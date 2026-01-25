@@ -1,7 +1,7 @@
 # Vauban Privilege Separation Architecture
 
 **Version:** 1.0  
-**Date:** January 2026  
+**Date:** 25 January 2026  
 **Author:** Richard Ben Aleya
 
 ---
@@ -26,7 +26,7 @@
 
 ### 1.1 Background
 
-Vauban is a security bastion (PAM - Privileged Access Management) designed to provide secure access to IT/OT/Military infrastructure. The initial architecture used gRPC with mTLS for inter-service communication.
+Vauban is a security bastion (PAM - Privileged Access Management) designed to provide secure access to Corporate/Industrial/Military infrastructure. The initial architecture used gRPC with mTLS for inter-service communication.
 
 ### 1.2 Motivation for Change
 
@@ -194,10 +194,10 @@ for conn in TOPOLOGY {
 Messages are serialized using **bincode** for efficiency:
 
 ```
-┌────────────────┬─────────────────────────────────┐
-│ Length (4 bytes)│ Serialized Message (bincode)   │
-│ Little-endian   │ Variable length, max 16 KB     │
-└────────────────┴─────────────────────────────────┘
+┌─────────────────┬─────────────────────────────────┐
+│ Length (4 bytes)│ Serialized Message (bincode)    │
+│ Little-endian   │ Variable length, max 16 KB      │
+└─────────────────┴─────────────────────────────────┘
 ```
 
 ### 4.2 Message Types
