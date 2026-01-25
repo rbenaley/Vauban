@@ -31,9 +31,6 @@ format = "text"
 [cache]
 enabled = false
 
-[grpc.mtls]
-enabled = false
-
 # Development TLS certificates (self-signed)
 # Generate with: ./vauban-web/scripts/generate-dev-certs.sh
 [server.tls]

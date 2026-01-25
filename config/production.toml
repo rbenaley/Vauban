@@ -118,6 +118,3 @@ max_failed_login_attempts = 3
 session_max_duration_secs = 14400   # 4 hours
 session_idle_timeout_secs = 900     # 15 minutes
 rate_limit_per_minute = 60
-
-[grpc.mtls]
-enabled = true

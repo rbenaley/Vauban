@@ -96,20 +96,6 @@ access_token_lifetime_minutes = 15
 refresh_token_lifetime_days = 1
 algorithm = "HS256"
 
-[grpc]
-rbac_url = "http://localhost:50052"
-vault_url = "http://localhost:50053"
-auth_url = "http://localhost:50051"
-proxy_ssh_url = "http://localhost:50054"
-proxy_rdp_url = "http://localhost:50055"
-audit_url = "http://localhost:50056"
-
-[grpc.mtls]
-enabled = false
-# ca_cert = "/path/to/ca.pem"
-# client_cert = "/path/to/client.pem"
-# client_key = "/path/to/client-key.pem"
-
 [security]
 password_min_length = 12
 max_failed_login_attempts = 5

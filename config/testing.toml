@@ -35,9 +35,6 @@ format = "text"
 [cache]
 enabled = false
 
-[grpc.mtls]
-enabled = false
-
 # Testing TLS certificates (use dev certs for tests)
 [server.tls]
 cert_path = "vauban-web/certs/dev-server.crt"

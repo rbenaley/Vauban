@@ -33,7 +33,7 @@ Vauban is a security bastion (PAM - Privileged Access Management) designed to pr
 The decision to migrate to a **privilege separation (privsep)** architecture was driven by:
 
 - **Enhanced Security**: Following the OpenSSH model, each process runs with minimal privileges
-- **Maximum Performance**: Unix pipes are faster than gRPC (no serialization overhead, no TLS handshake)
+- **Maximum Performance**: Unix pipes are faster than network protocols (no serialization overhead, no TLS handshake)
 - **Reduced Attack Surface**: No network ports exposed between services
 - **Appliance Deployment**: Single-machine deployment on FreeBSD
 

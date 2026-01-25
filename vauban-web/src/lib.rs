@@ -19,7 +19,7 @@ pub mod config;
 pub mod crypto;
 pub mod db;
 pub mod error;
-pub mod grpc;
+pub mod ipc;
 pub mod handlers;
 pub mod middleware;
 pub mod models;
@@ -158,8 +158,8 @@ mod tests {
     // ==================== Module Accessibility Tests ====================
 
     #[test]
-    fn test_grpc_module_exported() {
-        fn _check_grpc() {
+    fn test_ipc_module_exported() {
+        fn _check_ipc() {
             // Just verifies the module path compiles
         }
     }

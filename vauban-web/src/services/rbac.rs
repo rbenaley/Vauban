@@ -1,7 +1,7 @@
 /// VAUBAN Web - RBAC service client wrapper.
 use crate::config::Config;
 use crate::error::AppResult;
-use crate::grpc::RbacClient;
+use crate::ipc::RbacClient;
 
 /// RBAC permission check parameters.
 #[derive(Debug, Clone)]

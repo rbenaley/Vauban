@@ -63,25 +63,25 @@ flowchart TD
     LB --> ProxySSH
     LB --> ProxyRDP
 
-    %% Web layer connections
-    Web <-->|"gRPC/mTLS"| Auth
-    Web <-->|"gRPC/mTLS"| RBAC
+    %% Web layer connections (IPC via Unix pipes)
+    Web <-->|"IPC"| Auth
+    Web <-->|"IPC"| RBAC
     Web --> PG
     Web --> Valkey
 
     %% Auth connections
-    Auth <-->|"gRPC/mTLS"| RBAC
+    Auth <-->|"IPC"| RBAC
     Auth --> PG
     Auth --> Valkey
 
-    %% Proxy connections
-    ProxySSH <-->|"gRPC/mTLS"| RBAC
-    ProxySSH <-->|"gRPC/mTLS"| Vault
+    %% Proxy connections (IPC via Unix pipes)
+    ProxySSH <-->|"IPC"| RBAC
+    ProxySSH <-->|"IPC"| Vault
     ProxySSH -->|"Events"| RobustMQ
     ProxySSH --> Targets
 
-    ProxyRDP <-->|"gRPC/mTLS"| RBAC
-    ProxyRDP <-->|"gRPC/mTLS"| Vault
+    ProxyRDP <-->|"IPC"| RBAC
+    ProxyRDP <-->|"IPC"| Vault
     ProxyRDP -->|"Events"| RobustMQ
     ProxyRDP --> WindowsServers
 

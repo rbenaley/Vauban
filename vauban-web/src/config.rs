@@ -209,7 +209,6 @@ pub struct Config {
     pub cache: CacheConfig,
     pub server: ServerConfig,
     pub jwt: JwtConfig,
-    pub grpc: GrpcConfig,
     pub security: SecurityConfig,
     pub logging: LoggingConfig,
     /// API configuration for M2M endpoints.
@@ -280,35 +279,6 @@ pub struct JwtConfig {
     pub refresh_token_lifetime_days: u64,
     pub algorithm: String,
 }
-
-/// gRPC services configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GrpcConfig {
-    pub rbac_url: String,
-    pub vault_url: String,
-    pub auth_url: String,
-    pub proxy_ssh_url: String,
-    pub proxy_rdp_url: String,
-    pub audit_url: String,
-    pub mtls: MtlsConfig,
-}
-
-/// mTLS configuration.
-#[derive(Clone, Serialize, Deserialize)]
-pub struct MtlsConfig {
-    pub enabled: bool,
-    #[serde(default)]
-    pub ca_cert: OptionalSecret,
-    #[serde(default)]
-    pub client_cert: OptionalSecret,
-    #[serde(default)]
-    pub client_key: OptionalSecret,
-}
-
-debug_redacted_optional!(
-    MtlsConfig,
-    redact: [ca_cert, client_cert, client_key]
-);
 
 /// Security configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -802,16 +772,6 @@ mod tests {
     }
 
     #[test]
-    fn test_config_grpc_values() {
-        let config = unwrap_ok!(Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing));
-
-        // gRPC URLs should be set
-        assert!(!config.grpc.rbac_url.is_empty());
-        assert!(!config.grpc.vault_url.is_empty());
-        assert!(!config.grpc.auth_url.is_empty());
-    }
-
-    #[test]
     fn test_config_security_values() {
         let config = unwrap_ok!(Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing));
 
@@ -952,24 +912,10 @@ mod tests {
     }
 
     #[test]
-    fn test_grpc_config_debug() {
-        let config = unwrap_ok!(Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing));
-        let debug_str = format!("{:?}", config.grpc);
-        assert!(debug_str.contains("GrpcConfig"));
-    }
-
-    #[test]
     fn test_tls_config_debug() {
         let config = unwrap_ok!(Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing));
         let debug_str = format!("{:?}", config.server.tls);
         assert!(debug_str.contains("TlsConfig"));
-    }
-
-    #[test]
-    fn test_mtls_config_debug() {
-        let config = unwrap_ok!(Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing));
-        let debug_str = format!("{:?}", config.grpc.mtls);
-        assert!(debug_str.contains("MtlsConfig"));
     }
 
     #[test]

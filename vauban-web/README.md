@@ -5,7 +5,7 @@ Web interface and API for the VAUBAN security bastion platform, built with Rust 
 ## Features
 
 - **Secure Authentication**: JWT-based authentication with MFA (TOTP) support
-- **RBAC Integration**: Role-based access control via gRPC service
+- **RBAC Integration**: Role-based access control via IPC
 - **Asset Management**: Manage SSH, RDP, and VNC assets
 - **Session Management**: Track and monitor proxy sessions
 - **Post-Quantum Cryptography**: Hybrid classical + PQ crypto support
@@ -17,7 +17,7 @@ Web interface and API for the VAUBAN security bastion platform, built with Rust 
 - **Database**: PostgreSQL 18+ with Diesel ORM
 - **Cache**: Valkey/Redis
 - **Templates**: Askama (compile-time verified)
-- **gRPC**: Tonic with mTLS support
+- **IPC**: Unix pipes for inter-service communication
 - **Authentication**: JWT, Argon2id, TOTP
 
 ## Prerequisites
@@ -297,7 +297,7 @@ This application follows strict security practices:
 - All user input validated with `validator` crate
 - Secrets managed with `secrecy` and `zeroize`
 - Post-quantum cryptography ready
-- mTLS for gRPC communication
+- Privilege separation via Unix pipes IPC
 - Comprehensive audit logging
 
 ## License
