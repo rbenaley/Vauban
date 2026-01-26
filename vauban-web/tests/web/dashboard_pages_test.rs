@@ -18,15 +18,17 @@ use crate::fixtures::{
     create_recorded_session, create_simple_ssh_asset, create_simple_user, create_test_session,
     get_asset_uuid, unique_name,
 };
-use diesel::prelude::*;
+use diesel::{ExpressionMethods, QueryDsl};
+use diesel_async::{AsyncPgConnection, RunQueryDsl};
 
 /// Helper to get user UUID from user ID.
-fn get_user_uuid(conn: &mut diesel::PgConnection, user_id: i32) -> Uuid {
+async fn get_user_uuid(conn: &mut AsyncPgConnection, user_id: i32) -> Uuid {
     use vauban_web::schema::users;
     unwrap_ok!(users::table
         .filter(users::id.eq(user_id))
         .select(users::uuid)
-        .first(conn))
+        .first(conn)
+        .await)
 }
 
 // =============================================================================
@@ -76,16 +78,18 @@ async fn test_dashboard_home_loads_with_auth() {
     let user_id = create_simple_user(&mut conn, &username).await;
 
     let user_uuid: Uuid = {
-        use diesel::prelude::*;
+        use diesel::{ExpressionMethods, QueryDsl};
+        use diesel_async::RunQueryDsl;
         use vauban_web::schema::users;
         users::table
             .filter(users::id.eq(user_id))
             .select(users::uuid)
             .first(&mut conn)
+            .await
             .expect("User should exist")
     };
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
 
     let response = app
         .server
@@ -110,16 +114,18 @@ async fn test_user_sessions_page_contains_html() {
     let user_id = create_simple_user(&mut conn, &username).await;
 
     let user_uuid: Uuid = {
-        use diesel::prelude::*;
+        use diesel::{ExpressionMethods, QueryDsl};
+        use diesel_async::RunQueryDsl;
         use vauban_web::schema::users;
         users::table
             .filter(users::id.eq(user_id))
             .select(users::uuid)
             .first(&mut conn)
+            .await
             .expect("User should exist")
     };
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
 
     let response = app
         .server
@@ -151,16 +157,18 @@ async fn test_api_keys_page_contains_html() {
     let user_id = create_simple_user(&mut conn, &username).await;
 
     let user_uuid: Uuid = {
-        use diesel::prelude::*;
+        use diesel::{ExpressionMethods, QueryDsl};
+        use diesel_async::RunQueryDsl;
         use vauban_web::schema::users;
         users::table
             .filter(users::id.eq(user_id))
             .select(users::uuid)
             .first(&mut conn)
+            .await
             .expect("User should exist")
     };
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
 
     let response = app
         .server
@@ -191,16 +199,18 @@ async fn test_sessions_list_loads_empty() {
     let user_id = create_simple_user(&mut conn, &username).await;
 
     let user_uuid: Uuid = {
-        use diesel::prelude::*;
+        use diesel::{ExpressionMethods, QueryDsl};
+        use diesel_async::RunQueryDsl;
         use vauban_web::schema::users;
         users::table
             .filter(users::id.eq(user_id))
             .select(users::uuid)
             .first(&mut conn)
+            .await
             .expect("User should exist")
     };
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
 
     let response = app
         .server
@@ -220,23 +230,25 @@ async fn test_sessions_list_with_active_sessions() {
 
     let username = unique_name("active_sessions_list");
     let user_id = create_simple_user(&mut conn, &username).await;
-    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("session-asset"), user_id);
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("session-asset"), user_id).await;
 
     // Create some active sessions
     let _session1 = create_test_session(&mut conn, user_id, asset_id, "ssh", "active").await;
     let _session2 = create_test_session(&mut conn, user_id, asset_id, "rdp", "active").await;
 
     let user_uuid: Uuid = {
-        use diesel::prelude::*;
+        use diesel::{ExpressionMethods, QueryDsl};
+        use diesel_async::RunQueryDsl;
         use vauban_web::schema::users;
         users::table
             .filter(users::id.eq(user_id))
             .select(users::uuid)
             .first(&mut conn)
+            .await
             .expect("User should exist")
     };
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
 
     let response = app
         .server
@@ -260,22 +272,24 @@ async fn test_recordings_list_loads() {
 
     let username = unique_name("recordings_list");
     let user_id = create_simple_user(&mut conn, &username).await;
-    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("rec-asset"), user_id);
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("rec-asset"), user_id).await;
 
     // Create a recorded session
     let _session = create_recorded_session(&mut conn, user_id, asset_id).await;
 
     let user_uuid: Uuid = {
-        use diesel::prelude::*;
+        use diesel::{ExpressionMethods, QueryDsl};
+        use diesel_async::RunQueryDsl;
         use vauban_web::schema::users;
         users::table
             .filter(users::id.eq(user_id))
             .select(users::uuid)
             .first(&mut conn)
+            .await
             .expect("User should exist")
     };
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
 
     // Note: /sessions/recordings not in test router
     // Test with available endpoint
@@ -301,7 +315,7 @@ async fn test_asset_detail_with_sessions() {
 
     let username = unique_name("asset_sessions");
     let user_id = create_simple_user(&mut conn, &username).await;
-    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("asset-with-sess"), user_id);
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("asset-with-sess"), user_id).await;
     let asset_uuid = get_asset_uuid(&mut conn, asset_id).await;
 
     // Create sessions for this asset
@@ -309,16 +323,18 @@ async fn test_asset_detail_with_sessions() {
     let _session2 = create_test_session(&mut conn, user_id, asset_id, "ssh", "active").await;
 
     let user_uuid: Uuid = {
-        use diesel::prelude::*;
+        use diesel::{ExpressionMethods, QueryDsl};
+        use diesel_async::RunQueryDsl;
         use vauban_web::schema::users;
         users::table
             .filter(users::id.eq(user_id))
             .select(users::uuid)
             .first(&mut conn)
+            .await
             .expect("User should exist")
     };
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
 
     let response = app
         .server
@@ -342,9 +358,9 @@ async fn test_sessions_pagination() {
 
     let username = unique_name("pagination_user");
     let user_id = create_simple_user(&mut conn, &username).await;
-    let user_uuid = get_user_uuid(&mut conn, user_id);
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
 
     // Test various page numbers
     for page in [1, 2, 10, 100] {
@@ -372,9 +388,9 @@ async fn test_asset_groups_pagination() {
 
     let username = unique_name("group_pagination_user");
     let user_id = create_simple_user(&mut conn, &username).await;
-    let user_uuid = get_user_uuid(&mut conn, user_id);
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
 
     let response = app
         .server
@@ -398,9 +414,9 @@ async fn test_asset_groups_search() {
 
     let username = unique_name("search_user");
     let user_id = create_simple_user(&mut conn, &username).await;
-    let user_uuid = get_user_uuid(&mut conn, user_id);
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
 
     // Test search with various terms
     let search_terms = ["production", "test", "web", "database"];
@@ -430,9 +446,9 @@ async fn test_user_groups_search() {
 
     let username = unique_name("group_search_user");
     let user_id = create_simple_user(&mut conn, &username).await;
-    let user_uuid = get_user_uuid(&mut conn, user_id);
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
 
     let response = app
         .server
@@ -458,16 +474,18 @@ async fn test_html_pages_return_html_content_type() {
     let user_id = create_simple_user(&mut conn, &username).await;
 
     let user_uuid: Uuid = {
-        use diesel::prelude::*;
+        use diesel::{ExpressionMethods, QueryDsl};
+        use diesel_async::RunQueryDsl;
         use vauban_web::schema::users;
         users::table
             .filter(users::id.eq(user_id))
             .select(users::uuid)
             .first(&mut conn)
+            .await
             .expect("User should exist")
     };
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
 
     let response = app
         .server

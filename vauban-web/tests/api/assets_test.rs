@@ -2,7 +2,8 @@
 ///
 /// Tests for /api/v1/assets/* endpoints.
 use axum::http::header;
-use diesel::prelude::*;
+use diesel::{ExpressionMethods, QueryDsl};
+use diesel_async::RunQueryDsl;
 use serde_json::json;
 use serial_test::serial;
 use uuid::Uuid;
@@ -331,7 +332,7 @@ async fn test_update_asset_with_ipv4_persists_to_database() {
     let db_ip: Option<ipnetwork::IpNetwork> = unwrap_ok!(assets
         .filter(uuid.eq(asset.asset.uuid))
         .select(ip_address)
-        .first(&mut conn));
+        .first(&mut conn).await);
 
     assert_eq!(
         db_ip.map(|ip| ip.to_string()),
@@ -374,7 +375,7 @@ async fn test_update_asset_with_ipv6_persists_to_database() {
     let db_ip: Option<ipnetwork::IpNetwork> = unwrap_ok!(assets
         .filter(uuid.eq(asset.asset.uuid))
         .select(ip_address)
-        .first(&mut conn));
+        .first(&mut conn).await);
 
     assert_eq!(
         db_ip.map(|ip| ip.to_string()),
@@ -436,7 +437,7 @@ async fn test_update_asset_with_multiple_fields_persists_to_database() {
     let db_ip: Option<ipnetwork::IpNetwork> = unwrap_ok!(assets
         .filter(uuid.eq(asset.asset.uuid))
         .select(ip_address)
-        .first(&mut conn));
+        .first(&mut conn).await);
 
     assert_eq!(
         db_ip.map(|ip| ip.to_string()),
@@ -516,7 +517,7 @@ async fn test_update_asset_with_string_port() {
     let db_port: i32 = unwrap_ok!(assets
         .filter(uuid.eq(asset.asset.uuid))
         .select(port)
-        .first(&mut conn));
+        .first(&mut conn).await);
 
     assert_eq!(db_port, 2222, "Database should contain the updated port");
 
@@ -555,7 +556,7 @@ async fn test_update_asset_with_checkbox_on() {
     let db_mfa: bool = unwrap_ok!(assets
         .filter(uuid.eq(asset.asset.uuid))
         .select(require_mfa)
-        .first(&mut conn));
+        .first(&mut conn).await);
 
     assert!(db_mfa, "Database should have require_mfa set to true");
 
@@ -612,7 +613,7 @@ async fn test_update_asset_full_form_submission() {
     ) = unwrap_ok!(assets
         .filter(uuid.eq(asset.asset.uuid))
         .select((name, hostname, port, status, require_mfa, require_justification))
-        .first(&mut conn));
+        .first(&mut conn).await);
 
     assert!(db_name.starts_with("updated-server"), "Name should start with 'updated-server'");
     assert!(db_hostname.contains("updated"), "Hostname should contain 'updated'");
@@ -636,7 +637,7 @@ async fn test_get_asset_malformed_uuid_returns_validation_error() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("asset_malformed"));
+    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("asset_malformed")).await;
 
     // Try various malformed UUIDs
     let malformed_uuids = [
@@ -672,7 +673,7 @@ async fn test_update_asset_malformed_uuid_returns_validation_error() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("asset_upd_malformed"));
+    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("asset_upd_malformed")).await;
 
     let response = app
         .server

@@ -14,5 +14,6 @@ pub mod asset_pages_test;
 pub mod dashboard_pages_test;
 pub mod mfa_test;
 pub mod pages_test;
+pub mod routing_test;
 pub mod session_pages_test;
 pub mod sidebar_menu_test;

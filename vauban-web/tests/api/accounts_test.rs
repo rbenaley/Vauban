@@ -44,7 +44,7 @@ async fn test_api_returns_401_json_without_auth() {
 #[serial]
 async fn test_list_users_as_admin() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn().await.await;
+    let mut conn = app.get_conn().await;
 
     // Setup: create admin user
     let username = unique_name("test_admin");
@@ -71,7 +71,7 @@ async fn test_list_users_as_admin() {
 #[serial]
 async fn test_list_users_as_regular_user() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn().await.await;
+    let mut conn = app.get_conn().await;
 
     // Setup: create regular user
     let username = unique_name("test_regular");
@@ -101,7 +101,7 @@ async fn test_list_users_as_regular_user() {
 #[serial]
 async fn test_list_users_pagination() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn().await.await;
+    let mut conn = app.get_conn().await;
 
     // Setup: create admin and some test users
     let admin_name = unique_name("test_admin_pag");
@@ -131,7 +131,7 @@ async fn test_list_users_pagination() {
 #[serial]
 async fn test_list_users_search() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn().await.await;
+    let mut conn = app.get_conn().await;
 
     // Setup: create admin and a specific user
     let admin_name = unique_name("test_admin_search");
@@ -159,7 +159,7 @@ async fn test_list_users_search() {
 #[serial]
 async fn test_create_user_as_admin() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn().await.await;
+    let mut conn = app.get_conn().await;
 
     // Setup: create admin
     let admin_name = unique_name("test_admin_create");
@@ -198,7 +198,7 @@ async fn test_create_user_as_admin() {
 #[serial]
 async fn test_create_user_duplicate_email() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn().await.await;
+    let mut conn = app.get_conn().await;
 
     // Setup: create admin and existing user
     let admin_name = unique_name("test_admin_dup");
@@ -238,7 +238,7 @@ async fn test_create_user_duplicate_email() {
 #[serial]
 async fn test_create_user_invalid_data() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn().await.await;
+    let mut conn = app.get_conn().await;
 
     // Setup: create admin
     let admin_name = unique_name("test_admin_inv");
@@ -268,7 +268,7 @@ async fn test_create_user_invalid_data() {
 #[serial]
 async fn test_get_user_exists() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn().await.await;
+    let mut conn = app.get_conn().await;
 
     // Setup: create admin and target user
     let admin_name = unique_name("test_admin_get");
@@ -297,7 +297,7 @@ async fn test_get_user_exists() {
 #[serial]
 async fn test_get_user_not_found() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn().await.await;
+    let mut conn = app.get_conn().await;
 
     // Setup: create admin
     let admin_name = unique_name("test_admin_404");
@@ -324,7 +324,7 @@ async fn test_get_user_not_found() {
 #[serial]
 async fn test_update_user_success() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn().await.await;
+    let mut conn = app.get_conn().await;
 
     // Setup: create admin and target user
     let admin_name = unique_name("test_admin_upd");
@@ -356,7 +356,7 @@ async fn test_update_user_success() {
 #[serial]
 async fn test_update_user_not_found() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn().await.await;
+    let mut conn = app.get_conn().await;
 
     // Setup: create admin
     let admin_name = unique_name("test_admin_upd404");
@@ -390,7 +390,7 @@ async fn test_update_user_not_found() {
 #[serial]
 async fn test_get_user_malformed_uuid_returns_validation_error() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn().await.await;
+    let mut conn = app.get_conn().await;
 
     let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("admin_malformed")).await;
 
@@ -434,7 +434,7 @@ async fn test_get_user_malformed_uuid_returns_validation_error() {
 #[serial]
 async fn test_update_user_malformed_uuid_returns_validation_error() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn().await.await;
+    let mut conn = app.get_conn().await;
 
     let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("admin_upd_malformed")).await;
 

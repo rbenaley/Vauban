@@ -10,7 +10,8 @@ use axum_test::TestServer;
 use diesel::{ExpressionMethods, QueryDsl};
 use diesel_async::pooled_connection::deadpool::Pool;
 use diesel_async::pooled_connection::AsyncDieselConnectionManager;
-use diesel_async::{AsyncPgConnection, RunQueryDsl};
+use diesel_async::AsyncPgConnection;
+use diesel_async::RunQueryDsl as _;
 use secrecy::ExposeSecret;
 use tokio::sync::OnceCell;
 
@@ -212,7 +213,7 @@ impl TestApp {
     }
 
     /// Get a database connection.
-    pub async fn get_conn(&self) -> deadpool::managed::Object<AsyncDieselConnectionManager<AsyncPgConnection>> {
+    pub async fn get_conn(&self) -> vauban_web::db::DbConnection {
         unwrap_ok!(self.db_pool.get().await)
     }
 }

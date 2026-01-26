@@ -13,16 +13,18 @@ use crate::fixtures::{
     unique_name,
 };
 use axum::http::header::COOKIE;
-use diesel::prelude::*;
+use diesel::{ExpressionMethods, QueryDsl};
+use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use uuid::Uuid;
 
 /// Helper to get user UUID from user_id.
-fn get_user_uuid(conn: &mut diesel::PgConnection, user_id: i32) -> Uuid {
+async fn get_user_uuid(conn: &mut AsyncPgConnection, user_id: i32) -> Uuid {
     use vauban_web::schema::users;
     unwrap_ok!(users::table
         .filter(users::id.eq(user_id))
         .select(users::uuid)
-        .first(conn))
+        .first(conn)
+        .await)
 }
 
 // =============================================================================
@@ -37,10 +39,10 @@ async fn test_profile_page_loads() {
     // Create user in database
     let username = unique_name("profile_page_user");
     let user_id = create_simple_user(&mut conn, &username).await;
-    let user_uuid = get_user_uuid(&mut conn, user_id);
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
     // Generate auth token
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
 
     // Request profile page
     let response = app
@@ -119,9 +121,9 @@ async fn test_profile_page_displays_user_info() {
             users::auth_source.eq("local"),
             users::preferences.eq(serde_json::json!({})),
         ))
-        .execute(&mut conn));
+        .execute(&mut conn).await);
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
 
     let response = app
         .server
@@ -172,9 +174,10 @@ async fn test_profile_page_shows_mfa_status() {
             users::preferences.eq(serde_json::json!({})),
         ))
         .execute(&mut conn)
+        .await
         .expect("User creation should succeed");
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
 
     let response = app
         .server
@@ -206,13 +209,13 @@ async fn test_profile_page_shows_active_sessions() {
     // Create user
     let username = unique_name("profile_sessions_user");
     let user_id = create_simple_user(&mut conn, &username).await;
-    let user_uuid = get_user_uuid(&mut conn, user_id);
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
     // Create some sessions
     let _session1 = create_test_auth_session(&mut conn, user_id, true).await;
     let _session2 = create_test_auth_session(&mut conn, user_id, false).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
 
     let response = app
         .server
@@ -260,9 +263,10 @@ async fn test_profile_page_shows_superuser_badge() {
             users::preferences.eq(serde_json::json!({})),
         ))
         .execute(&mut conn)
+        .await
         .expect("User creation should succeed");
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
 
     let response = app
         .server
@@ -311,9 +315,10 @@ async fn test_profile_page_shows_auth_source() {
             users::preferences.eq(serde_json::json!({})),
         ))
         .execute(&mut conn)
+        .await
         .expect("User creation should succeed");
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
 
     let response = app
         .server
@@ -345,9 +350,9 @@ async fn test_profile_page_shows_quick_actions() {
 
     let username = unique_name("profile_actions_user");
     let user_id = create_simple_user(&mut conn, &username).await;
-    let user_uuid = get_user_uuid(&mut conn, user_id);
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
 
     let response = app
         .server
@@ -382,9 +387,9 @@ async fn test_profile_page_displays_uuid() {
 
     let username = unique_name("profile_uuid_user");
     let user_id = create_simple_user(&mut conn, &username).await;
-    let user_uuid = get_user_uuid(&mut conn, user_id);
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
 
     let response = app
         .server
@@ -416,10 +421,10 @@ async fn test_user_sessions_page_loads() {
     // Create user in database
     let username = unique_name("sessions_page_user");
     let user_id = create_simple_user(&mut conn, &username).await;
-    let user_uuid = get_user_uuid(&mut conn, user_id);
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
     // Generate auth token
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
 
     // Request user sessions page
     let response = app
@@ -469,9 +474,9 @@ async fn test_user_sessions_page_shows_empty_state() {
     // Create user in database
     let username = unique_name("empty_sessions_user");
     let user_id = create_simple_user(&mut conn, &username).await;
-    let user_uuid = get_user_uuid(&mut conn, user_id);
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
 
     let response = app
         .server
@@ -508,12 +513,13 @@ async fn test_user_sessions_page_displays_sessions() {
         .filter(users::id.eq(user_id))
         .select(users::uuid)
         .first(&mut conn)
+        .await
         .expect("User should exist");
 
     let _session1 = create_test_auth_session(&mut conn, user_id, true).await;
     let _session2 = create_test_auth_session(&mut conn, user_id, false).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
 
     let response = app
         .server
@@ -541,11 +547,12 @@ async fn test_revoke_session_works() {
         .filter(users::id.eq(user_id))
         .select(users::uuid)
         .first(&mut conn)
+        .await
         .expect("User should exist");
 
     let session_uuid = create_test_auth_session(&mut conn, user_id, false).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
     let csrf_token = app.generate_csrf_token();
 
     // Revoke the session
@@ -598,9 +605,9 @@ async fn test_api_keys_page_loads() {
     // Create user in database
     let username = unique_name("apikeys_page_user");
     let user_id = create_simple_user(&mut conn, &username).await;
-    let user_uuid = get_user_uuid(&mut conn, user_id);
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
 
     let response = app
         .server
@@ -639,9 +646,9 @@ async fn test_api_keys_page_shows_empty_state() {
     // Create user in database
     let username = unique_name("empty_apikeys_user");
     let user_id = create_simple_user(&mut conn, &username).await;
-    let user_uuid = get_user_uuid(&mut conn, user_id);
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
 
     let response = app
         .server
@@ -669,11 +676,11 @@ async fn test_api_keys_page_displays_keys() {
     // Create user and API keys
     let username = unique_name("apikeys_display_user");
     let user_id = create_simple_user(&mut conn, &username).await;
-    let user_uuid = get_user_uuid(&mut conn, user_id);
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
     let _key1 = create_test_api_key(&mut conn, user_id, "Test Key 1", true).await;
     let _key2 = create_test_api_key(&mut conn, user_id, "Test Key 2", true).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
 
     let response = app
         .server
@@ -693,10 +700,10 @@ async fn test_api_keys_page_shows_expired_keys() {
     // Create user with expired key
     let username = unique_name("expired_key_user");
     let user_id = create_simple_user(&mut conn, &username).await;
-    let user_uuid = get_user_uuid(&mut conn, user_id);
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
     let _expired_key = create_expired_api_key(&mut conn, user_id, "Expired Key").await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
 
     let response = app
         .server
@@ -720,9 +727,9 @@ async fn test_create_api_key_form_loads() {
     // Create user in database
     let username = unique_name("create_form_user");
     let user_id = create_simple_user(&mut conn, &username).await;
-    let user_uuid = get_user_uuid(&mut conn, user_id);
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
 
     let response = app
         .server
@@ -768,9 +775,9 @@ async fn test_create_api_key_endpoint_accepts_form() {
     // Create user in database
     let username = unique_name("create_key_user");
     let user_id = create_simple_user(&mut conn, &username).await;
-    let user_uuid = get_user_uuid(&mut conn, user_id);
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
     let csrf_token = app.generate_csrf_token();
 
     // Create API key via POST with form data
@@ -825,10 +832,10 @@ async fn test_revoke_api_key_success() {
     // Create user and key
     let username = unique_name("revoke_key_user");
     let user_id = create_simple_user(&mut conn, &username).await;
-    let user_uuid = get_user_uuid(&mut conn, user_id);
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
     let key_uuid = create_test_api_key(&mut conn, user_id, "Key to Revoke", true).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
     let csrf_token = app.generate_csrf_token();
 
     // Revoke the key
@@ -877,9 +884,9 @@ async fn test_revoke_api_key_not_found() {
     // Create user in database
     let username = unique_name("revoke_notfound_user");
     let user_id = create_simple_user(&mut conn, &username).await;
-    let user_uuid = get_user_uuid(&mut conn, user_id);
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
     let csrf_token = app.generate_csrf_token();
 
     // Try to revoke non-existent key
@@ -915,10 +922,10 @@ async fn test_cannot_revoke_other_users_key() {
     // Create different user trying to revoke
     let attacker_name = unique_name("attacker");
     let attacker_id = create_simple_user(&mut conn, &attacker_name).await;
-    let attacker_uuid = get_user_uuid(&mut conn, attacker_id);
+    let attacker_uuid = get_user_uuid(&mut conn, attacker_id).await;
 
     let attacker_token =
-        app.generate_test_token(&attacker_uuid.to_string(), &attacker_name, true, true);
+        app.generate_test_token(&attacker_uuid.to_string(), &attacker_name, true, true).await;
     let csrf_token = app.generate_csrf_token();
 
     // Try to revoke another user's key
@@ -963,11 +970,12 @@ async fn test_revoked_session_token_becomes_invalid() {
             .filter(users::id.eq(user_id))
             .select(users::uuid)
             .first(&mut conn)
+            .await
             .expect("User should exist")
     };
 
     // Generate a token for this user (this also creates a session in DB)
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
 
     // First, verify the token works (session exists)
     let response = app
@@ -984,6 +992,7 @@ async fn test_revoked_session_token_becomes_invalid() {
     // Now delete ALL sessions for this user from database (simulating revocation)
     diesel::delete(auth_sessions::table.filter(auth_sessions::user_id.eq(user_id)))
         .execute(&mut conn)
+        .await
         .expect("Should delete all sessions");
 
     // Try to use the token again - it should now be invalid
@@ -1004,7 +1013,6 @@ async fn test_revoked_session_token_becomes_invalid() {
 
 #[tokio::test]
 async fn test_session_created_on_login() {
-    use diesel::prelude::*;
     use vauban_web::schema::{auth_sessions, users};
 
     let app = TestApp::spawn().await;
@@ -1035,6 +1043,7 @@ async fn test_session_created_on_login() {
             users::preferences.eq(serde_json::json!({})),
         ))
         .execute(&mut conn)
+        .await
         .expect("User creation should succeed");
 
     // Get user_id
@@ -1042,6 +1051,7 @@ async fn test_session_created_on_login() {
         .filter(users::uuid.eq(user_uuid))
         .select(users::id)
         .first(&mut conn)
+        .await
         .expect("User should exist");
 
     // Count sessions for THIS USER before login
@@ -1049,6 +1059,7 @@ async fn test_session_created_on_login() {
         .filter(auth_sessions::user_id.eq(user_id))
         .count()
         .get_result(&mut conn)
+        .await
         .unwrap_or(0);
 
     // Attempt login with correct password
@@ -1074,6 +1085,7 @@ async fn test_session_created_on_login() {
         .filter(auth_sessions::user_id.eq(user_id))
         .count()
         .get_result(&mut conn)
+        .await
         .unwrap_or(0);
 
     // Session count should increase after successful login
@@ -1104,17 +1116,19 @@ async fn test_expired_session_is_rejected() {
             .filter(users::id.eq(user_id))
             .select(users::uuid)
             .first(&mut conn)
+            .await
             .expect("User should exist")
     };
 
     // Generate a token for this user (this creates a valid session)
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
 
     // Make the session idle for too long by setting last_activity to 2 hours ago
     // (exceeds session_idle_timeout_secs which is typically 30 min / 1800 secs)
     diesel::update(auth_sessions::table.filter(auth_sessions::user_id.eq(user_id)))
         .set(auth_sessions::last_activity.eq(Utc::now() - Duration::hours(2)))
         .execute(&mut conn)
+        .await
         .expect("Should update sessions to idle-expired");
 
     // Try to use the token - should be rejected (session idle-expired)
@@ -1155,12 +1169,13 @@ async fn test_revoke_session_broadcasts_update_to_websocket() {
         .filter(users::id.eq(user_id))
         .select(users::uuid)
         .first(&mut conn)
+        .await
         .expect("User should exist");
 
     // Create a session to revoke
     let session_to_revoke = create_test_auth_session(&mut conn, user_id, false).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
     let csrf_token = app.generate_csrf_token();
 
     // Subscribe to the user's auth sessions channel BEFORE revoking
@@ -1221,6 +1236,7 @@ async fn test_revoke_session_removes_session_from_database() {
         .filter(users::id.eq(user_id))
         .select(users::uuid)
         .first(&mut conn)
+        .await
         .expect("User should exist");
 
     let session_uuid = create_test_auth_session(&mut conn, user_id, false).await;
@@ -1230,10 +1246,11 @@ async fn test_revoke_session_removes_session_from_database() {
         auth_sessions::table.filter(auth_sessions::uuid.eq(session_uuid)),
     ))
     .get_result(&mut conn)
+    .await
     .expect("Query should succeed");
     assert!(exists_before, "Session should exist before revocation");
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
     let csrf_token = app.generate_csrf_token();
 
     // Revoke the session
@@ -1252,6 +1269,7 @@ async fn test_revoke_session_removes_session_from_database() {
         auth_sessions::table.filter(auth_sessions::uuid.eq(session_uuid)),
     ))
     .get_result(&mut conn)
+    .await
     .expect("Query should succeed");
     assert!(!exists_after, "Session should be deleted after revocation");
 }
@@ -1274,10 +1292,11 @@ async fn test_logout_broadcasts_session_removal() {
         .filter(users::id.eq(user_id))
         .select(users::uuid)
         .first(&mut conn)
+        .await
         .expect("User should exist");
 
     // Generate token (this also creates a session)
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
 
     // Subscribe to the user's auth sessions channel
     let channel = WsChannel::UserAuthSessions(user_uuid.to_string());
@@ -1348,6 +1367,7 @@ async fn test_login_broadcasts_new_session() {
             users::preferences.eq(serde_json::json!({})),
         ))
         .execute(&mut conn)
+        .await
         .expect("User creation should succeed");
 
     // Subscribe to the user's auth sessions channel BEFORE logging in
@@ -1411,10 +1431,11 @@ async fn test_multiple_sessions_all_updated_on_revoke() {
         .filter(users::id.eq(user_id))
         .select(users::uuid)
         .first(&mut conn)
+        .await
         .expect("User should exist");
 
     // Generate token first (this creates a session)
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
+    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
     let csrf_token = app.generate_csrf_token();
 
     // Create 3 additional sessions
@@ -1427,6 +1448,7 @@ async fn test_multiple_sessions_all_updated_on_revoke() {
         .filter(auth_sessions::user_id.eq(user_id))
         .count()
         .get_result(&mut conn)
+        .await
         .expect("Count should succeed");
 
     // Should have at least 4 sessions (1 from token + 3 created)
@@ -1452,6 +1474,7 @@ async fn test_multiple_sessions_all_updated_on_revoke() {
         .filter(auth_sessions::user_id.eq(user_id))
         .count()
         .get_result(&mut conn)
+        .await
         .expect("Count should succeed");
 
     assert_eq!(
@@ -1465,12 +1488,14 @@ async fn test_multiple_sessions_all_updated_on_revoke() {
         auth_sessions::table.filter(auth_sessions::uuid.eq(session1)),
     ))
     .get_result(&mut conn)
+    .await
     .unwrap();
 
     let session3_exists: bool = diesel::select(diesel::dsl::exists(
         auth_sessions::table.filter(auth_sessions::uuid.eq(session3)),
     ))
     .get_result(&mut conn)
+    .await
     .unwrap();
 
     assert!(session1_exists, "Session 1 should still exist");
