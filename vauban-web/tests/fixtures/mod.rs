@@ -2,7 +2,8 @@
 ///
 /// Factory functions for creating test data.
 use chrono::{Duration, Utc};
-use diesel::prelude::*;
+use diesel::{ExpressionMethods, QueryDsl};
+use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use sha3::{Digest, Sha3_256};
 use uuid::Uuid;
 
@@ -15,7 +16,7 @@ use vauban_web::services::auth::AuthService;
 use crate::common::{unwrap_ok, unwrap_some};
 
 /// Helper to create an auth session for a token in the database.
-fn create_session_for_token(conn: &mut PgConnection, user_id: i32, token: &str) {
+async fn create_session_for_token(conn: &mut AsyncPgConnection, user_id: i32, token: &str) {
     // Hash the token using SHA3-256
     let mut hasher = Sha3_256::new();
     hasher.update(token.as_bytes());
@@ -36,6 +37,7 @@ fn create_session_for_token(conn: &mut PgConnection, user_id: i32, token: &str) 
     diesel::insert_into(auth_sessions::table)
         .values(&new_session)
         .execute(conn)
+        .await
         .ok();
 }
 
@@ -47,8 +49,8 @@ pub struct TestUser {
 }
 
 /// Create a standard test user.
-pub fn create_test_user(
-    conn: &mut PgConnection,
+pub async fn create_test_user(
+    conn: &mut AsyncPgConnection,
     auth_service: &AuthService,
     username: &str,
 ) -> TestUser {
@@ -78,13 +80,14 @@ pub fn create_test_user(
 
     let user: User = unwrap_ok!(diesel::insert_into(users::table)
         .values(&new_user)
-        .get_result(conn));
+        .get_result(conn)
+        .await);
 
     let token = unwrap_ok!(auth_service
         .generate_access_token(&user.uuid.to_string(), &user.username, true, false, false));
 
     // Create session in database for middleware validation
-    create_session_for_token(conn, user.id, &token);
+    create_session_for_token(conn, user.id, &token).await;
 
     TestUser {
         user,
@@ -94,8 +97,8 @@ pub fn create_test_user(
 }
 
 /// Create an admin test user.
-pub fn create_admin_user(
-    conn: &mut PgConnection,
+pub async fn create_admin_user(
+    conn: &mut AsyncPgConnection,
     auth_service: &AuthService,
     username: &str,
 ) -> TestUser {
@@ -125,13 +128,14 @@ pub fn create_admin_user(
 
     let user: User = unwrap_ok!(diesel::insert_into(users::table)
         .values(&new_user)
-        .get_result(conn));
+        .get_result(conn)
+        .await);
 
     let token = unwrap_ok!(auth_service
         .generate_access_token(&user.uuid.to_string(), &user.username, true, true, true));
 
     // Create session in database for middleware validation
-    create_session_for_token(conn, user.id, &token);
+    create_session_for_token(conn, user.id, &token).await;
 
     TestUser {
         user,
@@ -141,8 +145,8 @@ pub fn create_admin_user(
 }
 
 /// Create a user with MFA enabled.
-pub fn create_mfa_user(
-    conn: &mut PgConnection,
+pub async fn create_mfa_user(
+    conn: &mut AsyncPgConnection,
     auth_service: &AuthService,
     username: &str,
 ) -> TestUser {
@@ -173,14 +177,15 @@ pub fn create_mfa_user(
 
     let user: User = unwrap_ok!(diesel::insert_into(users::table)
         .values(&new_user)
-        .get_result(conn));
+        .get_result(conn)
+        .await);
 
     // Token without MFA verified
     let token = unwrap_ok!(auth_service
         .generate_access_token(&user.uuid.to_string(), &user.username, false, false, false));
 
     // Create session in database for middleware validation
-    create_session_for_token(conn, user.id, &token);
+    create_session_for_token(conn, user.id, &token).await;
 
     TestUser {
         user,
@@ -195,7 +200,7 @@ pub struct TestAsset {
 }
 
 /// Create a test SSH asset.
-pub fn create_test_ssh_asset(conn: &mut PgConnection, name: &str) -> TestAsset {
+pub async fn create_test_ssh_asset(conn: &mut AsyncPgConnection, name: &str) -> TestAsset {
     let asset_uuid = Uuid::new_v4();
     let ip: ipnetwork::IpNetwork = unwrap_ok!("192.168.1.100".parse());
 
@@ -221,13 +226,14 @@ pub fn create_test_ssh_asset(conn: &mut PgConnection, name: &str) -> TestAsset {
 
     let asset: Asset = unwrap_ok!(diesel::insert_into(assets::table)
         .values(&new_asset)
-        .get_result(conn));
+        .get_result(conn)
+        .await);
 
     TestAsset { asset }
 }
 
 /// Create a test RDP asset.
-pub fn create_test_rdp_asset(conn: &mut PgConnection, name: &str) -> TestAsset {
+pub async fn create_test_rdp_asset(conn: &mut AsyncPgConnection, name: &str) -> TestAsset {
     let asset_uuid = Uuid::new_v4();
     let ip: ipnetwork::IpNetwork = unwrap_ok!("192.168.1.101".parse());
 
@@ -253,13 +259,14 @@ pub fn create_test_rdp_asset(conn: &mut PgConnection, name: &str) -> TestAsset {
 
     let asset: Asset = unwrap_ok!(diesel::insert_into(assets::table)
         .values(&new_asset)
-        .get_result(conn));
+        .get_result(conn)
+        .await);
 
     TestAsset { asset }
 }
 
 /// Create a test asset group.
-pub fn create_test_asset_group(conn: &mut PgConnection, group_name: &str) -> Uuid {
+pub async fn create_test_asset_group(conn: &mut AsyncPgConnection, group_name: &str) -> Uuid {
     use vauban_web::schema::asset_groups::dsl;
 
     let group_uuid = Uuid::new_v4();
@@ -273,7 +280,8 @@ pub fn create_test_asset_group(conn: &mut PgConnection, group_name: &str) -> Uui
             dsl::color.eq("#10b981"),
             dsl::icon.eq("server"),
         ))
-        .execute(conn));
+        .execute(conn)
+        .await);
 
     group_uuid
 }
@@ -293,7 +301,7 @@ pub fn unique_name(prefix: &str) -> String {
 
 /// Create a simple test user and return user_id (no auth service required).
 /// Uses a unique username with UUID suffix to avoid conflicts.
-pub fn create_simple_user(conn: &mut PgConnection, username: &str) -> i32 {
+pub async fn create_simple_user(conn: &mut AsyncPgConnection, username: &str) -> i32 {
     let user_uuid = Uuid::new_v4();
     // Create a truly unique username using a UUID suffix
     let unique_username = format!("{}_{}", username, &user_uuid.to_string()[..8]);
@@ -320,14 +328,15 @@ pub fn create_simple_user(conn: &mut PgConnection, username: &str) -> i32 {
 
     let user: User = unwrap_ok!(diesel::insert_into(users::table)
         .values(&new_user)
-        .get_result(conn));
+        .get_result(conn)
+        .await);
 
     user.id
 }
 
 /// Create a simple admin user and return user_id (no auth service required).
 /// Uses a unique username with UUID suffix to avoid conflicts.
-pub fn create_simple_admin_user(conn: &mut PgConnection, username: &str) -> i32 {
+pub async fn create_simple_admin_user(conn: &mut AsyncPgConnection, username: &str) -> i32 {
     let user_uuid = Uuid::new_v4();
     // Create a truly unique username using a UUID suffix
     let unique_username = format!("{}_{}", username, &user_uuid.to_string()[..8]);
@@ -354,14 +363,15 @@ pub fn create_simple_admin_user(conn: &mut PgConnection, username: &str) -> i32 
 
     let user: User = unwrap_ok!(diesel::insert_into(users::table)
         .values(&new_user)
-        .get_result(conn));
+        .get_result(conn)
+        .await);
 
     user.id
 }
 
 /// Create a test SSH asset and return asset_id.
 /// Uses a unique hostname (name + UUID suffix) to avoid conflicts.
-pub fn create_simple_ssh_asset(conn: &mut PgConnection, name: &str, created_by: i32) -> i32 {
+pub async fn create_simple_ssh_asset(conn: &mut AsyncPgConnection, name: &str, created_by: i32) -> i32 {
     let asset_uuid = Uuid::new_v4();
     // Create a truly unique hostname using a UUID suffix
     let unique_hostname = format!(
@@ -392,22 +402,24 @@ pub fn create_simple_ssh_asset(conn: &mut PgConnection, name: &str, created_by: 
 
     let asset: Asset = unwrap_ok!(diesel::insert_into(assets::table)
         .values(&new_asset)
-        .get_result(conn));
+        .get_result(conn)
+        .await);
 
     asset.id
 }
 
 /// Get the UUID of an asset by its ID.
-pub fn get_asset_uuid(conn: &mut PgConnection, asset_id: i32) -> Uuid {
+pub async fn get_asset_uuid(conn: &mut AsyncPgConnection, asset_id: i32) -> Uuid {
     unwrap_ok!(assets::table
         .filter(assets::id.eq(asset_id))
         .select(assets::uuid)
-        .first(conn))
+        .first(conn)
+        .await)
 }
 
 /// Create a test session and return session_id.
-pub fn create_test_session(
-    conn: &mut PgConnection,
+pub async fn create_test_session(
+    conn: &mut AsyncPgConnection,
     user_id: i32,
     asset_id: i32,
     session_type: &str,
@@ -443,19 +455,20 @@ pub fn create_test_session(
             proxy_sessions::metadata.eq(serde_json::json!({})),
         ))
         .returning(proxy_sessions::id)
-        .get_result(conn));
+        .get_result(conn)
+        .await);
 
     session_id
 }
 
 /// Create a recorded session and return session_id.
-pub fn create_recorded_session(conn: &mut PgConnection, user_id: i32, asset_id: i32) -> i32 {
-    create_recorded_session_with_type(conn, user_id, asset_id, "ssh")
+pub async fn create_recorded_session(conn: &mut AsyncPgConnection, user_id: i32, asset_id: i32) -> i32 {
+    create_recorded_session_with_type(conn, user_id, asset_id, "ssh").await
 }
 
 /// Create a recorded session with a specific session type and return session_id.
-pub fn create_recorded_session_with_type(
-    conn: &mut PgConnection,
+pub async fn create_recorded_session_with_type(
+    conn: &mut AsyncPgConnection,
     user_id: i32,
     asset_id: i32,
     session_type: &str,
@@ -489,13 +502,14 @@ pub fn create_recorded_session_with_type(
             proxy_sessions::metadata.eq(serde_json::json!({})),
         ))
         .returning(proxy_sessions::id)
-        .get_result(conn));
+        .get_result(conn)
+        .await);
 
     session_id
 }
 
 /// Create an approval request (session with justification) and return session_uuid.
-pub fn create_approval_request(conn: &mut PgConnection, user_id: i32, asset_id: i32) -> Uuid {
+pub async fn create_approval_request(conn: &mut AsyncPgConnection, user_id: i32, asset_id: i32) -> Uuid {
     use vauban_web::schema::proxy_sessions;
 
     let session_uuid = Uuid::new_v4();
@@ -515,14 +529,15 @@ pub fn create_approval_request(conn: &mut PgConnection, user_id: i32, asset_id: 
             proxy_sessions::justification.eq("Need access for maintenance"),
             proxy_sessions::metadata.eq(serde_json::json!({"approval_required": true})),
         ))
-        .execute(conn));
+        .execute(conn)
+        .await);
 
     session_uuid
 }
 
 /// Create a test vauban group (user group) and return group_uuid.
 /// Uses a unique name with UUID suffix to avoid conflicts.
-pub fn create_test_vauban_group(conn: &mut PgConnection, name: &str) -> Uuid {
+pub async fn create_test_vauban_group(conn: &mut AsyncPgConnection, name: &str) -> Uuid {
     use vauban_web::schema::vauban_groups;
 
     let group_uuid = Uuid::new_v4();
@@ -536,60 +551,66 @@ pub fn create_test_vauban_group(conn: &mut PgConnection, name: &str) -> Uuid {
             vauban_groups::description.eq(Some("Test group")),
             vauban_groups::source.eq("local"),
         ))
-        .execute(conn));
+        .execute(conn)
+        .await);
 
     group_uuid
 }
 
 /// Get the internal ID of a vauban group from its UUID.
-pub fn get_vauban_group_id(conn: &mut PgConnection, group_uuid: &Uuid) -> i32 {
+pub async fn get_vauban_group_id(conn: &mut AsyncPgConnection, group_uuid: &Uuid) -> i32 {
     use vauban_web::schema::vauban_groups;
 
     unwrap_ok!(vauban_groups::table
         .filter(vauban_groups::uuid.eq(group_uuid))
         .select(vauban_groups::id)
-        .first(conn))
+        .first(conn)
+        .await)
 }
 
 /// Add a user to a vauban group.
-pub fn add_user_to_vauban_group(conn: &mut PgConnection, user_id: i32, group_uuid: &Uuid) {
+pub async fn add_user_to_vauban_group(conn: &mut AsyncPgConnection, user_id: i32, group_uuid: &Uuid) {
     use vauban_web::schema::user_groups;
     use vauban_web::schema::vauban_groups;
 
     let group_id: i32 = unwrap_ok!(vauban_groups::table
         .filter(vauban_groups::uuid.eq(group_uuid))
         .select(vauban_groups::id)
-        .first(conn));
+        .first(conn)
+        .await);
 
     unwrap_ok!(diesel::insert_into(user_groups::table)
         .values((
             user_groups::user_id.eq(user_id),
             user_groups::group_id.eq(group_id),
         ))
-        .execute(conn));
+        .execute(conn)
+        .await);
 }
 
 /// Count members in a vauban group.
-pub fn count_vauban_group_members(conn: &mut PgConnection, group_uuid: &Uuid) -> i64 {
+pub async fn count_vauban_group_members(conn: &mut AsyncPgConnection, group_uuid: &Uuid) -> i64 {
     use vauban_web::schema::user_groups;
     use vauban_web::schema::vauban_groups;
 
     let group_id: i32 = unwrap_ok!(vauban_groups::table
         .filter(vauban_groups::uuid.eq(group_uuid))
         .select(vauban_groups::id)
-        .first(conn));
+        .first(conn)
+        .await);
 
     user_groups::table
         .filter(user_groups::group_id.eq(group_id))
         .count()
         .get_result(conn)
+        .await
         .unwrap_or(0)
 }
 
 /// Create a test asset in a specific group and return asset_id.
 /// Uses a unique hostname with UUID suffix to avoid conflicts.
-pub fn create_test_asset_in_group(
-    conn: &mut PgConnection,
+pub async fn create_test_asset_in_group(
+    conn: &mut AsyncPgConnection,
     name: &str,
     created_by: i32,
     group_uuid: &Uuid,
@@ -600,7 +621,8 @@ pub fn create_test_asset_in_group(
     let group_id: i32 = unwrap_ok!(asset_groups::table
         .filter(asset_groups::uuid.eq(group_uuid))
         .select(asset_groups::id)
-        .first(conn));
+        .first(conn)
+        .await);
 
     let asset_uuid = Uuid::new_v4();
     // Create a truly unique hostname using a UUID suffix
@@ -632,7 +654,8 @@ pub fn create_test_asset_in_group(
 
     let asset: Asset = unwrap_ok!(diesel::insert_into(assets::table)
         .values(&new_asset)
-        .get_result(conn));
+        .get_result(conn)
+        .await);
 
     asset.id
 }
@@ -642,7 +665,7 @@ pub fn create_test_asset_in_group(
 // =============================================================================
 
 /// Create a test auth session and return session_uuid.
-pub fn create_test_auth_session(conn: &mut PgConnection, user_id: i32, is_current: bool) -> Uuid {
+pub async fn create_test_auth_session(conn: &mut AsyncPgConnection, user_id: i32, is_current: bool) -> Uuid {
     use chrono::{Duration, Utc};
     use vauban_web::models::NewAuthSession;
     use vauban_web::schema::auth_sessions;
@@ -668,14 +691,15 @@ pub fn create_test_auth_session(conn: &mut PgConnection, user_id: i32, is_curren
 
     unwrap_ok!(diesel::insert_into(auth_sessions::table)
         .values(&new_session)
-        .execute(conn));
+        .execute(conn)
+        .await);
 
     session_uuid
 }
 
 /// Create a test API key and return key_uuid.
-pub fn create_test_api_key(
-    conn: &mut PgConnection,
+pub async fn create_test_api_key(
+    conn: &mut AsyncPgConnection,
     user_id: i32,
     name: &str,
     is_active: bool,
@@ -694,13 +718,14 @@ pub fn create_test_api_key(
             api_keys::scopes.eq(serde_json::json!(["read"])),
             api_keys::is_active.eq(is_active),
         ))
-        .execute(conn));
+        .execute(conn)
+        .await);
 
     key_uuid
 }
 
 /// Create an expired test API key and return key_uuid.
-pub fn create_expired_api_key(conn: &mut PgConnection, user_id: i32, name: &str) -> Uuid {
+pub async fn create_expired_api_key(conn: &mut AsyncPgConnection, user_id: i32, name: &str) -> Uuid {
     use chrono::{Duration, Utc};
     use vauban_web::schema::api_keys;
 
@@ -717,15 +742,16 @@ pub fn create_expired_api_key(conn: &mut PgConnection, user_id: i32, name: &str)
             api_keys::is_active.eq(true),
             api_keys::expires_at.eq(Utc::now() - Duration::days(1)),
         ))
-        .execute(conn));
+        .execute(conn)
+        .await);
 
     key_uuid
 }
 
 /// Create an auth session with a specific token hash (for testing revocation).
 /// Returns the session UUID.
-pub fn create_auth_session_with_token(
-    conn: &mut PgConnection,
+pub async fn create_auth_session_with_token(
+    conn: &mut AsyncPgConnection,
     user_id: i32,
     token: &str,
     is_current: bool,
@@ -756,14 +782,15 @@ pub fn create_auth_session_with_token(
 
     unwrap_ok!(diesel::insert_into(auth_sessions::table)
         .values(&new_session)
-        .execute(conn));
+        .execute(conn)
+        .await);
 
     session_uuid
 }
 
 /// Create an expired auth session with a specific token hash.
 /// Returns the session UUID.
-pub fn create_expired_auth_session(conn: &mut PgConnection, user_id: i32, token: &str) -> Uuid {
+pub async fn create_expired_auth_session(conn: &mut AsyncPgConnection, user_id: i32, token: &str) -> Uuid {
     use chrono::{Duration, Utc};
     use sha3::{Digest, Sha3_256};
     use vauban_web::models::NewAuthSession;
@@ -790,7 +817,8 @@ pub fn create_expired_auth_session(conn: &mut PgConnection, user_id: i32, token:
 
     unwrap_ok!(diesel::insert_into(auth_sessions::table)
         .values(&new_session)
-        .execute(conn));
+        .execute(conn)
+        .await);
 
     session_uuid
 }

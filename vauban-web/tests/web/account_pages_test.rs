@@ -32,11 +32,11 @@ fn get_user_uuid(conn: &mut diesel::PgConnection, user_id: i32) -> Uuid {
 #[tokio::test]
 async fn test_profile_page_loads() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create user in database
     let username = unique_name("profile_page_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     // Generate auth token
@@ -93,7 +93,7 @@ async fn test_profile_page_displays_user_info() {
     use vauban_web::schema::users;
 
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create user with specific details
     let username = unique_name("profile_display_user");
@@ -148,7 +148,7 @@ async fn test_profile_page_shows_mfa_status() {
     use vauban_web::schema::users;
 
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create user with MFA enabled
     let username = unique_name("profile_mfa_user");
@@ -201,16 +201,16 @@ async fn test_profile_page_shows_mfa_status() {
 #[tokio::test]
 async fn test_profile_page_shows_active_sessions() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create user
     let username = unique_name("profile_sessions_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     // Create some sessions
-    let _session1 = create_test_auth_session(&mut conn, user_id, true);
-    let _session2 = create_test_auth_session(&mut conn, user_id, false);
+    let _session1 = create_test_auth_session(&mut conn, user_id, true).await;
+    let _session2 = create_test_auth_session(&mut conn, user_id, false).await;
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
 
@@ -237,7 +237,7 @@ async fn test_profile_page_shows_superuser_badge() {
     use vauban_web::schema::users;
 
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create superuser
     let username = unique_name("profile_superuser");
@@ -288,7 +288,7 @@ async fn test_profile_page_shows_auth_source() {
     use vauban_web::schema::users;
 
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create user with LDAP auth source
     let username = unique_name("profile_ldap_user");
@@ -341,10 +341,10 @@ async fn test_profile_page_shows_auth_source() {
 #[tokio::test]
 async fn test_profile_page_shows_quick_actions() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("profile_actions_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
@@ -378,10 +378,10 @@ async fn test_profile_page_shows_quick_actions() {
 #[tokio::test]
 async fn test_profile_page_displays_uuid() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("profile_uuid_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
@@ -411,11 +411,11 @@ async fn test_profile_page_displays_uuid() {
 #[tokio::test]
 async fn test_user_sessions_page_loads() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create user in database
     let username = unique_name("sessions_page_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     // Generate auth token
@@ -464,11 +464,11 @@ async fn test_user_sessions_page_requires_auth() {
 #[tokio::test]
 async fn test_user_sessions_page_shows_empty_state() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create user in database
     let username = unique_name("empty_sessions_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
@@ -497,11 +497,11 @@ async fn test_user_sessions_page_displays_sessions() {
     use vauban_web::schema::users;
 
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create user and sessions
     let username = unique_name("sessions_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
 
     // Get user UUID
     let user_uuid: Uuid = users::table
@@ -510,8 +510,8 @@ async fn test_user_sessions_page_displays_sessions() {
         .first(&mut conn)
         .expect("User should exist");
 
-    let _session1 = create_test_auth_session(&mut conn, user_id, true);
-    let _session2 = create_test_auth_session(&mut conn, user_id, false);
+    let _session1 = create_test_auth_session(&mut conn, user_id, true).await;
+    let _session2 = create_test_auth_session(&mut conn, user_id, false).await;
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
 
@@ -530,11 +530,11 @@ async fn test_revoke_session_works() {
     use vauban_web::schema::users;
 
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create user and session
     let username = unique_name("revoke_session_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
 
     // Get user UUID
     let user_uuid: Uuid = users::table
@@ -543,7 +543,7 @@ async fn test_revoke_session_works() {
         .first(&mut conn)
         .expect("User should exist");
 
-    let session_uuid = create_test_auth_session(&mut conn, user_id, false);
+    let session_uuid = create_test_auth_session(&mut conn, user_id, false).await;
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
     let csrf_token = app.generate_csrf_token();
@@ -593,11 +593,11 @@ async fn test_revoke_session_requires_auth() {
 #[tokio::test]
 async fn test_api_keys_page_loads() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create user in database
     let username = unique_name("apikeys_page_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
@@ -634,11 +634,11 @@ async fn test_api_keys_page_requires_auth() {
 #[tokio::test]
 async fn test_api_keys_page_shows_empty_state() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create user in database
     let username = unique_name("empty_apikeys_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
@@ -664,14 +664,14 @@ async fn test_api_keys_page_shows_empty_state() {
 #[tokio::test]
 async fn test_api_keys_page_displays_keys() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create user and API keys
     let username = unique_name("apikeys_display_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
-    let _key1 = create_test_api_key(&mut conn, user_id, "Test Key 1", true);
-    let _key2 = create_test_api_key(&mut conn, user_id, "Test Key 2", true);
+    let _key1 = create_test_api_key(&mut conn, user_id, "Test Key 1", true).await;
+    let _key2 = create_test_api_key(&mut conn, user_id, "Test Key 2", true).await;
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
 
@@ -688,13 +688,13 @@ async fn test_api_keys_page_displays_keys() {
 #[tokio::test]
 async fn test_api_keys_page_shows_expired_keys() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create user with expired key
     let username = unique_name("expired_key_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
-    let _expired_key = create_expired_api_key(&mut conn, user_id, "Expired Key");
+    let _expired_key = create_expired_api_key(&mut conn, user_id, "Expired Key").await;
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
 
@@ -715,11 +715,11 @@ async fn test_api_keys_page_shows_expired_keys() {
 #[tokio::test]
 async fn test_create_api_key_form_loads() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create user in database
     let username = unique_name("create_form_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
@@ -763,11 +763,11 @@ async fn test_create_api_key_form_requires_auth() {
 #[tokio::test]
 async fn test_create_api_key_endpoint_accepts_form() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create user in database
     let username = unique_name("create_key_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
@@ -820,13 +820,13 @@ async fn test_create_api_key_requires_auth() {
 #[tokio::test]
 async fn test_revoke_api_key_success() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create user and key
     let username = unique_name("revoke_key_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
-    let key_uuid = create_test_api_key(&mut conn, user_id, "Key to Revoke", true);
+    let key_uuid = create_test_api_key(&mut conn, user_id, "Key to Revoke", true).await;
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
     let csrf_token = app.generate_csrf_token();
@@ -871,12 +871,12 @@ async fn test_revoke_api_key_requires_auth() {
 #[tokio::test]
 async fn test_revoke_api_key_not_found() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
     let nonexistent_uuid = Uuid::new_v4();
 
     // Create user in database
     let username = unique_name("revoke_notfound_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
@@ -905,16 +905,16 @@ async fn test_revoke_api_key_not_found() {
 #[tokio::test]
 async fn test_cannot_revoke_other_users_key() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create owner and their key
     let owner_name = unique_name("key_owner");
-    let owner_id = create_simple_user(&mut conn, &owner_name);
-    let key_uuid = create_test_api_key(&mut conn, owner_id, "Owners Key", true);
+    let owner_id = create_simple_user(&mut conn, &owner_name).await;
+    let key_uuid = create_test_api_key(&mut conn, owner_id, "Owners Key", true).await;
 
     // Create different user trying to revoke
     let attacker_name = unique_name("attacker");
-    let attacker_id = create_simple_user(&mut conn, &attacker_name);
+    let attacker_id = create_simple_user(&mut conn, &attacker_name).await;
     let attacker_uuid = get_user_uuid(&mut conn, attacker_id);
 
     let attacker_token =
@@ -950,11 +950,11 @@ async fn test_revoked_session_token_becomes_invalid() {
     use vauban_web::schema::auth_sessions;
 
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create user
     let username = unique_name("revoke_invalidates_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
 
     // Get user UUID
     let user_uuid: uuid::Uuid = {
@@ -1008,7 +1008,7 @@ async fn test_session_created_on_login() {
     use vauban_web::schema::{auth_sessions, users};
 
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create user with known password
     let username = unique_name("login_session_user");
@@ -1091,11 +1091,11 @@ async fn test_expired_session_is_rejected() {
     use vauban_web::schema::auth_sessions;
 
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create user
     let username = unique_name("expired_session_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
 
     // Get user UUID
     let user_uuid: uuid::Uuid = {
@@ -1145,11 +1145,11 @@ async fn test_revoke_session_broadcasts_update_to_websocket() {
     use vauban_web::services::broadcast::WsChannel;
 
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create user and sessions
     let username = unique_name("ws_revoke_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
 
     let user_uuid: Uuid = users::table
         .filter(users::id.eq(user_id))
@@ -1158,7 +1158,7 @@ async fn test_revoke_session_broadcasts_update_to_websocket() {
         .expect("User should exist");
 
     // Create a session to revoke
-    let session_to_revoke = create_test_auth_session(&mut conn, user_id, false);
+    let session_to_revoke = create_test_auth_session(&mut conn, user_id, false).await;
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
     let csrf_token = app.generate_csrf_token();
@@ -1211,11 +1211,11 @@ async fn test_revoke_session_removes_session_from_database() {
     use vauban_web::schema::{auth_sessions, users};
 
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create user and session
     let username = unique_name("revoke_db_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
 
     let user_uuid: Uuid = users::table
         .filter(users::id.eq(user_id))
@@ -1223,7 +1223,7 @@ async fn test_revoke_session_removes_session_from_database() {
         .first(&mut conn)
         .expect("User should exist");
 
-    let session_uuid = create_test_auth_session(&mut conn, user_id, false);
+    let session_uuid = create_test_auth_session(&mut conn, user_id, false).await;
 
     // Verify session exists before revocation
     let exists_before: bool = diesel::select(diesel::dsl::exists(
@@ -1264,11 +1264,11 @@ async fn test_logout_broadcasts_session_removal() {
     use vauban_web::services::broadcast::WsChannel;
 
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create user
     let username = unique_name("ws_logout_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
 
     let user_uuid: Uuid = users::table
         .filter(users::id.eq(user_id))
@@ -1321,7 +1321,7 @@ async fn test_login_broadcasts_new_session() {
     use vauban_web::services::broadcast::WsChannel;
 
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create user with known password
     let username = unique_name("ws_login_user");
@@ -1401,11 +1401,11 @@ async fn test_multiple_sessions_all_updated_on_revoke() {
     use vauban_web::schema::{auth_sessions, users};
 
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create user with multiple sessions
     let username = unique_name("multi_session_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
 
     let user_uuid: Uuid = users::table
         .filter(users::id.eq(user_id))
@@ -1418,9 +1418,9 @@ async fn test_multiple_sessions_all_updated_on_revoke() {
     let csrf_token = app.generate_csrf_token();
 
     // Create 3 additional sessions
-    let session1 = create_test_auth_session(&mut conn, user_id, false);
-    let session2 = create_test_auth_session(&mut conn, user_id, false);
-    let session3 = create_test_auth_session(&mut conn, user_id, false);
+    let session1 = create_test_auth_session(&mut conn, user_id, false).await;
+    let session2 = create_test_auth_session(&mut conn, user_id, false).await;
+    let session3 = create_test_auth_session(&mut conn, user_id, false).await;
 
     // Count sessions before revocation (after token generation)
     let count_before: i64 = auth_sessions::table

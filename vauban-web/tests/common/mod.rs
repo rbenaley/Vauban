@@ -7,8 +7,10 @@ pub use vauban_web::{assert_err, assert_none, assert_ok, assert_some, unwrap_ok,
 
 use axum::{Router, http::HeaderValue};
 use axum_test::TestServer;
-use diesel::prelude::*;
-use diesel::r2d2::{ConnectionManager, Pool};
+use diesel::{ExpressionMethods, QueryDsl};
+use diesel_async::pooled_connection::deadpool::Pool;
+use diesel_async::pooled_connection::AsyncDieselConnectionManager;
+use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use secrecy::ExposeSecret;
 use tokio::sync::OnceCell;
 
@@ -56,12 +58,13 @@ impl TestApp {
         // Load test configuration from workspace root config/testing.toml
         let config = unwrap_ok!(Config::load_with_environment(Self::config_dir(), Environment::Testing));
 
-        // Create database pool
-        let manager =
-            ConnectionManager::<diesel::PgConnection>::new(config.database.url.expose_secret());
-        let db_pool = unwrap_ok!(Pool::builder()
-            .max_size(config.database.max_connections)
-            .build(manager));
+        // Create async database pool
+        let manager = AsyncDieselConnectionManager::<AsyncPgConnection>::new(
+            config.database.url.expose_secret(),
+        );
+        let db_pool = unwrap_ok!(Pool::builder(manager)
+            .max_size(config.database.max_connections as usize)
+            .build());
 
         // Create auth service
         let auth_service = unwrap_ok!(AuthService::new(config.clone()));
@@ -117,7 +120,7 @@ impl TestApp {
 
     /// Generate a valid JWT for a test user and create a session in database.
     /// This is required because the middleware now validates sessions exist in DB.
-    pub fn generate_test_token(
+    pub async fn generate_test_token(
         &self,
         user_uuid: &str,
         username: &str,
@@ -125,7 +128,7 @@ impl TestApp {
         is_staff: bool,
     ) -> String {
         use chrono::{Duration, Utc};
-        use diesel::prelude::*;
+        use diesel::OptionalExtension;
         use sha3::{Digest, Sha3_256};
         use vauban_web::models::NewAuthSession;
         use vauban_web::schema::{auth_sessions, users};
@@ -135,15 +138,21 @@ impl TestApp {
             .generate_access_token(user_uuid, username, true, is_superuser, is_staff));
 
         // Create session in database for this token
-        let mut conn = self.get_conn();
+        let mut conn = self.get_conn().await;
 
         // Try to find user by UUID or username, or create one
         let user_id: i32 = if let Ok(uuid_val) = uuid::Uuid::parse_str(user_uuid) {
-            users::table
+            let existing: Option<i32> = users::table
                 .filter(users::uuid.eq(uuid_val))
                 .select(users::id)
                 .first(&mut conn)
-                .unwrap_or_else(|_| {
+                .await
+                .optional()
+                .unwrap_or(None);
+            
+            match existing {
+                Some(id) => id,
+                None => {
                     // User doesn't exist, create minimal user
                     diesel::insert_into(users::table)
                         .values((
@@ -159,8 +168,10 @@ impl TestApp {
                         ))
                         .returning(users::id)
                         .get_result(&mut conn)
+                        .await
                         .unwrap_or(1)
-                })
+                }
+            }
         } else {
             // No valid UUID, use placeholder ID
             1
@@ -187,6 +198,7 @@ impl TestApp {
         diesel::insert_into(auth_sessions::table)
             .values(&new_session)
             .execute(&mut conn)
+            .await
             .ok();
 
         token
@@ -200,10 +212,8 @@ impl TestApp {
     }
 
     /// Get a database connection.
-    pub fn get_conn(
-        &self,
-    ) -> diesel::r2d2::PooledConnection<ConnectionManager<diesel::PgConnection>> {
-        unwrap_ok!(self.db_pool.get())
+    pub async fn get_conn(&self) -> deadpool::managed::Object<AsyncDieselConnectionManager<AsyncPgConnection>> {
+        unwrap_ok!(self.db_pool.get().await)
     }
 }
 
@@ -439,29 +449,38 @@ fn build_test_router(state: AppState) -> Router {
 /// Test database utilities.
 pub mod test_db {
     use super::*;
-    use diesel::sql_query;
+    use diesel_async::AsyncPgConnection;
 
     /// Clean up test data (run before/after tests).
-    pub fn cleanup(conn: &mut diesel::PgConnection) {
+    pub async fn cleanup(conn: &mut AsyncPgConnection) {
         // Delete in reverse order of foreign key dependencies
-        sql_query("DELETE FROM session_recordings")
+        diesel::sql_query("DELETE FROM session_recordings")
             .execute(conn)
+            .await
             .ok();
-        sql_query("DELETE FROM proxy_sessions").execute(conn).ok();
-        sql_query("DELETE FROM approval_requests")
+        diesel::sql_query("DELETE FROM proxy_sessions")
             .execute(conn)
+            .await
             .ok();
-        sql_query("DELETE FROM assets WHERE name LIKE 'test-%'")
+        diesel::sql_query("DELETE FROM approval_requests")
             .execute(conn)
+            .await
             .ok();
-        sql_query("DELETE FROM asset_groups WHERE name LIKE 'test-%'")
+        diesel::sql_query("DELETE FROM assets WHERE name LIKE 'test-%'")
             .execute(conn)
+            .await
             .ok();
-        sql_query("DELETE FROM user_groups WHERE name LIKE 'test-%'")
+        diesel::sql_query("DELETE FROM asset_groups WHERE name LIKE 'test-%'")
             .execute(conn)
+            .await
             .ok();
-        sql_query("DELETE FROM users WHERE username LIKE 'test_%'")
+        diesel::sql_query("DELETE FROM user_groups WHERE name LIKE 'test-%'")
             .execute(conn)
+            .await
+            .ok();
+        diesel::sql_query("DELETE FROM users WHERE username LIKE 'test_%'")
+            .execute(conn)
+            .await
             .ok();
     }
 }

@@ -20,13 +20,13 @@ use crate::fixtures::{create_admin_user, create_test_rdp_asset, create_test_ssh_
 #[serial]
 async fn test_asset_edit_page_authenticated() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create admin and asset
     let admin_name = unique_name("test_admin_edit_page");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
-    let asset = create_test_ssh_asset(&mut conn, &unique_name("test-edit-page-asset"));
+    let asset = create_test_ssh_asset(&mut conn, &unique_name("test-edit-page-asset")).await;
 
     // Execute: GET /assets/{uuid}/edit
     let response = app
@@ -50,7 +50,7 @@ async fn test_asset_edit_page_authenticated() {
     );
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test asset edit page requires authentication.
@@ -58,10 +58,10 @@ async fn test_asset_edit_page_authenticated() {
 #[serial]
 async fn test_asset_edit_page_unauthenticated() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create asset
-    let asset = create_test_ssh_asset(&mut conn, &unique_name("test-edit-unauth-asset"));
+    let asset = create_test_ssh_asset(&mut conn, &unique_name("test-edit-unauth-asset")).await;
 
     // Execute: GET /assets/{uuid}/edit without auth
     let response = app
@@ -78,7 +78,7 @@ async fn test_asset_edit_page_unauthenticated() {
     );
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test asset edit page with non-existent asset redirects to list.
@@ -86,11 +86,11 @@ async fn test_asset_edit_page_unauthenticated() {
 #[serial]
 async fn test_asset_edit_page_not_found() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create admin
     let admin_name = unique_name("test_admin_edit_404");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
     let fake_uuid = Uuid::new_v4();
 
@@ -107,7 +107,7 @@ async fn test_asset_edit_page_not_found() {
     assert_eq!(location, Some("/assets"));
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test asset edit page with RDP asset.
@@ -115,13 +115,13 @@ async fn test_asset_edit_page_not_found() {
 #[serial]
 async fn test_asset_edit_page_rdp_asset() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create admin and RDP asset
     let admin_name = unique_name("test_admin_edit_rdp");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
-    let asset = create_test_rdp_asset(&mut conn, &unique_name("test-edit-rdp-asset"));
+    let asset = create_test_rdp_asset(&mut conn, &unique_name("test-edit-rdp-asset")).await;
 
     // Execute: GET /assets/{uuid}/edit
     let response = app
@@ -141,7 +141,7 @@ async fn test_asset_edit_page_rdp_asset() {
     );
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 // =============================================================================
@@ -154,12 +154,12 @@ async fn test_asset_edit_page_rdp_asset() {
 #[serial]
 async fn test_asset_edit_to_detail_navigation_flow() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup
     let admin_name = unique_name("test_admin_nav_flow");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
-    let asset = create_test_ssh_asset(&mut conn, &unique_name("test-nav-flow-asset"));
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+    let asset = create_test_ssh_asset(&mut conn, &unique_name("test-nav-flow-asset")).await;
 
     // Step 1: Verify edit page loads correctly
     let edit_response = app
@@ -209,7 +209,7 @@ async fn test_asset_edit_to_detail_navigation_flow() {
     );
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 // =============================================================================
@@ -222,12 +222,12 @@ async fn test_asset_edit_to_detail_navigation_flow() {
 #[serial]
 async fn test_asset_detail_accepts_uuid_not_integer_id() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup
     let admin_name = unique_name("test_admin_uuid_route");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
-    let asset = create_test_ssh_asset(&mut conn, &unique_name("test-uuid-route-asset"));
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+    let asset = create_test_ssh_asset(&mut conn, &unique_name("test-uuid-route-asset")).await;
 
     // UUID-based URL should work
     let uuid_response = app
@@ -256,5 +256,5 @@ async fn test_asset_detail_accepts_uuid_not_integer_id() {
     assert_eq!(location, Some("/assets"), "Invalid UUID should redirect to /assets");
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }

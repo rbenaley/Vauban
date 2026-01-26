@@ -34,11 +34,11 @@ async fn test_mfa_setup_page_requires_auth() {
 #[serial]
 async fn test_mfa_setup_page_renders() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create user with temporary token (mfa_verified = false)
     let username = unique_name("mfa_setup");
-    let test_user = create_test_user(&mut conn, &app.auth_service, &username);
+    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
     
     // Generate a temporary token with mfa_verified = false
     let temp_token = app.auth_service
@@ -60,7 +60,7 @@ async fn test_mfa_setup_page_renders() {
     assert!(body.contains("totp_code"), "Should contain TOTP input field");
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test MFA setup page shows QR code.
@@ -68,11 +68,11 @@ async fn test_mfa_setup_page_renders() {
 #[serial]
 async fn test_mfa_setup_page_shows_qr_code() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create user with temporary token
     let username = unique_name("mfa_qr");
-    let test_user = create_test_user(&mut conn, &app.auth_service, &username);
+    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
     let temp_token = app.auth_service
         .generate_access_token(&test_user.user.uuid.to_string(), &username, false, false, false)
         .unwrap();
@@ -90,7 +90,7 @@ async fn test_mfa_setup_page_shows_qr_code() {
     assert!(body.contains("data:image/png;base64,"), "Should contain base64 QR code image");
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 // =============================================================================
@@ -120,11 +120,11 @@ async fn test_mfa_verify_page_requires_auth() {
 #[serial]
 async fn test_mfa_verify_page_renders() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create MFA-enabled user with temporary token
     let username = unique_name("mfa_verify");
-    let mfa_user = create_mfa_user(&mut conn, &app.auth_service, &username);
+    let mfa_user = create_mfa_user(&mut conn, &app.auth_service, &username).await;
     
     // Generate a temporary token with mfa_verified = false
     let temp_token = app.auth_service
@@ -146,7 +146,7 @@ async fn test_mfa_verify_page_renders() {
     assert!(body.contains("Verify"), "Should contain verify button");
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test MFA verify page shows input for 6-digit code.
@@ -154,11 +154,11 @@ async fn test_mfa_verify_page_renders() {
 #[serial]
 async fn test_mfa_verify_page_has_code_input() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create MFA-enabled user with temporary token
     let username = unique_name("mfa_code_input");
-    let mfa_user = create_mfa_user(&mut conn, &app.auth_service, &username);
+    let mfa_user = create_mfa_user(&mut conn, &app.auth_service, &username).await;
     let temp_token = app.auth_service
         .generate_access_token(&mfa_user.user.uuid.to_string(), &username, false, false, false)
         .unwrap();
@@ -177,7 +177,7 @@ async fn test_mfa_verify_page_has_code_input() {
     assert!(body.contains("pattern=\"[0-9]{6}\""), "Should have pattern for 6 digits");
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 // =============================================================================
@@ -189,11 +189,11 @@ async fn test_mfa_verify_page_has_code_input() {
 #[serial]
 async fn test_mfa_setup_submit_invalid_code() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create user with temporary token
     let username = unique_name("mfa_invalid");
-    let test_user = create_test_user(&mut conn, &app.auth_service, &username);
+    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
     let temp_token = app.auth_service
         .generate_access_token(&test_user.user.uuid.to_string(), &username, false, false, false)
         .unwrap();
@@ -229,7 +229,7 @@ async fn test_mfa_setup_submit_invalid_code() {
     );
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 // =============================================================================
@@ -241,11 +241,11 @@ async fn test_mfa_setup_submit_invalid_code() {
 #[serial]
 async fn test_mfa_verify_submit_invalid_code() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create MFA-enabled user with temporary token
     let username = unique_name("mfa_verify_inv");
-    let mfa_user = create_mfa_user(&mut conn, &app.auth_service, &username);
+    let mfa_user = create_mfa_user(&mut conn, &app.auth_service, &username).await;
     let temp_token = app.auth_service
         .generate_access_token(&mfa_user.user.uuid.to_string(), &username, false, false, false)
         .unwrap();
@@ -270,7 +270,7 @@ async fn test_mfa_verify_submit_invalid_code() {
     );
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 // =============================================================================
@@ -282,11 +282,11 @@ async fn test_mfa_verify_submit_invalid_code() {
 #[serial]
 async fn test_login_redirects_to_mfa_setup() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create user without MFA
     let username = unique_name("login_mfa_setup");
-    let test_user = create_test_user(&mut conn, &app.auth_service, &username);
+    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
 
     // Execute: POST /auth/login via HTMX (expects JSON due to hx-ext="json-enc")
     // Note: CSRF validation is skipped when token is empty in test mode
@@ -321,7 +321,7 @@ async fn test_login_redirects_to_mfa_setup() {
     }
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test login redirects to MFA verify for user with MFA enabled.
@@ -329,11 +329,11 @@ async fn test_login_redirects_to_mfa_setup() {
 #[serial]
 async fn test_login_redirects_to_mfa_verify() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create user with MFA enabled
     let username = unique_name("login_mfa_verify");
-    let mfa_user = create_mfa_user(&mut conn, &app.auth_service, &username);
+    let mfa_user = create_mfa_user(&mut conn, &app.auth_service, &username).await;
 
     // Execute: POST /auth/login via HTMX (expects JSON due to hx-ext="json-enc")
     let response = app
@@ -364,5 +364,5 @@ async fn test_login_redirects_to_mfa_verify() {
     }
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }

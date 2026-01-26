@@ -25,17 +25,17 @@ fn get_user_uuid(conn: &mut diesel::PgConnection, user_id: i32) -> Uuid {
 #[tokio::test]
 async fn test_api_list_group_members_success() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let group_uuid = create_test_vauban_group(&mut conn, &unique_name("api-list-members"));
     let user_id = create_simple_user(&mut conn, &unique_name("api-member"));
 
     // Add member to group
-    add_user_to_vauban_group(&mut conn, user_id, &group_uuid);
+    add_user_to_vauban_group(&mut conn, user_id, &group_uuid).await;
 
     // Create admin user for authentication
     let admin_name = unique_name("api_members_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(
@@ -60,11 +60,11 @@ async fn test_api_list_group_members_success() {
 #[tokio::test]
 async fn test_api_list_group_members_not_found() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create admin user for authentication
     let admin_name = unique_name("api_members_404_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(
@@ -87,13 +87,13 @@ async fn test_api_list_group_members_not_found() {
 #[tokio::test]
 async fn test_api_list_group_members_empty() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let group_uuid = create_test_vauban_group(&mut conn, &unique_name("api-empty-group"));
 
     // Create admin user for authentication
     let admin_name = unique_name("api_empty_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(

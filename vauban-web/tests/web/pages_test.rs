@@ -31,10 +31,10 @@ fn get_user_uuid(conn: &mut diesel::PgConnection, user_id: i32) -> Uuid {
 #[tokio::test]
 async fn test_fallback_route_redirects_to_home() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_name = unique_name("fallback_test_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
@@ -58,10 +58,10 @@ async fn test_fallback_route_redirects_to_home() {
 #[tokio::test]
 async fn test_fallback_route_with_random_path() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_name = unique_name("fallback_rand_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
@@ -119,10 +119,10 @@ async fn test_fallback_route_unauthenticated() {
 #[tokio::test]
 async fn test_asset_detail_with_malformed_uuid() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_name = unique_name("malformed_uuid_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
@@ -160,10 +160,10 @@ async fn test_asset_detail_with_malformed_uuid() {
 #[tokio::test]
 async fn test_user_detail_with_malformed_uuid() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_name = unique_name("user_malformed_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
@@ -185,10 +185,10 @@ async fn test_user_detail_with_malformed_uuid() {
 #[tokio::test]
 async fn test_group_detail_with_malformed_uuid() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_name = unique_name("grp_malformed_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
@@ -210,10 +210,10 @@ async fn test_group_detail_with_malformed_uuid() {
 #[tokio::test]
 async fn test_asset_group_detail_with_malformed_uuid() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_name = unique_name("agrp_malformed_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
@@ -235,10 +235,10 @@ async fn test_asset_group_detail_with_malformed_uuid() {
 #[tokio::test]
 async fn test_approval_detail_with_malformed_uuid() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_name = unique_name("appr_malformed_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
@@ -264,10 +264,10 @@ async fn test_approval_detail_with_malformed_uuid() {
 #[tokio::test]
 async fn test_not_found_redirect_sets_flash_cookie() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_name = unique_name("flash_test_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
@@ -298,17 +298,17 @@ async fn test_not_found_redirect_sets_flash_cookie() {
 #[tokio::test]
 async fn test_authorization_error_redirect_sets_flash() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create an asset
     let admin_name = unique_name("flash_auth_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("flash-asset"), admin_id);
-    let asset_uuid = get_asset_uuid(&mut conn, asset_id);
+    let asset_uuid = get_asset_uuid(&mut conn, asset_id).await;
 
     // Create a normal user
     let user_name = unique_name("flash_auth_user");
-    let user_id = create_simple_user(&mut conn, &user_name);
+    let user_id = create_simple_user(&mut conn, &user_name).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &user_name, false, false);
@@ -393,12 +393,12 @@ async fn test_approval_list_with_status_filter() {
 #[tokio::test]
 async fn test_approval_list_with_orphaned_status_filter() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("orphaned_approval_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let asset_id = create_simple_ssh_asset(&mut conn, "orphaned-approval-asset", user_id);
-    let approval_uuid = create_approval_request(&mut conn, user_id, asset_id);
+    let approval_uuid = create_approval_request(&mut conn, user_id, asset_id).await;
 
     use vauban_web::schema::proxy_sessions::dsl as ps;
     diesel::update(ps::proxy_sessions.filter(ps::uuid.eq(approval_uuid)))
@@ -459,11 +459,11 @@ async fn test_approval_list_status_filter_all_statuses() {
     // - pending, approved, rejected, expired, orphaned
     // - empty string (All statuses) should behave like no filter
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create a user and assets for multiple approval requests
     let username = unique_name("status_filter_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     // Create approval requests with different statuses
@@ -475,7 +475,7 @@ async fn test_approval_list_status_filter_all_statuses() {
             &format!("status-filter-asset-{}", i),
             user_id,
         );
-        let approval_uuid = create_approval_request(&mut conn, user_id, asset_id);
+        let approval_uuid = create_approval_request(&mut conn, user_id, asset_id).await;
 
         // Update the status
         use vauban_web::schema::proxy_sessions::dsl as ps;
@@ -594,13 +594,13 @@ async fn test_approval_list_status_filter_all_statuses() {
 #[tokio::test]
 async fn test_approval_detail_page_loads() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create test data with justification (approval request)
-    let user_id = create_simple_user(&mut conn, "test_approval_detail");
+    let user_id = create_simple_user(&mut conn, "test_approval_detail").await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
     let asset_id = create_simple_ssh_asset(&mut conn, "test-approval-asset", user_id);
-    let session_uuid = create_approval_request(&mut conn, user_id, asset_id);
+    let session_uuid = create_approval_request(&mut conn, user_id, asset_id).await;
 
     let token = app.generate_test_token(&user_uuid.to_string(), "test_approval_detail", true, true);
 
@@ -649,20 +649,20 @@ async fn test_approval_detail_not_found() {
 #[tokio::test]
 async fn test_asset_delete_soft_deletes_and_updates_related_data() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create a regular user who owns the asset and sessions
     let username = unique_name("delete_asset_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let asset_name = unique_name("delete-asset");
     let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, user_id);
-    let approval_uuid = create_approval_request(&mut conn, user_id, asset_id);
-    let active_session_id = create_test_session(&mut conn, user_id, asset_id, "ssh", "active");
-    let asset_uuid = get_asset_uuid(&mut conn, asset_id);
+    let approval_uuid = create_approval_request(&mut conn, user_id, asset_id).await;
+    let active_session_id = create_test_session(&mut conn, user_id, asset_id, "ssh", "active").await;
+    let asset_uuid = get_asset_uuid(&mut conn, asset_id).await;
 
     // Create an admin user in the database to perform the deletion
     let admin_username = unique_name("admin_delete");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true);
@@ -700,7 +700,7 @@ async fn test_asset_delete_soft_deletes_and_updates_related_data() {
         );
     }
 
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     use vauban_web::schema::assets::dsl as a;
     let (is_deleted, deleted_at): (bool, Option<chrono::DateTime<chrono::Utc>>) = a::assets
@@ -736,16 +736,16 @@ async fn test_asset_delete_soft_deletes_and_updates_related_data() {
 #[tokio::test]
 async fn test_asset_delete_rejects_missing_csrf() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("delete_asset_csrf_missing");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let asset_id = create_simple_ssh_asset(&mut conn, "delete-asset-csrf", user_id);
-    let asset_uuid = get_asset_uuid(&mut conn, asset_id);
+    let asset_uuid = get_asset_uuid(&mut conn, asset_id).await;
 
     // Create an admin user in the database
     let admin_username = unique_name("admin_csrf_test");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true);
 
@@ -873,10 +873,10 @@ async fn test_asset_group_list_with_special_chars_search() {
 async fn test_asset_group_list_empty_search_shows_all() {
     // Regression test: empty search string should behave like no filter
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_username = unique_name("assetgrp_search_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     // Create an asset group to ensure there's at least one
@@ -959,10 +959,10 @@ async fn test_asset_group_list_empty_search_shows_all() {
 #[tokio::test]
 async fn test_asset_group_detail_page_loads() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create test asset group
-    let group_uuid = create_test_asset_group(&mut conn, &unique_name("test-detail-group"));
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("test-detail-group")).await;
 
     let token = app.generate_test_token(
         &Uuid::new_v4().to_string(),
@@ -1016,9 +1016,9 @@ async fn test_asset_group_detail_not_found() {
 #[tokio::test]
 async fn test_asset_group_edit_page_loads() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
-    let group_uuid = create_test_asset_group(&mut conn, &unique_name("test-edit-group"));
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("test-edit-group")).await;
 
     let token = app.generate_test_token(
         &Uuid::new_v4().to_string(),
@@ -1048,12 +1048,12 @@ async fn test_asset_group_edit_page_loads() {
 #[tokio::test]
 async fn test_asset_detail_page_loads() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
-    let user_id = create_simple_user(&mut conn, "test_asset_detail_page");
+    let user_id = create_simple_user(&mut conn, "test_asset_detail_page").await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
     let asset_id = create_simple_ssh_asset(&mut conn, "test-asset-detail", user_id);
-    let asset_uuid = get_asset_uuid(&mut conn, asset_id);
+    let asset_uuid = get_asset_uuid(&mut conn, asset_id).await;
 
     let token =
         app.generate_test_token(&user_uuid.to_string(), "test_asset_detail_page", true, true);
@@ -1075,17 +1075,17 @@ async fn test_asset_detail_page_loads() {
 #[tokio::test]
 async fn test_asset_detail_with_group() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let user_id = create_simple_user(&mut conn, &unique_name("test_asset_group"));
-    let group_uuid = create_test_asset_group(&mut conn, &unique_name("test-asset-group-link"));
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("test-asset-group-link")).await;
     let asset_id = create_test_asset_in_group(
         &mut conn,
         &unique_name("test-asset-in-group"),
         user_id,
         &group_uuid,
     );
-    let asset_uuid = get_asset_uuid(&mut conn, asset_id);
+    let asset_uuid = get_asset_uuid(&mut conn, asset_id).await;
 
     let token = app.generate_test_token(
         &Uuid::new_v4().to_string(),
@@ -1182,10 +1182,10 @@ async fn test_group_list_with_search() {
 async fn test_vauban_group_list_empty_search_shows_all() {
     // Regression test: empty search string should behave like no filter
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_username = unique_name("group_search_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     // Create a group to ensure there's at least one
@@ -1264,7 +1264,7 @@ async fn test_vauban_group_list_empty_search_shows_all() {
 #[tokio::test]
 async fn test_group_detail_page_loads() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let group_uuid = create_test_vauban_group(&mut conn, &unique_name("test-vauban-group"));
 
@@ -1320,7 +1320,7 @@ async fn test_group_detail_not_found() {
 #[tokio::test]
 async fn test_vauban_group_edit_form_loads() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let group_uuid = create_test_vauban_group(&mut conn, &unique_name("edit-form-group"));
     let token = app.generate_test_token(
@@ -1344,7 +1344,7 @@ async fn test_vauban_group_edit_form_loads() {
 #[tokio::test]
 async fn test_vauban_group_update_success() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let group_uuid = create_test_vauban_group(&mut conn, &unique_name("update-group"));
     let token = app.generate_test_token(
@@ -1380,7 +1380,7 @@ async fn test_vauban_group_update_success() {
 #[tokio::test]
 async fn test_vauban_group_add_member_form_loads() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let group_uuid = create_test_vauban_group(&mut conn, &unique_name("add-member-form"));
     let token = app.generate_test_token(
@@ -1407,7 +1407,7 @@ async fn test_vauban_group_add_member_form_loads() {
 #[tokio::test]
 async fn test_vauban_group_add_member_success() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let group_uuid = create_test_vauban_group(&mut conn, &unique_name("add-member-grp"));
     let user_id = create_simple_user(&mut conn, &unique_name("new-member"));
@@ -1422,7 +1422,7 @@ async fn test_vauban_group_add_member_success() {
     let csrf_token = app.generate_csrf_token();
 
     // Verify no members initially
-    let count_before = count_vauban_group_members(&mut conn, &group_uuid);
+    let count_before = count_vauban_group_members(&mut conn, &group_uuid).await;
     assert_eq!(count_before, 0, "Group should have no members initially");
 
     let response = app
@@ -1446,23 +1446,23 @@ async fn test_vauban_group_add_member_success() {
     );
 
     // Verify member was added
-    let count_after = count_vauban_group_members(&mut conn, &group_uuid);
+    let count_after = count_vauban_group_members(&mut conn, &group_uuid).await;
     assert_eq!(count_after, 1, "Group should have 1 member after adding");
 }
 
 #[tokio::test]
 async fn test_vauban_group_remove_member_success() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let group_uuid = create_test_vauban_group(&mut conn, &unique_name("remove-member-grp"));
     let user_id = create_simple_user(&mut conn, &unique_name("removable-member"));
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     // Add member first
-    add_user_to_vauban_group(&mut conn, user_id, &group_uuid);
+    add_user_to_vauban_group(&mut conn, user_id, &group_uuid).await;
 
-    let count_before = count_vauban_group_members(&mut conn, &group_uuid);
+    let count_before = count_vauban_group_members(&mut conn, &group_uuid).await;
     assert_eq!(count_before, 1, "Group should have 1 member initially");
 
     let token = app.generate_test_token(
@@ -1494,14 +1494,14 @@ async fn test_vauban_group_remove_member_success() {
     );
 
     // Verify member was removed
-    let count_after = count_vauban_group_members(&mut conn, &group_uuid);
+    let count_after = count_vauban_group_members(&mut conn, &group_uuid).await;
     assert_eq!(count_after, 0, "Group should have 0 members after removal");
 }
 
 #[tokio::test]
 async fn test_vauban_group_delete_empty_success() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let group_uuid = create_test_vauban_group(&mut conn, &unique_name("delete-empty-grp"));
 
@@ -1545,13 +1545,13 @@ async fn test_vauban_group_delete_empty_success() {
 #[tokio::test]
 async fn test_vauban_group_delete_with_members_fails() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let group_uuid = create_test_vauban_group(&mut conn, &unique_name("delete-has-members"));
     let user_id = create_simple_user(&mut conn, &unique_name("group-member"));
 
     // Add member to group
-    add_user_to_vauban_group(&mut conn, user_id, &group_uuid);
+    add_user_to_vauban_group(&mut conn, user_id, &group_uuid).await;
 
     let token = app.generate_test_token(
         &Uuid::new_v4().to_string(),
@@ -1593,7 +1593,7 @@ async fn test_vauban_group_delete_with_members_fails() {
 #[tokio::test]
 async fn test_vauban_group_delete_requires_admin() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let group_uuid = create_test_vauban_group(&mut conn, &unique_name("delete-nonadmin"));
 
@@ -1642,13 +1642,13 @@ async fn test_vauban_group_delete_requires_admin() {
 #[tokio::test]
 async fn test_update_asset_web_form_redirects_on_success() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create test data
-    let user_id = create_simple_user(&mut conn, "test_asset_form");
+    let user_id = create_simple_user(&mut conn, "test_asset_form").await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
     let asset_id = create_simple_ssh_asset(&mut conn, "test-form-asset", user_id);
-    let asset_uuid = get_asset_uuid(&mut conn, asset_id);
+    let asset_uuid = get_asset_uuid(&mut conn, asset_id).await;
 
     let token = app.generate_test_token(&user_uuid.to_string(), "test_asset_form", true, true);
     let csrf_token = app.generate_csrf_token();
@@ -1682,13 +1682,13 @@ async fn test_update_asset_web_form_redirects_on_success() {
 #[tokio::test]
 async fn test_update_asset_web_form_validation_error() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create test data
-    let user_id = create_simple_user(&mut conn, "test_asset_val");
+    let user_id = create_simple_user(&mut conn, "test_asset_val").await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
     let asset_id = create_simple_ssh_asset(&mut conn, "test-val-asset", user_id);
-    let asset_uuid = get_asset_uuid(&mut conn, asset_id);
+    let asset_uuid = get_asset_uuid(&mut conn, asset_id).await;
 
     let token = app.generate_test_token(&user_uuid.to_string(), "test_asset_val", true, true);
     let csrf_token = app.generate_csrf_token();
@@ -1722,10 +1722,10 @@ async fn test_update_asset_web_form_validation_error() {
 #[tokio::test]
 async fn test_update_asset_group_web_form_redirects_on_success() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create test data
-    let user_id = create_simple_user(&mut conn, "test_group_form");
+    let user_id = create_simple_user(&mut conn, "test_group_form").await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
     let group_uuid = create_test_asset_group(&mut conn, "test-form-group");
 
@@ -1762,10 +1762,10 @@ async fn test_update_asset_group_web_form_redirects_on_success() {
 #[tokio::test]
 async fn test_update_asset_group_web_form_validation_error() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create test data
-    let user_id = create_simple_user(&mut conn, "test_group_val");
+    let user_id = create_simple_user(&mut conn, "test_group_val").await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
     let group_uuid = create_test_asset_group(&mut conn, "test-val-group");
 
@@ -1801,11 +1801,11 @@ async fn test_update_asset_group_web_form_validation_error() {
 #[tokio::test]
 async fn test_asset_edit_page_requires_authentication() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
-    let user_id = create_simple_user(&mut conn, "test_auth_check");
+    let user_id = create_simple_user(&mut conn, "test_auth_check").await;
     let asset_id = create_simple_ssh_asset(&mut conn, "test-auth-asset", user_id);
-    let asset_uuid = get_asset_uuid(&mut conn, asset_id);
+    let asset_uuid = get_asset_uuid(&mut conn, asset_id).await;
 
     // Try to access edit page without authentication
     let response = app
@@ -1825,11 +1825,11 @@ async fn test_asset_edit_page_requires_authentication() {
 #[tokio::test]
 async fn test_web_form_post_requires_authentication() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
-    let user_id = create_simple_user(&mut conn, "test_post_auth");
+    let user_id = create_simple_user(&mut conn, "test_post_auth").await;
     let asset_id = create_simple_ssh_asset(&mut conn, "test-post-asset", user_id);
-    let asset_uuid = get_asset_uuid(&mut conn, asset_id);
+    let asset_uuid = get_asset_uuid(&mut conn, asset_id).await;
 
     // Try to submit form without authentication
     let response = app
@@ -1859,13 +1859,13 @@ async fn test_web_form_post_requires_authentication() {
 #[tokio::test]
 async fn test_invalid_ip_address_shows_flash_error() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create test data
-    let user_id = create_simple_user(&mut conn, "test_ip_error");
+    let user_id = create_simple_user(&mut conn, "test_ip_error").await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
     let asset_id = create_simple_ssh_asset(&mut conn, "test-ip-asset", user_id);
-    let asset_uuid = get_asset_uuid(&mut conn, asset_id);
+    let asset_uuid = get_asset_uuid(&mut conn, asset_id).await;
 
     let token = app.generate_test_token(&user_uuid.to_string(), "test_ip_error", true, true);
     let csrf_token = app.generate_csrf_token();
@@ -1923,13 +1923,13 @@ async fn test_invalid_ip_address_shows_flash_error() {
 #[tokio::test]
 async fn test_edit_page_displays_flash_messages() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create test data
-    let user_id = create_simple_user(&mut conn, "test_flash_display");
+    let user_id = create_simple_user(&mut conn, "test_flash_display").await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
     let asset_id = create_simple_ssh_asset(&mut conn, "test-flash-asset", user_id);
-    let asset_uuid = get_asset_uuid(&mut conn, asset_id);
+    let asset_uuid = get_asset_uuid(&mut conn, asset_id).await;
 
     let token = app.generate_test_token(&user_uuid.to_string(), "test_flash_display", true, true);
     let csrf_token = app.generate_csrf_token();
@@ -1988,12 +1988,12 @@ async fn test_edit_page_displays_flash_messages() {
 #[tokio::test]
 async fn test_asset_group_empty_name_shows_flash_error() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create test data
-    let user_id = create_simple_user(&mut conn, "test_group_name_err");
+    let user_id = create_simple_user(&mut conn, "test_group_name_err").await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
-    let group_uuid = create_test_asset_group(&mut conn, &unique_name("test-name-err-grp"));
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("test-name-err-grp")).await;
 
     let token = app.generate_test_token(&user_uuid.to_string(), "test_group_name_err", true, true);
     let csrf_token = app.generate_csrf_token();
@@ -2050,12 +2050,12 @@ async fn test_asset_group_empty_name_shows_flash_error() {
 #[tokio::test]
 async fn test_asset_group_empty_slug_shows_flash_error() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create test data
-    let user_id = create_simple_user(&mut conn, "test_group_slug_err");
+    let user_id = create_simple_user(&mut conn, "test_group_slug_err").await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
-    let group_uuid = create_test_asset_group(&mut conn, &unique_name("test-slug-err-grp"));
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("test-slug-err-grp")).await;
 
     let token = app.generate_test_token(&user_uuid.to_string(), "test_group_slug_err", true, true);
     let csrf_token = app.generate_csrf_token();
@@ -2099,12 +2099,12 @@ async fn test_asset_group_empty_slug_shows_flash_error() {
 #[tokio::test]
 async fn test_asset_group_edit_page_displays_flash_messages() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create test data
-    let user_id = create_simple_user(&mut conn, "test_group_flash");
+    let user_id = create_simple_user(&mut conn, "test_group_flash").await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
-    let group_uuid = create_test_asset_group(&mut conn, &unique_name("test-grp-flash-disp"));
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("test-grp-flash-disp")).await;
 
     let token = app.generate_test_token(&user_uuid.to_string(), "test_group_flash", true, true);
     let csrf_token = app.generate_csrf_token();
@@ -2166,10 +2166,10 @@ async fn test_asset_group_edit_page_displays_flash_messages() {
 #[tokio::test]
 async fn test_asset_group_create_form_loads_for_admin() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_name = unique_name("ag_create_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
@@ -2191,10 +2191,10 @@ async fn test_asset_group_create_form_loads_for_admin() {
 #[tokio::test]
 async fn test_asset_group_create_form_requires_admin() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("ag_create_normal");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false);
@@ -2216,10 +2216,10 @@ async fn test_asset_group_create_form_requires_admin() {
 #[tokio::test]
 async fn test_asset_group_create_success() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_name = unique_name("ag_creator");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
@@ -2266,10 +2266,10 @@ async fn test_asset_group_create_success() {
 #[tokio::test]
 async fn test_asset_group_create_normal_user_forbidden() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("ag_create_denied");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false);
@@ -2315,10 +2315,10 @@ async fn test_asset_group_create_normal_user_forbidden() {
 #[tokio::test]
 async fn test_asset_group_create_duplicate_slug_rejected() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_name = unique_name("ag_dup_creator");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
@@ -2365,10 +2365,10 @@ async fn test_asset_group_create_duplicate_slug_rejected() {
 #[tokio::test]
 async fn test_asset_group_create_duplicate_slug_shows_flash_error() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_name = unique_name("ag_dup_flash");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
@@ -2430,17 +2430,17 @@ async fn test_asset_group_create_duplicate_slug_shows_flash_error() {
 #[tokio::test]
 async fn test_asset_group_delete_success() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_name = unique_name("ag_deleter");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
     let csrf_token = app.generate_csrf_token();
 
     // Create a group to delete
-    let group_uuid = create_test_asset_group(&mut conn, &unique_name("delete-me-group"));
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("delete-me-group")).await;
 
     let response = app
         .server
@@ -2474,18 +2474,18 @@ async fn test_asset_group_delete_success() {
 #[tokio::test]
 async fn test_asset_group_delete_with_assets() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_name = unique_name("ag_del_assets");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
     let csrf_token = app.generate_csrf_token();
 
     // Create a group with an asset
-    let group_uuid = create_test_asset_group(&mut conn, &unique_name("del-with-assets"));
-    let _asset_id = create_test_asset_in_group(&mut conn, &unique_name("asset-in-grp"), admin_id, &group_uuid);
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("del-with-assets")).await;
+    let _asset_id = create_test_asset_in_group(&mut conn, &unique_name("asset-in-grp"), admin_id, &group_uuid).await;
 
     let response = app
         .server
@@ -2536,13 +2536,13 @@ async fn test_asset_group_delete_with_assets() {
 #[tokio::test]
 async fn test_asset_group_add_asset_form_loads() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_name = unique_name("add_asset_form_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
-    let group_uuid = create_test_asset_group(&mut conn, &unique_name("add-asset-form-grp"));
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("add-asset-form-grp")).await;
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
 
@@ -2562,13 +2562,13 @@ async fn test_asset_group_add_asset_form_loads() {
 #[tokio::test]
 async fn test_asset_group_add_asset_form_requires_admin() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("add_asset_form_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
-    let group_uuid = create_test_asset_group(&mut conn, &unique_name("add-asset-form-denied"));
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("add-asset-form-denied")).await;
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false);
 
@@ -2589,13 +2589,13 @@ async fn test_asset_group_add_asset_form_requires_admin() {
 #[tokio::test]
 async fn test_asset_group_add_asset_success() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_name = unique_name("add_asset_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
-    let group_uuid = create_test_asset_group(&mut conn, &unique_name("add-asset-grp"));
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("add-asset-grp")).await;
     let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("asset-to-add"), admin_id);
 
     // Get asset UUID
@@ -2654,13 +2654,13 @@ async fn test_asset_group_add_asset_success() {
 #[tokio::test]
 async fn test_asset_group_add_multiple_assets_success() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_name = unique_name("add_multi_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
-    let group_uuid = create_test_asset_group(&mut conn, &unique_name("add-multi-grp"));
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("add-multi-grp")).await;
 
     // Create multiple assets
     let asset1_id = create_simple_ssh_asset(&mut conn, &unique_name("multi-asset1"), admin_id);
@@ -2739,14 +2739,14 @@ async fn test_asset_group_add_multiple_assets_success() {
 #[tokio::test]
 async fn test_asset_group_add_asset_normal_user_forbidden() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("add_asset_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let admin_id = create_simple_admin_user(&mut conn, &unique_name("add_asset_admin2"));
-    let group_uuid = create_test_asset_group(&mut conn, &unique_name("add-asset-denied"));
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("add-asset-denied")).await;
     let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("asset-add-denied"), admin_id);
 
     // Get asset UUID
@@ -2796,15 +2796,15 @@ async fn test_asset_group_add_asset_normal_user_forbidden() {
 #[tokio::test]
 async fn test_asset_group_add_asset_already_in_group() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_name = unique_name("add_asset_dup_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     // Create first group and add asset to it
-    let group1_uuid = create_test_asset_group(&mut conn, &unique_name("add-asset-grp1"));
-    let asset_id = create_test_asset_in_group(&mut conn, &unique_name("asset-in-grp1"), admin_id, &group1_uuid);
+    let group1_uuid = create_test_asset_group(&mut conn, &unique_name("add-asset-grp1")).await;
+    let asset_id = create_test_asset_in_group(&mut conn, &unique_name("asset-in-grp1"), admin_id, &group1_uuid).await;
 
     // Get asset UUID
     use vauban_web::schema::assets;
@@ -2815,7 +2815,7 @@ async fn test_asset_group_add_asset_already_in_group() {
         .unwrap();
 
     // Create second group and try to add the same asset
-    let group2_uuid = create_test_asset_group(&mut conn, &unique_name("add-asset-grp2"));
+    let group2_uuid = create_test_asset_group(&mut conn, &unique_name("add-asset-grp2")).await;
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
     let csrf_token = app.generate_csrf_token();
@@ -2864,14 +2864,14 @@ async fn test_asset_group_add_asset_already_in_group() {
 #[tokio::test]
 async fn test_asset_group_remove_asset_success() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_name = unique_name("rem_asset_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
-    let group_uuid = create_test_asset_group(&mut conn, &unique_name("rem-asset-grp"));
-    let asset_id = create_test_asset_in_group(&mut conn, &unique_name("asset-to-rem"), admin_id, &group_uuid);
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("rem-asset-grp")).await;
+    let asset_id = create_test_asset_in_group(&mut conn, &unique_name("asset-to-rem"), admin_id, &group_uuid).await;
 
     // Get asset UUID
     use vauban_web::schema::assets;
@@ -2920,15 +2920,15 @@ async fn test_asset_group_remove_asset_success() {
 #[tokio::test]
 async fn test_asset_group_remove_asset_normal_user_forbidden() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("rem_asset_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let admin_id = create_simple_admin_user(&mut conn, &unique_name("rem_asset_admin2"));
-    let group_uuid = create_test_asset_group(&mut conn, &unique_name("rem-asset-denied"));
-    let asset_id = create_test_asset_in_group(&mut conn, &unique_name("asset-rem-denied"), admin_id, &group_uuid);
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("rem-asset-denied")).await;
+    let asset_id = create_test_asset_in_group(&mut conn, &unique_name("asset-rem-denied"), admin_id, &group_uuid).await;
 
     // Get asset UUID
     use vauban_web::schema::assets;
@@ -2985,13 +2985,13 @@ async fn test_asset_group_remove_asset_normal_user_forbidden() {
 #[tokio::test]
 async fn test_asset_group_detail_shows_add_asset_button() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_name = unique_name("det_add_btn_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
-    let group_uuid = create_test_asset_group(&mut conn, &unique_name("det-add-btn-grp"));
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("det-add-btn-grp")).await;
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
 
@@ -3016,14 +3016,14 @@ async fn test_asset_group_detail_shows_add_asset_button() {
 #[tokio::test]
 async fn test_asset_group_detail_shows_remove_button() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_name = unique_name("det_rem_btn_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
-    let group_uuid = create_test_asset_group(&mut conn, &unique_name("det-rem-btn-grp"));
-    let _asset_id = create_test_asset_in_group(&mut conn, &unique_name("asset-rem-btn"), admin_id, &group_uuid);
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("det-rem-btn-grp")).await;
+    let _asset_id = create_test_asset_in_group(&mut conn, &unique_name("asset-rem-btn"), admin_id, &group_uuid).await;
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
 
@@ -3048,17 +3048,17 @@ async fn test_asset_group_detail_shows_remove_button() {
 #[tokio::test]
 async fn test_asset_group_delete_normal_user_forbidden() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("ag_del_denied");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false);
     let csrf_token = app.generate_csrf_token();
 
     // Create a group to try to delete
-    let group_uuid = create_test_asset_group(&mut conn, &unique_name("no-del-group"));
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("no-del-group")).await;
 
     let response = app
         .server
@@ -3092,15 +3092,15 @@ async fn test_asset_group_delete_normal_user_forbidden() {
 #[tokio::test]
 async fn test_asset_group_detail_has_delete_button() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_name = unique_name("ag_del_btn_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
 
-    let group_uuid = create_test_asset_group(&mut conn, &unique_name("del-btn-group"));
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("del-btn-group")).await;
 
     let response = app
         .server
@@ -3119,10 +3119,10 @@ async fn test_asset_group_detail_has_delete_button() {
 #[tokio::test]
 async fn test_asset_group_icons_rendered_correctly() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_name = unique_name("ag_icon_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
@@ -3196,10 +3196,10 @@ async fn test_asset_group_icons_rendered_correctly() {
 #[tokio::test]
 async fn test_asset_group_create_form_fields_present() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_name = unique_name("ag_form_fields");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
@@ -3281,10 +3281,10 @@ async fn test_user_list_filter_by_all_statuses() {
     // - active, inactive
     // - empty string (All statuses) should behave like no filter
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_username = unique_name("user_list_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true);
@@ -3369,10 +3369,10 @@ async fn test_user_list_filter_by_all_statuses() {
 async fn test_user_list_search_by_username() {
     // Test that searching by username works correctly
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_username = unique_name("user_search_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     // Create a user with a unique searchable name - use full UUID for uniqueness
@@ -3454,18 +3454,18 @@ async fn test_user_list_search_by_username() {
 async fn test_user_list_combined_filters() {
     // Test combining search and status filters
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_username = unique_name("combofilt_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     // Create users with different statuses and unique names to avoid conflicts with other tests
     let active_user = unique_name("combofilt_active");
     let inactive_user = unique_name("combofilt_inactive");
 
-    let _active_id = create_simple_user(&mut conn, &active_user);
-    let inactive_id = create_simple_user(&mut conn, &inactive_user);
+    let _active_id = create_simple_user(&mut conn, &active_user).await;
+    let inactive_id = create_simple_user(&mut conn, &inactive_user).await;
 
     // Deactivate one user
     use vauban_web::schema::users;
@@ -3530,11 +3530,11 @@ async fn test_user_list_combined_filters() {
 #[tokio::test]
 async fn test_user_create_form_requires_admin() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create a regular user (not staff, not superuser)
     let username = unique_name("regular_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
     let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false);
 
@@ -3556,10 +3556,10 @@ async fn test_user_create_form_requires_admin() {
 #[tokio::test]
 async fn test_user_create_form_loads_for_admin() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_username = unique_name("admin_create_form");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true);
 
@@ -3577,10 +3577,10 @@ async fn test_user_create_form_loads_for_admin() {
 #[tokio::test]
 async fn test_user_create_success() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_username = unique_name("admin_create_user");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true);
     let csrf_token = app.generate_csrf_token();
@@ -3624,10 +3624,10 @@ async fn test_user_create_success() {
 #[tokio::test]
 async fn test_user_create_validates_password_length() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_username = unique_name("admin_pw_val");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true);
     let csrf_token = app.generate_csrf_token();
@@ -3671,7 +3671,7 @@ async fn test_user_create_validates_password_length() {
 #[tokio::test]
 async fn test_user_create_staff_cannot_create_superuser() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create a staff user (not superuser)
     let staff_username = unique_name("staff_no_super");
@@ -3736,16 +3736,16 @@ async fn test_user_create_staff_cannot_create_superuser() {
 #[tokio::test]
 async fn test_user_edit_form_loads() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_username = unique_name("admin_edit_form");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true);
 
     // Create a user to edit
     let target_username = unique_name("edit_target");
-    let target_id = create_simple_user(&mut conn, &target_username);
+    let target_id = create_simple_user(&mut conn, &target_username).await;
     let target_uuid = get_user_uuid(&mut conn, target_id);
 
     let response = app
@@ -3762,17 +3762,17 @@ async fn test_user_edit_form_loads() {
 #[tokio::test]
 async fn test_user_update_success() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_username = unique_name("admin_update");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true);
     let csrf_token = app.generate_csrf_token();
 
     // Create a user to update
     let target_username = unique_name("update_target");
-    let target_id = create_simple_user(&mut conn, &target_username);
+    let target_id = create_simple_user(&mut conn, &target_username).await;
     let target_uuid = get_user_uuid(&mut conn, target_id);
 
     let new_email = format!("updated_{}@test.vauban.io", target_username);
@@ -3810,7 +3810,7 @@ async fn test_user_update_success() {
 #[tokio::test]
 async fn test_user_update_staff_cannot_edit_superuser() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create a staff user
     let staff_username = unique_name("staff_cant_edit");
@@ -3838,7 +3838,7 @@ async fn test_user_update_staff_cannot_edit_superuser() {
 
     // Create a superuser to try to edit
     let super_username = unique_name("super_target");
-    let super_id = create_simple_admin_user(&mut conn, &super_username);
+    let super_id = create_simple_admin_user(&mut conn, &super_username).await;
     let super_uuid = get_user_uuid(&mut conn, super_id);
 
     // Try to access edit form
@@ -3860,17 +3860,17 @@ async fn test_user_update_staff_cannot_edit_superuser() {
 #[tokio::test]
 async fn test_user_delete_soft_deletes() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_username = unique_name("admin_delete");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true);
     let csrf_token = app.generate_csrf_token();
 
     // Create a user to delete
     let target_username = unique_name("delete_target");
-    let target_id = create_simple_user(&mut conn, &target_username);
+    let target_id = create_simple_user(&mut conn, &target_username).await;
     let target_uuid = get_user_uuid(&mut conn, target_id);
 
     let response = app
@@ -3905,7 +3905,7 @@ async fn test_user_delete_protects_last_superuser() {
     // This test verifies that when there is only 1 active superuser,
     // deleting them should fail. Uses serial_test to run in isolation.
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
     use vauban_web::schema::users;
     use chrono::Utc;
 
@@ -3920,7 +3920,7 @@ async fn test_user_delete_protects_last_superuser() {
 
     // Create a unique superuser for this test
     let last_super_username = unique_name("last_super");
-    let last_super_id = create_simple_admin_user(&mut conn, &last_super_username);
+    let last_super_id = create_simple_admin_user(&mut conn, &last_super_username).await;
     let last_super_uuid = get_user_uuid(&mut conn, last_super_id);
 
     // Deactivate ALL OTHER superusers (we'll restore them at the end)
@@ -3982,7 +3982,7 @@ async fn test_user_delete_protects_last_superuser() {
 #[tokio::test]
 async fn test_user_delete_staff_cannot_delete_superuser() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create a staff user
     let staff_username = unique_name("staff_del");
@@ -4011,7 +4011,7 @@ async fn test_user_delete_staff_cannot_delete_superuser() {
 
     // Create a superuser to try to delete
     let super_username = unique_name("super_nodelete");
-    let super_id = create_simple_admin_user(&mut conn, &super_username);
+    let super_id = create_simple_admin_user(&mut conn, &super_username).await;
     let super_uuid = get_user_uuid(&mut conn, super_id);
 
     // Try to delete the superuser
@@ -4039,15 +4039,15 @@ async fn test_user_delete_staff_cannot_delete_superuser() {
 #[tokio::test]
 async fn test_user_delete_rejects_csrf_invalid() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_username = unique_name("admin_csrf_del");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true);
 
     let target_username = unique_name("csrf_del_target");
-    let target_id = create_simple_user(&mut conn, &target_username);
+    let target_id = create_simple_user(&mut conn, &target_username).await;
     let target_uuid = get_user_uuid(&mut conn, target_id);
 
     let invalid_csrf = "invalid-token";
@@ -4079,11 +4079,11 @@ async fn test_user_delete_rejects_csrf_invalid() {
 #[tokio::test]
 async fn test_vauban_group_create_form_loads_for_superuser() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create a superuser in the database
     let admin_username = unique_name("grp_create_super");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     // Superuser can access create form
@@ -4103,11 +4103,11 @@ async fn test_vauban_group_create_form_loads_for_superuser() {
 #[tokio::test]
 async fn test_vauban_group_create_form_requires_superuser() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create a staff user (not superuser) in the database
     let staff_username = unique_name("grp_create_staff");
-    let staff_id = create_simple_user(&mut conn, &staff_username);
+    let staff_id = create_simple_user(&mut conn, &staff_username).await;
     // Update user to be staff but not superuser
     use vauban_web::schema::users;
     diesel::update(users::table.filter(users::id.eq(staff_id)))
@@ -4137,11 +4137,11 @@ async fn test_vauban_group_create_form_requires_superuser() {
 #[tokio::test]
 async fn test_vauban_group_create_success() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create a superuser in the database
     let admin_username = unique_name("grp_create_ok");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true);
@@ -4186,11 +4186,11 @@ async fn test_vauban_group_create_success() {
 #[tokio::test]
 async fn test_vauban_group_create_staff_cannot_create() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create a staff user (not superuser) in the database
     let staff_username = unique_name("grp_create_staff2");
-    let staff_id = create_simple_user(&mut conn, &staff_username);
+    let staff_id = create_simple_user(&mut conn, &staff_username).await;
     // Update user to be staff but not superuser
     use vauban_web::schema::users;
     diesel::update(users::table.filter(users::id.eq(staff_id)))
@@ -4240,13 +4240,13 @@ async fn test_vauban_group_create_staff_cannot_create() {
 #[tokio::test]
 async fn test_vauban_group_edit_requires_superuser() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let group_uuid = create_test_vauban_group(&mut conn, &unique_name("edit-staff-grp"));
 
     // Create a staff user (not superuser) in the database
     let staff_username = unique_name("grp_edit_staff");
-    let staff_id = create_simple_user(&mut conn, &staff_username);
+    let staff_id = create_simple_user(&mut conn, &staff_username).await;
     // Update user to be staff but not superuser
     use vauban_web::schema::users;
     diesel::update(users::table.filter(users::id.eq(staff_id)))
@@ -4275,14 +4275,14 @@ async fn test_vauban_group_edit_requires_superuser() {
 #[tokio::test]
 async fn test_vauban_group_update_requires_superuser() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let original_name = unique_name("update-staff-grp");
-    let group_uuid = create_test_vauban_group(&mut conn, &original_name);
+    let group_uuid = create_test_vauban_group(&mut conn, &original_name).await;
 
     // Create a staff user (not superuser) in the database
     let staff_username = unique_name("grp_update_staff");
-    let staff_id = create_simple_user(&mut conn, &staff_username);
+    let staff_id = create_simple_user(&mut conn, &staff_username).await;
     // Update user to be staff but not superuser
     use vauban_web::schema::users;
     diesel::update(users::table.filter(users::id.eq(staff_id)))
@@ -4331,13 +4331,13 @@ async fn test_vauban_group_update_requires_superuser() {
 #[tokio::test]
 async fn test_vauban_group_delete_requires_superuser_not_staff() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let group_uuid = create_test_vauban_group(&mut conn, &unique_name("delete-staff-grp"));
 
     // Create a staff user (not superuser) in the database
     let staff_username = unique_name("grp_del_staff");
-    let staff_id = create_simple_user(&mut conn, &staff_username);
+    let staff_id = create_simple_user(&mut conn, &staff_username).await;
     // Update user to be staff but not superuser
     use vauban_web::schema::users;
     diesel::update(users::table.filter(users::id.eq(staff_id)))
@@ -4387,11 +4387,11 @@ async fn test_vauban_group_delete_requires_superuser_not_staff() {
 #[tokio::test]
 async fn test_recordings_page_requires_admin() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create a normal user (not admin)
     let username = unique_name("normal_rec_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     // User is neither superuser nor staff
@@ -4414,10 +4414,10 @@ async fn test_recordings_page_requires_admin() {
 #[tokio::test]
 async fn test_recordings_page_accessible_to_superuser() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("superuser_rec");
-    let user_id = create_simple_admin_user(&mut conn, &username);
+    let user_id = create_simple_admin_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
@@ -4439,10 +4439,10 @@ async fn test_recordings_page_accessible_to_superuser() {
 #[tokio::test]
 async fn test_recordings_page_accessible_to_staff() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("staff_rec");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     // Update user to be staff
     use vauban_web::schema::users;
     diesel::update(users::table.filter(users::id.eq(user_id)))
@@ -4475,10 +4475,10 @@ async fn test_recordings_filter_by_all_formats() {
     use crate::fixtures::create_recorded_session_with_type;
 
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("rec_format_filter");
-    let user_id = create_simple_admin_user(&mut conn, &username);
+    let user_id = create_simple_admin_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     // Create recordings with different session types
@@ -4592,10 +4592,10 @@ async fn test_recordings_filter_by_asset_name() {
     use crate::fixtures::create_recorded_session_with_type;
 
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("rec_asset_filter");
-    let user_id = create_simple_admin_user(&mut conn, &username);
+    let user_id = create_simple_admin_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     // Create recordings with different asset names
@@ -4693,10 +4693,10 @@ async fn test_recordings_combined_filters() {
     use crate::fixtures::create_recorded_session_with_type;
 
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("rec_combined_filter");
-    let user_id = create_simple_admin_user(&mut conn, &username);
+    let user_id = create_simple_admin_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     // Create diverse recordings
@@ -4761,17 +4761,17 @@ async fn test_recordings_combined_filters() {
 #[tokio::test]
 async fn test_recording_play_requires_admin() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create recorded session
     let admin_username = unique_name("admin_rec_play");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("rec-asset"), admin_id);
-    let session_id = create_recorded_session(&mut conn, admin_id, asset_id);
+    let session_id = create_recorded_session(&mut conn, admin_id, asset_id).await;
 
     // Create a normal user
     let username = unique_name("normal_rec_play");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false);
@@ -4796,10 +4796,10 @@ async fn test_recording_play_requires_admin() {
 #[tokio::test]
 async fn test_approvals_page_requires_admin() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("normal_approvals");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false);
@@ -4821,10 +4821,10 @@ async fn test_approvals_page_requires_admin() {
 #[tokio::test]
 async fn test_active_sessions_requires_admin() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("normal_active");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false);
@@ -4846,17 +4846,17 @@ async fn test_active_sessions_requires_admin() {
 #[tokio::test]
 async fn test_asset_detail_requires_admin() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create an asset
     let admin_username = unique_name("admin_asset_det");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("det-asset"), admin_id);
-    let asset_uuid = get_asset_uuid(&mut conn, asset_id);
+    let asset_uuid = get_asset_uuid(&mut conn, asset_id).await;
 
     // Create a normal user
     let username = unique_name("normal_asset_det");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false);
@@ -4887,10 +4887,10 @@ async fn test_asset_list_filter_by_all_types() {
     // Test that filtering by asset type works correctly for all types
     // and empty string behaves like no filter
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_username = unique_name("asset_type_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true);
@@ -4971,10 +4971,10 @@ async fn test_asset_list_filter_by_all_types() {
 async fn test_asset_list_filter_by_all_statuses() {
     // Test that filtering by status works correctly
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_username = unique_name("asset_status_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true);
@@ -5024,10 +5024,10 @@ async fn test_asset_list_filter_by_all_statuses() {
 async fn test_asset_list_search_by_name() {
     // Test that searching by asset name works correctly
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_username = unique_name("asset_search_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     // Create an asset with a unique searchable name
@@ -5086,10 +5086,10 @@ async fn test_asset_list_search_by_name() {
 async fn test_asset_list_combined_filters() {
     // Test combining search, type, and status filters
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_username = unique_name("asset_combined_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true);
@@ -5146,10 +5146,10 @@ async fn test_asset_list_combined_filters() {
 #[tokio::test]
 async fn test_asset_list_accessible_to_normal_user() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("asset_list_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     // Create an asset
@@ -5177,10 +5177,10 @@ async fn test_asset_list_accessible_to_normal_user() {
 #[tokio::test]
 async fn test_asset_list_admin_has_view_links() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_name = unique_name("asset_list_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     // Create an asset
@@ -5211,10 +5211,10 @@ async fn test_asset_list_admin_has_view_links() {
 #[tokio::test]
 async fn test_assets_new_does_not_conflict_with_uuid_route() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_name = unique_name("asset_new_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
@@ -5242,10 +5242,10 @@ async fn test_assets_new_does_not_conflict_with_uuid_route() {
 #[tokio::test]
 async fn test_assets_new_requires_admin() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("asset_new_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false);
@@ -5267,10 +5267,10 @@ async fn test_assets_new_requires_admin() {
 #[tokio::test]
 async fn test_asset_create_form_loads_for_admin() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_name = unique_name("asset_create_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
@@ -5292,10 +5292,10 @@ async fn test_asset_create_form_loads_for_admin() {
 #[tokio::test]
 async fn test_asset_create_success() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_name = unique_name("asset_creator");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
@@ -5343,10 +5343,10 @@ async fn test_asset_create_success() {
 #[tokio::test]
 async fn test_asset_create_normal_user_forbidden() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("asset_create_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false);
@@ -5393,11 +5393,11 @@ async fn test_asset_create_normal_user_forbidden() {
 #[tokio::test]
 async fn test_asset_edit_page_normal_user_forbidden() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create an admin and an asset
     let admin_name = unique_name("asset_edit_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("edit-forbid-asset"), admin_id);
 
     // Get asset UUID
@@ -5410,7 +5410,7 @@ async fn test_asset_edit_page_normal_user_forbidden() {
 
     // Create a normal user (non-admin)
     let user_name = unique_name("asset_edit_user");
-    let user_id = create_simple_user(&mut conn, &user_name);
+    let user_id = create_simple_user(&mut conn, &user_name).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &user_name, false, false);
@@ -5436,11 +5436,11 @@ async fn test_asset_edit_page_normal_user_forbidden() {
 #[tokio::test]
 async fn test_asset_update_normal_user_forbidden() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create an admin and an asset
     let admin_name = unique_name("asset_upd_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("upd-forbid-asset"), admin_id);
 
     // Get asset UUID
@@ -5453,7 +5453,7 @@ async fn test_asset_update_normal_user_forbidden() {
 
     // Create a normal user (non-admin)
     let user_name = unique_name("asset_upd_user");
-    let user_id = create_simple_user(&mut conn, &user_name);
+    let user_id = create_simple_user(&mut conn, &user_name).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &user_name, false, false);
@@ -5500,14 +5500,14 @@ async fn test_asset_update_normal_user_forbidden() {
 #[tokio::test]
 async fn test_asset_group_edit_page_normal_user_forbidden() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create an asset group
-    let group_uuid = create_test_asset_group(&mut conn, &unique_name("edit-forbid-group"));
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("edit-forbid-group")).await;
 
     // Create a normal user (non-admin)
     let user_name = unique_name("grp_edit_user");
-    let user_id = create_simple_user(&mut conn, &user_name);
+    let user_id = create_simple_user(&mut conn, &user_name).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &user_name, false, false);
@@ -5533,14 +5533,14 @@ async fn test_asset_group_edit_page_normal_user_forbidden() {
 #[tokio::test]
 async fn test_asset_group_update_normal_user_forbidden() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create an asset group
-    let group_uuid = create_test_asset_group(&mut conn, &unique_name("upd-forbid-group"));
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("upd-forbid-group")).await;
 
     // Create a normal user (non-admin)
     let user_name = unique_name("grp_upd_user");
-    let user_id = create_simple_user(&mut conn, &user_name);
+    let user_id = create_simple_user(&mut conn, &user_name).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &user_name, false, false);
@@ -5587,10 +5587,10 @@ async fn test_asset_group_update_normal_user_forbidden() {
 #[tokio::test]
 async fn test_asset_create_with_checkboxes() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_name = unique_name("asset_cb_creator");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
@@ -5647,10 +5647,10 @@ async fn test_asset_create_with_checkboxes() {
 #[tokio::test]
 async fn test_asset_create_without_checkboxes() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_name = unique_name("asset_nocb_creator");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
@@ -5705,10 +5705,10 @@ async fn test_asset_create_without_checkboxes() {
 #[tokio::test]
 async fn test_asset_create_reactivates_soft_deleted() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_name = unique_name("asset_reactivator");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
@@ -5805,10 +5805,10 @@ async fn test_asset_create_reactivates_soft_deleted() {
 #[tokio::test]
 async fn test_asset_create_fails_for_active_duplicate() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_name = unique_name("asset_dup_creator");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);

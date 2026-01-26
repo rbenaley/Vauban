@@ -13,11 +13,11 @@ use crate::fixtures::{create_mfa_user, create_test_user, unique_name};
 #[serial]
 async fn test_login_success() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create test user
     let username = unique_name("test_login");
-    let test_user = create_test_user(&mut conn, &app.auth_service, &username);
+    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
 
     // Execute: POST /api/v1/auth/login
     let response = app
@@ -35,7 +35,7 @@ async fn test_login_success() {
     assert_json_has_field(&response, "user");
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test login with invalid password.
@@ -43,11 +43,11 @@ async fn test_login_success() {
 #[serial]
 async fn test_login_invalid_password() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create test user
     let username = unique_name("test_badpwd");
-    let _test_user = create_test_user(&mut conn, &app.auth_service, &username);
+    let _test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
 
     // Execute: POST /api/v1/auth/login with wrong password
     let response = app
@@ -63,7 +63,7 @@ async fn test_login_invalid_password() {
     assert_status(&response, 401);
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test login with unknown user.
@@ -91,11 +91,11 @@ async fn test_login_unknown_user() {
 #[serial]
 async fn test_login_mfa_required() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create user with MFA enabled
     let username = unique_name("test_mfa");
-    let mfa_user = create_mfa_user(&mut conn, &app.auth_service, &username);
+    let mfa_user = create_mfa_user(&mut conn, &app.auth_service, &username).await;
 
     // Execute: POST /api/v1/auth/login without MFA code
     let response = app
@@ -116,7 +116,7 @@ async fn test_login_mfa_required() {
     );
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test successful logout.
@@ -124,11 +124,11 @@ async fn test_login_mfa_required() {
 #[serial]
 async fn test_logout_success() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create test user and get token
     let username = unique_name("test_logout");
-    let test_user = create_test_user(&mut conn, &app.auth_service, &username);
+    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
 
     // Execute: POST /api/v1/auth/logout with valid token
     let response = app
@@ -146,7 +146,7 @@ async fn test_logout_success() {
     );
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test logout without authentication.
@@ -172,11 +172,11 @@ async fn test_logout_without_token() {
 #[serial]
 async fn test_mfa_setup_page_success() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create test user with temporary token (mfa_verified = false)
     let username = unique_name("test_mfa_setup");
-    let test_user = create_test_user(&mut conn, &app.auth_service, &username);
+    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
     let temp_token = unwrap_ok!(app.auth_service
         .generate_access_token(&test_user.user.uuid.to_string(), &username, false, false, false));
 
@@ -194,7 +194,7 @@ async fn test_mfa_setup_page_success() {
     assert!(body.contains("Two-Factor Authentication"), "Should show MFA setup page");
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test MFA setup page without authentication.

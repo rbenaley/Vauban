@@ -32,12 +32,12 @@ fn get_user_uuid(conn: &mut diesel::PgConnection, user_id: i32) -> Uuid {
 #[tokio::test]
 async fn test_session_detail_page_loads() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
-    let user_id = create_simple_user(&mut conn, "test_session_page");
+    let user_id = create_simple_user(&mut conn, "test_session_page").await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
     let asset_id = create_simple_ssh_asset(&mut conn, "test-session-page-asset", user_id);
-    let session_id = create_test_session(&mut conn, user_id, asset_id, "ssh", "active");
+    let session_id = create_test_session(&mut conn, user_id, asset_id, "ssh", "active").await;
 
     let token = app.generate_test_token(&user_uuid.to_string(), "test_session_page", true, true);
 
@@ -85,12 +85,12 @@ async fn test_session_detail_not_found() {
 #[tokio::test]
 async fn test_recording_play_page_with_recorded_session() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
-    let user_id = create_simple_user(&mut conn, "test_recording_page");
+    let user_id = create_simple_user(&mut conn, "test_recording_page").await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
     let asset_id = create_simple_ssh_asset(&mut conn, "test-recording-asset", user_id);
-    let session_id = create_recorded_session(&mut conn, user_id, asset_id);
+    let session_id = create_recorded_session(&mut conn, user_id, asset_id).await;
 
     let token = app.generate_test_token(&user_uuid.to_string(), "test_recording_page", true, true);
 
@@ -159,12 +159,12 @@ async fn test_active_sessions_page_loads() {
 #[tokio::test]
 async fn test_active_sessions_with_data() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
-    let user_id = create_simple_user(&mut conn, "test_active_data");
+    let user_id = create_simple_user(&mut conn, "test_active_data").await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
     let asset_id = create_simple_ssh_asset(&mut conn, "test-active-asset", user_id);
-    let _session_id = create_test_session(&mut conn, user_id, asset_id, "ssh", "active");
+    let _session_id = create_test_session(&mut conn, user_id, asset_id, "ssh", "active").await;
 
     let token = app.generate_test_token(&user_uuid.to_string(), "test_active_data", true, true);
 
@@ -189,10 +189,10 @@ async fn test_active_sessions_with_data() {
 #[tokio::test]
 async fn test_session_list_filter_by_all_statuses() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_username = unique_name("session_status_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true);
@@ -265,10 +265,10 @@ async fn test_session_list_filter_by_all_statuses() {
 #[tokio::test]
 async fn test_session_list_filter_by_all_types() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_username = unique_name("session_type_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true);
@@ -324,10 +324,10 @@ async fn test_session_list_filter_by_all_types() {
 #[tokio::test]
 async fn test_session_list_search_by_asset() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_username = unique_name("session_asset_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true);
@@ -367,10 +367,10 @@ async fn test_session_list_search_by_asset() {
 #[tokio::test]
 async fn test_session_list_combined_filters() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_username = unique_name("session_combined_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_username);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true);
@@ -427,18 +427,18 @@ async fn test_session_list_combined_filters() {
 #[tokio::test]
 async fn test_session_list_filters_by_user() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let user1_name = unique_name("sess_user1");
-    let user1_id = create_simple_user(&mut conn, &user1_name);
+    let user1_id = create_simple_user(&mut conn, &user1_name).await;
     let user1_uuid = get_user_uuid(&mut conn, user1_id);
 
     let user2_name = unique_name("sess_user2");
-    let user2_id = create_simple_user(&mut conn, &user2_name);
+    let user2_id = create_simple_user(&mut conn, &user2_name).await;
 
     let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("filter-asset"), user1_id);
-    let _session1_id = create_test_session(&mut conn, user1_id, asset_id, "ssh", "completed");
-    let _session2_id = create_test_session(&mut conn, user2_id, asset_id, "ssh", "completed");
+    let _session1_id = create_test_session(&mut conn, user1_id, asset_id, "ssh", "completed").await;
+    let _session2_id = create_test_session(&mut conn, user2_id, asset_id, "ssh", "completed").await;
 
     let token = app.generate_test_token(&user1_uuid.to_string(), &user1_name, false, false);
 
@@ -459,16 +459,16 @@ async fn test_session_list_filters_by_user() {
 #[tokio::test]
 async fn test_session_list_admin_sees_all() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_name = unique_name("sess_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let other_name = unique_name("other_sess_user");
-    let other_id = create_simple_user(&mut conn, &other_name);
+    let other_id = create_simple_user(&mut conn, &other_name).await;
     let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("all-sess-asset"), admin_id);
-    let _session_id = create_test_session(&mut conn, other_id, asset_id, "ssh", "completed");
+    let _session_id = create_test_session(&mut conn, other_id, asset_id, "ssh", "completed").await;
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
 
@@ -489,16 +489,16 @@ async fn test_session_list_admin_sees_all() {
 #[tokio::test]
 async fn test_session_detail_own_session_allowed() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let test_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
     let username = format!("own_sess_user_{}", test_id);
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let asset_name = format!("own-sess-asset-{}", test_id);
     let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, user_id);
-    let session_id = create_test_session(&mut conn, user_id, asset_id, "ssh", "completed");
+    let session_id = create_test_session(&mut conn, user_id, asset_id, "ssh", "completed").await;
 
     use vauban_web::schema::proxy_sessions;
     let session_exists: bool = proxy_sessions::table
@@ -527,15 +527,15 @@ async fn test_session_detail_own_session_allowed() {
 #[tokio::test]
 async fn test_session_detail_other_session_forbidden() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let test_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
 
     let owner_name = format!("sess_owner_{}", test_id);
-    let owner_id = create_simple_user(&mut conn, &owner_name);
+    let owner_id = create_simple_user(&mut conn, &owner_name).await;
     let asset_name = format!("other-sess-asset-{}", test_id);
     let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, owner_id);
-    let session_id = create_test_session(&mut conn, owner_id, asset_id, "ssh", "completed");
+    let session_id = create_test_session(&mut conn, owner_id, asset_id, "ssh", "completed").await;
 
     use vauban_web::schema::proxy_sessions;
     let session_exists: bool = proxy_sessions::table
@@ -546,7 +546,7 @@ async fn test_session_detail_other_session_forbidden() {
     assert!(session_exists, "Session should exist after creation");
 
     let other_name = format!("sess_other_{}", test_id);
-    let other_id = create_simple_user(&mut conn, &other_name);
+    let other_id = create_simple_user(&mut conn, &other_name).await;
     let other_uuid = get_user_uuid(&mut conn, other_id);
 
     let token = app.generate_test_token(&other_uuid.to_string(), &other_name, false, false);
@@ -575,10 +575,10 @@ async fn test_session_detail_other_session_forbidden() {
 #[tokio::test]
 async fn test_session_detail_invalid_id_format() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_name = unique_name("invalid_id_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
@@ -610,10 +610,10 @@ async fn test_session_detail_invalid_id_format() {
 #[tokio::test]
 async fn test_recording_play_invalid_id() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_name = unique_name("rec_invalid_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
@@ -644,10 +644,10 @@ async fn test_recording_play_invalid_id() {
 #[tokio::test]
 async fn test_session_detail_negative_id() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_name = unique_name("neg_id_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
@@ -673,10 +673,10 @@ async fn test_session_detail_negative_id() {
 #[tokio::test]
 async fn test_session_detail_very_large_id() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_name = unique_name("large_id_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
@@ -700,15 +700,15 @@ async fn test_session_detail_very_large_id() {
 #[tokio::test]
 async fn test_recording_play_non_recorded_session() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin_name = unique_name("rec_non_recorded");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
     let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("non-rec-asset"), admin_id);
     
     // Create a non-recorded session
-    let session_id = create_test_session(&mut conn, admin_id, asset_id, "ssh", "completed");
+    let session_id = create_test_session(&mut conn, admin_id, asset_id, "ssh", "completed").await;
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);
 
@@ -731,20 +731,20 @@ async fn test_recording_play_non_recorded_session() {
 #[tokio::test]
 async fn test_admin_can_view_any_session() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let test_id = Uuid::new_v4().to_string()[..8].to_string();
 
     // Create a user and their session
     let owner_name = format!("sess_owner2_{}", test_id);
-    let owner_id = create_simple_user(&mut conn, &owner_name);
+    let owner_id = create_simple_user(&mut conn, &owner_name).await;
     let asset_name = format!("admin-view-asset-{}", test_id);
     let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, owner_id);
-    let session_id = create_test_session(&mut conn, owner_id, asset_id, "ssh", "completed");
+    let session_id = create_test_session(&mut conn, owner_id, asset_id, "ssh", "completed").await;
 
     // Create admin user
     let admin_name = format!("admin_viewer_{}", test_id);
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id);
 
     let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true);

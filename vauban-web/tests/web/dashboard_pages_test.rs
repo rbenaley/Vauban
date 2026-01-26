@@ -70,10 +70,10 @@ async fn test_dashboard_home_redirects_without_auth() {
 #[serial]
 async fn test_dashboard_home_loads_with_auth() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("dashboard_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
 
     let user_uuid: Uuid = {
         use diesel::prelude::*;
@@ -104,10 +104,10 @@ async fn test_dashboard_home_loads_with_auth() {
 #[serial]
 async fn test_user_sessions_page_contains_html() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("sessions_html_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
 
     let user_uuid: Uuid = {
         use diesel::prelude::*;
@@ -145,10 +145,10 @@ async fn test_user_sessions_page_contains_html() {
 #[serial]
 async fn test_api_keys_page_contains_html() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("apikeys_html_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
 
     let user_uuid: Uuid = {
         use diesel::prelude::*;
@@ -185,10 +185,10 @@ async fn test_api_keys_page_contains_html() {
 #[serial]
 async fn test_sessions_list_loads_empty() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("empty_sessions_list");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
 
     let user_uuid: Uuid = {
         use diesel::prelude::*;
@@ -216,15 +216,15 @@ async fn test_sessions_list_loads_empty() {
 #[serial]
 async fn test_sessions_list_with_active_sessions() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("active_sessions_list");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("session-asset"), user_id);
 
     // Create some active sessions
-    let _session1 = create_test_session(&mut conn, user_id, asset_id, "ssh", "active");
-    let _session2 = create_test_session(&mut conn, user_id, asset_id, "rdp", "active");
+    let _session1 = create_test_session(&mut conn, user_id, asset_id, "ssh", "active").await;
+    let _session2 = create_test_session(&mut conn, user_id, asset_id, "rdp", "active").await;
 
     let user_uuid: Uuid = {
         use diesel::prelude::*;
@@ -256,14 +256,14 @@ async fn test_sessions_list_with_active_sessions() {
 #[serial]
 async fn test_recordings_list_loads() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("recordings_list");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("rec-asset"), user_id);
 
     // Create a recorded session
-    let _session = create_recorded_session(&mut conn, user_id, asset_id);
+    let _session = create_recorded_session(&mut conn, user_id, asset_id).await;
 
     let user_uuid: Uuid = {
         use diesel::prelude::*;
@@ -297,16 +297,16 @@ async fn test_recordings_list_loads() {
 #[serial]
 async fn test_asset_detail_with_sessions() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("asset_sessions");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("asset-with-sess"), user_id);
-    let asset_uuid = get_asset_uuid(&mut conn, asset_id);
+    let asset_uuid = get_asset_uuid(&mut conn, asset_id).await;
 
     // Create sessions for this asset
-    let _session1 = create_test_session(&mut conn, user_id, asset_id, "ssh", "completed");
-    let _session2 = create_test_session(&mut conn, user_id, asset_id, "ssh", "active");
+    let _session1 = create_test_session(&mut conn, user_id, asset_id, "ssh", "completed").await;
+    let _session2 = create_test_session(&mut conn, user_id, asset_id, "ssh", "active").await;
 
     let user_uuid: Uuid = {
         use diesel::prelude::*;
@@ -338,10 +338,10 @@ async fn test_asset_detail_with_sessions() {
 #[serial]
 async fn test_sessions_pagination() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("pagination_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
@@ -368,10 +368,10 @@ async fn test_sessions_pagination() {
 #[serial]
 async fn test_asset_groups_pagination() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("group_pagination_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
@@ -394,10 +394,10 @@ async fn test_asset_groups_pagination() {
 #[serial]
 async fn test_asset_groups_search() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("search_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
@@ -426,10 +426,10 @@ async fn test_asset_groups_search() {
 #[serial]
 async fn test_user_groups_search() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("group_search_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);
@@ -452,10 +452,10 @@ async fn test_user_groups_search() {
 #[serial]
 async fn test_html_pages_return_html_content_type() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("content_type_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
 
     let user_uuid: Uuid = {
         use diesel::prelude::*;

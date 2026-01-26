@@ -14,11 +14,11 @@ use crate::fixtures::{create_admin_user, create_test_ssh_asset, create_test_user
 #[serial]
 async fn test_list_sessions_as_admin() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create admin
     let admin_name = unique_name("test_admin_sess");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
     // Execute: GET /api/v1/sessions
     let response = app
@@ -31,7 +31,7 @@ async fn test_list_sessions_as_admin() {
     assert_status(&response, 200);
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test list sessions as regular user (sees own sessions only).
@@ -39,11 +39,11 @@ async fn test_list_sessions_as_admin() {
 #[serial]
 async fn test_list_sessions_user_own() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create user
     let username = unique_name("test_user_sess");
-    let user = create_test_user(&mut conn, &app.auth_service, &username);
+    let user = create_test_user(&mut conn, &app.auth_service, &username).await;
 
     // Execute: GET /api/v1/sessions
     let response = app
@@ -56,7 +56,7 @@ async fn test_list_sessions_user_own() {
     assert_status(&response, 200);
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test list sessions with status filter.
@@ -64,11 +64,11 @@ async fn test_list_sessions_user_own() {
 #[serial]
 async fn test_list_sessions_filter_status() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create admin
     let admin_name = unique_name("test_admin_status");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
     // Execute: GET /api/v1/sessions?status=active
     let response = app
@@ -81,7 +81,7 @@ async fn test_list_sessions_filter_status() {
     assert_status(&response, 200);
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test create session.
@@ -89,13 +89,13 @@ async fn test_list_sessions_filter_status() {
 #[serial]
 async fn test_create_session_success() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create user and asset
     let username = unique_name("test_user_create_sess");
-    let user = create_test_user(&mut conn, &app.auth_service, &username);
+    let user = create_test_user(&mut conn, &app.auth_service, &username).await;
 
-    let asset = create_test_ssh_asset(&mut conn, &unique_name("test-session-asset"));
+    let asset = create_test_ssh_asset(&mut conn, &unique_name("test-session-asset")).await;
 
     // Execute: POST /api/v1/sessions
     let response = app
@@ -119,7 +119,7 @@ async fn test_create_session_success() {
     );
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test create session with non-existent asset.
@@ -127,11 +127,11 @@ async fn test_create_session_success() {
 #[serial]
 async fn test_create_session_asset_not_found() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create user
     let username = unique_name("test_user_no_asset");
-    let user = create_test_user(&mut conn, &app.auth_service, &username);
+    let user = create_test_user(&mut conn, &app.auth_service, &username).await;
 
     let fake_asset_uuid = Uuid::new_v4();
 
@@ -156,7 +156,7 @@ async fn test_create_session_asset_not_found() {
     );
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test get session by UUID.
@@ -164,11 +164,11 @@ async fn test_create_session_asset_not_found() {
 #[serial]
 async fn test_get_session_exists() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create admin (for full access)
     let admin_name = unique_name("test_admin_get_sess");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
     // Note: In a real scenario, we'd create a session first, then get it
     // For now, test that 404/500 is returned for non-existent session
@@ -185,7 +185,7 @@ async fn test_get_session_exists() {
     assert_status(&response, 404);
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test get session as non-owner (should be forbidden).
@@ -193,14 +193,14 @@ async fn test_get_session_exists() {
 #[serial]
 async fn test_get_session_not_owner() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create two users
     let owner_name = unique_name("test_owner");
-    let _owner = create_test_user(&mut conn, &app.auth_service, &owner_name);
+    let _owner = create_test_user(&mut conn, &app.auth_service, &owner_name).await;
 
     let other_name = unique_name("test_other");
-    let other = create_test_user(&mut conn, &app.auth_service, &other_name);
+    let other = create_test_user(&mut conn, &app.auth_service, &other_name).await;
 
     // Note: In a real scenario, owner would create a session,
     // then other user tries to access it
@@ -222,5 +222,5 @@ async fn test_get_session_not_owner() {
     );
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }

@@ -44,11 +44,11 @@ async fn test_api_returns_401_json_without_auth() {
 #[serial]
 async fn test_list_users_as_admin() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await.await;
 
     // Setup: create admin user
     let username = unique_name("test_admin");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &username);
+    let admin = create_admin_user(&mut conn, &app.auth_service, &username).await;
 
     // Execute: GET /api/v1/accounts
     let response = app
@@ -63,7 +63,7 @@ async fn test_list_users_as_admin() {
     assert!(json.is_array() || json.get("users").is_some());
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test list users as regular user (should be forbidden or limited).
@@ -71,11 +71,11 @@ async fn test_list_users_as_admin() {
 #[serial]
 async fn test_list_users_as_regular_user() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await.await;
 
     // Setup: create regular user
     let username = unique_name("test_regular");
-    let user = create_test_user(&mut conn, &app.auth_service, &username);
+    let user = create_test_user(&mut conn, &app.auth_service, &username).await;
 
     // Execute: GET /api/v1/accounts
     let response = app
@@ -93,7 +93,7 @@ async fn test_list_users_as_regular_user() {
     );
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test list users with pagination.
@@ -101,15 +101,15 @@ async fn test_list_users_as_regular_user() {
 #[serial]
 async fn test_list_users_pagination() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await.await;
 
     // Setup: create admin and some test users
     let admin_name = unique_name("test_admin_pag");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
     for i in 0..5 {
         let name = unique_name(&format!("test_user_{}", i));
-        create_test_user(&mut conn, &app.auth_service, &name);
+        create_test_user(&mut conn, &app.auth_service, &name).await;
     }
 
     // Execute: GET /api/v1/accounts with limit
@@ -123,7 +123,7 @@ async fn test_list_users_pagination() {
     assert_status(&response, 200);
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test list users with search filter.
@@ -131,14 +131,14 @@ async fn test_list_users_pagination() {
 #[serial]
 async fn test_list_users_search() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await.await;
 
     // Setup: create admin and a specific user
     let admin_name = unique_name("test_admin_search");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
     let target_name = unique_name("test_findme");
-    create_test_user(&mut conn, &app.auth_service, &target_name);
+    create_test_user(&mut conn, &app.auth_service, &target_name).await;
 
     // Execute: GET /api/v1/accounts with search
     let response = app
@@ -151,7 +151,7 @@ async fn test_list_users_search() {
     assert_status(&response, 200);
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test create user as admin.
@@ -159,11 +159,11 @@ async fn test_list_users_search() {
 #[serial]
 async fn test_create_user_as_admin() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await.await;
 
     // Setup: create admin
     let admin_name = unique_name("test_admin_create");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
     let new_username = unique_name("test_newuser");
 
@@ -190,7 +190,7 @@ async fn test_create_user_as_admin() {
     );
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test create user with duplicate email.
@@ -198,14 +198,14 @@ async fn test_create_user_as_admin() {
 #[serial]
 async fn test_create_user_duplicate_email() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await.await;
 
     // Setup: create admin and existing user
     let admin_name = unique_name("test_admin_dup");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
     let existing_name = unique_name("test_existing");
-    let existing_user = create_test_user(&mut conn, &app.auth_service, &existing_name);
+    let existing_user = create_test_user(&mut conn, &app.auth_service, &existing_name).await;
 
     // Execute: POST /api/v1/accounts with same email
     let response = app
@@ -230,7 +230,7 @@ async fn test_create_user_duplicate_email() {
     );
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test create user with invalid data.
@@ -238,11 +238,11 @@ async fn test_create_user_duplicate_email() {
 #[serial]
 async fn test_create_user_invalid_data() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await.await;
 
     // Setup: create admin
     let admin_name = unique_name("test_admin_inv");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
     // Execute: POST /api/v1/accounts with invalid email
     let response = app
@@ -260,7 +260,7 @@ async fn test_create_user_invalid_data() {
     assert_status(&response, 400);
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test get user by UUID.
@@ -268,14 +268,14 @@ async fn test_create_user_invalid_data() {
 #[serial]
 async fn test_get_user_exists() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await.await;
 
     // Setup: create admin and target user
     let admin_name = unique_name("test_admin_get");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
     let target_name = unique_name("test_target");
-    let target = create_test_user(&mut conn, &app.auth_service, &target_name);
+    let target = create_test_user(&mut conn, &app.auth_service, &target_name).await;
 
     // Execute: GET /api/v1/accounts/{uuid}
     let response = app
@@ -289,7 +289,7 @@ async fn test_get_user_exists() {
     assert_json_has_field(&response, "uuid");
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test get non-existent user.
@@ -297,11 +297,11 @@ async fn test_get_user_exists() {
 #[serial]
 async fn test_get_user_not_found() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await.await;
 
     // Setup: create admin
     let admin_name = unique_name("test_admin_404");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
     let fake_uuid = Uuid::new_v4();
 
@@ -316,7 +316,7 @@ async fn test_get_user_not_found() {
     assert_status(&response, 404);
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test update user.
@@ -324,14 +324,14 @@ async fn test_get_user_not_found() {
 #[serial]
 async fn test_update_user_success() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await.await;
 
     // Setup: create admin and target user
     let admin_name = unique_name("test_admin_upd");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
     let target_name = unique_name("test_update");
-    let target = create_test_user(&mut conn, &app.auth_service, &target_name);
+    let target = create_test_user(&mut conn, &app.auth_service, &target_name).await;
 
     // Execute: PUT /api/v1/accounts/{uuid}
     let response = app
@@ -348,7 +348,7 @@ async fn test_update_user_success() {
     assert_status(&response, 200);
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test update non-existent user.
@@ -356,11 +356,11 @@ async fn test_update_user_success() {
 #[serial]
 async fn test_update_user_not_found() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await.await;
 
     // Setup: create admin
     let admin_name = unique_name("test_admin_upd404");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
     let fake_uuid = Uuid::new_v4();
 
@@ -378,7 +378,7 @@ async fn test_update_user_not_found() {
     assert_status(&response, 404);
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 // =============================================================================
@@ -390,9 +390,9 @@ async fn test_update_user_not_found() {
 #[serial]
 async fn test_get_user_malformed_uuid_returns_validation_error() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await.await;
 
-    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("admin_malformed"));
+    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("admin_malformed")).await;
 
     // Try various malformed UUIDs
     let malformed_uuids = [
@@ -426,7 +426,7 @@ async fn test_get_user_malformed_uuid_returns_validation_error() {
         );
     }
 
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test update user with malformed UUID returns validation error.
@@ -434,9 +434,9 @@ async fn test_get_user_malformed_uuid_returns_validation_error() {
 #[serial]
 async fn test_update_user_malformed_uuid_returns_validation_error() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await.await;
 
-    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("admin_upd_malformed"));
+    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("admin_upd_malformed")).await;
 
     let response = app
         .server
@@ -454,5 +454,5 @@ async fn test_update_user_malformed_uuid_returns_validation_error() {
         status
     );
 
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }

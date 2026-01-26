@@ -31,10 +31,10 @@ fn get_user_uuid(conn: &mut diesel::PgConnection, user_id: i32) -> Uuid {
 #[tokio::test]
 async fn test_sidebar_contains_user_profile_link() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("sidebar_profile_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false);
@@ -65,10 +65,10 @@ async fn test_sidebar_contains_user_profile_link() {
 #[tokio::test]
 async fn test_sidebar_contains_user_sessions_link() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("sidebar_sessions_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false);
@@ -98,10 +98,10 @@ async fn test_sidebar_contains_user_sessions_link() {
 #[tokio::test]
 async fn test_sidebar_contains_api_keys_link() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("sidebar_apikeys_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false);
@@ -131,10 +131,10 @@ async fn test_sidebar_contains_api_keys_link() {
 #[tokio::test]
 async fn test_sidebar_contains_logout_button() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("sidebar_logout_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false);
@@ -164,10 +164,10 @@ async fn test_sidebar_contains_logout_button() {
 #[tokio::test]
 async fn test_sidebar_displays_user_name() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("sidebar_name_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false);
@@ -198,10 +198,10 @@ async fn test_sidebar_displays_user_name() {
 #[tokio::test]
 async fn test_my_profile_link_navigates_correctly() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("nav_profile_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false);
@@ -230,10 +230,10 @@ async fn test_my_profile_link_navigates_correctly() {
 #[tokio::test]
 async fn test_my_sessions_link_navigates_correctly() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("nav_sessions_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false);
@@ -262,10 +262,10 @@ async fn test_my_sessions_link_navigates_correctly() {
 #[tokio::test]
 async fn test_api_keys_link_navigates_correctly() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("nav_apikeys_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false);
@@ -294,10 +294,10 @@ async fn test_api_keys_link_navigates_correctly() {
 #[tokio::test]
 async fn test_logout_button_works() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("nav_logout_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false);
@@ -406,10 +406,10 @@ async fn test_api_keys_requires_authentication() {
 #[tokio::test]
 async fn test_logout_requires_csrf_token() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("logout_csrf_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false);
@@ -452,10 +452,10 @@ async fn test_logout_requires_csrf_token() {
 #[tokio::test]
 async fn test_complete_user_menu_navigation_flow() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("flow_menu_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false);
@@ -550,10 +550,10 @@ async fn test_complete_user_menu_navigation_flow() {
 #[tokio::test]
 async fn test_sidebar_user_menu_on_all_pages() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("sidebar_all_pages_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id);
 
     let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true);

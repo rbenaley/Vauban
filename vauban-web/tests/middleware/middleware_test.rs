@@ -31,10 +31,10 @@ async fn test_auth_middleware_allows_unauthenticated() {
 #[serial]
 async fn test_auth_middleware_extracts_user_from_bearer_token() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("bearer_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
 
     // Get user UUID
     let user_uuid: uuid::Uuid = {
@@ -63,10 +63,10 @@ async fn test_auth_middleware_extracts_user_from_bearer_token() {
 #[serial]
 async fn test_auth_middleware_extracts_user_from_cookie() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("cookie_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
 
     let user_uuid: uuid::Uuid = {
         use diesel::prelude::*;
@@ -116,10 +116,10 @@ async fn test_auth_middleware_ignores_invalid_token() {
 #[serial]
 async fn test_auth_middleware_rejects_expired_token() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("expired_token_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
 
     let user_uuid: uuid::Uuid = {
         use diesel::prelude::*;
@@ -165,10 +165,10 @@ async fn test_auth_middleware_rejects_expired_token() {
 #[serial]
 async fn test_auth_middleware_rejects_revoked_session() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("revoked_session_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
 
     let user_uuid: uuid::Uuid = {
         use diesel::prelude::*;
@@ -215,13 +215,13 @@ async fn test_auth_middleware_rejects_revoked_session() {
 #[serial]
 async fn test_bearer_token_takes_priority_over_cookie() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Create two users
     let user1_name = unique_name("bearer_priority_1");
     let user2_name = unique_name("bearer_priority_2");
-    let user1_id = create_simple_user(&mut conn, &user1_name);
-    let user2_id = create_simple_user(&mut conn, &user2_name);
+    let user1_id = create_simple_user(&mut conn, &user1_name).await;
+    let user2_id = create_simple_user(&mut conn, &user2_name).await;
 
     let user1_uuid: uuid::Uuid = {
         use diesel::prelude::*;
@@ -324,10 +324,10 @@ async fn test_empty_cookie() {
 #[serial]
 async fn test_superuser_flag_extracted() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("superuser_test");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
 
     let user_uuid: uuid::Uuid = {
         use diesel::prelude::*;
@@ -360,10 +360,10 @@ async fn test_superuser_flag_extracted() {
 #[serial]
 async fn test_regular_user_access() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("regular_user_test");
-    let test_user = create_test_user(&mut conn, &app.auth_service, &username);
+    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
 
     let response = app
         .server
@@ -384,10 +384,10 @@ async fn test_regular_user_access() {
 #[serial]
 async fn test_session_rejected_when_max_duration_exceeded() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("max_duration_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
 
     let user_uuid: uuid::Uuid = {
         use diesel::prelude::*;
@@ -432,10 +432,10 @@ async fn test_session_rejected_when_max_duration_exceeded() {
 #[serial]
 async fn test_session_valid_within_timeout_limits() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("valid_timeout_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
 
     let user_uuid: uuid::Uuid = {
         use diesel::prelude::*;
@@ -464,10 +464,10 @@ async fn test_session_valid_within_timeout_limits() {
 #[serial]
 async fn test_last_activity_updated_on_request() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("last_activity_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
 
     let user_uuid: uuid::Uuid = {
         use diesel::prelude::*;
@@ -524,10 +524,10 @@ async fn test_last_activity_updated_on_request() {
 #[serial]
 async fn test_session_valid_with_old_but_active_session() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("old_active_user");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
 
     let user_uuid: uuid::Uuid = {
         use diesel::prelude::*;

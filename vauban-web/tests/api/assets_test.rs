@@ -17,14 +17,14 @@ use crate::fixtures::{
 #[serial]
 async fn test_list_assets_authenticated() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create user and assets
     let username = unique_name("test_user_assets");
-    let user = create_test_user(&mut conn, &app.auth_service, &username);
+    let user = create_test_user(&mut conn, &app.auth_service, &username).await;
 
-    create_test_ssh_asset(&mut conn, &unique_name("test-ssh"));
-    create_test_rdp_asset(&mut conn, &unique_name("test-rdp"));
+    create_test_ssh_asset(&mut conn, &unique_name("test-ssh")).await;
+    create_test_rdp_asset(&mut conn, &unique_name("test-rdp")).await;
 
     // Execute: GET /api/v1/assets
     let response = app
@@ -37,7 +37,7 @@ async fn test_list_assets_authenticated() {
     assert_status(&response, 200);
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test list assets without authentication.
@@ -58,14 +58,14 @@ async fn test_list_assets_unauthenticated() {
 #[serial]
 async fn test_list_assets_filter_by_type() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create user and assets of different types
     let username = unique_name("test_user_filter");
-    let user = create_test_user(&mut conn, &app.auth_service, &username);
+    let user = create_test_user(&mut conn, &app.auth_service, &username).await;
 
-    create_test_ssh_asset(&mut conn, &unique_name("test-ssh"));
-    create_test_rdp_asset(&mut conn, &unique_name("test-rdp"));
+    create_test_ssh_asset(&mut conn, &unique_name("test-ssh")).await;
+    create_test_rdp_asset(&mut conn, &unique_name("test-rdp")).await;
 
     // Execute: GET /api/v1/assets?type=ssh
     let response = app
@@ -78,7 +78,7 @@ async fn test_list_assets_filter_by_type() {
     assert_status(&response, 200);
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test list assets with status filter.
@@ -86,13 +86,13 @@ async fn test_list_assets_filter_by_type() {
 #[serial]
 async fn test_list_assets_filter_by_status() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create user and online asset
     let username = unique_name("test_user_status");
-    let user = create_test_user(&mut conn, &app.auth_service, &username);
+    let user = create_test_user(&mut conn, &app.auth_service, &username).await;
 
-    create_test_ssh_asset(&mut conn, &unique_name("test-online"));
+    create_test_ssh_asset(&mut conn, &unique_name("test-online")).await;
 
     // Execute: GET /api/v1/assets?status=online
     let response = app
@@ -105,7 +105,7 @@ async fn test_list_assets_filter_by_status() {
     assert_status(&response, 200);
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test create asset.
@@ -113,11 +113,11 @@ async fn test_list_assets_filter_by_status() {
 #[serial]
 async fn test_create_asset_success() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create admin
     let admin_name = unique_name("test_admin_asset");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
     let asset_name = unique_name("test-new-asset");
 
@@ -145,7 +145,7 @@ async fn test_create_asset_success() {
     );
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test create asset with invalid IP.
@@ -153,11 +153,11 @@ async fn test_create_asset_success() {
 #[serial]
 async fn test_create_asset_invalid_ip() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create admin
     let admin_name = unique_name("test_admin_ip");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
     // Execute: POST /api/v1/assets with invalid IP
     let response = app
@@ -178,7 +178,7 @@ async fn test_create_asset_invalid_ip() {
     assert_status(&response, 400);
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test create asset with invalid port.
@@ -186,11 +186,11 @@ async fn test_create_asset_invalid_ip() {
 #[serial]
 async fn test_create_asset_invalid_port() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create admin
     let admin_name = unique_name("test_admin_port");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
     // Execute: POST /api/v1/assets with invalid port
     let response = app
@@ -211,7 +211,7 @@ async fn test_create_asset_invalid_port() {
     assert_status(&response, 400);
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test get asset by UUID.
@@ -219,13 +219,13 @@ async fn test_create_asset_invalid_port() {
 #[serial]
 async fn test_get_asset_exists() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create user and asset
     let username = unique_name("test_user_get_asset");
-    let user = create_test_user(&mut conn, &app.auth_service, &username);
+    let user = create_test_user(&mut conn, &app.auth_service, &username).await;
 
-    let asset = create_test_ssh_asset(&mut conn, &unique_name("test-get-asset"));
+    let asset = create_test_ssh_asset(&mut conn, &unique_name("test-get-asset")).await;
 
     // Execute: GET /api/v1/assets/{uuid}
     let response = app
@@ -239,7 +239,7 @@ async fn test_get_asset_exists() {
     assert_json_has_field(&response, "uuid");
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test get non-existent asset.
@@ -247,11 +247,11 @@ async fn test_get_asset_exists() {
 #[serial]
 async fn test_get_asset_not_found() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create user
     let username = unique_name("test_user_asset_404");
-    let user = create_test_user(&mut conn, &app.auth_service, &username);
+    let user = create_test_user(&mut conn, &app.auth_service, &username).await;
 
     let fake_uuid = Uuid::new_v4();
 
@@ -266,7 +266,7 @@ async fn test_get_asset_not_found() {
     assert_status(&response, 404);
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test update asset.
@@ -274,13 +274,13 @@ async fn test_get_asset_not_found() {
 #[serial]
 async fn test_update_asset_success() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create admin and asset
     let admin_name = unique_name("test_admin_upd_asset");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
-    let asset = create_test_ssh_asset(&mut conn, &unique_name("test-update-asset"));
+    let asset = create_test_ssh_asset(&mut conn, &unique_name("test-update-asset")).await;
 
     // Execute: PUT /api/v1/assets/{uuid}
     let response = app
@@ -297,7 +297,7 @@ async fn test_update_asset_success() {
     assert_status(&response, 200);
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test update asset with IPv4 address persists to database.
@@ -305,13 +305,13 @@ async fn test_update_asset_success() {
 #[serial]
 async fn test_update_asset_with_ipv4_persists_to_database() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create admin and asset
     let admin_name = unique_name("test_admin_ip_asset");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
-    let asset = create_test_ssh_asset(&mut conn, &unique_name("test-ip-asset"));
+    let asset = create_test_ssh_asset(&mut conn, &unique_name("test-ip-asset")).await;
 
     // Execute: PUT /api/v1/assets/{uuid} with new IP
     let response = app
@@ -340,7 +340,7 @@ async fn test_update_asset_with_ipv4_persists_to_database() {
     );
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test update asset with IPv6 address persists to database.
@@ -348,13 +348,13 @@ async fn test_update_asset_with_ipv4_persists_to_database() {
 #[serial]
 async fn test_update_asset_with_ipv6_persists_to_database() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create admin and asset
     let admin_name = unique_name("test_admin_ipv6_asset");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
-    let asset = create_test_ssh_asset(&mut conn, &unique_name("test-ipv6-asset"));
+    let asset = create_test_ssh_asset(&mut conn, &unique_name("test-ipv6-asset")).await;
 
     // Execute: PUT /api/v1/assets/{uuid} with IPv6
     let response = app
@@ -383,7 +383,7 @@ async fn test_update_asset_with_ipv6_persists_to_database() {
     );
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test update asset with multiple fields persists all to database.
@@ -391,13 +391,13 @@ async fn test_update_asset_with_ipv6_persists_to_database() {
 #[serial]
 async fn test_update_asset_with_multiple_fields_persists_to_database() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create admin and asset
     let admin_name = unique_name("test_admin_multi_asset");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
-    let asset = create_test_ssh_asset(&mut conn, &unique_name("test-multi-asset"));
+    let asset = create_test_ssh_asset(&mut conn, &unique_name("test-multi-asset")).await;
 
     // Execute: PUT /api/v1/assets/{uuid} with multiple fields
     let response = app
@@ -445,7 +445,7 @@ async fn test_update_asset_with_multiple_fields_persists_to_database() {
     );
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test update asset with invalid IP address returns error.
@@ -453,13 +453,13 @@ async fn test_update_asset_with_multiple_fields_persists_to_database() {
 #[serial]
 async fn test_update_asset_with_invalid_ip_returns_error() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create admin and asset
     let admin_name = unique_name("test_admin_invalid_ip");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
-    let asset = create_test_ssh_asset(&mut conn, &unique_name("test-invalid-ip-asset"));
+    let asset = create_test_ssh_asset(&mut conn, &unique_name("test-invalid-ip-asset")).await;
 
     // Execute: PUT /api/v1/assets/{uuid} with invalid IP
     let response = app
@@ -480,7 +480,7 @@ async fn test_update_asset_with_invalid_ip_returns_error() {
     );
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 // ==================== Form Submission Tests ====================
 
@@ -490,13 +490,13 @@ async fn test_update_asset_with_invalid_ip_returns_error() {
 #[serial]
 async fn test_update_asset_with_string_port() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create admin and asset
     let admin_name = unique_name("test_admin_string_port");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
-    let asset = create_test_ssh_asset(&mut conn, &unique_name("test-string-port-asset"));
+    let asset = create_test_ssh_asset(&mut conn, &unique_name("test-string-port-asset")).await;
 
     // Execute: PUT with port as string (like HTML forms send)
     let response = app
@@ -521,7 +521,7 @@ async fn test_update_asset_with_string_port() {
     assert_eq!(db_port, 2222, "Database should contain the updated port");
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test update asset with boolean as string "on" (checkbox behavior).
@@ -529,13 +529,13 @@ async fn test_update_asset_with_string_port() {
 #[serial]
 async fn test_update_asset_with_checkbox_on() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create admin and asset
     let admin_name = unique_name("test_admin_checkbox");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
-    let asset = create_test_ssh_asset(&mut conn, &unique_name("test-checkbox-asset"));
+    let asset = create_test_ssh_asset(&mut conn, &unique_name("test-checkbox-asset")).await;
 
     // Execute: PUT with require_mfa as "on" (like HTML checkboxes)
     let response = app
@@ -560,7 +560,7 @@ async fn test_update_asset_with_checkbox_on() {
     assert!(db_mfa, "Database should have require_mfa set to true");
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test update asset with full form-like submission.
@@ -568,13 +568,13 @@ async fn test_update_asset_with_checkbox_on() {
 #[serial]
 async fn test_update_asset_full_form_submission() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create admin and asset
     let admin_name = unique_name("test_admin_full_form");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
-    let asset = create_test_ssh_asset(&mut conn, &unique_name("test-full-form-asset"));
+    let asset = create_test_ssh_asset(&mut conn, &unique_name("test-full-form-asset")).await;
 
     // Use unique names to avoid conflicts
     let updated_name = unique_name("updated-server");
@@ -622,7 +622,7 @@ async fn test_update_asset_full_form_submission() {
     assert!(db_justification);
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 // =============================================================================
@@ -634,7 +634,7 @@ async fn test_update_asset_full_form_submission() {
 #[serial]
 async fn test_get_asset_malformed_uuid_returns_validation_error() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("asset_malformed"));
 
@@ -662,7 +662,7 @@ async fn test_get_asset_malformed_uuid_returns_validation_error() {
         );
     }
 
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test update asset with malformed UUID returns validation error.
@@ -670,7 +670,7 @@ async fn test_get_asset_malformed_uuid_returns_validation_error() {
 #[serial]
 async fn test_update_asset_malformed_uuid_returns_validation_error() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("asset_upd_malformed"));
 
@@ -690,5 +690,5 @@ async fn test_update_asset_malformed_uuid_returns_validation_error() {
         status
     );
 
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }

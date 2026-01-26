@@ -35,10 +35,10 @@ use crate::fixtures::{create_test_user, unique_name};
 #[serial]
 async fn test_sql_injection_prevention_user_creation() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("test_sql_inj");
-    let test_user = create_test_user(&mut conn, &app.auth_service, &username);
+    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
 
     // Test SQL injection in username
     let response = app
@@ -80,7 +80,7 @@ async fn test_sql_injection_prevention_user_creation() {
         status
     );
 
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test SQL injection attempts on user search/list.
@@ -88,10 +88,10 @@ async fn test_sql_injection_prevention_user_creation() {
 #[serial]
 async fn test_sql_injection_prevention_user_search() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("test_search");
-    let test_user = create_test_user(&mut conn, &app.auth_service, &username);
+    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
 
     // API should handle malicious query parameters safely
     let response = app
@@ -108,7 +108,7 @@ async fn test_sql_injection_prevention_user_search() {
         status
     );
 
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 // =============================================================================
@@ -120,10 +120,10 @@ async fn test_sql_injection_prevention_user_search() {
 #[serial]
 async fn test_input_validation_user_creation() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("test_input_val");
-    let test_user = create_test_user(&mut conn, &app.auth_service, &username);
+    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
 
     // Test empty username
     let response = app
@@ -182,7 +182,7 @@ async fn test_input_validation_user_creation() {
 
     assert_status(&response, 400);
 
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test input validation for asset creation.
@@ -190,10 +190,10 @@ async fn test_input_validation_user_creation() {
 #[serial]
 async fn test_input_validation_asset_creation() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("test_asset");
-    let test_user = create_test_user(&mut conn, &app.auth_service, &username);
+    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
 
     // Test invalid IP address
     let response = app
@@ -243,7 +243,7 @@ async fn test_input_validation_asset_creation() {
 
     assert_status(&response, 400);
 
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 // =============================================================================
@@ -259,10 +259,10 @@ async fn test_input_validation_asset_creation() {
 #[serial]
 async fn test_xss_prevention_user_fields() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("test_xss");
-    let test_user = create_test_user(&mut conn, &app.auth_service, &username);
+    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
 
     // Test XSS in username - should be handled without crashing
     // VAUBAN sanitizes output via Askama templates (HTML escaping)
@@ -306,7 +306,7 @@ async fn test_xss_prevention_user_fields() {
         status
     );
 
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 // =============================================================================
@@ -423,10 +423,10 @@ async fn test_api_key_authentication() {
 #[serial]
 async fn test_brute_force_protection() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("test_bruteforce");
-    let test_user = create_test_user(&mut conn, &app.auth_service, &username);
+    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
 
     // Make multiple failed login attempts
     const MAX_ATTEMPTS: u32 = 5;
@@ -461,7 +461,7 @@ async fn test_brute_force_protection() {
         status
     );
 
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test account lockout mechanism.
@@ -469,10 +469,10 @@ async fn test_brute_force_protection() {
 #[serial]
 async fn test_account_lockout() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("test_lockout");
-    let test_user = create_test_user(&mut conn, &app.auth_service, &username);
+    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
 
     // Make multiple failed login attempts
     for _ in 0..5 {
@@ -505,7 +505,7 @@ async fn test_account_lockout() {
         status
     );
 
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test rate limiting functionality.
@@ -550,10 +550,10 @@ async fn test_rate_limiting() {
 #[serial]
 async fn test_secure_cookie_settings() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("test_cookie");
-    let test_user = create_test_user(&mut conn, &app.auth_service, &username);
+    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
 
     let response = app
         .server
@@ -576,7 +576,7 @@ async fn test_secure_cookie_settings() {
         );
     }
 
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test session fixation protection.
@@ -584,10 +584,10 @@ async fn test_secure_cookie_settings() {
 #[serial]
 async fn test_session_fixation_protection() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("test_session");
-    let test_user = create_test_user(&mut conn, &app.auth_service, &username);
+    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
 
     let response = app
         .server
@@ -605,7 +605,7 @@ async fn test_session_fixation_protection() {
     let json: serde_json::Value = response.json();
     assert!(json.get("access_token").is_some(), "New token should be issued on login");
 
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test JWT token expiration.
@@ -613,10 +613,10 @@ async fn test_session_fixation_protection() {
 #[serial]
 async fn test_jwt_expiration() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("test_jwt_exp");
-    let test_user = create_test_user(&mut conn, &app.auth_service, &username);
+    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
 
     let response = app
         .server
@@ -642,7 +642,7 @@ async fn test_jwt_expiration() {
 
     assert_status(&response, 200);
 
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 // =============================================================================
@@ -657,10 +657,10 @@ async fn test_jwt_expiration() {
 #[serial]
 async fn test_password_complexity() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("test_pwd_complex");
-    let test_user = create_test_user(&mut conn, &app.auth_service, &username);
+    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
 
     // Password too short - should be rejected
     let response = app
@@ -701,7 +701,7 @@ async fn test_password_complexity() {
         status
     );
 
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 // =============================================================================
@@ -715,10 +715,10 @@ async fn test_password_complexity() {
 #[serial]
 async fn test_data_sanitization() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("test_sanitize");
-    let test_user = create_test_user(&mut conn, &app.auth_service, &username);
+    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
 
     // Valid input with unique name
     let new_username = unique_name("admin_test");
@@ -763,7 +763,7 @@ async fn test_data_sanitization() {
         status
     );
 
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 // =============================================================================
@@ -905,10 +905,10 @@ async fn test_csrf_protection() {
 #[serial]
 async fn test_mfa_enforcement() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     let username = unique_name("test_mfa_enforce");
-    let test_user = create_test_user(&mut conn, &app.auth_service, &username);
+    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
 
     // Login without MFA code (for non-MFA user, should succeed)
     let response = app
@@ -928,7 +928,7 @@ async fn test_mfa_enforcement() {
         status
     );
 
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 // =============================================================================

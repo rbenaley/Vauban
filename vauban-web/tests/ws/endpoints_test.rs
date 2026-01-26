@@ -15,11 +15,11 @@ use crate::fixtures::{create_admin_user, unique_name};
 async fn test_dashboard_ws_connection() {
     let app = TestApp::spawn().await;
     let admin = create_admin_user(
-        &mut app.get_conn(),
+        &mut app.get_conn().await,
         &app.auth_service,
         &unique_name("wsadmin"),
     );
-    test_db::cleanup(&mut app.get_conn());
+    test_db::cleanup(&mut app.get_conn().await);
 
     // Note: axum-test doesn't support WebSocket directly,
     // so we test via the HTTP upgrade request
@@ -48,7 +48,7 @@ async fn test_dashboard_ws_connection() {
 #[serial]
 async fn test_dashboard_ws_requires_auth() {
     let app = TestApp::spawn().await;
-    test_db::cleanup(&mut app.get_conn());
+    test_db::cleanup(&mut app.get_conn().await);
 
     // Try to connect without authentication
     let response = app
@@ -77,11 +77,11 @@ async fn test_dashboard_ws_requires_auth() {
 async fn test_session_ws_endpoint_exists() {
     let app = TestApp::spawn().await;
     let admin = create_admin_user(
-        &mut app.get_conn(),
+        &mut app.get_conn().await,
         &app.auth_service,
         &unique_name("wssession"),
     );
-    test_db::cleanup(&mut app.get_conn());
+    test_db::cleanup(&mut app.get_conn().await);
 
     let response = app
         .server
@@ -106,7 +106,7 @@ async fn test_session_ws_endpoint_exists() {
 #[serial]
 async fn test_session_ws_requires_auth() {
     let app = TestApp::spawn().await;
-    test_db::cleanup(&mut app.get_conn());
+    test_db::cleanup(&mut app.get_conn().await);
 
     let response = app
         .server
@@ -133,11 +133,11 @@ async fn test_session_ws_requires_auth() {
 async fn test_notifications_ws_endpoint_exists() {
     let app = TestApp::spawn().await;
     let admin = create_admin_user(
-        &mut app.get_conn(),
+        &mut app.get_conn().await,
         &app.auth_service,
         &unique_name("wsnotif"),
     );
-    test_db::cleanup(&mut app.get_conn());
+    test_db::cleanup(&mut app.get_conn().await);
 
     let response = app
         .server
@@ -162,7 +162,7 @@ async fn test_notifications_ws_endpoint_exists() {
 #[serial]
 async fn test_notifications_ws_requires_auth() {
     let app = TestApp::spawn().await;
-    test_db::cleanup(&mut app.get_conn());
+    test_db::cleanup(&mut app.get_conn().await);
 
     let response = app
         .server
@@ -189,11 +189,11 @@ async fn test_notifications_ws_requires_auth() {
 async fn test_active_sessions_ws_endpoint_exists() {
     let app = TestApp::spawn().await;
     let admin = create_admin_user(
-        &mut app.get_conn(),
+        &mut app.get_conn().await,
         &app.auth_service,
         &unique_name("wsactivesessions"),
     );
-    test_db::cleanup(&mut app.get_conn());
+    test_db::cleanup(&mut app.get_conn().await);
 
     let response = app
         .server
@@ -218,7 +218,7 @@ async fn test_active_sessions_ws_endpoint_exists() {
 #[serial]
 async fn test_active_sessions_ws_requires_auth() {
     let app = TestApp::spawn().await;
-    test_db::cleanup(&mut app.get_conn());
+    test_db::cleanup(&mut app.get_conn().await);
 
     let response = app
         .server

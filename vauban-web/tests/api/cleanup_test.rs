@@ -21,11 +21,11 @@ use vauban_web::schema::{api_keys, auth_sessions};
 #[serial]
 async fn test_cleanup_expired_auth_sessions() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create test user
     let username = unique_name("test_cleanup_sess");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
 
     // Create an expired session (expired 1 hour ago)
     let expired_uuid = create_expired_session(&mut conn, user_id, "expired_token_1");
@@ -68,7 +68,7 @@ async fn test_cleanup_expired_auth_sessions() {
     assert!(valid_exists, "Valid session should still exist");
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test that valid (non-expired) sessions are NOT deleted.
@@ -76,11 +76,11 @@ async fn test_cleanup_expired_auth_sessions() {
 #[serial]
 async fn test_cleanup_preserves_valid_sessions() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create test user
     let username = unique_name("test_preserve_sess");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
 
     // Create multiple valid sessions
     let uuid1 = create_valid_session(&mut conn, user_id, "valid_1");
@@ -103,7 +103,7 @@ async fn test_cleanup_preserves_valid_sessions() {
     assert_eq!(count, 3, "All 3 valid sessions should still exist");
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 // =============================================================================
@@ -115,14 +115,14 @@ async fn test_cleanup_preserves_valid_sessions() {
 #[serial]
 async fn test_cleanup_expired_api_keys() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create test user
     let username = unique_name("test_cleanup_keys");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
 
     // Create an expired API key
-    let expired_uuid = create_expired_api_key(&mut conn, user_id, "expired_key");
+    let expired_uuid = create_expired_api_key(&mut conn, user_id, "expired_key").await;
 
     // Create a valid API key (no expiration)
     let valid_uuid = create_valid_api_key(&mut conn, user_id, "valid_key");
@@ -164,7 +164,7 @@ async fn test_cleanup_expired_api_keys() {
     assert!(valid_exists, "Valid API key should still exist");
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test that inactive API keys are deleted by cleanup.
@@ -172,11 +172,11 @@ async fn test_cleanup_expired_api_keys() {
 #[serial]
 async fn test_cleanup_inactive_api_keys() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create test user
     let username = unique_name("test_inactive_keys");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
 
     // Create an inactive API key
     let inactive_uuid = create_inactive_api_key(&mut conn, user_id, "inactive_key");
@@ -214,7 +214,7 @@ async fn test_cleanup_inactive_api_keys() {
     assert!(active_exists, "Active API key should still exist");
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test cleanup with no expired data.
@@ -222,11 +222,11 @@ async fn test_cleanup_inactive_api_keys() {
 #[serial]
 async fn test_cleanup_with_no_expired_data() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create test user with only valid data
     let username = unique_name("test_no_expired");
-    let user_id = create_simple_user(&mut conn, &username);
+    let user_id = create_simple_user(&mut conn, &username).await;
 
     create_valid_session(&mut conn, user_id, "valid_sess");
     create_valid_api_key(&mut conn, user_id, "valid_key");
@@ -251,7 +251,7 @@ async fn test_cleanup_with_no_expired_data() {
     assert_eq!(keys_deleted, 0, "Should not delete any API keys");
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 // =============================================================================

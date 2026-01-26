@@ -26,13 +26,13 @@ struct AssetGroupFormData {
 #[serial]
 async fn test_update_asset_group_success() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create admin and asset group
     let admin_name = unique_name("test_admin_grp");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
-    let group_uuid = create_test_asset_group(&mut conn, &unique_name("test-group"));
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("test-group")).await;
     let csrf_token = app.generate_csrf_token();
 
     // Execute: POST /api/v1/assets/groups/{uuid} with form data
@@ -62,7 +62,7 @@ async fn test_update_asset_group_success() {
     );
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test update non-existent asset group.
@@ -70,11 +70,11 @@ async fn test_update_asset_group_success() {
 #[serial]
 async fn test_update_asset_group_not_found() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create admin
     let admin_name = unique_name("test_admin_grp404");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
     let csrf_token = app.generate_csrf_token();
 
     let fake_uuid = Uuid::new_v4();
@@ -107,7 +107,7 @@ async fn test_update_asset_group_not_found() {
     );
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test update asset group with invalid data.
@@ -115,14 +115,14 @@ async fn test_update_asset_group_not_found() {
 #[serial]
 async fn test_update_asset_group_invalid_data() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create admin and asset group
     let admin_name = unique_name("test_admin_inv_grp");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
     let csrf_token = app.generate_csrf_token();
 
-    let group_uuid = create_test_asset_group(&mut conn, &unique_name("test-invalid-group"));
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("test-invalid-group")).await;
 
     // Execute: POST /api/v1/assets/groups/{uuid} with invalid data (empty strings)
     let form = AssetGroupFormData {
@@ -152,7 +152,7 @@ async fn test_update_asset_group_invalid_data() {
     );
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 // =============================================================================
@@ -164,14 +164,14 @@ async fn test_update_asset_group_invalid_data() {
 #[serial]
 async fn test_api_list_asset_groups() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create admin
     let admin_name = unique_name("api_list_grp_admin");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
     // Create a test group to ensure at least one exists
-    let _group_uuid = create_test_asset_group(&mut conn, &unique_name("api-list-grp"));
+    let _group_uuid = create_test_asset_group(&mut conn, &unique_name("api-list-grp")).await;
 
     // Execute: GET /api/v1/assets/groups
     let response = app
@@ -194,7 +194,7 @@ async fn test_api_list_asset_groups() {
     assert!(body.contains("\"asset_count\""), "Response should contain asset_count field");
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test list asset groups API requires authentication.
@@ -219,16 +219,16 @@ async fn test_api_list_asset_groups_requires_auth() {
 #[serial]
 async fn test_api_list_group_assets() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create admin, group, and assets
     let admin_name = unique_name("api_grp_assets_admin");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_name);
-    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
-    let group_uuid = create_test_asset_group(&mut conn, &unique_name("api-grp-assets"));
-    let _asset1_id = create_test_asset_in_group(&mut conn, &unique_name("api-asset1"), admin_id, &group_uuid);
-    let _asset2_id = create_test_asset_in_group(&mut conn, &unique_name("api-asset2"), admin_id, &group_uuid);
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("api-grp-assets")).await;
+    let _asset1_id = create_test_asset_in_group(&mut conn, &unique_name("api-asset1"), admin_id, &group_uuid).await;
+    let _asset2_id = create_test_asset_in_group(&mut conn, &unique_name("api-asset2"), admin_id, &group_uuid).await;
 
     // Execute: GET /api/v1/assets/groups/{uuid}/assets
     let response = app
@@ -247,7 +247,7 @@ async fn test_api_list_group_assets() {
     assert!(body.contains("asset_type"), "Response should contain asset_type field");
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test list assets in a group API - group not found.
@@ -255,11 +255,11 @@ async fn test_api_list_group_assets() {
 #[serial]
 async fn test_api_list_group_assets_not_found() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create admin
     let admin_name = unique_name("api_grp_assets_404");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
     let fake_uuid = Uuid::new_v4();
 
@@ -275,7 +275,7 @@ async fn test_api_list_group_assets_not_found() {
     assert_eq!(status, 404, "Expected 404 for non-existent group, got {}", status);
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test list assets in a group API requires authentication.
@@ -283,9 +283,9 @@ async fn test_api_list_group_assets_not_found() {
 #[serial]
 async fn test_api_list_group_assets_requires_auth() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
-    let group_uuid = create_test_asset_group(&mut conn, &unique_name("api-grp-auth"));
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("api-grp-auth")).await;
 
     // Execute: GET /api/v1/assets/groups/{uuid}/assets without auth
     let response = app
@@ -298,7 +298,7 @@ async fn test_api_list_group_assets_requires_auth() {
     assert_eq!(status, 401, "Expected 401 without auth, got {}", status);
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Test list assets in an empty group.
@@ -306,13 +306,13 @@ async fn test_api_list_group_assets_requires_auth() {
 #[serial]
 async fn test_api_list_group_assets_empty() {
     let app = TestApp::spawn().await;
-    let mut conn = app.get_conn();
+    let mut conn = app.get_conn().await;
 
     // Setup: create admin and empty group
     let admin_name = unique_name("api_grp_empty_admin");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name);
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
-    let group_uuid = create_test_asset_group(&mut conn, &unique_name("api-grp-empty"));
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("api-grp-empty")).await;
 
     // Execute: GET /api/v1/assets/groups/{uuid}/assets
     let response = app
@@ -329,5 +329,5 @@ async fn test_api_list_group_assets_empty() {
     assert_eq!(body.trim(), "[]", "Expected empty array for empty group");
 
     // Cleanup
-    test_db::cleanup(&mut conn);
+    test_db::cleanup(&mut conn).await;
 }
