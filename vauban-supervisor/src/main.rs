@@ -526,6 +526,26 @@ mod tests {
     use super::*;
     use shared::messages::ServiceStats;
 
+    // ==================== Test Helpers ====================
+
+    /// Get the path to the workspace root config/ directory for tests.
+    fn test_config_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("Failed to get workspace root")
+            .join("config")
+    }
+
+    /// Load configuration from the real config files for tests.
+    ///
+    /// This ensures tests validate the actual configuration files,
+    /// not a hardcoded fallback that could become out of sync.
+    fn test_config() -> config::SupervisorConfig {
+        let config_dir = test_config_dir();
+        config::SupervisorConfig::load_from_dir(&config_dir)
+            .expect("Failed to load config from config/ directory. Ensure config/default.toml exists.")
+    }
+
     // ==================== PipeTopology Tests ====================
 
     #[test]
@@ -728,7 +748,7 @@ mod tests {
 
     #[test]
     fn test_config_service_keys_match_topology() {
-        let config = config::SupervisorConfig::default_development().unwrap();
+        let config = test_config();
         
         // All services in topology should be configurable
         let service_keys: std::collections::HashSet<_> = TOPOLOGY
@@ -900,7 +920,7 @@ mod tests {
 
     #[test]
     fn test_heartbeat_multiple_missed_triggers_restart() {
-        let config = config::SupervisorConfig::default_development().unwrap();
+        let config = test_config();
         let max_missed = config.supervisor.watchdog.max_missed_heartbeats;
         
         // Create state with max_missed - 1 already missed
@@ -1000,7 +1020,7 @@ mod tests {
 
     #[test]
     fn test_heartbeat_interval_config() {
-        let config = config::SupervisorConfig::default_development().unwrap();
+        let config = test_config();
         
         // Verify reasonable defaults
         assert!(

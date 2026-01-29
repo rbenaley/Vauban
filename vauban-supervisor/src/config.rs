@@ -169,7 +169,7 @@ impl SupervisorConfig {
     /// Load configuration from a directory containing TOML files.
     ///
     /// Loads default.toml first, then overlays environment-specific config.
-    fn load_from_dir(config_dir: &Path) -> Result<Self> {
+    pub fn load_from_dir(config_dir: &Path) -> Result<Self> {
         // Determine environment from VAUBAN_ENVIRONMENT or default to development
         let environment = std::env::var("VAUBAN_ENVIRONMENT")
             .map(|e| match e.to_lowercase().as_str() {
@@ -277,57 +277,6 @@ impl SupervisorConfig {
         None
     }
 
-    /// Create default development configuration.
-    /// Used by tests and as fallback when no config file is found.
-    #[allow(dead_code)]
-    pub fn default_development() -> Result<Self> {
-        let toml_str = r#"
-[supervisor]
-environment = "development"
-bin_path = "./target/debug"
-log_level = "debug"
-
-[supervisor.watchdog]
-heartbeat_interval_secs = 5
-heartbeat_timeout_secs = 2
-max_missed_heartbeats = 3
-max_respawns_per_hour = 10
-
-[defaults]
-uid = 0
-gid = 0
-
-[services.audit]
-name = "vauban-audit"
-binary = "vauban-audit"
-
-[services.vault]
-name = "vauban-vault"
-binary = "vauban-vault"
-
-[services.rbac]
-name = "vauban-rbac"
-binary = "vauban-rbac"
-
-[services.auth]
-name = "vauban-auth"
-binary = "vauban-auth"
-
-[services.proxy_ssh]
-name = "vauban-proxy-ssh"
-binary = "vauban-proxy-ssh"
-
-[services.proxy_rdp]
-name = "vauban-proxy-rdp"
-binary = "vauban-proxy-rdp"
-
-[services.web]
-name = "vauban-web"
-binary = "vauban-web"
-"#;
-        toml::from_str(toml_str).context("Failed to parse default configuration")
-    }
-
     /// Get ordered list of services for startup.
     ///
     /// Returns service keys in dependency order.
@@ -349,11 +298,31 @@ binary = "vauban-web"
 mod tests {
     use super::*;
 
-    // ==================== Default Development Config Tests ====================
+    // ==================== Test Helpers ====================
+
+    /// Get the path to the workspace root config/ directory for tests.
+    fn test_config_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("Failed to get workspace root")
+            .join("config")
+    }
+
+    /// Load configuration from the real config files for tests.
+    ///
+    /// This ensures tests validate the actual configuration files,
+    /// not a hardcoded fallback that could become out of sync.
+    fn test_config() -> SupervisorConfig {
+        let config_dir = test_config_dir();
+        SupervisorConfig::load_from_dir(&config_dir)
+            .expect("Failed to load config from config/ directory. Ensure config/default.toml exists.")
+    }
+
+    // ==================== Development Config Tests ====================
 
     #[test]
-    fn test_default_development_config() {
-        let config = SupervisorConfig::default_development().unwrap();
+    fn test_development_config() {
+        let config = test_config();
         
         assert!(config.supervisor.environment.is_development());
         assert_eq!(config.defaults.uid, 0);
@@ -362,20 +331,20 @@ mod tests {
     }
 
     #[test]
-    fn test_default_development_bin_path() {
-        let config = SupervisorConfig::default_development().unwrap();
+    fn test_development_bin_path() {
+        let config = test_config();
         assert_eq!(config.supervisor.bin_path, "./target/debug");
     }
 
     #[test]
-    fn test_default_development_log_level() {
-        let config = SupervisorConfig::default_development().unwrap();
+    fn test_development_log_level() {
+        let config = test_config();
         assert_eq!(config.supervisor.log_level, "debug");
     }
 
     #[test]
-    fn test_default_development_watchdog_config() {
-        let config = SupervisorConfig::default_development().unwrap();
+    fn test_development_watchdog_config() {
+        let config = test_config();
         assert_eq!(config.supervisor.watchdog.heartbeat_interval_secs, 5);
         assert_eq!(config.supervisor.watchdog.heartbeat_timeout_secs, 2);
         assert_eq!(config.supervisor.watchdog.max_missed_heartbeats, 3);
@@ -383,8 +352,8 @@ mod tests {
     }
 
     #[test]
-    fn test_default_development_all_services_present() {
-        let config = SupervisorConfig::default_development().unwrap();
+    fn test_development_all_services_present() {
+        let config = test_config();
         
         assert!(config.services.contains_key("audit"));
         assert!(config.services.contains_key("vault"));
@@ -399,7 +368,7 @@ mod tests {
 
     #[test]
     fn test_effective_uid_development() {
-        let config = SupervisorConfig::default_development().unwrap();
+        let config = test_config();
         
         // In development, effective_uid should return None (don't change)
         assert_eq!(config.effective_uid("audit"), None);
@@ -408,7 +377,7 @@ mod tests {
 
     #[test]
     fn test_effective_gid_development() {
-        let config = SupervisorConfig::default_development().unwrap();
+        let config = test_config();
         
         // In development, effective_gid should return None (don't change)
         assert_eq!(config.effective_gid("audit"), None);
@@ -417,7 +386,7 @@ mod tests {
 
     #[test]
     fn test_effective_uid_unknown_service() {
-        let config = SupervisorConfig::default_development().unwrap();
+        let config = test_config();
         
         // Unknown service should return None
         assert_eq!(config.effective_uid("unknown"), None);
@@ -425,7 +394,7 @@ mod tests {
 
     #[test]
     fn test_effective_gid_unknown_service() {
-        let config = SupervisorConfig::default_development().unwrap();
+        let config = test_config();
         
         // Unknown service should return None
         assert_eq!(config.effective_gid("unknown"), None);
@@ -435,7 +404,7 @@ mod tests {
 
     #[test]
     fn test_binary_path() {
-        let config = SupervisorConfig::default_development().unwrap();
+        let config = test_config();
         
         // binary_path returns an absolute path
         let path = config.binary_path("audit");
@@ -446,7 +415,7 @@ mod tests {
 
     #[test]
     fn test_binary_path_all_services() {
-        let config = SupervisorConfig::default_development().unwrap();
+        let config = test_config();
         
         let services = ["audit", "vault", "rbac", "auth", "proxy_ssh", "proxy_rdp", "web"];
         for service in services {
@@ -459,7 +428,7 @@ mod tests {
 
     #[test]
     fn test_binary_path_unknown_service() {
-        let config = SupervisorConfig::default_development().unwrap();
+        let config = test_config();
         
         let path = config.binary_path("nonexistent");
         assert!(path.is_none());
@@ -469,7 +438,7 @@ mod tests {
 
     #[test]
     fn test_effective_workdir_development() {
-        let config = SupervisorConfig::default_development().unwrap();
+        let config = test_config();
         
         // In development, workdir should be None (run from workspace root)
         // This ensures all relative paths in configuration work correctly
@@ -479,7 +448,7 @@ mod tests {
 
     #[test]
     fn test_effective_workdir_all_services_development() {
-        let config = SupervisorConfig::default_development().unwrap();
+        let config = test_config();
         
         let services = ["audit", "vault", "rbac", "auth", "proxy_ssh", "proxy_rdp", "web"];
         
@@ -495,7 +464,7 @@ mod tests {
 
     #[test]
     fn test_effective_workdir_unknown_service() {
-        let config = SupervisorConfig::default_development().unwrap();
+        let config = test_config();
         
         let workdir = config.effective_workdir("nonexistent");
         assert!(workdir.is_none());
@@ -508,7 +477,7 @@ mod tests {
     /// "vauban-web/vauban-web/certs/..." which is incorrect.
     #[test]
     fn test_development_workdir_none_prevents_path_doubling() {
-        let config = SupervisorConfig::default_development().unwrap();
+        let config = test_config();
         
         // Critical: web service must NOT have a workdir in development
         // Otherwise paths like "vauban-web/certs/..." would fail
@@ -525,7 +494,7 @@ mod tests {
 
     #[test]
     fn test_startup_order() {
-        let config = SupervisorConfig::default_development().unwrap();
+        let config = test_config();
         let order = config.startup_order();
         
         assert_eq!(order.len(), 7);
@@ -535,7 +504,7 @@ mod tests {
 
     #[test]
     fn test_startup_order_dependencies() {
-        let config = SupervisorConfig::default_development().unwrap();
+        let config = test_config();
         let order = config.startup_order();
         
         // Verify dependency order
@@ -573,7 +542,7 @@ mod tests {
 
     #[test]
     fn test_service_config_name() {
-        let config = SupervisorConfig::default_development().unwrap();
+        let config = test_config();
         
         let audit = config.services.get("audit").unwrap();
         assert_eq!(audit.name, "vauban-audit");
@@ -582,7 +551,7 @@ mod tests {
 
     #[test]
     fn test_service_config_no_uid_gid_in_development() {
-        let config = SupervisorConfig::default_development().unwrap();
+        let config = test_config();
         
         for (_, service) in &config.services {
             assert!(service.uid.is_none());
@@ -592,24 +561,14 @@ mod tests {
 
     // ==================== Load Config Tests ====================
 
-    /// Get the path to the workspace root config/ directory for tests.
-    fn test_config_dir() -> std::path::PathBuf {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("Failed to get workspace root")
-            .join("config")
-    }
-
     #[test]
     fn test_load_from_config_dir() {
         // Load from the centralized config directory
         let config_dir = test_config_dir();
-        if config_dir.exists() {
-            let config = SupervisorConfig::load_from_dir(&config_dir);
-            assert!(config.is_ok(), "Failed to load config: {:?}", config.err());
-            let config = config.unwrap();
-            assert!(config.supervisor.environment.is_development());
-        }
+        let config = SupervisorConfig::load_from_dir(&config_dir);
+        assert!(config.is_ok(), "Failed to load config: {:?}", config.err());
+        let config = config.unwrap();
+        assert!(config.supervisor.environment.is_development());
     }
 
     #[test]
