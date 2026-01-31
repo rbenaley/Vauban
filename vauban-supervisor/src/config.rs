@@ -66,6 +66,13 @@ pub struct WatchdogConfig {
     pub heartbeat_timeout_secs: u64,
     pub max_missed_heartbeats: u32,
     pub max_respawns_per_hour: u32,
+    /// Maximum time to wait for drain completion (default: 30s per Section 9.2)
+    #[serde(default = "default_drain_timeout")]
+    pub drain_timeout_secs: u64,
+}
+
+fn default_drain_timeout() -> u64 {
+    30
 }
 
 /// Default credentials for development mode.
@@ -349,6 +356,7 @@ mod tests {
         assert_eq!(config.supervisor.watchdog.heartbeat_timeout_secs, 2);
         assert_eq!(config.supervisor.watchdog.max_missed_heartbeats, 3);
         assert_eq!(config.supervisor.watchdog.max_respawns_per_hour, 10);
+        assert_eq!(config.supervisor.watchdog.drain_timeout_secs, 30);
     }
 
     #[test]

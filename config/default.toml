@@ -25,6 +25,7 @@ heartbeat_interval_secs = 5
 heartbeat_timeout_secs = 2
 max_missed_heartbeats = 3
 max_respawns_per_hour = 10
+drain_timeout_secs = 30
 
 # Default credentials for services
 # When uid/gid are 0, the current user is used (development mode).

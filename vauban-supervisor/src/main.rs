@@ -13,11 +13,11 @@ mod config;
 use anyhow::{Context, Result};
 use config::SupervisorConfig;
 use shared::ipc::IpcChannel;
-use shared::messages::{ControlMessage, Message, Service};
+use shared::messages::{ControlMessage, Message, Service, ServiceStats};
 use std::collections::HashMap;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Runtime state for a running child service.
 struct ChildState {
@@ -25,8 +25,7 @@ struct ChildState {
     service_key: String,
     /// IPC channel to communicate with this child.
     channel: IpcChannel,
-    /// Last successful heartbeat.
-    #[allow(dead_code)] // Will be used when heartbeat response is implemented
+    /// Last successful heartbeat timestamp.
     last_pong: Instant,
     /// Number of missed heartbeats.
     missed_heartbeats: u32,
@@ -36,6 +35,12 @@ struct ChildState {
     respawn_count: u32,
     /// Last respawn timestamp.
     last_respawn: Instant,
+    /// Stats from the last successful Pong response.
+    last_stats: Option<ServiceStats>,
+    /// Whether this service is currently draining.
+    is_draining: bool,
+    /// When drain was initiated for this service.
+    drain_started: Option<Instant>,
 }
 
 /// Pipe connection topology.
@@ -155,6 +160,9 @@ fn run_supervisor() -> Result<()> {
                     heartbeat_seq: 0,
                     respawn_count: 0,
                     last_respawn: Instant::now(),
+                    last_stats: None,
+                    is_draining: false,
+                    drain_started: None,
                 });
             }
             Err(e) => {
@@ -333,9 +341,19 @@ fn watchdog_loop(
 
         // Check for unresponsive children
         for (service_key, state) in children.iter_mut() {
-            if state.missed_heartbeats >= max_missed_heartbeats {
-                warn!("{} is unresponsive, initiating restart", service_key);
-                kill_and_respawn(state, config);
+            match should_force_restart(state, max_missed_heartbeats) {
+                RestartDecision::NotNeeded => {}
+                RestartDecision::DrainFirst { active, pending } => {
+                    warn!(
+                        "{} is unresponsive with active work (connections={}, pending={}), draining first",
+                        service_key, active, pending
+                    );
+                    drain_and_restart(state, config);
+                }
+                RestartDecision::ForceNow => {
+                    warn!("{} is unresponsive, forcing restart", service_key);
+                    kill_and_respawn(state, config);
+                }
             }
         }
 
@@ -401,11 +419,24 @@ fn send_heartbeat(service_key: &str, state: &mut ChildState) {
         Ok(ready_indices) if !ready_indices.is_empty() => {
             // Data available, try to read the response
             match state.channel.recv() {
-                Ok(Message::Control(ControlMessage::Pong { seq, stats: _ })) => {
+                Ok(Message::Control(ControlMessage::Pong { seq, stats })) => {
                     if seq == state.heartbeat_seq {
-                        // Valid Pong received, reset missed count
+                        // Valid Pong received, reset missed count and store stats
                         state.missed_heartbeats = 0;
                         state.last_pong = Instant::now();
+                        
+                        // Log stats at DEBUG level
+                        debug!(
+                            "{}: pong received (latency: {:?}), uptime={}s, active_connections={}, pending={}",
+                            service_key,
+                            state.last_pong.elapsed(),
+                            stats.uptime_secs,
+                            stats.active_connections,
+                            stats.pending_requests
+                        );
+                        
+                        // Store stats for decision making
+                        state.last_stats = Some(stats);
                     } else {
                         warn!("{}: Pong seq mismatch (expected {}, got {})", 
                               service_key, state.heartbeat_seq, seq);
@@ -442,6 +473,40 @@ fn should_respawn(state: &mut ChildState, max_respawns_per_hour: u32) -> bool {
     }
 
     state.respawn_count < max_respawns_per_hour
+}
+
+/// Decision for how to restart an unresponsive service.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RestartDecision {
+    /// Service is responsive, no restart needed.
+    NotNeeded,
+    /// Service has active connections/requests, drain first before restart.
+    DrainFirst { active: u32, pending: u32 },
+    /// Service can be restarted immediately (no active work).
+    ForceNow,
+}
+
+/// Determine whether and how to restart an unresponsive service.
+///
+/// Uses the stats from the last successful Pong to decide:
+/// - If service has active connections or pending requests, drain first
+/// - Otherwise, force restart immediately
+fn should_force_restart(state: &ChildState, max_missed: u32) -> RestartDecision {
+    if state.missed_heartbeats < max_missed {
+        return RestartDecision::NotNeeded;
+    }
+    
+    // Check stats from last successful Pong
+    if let Some(ref stats) = state.last_stats {
+        if stats.active_connections > 0 || stats.pending_requests > 0 {
+            return RestartDecision::DrainFirst {
+                active: stats.active_connections,
+                pending: stats.pending_requests,
+            };
+        }
+    }
+    
+    RestartDecision::ForceNow
 }
 
 fn kill_and_respawn(state: &mut ChildState, config: &SupervisorConfig) {
@@ -498,10 +563,202 @@ fn respawn_service(state: &mut ChildState, config: &SupervisorConfig) {
             state.missed_heartbeats = 0;
             state.respawn_count += 1;
             state.last_respawn = Instant::now();
+            state.last_pong = Instant::now();
+            state.last_stats = None;
+            state.is_draining = false;
+            state.drain_started = None;
         }
         Err(e) => {
             error!("Failed to respawn {}: {}", state.service_key, e);
         }
+    }
+}
+
+/// Initiate drain on a service and wait for completion before restart.
+///
+/// This sends a Drain message, waits for DrainComplete with pending_requests=0,
+/// then proceeds with the standard kill_and_respawn sequence.
+fn drain_and_restart(state: &mut ChildState, config: &SupervisorConfig) {
+    use shared::ipc::poll_readable;
+    
+    // 1. Send Drain message
+    let drain_msg = Message::Control(ControlMessage::Drain);
+    if let Err(e) = state.channel.send(&drain_msg) {
+        warn!("{}: failed to send Drain, proceeding with kill: {}", state.service_key, e);
+        kill_and_respawn(state, config);
+        return;
+    }
+    
+    state.is_draining = true;
+    state.drain_started = Some(Instant::now());
+    info!("{}: drain initiated", state.service_key);
+    
+    // 2. Wait for DrainComplete or timeout
+    let drain_timeout = Duration::from_secs(config.supervisor.watchdog.drain_timeout_secs);
+    let fds = [state.channel.read_fd()];
+    
+    while state.drain_started.unwrap().elapsed() < drain_timeout {
+        // Poll for DrainComplete message (500ms timeout per poll)
+        match poll_readable(&fds, 500) {
+            Ok(ready) if !ready.is_empty() => {
+                match state.channel.recv() {
+                    Ok(Message::Control(ControlMessage::DrainComplete { pending_requests })) => {
+                        if pending_requests == 0 {
+                            info!("{}: drain complete", state.service_key);
+                            break;
+                        }
+                        debug!("{}: draining, {} requests pending", state.service_key, pending_requests);
+                    }
+                    Ok(Message::Control(ControlMessage::Pong { seq: _, stats })) => {
+                        // Service is still responding to heartbeats during drain
+                        state.last_stats = Some(stats);
+                    }
+                    Ok(_) => {
+                        // Other message types, ignore during drain
+                    }
+                    Err(e) => {
+                        warn!("{}: error receiving during drain: {}", state.service_key, e);
+                        break;
+                    }
+                }
+            }
+            Ok(_) => {
+                // Poll timeout, continue waiting
+            }
+            Err(e) => {
+                warn!("{}: poll error during drain: {}", state.service_key, e);
+                break;
+            }
+        }
+    }
+    
+    if state.drain_started.unwrap().elapsed() >= drain_timeout {
+        warn!("{}: drain timeout after {:?}, forcing restart", 
+              state.service_key, drain_timeout);
+    }
+    
+    // 3. Send Shutdown and proceed with restart
+    let shutdown_msg = Message::Control(ControlMessage::Shutdown);
+    let _ = state.channel.send(&shutdown_msg);
+    
+    kill_and_respawn(state, config);
+}
+
+/// Frontend services: drained in parallel (no dependencies between them)
+#[allow(dead_code)] // Will be used when graceful shutdown is fully implemented
+const FRONTEND_SERVICES: &[&str] = &["web", "proxy_rdp", "proxy_ssh"];
+
+/// Backend services: drained sequentially after frontend completes
+/// Order matters: audit must be last to capture all events
+#[allow(dead_code)] // Will be used when graceful shutdown is fully implemented
+const BACKEND_SERVICES: &[&str] = &["auth", "rbac", "vault", "audit"];
+
+/// Gracefully shutdown all services respecting dependencies.
+///
+/// Phase 1: Drain all frontend services in parallel, wait for completion
+/// Phase 2: Drain backend services sequentially (audit last)
+/// Phase 3: Send Shutdown to all
+#[allow(dead_code)] // Will be used when graceful shutdown is fully implemented
+fn graceful_shutdown_all(children: &mut HashMap<String, ChildState>, config: &SupervisorConfig) {
+    use shared::ipc::poll_readable;
+    
+    let drain_timeout = Duration::from_secs(config.supervisor.watchdog.drain_timeout_secs);
+    
+    // Phase 1: Drain all frontend services simultaneously (parallel)
+    info!("Phase 1: Draining frontend services (web, proxy_rdp, proxy_ssh)");
+    for key in FRONTEND_SERVICES {
+        if let Some(state) = children.get_mut(*key) {
+            let drain_msg = Message::Control(ControlMessage::Drain);
+            if let Err(e) = state.channel.send(&drain_msg) {
+                warn!("{}: failed to send Drain: {}", key, e);
+                continue;
+            }
+            state.is_draining = true;
+            state.drain_started = Some(Instant::now());
+            info!("{}: drain initiated", key);
+        }
+    }
+    
+    // Wait for ALL frontend services to complete their active connections
+    let start = Instant::now();
+    let mut frontend_complete = [false; 3]; // web, proxy_rdp, proxy_ssh
+    
+    while start.elapsed() < drain_timeout {
+        let mut all_complete = true;
+        
+        for (i, key) in FRONTEND_SERVICES.iter().enumerate() {
+            if frontend_complete[i] {
+                continue;
+            }
+            
+            if let Some(state) = children.get_mut(*key) {
+                let fds = [state.channel.read_fd()];
+                if let Ok(ready) = poll_readable(&fds, 100) {
+                    if !ready.is_empty() {
+                        if let Ok(Message::Control(ControlMessage::DrainComplete { pending_requests })) 
+                            = state.channel.recv() 
+                        {
+                            if pending_requests == 0 {
+                                info!("{}: drain complete", key);
+                                frontend_complete[i] = true;
+                            } else {
+                                debug!("{}: draining, {} pending", key, pending_requests);
+                            }
+                        }
+                    }
+                }
+            }
+            
+            if !frontend_complete[i] {
+                all_complete = false;
+            }
+        }
+        
+        if all_complete {
+            break;
+        }
+        
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    
+    if start.elapsed() >= drain_timeout {
+        warn!("Frontend drain timeout after {:?}", drain_timeout);
+    }
+    
+    // Phase 2: Drain backend services sequentially (audit MUST be last)
+    info!("Phase 2: Draining backend services (auth, rbac, vault, audit)");
+    for key in BACKEND_SERVICES {
+        if let Some(state) = children.get_mut(*key) {
+            let drain_msg = Message::Control(ControlMessage::Drain);
+            if let Err(e) = state.channel.send(&drain_msg) {
+                warn!("{}: failed to send Drain: {}", key, e);
+                continue;
+            }
+            
+            // Wait for this backend service to complete (quick, they're stateless)
+            let fds = [state.channel.read_fd()];
+            let backend_start = Instant::now();
+            while backend_start.elapsed() < Duration::from_secs(5) {
+                if let Ok(ready) = poll_readable(&fds, 1000) {
+                    if !ready.is_empty() {
+                        if let Ok(Message::Control(ControlMessage::DrainComplete { pending_requests })) 
+                            = state.channel.recv() 
+                        {
+                            if pending_requests == 0 {
+                                info!("{}: drain complete", key);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // Phase 3: Send Shutdown to all
+    info!("Phase 3: Sending Shutdown to all services");
+    for state in children.values_mut() {
+        let _ = state.channel.send(&Message::Control(ControlMessage::Shutdown));
     }
 }
 
@@ -662,6 +919,9 @@ mod tests {
             heartbeat_seq: 0,
             respawn_count: 0,
             last_respawn: Instant::now(),
+            last_stats: None,
+            is_draining: false,
+            drain_started: None,
         };
         
         // First respawn should always be allowed
@@ -679,6 +939,9 @@ mod tests {
             heartbeat_seq: 0,
             respawn_count: 5,
             last_respawn: Instant::now(),
+            last_stats: None,
+            is_draining: false,
+            drain_started: None,
         };
         
         // Under limit (5 < 10), should be allowed
@@ -696,6 +959,9 @@ mod tests {
             heartbeat_seq: 0,
             respawn_count: 10,
             last_respawn: Instant::now(),
+            last_stats: None,
+            is_draining: false,
+            drain_started: None,
         };
         
         // At limit (10 >= 10), should NOT be allowed
@@ -713,6 +979,9 @@ mod tests {
             heartbeat_seq: 0,
             respawn_count: 15,
             last_respawn: Instant::now(),
+            last_stats: None,
+            is_draining: false,
+            drain_started: None,
         };
         
         // Over limit (15 >= 10), should NOT be allowed
@@ -721,6 +990,132 @@ mod tests {
 
     // Note: Testing reset after 1 hour would require time manipulation
     // which is complex. We trust the Duration comparison works correctly.
+
+    // ==================== should_force_restart Tests ====================
+
+    #[test]
+    fn test_should_force_restart_not_needed() {
+        let state = ChildState {
+            pid: 12345,
+            service_key: "test".to_string(),
+            channel: IpcChannel::pair().unwrap().0,
+            last_pong: Instant::now(),
+            missed_heartbeats: 1, // Below threshold
+            heartbeat_seq: 5,
+            respawn_count: 0,
+            last_respawn: Instant::now(),
+            last_stats: None,
+            is_draining: false,
+            drain_started: None,
+        };
+        
+        // With max_missed = 3, and only 1 missed, should not restart
+        assert_eq!(should_force_restart(&state, 3), RestartDecision::NotNeeded);
+    }
+
+    #[test]
+    fn test_should_force_restart_force_now_no_stats() {
+        let state = ChildState {
+            pid: 12345,
+            service_key: "test".to_string(),
+            channel: IpcChannel::pair().unwrap().0,
+            last_pong: Instant::now(),
+            missed_heartbeats: 5, // Above threshold
+            heartbeat_seq: 10,
+            respawn_count: 0,
+            last_respawn: Instant::now(),
+            last_stats: None, // No stats available
+            is_draining: false,
+            drain_started: None,
+        };
+        
+        // Above threshold with no stats, should force restart
+        assert_eq!(should_force_restart(&state, 3), RestartDecision::ForceNow);
+    }
+
+    #[test]
+    fn test_should_force_restart_force_now_no_active_work() {
+        let state = ChildState {
+            pid: 12345,
+            service_key: "test".to_string(),
+            channel: IpcChannel::pair().unwrap().0,
+            last_pong: Instant::now(),
+            missed_heartbeats: 5, // Above threshold
+            heartbeat_seq: 10,
+            respawn_count: 0,
+            last_respawn: Instant::now(),
+            last_stats: Some(ServiceStats {
+                uptime_secs: 100,
+                requests_processed: 50,
+                requests_failed: 0,
+                active_connections: 0, // No active connections
+                pending_requests: 0,   // No pending requests
+            }),
+            is_draining: false,
+            drain_started: None,
+        };
+        
+        // Above threshold with no active work, should force restart
+        assert_eq!(should_force_restart(&state, 3), RestartDecision::ForceNow);
+    }
+
+    #[test]
+    fn test_should_force_restart_drain_first_active_connections() {
+        let state = ChildState {
+            pid: 12345,
+            service_key: "test".to_string(),
+            channel: IpcChannel::pair().unwrap().0,
+            last_pong: Instant::now(),
+            missed_heartbeats: 5, // Above threshold
+            heartbeat_seq: 10,
+            respawn_count: 0,
+            last_respawn: Instant::now(),
+            last_stats: Some(ServiceStats {
+                uptime_secs: 100,
+                requests_processed: 50,
+                requests_failed: 0,
+                active_connections: 10, // Has active connections
+                pending_requests: 0,
+            }),
+            is_draining: false,
+            drain_started: None,
+        };
+        
+        // Above threshold with active connections, should drain first
+        assert_eq!(
+            should_force_restart(&state, 3),
+            RestartDecision::DrainFirst { active: 10, pending: 0 }
+        );
+    }
+
+    #[test]
+    fn test_should_force_restart_drain_first_pending_requests() {
+        let state = ChildState {
+            pid: 12345,
+            service_key: "test".to_string(),
+            channel: IpcChannel::pair().unwrap().0,
+            last_pong: Instant::now(),
+            missed_heartbeats: 5, // Above threshold
+            heartbeat_seq: 10,
+            respawn_count: 0,
+            last_respawn: Instant::now(),
+            last_stats: Some(ServiceStats {
+                uptime_secs: 100,
+                requests_processed: 50,
+                requests_failed: 0,
+                active_connections: 0,
+                pending_requests: 5, // Has pending requests
+            }),
+            is_draining: false,
+            drain_started: None,
+        };
+        
+        // Above threshold with pending requests, should drain first
+        assert_eq!(
+            should_force_restart(&state, 3),
+            RestartDecision::DrainFirst { active: 0, pending: 5 }
+        );
+    }
 
     // ==================== ChildState Tests ====================
 
@@ -736,12 +1131,18 @@ mod tests {
             heartbeat_seq: 0,
             respawn_count: 0,
             last_respawn: Instant::now(),
+            last_stats: None,
+            is_draining: false,
+            drain_started: None,
         };
         
         assert_eq!(state.pid, 12345);
         assert_eq!(state.service_key, "audit");
         assert_eq!(state.missed_heartbeats, 0);
         assert_eq!(state.respawn_count, 0);
+        assert!(state.last_stats.is_none());
+        assert!(!state.is_draining);
+        assert!(state.drain_started.is_none());
     }
 
     // ==================== Integration-style Tests ====================
@@ -793,6 +1194,9 @@ mod tests {
             heartbeat_seq: 0,
             respawn_count: 0,
             last_respawn: Instant::now(),
+            last_stats: None,
+            is_draining: false,
+            drain_started: None,
         };
         
         // Spawn a thread to simulate the service responding to Ping
@@ -839,6 +1243,9 @@ mod tests {
             heartbeat_seq: 0,
             respawn_count: 0,
             last_respawn: Instant::now(),
+            last_stats: None,
+            is_draining: false,
+            drain_started: None,
         };
         
         // Send heartbeat - service won't respond, will timeout
@@ -863,6 +1270,9 @@ mod tests {
             heartbeat_seq: 0,
             respawn_count: 0,
             last_respawn: Instant::now(),
+            last_stats: None,
+            is_draining: false,
+            drain_started: None,
         };
         
         // Spawn thread to respond with wrong seq
@@ -897,6 +1307,9 @@ mod tests {
             heartbeat_seq: 5,
             respawn_count: 0,
             last_respawn: Instant::now(),
+            last_stats: None,
+            is_draining: false,
+            drain_started: None,
         };
         
         // Spawn thread to respond correctly
@@ -934,6 +1347,9 @@ mod tests {
             heartbeat_seq: 10,
             respawn_count: 0,
             last_respawn: Instant::now(),
+            last_stats: None,
+            is_draining: false,
+            drain_started: None,
         };
         
         // One more miss should trigger restart
@@ -961,6 +1377,9 @@ mod tests {
             heartbeat_seq: 0,
             respawn_count: 0,
             last_respawn: Instant::now(),
+            last_stats: None,
+            is_draining: false,
+            drain_started: None,
         };
         
         // Expected stats from service
@@ -990,8 +1409,15 @@ mod tests {
         
         // Heartbeat was successful
         assert_eq!(state.missed_heartbeats, 0);
-        // Note: Currently we don't store stats in ChildState, 
-        // but we verified the Pong was received correctly
+        
+        // Verify stats are stored in last_stats
+        assert!(state.last_stats.is_some(), "Stats should be stored after successful Pong");
+        let stored_stats = state.last_stats.as_ref().unwrap();
+        assert_eq!(stored_stats.uptime_secs, expected_stats.uptime_secs);
+        assert_eq!(stored_stats.requests_processed, expected_stats.requests_processed);
+        assert_eq!(stored_stats.requests_failed, expected_stats.requests_failed);
+        assert_eq!(stored_stats.active_connections, expected_stats.active_connections);
+        assert_eq!(stored_stats.pending_requests, expected_stats.pending_requests);
     }
 
     // ==================== All Services Heartbeat Contract Tests ====================
@@ -1035,5 +1461,110 @@ mod tests {
             config.supervisor.watchdog.max_missed_heartbeats >= 2,
             "Should allow at least 2 missed heartbeats before restart"
         );
+    }
+
+    // ==================== Drain Configuration Tests ====================
+
+    #[test]
+    fn test_drain_timeout_config() {
+        let config = test_config();
+        
+        // Verify drain timeout is configured (default 30s per Section 9.2)
+        assert_eq!(
+            config.supervisor.watchdog.drain_timeout_secs, 30,
+            "Drain timeout should be 30 seconds by default"
+        );
+    }
+
+    #[test]
+    fn test_drain_order_frontend_services() {
+        // Verify frontend services list for drain order
+        assert_eq!(FRONTEND_SERVICES.len(), 3);
+        assert!(FRONTEND_SERVICES.contains(&"web"));
+        assert!(FRONTEND_SERVICES.contains(&"proxy_rdp"));
+        assert!(FRONTEND_SERVICES.contains(&"proxy_ssh"));
+    }
+
+    #[test]
+    fn test_drain_order_backend_services() {
+        // Verify backend services list for drain order
+        assert_eq!(BACKEND_SERVICES.len(), 4);
+        assert_eq!(BACKEND_SERVICES[0], "auth");
+        assert_eq!(BACKEND_SERVICES[1], "rbac");
+        assert_eq!(BACKEND_SERVICES[2], "vault");
+        assert_eq!(BACKEND_SERVICES[3], "audit"); // Must be last
+    }
+
+    #[test]
+    fn test_drain_order_audit_is_last() {
+        // Critical: audit must be the last service to be drained
+        // to capture all events during proxy session teardown
+        assert_eq!(
+            BACKEND_SERVICES.last(),
+            Some(&"audit"),
+            "Audit must be the last backend service to drain"
+        );
+    }
+
+    #[test]
+    fn test_drain_order_is_reverse_of_startup() {
+        let config = test_config();
+        let startup_order = config.startup_order();
+        
+        // Drain order should be reverse of startup order
+        // Startup: audit, vault, rbac, auth, proxy_ssh, proxy_rdp, web
+        // Drain frontend: web, proxy_rdp, proxy_ssh (parallel)
+        // Drain backend: auth, rbac, vault, audit (sequential)
+        
+        // First service to start should be last to drain
+        assert_eq!(startup_order[0], "audit");
+        assert_eq!(BACKEND_SERVICES.last(), Some(&"audit"));
+        
+        // Last service to start should be first to drain
+        assert_eq!(startup_order.last(), Some(&"web"));
+        assert!(FRONTEND_SERVICES.contains(&"web"));
+    }
+
+    // ==================== Drain State Tests ====================
+
+    #[test]
+    fn test_child_state_drain_fields_initial() {
+        let channel = IpcChannel::pair().unwrap().0;
+        let state = ChildState {
+            pid: 12345,
+            service_key: "test".to_string(),
+            channel,
+            last_pong: Instant::now(),
+            missed_heartbeats: 0,
+            heartbeat_seq: 0,
+            respawn_count: 0,
+            last_respawn: Instant::now(),
+            last_stats: None,
+            is_draining: false,
+            drain_started: None,
+        };
+        
+        // Initial drain state
+        assert!(!state.is_draining);
+        assert!(state.drain_started.is_none());
+    }
+
+    #[test]
+    fn test_restart_decision_variants() {
+        // Test that all RestartDecision variants exist and are usable
+        let not_needed = RestartDecision::NotNeeded;
+        let drain_first = RestartDecision::DrainFirst { active: 5, pending: 3 };
+        let force_now = RestartDecision::ForceNow;
+        
+        assert_eq!(not_needed, RestartDecision::NotNeeded);
+        assert_eq!(drain_first, RestartDecision::DrainFirst { active: 5, pending: 3 });
+        assert_eq!(force_now, RestartDecision::ForceNow);
+    }
+
+    #[test]
+    fn test_restart_decision_is_clone() {
+        let decision = RestartDecision::DrainFirst { active: 10, pending: 5 };
+        let cloned = decision.clone();
+        assert_eq!(decision, cloned);
     }
 }
