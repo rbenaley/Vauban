@@ -179,18 +179,14 @@ fn read_exact_fd(fd: RawFd, buf: &mut [u8]) -> Result<()> {
 pub fn send_fd(socket_fd: RawFd, fd_to_send: RawFd) -> Result<()> {
     use nix::sys::socket::{sendmsg, ControlMessage, MsgFlags};
 
-    // SAFETY: We borrow the fds for the duration of this function.
-    let socket_borrowed = unsafe { BorrowedFd::borrow_raw(socket_fd) };
-    let fd_borrowed = unsafe { BorrowedFd::borrow_raw(fd_to_send) };
-
     // Data to send (at least 1 byte required for SCM_RIGHTS)
     let iov = [io::IoSlice::new(b"F")];
 
-    // Control message with the file descriptor
-    let fds = [fd_borrowed];
+    // Control message with the file descriptor (nix uses RawFd on FreeBSD)
+    let fds = [fd_to_send];
     let cmsg = [ControlMessage::ScmRights(&fds)];
 
-    sendmsg::<()>(socket_borrowed, &iov, &cmsg, MsgFlags::empty(), None)
+    sendmsg::<()>(socket_fd, &iov, &cmsg, MsgFlags::empty(), None)
         .map_err(|e| IpcError::Io(e.into()))?;
 
     Ok(())
@@ -201,9 +197,6 @@ pub fn send_fd(socket_fd: RawFd, fd_to_send: RawFd) -> Result<()> {
 pub fn recv_fd(socket_fd: RawFd) -> Result<OwnedFd> {
     use nix::sys::socket::{recvmsg, ControlMessageOwned, MsgFlags};
 
-    // SAFETY: We borrow the fd for the duration of this function.
-    let socket_borrowed = unsafe { BorrowedFd::borrow_raw(socket_fd) };
-
     // Buffer for data (at least 1 byte)
     let mut buf = [0u8; 1];
     let mut iov = [io::IoSliceMut::new(&mut buf)];
@@ -211,7 +204,7 @@ pub fn recv_fd(socket_fd: RawFd) -> Result<OwnedFd> {
     // Buffer for control messages
     let mut cmsg_buf = nix::cmsg_space!([RawFd; 1]);
 
-    let msg = recvmsg::<()>(socket_borrowed, &mut iov, Some(&mut cmsg_buf), MsgFlags::empty())
+    let msg = recvmsg::<()>(socket_fd, &mut iov, Some(&mut cmsg_buf), MsgFlags::empty())
         .map_err(|e| IpcError::Io(e.into()))?;
 
     if msg.bytes == 0 {
@@ -219,7 +212,9 @@ pub fn recv_fd(socket_fd: RawFd) -> Result<OwnedFd> {
     }
 
     // Extract the file descriptor from control messages
-    for cmsg in msg.cmsgs()? {
+    // Note: cmsgs() may return Result on some platforms, we handle both cases
+    let cmsgs_iter = msg.cmsgs().map_err(|e| IpcError::Io(e.into()))?;
+    for cmsg in cmsgs_iter {
         if let ControlMessageOwned::ScmRights(fds) = cmsg {
             if let Some(&fd) = fds.first() {
                 // SAFETY: The fd was just received via SCM_RIGHTS and is valid.
