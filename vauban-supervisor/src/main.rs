@@ -12,16 +12,20 @@ mod config;
 
 use anyhow::{Context, Result};
 use config::SupervisorConfig;
+use nix::sys::signal::{kill, Signal};
+use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
+use nix::unistd::{execv, fork, setgid, setuid, ForkResult, Gid, Pid, Uid};
 use shared::ipc::IpcChannel;
 use shared::messages::{ControlMessage, Message, Service, ServiceStats};
 use std::collections::HashMap;
+use std::ffi::CString;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 
 /// Runtime state for a running child service.
 struct ChildState {
-    pid: libc::pid_t,
+    pid: i32,
     service_key: String,
     /// IPC channel to communicate with this child.
     channel: IpcChannel,
@@ -235,21 +239,17 @@ fn spawn_child(
     gid: Option<u32>,
     workdir: Option<&str>,
     channel: IpcChannel,
-) -> Result<libc::pid_t> {
-    use std::ffi::CString;
-
+) -> Result<i32> {
     // Get raw FDs before fork (we'll pass them via env vars)
     let read_fd = channel.read_fd();
     let write_fd = channel.write_fd();
 
-    // SAFETY: fork() is a standard POSIX call
-    let pid = unsafe { libc::fork() };
-
-    match pid {
-        -1 => {
-            Err(std::io::Error::last_os_error()).context("fork() failed")
-        }
-        0 => {
+    // SAFETY: fork() is unsafe because it's inherently dangerous in multi-threaded
+    // Rust programs. We ensure safety by:
+    // 1. Only calling async-signal-safe functions in the child before exec
+    // 2. Not using any Rust allocator operations in the child
+    match unsafe { fork() } {
+        Ok(ForkResult::Child) => {
             // Child process
             
             // Change working directory if specified
@@ -261,20 +261,17 @@ fn spawn_child(
             }
             
             // Drop privileges if configured (production mode)
+            // Must set GID before UID
             if let Some(g) = gid {
-                // SAFETY: setgid() is a standard POSIX call
-                let ret = unsafe { libc::setgid(g) };
-                if ret != 0 {
-                    eprintln!("Failed to setgid({}): {}", g, std::io::Error::last_os_error());
+                if let Err(e) = setgid(Gid::from_raw(g)) {
+                    eprintln!("Failed to setgid({}): {}", g, e);
                     std::process::exit(1);
                 }
             }
             
             if let Some(u) = uid {
-                // SAFETY: setuid() is a standard POSIX call
-                let ret = unsafe { libc::setuid(u) };
-                if ret != 0 {
-                    eprintln!("Failed to setuid({}): {}", u, std::io::Error::last_os_error());
+                if let Err(e) = setuid(Uid::from_raw(u)) {
+                    eprintln!("Failed to setuid({}): {}", u, e);
                     std::process::exit(1);
                 }
             }
@@ -296,24 +293,19 @@ fn spawn_child(
                 }
             };
             
-            // argv[0] = binary name
-            let argv: [*const libc::c_char; 2] = [c_path.as_ptr(), std::ptr::null()];
-            
-            // SAFETY: execv is a standard POSIX call. If it succeeds, it doesn't return.
-            // If it fails, we exit with an error.
-            unsafe {
-                libc::execv(c_path.as_ptr(), argv.as_ptr());
-            }
-            
-            // If we get here, exec failed
-            eprintln!("Failed to exec {}: {}", binary_path, std::io::Error::last_os_error());
+            // Execute the binary - execv only returns on error
+            let Err(e) = execv(&c_path, &[&c_path]);
+            eprintln!("Failed to exec {}: {}", binary_path, e);
             std::process::exit(1);
         }
-        child_pid => {
+        Ok(ForkResult::Parent { child }) => {
             // Parent process - drop our copy of the channel
             // The channel FDs are now owned by the child
             drop(channel);
-            Ok(child_pid)
+            Ok(child.as_raw())
+        }
+        Err(e) => {
+            Err(anyhow::anyhow!("fork() failed: {}", e))
         }
     }
 }
@@ -368,33 +360,55 @@ fn reap_children(
     max_respawns_per_hour: u32,
 ) {
     loop {
-        let mut status: libc::c_int = 0;
-        // SAFETY: waitpid() is a standard POSIX call
-        let pid = unsafe { libc::waitpid(-1, &mut status, libc::WNOHANG) };
-
-        if pid <= 0 {
-            break;
-        }
-
-        // Find which service this was
-        for (service_key, state) in children.iter_mut() {
-            if state.pid == pid {
-                if libc::WIFEXITED(status) {
-                    let exit_code = libc::WEXITSTATUS(status);
-                    warn!("{} exited with code {}", service_key, exit_code);
-                } else if libc::WIFSIGNALED(status) {
-                    let signal = libc::WTERMSIG(status);
-                    warn!("{} killed by signal {}", service_key, signal);
+        match waitpid(Pid::from_raw(-1), Some(WaitPidFlag::WNOHANG)) {
+            Ok(WaitStatus::Exited(pid, exit_code)) => {
+                // Find which service this was
+                for (service_key, state) in children.iter_mut() {
+                    if state.pid == pid.as_raw() {
+                        warn!("{} exited with code {}", service_key, exit_code);
+                        
+                        // Respawn if not too many recent respawns
+                        if should_respawn(state, max_respawns_per_hour) {
+                            info!("Respawning {}", service_key);
+                            respawn_service(state, config);
+                        } else {
+                            error!("{} has crashed too many times, not respawning", service_key);
+                        }
+                        break;
+                    }
                 }
-
-                // Respawn if not too many recent respawns
-                if should_respawn(state, max_respawns_per_hour) {
-                    info!("Respawning {}", service_key);
-                    respawn_service(state, config);
-                } else {
-                    error!("{} has crashed too many times, not respawning", service_key);
+            }
+            Ok(WaitStatus::Signaled(pid, signal, _core_dumped)) => {
+                // Find which service this was
+                for (service_key, state) in children.iter_mut() {
+                    if state.pid == pid.as_raw() {
+                        warn!("{} killed by signal {:?}", service_key, signal);
+                        
+                        // Respawn if not too many recent respawns
+                        if should_respawn(state, max_respawns_per_hour) {
+                            info!("Respawning {}", service_key);
+                            respawn_service(state, config);
+                        } else {
+                            error!("{} has crashed too many times, not respawning", service_key);
+                        }
+                        break;
+                    }
                 }
+            }
+            Ok(WaitStatus::StillAlive) => {
+                // No more children to reap
                 break;
+            }
+            Err(nix::errno::Errno::ECHILD) => {
+                // No children
+                break;
+            }
+            Err(e) => {
+                error!("waitpid error: {}", e);
+                break;
+            }
+            _ => {
+                // Other status (stopped, continued), continue reaping
             }
         }
     }
@@ -510,25 +524,25 @@ fn should_force_restart(state: &ChildState, max_missed: u32) -> RestartDecision 
 }
 
 fn kill_and_respawn(state: &mut ChildState, config: &SupervisorConfig) {
+    let pid = Pid::from_raw(state.pid);
+    
     // Send SIGTERM
-    // SAFETY: kill() is a standard POSIX call
-    unsafe { libc::kill(state.pid, libc::SIGTERM) };
+    let _ = kill(pid, Signal::SIGTERM);
 
     // Wait up to 5 seconds
     std::thread::sleep(Duration::from_secs(5));
 
     // Check if still alive
-    let mut status: libc::c_int = 0;
-    // SAFETY: waitpid() is a standard POSIX call
-    let result = unsafe { libc::waitpid(state.pid, &mut status, libc::WNOHANG) };
-
-    if result == 0 {
-        // Still alive, send SIGKILL
-        warn!("{} did not terminate, sending SIGKILL", state.service_key);
-        // SAFETY: kill() is a standard POSIX call
-        unsafe { libc::kill(state.pid, libc::SIGKILL) };
-        // SAFETY: waitpid() is a standard POSIX call
-        unsafe { libc::waitpid(state.pid, &mut status, 0) };
+    match waitpid(pid, Some(WaitPidFlag::WNOHANG)) {
+        Ok(WaitStatus::StillAlive) => {
+            // Still alive, send SIGKILL
+            warn!("{} did not terminate, sending SIGKILL", state.service_key);
+            let _ = kill(pid, Signal::SIGKILL);
+            let _ = waitpid(pid, None); // Wait for termination
+        }
+        _ => {
+            // Process already exited or error
+        }
     }
 
     respawn_service(state, config);

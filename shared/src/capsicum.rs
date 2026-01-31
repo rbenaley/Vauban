@@ -164,13 +164,7 @@ impl CapRights {
 /// Returns an error if entering capability mode fails.
 #[cfg(target_os = "freebsd")]
 pub fn enter_capability_mode() -> Result<()> {
-    // SAFETY: cap_enter() is a FreeBSD system call
-    let ret = unsafe { libc::cap_enter() };
-
-    if ret != 0 {
-        return Err(CapsicumError::EnterFailed(std::io::Error::last_os_error()));
-    }
-
+    capsicum::enter().map_err(CapsicumError::EnterFailed)?;
     tracing::info!("Entered Capsicum capability mode");
     Ok(())
 }
@@ -178,12 +172,7 @@ pub fn enter_capability_mode() -> Result<()> {
 /// Check if the process is currently in capability mode.
 #[cfg(target_os = "freebsd")]
 pub fn in_capability_mode() -> bool {
-    let mut mode: libc::c_uint = 0;
-
-    // SAFETY: cap_getmode() is a FreeBSD system call
-    let ret = unsafe { libc::cap_getmode(&mut mode) };
-
-    ret == 0 && mode != 0
+    capsicum::sandboxed()
 }
 
 /// Limit the rights on a file descriptor.

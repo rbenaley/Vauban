@@ -113,32 +113,27 @@ fn prompt_password(message: &str) -> io::Result<String> {
     // Try to use rpassword-like behavior by disabling echo
     #[cfg(unix)]
     {
-        use std::os::unix::io::AsRawFd;
+        use nix::sys::termios::{tcgetattr, tcsetattr, LocalFlags, SetArg};
 
-        let stdin_fd = io::stdin().as_raw_fd();
-        let mut termios = unsafe {
-            let mut t: libc::termios = std::mem::zeroed();
-            if libc::tcgetattr(stdin_fd, &mut t) == 0 {
-                Some(t)
-            } else {
-                None
+        let stdin = io::stdin();
+
+        // Get current terminal attributes
+        if let Ok(original) = tcgetattr(&stdin) {
+            let mut new_termios = original.clone();
+            new_termios.local_flags.remove(LocalFlags::ECHO);
+
+            // Disable echo
+            if tcsetattr(&stdin, SetArg::TCSANOW, &new_termios).is_ok() {
+                let mut input = String::new();
+                let result = stdin.read_line(&mut input);
+
+                // Restore terminal (always, even on error)
+                let _ = tcsetattr(&stdin, SetArg::TCSANOW, &original);
+                println!(); // New line after hidden input
+
+                result?;
+                return Ok(input.trim().to_string());
             }
-        };
-
-        if let Some(ref mut t) = termios {
-            let original = *t;
-            t.c_lflag &= !libc::ECHO;
-            unsafe { libc::tcsetattr(stdin_fd, libc::TCSANOW, t) };
-
-            let mut input = String::new();
-            let result = io::stdin().read_line(&mut input);
-
-            // Restore terminal
-            unsafe { libc::tcsetattr(stdin_fd, libc::TCSANOW, &original) };
-            println!(); // New line after hidden input
-
-            result?;
-            return Ok(input.trim().to_string());
         }
     }
 

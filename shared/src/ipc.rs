@@ -1,8 +1,10 @@
 //! Unix pipe IPC utilities with SCM_RIGHTS support for file descriptor passing.
 
 use crate::messages::Message;
+use nix::poll::{PollFd, PollFlags, PollTimeout};
+use nix::unistd::{pipe, read, write};
 use std::io;
-use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::unix::io::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use thiserror::Error;
 
 /// Maximum message size (16 KB).
@@ -59,35 +61,20 @@ impl IpcChannel {
     /// Returns (parent_channel, child_channel).
     pub fn pair() -> Result<(Self, Self)> {
         // Create two pipes: one for each direction
-        let mut parent_to_child = [0i32; 2];
-        let mut child_to_parent = [0i32; 2];
+        // nix::unistd::pipe() returns (read_fd, write_fd) as OwnedFd
+        let (p2c_read, p2c_write) = pipe().map_err(|e| IpcError::Io(e.into()))?;
+        let (c2p_read, c2p_write) = pipe().map_err(|e| IpcError::Io(e.into()))?;
 
-        // SAFETY: pipe() is a standard POSIX call
-        unsafe {
-            if libc::pipe(parent_to_child.as_mut_ptr()) != 0 {
-                return Err(IpcError::Io(io::Error::last_os_error()));
-            }
-            if libc::pipe(child_to_parent.as_mut_ptr()) != 0 {
-                libc::close(parent_to_child[0]);
-                libc::close(parent_to_child[1]);
-                return Err(IpcError::Io(io::Error::last_os_error()));
-            }
-        }
-
-        // Parent reads from child_to_parent[0], writes to parent_to_child[1]
-        // Child reads from parent_to_child[0], writes to child_to_parent[1]
-        let parent_channel = unsafe {
-            Self {
-                read_fd: OwnedFd::from_raw_fd(child_to_parent[0]),
-                write_fd: OwnedFd::from_raw_fd(parent_to_child[1]),
-            }
+        // Parent reads from child_to_parent, writes to parent_to_child
+        // Child reads from parent_to_child, writes to child_to_parent
+        let parent_channel = Self {
+            read_fd: c2p_read,
+            write_fd: p2c_write,
         };
 
-        let child_channel = unsafe {
-            Self {
-                read_fd: OwnedFd::from_raw_fd(parent_to_child[0]),
-                write_fd: OwnedFd::from_raw_fd(child_to_parent[1]),
-            }
+        let child_channel = Self {
+            read_fd: p2c_read,
+            write_fd: c2p_write,
         };
 
         Ok((parent_channel, child_channel))
@@ -152,53 +139,35 @@ impl IpcChannel {
 
 /// Write all bytes to a file descriptor.
 fn write_all_fd(fd: RawFd, mut buf: &[u8]) -> Result<()> {
+    // SAFETY: We borrow the fd for the duration of this function.
+    // The caller ensures the fd is valid.
+    let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+    
     while !buf.is_empty() {
-        // SAFETY: write() is a standard POSIX call
-        let n = unsafe { libc::write(fd, buf.as_ptr() as *const libc::c_void, buf.len()) };
-
-        if n < 0 {
-            let err = io::Error::last_os_error();
-            if err.kind() == io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(IpcError::Io(err));
+        match write(borrowed, buf) {
+            Ok(0) => return Err(IpcError::ConnectionClosed),
+            Ok(n) => buf = &buf[n..],
+            Err(nix::errno::Errno::EINTR) => continue,
+            Err(e) => return Err(IpcError::Io(e.into())),
         }
-
-        if n == 0 {
-            return Err(IpcError::ConnectionClosed);
-        }
-
-        buf = &buf[n as usize..];
     }
     Ok(())
 }
 
 /// Read exact number of bytes from a file descriptor.
 fn read_exact_fd(fd: RawFd, buf: &mut [u8]) -> Result<()> {
+    // SAFETY: We borrow the fd for the duration of this function.
+    // The caller ensures the fd is valid.
+    let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+    
     let mut pos = 0;
     while pos < buf.len() {
-        // SAFETY: read() is a standard POSIX call
-        let n = unsafe {
-            libc::read(
-                fd,
-                buf[pos..].as_mut_ptr() as *mut libc::c_void,
-                buf.len() - pos,
-            )
-        };
-
-        if n < 0 {
-            let err = io::Error::last_os_error();
-            if err.kind() == io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(IpcError::Io(err));
+        match read(borrowed, &mut buf[pos..]) {
+            Ok(0) => return Err(IpcError::ConnectionClosed),
+            Ok(n) => pos += n,
+            Err(nix::errno::Errno::EINTR) => continue,
+            Err(e) => return Err(IpcError::Io(e.into())),
         }
-
-        if n == 0 {
-            return Err(IpcError::ConnectionClosed);
-        }
-
-        pos += n as usize;
     }
     Ok(())
 }
@@ -208,38 +177,21 @@ fn read_exact_fd(fd: RawFd, buf: &mut [u8]) -> Result<()> {
 /// This is used to pass sockets between processes (e.g., for connection handoff).
 #[cfg(target_os = "freebsd")]
 pub fn send_fd(socket_fd: RawFd, fd_to_send: RawFd) -> Result<()> {
-    use std::mem;
+    use nix::sys::socket::{sendmsg, ControlMessage, MsgFlags};
 
-    // SAFETY: Standard SCM_RIGHTS implementation
-    unsafe {
-        let mut iov = libc::iovec {
-            iov_base: b"F".as_ptr() as *mut libc::c_void,
-            iov_len: 1,
-        };
+    // SAFETY: We borrow the fds for the duration of this function.
+    let socket_borrowed = unsafe { BorrowedFd::borrow_raw(socket_fd) };
+    let fd_borrowed = unsafe { BorrowedFd::borrow_raw(fd_to_send) };
 
-        // Control message buffer
-        let cmsg_space = libc::CMSG_SPACE(mem::size_of::<RawFd>() as u32) as usize;
-        let mut cmsg_buf = vec![0u8; cmsg_space];
+    // Data to send (at least 1 byte required for SCM_RIGHTS)
+    let iov = [io::IoSlice::new(b"F")];
 
-        let mut msg: libc::msghdr = mem::zeroed();
-        msg.msg_iov = &mut iov;
-        msg.msg_iovlen = 1;
-        msg.msg_control = cmsg_buf.as_mut_ptr() as *mut libc::c_void;
-        msg.msg_controllen = cmsg_space as libc::socklen_t;
+    // Control message with the file descriptor
+    let fds = [fd_borrowed];
+    let cmsg = [ControlMessage::ScmRights(&fds)];
 
-        let cmsg = libc::CMSG_FIRSTHDR(&msg);
-        (*cmsg).cmsg_level = libc::SOL_SOCKET;
-        (*cmsg).cmsg_type = libc::SCM_RIGHTS;
-        (*cmsg).cmsg_len = libc::CMSG_LEN(mem::size_of::<RawFd>() as u32) as libc::socklen_t;
-
-        let fd_ptr = libc::CMSG_DATA(cmsg) as *mut RawFd;
-        *fd_ptr = fd_to_send;
-
-        let ret = libc::sendmsg(socket_fd, &msg, 0);
-        if ret < 0 {
-            return Err(IpcError::Io(io::Error::last_os_error()));
-        }
-    }
+    sendmsg::<()>(socket_borrowed, &iov, &cmsg, MsgFlags::empty(), None)
+        .map_err(|e| IpcError::Io(e.into()))?;
 
     Ok(())
 }
@@ -247,46 +199,36 @@ pub fn send_fd(socket_fd: RawFd, fd_to_send: RawFd) -> Result<()> {
 /// Receive a file descriptor over a Unix socket using SCM_RIGHTS.
 #[cfg(target_os = "freebsd")]
 pub fn recv_fd(socket_fd: RawFd) -> Result<OwnedFd> {
-    use std::mem;
+    use nix::sys::socket::{recvmsg, ControlMessageOwned, MsgFlags};
 
-    // SAFETY: Standard SCM_RIGHTS implementation
-    unsafe {
-        let mut buf = [0u8; 1];
-        let mut iov = libc::iovec {
-            iov_base: buf.as_mut_ptr() as *mut libc::c_void,
-            iov_len: 1,
-        };
+    // SAFETY: We borrow the fd for the duration of this function.
+    let socket_borrowed = unsafe { BorrowedFd::borrow_raw(socket_fd) };
 
-        let cmsg_space = libc::CMSG_SPACE(mem::size_of::<RawFd>() as u32) as usize;
-        let mut cmsg_buf = vec![0u8; cmsg_space];
+    // Buffer for data (at least 1 byte)
+    let mut buf = [0u8; 1];
+    let mut iov = [io::IoSliceMut::new(&mut buf)];
 
-        let mut msg: libc::msghdr = mem::zeroed();
-        msg.msg_iov = &mut iov;
-        msg.msg_iovlen = 1;
-        msg.msg_control = cmsg_buf.as_mut_ptr() as *mut libc::c_void;
-        msg.msg_controllen = cmsg_space as libc::socklen_t;
+    // Buffer for control messages
+    let mut cmsg_buf = nix::cmsg_space!([RawFd; 1]);
 
-        let ret = libc::recvmsg(socket_fd, &mut msg, 0);
-        if ret < 0 {
-            return Err(IpcError::Io(io::Error::last_os_error()));
-        }
-        if ret == 0 {
-            return Err(IpcError::ConnectionClosed);
-        }
+    let msg = recvmsg::<()>(socket_borrowed, &mut iov, Some(&mut cmsg_buf), MsgFlags::empty())
+        .map_err(|e| IpcError::Io(e.into()))?;
 
-        let cmsg = libc::CMSG_FIRSTHDR(&msg);
-        if cmsg.is_null() {
-            return Err(IpcError::InvalidHeader);
-        }
-        if (*cmsg).cmsg_level != libc::SOL_SOCKET || (*cmsg).cmsg_type != libc::SCM_RIGHTS {
-            return Err(IpcError::InvalidHeader);
-        }
-
-        let fd_ptr = libc::CMSG_DATA(cmsg) as *const RawFd;
-        let received_fd = *fd_ptr;
-
-        Ok(OwnedFd::from_raw_fd(received_fd))
+    if msg.bytes == 0 {
+        return Err(IpcError::ConnectionClosed);
     }
+
+    // Extract the file descriptor from control messages
+    for cmsg in msg.cmsgs()? {
+        if let ControlMessageOwned::ScmRights(fds) = cmsg {
+            if let Some(&fd) = fds.first() {
+                // SAFETY: The fd was just received via SCM_RIGHTS and is valid.
+                return Ok(unsafe { OwnedFd::from_raw_fd(fd) });
+            }
+        }
+    }
+
+    Err(IpcError::InvalidHeader)
 }
 
 /// Stub implementations for non-FreeBSD platforms (development).
@@ -308,34 +250,40 @@ pub fn recv_fd(_socket_fd: RawFd) -> Result<OwnedFd> {
 ///
 /// Returns the indices of ready file descriptors.
 pub fn poll_readable(fds: &[RawFd], timeout_ms: i32) -> Result<Vec<usize>> {
-    let mut pollfds: Vec<libc::pollfd> = fds
+    // Create PollFd structs for nix::poll
+    // SAFETY: We borrow the fds for the duration of this function.
+    let mut pollfds: Vec<PollFd> = fds
         .iter()
-        .map(|&fd| libc::pollfd {
-            fd,
-            events: libc::POLLIN,
-            revents: 0,
+        .map(|&fd| {
+            let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+            PollFd::new(borrowed, PollFlags::POLLIN)
         })
         .collect();
 
-    // SAFETY: poll() is a standard POSIX call
-    let ret = unsafe { libc::poll(pollfds.as_mut_ptr(), pollfds.len() as libc::nfds_t, timeout_ms) };
+    // Convert timeout
+    let timeout = if timeout_ms < 0 {
+        PollTimeout::NONE
+    } else {
+        PollTimeout::try_from(timeout_ms as u16).unwrap_or(PollTimeout::MAX)
+    };
 
-    if ret < 0 {
-        let err = io::Error::last_os_error();
-        if err.kind() == io::ErrorKind::Interrupted {
-            return Ok(vec![]);
+    match nix::poll::poll(&mut pollfds, timeout) {
+        Ok(_) => {
+            let ready: Vec<usize> = pollfds
+                .iter()
+                .enumerate()
+                .filter(|(_, pfd)| {
+                    pfd.revents()
+                        .map(|r| r.contains(PollFlags::POLLIN))
+                        .unwrap_or(false)
+                })
+                .map(|(i, _)| i)
+                .collect();
+            Ok(ready)
         }
-        return Err(IpcError::Io(err));
+        Err(nix::errno::Errno::EINTR) => Ok(vec![]),
+        Err(e) => Err(IpcError::Io(e.into())),
     }
-
-    let ready: Vec<usize> = pollfds
-        .iter()
-        .enumerate()
-        .filter(|(_, pfd)| pfd.revents & libc::POLLIN != 0)
-        .map(|(i, _)| i)
-        .collect();
-
-    Ok(ready)
 }
 
 #[cfg(test)]
