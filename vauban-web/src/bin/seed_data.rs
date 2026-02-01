@@ -12,15 +12,18 @@
 //! - 20 approval requests
 //!
 //! This script can be run multiple times without creating duplicates.
+//!
+//! Refactored to use Diesel DSL instead of raw SQL queries for type safety.
 
 use anyhow::{Context, Result};
 use argon2::{Algorithm, Argon2, Params, PasswordHasher, Version, password_hash::SaltString};
-use chrono::{Duration, Utc};
-use diesel::sql_types::{BigInt, Bool, Integer, Nullable, Text};
-use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
+use chrono::{DateTime, Duration, Utc};
+use diesel::dsl::exists;
+use diesel::prelude::*;
 use diesel_async::pooled_connection::AsyncDieselConnectionManager;
 use diesel_async::pooled_connection::deadpool::Pool;
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
+use ipnetwork::IpNetwork;
 use rand::Rng;
 use rand::rngs::OsRng;
 use secrecy::ExposeSecret;
@@ -30,6 +33,92 @@ use vauban_web::config::Config;
 // Import schema
 mod schema {
     include!("../schema.rs");
+}
+
+// ==================== Local Insertable Structs ====================
+// These are used only for seed data generation
+
+/// New user for insertion (local to seed_data).
+#[derive(Debug, Clone, Insertable)]
+#[diesel(table_name = schema::users)]
+struct NewUser {
+    pub uuid: Uuid,
+    pub username: String,
+    pub email: String,
+    pub password_hash: String,
+    pub first_name: Option<String>,
+    pub last_name: Option<String>,
+    pub is_active: bool,
+    pub is_staff: bool,
+    pub is_superuser: bool,
+    pub auth_source: String,
+    pub preferences: serde_json::Value,
+}
+
+/// New asset for insertion (local to seed_data).
+#[derive(Debug, Clone, Insertable, AsChangeset)]
+#[diesel(table_name = schema::assets)]
+struct NewAsset {
+    pub uuid: Uuid,
+    pub name: String,
+    pub hostname: String,
+    pub ip_address: Option<IpNetwork>,
+    pub port: i32,
+    pub asset_type: String,
+    pub status: String,
+    pub os_type: Option<String>,
+    pub os_version: Option<String>,
+    pub description: Option<String>,
+    pub created_by_id: Option<i32>,
+    pub require_mfa: bool,
+    pub require_justification: bool,
+    pub connection_config: serde_json::Value,
+    pub max_session_duration: i32,
+}
+
+/// New proxy session for insertion (local to seed_data).
+#[derive(Debug, Clone, Insertable)]
+#[diesel(table_name = schema::proxy_sessions)]
+struct NewProxySession {
+    pub uuid: Uuid,
+    pub user_id: i32,
+    pub asset_id: i32,
+    pub credential_id: String,
+    pub credential_username: String,
+    pub session_type: String,
+    pub status: String,
+    pub client_ip: IpNetwork,
+    pub connected_at: Option<DateTime<Utc>>,
+    pub disconnected_at: Option<DateTime<Utc>>,
+    pub is_recorded: bool,
+    pub recording_path: Option<String>,
+    pub bytes_sent: i64,
+    pub bytes_received: i64,
+    pub commands_count: i32,
+    pub justification: Option<String>,
+    pub metadata: serde_json::Value,
+}
+
+/// New vauban group for insertion (local to seed_data).
+#[derive(Debug, Clone, Insertable)]
+#[diesel(table_name = schema::vauban_groups)]
+struct NewVaubanGroup {
+    pub uuid: Uuid,
+    pub name: String,
+    pub description: Option<String>,
+    pub source: String,
+}
+
+/// New asset group for insertion (local to seed_data).
+#[derive(Debug, Clone, Insertable)]
+#[diesel(table_name = schema::asset_groups)]
+struct NewAssetGroup {
+    pub uuid: Uuid,
+    pub name: String,
+    pub slug: String,
+    pub description: Option<String>,
+    pub color: String,
+    pub icon: String,
 }
 
 #[tokio::main]
@@ -168,9 +257,9 @@ fn hash_password(password: &str, config: &Config) -> String {
         .to_string()
 }
 
-/// Create test users (idempotent).
+/// Create test users (idempotent) using Diesel DSL.
 async fn create_users(conn: &mut AsyncPgConnection, config: &Config) -> Vec<i32> {
-    use diesel::BoolExpressionMethods;
+    use schema::users::dsl::*;
 
     let mut user_ids = Vec::new();
 
@@ -212,97 +301,150 @@ async fn create_users(conn: &mut AsyncPgConnection, config: &Config) -> Vec<i32>
     ];
 
     let default_password = "SecurePassword123!";
-    let password_hash = hash_password(default_password, config);
+    let password_hash_value = hash_password(default_password, config);
 
-    for (username, email, first_name, last_name, is_staff, is_superuser) in users_data {
+    for (uname, mail, fname, lname, staff, superuser) in users_data {
         // Check if user already exists
-        use schema::users::dsl::{
-            email as user_email, id as user_id, username as user_username, users,
-        };
         let existing: Option<i32> = users
-            .filter(user_username.eq(username).or(user_email.eq(email)))
-            .select(user_id)
+            .filter(username.eq(uname).or(email.eq(mail)))
+            .select(id)
             .first(conn)
             .await
             .optional()
             .expect("Failed to query users");
 
-        if let Some(id) = existing {
-            user_ids.push(id);
-            let role = if is_superuser {
+        if let Some(user_id) = existing {
+            user_ids.push(user_id);
+            let role = if superuser {
                 "admin"
-            } else if is_staff {
+            } else if staff {
                 "staff"
             } else {
                 "user"
             };
-            println!("   - {} ({}) already exists", username, role);
+            println!("   - {} ({}) already exists", uname, role);
             continue;
         }
 
-        // NOTE: Raw SQL required - uses uuid_generate_v4() and ON CONFLICT (UPSERT)
-        let result = diesel::sql_query(
-            "INSERT INTO users (uuid, username, email, password_hash, first_name, last_name, is_active, is_staff, is_superuser, auth_source, preferences)
-             VALUES (uuid_generate_v4(), $1, $2, $3, $4, $5, true, $6, $7, 'local', '{}')
-             ON CONFLICT (username) DO NOTHING
-             RETURNING id"
-        )
-        .bind::<Text, _>(username)
-        .bind::<Text, _>(email)
-        .bind::<Text, _>(&password_hash)
-        .bind::<Text, _>(first_name)
-        .bind::<Text, _>(last_name)
-        .bind::<Bool, _>(is_staff)
-        .bind::<Bool, _>(is_superuser)
-        .get_result::<UserId>(conn)
-        .await;
+        // Create new user using Diesel DSL
+        let new_user = NewUser {
+            uuid: Uuid::new_v4(),
+            username: uname.to_string(),
+            email: mail.to_string(),
+            password_hash: password_hash_value.clone(),
+            first_name: Some(fname.to_string()),
+            last_name: Some(lname.to_string()),
+            is_active: true,
+            is_staff: staff,
+            is_superuser: superuser,
+            auth_source: "local".to_string(),
+            preferences: serde_json::json!({}),
+        };
+
+        let result: Result<i32, _> = diesel::insert_into(users)
+            .values(&new_user)
+            .on_conflict(username)
+            .do_nothing()
+            .returning(id)
+            .get_result(conn)
+            .await;
 
         match result {
-            Ok(u) => {
-                user_ids.push(u.id);
-                let role = if is_superuser {
+            Ok(user_id) => {
+                user_ids.push(user_id);
+                let role = if superuser {
                     "admin"
-                } else if is_staff {
+                } else if staff {
                     "staff"
                 } else {
                     "user"
                 };
-                println!("   - {} ({}) created", username, role);
+                println!("   - {} ({}) created", uname, role);
             }
             Err(e) => {
-                eprintln!("   ⚠ Failed to create {}: {}", username, e);
+                eprintln!("   ⚠ Failed to create {}: {}", uname, e);
             }
         }
     }
 
     // Also include existing 'mnemonic' user if present
-    use schema::users::dsl::{id as user_id, username as user_username, users};
     let mnemonic_id: Option<i32> = users
-        .filter(user_username.eq("mnemonic"))
-        .select(user_id)
+        .filter(username.eq("mnemonic"))
+        .select(id)
         .first(conn)
         .await
         .optional()
         .expect("Failed to query users");
 
-    if let Some(id) = mnemonic_id
-        && !user_ids.contains(&id)
-    {
-        user_ids.push(id);
-        println!("   - mnemonic (existing) included");
+    if let Some(uid) = mnemonic_id {
+        if !user_ids.contains(&uid) {
+            user_ids.push(uid);
+            println!("   - mnemonic (existing) included");
+        }
     }
 
     user_ids
 }
 
-/// Create test assets (idempotent).
-/// NOTE: Uses raw SQL for INSERT with uuid_generate_v4(), ON CONFLICT (UPSERT),
-/// and NOW() - INTERVAL which cannot be expressed in Diesel DSL.
+/// Create test assets (idempotent) using Diesel DSL with upsert.
 async fn create_assets(conn: &mut AsyncPgConnection, admin_id: i32) -> Vec<i32> {
     let mut rng = rand::thread_rng();
     let mut asset_ids = Vec::new();
     let mut created_count = 0;
     let mut existing_count = 0;
+
+    // Helper to create and upsert an asset
+    async fn upsert_asset(
+        conn: &mut AsyncPgConnection,
+        new_asset: NewAsset,
+        asset_ids: &mut Vec<i32>,
+        created_count: &mut i32,
+        existing_count: &mut i32,
+        display_type: &str,
+    ) {
+        use schema::assets::dsl::*;
+
+        // Check if asset already exists
+        let existing_id: Option<i32> = assets
+            .filter(hostname.eq(&new_asset.hostname))
+            .filter(port.eq(new_asset.port))
+            .select(id)
+            .first(conn)
+            .await
+            .optional()
+            .unwrap_or(None);
+
+        if let Some(asset_id) = existing_id {
+            // Update status only
+            let _ = diesel::update(assets.filter(id.eq(asset_id)))
+                .set(status.eq(&new_asset.status))
+                .execute(conn)
+                .await;
+            asset_ids.push(asset_id);
+            *existing_count += 1;
+        } else {
+            // Insert new asset
+            let result: Result<i32, _> = diesel::insert_into(assets)
+                .values(&new_asset)
+                .returning(id)
+                .get_result(conn)
+                .await;
+
+            match result {
+                Ok(asset_id) => {
+                    asset_ids.push(asset_id);
+                    *created_count += 1;
+                    println!(
+                        "   - {} ({}, {})",
+                        new_asset.name, display_type, new_asset.status
+                    );
+                }
+                Err(e) => {
+                    eprintln!("   ⚠ Failed to create asset {}: {}", new_asset.name, e);
+                }
+            }
+        }
+    }
 
     // Linux SSH servers
     let linux_servers = vec![
@@ -323,59 +465,41 @@ async fn create_assets(conn: &mut AsyncPgConnection, admin_id: i32) -> Vec<i32> 
         ("bastion-internal", "Ubuntu 22.04", "Internal Bastion"),
     ];
 
-    for (i, (name, os, desc)) in linux_servers.iter().enumerate() {
-        let ip = format!("10.0.{}.{}", (i / 50) + 1, (i % 254) + 1);
-        let status = if rng.gen_bool(0.85) {
+    for (i, (name_val, os_val, desc_val)) in linux_servers.iter().enumerate() {
+        let ip_str = format!("10.0.{}.{}", (i / 50) + 1, (i % 254) + 1);
+        let status_val = if rng.gen_bool(0.85) {
             "online"
         } else {
             "offline"
         };
 
-        let hostname = format!("{}.vauban.local", name);
-        let require_mfa = rng.gen_bool(0.3);
-        let require_justification = rng.gen_bool(0.2);
-        let result = diesel::sql_query(
-            "INSERT INTO assets (uuid, name, hostname, ip_address, port, asset_type, status, os_type, os_version, description, created_by_id, require_mfa, require_justification, connection_config)
-             VALUES (uuid_generate_v4(), $1, $2, $3::inet, 22, 'ssh', $4, 'linux', $5, $6, $7, $8, $9, '{}')
-             ON CONFLICT (hostname, port) DO UPDATE SET status = EXCLUDED.status
-             RETURNING id"
+        let new_asset = NewAsset {
+            uuid: Uuid::new_v4(),
+            name: name_val.to_string(),
+            hostname: format!("{}.vauban.local", name_val),
+            ip_address: Some(ip_str.parse().expect("Invalid IP")),
+            port: 22,
+            asset_type: "ssh".to_string(),
+            status: status_val.to_string(),
+            os_type: Some("linux".to_string()),
+            os_version: Some(os_val.to_string()),
+            description: Some(desc_val.to_string()),
+            created_by_id: Some(admin_id),
+            require_mfa: rng.gen_bool(0.3),
+            require_justification: rng.gen_bool(0.2),
+            connection_config: serde_json::json!({}),
+            max_session_duration: 28800,
+        };
+
+        upsert_asset(
+            conn,
+            new_asset,
+            &mut asset_ids,
+            &mut created_count,
+            &mut existing_count,
+            "SSH",
         )
-        .bind::<Text, _>(*name)
-        .bind::<Text, _>(&hostname)
-        .bind::<Text, _>(&ip)
-        .bind::<Text, _>(status)
-        .bind::<Text, _>(*os)
-        .bind::<Text, _>(*desc)
-        .bind::<Integer, _>(admin_id)
-        .bind::<Bool, _>(require_mfa)
-        .bind::<Bool, _>(require_justification)
-        .get_result::<AssetId>(conn)
         .await;
-
-        match &result {
-            Err(e) => eprintln!("   ⚠ Failed to create asset {}: {}", name, e),
-            Ok(_) => {}
-        }
-
-        if let Ok(asset) = result {
-            asset_ids.push(asset.id);
-            // Check if it was an insert or update
-            let was_update = diesel::sql_query(
-                "SELECT created_at < NOW() - INTERVAL '1 second' as existed FROM assets WHERE id = $1"
-            )
-            .bind::<Integer, _>(asset.id)
-            .get_result::<ExistedCheck>(conn)
-            .await
-            .map(|r| r.existed)
-            .unwrap_or(false);
-
-            if was_update {
-                existing_count += 1;
-            } else {
-                created_count += 1;
-                println!("   - {} (SSH, {})", name, status);
-            }
-        }
     }
 
     // Windows RDP servers
@@ -392,58 +516,41 @@ async fn create_assets(conn: &mut AsyncPgConnection, admin_id: i32) -> Vec<i32> 
         ("win-dev-01", "Windows 11 Pro", "Developer Workstation"),
     ];
 
-    for (i, (name, os, desc)) in windows_servers.iter().enumerate() {
-        let ip = format!("10.1.{}.{}", (i / 50) + 1, (i % 254) + 1);
-        let status = if rng.gen_bool(0.9) {
+    for (i, (name_val, os_val, desc_val)) in windows_servers.iter().enumerate() {
+        let ip_str = format!("10.1.{}.{}", (i / 50) + 1, (i % 254) + 1);
+        let status_val = if rng.gen_bool(0.9) {
             "online"
         } else {
             "offline"
         };
 
-        let hostname = format!("{}.vauban.local", name);
-        let require_mfa = rng.gen_bool(0.5);
-        let require_justification = rng.gen_bool(0.4);
-        let result = diesel::sql_query(
-            "INSERT INTO assets (uuid, name, hostname, ip_address, port, asset_type, status, os_type, os_version, description, created_by_id, require_mfa, require_justification, connection_config)
-             VALUES (uuid_generate_v4(), $1, $2, $3::inet, 3389, 'rdp', $4, 'windows', $5, $6, $7, $8, $9, '{}')
-             ON CONFLICT (hostname, port) DO UPDATE SET status = EXCLUDED.status
-             RETURNING id"
+        let new_asset = NewAsset {
+            uuid: Uuid::new_v4(),
+            name: name_val.to_string(),
+            hostname: format!("{}.vauban.local", name_val),
+            ip_address: Some(ip_str.parse().expect("Invalid IP")),
+            port: 3389,
+            asset_type: "rdp".to_string(),
+            status: status_val.to_string(),
+            os_type: Some("windows".to_string()),
+            os_version: Some(os_val.to_string()),
+            description: Some(desc_val.to_string()),
+            created_by_id: Some(admin_id),
+            require_mfa: rng.gen_bool(0.5),
+            require_justification: rng.gen_bool(0.4),
+            connection_config: serde_json::json!({}),
+            max_session_duration: 28800,
+        };
+
+        upsert_asset(
+            conn,
+            new_asset,
+            &mut asset_ids,
+            &mut created_count,
+            &mut existing_count,
+            "RDP",
         )
-        .bind::<Text, _>(*name)
-        .bind::<Text, _>(&hostname)
-        .bind::<Text, _>(&ip)
-        .bind::<Text, _>(status)
-        .bind::<Text, _>(*os)
-        .bind::<Text, _>(*desc)
-        .bind::<Integer, _>(admin_id)
-        .bind::<Bool, _>(require_mfa)
-        .bind::<Bool, _>(require_justification)
-        .get_result::<AssetId>(conn)
         .await;
-
-        match &result {
-            Err(e) => eprintln!("   ⚠ Failed to create asset {}: {}", name, e),
-            Ok(_) => {}
-        }
-
-        if let Ok(asset) = result {
-            asset_ids.push(asset.id);
-            let was_update = diesel::sql_query(
-                "SELECT created_at < NOW() - INTERVAL '1 second' as existed FROM assets WHERE id = $1"
-            )
-            .bind::<Integer, _>(asset.id)
-            .get_result::<ExistedCheck>(conn)
-            .await
-            .map(|r| r.existed)
-            .unwrap_or(false);
-
-            if was_update {
-                existing_count += 1;
-            } else {
-                created_count += 1;
-                println!("   - {} (RDP, {})", name, status);
-            }
-        }
     }
 
     // VNC servers
@@ -455,54 +562,41 @@ async fn create_assets(conn: &mut AsyncPgConnection, admin_id: i32) -> Vec<i32> 
         ("ilo-server-01", "HP iLO", "Server Management"),
     ];
 
-    for (i, (name, os, desc)) in vnc_servers.iter().enumerate() {
-        let ip = format!("10.2.{}.{}", (i / 50) + 1, (i % 254) + 1);
-        let status = if rng.gen_bool(0.95) {
+    for (i, (name_val, os_val, desc_val)) in vnc_servers.iter().enumerate() {
+        let ip_str = format!("10.2.{}.{}", (i / 50) + 1, (i % 254) + 1);
+        let status_val = if rng.gen_bool(0.95) {
             "online"
         } else {
             "maintenance"
         };
 
-        let hostname = format!("{}.vauban.local", name);
-        let result = diesel::sql_query(
-            "INSERT INTO assets (uuid, name, hostname, ip_address, port, asset_type, status, os_type, os_version, description, created_by_id, require_mfa, require_justification, connection_config)
-             VALUES (uuid_generate_v4(), $1, $2, $3::inet, 5900, 'vnc', $4, 'linux', $5, $6, $7, true, true, '{}')
-             ON CONFLICT (hostname, port) DO UPDATE SET status = EXCLUDED.status
-             RETURNING id"
+        let new_asset = NewAsset {
+            uuid: Uuid::new_v4(),
+            name: name_val.to_string(),
+            hostname: format!("{}.vauban.local", name_val),
+            ip_address: Some(ip_str.parse().expect("Invalid IP")),
+            port: 5900,
+            asset_type: "vnc".to_string(),
+            status: status_val.to_string(),
+            os_type: Some("linux".to_string()),
+            os_version: Some(os_val.to_string()),
+            description: Some(desc_val.to_string()),
+            created_by_id: Some(admin_id),
+            require_mfa: true,
+            require_justification: true,
+            connection_config: serde_json::json!({}),
+            max_session_duration: 28800,
+        };
+
+        upsert_asset(
+            conn,
+            new_asset,
+            &mut asset_ids,
+            &mut created_count,
+            &mut existing_count,
+            "VNC",
         )
-        .bind::<Text, _>(*name)
-        .bind::<Text, _>(&hostname)
-        .bind::<Text, _>(&ip)
-        .bind::<Text, _>(status)
-        .bind::<Text, _>(*os)
-        .bind::<Text, _>(*desc)
-        .bind::<Integer, _>(admin_id)
-        .get_result::<AssetId>(conn)
         .await;
-
-        match &result {
-            Err(e) => eprintln!("   ⚠ Failed to create asset {}: {}", name, e),
-            Ok(_) => {}
-        }
-
-        if let Ok(asset) = result {
-            asset_ids.push(asset.id);
-            let was_update = diesel::sql_query(
-                "SELECT created_at < NOW() - INTERVAL '1 second' as existed FROM assets WHERE id = $1"
-            )
-            .bind::<Integer, _>(asset.id)
-            .get_result::<ExistedCheck>(conn)
-            .await
-            .map(|r| r.existed)
-            .unwrap_or(false);
-
-            if was_update {
-                existing_count += 1;
-            } else {
-                created_count += 1;
-                println!("   - {} (VNC, {})", name, status);
-            }
-        }
     }
 
     if existing_count > 0 {
@@ -515,14 +609,15 @@ async fn create_assets(conn: &mut AsyncPgConnection, admin_id: i32) -> Vec<i32> 
     asset_ids
 }
 
-/// Create test sessions.
-/// NOTE: Uses raw SQL for INSERT with uuid_generate_v4() and complex date formatting.
+/// Create test sessions using Diesel DSL.
 async fn create_sessions(
     conn: &mut AsyncPgConnection,
     user_ids: &[i32],
     asset_ids: &[i32],
     count: i32,
 ) -> i32 {
+    use schema::proxy_sessions::dsl::*;
+
     let mut rng = rand::thread_rng();
     let mut created = 0;
 
@@ -532,7 +627,7 @@ async fn create_sessions(
 
     let statuses = ["active", "disconnected", "completed", "terminated"];
     let session_types = ["ssh", "rdp", "vnc"];
-    let client_ips = [
+    let client_ips_list = [
         "192.168.1.10",
         "192.168.1.25",
         "192.168.1.100",
@@ -542,18 +637,18 @@ async fn create_sessions(
     ];
 
     for i in 0..count {
-        let user_id = user_ids[rng.gen_range(0..user_ids.len())];
-        let asset_id = asset_ids[rng.gen_range(0..asset_ids.len())];
-        let status = if i < 3 {
+        let uid = user_ids[rng.gen_range(0..user_ids.len())];
+        let aid = asset_ids[rng.gen_range(0..asset_ids.len())];
+        let status_val = if i < 3 {
             "active"
         } else {
             statuses[rng.gen_range(0..statuses.len())]
         };
-        let session_type = session_types[rng.gen_range(0..session_types.len())];
-        let client_ip = client_ips[rng.gen_range(0..client_ips.len())];
+        let session_type_val = session_types[rng.gen_range(0..session_types.len())];
+        let client_ip_str = client_ips_list[rng.gen_range(0..client_ips_list.len())];
 
-        let is_recorded = i >= 10;
-        let recording_path = if is_recorded {
+        let is_recorded_val = i >= 10;
+        let recording_path_val = if is_recorded_val {
             Some(format!(
                 "/recordings/{}/{}.cast",
                 Utc::now().format("%Y/%m"),
@@ -563,60 +658,61 @@ async fn create_sessions(
             None
         };
 
-        let connected_at = Utc::now() - Duration::hours(rng.gen_range(1..720));
-        let disconnected_at = if status != "active" {
-            Some(connected_at + Duration::minutes(rng.gen_range(5..180)))
+        let connected_at_val = Utc::now() - Duration::hours(rng.gen_range(1..720));
+        let disconnected_at_val = if status_val != "active" {
+            Some(connected_at_val + Duration::minutes(rng.gen_range(5..180)))
         } else {
             None
         };
 
-        let credential_id = Uuid::new_v4().to_string();
-        let credential_username = if session_type == "ssh" {
+        let credential_id_val = Uuid::new_v4().to_string();
+        let credential_username_val = if session_type_val == "ssh" {
             "root"
         } else {
             "Administrator"
         };
-        let connected_at_str = connected_at.format("%Y-%m-%d %H:%M:%S%z").to_string();
-        let disconnected_at_str =
-            disconnected_at.map(|d| d.format("%Y-%m-%d %H:%M:%S%z").to_string());
-        let bytes_sent: i64 = rng.gen_range(1000..1000000);
-        let bytes_received: i64 = rng.gen_range(5000..5000000);
-        let commands_count: i32 = rng.gen_range(0..500);
-        let justification: Option<&str> = if rng.gen_bool(0.3) {
-            Some("Maintenance task")
+        let bytes_sent_val: i64 = rng.gen_range(1000..1000000);
+        let bytes_received_val: i64 = rng.gen_range(5000..5000000);
+        let commands_count_val: i32 = rng.gen_range(0..500);
+        let justification_val: Option<String> = if rng.gen_bool(0.3) {
+            Some("Maintenance task".to_string())
         } else {
             None
         };
 
-        let result = diesel::sql_query(
-            "INSERT INTO proxy_sessions (uuid, user_id, asset_id, credential_id, credential_username, session_type, status, client_ip, connected_at, disconnected_at, is_recorded, recording_path, bytes_sent, bytes_received, commands_count, justification, metadata)
-             VALUES (uuid_generate_v4(), $1, $2, $3, $4, $5, $6, $7::inet, $8::timestamptz, $9::timestamptz, $10, $11, $12, $13, $14, $15, '{}')
-             RETURNING id"
-        )
-        .bind::<Integer, _>(user_id)
-        .bind::<Integer, _>(asset_id)
-        .bind::<Text, _>(&credential_id)
-        .bind::<Text, _>(credential_username)
-        .bind::<Text, _>(session_type)
-        .bind::<Text, _>(status)
-        .bind::<Text, _>(client_ip)
-        .bind::<Text, _>(&connected_at_str)
-        .bind::<Nullable<Text>, _>(disconnected_at_str.as_deref())
-        .bind::<Bool, _>(is_recorded)
-        .bind::<Nullable<Text>, _>(recording_path.as_deref())
-        .bind::<BigInt, _>(bytes_sent)
-        .bind::<BigInt, _>(bytes_received)
-        .bind::<Integer, _>(commands_count)
-        .bind::<Nullable<Text>, _>(justification)
-        .execute(conn)
-        .await;
+        let new_session = NewProxySession {
+            uuid: Uuid::new_v4(),
+            user_id: uid,
+            asset_id: aid,
+            credential_id: credential_id_val,
+            credential_username: credential_username_val.to_string(),
+            session_type: session_type_val.to_string(),
+            status: status_val.to_string(),
+            client_ip: client_ip_str.parse().expect("Invalid client IP"),
+            connected_at: Some(connected_at_val),
+            disconnected_at: disconnected_at_val,
+            is_recorded: is_recorded_val,
+            recording_path: recording_path_val,
+            bytes_sent: bytes_sent_val,
+            bytes_received: bytes_received_val,
+            commands_count: commands_count_val,
+            justification: justification_val,
+            metadata: serde_json::json!({}),
+        };
 
-        match &result {
-            Err(e) => eprintln!("   ⚠ Failed to create session {}: {}", i + 1, e),
+        let result = diesel::insert_into(proxy_sessions)
+            .values(&new_session)
+            .execute(conn)
+            .await;
+
+        match result {
             Ok(_) => {
                 created += 1;
-                let rec_str = if is_recorded { " (recorded)" } else { "" };
-                println!("   - Session {} [{}]{}", i + 1, status, rec_str);
+                let rec_str = if is_recorded_val { " (recorded)" } else { "" };
+                println!("   - Session {} [{}]{}", i + 1, status_val, rec_str);
+            }
+            Err(e) => {
+                eprintln!("   ⚠ Failed to create session {}: {}", i + 1, e);
             }
         }
     }
@@ -624,14 +720,15 @@ async fn create_sessions(
     created
 }
 
-/// Create approval requests.
-/// NOTE: Uses raw SQL for INSERT with uuid_generate_v4().
+/// Create approval requests using Diesel DSL.
 async fn create_approval_requests(
     conn: &mut AsyncPgConnection,
     user_ids: &[i32],
     asset_ids: &[i32],
     count: i32,
 ) -> i32 {
+    use schema::proxy_sessions::dsl::*;
+
     let mut rng = rand::thread_rng();
     let mut created = 0;
 
@@ -639,7 +736,7 @@ async fn create_approval_requests(
         return 0;
     }
 
-    let justifications = vec![
+    let justifications_list = vec![
         "Urgent production issue - server not responding",
         "Scheduled maintenance window",
         "Security patching required",
@@ -653,7 +750,7 @@ async fn create_approval_requests(
     ];
 
     let session_types = ["ssh", "rdp"];
-    let client_ips = [
+    let client_ips_list = [
         "192.168.1.50",
         "192.168.1.75",
         "192.168.1.150",
@@ -662,43 +759,55 @@ async fn create_approval_requests(
     ];
 
     for i in 0..count {
-        let user_id = user_ids[rng.gen_range(0..user_ids.len())];
-        let asset_id = asset_ids[rng.gen_range(0..asset_ids.len())];
-        let session_type = session_types[rng.gen_range(0..session_types.len())];
-        let client_ip = client_ips[rng.gen_range(0..client_ips.len())];
-        let justification = justifications[rng.gen_range(0..justifications.len())];
+        let uid = user_ids[rng.gen_range(0..user_ids.len())];
+        let aid = asset_ids[rng.gen_range(0..asset_ids.len())];
+        let session_type_val = session_types[rng.gen_range(0..session_types.len())];
+        let client_ip_str = client_ips_list[rng.gen_range(0..client_ips_list.len())];
+        let justification_val = justifications_list[rng.gen_range(0..justifications_list.len())];
 
-        let credential_id = Uuid::new_v4().to_string();
-        let credential_username = if session_type == "ssh" {
+        let credential_id_val = Uuid::new_v4().to_string();
+        let credential_username_val = if session_type_val == "ssh" {
             "root"
         } else {
             "Administrator"
         };
 
-        let result = diesel::sql_query(
-            "INSERT INTO proxy_sessions (uuid, user_id, asset_id, credential_id, credential_username, session_type, status, client_ip, is_recorded, justification, metadata)
-             VALUES (uuid_generate_v4(), $1, $2, $3, $4, $5, 'pending', $6::inet, true, $7, '{\"approval_required\": true}')
-             RETURNING id"
-        )
-        .bind::<Integer, _>(user_id)
-        .bind::<Integer, _>(asset_id)
-        .bind::<Text, _>(&credential_id)
-        .bind::<Text, _>(credential_username)
-        .bind::<Text, _>(session_type)
-        .bind::<Text, _>(client_ip)
-        .bind::<Text, _>(justification)
-        .execute(conn)
-        .await;
+        let new_session = NewProxySession {
+            uuid: Uuid::new_v4(),
+            user_id: uid,
+            asset_id: aid,
+            credential_id: credential_id_val,
+            credential_username: credential_username_val.to_string(),
+            session_type: session_type_val.to_string(),
+            status: "pending".to_string(),
+            client_ip: client_ip_str.parse().expect("Invalid client IP"),
+            connected_at: None,
+            disconnected_at: None,
+            is_recorded: true,
+            recording_path: None,
+            bytes_sent: 0,
+            bytes_received: 0,
+            commands_count: 0,
+            justification: Some(justification_val.to_string()),
+            metadata: serde_json::json!({"approval_required": true}),
+        };
 
-        match &result {
-            Err(e) => eprintln!("   ⚠ Failed to create approval {}: {}", i + 1, e),
+        let result = diesel::insert_into(proxy_sessions)
+            .values(&new_session)
+            .execute(conn)
+            .await;
+
+        match result {
             Ok(_) => {
                 created += 1;
                 println!(
                     "   - Approval #{}: {}",
                     i + 1,
-                    &justification[..50.min(justification.len())]
+                    &justification_val[..50.min(justification_val.len())]
                 );
+            }
+            Err(e) => {
+                eprintln!("   ⚠ Failed to create approval {}: {}", i + 1, e);
             }
         }
     }
@@ -706,10 +815,10 @@ async fn create_approval_requests(
     created
 }
 
-/// Create user groups (idempotent).
-/// NOTE: Uses raw SQL for INSERT with uuid_generate_v4() and ON CONFLICT.
-/// EXISTS check has been migrated to Diesel DSL.
+/// Create user groups (idempotent) using Diesel DSL.
 async fn create_groups(conn: &mut AsyncPgConnection) -> i32 {
+    use schema::vauban_groups::dsl::*;
+
     let mut count = 0;
 
     // Define groups: (name, description, source)
@@ -737,44 +846,45 @@ async fn create_groups(conn: &mut AsyncPgConnection) -> i32 {
         ),
     ];
 
-    for (name, description, source) in groups_data {
+    for (name_val, description_val, source_val) in groups_data {
         // Check if group already exists
-        use diesel::dsl::exists;
-        use schema::vauban_groups::dsl::{name as group_name, vauban_groups};
-        let existing: bool = diesel::select(exists(vauban_groups.filter(group_name.eq(name))))
+        let existing: bool = diesel::select(exists(vauban_groups.filter(name.eq(name_val))))
             .get_result(conn)
             .await
             .unwrap_or(false);
 
         if existing {
             count += 1;
-            println!("   - {} already exists", name);
+            println!("   - {} already exists", name_val);
             continue;
         }
 
         // Create new group
-        let result = diesel::sql_query(
-            "INSERT INTO vauban_groups (uuid, name, description, source)
-             VALUES (uuid_generate_v4(), $1, $2, $3)
-             ON CONFLICT (name) DO NOTHING",
-        )
-        .bind::<Text, _>(name)
-        .bind::<Text, _>(description)
-        .bind::<Text, _>(source)
-        .execute(conn)
-        .await;
+        let new_group = NewVaubanGroup {
+            uuid: Uuid::new_v4(),
+            name: name_val.to_string(),
+            description: Some(description_val.to_string()),
+            source: source_val.to_string(),
+        };
+
+        let result = diesel::insert_into(vauban_groups)
+            .values(&new_group)
+            .on_conflict(name)
+            .do_nothing()
+            .execute(conn)
+            .await;
 
         match result {
             Ok(rows) if rows > 0 => {
                 count += 1;
-                println!("   - {} created", name);
+                println!("   - {} created", name_val);
             }
             Ok(_) => {
                 count += 1;
-                println!("   - {} already exists", name);
+                println!("   - {} already exists", name_val);
             }
             Err(e) => {
-                eprintln!("   ⚠ Failed to create {}: {}", name, e);
+                eprintln!("   ⚠ Failed to create {}: {}", name_val, e);
             }
         }
     }
@@ -782,9 +892,10 @@ async fn create_groups(conn: &mut AsyncPgConnection) -> i32 {
     count
 }
 
-/// Create asset groups (idempotent).
-/// NOTE: Uses raw SQL for INSERT with uuid_generate_v4() and ON CONFLICT.
+/// Create asset groups (idempotent) using Diesel DSL.
 async fn create_asset_groups(conn: &mut AsyncPgConnection) -> i32 {
+    use schema::asset_groups::dsl::*;
+
     let mut count = 0;
 
     // Define asset groups: (name, slug, description, color, icon)
@@ -826,13 +937,11 @@ async fn create_asset_groups(conn: &mut AsyncPgConnection) -> i32 {
         ),
     ];
 
-    for (name, slug, description, color, icon) in groups_data {
+    for (name_val, slug_val, description_val, color_val, icon_val) in groups_data {
         // Check if group already exists
-        use diesel::dsl::exists;
-        use schema::asset_groups::dsl::{asset_groups, is_deleted, slug as group_slug};
         let existing: bool = diesel::select(exists(
             asset_groups
-                .filter(group_slug.eq(slug))
+                .filter(slug.eq(slug_val))
                 .filter(is_deleted.eq(false)),
         ))
         .get_result(conn)
@@ -841,61 +950,43 @@ async fn create_asset_groups(conn: &mut AsyncPgConnection) -> i32 {
 
         if existing {
             count += 1;
-            println!("   - {} already exists", name);
+            println!("   - {} already exists", name_val);
             continue;
         }
 
         // Create new group
-        let result = diesel::sql_query(
-            "INSERT INTO asset_groups (uuid, name, slug, description, color, icon)
-             VALUES (uuid_generate_v4(), $1, $2, $3, $4, $5)
-             ON CONFLICT (slug) DO NOTHING",
-        )
-        .bind::<Text, _>(name)
-        .bind::<Text, _>(slug)
-        .bind::<Text, _>(description)
-        .bind::<Text, _>(color)
-        .bind::<Text, _>(icon)
-        .execute(conn)
-        .await;
+        let new_group = NewAssetGroup {
+            uuid: Uuid::new_v4(),
+            name: name_val.to_string(),
+            slug: slug_val.to_string(),
+            description: Some(description_val.to_string()),
+            color: color_val.to_string(),
+            icon: icon_val.to_string(),
+        };
+
+        let result = diesel::insert_into(asset_groups)
+            .values(&new_group)
+            .on_conflict(slug)
+            .do_nothing()
+            .execute(conn)
+            .await;
 
         match result {
             Ok(rows) if rows > 0 => {
                 count += 1;
-                println!("   - {} created", name);
+                println!("   - {} created", name_val);
             }
             Ok(_) => {
                 count += 1;
-                println!("   - {} already exists", name);
+                println!("   - {} already exists", name_val);
             }
             Err(e) => {
-                eprintln!("   ⚠ Failed to create {}: {}", name, e);
+                eprintln!("   ⚠ Failed to create {}: {}", name_val, e);
             }
         }
     }
 
     count
-}
-
-// Helper structs for returning data
-#[derive(diesel::QueryableByName)]
-struct AssetId {
-    #[diesel(sql_type = diesel::sql_types::Int4)]
-    id: i32,
-}
-
-#[derive(diesel::QueryableByName)]
-struct UserId {
-    #[diesel(sql_type = diesel::sql_types::Int4)]
-    id: i32,
-}
-
-// NOTE: CountResult and ExistsResult removed - migrated to Diesel DSL
-
-#[derive(diesel::QueryableByName)]
-struct ExistedCheck {
-    #[diesel(sql_type = diesel::sql_types::Bool)]
-    existed: bool,
 }
 
 // ==================== Data Generation Functions ====================
