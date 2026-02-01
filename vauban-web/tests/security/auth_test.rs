@@ -177,8 +177,13 @@ async fn test_mfa_setup_page_success() {
     // Setup: create test user with temporary token (mfa_verified = false)
     let username = unique_name("test_mfa_setup");
     let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
-    let temp_token = unwrap_ok!(app.auth_service
-        .generate_access_token(&test_user.user.uuid.to_string(), &username, false, false, false));
+    let temp_token = unwrap_ok!(app.auth_service.generate_access_token(
+        &test_user.user.uuid.to_string(),
+        &username,
+        false,
+        false,
+        false
+    ));
 
     // Execute: GET /mfa/setup with cookie auth
     let response = app
@@ -191,7 +196,10 @@ async fn test_mfa_setup_page_success() {
     let status = response.status_code().as_u16();
     assert_eq!(status, 200, "MFA setup page should load, got {}", status);
     let body = response.text();
-    assert!(body.contains("Two-Factor Authentication"), "Should show MFA setup page");
+    assert!(
+        body.contains("Two-Factor Authentication"),
+        "Should show MFA setup page"
+    );
 
     // Cleanup
     test_db::cleanup(&mut conn).await;

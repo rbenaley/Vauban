@@ -173,7 +173,7 @@ impl HybridSigPublicKey {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     use pqcrypto_traits::kem::{PublicKey as _, SecretKey as _};
 
     #[test]

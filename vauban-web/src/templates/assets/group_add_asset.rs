@@ -34,7 +34,6 @@ impl AvailableAsset {
     }
 }
 
-
 /// Group summary for display.
 #[derive(Debug, Clone)]
 pub struct GroupSummary {
@@ -63,7 +62,6 @@ pub struct AssetGroupAddAssetTemplate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     fn create_test_available_asset(status: &str) -> AvailableAsset {
         AvailableAsset {
@@ -181,7 +179,10 @@ mod tests {
         };
 
         let result = template.render();
-        assert!(result.is_ok(), "AssetGroupAddAssetTemplate should render with assets");
+        assert!(
+            result.is_ok(),
+            "AssetGroupAddAssetTemplate should render with assets"
+        );
     }
 
     #[test]
@@ -213,7 +214,10 @@ mod tests {
         };
 
         let result = template.render();
-        assert!(result.is_ok(), "AssetGroupAddAssetTemplate should render empty");
+        assert!(
+            result.is_ok(),
+            "AssetGroupAddAssetTemplate should render empty"
+        );
     }
 
     #[test]

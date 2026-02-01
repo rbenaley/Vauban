@@ -7,7 +7,10 @@ use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use uuid::Uuid;
 
 use crate::common::{TestApp, assertions::assert_status};
-use crate::fixtures::{add_user_to_vauban_group, create_simple_admin_user, create_simple_user, create_test_vauban_group, unique_name};
+use crate::fixtures::{
+    add_user_to_vauban_group, create_simple_admin_user, create_simple_user,
+    create_test_vauban_group, unique_name,
+};
 
 /// Helper to get user UUID from user_id.
 async fn get_user_uuid(conn: &mut AsyncPgConnection, user_id: i32) -> Uuid {
@@ -40,12 +43,9 @@ async fn test_api_list_group_members_success() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(
-        &admin_uuid.to_string(),
-        &admin_name,
-        true,
-        true,
-    ).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
 
     let response = app
         .server
@@ -55,8 +55,14 @@ async fn test_api_list_group_members_success() {
 
     assert_status(&response, 200);
     let body = response.text();
-    assert!(body.contains("members"), "Response should contain members array");
-    assert!(body.contains("total"), "Response should contain total count");
+    assert!(
+        body.contains("members"),
+        "Response should contain members array"
+    );
+    assert!(
+        body.contains("total"),
+        "Response should contain total count"
+    );
 }
 
 #[tokio::test]
@@ -69,12 +75,9 @@ async fn test_api_list_group_members_not_found() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(
-        &admin_uuid.to_string(),
-        &admin_name,
-        true,
-        true,
-    ).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
 
     let fake_uuid = Uuid::new_v4();
     let response = app
@@ -98,12 +101,9 @@ async fn test_api_list_group_members_empty() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(
-        &admin_uuid.to_string(),
-        &admin_name,
-        true,
-        true,
-    ).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
 
     let response = app
         .server
@@ -113,5 +113,8 @@ async fn test_api_list_group_members_empty() {
 
     assert_status(&response, 200);
     let body = response.text();
-    assert!(body.contains("\"total\":0"), "Empty group should have 0 members");
+    assert!(
+        body.contains("\"total\":0"),
+        "Empty group should have 0 members"
+    );
 }

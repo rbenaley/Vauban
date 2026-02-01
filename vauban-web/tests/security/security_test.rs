@@ -409,7 +409,10 @@ async fn test_api_key_authentication() {
     let response = app
         .server
         .get("/api/v1/accounts")
-        .add_header(header::AUTHORIZATION, "Bearer vb_nonexistent_key_1234567890")
+        .add_header(
+            header::AUTHORIZATION,
+            "Bearer vb_nonexistent_key_1234567890",
+        )
         .await;
     assert_status(&response, 401);
 }
@@ -603,7 +606,10 @@ async fn test_session_fixation_protection() {
     // After successful login, session should be regenerated
     // This is verified by checking that a new token is issued
     let json: serde_json::Value = response.json();
-    assert!(json.get("access_token").is_some(), "New token should be issued on login");
+    assert!(
+        json.get("access_token").is_some(),
+        "New token should be issued on login"
+    );
 
     test_db::cleanup(&mut conn).await;
 }
@@ -958,10 +964,7 @@ async fn test_csrf_token_form_matches_cookie() {
             let s = v.to_str().ok()?;
             if s.starts_with("__vauban_csrf=") {
                 // Extract token value from "name=value; ..."
-                let token = s
-                    .split(';')
-                    .next()?
-                    .strip_prefix("__vauban_csrf=")?;
+                let token = s.split(';').next()?.strip_prefix("__vauban_csrf=")?;
                 Some(token.to_string())
             } else {
                 None
@@ -972,7 +975,10 @@ async fn test_csrf_token_form_matches_cookie() {
 
     // Extract CSRF token from HTML form
     let body = response.text();
-    let form_token = unwrap_some!(extract_csrf_token_from_html(&body), "CSRF token should be present in login form HTML");
+    let form_token = unwrap_some!(
+        extract_csrf_token_from_html(&body),
+        "CSRF token should be present in login form HTML"
+    );
 
     // The cookie and form token MUST match
     assert_eq!(
@@ -1049,7 +1055,10 @@ async fn test_csrf_login_flow_end_to_end() {
 
     // Extract token from HTML
     let body = login_page.text();
-    let form_token = unwrap_some!(extract_csrf_token_from_html(&body), "CSRF token should be in form");
+    let form_token = unwrap_some!(
+        extract_csrf_token_from_html(&body),
+        "CSRF token should be in form"
+    );
 
     // Step 2: Submit login with the CSRF token
     let response = app
@@ -1097,20 +1106,13 @@ async fn test_csrf_fresh_session_works() {
     assert_status(&response, 200);
 
     // Verify we get a CSRF cookie
-    let has_csrf_cookie = response
-        .headers()
-        .get_all("set-cookie")
-        .iter()
-        .any(|v| {
-            v.to_str()
-                .map(|s| s.starts_with("__vauban_csrf="))
-                .unwrap_or(false)
-        });
+    let has_csrf_cookie = response.headers().get_all("set-cookie").iter().any(|v| {
+        v.to_str()
+            .map(|s| s.starts_with("__vauban_csrf="))
+            .unwrap_or(false)
+    });
 
-    assert!(
-        has_csrf_cookie,
-        "Fresh login page should set a CSRF cookie"
-    );
+    assert!(has_csrf_cookie, "Fresh login page should set a CSRF cookie");
 
     // Verify the form has a matching token
     let body = response.text();

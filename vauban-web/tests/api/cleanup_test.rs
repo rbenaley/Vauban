@@ -35,18 +35,21 @@ async fn test_cleanup_expired_auth_sessions() {
     let valid_uuid = create_valid_session(&mut conn, user_id, "valid_token_1").await;
 
     // Verify both sessions exist
-    let count_before: i64 = unwrap_ok!(auth_sessions::table
-        .filter(auth_sessions::user_id.eq(user_id))
-        .count()
-        .get_result(&mut conn)
-        .await);
+    let count_before: i64 = unwrap_ok!(
+        auth_sessions::table
+            .filter(auth_sessions::user_id.eq(user_id))
+            .count()
+            .get_result(&mut conn)
+            .await
+    );
     assert_eq!(count_before, 2, "Should have 2 sessions before cleanup");
 
     // Execute cleanup directly (call the internal function via SQL)
     let deleted: usize = unwrap_ok!(
         diesel::delete(auth_sessions::table.filter(auth_sessions::expires_at.lt(Utc::now())))
             .execute(&mut conn)
-            .await);
+            .await
+    );
 
     // Assert: expired session should be deleted
     assert!(
@@ -55,21 +58,23 @@ async fn test_cleanup_expired_auth_sessions() {
     );
 
     // Verify expired session is gone
-    let expired_exists: bool = unwrap_ok!(auth_sessions::table
-        .filter(auth_sessions::uuid.eq(expired_uuid))
-        .count()
-        .get_result::<i64>(&mut conn)
-        .await)
-        > 0;
+    let expired_exists: bool = unwrap_ok!(
+        auth_sessions::table
+            .filter(auth_sessions::uuid.eq(expired_uuid))
+            .count()
+            .get_result::<i64>(&mut conn)
+            .await
+    ) > 0;
     assert!(!expired_exists, "Expired session should be deleted");
 
     // Verify valid session still exists
-    let valid_exists: bool = unwrap_ok!(auth_sessions::table
-        .filter(auth_sessions::uuid.eq(valid_uuid))
-        .count()
-        .get_result::<i64>(&mut conn)
-        .await)
-        > 0;
+    let valid_exists: bool = unwrap_ok!(
+        auth_sessions::table
+            .filter(auth_sessions::uuid.eq(valid_uuid))
+            .count()
+            .get_result::<i64>(&mut conn)
+            .await
+    ) > 0;
     assert!(valid_exists, "Valid session should still exist");
 
     // Cleanup
@@ -96,17 +101,20 @@ async fn test_cleanup_preserves_valid_sessions() {
     let deleted: usize = unwrap_ok!(
         diesel::delete(auth_sessions::table.filter(auth_sessions::expires_at.lt(Utc::now())))
             .execute(&mut conn)
-            .await);
+            .await
+    );
 
     // Assert: no sessions should be deleted
     assert_eq!(deleted, 0, "Should not delete any valid sessions");
 
     // Verify all sessions still exist
-    let count: i64 = unwrap_ok!(auth_sessions::table
-        .filter(auth_sessions::uuid.eq_any(vec![uuid1, uuid2, uuid3]))
-        .count()
-        .get_result(&mut conn)
-        .await);
+    let count: i64 = unwrap_ok!(
+        auth_sessions::table
+            .filter(auth_sessions::uuid.eq_any(vec![uuid1, uuid2, uuid3]))
+            .count()
+            .get_result(&mut conn)
+            .await
+    );
     assert_eq!(count, 3, "All 3 valid sessions should still exist");
 
     // Cleanup
@@ -135,43 +143,49 @@ async fn test_cleanup_expired_api_keys() {
     let valid_uuid = create_valid_api_key(&mut conn, user_id, "valid_key").await;
 
     // Verify both keys exist
-    let count_before: i64 = unwrap_ok!(api_keys::table
-        .filter(api_keys::user_id.eq(user_id))
-        .count()
-        .get_result(&mut conn)
-        .await);
+    let count_before: i64 = unwrap_ok!(
+        api_keys::table
+            .filter(api_keys::user_id.eq(user_id))
+            .count()
+            .get_result(&mut conn)
+            .await
+    );
     assert_eq!(count_before, 2, "Should have 2 API keys before cleanup");
 
     // Execute cleanup (delete expired or inactive)
-    let deleted: usize = unwrap_ok!(diesel::delete(
-        api_keys::table.filter(
-            api_keys::is_active
-                .eq(false)
-                .or(api_keys::expires_at.lt(Some(Utc::now()))),
-        ),
-    )
-    .execute(&mut conn)
-    .await);
+    let deleted: usize = unwrap_ok!(
+        diesel::delete(
+            api_keys::table.filter(
+                api_keys::is_active
+                    .eq(false)
+                    .or(api_keys::expires_at.lt(Some(Utc::now()))),
+            ),
+        )
+        .execute(&mut conn)
+        .await
+    );
 
     // Assert: expired key should be deleted
     assert!(deleted >= 1, "Should have deleted at least 1 expired key");
 
     // Verify expired key is gone
-    let expired_exists: bool = unwrap_ok!(api_keys::table
-        .filter(api_keys::uuid.eq(expired_uuid))
-        .count()
-        .get_result::<i64>(&mut conn)
-        .await)
-        > 0;
+    let expired_exists: bool = unwrap_ok!(
+        api_keys::table
+            .filter(api_keys::uuid.eq(expired_uuid))
+            .count()
+            .get_result::<i64>(&mut conn)
+            .await
+    ) > 0;
     assert!(!expired_exists, "Expired API key should be deleted");
 
     // Verify valid key still exists
-    let valid_exists: bool = unwrap_ok!(api_keys::table
-        .filter(api_keys::uuid.eq(valid_uuid))
-        .count()
-        .get_result::<i64>(&mut conn)
-        .await)
-        > 0;
+    let valid_exists: bool = unwrap_ok!(
+        api_keys::table
+            .filter(api_keys::uuid.eq(valid_uuid))
+            .count()
+            .get_result::<i64>(&mut conn)
+            .await
+    ) > 0;
     assert!(valid_exists, "Valid API key should still exist");
 
     // Cleanup
@@ -196,35 +210,39 @@ async fn test_cleanup_inactive_api_keys() {
     let active_uuid = create_valid_api_key(&mut conn, user_id, "active_key").await;
 
     // Execute cleanup
-    let deleted: usize = unwrap_ok!(diesel::delete(
-        api_keys::table.filter(
-            api_keys::is_active
-                .eq(false)
-                .or(api_keys::expires_at.lt(Some(Utc::now()))),
-        ),
-    )
-    .execute(&mut conn)
-    .await);
+    let deleted: usize = unwrap_ok!(
+        diesel::delete(
+            api_keys::table.filter(
+                api_keys::is_active
+                    .eq(false)
+                    .or(api_keys::expires_at.lt(Some(Utc::now()))),
+            ),
+        )
+        .execute(&mut conn)
+        .await
+    );
 
     // Assert: inactive key should be deleted
     assert!(deleted >= 1, "Should have deleted at least 1 inactive key");
 
     // Verify inactive key is gone
-    let inactive_exists: bool = unwrap_ok!(api_keys::table
-        .filter(api_keys::uuid.eq(inactive_uuid))
-        .count()
-        .get_result::<i64>(&mut conn)
-        .await)
-        > 0;
+    let inactive_exists: bool = unwrap_ok!(
+        api_keys::table
+            .filter(api_keys::uuid.eq(inactive_uuid))
+            .count()
+            .get_result::<i64>(&mut conn)
+            .await
+    ) > 0;
     assert!(!inactive_exists, "Inactive API key should be deleted");
 
     // Verify active key still exists
-    let active_exists: bool = unwrap_ok!(api_keys::table
-        .filter(api_keys::uuid.eq(active_uuid))
-        .count()
-        .get_result::<i64>(&mut conn)
-        .await)
-        > 0;
+    let active_exists: bool = unwrap_ok!(
+        api_keys::table
+            .filter(api_keys::uuid.eq(active_uuid))
+            .count()
+            .get_result::<i64>(&mut conn)
+            .await
+    ) > 0;
     assert!(active_exists, "Active API key should still exist");
 
     // Cleanup
@@ -249,18 +267,21 @@ async fn test_cleanup_with_no_expired_data() {
     let sessions_deleted: usize = unwrap_ok!(
         diesel::delete(auth_sessions::table.filter(auth_sessions::expires_at.lt(Utc::now())))
             .execute(&mut conn)
-            .await);
+            .await
+    );
 
     // Execute cleanup for API keys
-    let keys_deleted: usize = unwrap_ok!(diesel::delete(
-        api_keys::table.filter(
-            api_keys::is_active
-                .eq(false)
-                .or(api_keys::expires_at.lt(Some(Utc::now()))),
-        ),
-    )
-    .execute(&mut conn)
-    .await);
+    let keys_deleted: usize = unwrap_ok!(
+        diesel::delete(
+            api_keys::table.filter(
+                api_keys::is_active
+                    .eq(false)
+                    .or(api_keys::expires_at.lt(Some(Utc::now()))),
+            ),
+        )
+        .execute(&mut conn)
+        .await
+    );
 
     // Assert: nothing should be deleted
     assert_eq!(sessions_deleted, 0, "Should not delete any sessions");
@@ -296,10 +317,12 @@ async fn create_expired_session(conn: &mut AsyncPgConnection, user_id: i32, toke
         is_current: false,
     };
 
-    unwrap_ok!(diesel::insert_into(auth_sessions::table)
-        .values(&new_session)
-        .execute(conn)
-        .await);
+    unwrap_ok!(
+        diesel::insert_into(auth_sessions::table)
+            .values(&new_session)
+            .execute(conn)
+            .await
+    );
 
     session_uuid
 }
@@ -326,10 +349,12 @@ async fn create_valid_session(conn: &mut AsyncPgConnection, user_id: i32, token:
         is_current: true,
     };
 
-    unwrap_ok!(diesel::insert_into(auth_sessions::table)
-        .values(&new_session)
-        .execute(conn)
-        .await);
+    unwrap_ok!(
+        diesel::insert_into(auth_sessions::table)
+            .values(&new_session)
+            .execute(conn)
+            .await
+    );
 
     session_uuid
 }
@@ -338,19 +363,21 @@ async fn create_valid_session(conn: &mut AsyncPgConnection, user_id: i32, token:
 async fn create_expired_api_key(conn: &mut AsyncPgConnection, user_id: i32, name: &str) -> Uuid {
     let key_uuid = Uuid::new_v4();
 
-    unwrap_ok!(diesel::insert_into(api_keys::table)
-        .values((
-            api_keys::uuid.eq(key_uuid),
-            api_keys::user_id.eq(user_id),
-            api_keys::name.eq(name),
-            api_keys::key_prefix.eq("vbn_exp"),
-            api_keys::key_hash.eq(format!("hash_exp_{}", name)),
-            api_keys::scopes.eq(serde_json::json!(["read"])),
-            api_keys::is_active.eq(true),
-            api_keys::expires_at.eq(Utc::now() - Duration::days(1)), // Expired 1 day ago
-        ))
-        .execute(conn)
-        .await);
+    unwrap_ok!(
+        diesel::insert_into(api_keys::table)
+            .values((
+                api_keys::uuid.eq(key_uuid),
+                api_keys::user_id.eq(user_id),
+                api_keys::name.eq(name),
+                api_keys::key_prefix.eq("vbn_exp"),
+                api_keys::key_hash.eq(format!("hash_exp_{}", name)),
+                api_keys::scopes.eq(serde_json::json!(["read"])),
+                api_keys::is_active.eq(true),
+                api_keys::expires_at.eq(Utc::now() - Duration::days(1)), // Expired 1 day ago
+            ))
+            .execute(conn)
+            .await
+    );
 
     key_uuid
 }
@@ -359,19 +386,21 @@ async fn create_expired_api_key(conn: &mut AsyncPgConnection, user_id: i32, name
 async fn create_valid_api_key(conn: &mut AsyncPgConnection, user_id: i32, name: &str) -> Uuid {
     let key_uuid = Uuid::new_v4();
 
-    unwrap_ok!(diesel::insert_into(api_keys::table)
-        .values((
-            api_keys::uuid.eq(key_uuid),
-            api_keys::user_id.eq(user_id),
-            api_keys::name.eq(name),
-            api_keys::key_prefix.eq("vbn_val"),
-            api_keys::key_hash.eq(format!("hash_val_{}", name)),
-            api_keys::scopes.eq(serde_json::json!(["read", "write"])),
-            api_keys::is_active.eq(true),
-            // No expires_at = never expires
-        ))
-        .execute(conn)
-        .await);
+    unwrap_ok!(
+        diesel::insert_into(api_keys::table)
+            .values((
+                api_keys::uuid.eq(key_uuid),
+                api_keys::user_id.eq(user_id),
+                api_keys::name.eq(name),
+                api_keys::key_prefix.eq("vbn_val"),
+                api_keys::key_hash.eq(format!("hash_val_{}", name)),
+                api_keys::scopes.eq(serde_json::json!(["read", "write"])),
+                api_keys::is_active.eq(true),
+                // No expires_at = never expires
+            ))
+            .execute(conn)
+            .await
+    );
 
     key_uuid
 }
@@ -380,18 +409,20 @@ async fn create_valid_api_key(conn: &mut AsyncPgConnection, user_id: i32, name: 
 async fn create_inactive_api_key(conn: &mut AsyncPgConnection, user_id: i32, name: &str) -> Uuid {
     let key_uuid = Uuid::new_v4();
 
-    unwrap_ok!(diesel::insert_into(api_keys::table)
-        .values((
-            api_keys::uuid.eq(key_uuid),
-            api_keys::user_id.eq(user_id),
-            api_keys::name.eq(name),
-            api_keys::key_prefix.eq("vbn_ina"),
-            api_keys::key_hash.eq(format!("hash_ina_{}", name)),
-            api_keys::scopes.eq(serde_json::json!(["read"])),
-            api_keys::is_active.eq(false), // Inactive
-        ))
-        .execute(conn)
-        .await);
+    unwrap_ok!(
+        diesel::insert_into(api_keys::table)
+            .values((
+                api_keys::uuid.eq(key_uuid),
+                api_keys::user_id.eq(user_id),
+                api_keys::name.eq(name),
+                api_keys::key_prefix.eq("vbn_ina"),
+                api_keys::key_hash.eq(format!("hash_ina_{}", name)),
+                api_keys::scopes.eq(serde_json::json!(["read"])),
+                api_keys::is_active.eq(false), // Inactive
+            ))
+            .execute(conn)
+            .await
+    );
 
     key_uuid
 }

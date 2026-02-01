@@ -10,8 +10,8 @@ use axum::{
 use axum_server::tls_rustls::RustlsConfig;
 use secrecy::ExposeSecret;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use tower::ServiceBuilder;
 use tower_http::{
@@ -22,7 +22,7 @@ use tower_http::{
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 // IPC imports for supervisor heartbeat
-use shared::ipc::{poll_readable, IpcChannel};
+use shared::ipc::{IpcChannel, poll_readable};
 use shared::messages::{ControlMessage, Message, ServiceStats};
 
 /// Shared state for heartbeat reporting.
@@ -290,7 +290,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     tracing::info!(
         "Rate limiter initialized (backend: {}, limit: {}/min)",
-        if config.cache.enabled { "Redis" } else { "in-memory" },
+        if config.cache.enabled {
+            "Redis"
+        } else {
+            "in-memory"
+        },
         config.security.rate_limit_per_minute
     );
 
@@ -349,9 +353,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///
 /// On non-FreeBSD platforms, this is a no-op with a warning.
 #[cfg(target_os = "freebsd")]
-fn enter_sandbox(
-    _listener: &std::net::TcpListener,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn enter_sandbox(_listener: &std::net::TcpListener) -> Result<(), Box<dyn std::error::Error>> {
     use shared::capsicum;
 
     // Enter capability mode - point of no return
@@ -369,9 +371,7 @@ fn enter_sandbox(
 }
 
 #[cfg(not(target_os = "freebsd"))]
-fn enter_sandbox(
-    _listener: &std::net::TcpListener,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn enter_sandbox(_listener: &std::net::TcpListener) -> Result<(), Box<dyn std::error::Error>> {
     tracing::warn!("Capsicum not available on this platform - running without sandbox");
     Ok(())
 }
@@ -403,9 +403,10 @@ async fn load_tls_config(config: &Config) -> Result<RustlsConfig, Box<dyn std::e
     // Load certificate chain
     let cert_file = File::open(cert_path)?;
     let mut cert_reader = BufReader::new(cert_file);
-    let cert_chain: Vec<CertificateDer<'static>> = CertificateDer::pem_reader_iter(&mut cert_reader)
-        .filter_map(|cert| cert.ok())
-        .collect();
+    let cert_chain: Vec<CertificateDer<'static>> =
+        CertificateDer::pem_reader_iter(&mut cert_reader)
+            .filter_map(|cert| cert.ok())
+            .collect();
 
     if cert_chain.is_empty() {
         return Err("No valid certificates found in certificate file".into());
@@ -454,7 +455,7 @@ async fn load_tls_config(config: &Config) -> Result<RustlsConfig, Box<dyn std::e
 /// - API routes: Conditionally active based on config.api.enabled, serve JSON for M2M
 async fn create_app(state: AppState) -> Result<Router, AppError> {
     use secrecy::ExposeSecret;
-    
+
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::predicate(|origin, request_parts| {
             let host = request_parts
@@ -604,7 +605,10 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             get(handlers::web::asset_list).post(handlers::web::create_asset_web),
         )
         // Asset groups - literal routes MUST come before parameterized routes
-        .route("/assets/groups/new", get(handlers::web::asset_group_create_form))
+        .route(
+            "/assets/groups/new",
+            get(handlers::web::asset_group_create_form),
+        )
         .route(
             "/assets/groups",
             get(handlers::web::asset_group_list).post(handlers::web::create_asset_group_web),
@@ -643,7 +647,10 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
         .route("/assets/{uuid}", get(handlers::web::asset_detail))
         // Sessions pages
         .route("/sessions", get(handlers::web::session_list))
-        .route("/sessions/{id}/terminate", post(handlers::web::terminate_session_web))
+        .route(
+            "/sessions/{id}/terminate",
+            post(handlers::web::terminate_session_web),
+        )
         .route("/sessions/recordings", get(handlers::web::recording_list))
         .route(
             "/sessions/recordings/{id}/play",
@@ -718,7 +725,13 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
         tracing::info!("API routes disabled by configuration");
         Router::new()
             // Return 404 for all API routes when disabled
-            .route("/api/v1/{*path}", get(api_disabled_handler).post(api_disabled_handler).put(api_disabled_handler).delete(api_disabled_handler))
+            .route(
+                "/api/v1/{*path}",
+                get(api_disabled_handler)
+                    .post(api_disabled_handler)
+                    .put(api_disabled_handler)
+                    .delete(api_disabled_handler),
+            )
     };
 
     // Merge web and API routes
@@ -1003,10 +1016,10 @@ mod tests {
     #[test]
     fn test_heartbeat_state_atomic_counters() {
         let state = Arc::new(HeartbeatState::new());
-        
+
         state.requests_processed.fetch_add(42, Ordering::Relaxed);
         state.requests_failed.fetch_add(3, Ordering::Relaxed);
-        
+
         assert_eq!(state.requests_processed.load(Ordering::Relaxed), 42);
         assert_eq!(state.requests_failed.load(Ordering::Relaxed), 3);
     }
@@ -1024,15 +1037,15 @@ mod tests {
     #[test]
     fn test_heartbeat_responds_to_ping() {
         let (supervisor_channel, service_channel) = IpcChannel::pair().unwrap();
-        
+
         let state = Arc::new(HeartbeatState::new());
         state.requests_processed.store(100, Ordering::Relaxed);
         state.requests_failed.store(5, Ordering::Relaxed);
-        
+
         // Send Ping from "supervisor"
         let ping = Message::Control(ControlMessage::Ping { seq: 42 });
         supervisor_channel.send(&ping).unwrap();
-        
+
         // Manually handle the message (simulating heartbeat_loop behavior)
         let msg = service_channel.recv().unwrap();
         if let Message::Control(ControlMessage::Ping { seq }) = msg {
@@ -1046,7 +1059,7 @@ mod tests {
             let pong = Message::Control(ControlMessage::Pong { seq, stats });
             service_channel.send(&pong).unwrap();
         }
-        
+
         // Verify response on supervisor side
         let response = supervisor_channel.recv().unwrap();
         if let Message::Control(ControlMessage::Pong { seq, stats }) = response {
@@ -1062,12 +1075,12 @@ mod tests {
     fn test_heartbeat_handles_multiple_pings() {
         let (supervisor_channel, service_channel) = IpcChannel::pair().unwrap();
         let state = Arc::new(HeartbeatState::new());
-        
+
         // Send and handle multiple Pings
         for seq in 1..=5u64 {
             let ping = Message::Control(ControlMessage::Ping { seq });
             supervisor_channel.send(&ping).unwrap();
-            
+
             // Handle on service side
             let msg = service_channel.recv().unwrap();
             if let Message::Control(ControlMessage::Ping { seq: recv_seq }) = msg {
@@ -1078,9 +1091,14 @@ mod tests {
                     active_connections: 0,
                     pending_requests: 0,
                 };
-                service_channel.send(&Message::Control(ControlMessage::Pong { seq: recv_seq, stats })).unwrap();
+                service_channel
+                    .send(&Message::Control(ControlMessage::Pong {
+                        seq: recv_seq,
+                        stats,
+                    }))
+                    .unwrap();
             }
-            
+
             // Verify on supervisor side
             let response = supervisor_channel.recv().unwrap();
             if let Message::Control(ControlMessage::Pong { seq: resp_seq, .. }) = response {
@@ -1095,10 +1113,12 @@ mod tests {
     fn test_heartbeat_stats_update_live() {
         let (supervisor_channel, service_channel) = IpcChannel::pair().unwrap();
         let state = Arc::new(HeartbeatState::new());
-        
+
         // First ping - counters at 0
-        supervisor_channel.send(&Message::Control(ControlMessage::Ping { seq: 1 })).unwrap();
-        
+        supervisor_channel
+            .send(&Message::Control(ControlMessage::Ping { seq: 1 }))
+            .unwrap();
+
         let msg = service_channel.recv().unwrap();
         if let Message::Control(ControlMessage::Ping { seq }) = msg {
             let stats = ServiceStats {
@@ -1108,21 +1128,25 @@ mod tests {
                 active_connections: 0,
                 pending_requests: 0,
             };
-            service_channel.send(&Message::Control(ControlMessage::Pong { seq, stats })).unwrap();
+            service_channel
+                .send(&Message::Control(ControlMessage::Pong { seq, stats }))
+                .unwrap();
         }
-        
+
         let response = supervisor_channel.recv().unwrap();
         if let Message::Control(ControlMessage::Pong { stats, .. }) = response {
             assert_eq!(stats.requests_processed, 0);
         }
-        
+
         // Update counters (simulating request processing)
         state.requests_processed.store(50, Ordering::Relaxed);
         state.requests_failed.store(2, Ordering::Relaxed);
-        
+
         // Second ping - should see updated counters
-        supervisor_channel.send(&Message::Control(ControlMessage::Ping { seq: 2 })).unwrap();
-        
+        supervisor_channel
+            .send(&Message::Control(ControlMessage::Ping { seq: 2 }))
+            .unwrap();
+
         let msg = service_channel.recv().unwrap();
         if let Message::Control(ControlMessage::Ping { seq }) = msg {
             let stats = ServiceStats {
@@ -1132,12 +1156,17 @@ mod tests {
                 active_connections: 0,
                 pending_requests: 0,
             };
-            service_channel.send(&Message::Control(ControlMessage::Pong { seq, stats })).unwrap();
+            service_channel
+                .send(&Message::Control(ControlMessage::Pong { seq, stats }))
+                .unwrap();
         }
-        
+
         let response = supervisor_channel.recv().unwrap();
         if let Message::Control(ControlMessage::Pong { stats, .. }) = response {
-            assert_eq!(stats.requests_processed, 50, "Stats should reflect live updates");
+            assert_eq!(
+                stats.requests_processed, 50,
+                "Stats should reflect live updates"
+            );
             assert_eq!(stats.requests_failed, 2);
         }
     }
@@ -1145,18 +1174,20 @@ mod tests {
     #[test]
     fn test_heartbeat_handles_drain_message() {
         let (supervisor_channel, service_channel) = IpcChannel::pair().unwrap();
-        
+
         // Send Drain message
         let drain = Message::Control(ControlMessage::Drain);
         supervisor_channel.send(&drain).unwrap();
-        
+
         // Handle on service side
         let msg = service_channel.recv().unwrap();
         if let Message::Control(ControlMessage::Drain) = msg {
-            let response = Message::Control(ControlMessage::DrainComplete { pending_requests: 0 });
+            let response = Message::Control(ControlMessage::DrainComplete {
+                pending_requests: 0,
+            });
             service_channel.send(&response).unwrap();
         }
-        
+
         // Verify DrainComplete on supervisor side
         let response = supervisor_channel.recv().unwrap();
         if let Message::Control(ControlMessage::DrainComplete { pending_requests }) = response {

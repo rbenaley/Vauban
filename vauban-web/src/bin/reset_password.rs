@@ -2,7 +2,7 @@
 ///
 /// Interactive CLI tool to reset a user's password.
 /// No secrets are stored in code - all input is provided interactively.
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use argon2::{Algorithm, Argon2, Params, PasswordHasher, Version, password_hash::SaltString};
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
@@ -43,16 +43,16 @@ fn main() -> Result<()> {
     }
 
     // Prompt for new password
-    let password =
-        prompt_password("Enter new password (min 12 chars): ").context("Failed to read password")?;
+    let password = prompt_password("Enter new password (min 12 chars): ")
+        .context("Failed to read password")?;
 
     if password.len() < 12 {
         return Err(anyhow!("Password must be at least 12 characters"));
     }
 
     // Confirm password
-    let password_confirm =
-        prompt_password("Confirm new password: ").context("Failed to read password confirmation")?;
+    let password_confirm = prompt_password("Confirm new password: ")
+        .context("Failed to read password confirmation")?;
 
     if password != password_confirm {
         return Err(anyhow!("Passwords do not match"));
@@ -113,7 +113,7 @@ fn prompt_password(message: &str) -> io::Result<String> {
     // Try to use rpassword-like behavior by disabling echo
     #[cfg(unix)]
     {
-        use nix::sys::termios::{tcgetattr, tcsetattr, LocalFlags, SetArg};
+        use nix::sys::termios::{LocalFlags, SetArg, tcgetattr, tcsetattr};
 
         let stdin = io::stdin();
 

@@ -4,7 +4,7 @@
 /// Flash messages are stored in a cookie and cleared after being read.
 use axum::{
     extract::FromRequestParts,
-    http::{request::Parts, StatusCode},
+    http::{StatusCode, request::Parts},
     response::{IntoResponse, IntoResponseParts, Response, ResponseParts},
 };
 use axum_extra::extract::cookie::{Cookie, SameSite};
@@ -142,7 +142,8 @@ impl IntoResponseParts for Flash {
                 .build();
 
             if let Ok(header_value) = cookie.to_string().parse() {
-                res.headers_mut().append(axum::http::header::SET_COOKIE, header_value);
+                res.headers_mut()
+                    .append(axum::http::header::SET_COOKIE, header_value);
             }
         }
         Ok(res)
@@ -213,8 +214,7 @@ impl IncomingFlash {
         // Verify signature
         // SAFETY: HMAC accepts any key size per RFC 2104
         #[allow(clippy::expect_used)]
-        let mut mac =
-            HmacSha3::new_from_slice(secret_key).expect("HMAC can take key of any size");
+        let mut mac = HmacSha3::new_from_slice(secret_key).expect("HMAC can take key of any size");
         mac.update(json.as_bytes());
 
         let expected_signature = hex::encode(mac.finalize().into_bytes());
@@ -292,7 +292,8 @@ impl IntoResponseParts for ClearFlashCookie {
             .build();
 
         if let Ok(header_value) = cookie.to_string().parse() {
-            res.headers_mut().append(axum::http::header::SET_COOKIE, header_value);
+            res.headers_mut()
+                .append(axum::http::header::SET_COOKIE, header_value);
         }
         Ok(res)
     }
@@ -321,11 +322,7 @@ pub async fn flash_middleware(
 pub fn flash_redirect(flash: Flash, location: &str) -> Response {
     // Set flash cookie and redirect - DO NOT clear the cookie here!
     // The cookie will be cleared when the GET handler reads it.
-    (
-        flash,
-        axum::response::Redirect::to(location),
-    )
-        .into_response()
+    (flash, axum::response::Redirect::to(location)).into_response()
 }
 
 // Base64 encoding/decoding helpers (URL-safe)
@@ -356,7 +353,6 @@ fn constant_time_compare(a: &str, b: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     #[test]
     fn test_flash_message_success() {

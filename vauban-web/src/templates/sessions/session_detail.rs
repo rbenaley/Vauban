@@ -291,6 +291,9 @@ mod tests {
 
         assert!(!template.show_play_recording);
         let result = template.render();
-        assert!(result.is_ok(), "SessionDetailTemplate should render without play button");
+        assert!(
+            result.is_ok(),
+            "SessionDetailTemplate should render without play button"
+        );
     }
 }

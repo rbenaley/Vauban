@@ -22,10 +22,7 @@ use axum::{
 /// - `Strict-Transport-Security: max-age=31536000; includeSubDomains`
 /// - `Referrer-Policy: strict-origin-when-cross-origin`
 /// - `Permissions-Policy: geolocation=(), camera=(), microphone=()`
-pub async fn security_headers_middleware(
-    request: Request<Body>,
-    next: Next,
-) -> Response<Body> {
+pub async fn security_headers_middleware(request: Request<Body>, next: Next) -> Response<Body> {
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
 
@@ -36,10 +33,7 @@ pub async fn security_headers_middleware(
     );
 
     // Prevent clickjacking
-    headers.insert(
-        "x-frame-options",
-        HeaderValue::from_static("DENY"),
-    );
+    headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
 
     // XSS protection (legacy, but still useful for older browsers)
     headers.insert(
@@ -92,9 +86,8 @@ pub async fn security_headers_middleware(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{Router, routing::get, body::Body, http::Request};
+    use axum::{Router, body::Body, http::Request, routing::get};
     use tower::ServiceExt;
-    
 
     async fn test_handler() -> &'static str {
         "OK"
@@ -106,14 +99,19 @@ mod tests {
             .route("/", get(test_handler))
             .layer(axum::middleware::from_fn(security_headers_middleware));
 
-        let response = unwrap_ok!(app
-            .oneshot(unwrap_ok!(Request::builder().uri("/").body(Body::empty())))
-            .await);
+        let response = unwrap_ok!(
+            app.oneshot(unwrap_ok!(Request::builder().uri("/").body(Body::empty())))
+                .await
+        );
 
         let headers = response.headers();
 
         assert_eq!(
-            unwrap_ok!(headers.get("x-content-type-options").ok_or("missing header")),
+            unwrap_ok!(
+                headers
+                    .get("x-content-type-options")
+                    .ok_or("missing header")
+            ),
             "nosniff"
         );
         assert_eq!(
@@ -136,15 +134,20 @@ mod tests {
             .route("/", get(test_handler))
             .layer(axum::middleware::from_fn(security_headers_middleware));
 
-        let response = unwrap_ok!(app
-            .oneshot(unwrap_ok!(Request::builder().uri("/").body(Body::empty())))
-            .await);
+        let response = unwrap_ok!(
+            app.oneshot(unwrap_ok!(Request::builder().uri("/").body(Body::empty())))
+                .await
+        );
 
-        let csp = unwrap_ok!(unwrap_ok!(response
-            .headers()
-            .get("content-security-policy")
-            .ok_or("missing header"))
-            .to_str());
+        let csp = unwrap_ok!(
+            unwrap_ok!(
+                response
+                    .headers()
+                    .get("content-security-policy")
+                    .ok_or("missing header")
+            )
+            .to_str()
+        );
 
         assert!(csp.contains("default-src 'self'"));
         assert!(csp.contains("script-src"));
@@ -157,15 +160,20 @@ mod tests {
             .route("/", get(test_handler))
             .layer(axum::middleware::from_fn(security_headers_middleware));
 
-        let response = unwrap_ok!(app
-            .oneshot(unwrap_ok!(Request::builder().uri("/").body(Body::empty())))
-            .await);
+        let response = unwrap_ok!(
+            app.oneshot(unwrap_ok!(Request::builder().uri("/").body(Body::empty())))
+                .await
+        );
 
-        let hsts = unwrap_ok!(unwrap_ok!(response
-            .headers()
-            .get("strict-transport-security")
-            .ok_or("missing header"))
-            .to_str());
+        let hsts = unwrap_ok!(
+            unwrap_ok!(
+                response
+                    .headers()
+                    .get("strict-transport-security")
+                    .ok_or("missing header")
+            )
+            .to_str()
+        );
 
         assert!(hsts.contains("max-age="));
         assert!(hsts.contains("includeSubDomains"));

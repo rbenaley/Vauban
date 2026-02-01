@@ -262,7 +262,6 @@ pub struct UpdateAssetRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     /// Helper to create a test asset
     fn create_test_asset() -> Asset {
@@ -364,10 +363,7 @@ mod tests {
 
     #[test]
     fn test_asset_status_from_str_maintenance() {
-        assert_eq!(
-            AssetStatus::parse("maintenance"),
-            AssetStatus::Maintenance
-        );
+        assert_eq!(AssetStatus::parse("maintenance"), AssetStatus::Maintenance);
     }
 
     #[test]

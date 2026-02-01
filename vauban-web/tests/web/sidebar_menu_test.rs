@@ -18,11 +18,13 @@ use uuid::Uuid;
 /// Helper to get user UUID from user_id.
 async fn get_user_uuid(conn: &mut AsyncPgConnection, user_id: i32) -> Uuid {
     use vauban_web::schema::users;
-    unwrap_ok!(users::table
-        .filter(users::id.eq(user_id))
-        .select(users::uuid)
-        .first(conn)
-        .await)
+    unwrap_ok!(
+        users::table
+            .filter(users::id.eq(user_id))
+            .select(users::uuid)
+            .first(conn)
+            .await
+    )
 }
 
 // =============================================================================
@@ -38,7 +40,9 @@ async fn test_sidebar_contains_user_profile_link() {
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, false, false)
+        .await;
 
     // Request dashboard (which includes the sidebar)
     let response = app
@@ -72,7 +76,9 @@ async fn test_sidebar_contains_user_sessions_link() {
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, false, false)
+        .await;
 
     let response = app
         .server
@@ -105,7 +111,9 @@ async fn test_sidebar_contains_api_keys_link() {
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, false, false)
+        .await;
 
     let response = app
         .server
@@ -138,7 +146,9 @@ async fn test_sidebar_contains_logout_button() {
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, false, false)
+        .await;
 
     let response = app
         .server
@@ -171,7 +181,9 @@ async fn test_sidebar_displays_user_name() {
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, false, false)
+        .await;
 
     let response = app
         .server
@@ -205,7 +217,9 @@ async fn test_my_profile_link_navigates_correctly() {
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, false, false)
+        .await;
 
     // Navigate to profile page (the link from sidebar)
     let response = app
@@ -237,7 +251,9 @@ async fn test_my_sessions_link_navigates_correctly() {
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, false, false)
+        .await;
 
     // Navigate to sessions page (the link from sidebar)
     let response = app
@@ -269,7 +285,9 @@ async fn test_api_keys_link_navigates_correctly() {
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, false, false)
+        .await;
 
     // Navigate to API keys page (the link from sidebar)
     let response = app
@@ -301,7 +319,9 @@ async fn test_logout_button_works() {
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, false, false)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     // Submit logout form (as it would be from sidebar)
@@ -326,10 +346,7 @@ async fn test_logout_button_works() {
     // If redirect, verify it goes to login page
     if status == 303 {
         let location = response.headers().get("location");
-        assert!(
-            location.is_some(),
-            "Redirect should have Location header"
-        );
+        assert!(location.is_some(), "Redirect should have Location header");
         let loc_str = location.unwrap().to_str().unwrap();
         assert!(
             loc_str.contains("/login") || loc_str == "/",
@@ -413,7 +430,9 @@ async fn test_logout_requires_csrf_token() {
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, false, false)
+        .await;
 
     // Submit logout with empty/invalid CSRF token
     let response = app
@@ -459,7 +478,9 @@ async fn test_complete_user_menu_navigation_flow() {
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, false, false)
+        .await;
 
     // Step 1: Load dashboard (with sidebar)
     let dashboard_response = app
@@ -557,7 +578,9 @@ async fn test_sidebar_user_menu_on_all_pages() {
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     // List of pages that should have the sidebar with user menu
     let pages = [

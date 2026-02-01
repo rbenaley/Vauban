@@ -165,7 +165,6 @@ pub struct CreateSessionRequest {
 mod tests {
     use super::*;
     use chrono::Duration;
-    
 
     /// Helper to create a test session
     fn create_test_session() -> ProxySession {

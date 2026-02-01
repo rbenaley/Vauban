@@ -7,7 +7,10 @@ use serial_test::serial;
 use uuid::Uuid;
 
 use crate::common::{TestApp, test_db};
-use crate::fixtures::{create_admin_user, create_simple_admin_user, create_test_asset_group, create_test_asset_in_group, unique_name};
+use crate::fixtures::{
+    create_admin_user, create_simple_admin_user, create_test_asset_group,
+    create_test_asset_in_group, unique_name,
+};
 
 /// Form data for asset group update.
 #[derive(Serialize)]
@@ -185,13 +188,25 @@ async fn test_api_list_asset_groups() {
     assert_eq!(status, 200, "Expected 200, got {}", status);
 
     let body = response.text();
-    
+
     // Verify response is a valid JSON array with expected fields
     assert!(body.starts_with("["), "Response should be a JSON array");
-    assert!(body.contains("\"uuid\""), "Response should contain uuid field");
-    assert!(body.contains("\"name\""), "Response should contain name field");
-    assert!(body.contains("\"slug\""), "Response should contain slug field");
-    assert!(body.contains("\"asset_count\""), "Response should contain asset_count field");
+    assert!(
+        body.contains("\"uuid\""),
+        "Response should contain uuid field"
+    );
+    assert!(
+        body.contains("\"name\""),
+        "Response should contain name field"
+    );
+    assert!(
+        body.contains("\"slug\""),
+        "Response should contain slug field"
+    );
+    assert!(
+        body.contains("\"asset_count\""),
+        "Response should contain asset_count field"
+    );
 
     // Cleanup
     test_db::cleanup(&mut conn).await;
@@ -204,10 +219,7 @@ async fn test_api_list_asset_groups_requires_auth() {
     let app = TestApp::spawn().await;
 
     // Execute: GET /api/v1/assets/groups without auth
-    let response = app
-        .server
-        .get("/api/v1/assets/groups")
-        .await;
+    let response = app.server.get("/api/v1/assets/groups").await;
 
     // Assert: 401 Unauthorized
     let status = response.status_code().as_u16();
@@ -227,8 +239,12 @@ async fn test_api_list_group_assets() {
     let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
     let group_uuid = create_test_asset_group(&mut conn, &unique_name("api-grp-assets")).await;
-    let _asset1_id = create_test_asset_in_group(&mut conn, &unique_name("api-asset1"), admin_id, &group_uuid).await;
-    let _asset2_id = create_test_asset_in_group(&mut conn, &unique_name("api-asset2"), admin_id, &group_uuid).await;
+    let _asset1_id =
+        create_test_asset_in_group(&mut conn, &unique_name("api-asset1"), admin_id, &group_uuid)
+            .await;
+    let _asset2_id =
+        create_test_asset_in_group(&mut conn, &unique_name("api-asset2"), admin_id, &group_uuid)
+            .await;
 
     // Execute: GET /api/v1/assets/groups/{uuid}/assets
     let response = app
@@ -242,9 +258,18 @@ async fn test_api_list_group_assets() {
     assert_eq!(status, 200, "Expected 200, got {}", status);
 
     let body = response.text();
-    assert!(body.contains("api-asset1") || body.contains("api-asset2"), "Response should contain assets");
-    assert!(body.contains("hostname"), "Response should contain hostname field");
-    assert!(body.contains("asset_type"), "Response should contain asset_type field");
+    assert!(
+        body.contains("api-asset1") || body.contains("api-asset2"),
+        "Response should contain assets"
+    );
+    assert!(
+        body.contains("hostname"),
+        "Response should contain hostname field"
+    );
+    assert!(
+        body.contains("asset_type"),
+        "Response should contain asset_type field"
+    );
 
     // Cleanup
     test_db::cleanup(&mut conn).await;
@@ -272,7 +297,11 @@ async fn test_api_list_group_assets_not_found() {
 
     // Assert: 404 Not Found
     let status = response.status_code().as_u16();
-    assert_eq!(status, 404, "Expected 404 for non-existent group, got {}", status);
+    assert_eq!(
+        status, 404,
+        "Expected 404 for non-existent group, got {}",
+        status
+    );
 
     // Cleanup
     test_db::cleanup(&mut conn).await;

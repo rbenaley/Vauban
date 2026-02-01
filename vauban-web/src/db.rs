@@ -1,3 +1,5 @@
+use diesel_async::AsyncPgConnection;
+use diesel_async::pooled_connection::AsyncDieselConnectionManager;
 /// VAUBAN Web - Database connection pool setup.
 ///
 /// Uses diesel-async with deadpool for async PostgreSQL connection pooling.
@@ -7,8 +9,6 @@
 /// - `create_pool()`: Async pool for production use
 /// - `create_pool_sandboxed()`: Pre-establishes all connections for Capsicum sandbox mode
 use diesel_async::pooled_connection::deadpool::{Object, Pool};
-use diesel_async::pooled_connection::AsyncDieselConnectionManager;
-use diesel_async::AsyncPgConnection;
 use secrecy::ExposeSecret;
 
 use crate::config::Config;
@@ -29,9 +29,8 @@ pub type DbConnection = Object<AsyncPgConnection>;
 /// This creates an async pool using deadpool-diesel.
 /// No background threads are spawned, making it Capsicum-compatible.
 pub async fn create_pool(config: &Config) -> AppResult<DbPool> {
-    let manager = AsyncDieselConnectionManager::<AsyncPgConnection>::new(
-        config.database.url.expose_secret(),
-    );
+    let manager =
+        AsyncDieselConnectionManager::<AsyncPgConnection>::new(config.database.url.expose_secret());
 
     let pool = Pool::builder(manager)
         .max_size(config.database.max_connections as usize)
@@ -57,16 +56,17 @@ pub async fn create_pool(config: &Config) -> AppResult<DbPool> {
 /// # Errors
 /// Returns an error if the pool cannot be created or if any connection fails validation.
 pub async fn create_pool_sandboxed(config: &Config) -> AppResult<DbPool> {
-    let manager = AsyncDieselConnectionManager::<AsyncPgConnection>::new(
-        config.database.url.expose_secret(),
-    );
+    let manager =
+        AsyncDieselConnectionManager::<AsyncPgConnection>::new(config.database.url.expose_secret());
 
     let pool_size = config.database.max_connections as usize;
 
     let pool = Pool::builder(manager)
         .max_size(pool_size)
         .build()
-        .map_err(|e| AppError::Config(format!("Failed to create sandboxed database pool: {}", e)))?;
+        .map_err(|e| {
+            AppError::Config(format!("Failed to create sandboxed database pool: {}", e))
+        })?;
 
     // Force creation of all connections by borrowing them simultaneously.
     // This ensures all connections are established BEFORE cap_enter().

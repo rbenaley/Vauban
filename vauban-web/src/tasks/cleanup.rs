@@ -106,7 +106,6 @@ async fn cleanup_expired_api_keys(db_pool: &DbPool) -> Result<usize, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     // ==================== Constants Tests ====================
 
@@ -153,7 +152,12 @@ mod tests {
     fn test_cleanup_result_err() {
         let result: Result<usize, String> = Err("Database error".to_string());
         assert!(result.is_err());
-        assert!(result.err().map(|e| e.contains("Database")).unwrap_or(false));
+        assert!(
+            result
+                .err()
+                .map(|e| e.contains("Database"))
+                .unwrap_or(false)
+        );
     }
 
     #[test]

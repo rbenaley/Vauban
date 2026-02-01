@@ -9,7 +9,9 @@ use serial_test::serial;
 use uuid::Uuid;
 
 use crate::common::{TestApp, assertions::*, test_db};
-use crate::fixtures::{create_admin_user, create_test_rdp_asset, create_test_ssh_asset, unique_name};
+use crate::fixtures::{
+    create_admin_user, create_test_rdp_asset, create_test_ssh_asset, unique_name,
+};
 
 // =============================================================================
 // Asset Edit Page Tests
@@ -103,7 +105,10 @@ async fn test_asset_edit_page_not_found() {
 
     // Assert: redirects to asset list with flash message
     assert_status(&response, 303);
-    let location = response.headers().get("location").and_then(|v| v.to_str().ok());
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok());
     assert_eq!(location, Some("/assets"));
 
     // Cleanup
@@ -252,8 +257,15 @@ async fn test_asset_detail_accepts_uuid_not_integer_id() {
 
     // Should redirect gracefully instead of returning raw error
     assert_status(&id_response, 303);
-    let location = id_response.headers().get("location").and_then(|v| v.to_str().ok());
-    assert_eq!(location, Some("/assets"), "Invalid UUID should redirect to /assets");
+    let location = id_response
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok());
+    assert_eq!(
+        location,
+        Some("/assets"),
+        "Invalid UUID should redirect to /assets"
+    );
 
     // Cleanup
     test_db::cleanup(&mut conn).await;

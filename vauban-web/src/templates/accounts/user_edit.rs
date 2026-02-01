@@ -126,6 +126,9 @@ mod tests {
         };
 
         let result = template.render();
-        assert!(result.is_ok(), "UserEditTemplate should render for staff viewing superuser");
+        assert!(
+            result.is_ok(),
+            "UserEditTemplate should render for staff viewing superuser"
+        );
     }
 }

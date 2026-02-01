@@ -114,6 +114,9 @@ mod tests {
         };
 
         let result = template.render();
-        assert!(result.is_ok(), "Template should render with empty user list");
+        assert!(
+            result.is_ok(),
+            "Template should render with empty user list"
+        );
     }
 }

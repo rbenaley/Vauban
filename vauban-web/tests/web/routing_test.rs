@@ -11,11 +11,13 @@ use uuid::Uuid;
 /// Helper to get user UUID from user_id.
 async fn get_user_uuid(conn: &mut AsyncPgConnection, user_id: i32) -> Uuid {
     use vauban_web::schema::users;
-    unwrap_ok!(users::table
-        .filter(users::id.eq(user_id))
-        .select(users::uuid)
-        .first(conn)
-        .await)
+    unwrap_ok!(
+        users::table
+            .filter(users::id.eq(user_id))
+            .select(users::uuid)
+            .first(conn)
+            .await
+    )
 }
 
 // =============================================================================
@@ -31,7 +33,9 @@ async fn test_fallback_route_redirects_to_home() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
 
     // Try to access a non-existent route
     let response = app
@@ -58,7 +62,9 @@ async fn test_fallback_route_with_random_path() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
 
     // Try various non-existent paths
     let paths = [
@@ -119,16 +125,18 @@ async fn test_asset_detail_with_malformed_uuid() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
 
     // Try various malformed UUIDs - all should redirect gracefully to /assets
     let malformed_uuids = [
         "not-a-uuid",
         "12345",
         "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-        "123e4567-e89b-12d3-a456",  // Too short
-        "123e4567-e89b-12d3-a456-4266141740001234",  // Too long
-        "24d3cc30-d6c0-ooo7-be9a-978dd250ae3e",  // Invalid character 'o' in hex
+        "123e4567-e89b-12d3-a456",                  // Too short
+        "123e4567-e89b-12d3-a456-4266141740001234", // Too long
+        "24d3cc30-d6c0-ooo7-be9a-978dd250ae3e",     // Invalid character 'o' in hex
     ];
 
     for bad_uuid in malformed_uuids {
@@ -139,7 +147,10 @@ async fn test_asset_detail_with_malformed_uuid() {
             .await;
 
         let status = response.status_code().as_u16();
-        let location = response.headers().get("location").and_then(|v| v.to_str().ok());
+        let location = response
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok());
 
         assert!(
             status == 303 && location == Some("/assets"),
@@ -160,7 +171,9 @@ async fn test_user_detail_with_malformed_uuid() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
 
     let response = app
         .server
@@ -185,7 +198,9 @@ async fn test_group_detail_with_malformed_uuid() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
 
     let response = app
         .server
@@ -210,7 +225,9 @@ async fn test_asset_group_detail_with_malformed_uuid() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
 
     let response = app
         .server
@@ -235,7 +252,9 @@ async fn test_approval_detail_with_malformed_uuid() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
 
     let response = app
         .server

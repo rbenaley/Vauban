@@ -212,7 +212,8 @@ async fn fetch_initial_stats(
     let active_count: i64 = proxy_sessions
         .filter(status.eq("active"))
         .count()
-        .get_result(&mut conn).await
+        .get_result(&mut conn)
+        .await
         .unwrap_or(0);
 
     let today_start = Utc::now()
@@ -224,14 +225,16 @@ async fn fetch_initial_stats(
     let today_count: i64 = proxy_sessions
         .filter(created_at.ge(today_start))
         .count()
-        .get_result(&mut conn).await
+        .get_result(&mut conn)
+        .await
         .unwrap_or(0);
 
     let week_start = Utc::now() - chrono::Duration::days(7);
     let week_count: i64 = proxy_sessions
         .filter(created_at.ge(week_start))
         .count()
-        .get_result(&mut conn).await
+        .get_result(&mut conn)
+        .await
         .unwrap_or(0);
 
     Ok(StatsData {
@@ -259,7 +262,8 @@ async fn fetch_initial_sessions(
         .filter(status.eq("active"))
         .order(created_at.desc())
         .limit(10)
-        .load(&mut conn).await
+        .load(&mut conn)
+        .await
         .unwrap_or_default();
 
     let now = Utc::now();
@@ -294,7 +298,8 @@ async fn fetch_initial_activity(
     let sessions: Vec<ProxySession> = proxy_sessions
         .order(created_at.desc())
         .limit(10)
-        .load(&mut conn).await
+        .load(&mut conn)
+        .await
         .unwrap_or_default();
 
     Ok(sessions
@@ -699,7 +704,8 @@ async fn fetch_active_sessions_list(
     let sessions: Vec<ProxySession> = proxy_sessions
         .filter(status.eq("active"))
         .order(created_at.desc())
-        .load(&mut conn).await
+        .load(&mut conn)
+        .await
         .unwrap_or_default();
 
     let now = Utc::now();
@@ -721,7 +727,6 @@ async fn fetch_active_sessions_list(
         })
         .collect())
 }
-
 
 #[cfg(test)]
 mod tests {

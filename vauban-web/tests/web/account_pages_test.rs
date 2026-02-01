@@ -20,11 +20,13 @@ use uuid::Uuid;
 /// Helper to get user UUID from user_id.
 async fn get_user_uuid(conn: &mut AsyncPgConnection, user_id: i32) -> Uuid {
     use vauban_web::schema::users;
-    unwrap_ok!(users::table
-        .filter(users::id.eq(user_id))
-        .select(users::uuid)
-        .first(conn)
-        .await)
+    unwrap_ok!(
+        users::table
+            .filter(users::id.eq(user_id))
+            .select(users::uuid)
+            .first(conn)
+            .await
+    )
 }
 
 // =============================================================================
@@ -42,7 +44,9 @@ async fn test_profile_page_loads() {
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
     // Generate auth token
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     // Request profile page
     let response = app
@@ -103,27 +107,30 @@ async fn test_profile_page_displays_user_info() {
 
     // Create user with first/last name
     let user_uuid = Uuid::new_v4();
-    let password_hash = unwrap_ok!(app
-        .auth_service
-        .hash_password("test_password_123!"));
+    let password_hash = unwrap_ok!(app.auth_service.hash_password("test_password_123!"));
 
-    unwrap_ok!(diesel::insert_into(users::table)
-        .values((
-            users::uuid.eq(user_uuid),
-            users::username.eq(&username),
-            users::email.eq(&email),
-            users::password_hash.eq(&password_hash),
-            users::first_name.eq("John"),
-            users::last_name.eq("Doe"),
-            users::is_active.eq(true),
-            users::is_staff.eq(true),
-            users::is_superuser.eq(false),
-            users::auth_source.eq("local"),
-            users::preferences.eq(serde_json::json!({})),
-        ))
-        .execute(&mut conn).await);
+    unwrap_ok!(
+        diesel::insert_into(users::table)
+            .values((
+                users::uuid.eq(user_uuid),
+                users::username.eq(&username),
+                users::email.eq(&email),
+                users::password_hash.eq(&password_hash),
+                users::first_name.eq("John"),
+                users::last_name.eq("Doe"),
+                users::is_active.eq(true),
+                users::is_staff.eq(true),
+                users::is_superuser.eq(false),
+                users::auth_source.eq("local"),
+                users::preferences.eq(serde_json::json!({})),
+            ))
+            .execute(&mut conn)
+            .await
+    );
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     let response = app
         .server
@@ -177,7 +184,9 @@ async fn test_profile_page_shows_mfa_status() {
         .await
         .expect("User creation should succeed");
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     let response = app
         .server
@@ -215,7 +224,9 @@ async fn test_profile_page_shows_active_sessions() {
     let _session1 = create_test_auth_session(&mut conn, user_id, true).await;
     let _session2 = create_test_auth_session(&mut conn, user_id, false).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     let response = app
         .server
@@ -266,7 +277,9 @@ async fn test_profile_page_shows_superuser_badge() {
         .await
         .expect("User creation should succeed");
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     let response = app
         .server
@@ -318,7 +331,9 @@ async fn test_profile_page_shows_auth_source() {
         .await
         .expect("User creation should succeed");
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     let response = app
         .server
@@ -352,7 +367,9 @@ async fn test_profile_page_shows_quick_actions() {
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     let response = app
         .server
@@ -389,7 +406,9 @@ async fn test_profile_page_displays_uuid() {
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     let response = app
         .server
@@ -424,7 +443,9 @@ async fn test_user_sessions_page_loads() {
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
     // Generate auth token
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     // Request user sessions page
     let response = app
@@ -476,7 +497,9 @@ async fn test_user_sessions_page_shows_empty_state() {
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     let response = app
         .server
@@ -519,7 +542,9 @@ async fn test_user_sessions_page_displays_sessions() {
     let _session1 = create_test_auth_session(&mut conn, user_id, true).await;
     let _session2 = create_test_auth_session(&mut conn, user_id, false).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     let response = app
         .server
@@ -552,7 +577,9 @@ async fn test_revoke_session_works() {
 
     let session_uuid = create_test_auth_session(&mut conn, user_id, false).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     // Revoke the session
@@ -607,7 +634,9 @@ async fn test_api_keys_page_loads() {
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     let response = app
         .server
@@ -648,7 +677,9 @@ async fn test_api_keys_page_shows_empty_state() {
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     let response = app
         .server
@@ -680,7 +711,9 @@ async fn test_api_keys_page_displays_keys() {
     let _key1 = create_test_api_key(&mut conn, user_id, "Test Key 1", true).await;
     let _key2 = create_test_api_key(&mut conn, user_id, "Test Key 2", true).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     let response = app
         .server
@@ -703,7 +736,9 @@ async fn test_api_keys_page_shows_expired_keys() {
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
     let _expired_key = create_expired_api_key(&mut conn, user_id, "Expired Key").await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     let response = app
         .server
@@ -729,7 +764,9 @@ async fn test_create_api_key_form_loads() {
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     let response = app
         .server
@@ -777,7 +814,9 @@ async fn test_create_api_key_endpoint_accepts_form() {
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     // Create API key via POST with form data
@@ -835,7 +874,9 @@ async fn test_revoke_api_key_success() {
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
     let key_uuid = create_test_api_key(&mut conn, user_id, "Key to Revoke", true).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     // Revoke the key
@@ -886,7 +927,9 @@ async fn test_revoke_api_key_not_found() {
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     // Try to revoke non-existent key
@@ -924,8 +967,9 @@ async fn test_cannot_revoke_other_users_key() {
     let attacker_id = create_simple_user(&mut conn, &attacker_name).await;
     let attacker_uuid = get_user_uuid(&mut conn, attacker_id).await;
 
-    let attacker_token =
-        app.generate_test_token(&attacker_uuid.to_string(), &attacker_name, true, true).await;
+    let attacker_token = app
+        .generate_test_token(&attacker_uuid.to_string(), &attacker_name, true, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     // Try to revoke another user's key
@@ -934,7 +978,10 @@ async fn test_cannot_revoke_other_users_key() {
         .post(&format!("/accounts/apikeys/{}/revoke", key_uuid))
         .add_header(
             COOKIE,
-            format!("access_token={}; __vauban_csrf={}", attacker_token, csrf_token),
+            format!(
+                "access_token={}; __vauban_csrf={}",
+                attacker_token, csrf_token
+            ),
         )
         .form(&[("csrf_token", csrf_token.as_str())])
         .await;
@@ -975,7 +1022,9 @@ async fn test_revoked_session_token_becomes_invalid() {
     };
 
     // Generate a token for this user (this also creates a session in DB)
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     // First, verify the token works (session exists)
     let response = app
@@ -1121,7 +1170,9 @@ async fn test_expired_session_is_rejected() {
     };
 
     // Generate a token for this user (this creates a valid session)
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     // Make the session idle for too long by setting last_activity to 2 hours ago
     // (exceeds session_idle_timeout_secs which is typically 30 min / 1800 secs)
@@ -1175,7 +1226,9 @@ async fn test_revoke_session_broadcasts_update_to_websocket() {
     // Create a session to revoke
     let session_to_revoke = create_test_auth_session(&mut conn, user_id, false).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     // Subscribe to the user's auth sessions channel BEFORE revoking
@@ -1250,7 +1303,9 @@ async fn test_revoke_session_removes_session_from_database() {
     .expect("Query should succeed");
     assert!(exists_before, "Session should exist before revocation");
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     // Revoke the session
@@ -1296,7 +1351,9 @@ async fn test_logout_broadcasts_session_removal() {
         .expect("User should exist");
 
     // Generate token (this also creates a session)
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     // Subscribe to the user's auth sessions channel
     let channel = WsChannel::UserAuthSessions(user_uuid.to_string());
@@ -1435,7 +1492,9 @@ async fn test_multiple_sessions_all_updated_on_revoke() {
         .expect("User should exist");
 
     // Generate token first (this creates a session)
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     // Create 3 additional sessions

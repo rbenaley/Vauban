@@ -392,14 +392,19 @@ async fn test_get_user_malformed_uuid_returns_validation_error() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("admin_malformed")).await;
+    let admin = create_admin_user(
+        &mut conn,
+        &app.auth_service,
+        &unique_name("admin_malformed"),
+    )
+    .await;
 
     // Try various malformed UUIDs
     let malformed_uuids = [
         "not-a-uuid",
         "12345",
         "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-        "24d3cc30-d6c0-ooo7-be9a-978dd250ae3e",  // Invalid character 'o'
+        "24d3cc30-d6c0-ooo7-be9a-978dd250ae3e", // Invalid character 'o'
     ];
 
     for bad_uuid in malformed_uuids {
@@ -436,7 +441,12 @@ async fn test_update_user_malformed_uuid_returns_validation_error() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("admin_upd_malformed")).await;
+    let admin = create_admin_user(
+        &mut conn,
+        &app.auth_service,
+        &unique_name("admin_upd_malformed"),
+    )
+    .await;
 
     let response = app
         .server

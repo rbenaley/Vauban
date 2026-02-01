@@ -11,7 +11,6 @@ pub struct ApikeyCreatedTemplate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     #[test]
     fn test_apikey_created_renders() {

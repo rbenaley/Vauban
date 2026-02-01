@@ -73,10 +73,7 @@ impl CacheConnection {
         match self {
             CacheConnection::Redis(conn) => {
                 let mut conn = conn.lock().await;
-                if let Err(e) = redis::cmd("PING")
-                    .query_async::<String>(&mut *conn)
-                    .await
-                {
+                if let Err(e) = redis::cmd("PING").query_async::<String>(&mut *conn).await {
                     tracing::error!(
                         "Cache connection lost in sandbox mode: {}. Exiting for respawn.",
                         e
@@ -203,10 +200,7 @@ impl CacheOps for CacheConnection {
                         .await
                         .map_err(AppError::Cache)?;
                 } else {
-                    let _: () = conn
-                        .set(key, &serialized)
-                        .await
-                        .map_err(AppError::Cache)?;
+                    let _: () = conn.set(key, &serialized).await.map_err(AppError::Cache)?;
                 }
 
                 Ok(())
@@ -275,7 +269,6 @@ impl CacheOps for MockCache {
 mod tests {
     use super::*;
     use serde::{Deserialize, Serialize};
-    
 
     // ==================== MockCache Tests ====================
 

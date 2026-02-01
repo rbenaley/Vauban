@@ -41,13 +41,18 @@ async fn test_auth_middleware_extracts_user_from_bearer_token() {
         use diesel::{ExpressionMethods, QueryDsl};
         use diesel_async::RunQueryDsl;
         use vauban_web::schema::users;
-        unwrap_ok!(users::table
-            .filter(users::id.eq(user_id))
-            .select(users::uuid)
-            .first(&mut conn).await)
+        unwrap_ok!(
+            users::table
+                .filter(users::id.eq(user_id))
+                .select(users::uuid)
+                .first(&mut conn)
+                .await
+        )
     };
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     // Request with Bearer token in Authorization header
     let response = app
@@ -73,13 +78,18 @@ async fn test_auth_middleware_extracts_user_from_cookie() {
         use diesel::{ExpressionMethods, QueryDsl};
         use diesel_async::RunQueryDsl;
         use vauban_web::schema::users;
-        unwrap_ok!(users::table
-            .filter(users::id.eq(user_id))
-            .select(users::uuid)
-            .first(&mut conn).await)
+        unwrap_ok!(
+            users::table
+                .filter(users::id.eq(user_id))
+                .select(users::uuid)
+                .first(&mut conn)
+                .await
+        )
     };
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     // Request with token in cookie
     let response = app
@@ -127,14 +137,19 @@ async fn test_auth_middleware_rejects_expired_token() {
         use diesel::{ExpressionMethods, QueryDsl};
         use diesel_async::RunQueryDsl;
         use vauban_web::schema::users;
-        unwrap_ok!(users::table
-            .filter(users::id.eq(user_id))
-            .select(users::uuid)
-            .first(&mut conn).await)
+        unwrap_ok!(
+            users::table
+                .filter(users::id.eq(user_id))
+                .select(users::uuid)
+                .first(&mut conn)
+                .await
+        )
     };
 
     // Generate token but then make the session idle for too long
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     // Set last_activity to 2 hours ago (exceeds session_idle_timeout_secs)
     {
@@ -143,9 +158,12 @@ async fn test_auth_middleware_rejects_expired_token() {
         use diesel_async::RunQueryDsl;
         use vauban_web::schema::auth_sessions;
 
-        unwrap_ok!(diesel::update(auth_sessions::table.filter(auth_sessions::user_id.eq(user_id)))
-            .set(auth_sessions::last_activity.eq(Utc::now() - Duration::hours(2)))
-            .execute(&mut conn).await);
+        unwrap_ok!(
+            diesel::update(auth_sessions::table.filter(auth_sessions::user_id.eq(user_id)))
+                .set(auth_sessions::last_activity.eq(Utc::now() - Duration::hours(2)))
+                .execute(&mut conn)
+                .await
+        );
     }
 
     // Request with idle-expired session
@@ -178,13 +196,18 @@ async fn test_auth_middleware_rejects_revoked_session() {
         use diesel::{ExpressionMethods, QueryDsl};
         use diesel_async::RunQueryDsl;
         use vauban_web::schema::users;
-        unwrap_ok!(users::table
-            .filter(users::id.eq(user_id))
-            .select(users::uuid)
-            .first(&mut conn).await)
+        unwrap_ok!(
+            users::table
+                .filter(users::id.eq(user_id))
+                .select(users::uuid)
+                .first(&mut conn)
+                .await
+        )
     };
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     // Delete all sessions for this user (simulating revocation)
     {
@@ -192,8 +215,11 @@ async fn test_auth_middleware_rejects_revoked_session() {
         use diesel_async::RunQueryDsl;
         use vauban_web::schema::auth_sessions;
 
-        unwrap_ok!(diesel::delete(auth_sessions::table.filter(auth_sessions::user_id.eq(user_id)))
-            .execute(&mut conn).await);
+        unwrap_ok!(
+            diesel::delete(auth_sessions::table.filter(auth_sessions::user_id.eq(user_id)))
+                .execute(&mut conn)
+                .await
+        );
     }
 
     // Request with revoked session
@@ -233,24 +259,34 @@ async fn test_bearer_token_takes_priority_over_cookie() {
         use diesel::{ExpressionMethods, QueryDsl};
         use diesel_async::RunQueryDsl;
         use vauban_web::schema::users;
-        unwrap_ok!(users::table
-            .filter(users::id.eq(user1_id))
-            .select(users::uuid)
-            .first(&mut conn).await)
+        unwrap_ok!(
+            users::table
+                .filter(users::id.eq(user1_id))
+                .select(users::uuid)
+                .first(&mut conn)
+                .await
+        )
     };
 
     let user2_uuid: uuid::Uuid = {
         use diesel::{ExpressionMethods, QueryDsl};
         use diesel_async::RunQueryDsl;
         use vauban_web::schema::users;
-        unwrap_ok!(users::table
-            .filter(users::id.eq(user2_id))
-            .select(users::uuid)
-            .first(&mut conn).await)
+        unwrap_ok!(
+            users::table
+                .filter(users::id.eq(user2_id))
+                .select(users::uuid)
+                .first(&mut conn)
+                .await
+        )
     };
 
-    let token1 = app.generate_test_token(&user1_uuid.to_string(), &user1_name, true, true).await;
-    let token2 = app.generate_test_token(&user2_uuid.to_string(), &user2_name, true, true).await;
+    let token1 = app
+        .generate_test_token(&user1_uuid.to_string(), &user1_name, true, true)
+        .await;
+    let token2 = app
+        .generate_test_token(&user2_uuid.to_string(), &user2_name, true, true)
+        .await;
 
     // Request with Bearer token (user1) and cookie (user2)
     // Bearer should take priority
@@ -341,19 +377,24 @@ async fn test_superuser_flag_extracted() {
         use diesel::{ExpressionMethods, QueryDsl};
         use diesel_async::RunQueryDsl;
         use vauban_web::schema::users;
-        unwrap_ok!(users::table
-            .filter(users::id.eq(user_id))
-            .select(users::uuid)
-            .first(&mut conn).await)
+        unwrap_ok!(
+            users::table
+                .filter(users::id.eq(user_id))
+                .select(users::uuid)
+                .first(&mut conn)
+                .await
+        )
     };
 
     // Generate token with superuser=true
-    let token = app.generate_test_token(
-        &user_uuid.to_string(),
-        &username,
-        true, // is_superuser
-        true, // is_staff
-    ).await;
+    let token = app
+        .generate_test_token(
+            &user_uuid.to_string(),
+            &username,
+            true, // is_superuser
+            true, // is_staff
+        )
+        .await;
 
     let response = app
         .server
@@ -402,14 +443,19 @@ async fn test_session_rejected_when_max_duration_exceeded() {
         use diesel::{ExpressionMethods, QueryDsl};
         use diesel_async::RunQueryDsl;
         use vauban_web::schema::users;
-        unwrap_ok!(users::table
-            .filter(users::id.eq(user_id))
-            .select(users::uuid)
-            .first(&mut conn).await)
+        unwrap_ok!(
+            users::table
+                .filter(users::id.eq(user_id))
+                .select(users::uuid)
+                .first(&mut conn)
+                .await
+        )
     };
 
     // Generate token
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     // Set created_at to 10 hours ago (exceeds session_max_duration_secs which is 8h by default)
     {
@@ -418,9 +464,12 @@ async fn test_session_rejected_when_max_duration_exceeded() {
         use diesel_async::RunQueryDsl;
         use vauban_web::schema::auth_sessions;
 
-        unwrap_ok!(diesel::update(auth_sessions::table.filter(auth_sessions::user_id.eq(user_id)))
-            .set(auth_sessions::created_at.eq(Utc::now() - Duration::hours(10)))
-            .execute(&mut conn).await);
+        unwrap_ok!(
+            diesel::update(auth_sessions::table.filter(auth_sessions::user_id.eq(user_id)))
+                .set(auth_sessions::created_at.eq(Utc::now() - Duration::hours(10)))
+                .execute(&mut conn)
+                .await
+        );
     }
 
     // Request should fail - session max duration exceeded
@@ -452,14 +501,19 @@ async fn test_session_valid_within_timeout_limits() {
         use diesel::{ExpressionMethods, QueryDsl};
         use diesel_async::RunQueryDsl;
         use vauban_web::schema::users;
-        unwrap_ok!(users::table
-            .filter(users::id.eq(user_id))
-            .select(users::uuid)
-            .first(&mut conn).await)
+        unwrap_ok!(
+            users::table
+                .filter(users::id.eq(user_id))
+                .select(users::uuid)
+                .first(&mut conn)
+                .await
+        )
     };
 
     // Generate token - session is created with current timestamps
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     // Request should succeed - session is fresh
     let response = app
@@ -485,24 +539,32 @@ async fn test_last_activity_updated_on_request() {
         use diesel::{ExpressionMethods, QueryDsl};
         use diesel_async::RunQueryDsl;
         use vauban_web::schema::users;
-        unwrap_ok!(users::table
-            .filter(users::id.eq(user_id))
-            .select(users::uuid)
-            .first(&mut conn).await)
+        unwrap_ok!(
+            users::table
+                .filter(users::id.eq(user_id))
+                .select(users::uuid)
+                .first(&mut conn)
+                .await
+        )
     };
 
     // Generate token
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     // Get initial last_activity
     let initial_last_activity: chrono::DateTime<chrono::Utc> = {
         use diesel::{ExpressionMethods, QueryDsl};
         use diesel_async::RunQueryDsl;
         use vauban_web::schema::auth_sessions;
-        unwrap_ok!(auth_sessions::table
-            .filter(auth_sessions::user_id.eq(user_id))
-            .select(auth_sessions::last_activity)
-            .first(&mut conn).await)
+        unwrap_ok!(
+            auth_sessions::table
+                .filter(auth_sessions::user_id.eq(user_id))
+                .select(auth_sessions::last_activity)
+                .first(&mut conn)
+                .await
+        )
     };
 
     // Wait a bit and make a request
@@ -521,10 +583,13 @@ async fn test_last_activity_updated_on_request() {
         use diesel::{ExpressionMethods, QueryDsl};
         use diesel_async::RunQueryDsl;
         use vauban_web::schema::auth_sessions;
-        unwrap_ok!(auth_sessions::table
-            .filter(auth_sessions::user_id.eq(user_id))
-            .select(auth_sessions::last_activity)
-            .first(&mut conn).await)
+        unwrap_ok!(
+            auth_sessions::table
+                .filter(auth_sessions::user_id.eq(user_id))
+                .select(auth_sessions::last_activity)
+                .first(&mut conn)
+                .await
+        )
     };
 
     assert!(
@@ -548,14 +613,19 @@ async fn test_session_valid_with_old_but_active_session() {
         use diesel::{ExpressionMethods, QueryDsl};
         use diesel_async::RunQueryDsl;
         use vauban_web::schema::users;
-        unwrap_ok!(users::table
-            .filter(users::id.eq(user_id))
-            .select(users::uuid)
-            .first(&mut conn).await)
+        unwrap_ok!(
+            users::table
+                .filter(users::id.eq(user_id))
+                .select(users::uuid)
+                .first(&mut conn)
+                .await
+        )
     };
 
     // Generate token
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     // Set created_at to 4 hours ago (within max_duration of 8h from default.toml)
     // but keep last_activity recent
@@ -565,12 +635,15 @@ async fn test_session_valid_with_old_but_active_session() {
         use diesel_async::RunQueryDsl;
         use vauban_web::schema::auth_sessions;
 
-        unwrap_ok!(diesel::update(auth_sessions::table.filter(auth_sessions::user_id.eq(user_id)))
-            .set((
-                auth_sessions::created_at.eq(Utc::now() - Duration::hours(4)),
-                auth_sessions::last_activity.eq(Utc::now()),
-            ))
-            .execute(&mut conn).await);
+        unwrap_ok!(
+            diesel::update(auth_sessions::table.filter(auth_sessions::user_id.eq(user_id)))
+                .set((
+                    auth_sessions::created_at.eq(Utc::now() - Duration::hours(4)),
+                    auth_sessions::last_activity.eq(Utc::now()),
+                ))
+                .execute(&mut conn)
+                .await
+        );
     }
 
     // Request should succeed - session is old but active and within max_duration

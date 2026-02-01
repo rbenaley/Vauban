@@ -165,7 +165,8 @@ async fn verify_session_with_timeouts(state: &AppState, token: &str) -> Option<S
             // Session must have been active recently
             .filter(auth_sessions::last_activity.gt(idle_cutoff))
             .count()
-            .get_result(&mut conn).await;
+            .get_result(&mut conn)
+            .await;
 
         if matches!(exists, Ok(count) if count > 0) {
             Some(token_hash)
@@ -183,11 +184,11 @@ async fn verify_session_with_timeouts(state: &AppState, token: &str) -> Option<S
 /// This is called on each authenticated request to track user activity.
 async fn update_last_activity(state: &AppState, token_hash: &str) {
     if let Ok(mut conn) = state.db_pool.get().await {
-        let _ = diesel::update(
-            auth_sessions::table.filter(auth_sessions::token_hash.eq(token_hash)),
-        )
-        .set(auth_sessions::last_activity.eq(chrono::Utc::now()))
-        .execute(&mut conn).await;
+        let _ =
+            diesel::update(auth_sessions::table.filter(auth_sessions::token_hash.eq(token_hash)))
+                .set(auth_sessions::last_activity.eq(chrono::Utc::now()))
+                .execute(&mut conn)
+                .await;
     }
 }
 
@@ -270,7 +271,6 @@ pub async fn require_mfa(
 mod tests {
     use super::*;
     use axum::http::Request as HttpRequest;
-    
 
     // ==================== AuthUser Tests ====================
 
@@ -355,9 +355,11 @@ mod tests {
 
     #[test]
     fn test_extract_token_from_bearer_header() {
-        let request = unwrap_ok!(HttpRequest::builder()
-            .header("Authorization", "Bearer my-jwt-token-123")
-            .body(axum::body::Body::empty()));
+        let request = unwrap_ok!(
+            HttpRequest::builder()
+                .header("Authorization", "Bearer my-jwt-token-123")
+                .body(axum::body::Body::empty())
+        );
 
         let jar = CookieJar::new();
         let result = unwrap_ok!(extract_token(&jar, &request));
@@ -368,9 +370,11 @@ mod tests {
     #[test]
     fn test_extract_token_bearer_case_sensitive() {
         // "bearer" lowercase should not match
-        let request = unwrap_ok!(HttpRequest::builder()
-            .header("Authorization", "bearer lowercase-token")
-            .body(axum::body::Body::empty()));
+        let request = unwrap_ok!(
+            HttpRequest::builder()
+                .header("Authorization", "bearer lowercase-token")
+                .body(axum::body::Body::empty())
+        );
 
         let jar = CookieJar::new();
         let result = unwrap_ok!(extract_token(&jar, &request));
@@ -381,8 +385,7 @@ mod tests {
 
     #[test]
     fn test_extract_token_no_auth_returns_none() {
-        let request = unwrap_ok!(HttpRequest::builder()
-            .body(axum::body::Body::empty()));
+        let request = unwrap_ok!(HttpRequest::builder().body(axum::body::Body::empty()));
 
         let jar = CookieJar::new();
         let result = unwrap_ok!(extract_token(&jar, &request));
@@ -392,9 +395,11 @@ mod tests {
 
     #[test]
     fn test_extract_token_invalid_auth_scheme() {
-        let request = unwrap_ok!(HttpRequest::builder()
-            .header("Authorization", "Basic dXNlcjpwYXNz")
-            .body(axum::body::Body::empty()));
+        let request = unwrap_ok!(
+            HttpRequest::builder()
+                .header("Authorization", "Basic dXNlcjpwYXNz")
+                .body(axum::body::Body::empty())
+        );
 
         let jar = CookieJar::new();
         let result = unwrap_ok!(extract_token(&jar, &request));
@@ -405,9 +410,11 @@ mod tests {
 
     #[test]
     fn test_extract_token_empty_bearer() {
-        let request = unwrap_ok!(HttpRequest::builder()
-            .header("Authorization", "Bearer ")
-            .body(axum::body::Body::empty()));
+        let request = unwrap_ok!(
+            HttpRequest::builder()
+                .header("Authorization", "Bearer ")
+                .body(axum::body::Body::empty())
+        );
 
         let jar = CookieJar::new();
         let result = unwrap_ok!(extract_token(&jar, &request));
@@ -510,9 +517,11 @@ mod tests {
     #[test]
     fn test_extract_token_bearer_with_long_token() {
         let long_token = "a".repeat(1000);
-        let request = unwrap_ok!(HttpRequest::builder()
-            .header("Authorization", format!("Bearer {}", long_token))
-            .body(axum::body::Body::empty()));
+        let request = unwrap_ok!(
+            HttpRequest::builder()
+                .header("Authorization", format!("Bearer {}", long_token))
+                .body(axum::body::Body::empty())
+        );
 
         let jar = CookieJar::new();
         let result = unwrap_ok!(extract_token(&jar, &request));
@@ -523,9 +532,11 @@ mod tests {
     #[test]
     fn test_extract_token_bearer_with_special_chars() {
         let token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc123-_";
-        let request = unwrap_ok!(HttpRequest::builder()
-            .header("Authorization", format!("Bearer {}", token))
-            .body(axum::body::Body::empty()));
+        let request = unwrap_ok!(
+            HttpRequest::builder()
+                .header("Authorization", format!("Bearer {}", token))
+                .body(axum::body::Body::empty())
+        );
 
         let jar = CookieJar::new();
         let result = unwrap_ok!(extract_token(&jar, &request));
@@ -535,9 +546,11 @@ mod tests {
 
     #[test]
     fn test_extract_token_no_auth_header() {
-        let request = unwrap_ok!(HttpRequest::builder()
-            .header("Content-Type", "application/json")
-            .body(axum::body::Body::empty()));
+        let request = unwrap_ok!(
+            HttpRequest::builder()
+                .header("Content-Type", "application/json")
+                .body(axum::body::Body::empty())
+        );
 
         let jar = CookieJar::new();
         let result = unwrap_ok!(extract_token(&jar, &request));

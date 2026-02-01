@@ -1,17 +1,16 @@
 /// VAUBAN Web - Test infrastructure.
 ///
 /// Common utilities for integration tests.
-
 // Re-export test macros for all test files
 pub use vauban_web::{assert_err, assert_none, assert_ok, assert_some, unwrap_ok, unwrap_some};
 
 use axum::{Router, http::HeaderValue};
 use axum_test::TestServer;
 use diesel::{ExpressionMethods, QueryDsl};
-use diesel_async::pooled_connection::deadpool::Pool;
-use diesel_async::pooled_connection::AsyncDieselConnectionManager;
 use diesel_async::AsyncPgConnection;
 use diesel_async::RunQueryDsl as _;
+use diesel_async::pooled_connection::AsyncDieselConnectionManager;
+use diesel_async::pooled_connection::deadpool::Pool;
 use secrecy::ExposeSecret;
 use tokio::sync::OnceCell;
 
@@ -57,15 +56,20 @@ impl TestApp {
     /// Create test app (internal).
     async fn create() -> Self {
         // Load test configuration from workspace root config/testing.toml
-        let config = unwrap_ok!(Config::load_with_environment(Self::config_dir(), Environment::Testing));
+        let config = unwrap_ok!(Config::load_with_environment(
+            Self::config_dir(),
+            Environment::Testing
+        ));
 
         // Create async database pool
         let manager = AsyncDieselConnectionManager::<AsyncPgConnection>::new(
             config.database.url.expose_secret(),
         );
-        let db_pool = unwrap_ok!(Pool::builder(manager)
-            .max_size(config.database.max_connections as usize)
-            .build());
+        let db_pool = unwrap_ok!(
+            Pool::builder(manager)
+                .max_size(config.database.max_connections as usize)
+                .build()
+        );
 
         // Create auth service
         let auth_service = unwrap_ok!(AuthService::new(config.clone()));
@@ -83,8 +87,7 @@ impl TestApp {
         // Use 1000 requests per minute in tests to avoid rate limiting interference
         let rate_limiter = unwrap_ok!(RateLimiter::new(
             false, // Don't use Redis in tests
-            None,
-            1000, // High limit for tests
+            None, 1000, // High limit for tests
         ));
 
         // Create app state
@@ -134,9 +137,13 @@ impl TestApp {
         use vauban_web::models::NewAuthSession;
         use vauban_web::schema::{auth_sessions, users};
 
-        let token = unwrap_ok!(self
-            .auth_service
-            .generate_access_token(user_uuid, username, true, is_superuser, is_staff));
+        let token = unwrap_ok!(self.auth_service.generate_access_token(
+            user_uuid,
+            username,
+            true,
+            is_superuser,
+            is_staff
+        ));
 
         // Create session in database for this token
         let mut conn = self.get_conn().await;
@@ -150,7 +157,7 @@ impl TestApp {
                 .await
                 .optional()
                 .unwrap_or(None);
-            
+
             match existing {
                 Some(id) => id,
                 None => {
@@ -256,10 +263,7 @@ fn build_test_router(state: AppState) -> Router {
         .route("/api/v1/accounts", get(handlers::api::list_users))
         .route("/api/v1/accounts", post(handlers::api::create_user))
         .route("/api/v1/accounts/{uuid}", get(handlers::api::get_user))
-        .route(
-            "/api/v1/accounts/{uuid}",
-            put(handlers::api::update_user),
-        )
+        .route("/api/v1/accounts/{uuid}", put(handlers::api::update_user))
         // Assets routes
         .route("/api/v1/assets", get(handlers::api::list_assets))
         .route("/api/v1/assets", post(handlers::api::create_asset))
@@ -282,10 +286,7 @@ fn build_test_router(state: AppState) -> Router {
         // Sessions routes
         .route("/api/v1/sessions", get(handlers::api::list_sessions))
         .route("/api/v1/sessions", post(handlers::api::create_session))
-        .route(
-            "/api/v1/sessions/{uuid}",
-            get(handlers::api::get_session),
-        )
+        .route("/api/v1/sessions/{uuid}", get(handlers::api::get_session))
         // Web pages (HTML) - for testing raw SQL queries
         .route("/sessions", get(handlers::web::session_list))
         .route("/sessions/recordings", get(handlers::web::recording_list))
@@ -300,7 +301,10 @@ fn build_test_router(state: AppState) -> Router {
             get(handlers::web::approval_detail),
         )
         .route("/sessions/active", get(handlers::web::active_sessions))
-        .route("/sessions/{id}/terminate", post(handlers::web::terminate_session_web))
+        .route(
+            "/sessions/{id}/terminate",
+            post(handlers::web::terminate_session_web),
+        )
         .route(
             "/assets/{uuid}/edit",
             get(handlers::web::asset_edit).post(handlers::web::update_asset_web),
@@ -317,7 +321,10 @@ fn build_test_router(state: AppState) -> Router {
         .route("/assets/{uuid}", get(handlers::web::asset_detail))
         .route("/assets/search", get(handlers::web::asset_search))
         // Asset groups - literal routes MUST come before parameterized routes
-        .route("/assets/groups/new", get(handlers::web::asset_group_create_form))
+        .route(
+            "/assets/groups/new",
+            get(handlers::web::asset_group_create_form),
+        )
         .route(
             "/assets/groups",
             get(handlers::web::asset_group_list).post(handlers::web::create_asset_group_web),
@@ -436,7 +443,9 @@ fn build_test_router(state: AppState) -> Router {
         ))
         // Add flash middleware
         .layer(axum::middleware::from_fn_with_state(
-            middleware::flash::FlashSecretKey(state.config.secret_key.expose_secret().as_bytes().to_vec()),
+            middleware::flash::FlashSecretKey(
+                state.config.secret_key.expose_secret().as_bytes().to_vec(),
+            ),
             middleware::flash::flash_middleware,
         ))
         // Add auth middleware

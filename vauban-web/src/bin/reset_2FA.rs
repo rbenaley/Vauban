@@ -6,9 +6,9 @@
 /// Usage: cargo run --bin reset_2FA
 ///
 /// The tool will prompt for the username and confirm before disabling MFA.
-use anyhow::{anyhow, Context, Result};
-use diesel::prelude::*;
+use anyhow::{Context, Result, anyhow};
 use diesel::pg::PgConnection;
+use diesel::prelude::*;
 use secrecy::ExposeSecret;
 use std::io::{self, Write};
 

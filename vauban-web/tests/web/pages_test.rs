@@ -18,11 +18,13 @@ use uuid::Uuid;
 /// Helper to get user UUID from user_id.
 async fn get_user_uuid(conn: &mut AsyncPgConnection, user_id: i32) -> Uuid {
     use vauban_web::schema::users;
-    unwrap_ok!(users::table
-        .filter(users::id.eq(user_id))
-        .select(users::uuid)
-        .first(conn)
-        .await)
+    unwrap_ok!(
+        users::table
+            .filter(users::id.eq(user_id))
+            .select(users::uuid)
+            .first(conn)
+            .await
+    )
 }
 
 // =============================================================================
@@ -38,7 +40,9 @@ async fn test_fallback_route_redirects_to_home() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
 
     // Try to access a non-existent route
     let response = app
@@ -65,7 +69,9 @@ async fn test_fallback_route_with_random_path() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
 
     // Try various non-existent paths
     let paths = [
@@ -126,16 +132,18 @@ async fn test_asset_detail_with_malformed_uuid() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
 
     // Try various malformed UUIDs - all should redirect gracefully to /assets
     let malformed_uuids = [
         "not-a-uuid",
         "12345",
         "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-        "123e4567-e89b-12d3-a456",  // Too short
-        "123e4567-e89b-12d3-a456-4266141740001234",  // Too long
-        "24d3cc30-d6c0-ooo7-be9a-978dd250ae3e",  // Invalid character 'o' in hex
+        "123e4567-e89b-12d3-a456",                  // Too short
+        "123e4567-e89b-12d3-a456-4266141740001234", // Too long
+        "24d3cc30-d6c0-ooo7-be9a-978dd250ae3e",     // Invalid character 'o' in hex
     ];
 
     for bad_uuid in malformed_uuids {
@@ -146,7 +154,10 @@ async fn test_asset_detail_with_malformed_uuid() {
             .await;
 
         let status = response.status_code().as_u16();
-        let location = response.headers().get("location").and_then(|v| v.to_str().ok());
+        let location = response
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok());
 
         assert!(
             status == 303 && location == Some("/assets"),
@@ -167,7 +178,9 @@ async fn test_user_detail_with_malformed_uuid() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
 
     let response = app
         .server
@@ -192,7 +205,9 @@ async fn test_group_detail_with_malformed_uuid() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
 
     let response = app
         .server
@@ -217,7 +232,9 @@ async fn test_asset_group_detail_with_malformed_uuid() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
 
     let response = app
         .server
@@ -242,7 +259,9 @@ async fn test_approval_detail_with_malformed_uuid() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
 
     let response = app
         .server
@@ -271,7 +290,9 @@ async fn test_not_found_redirect_sets_flash_cookie() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
 
     let fake_uuid = Uuid::new_v4();
     let response = app
@@ -288,7 +309,7 @@ async fn test_not_found_redirect_sets_flash_cookie() {
         .get("set-cookie")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    
+
     assert!(
         set_cookie.contains("flash="),
         "Response should set flash cookie, got: {}",
@@ -312,7 +333,9 @@ async fn test_authorization_error_redirect_sets_flash() {
     let user_id = create_simple_user(&mut conn, &user_name).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &user_name, false, false).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
+        .await;
 
     // Normal user tries to access asset (forbidden)
     let response = app
@@ -329,7 +352,7 @@ async fn test_authorization_error_redirect_sets_flash() {
         .get("set-cookie")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    
+
     assert!(
         set_cookie.contains("flash="),
         "Authorization error should set flash cookie"
@@ -344,12 +367,14 @@ async fn test_authorization_error_redirect_sets_flash() {
 async fn test_approval_list_page_loads() {
     let app = TestApp::spawn().await;
 
-    let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
-        "test_approval_list",
-        true,
-        true,
-    ).await;
+    let token = app
+        .generate_test_token(
+            &Uuid::new_v4().to_string(),
+            "test_approval_list",
+            true,
+            true,
+        )
+        .await;
 
     let response = app
         .server
@@ -369,12 +394,14 @@ async fn test_approval_list_page_loads() {
 async fn test_approval_list_with_status_filter() {
     let app = TestApp::spawn().await;
 
-    let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
-        "test_approval_filter",
-        true,
-        true,
-    ).await;
+    let token = app
+        .generate_test_token(
+            &Uuid::new_v4().to_string(),
+            "test_approval_filter",
+            true,
+            true,
+        )
+        .await;
 
     // Test with pending status filter
     let response = app
@@ -408,12 +435,14 @@ async fn test_approval_list_with_orphaned_status_filter() {
         .await
         .expect("Failed to update approval status");
 
-    let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
-        "test_approval_orphaned",
-        true,
-        true,
-    ).await;
+    let token = app
+        .generate_test_token(
+            &Uuid::new_v4().to_string(),
+            "test_approval_orphaned",
+            true,
+            true,
+        )
+        .await;
 
     let response = app
         .server
@@ -433,12 +462,14 @@ async fn test_approval_list_with_orphaned_status_filter() {
 async fn test_approval_list_with_pagination() {
     let app = TestApp::spawn().await;
 
-    let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
-        "test_approval_page",
-        true,
-        true,
-    ).await;
+    let token = app
+        .generate_test_token(
+            &Uuid::new_v4().to_string(),
+            "test_approval_page",
+            true,
+            true,
+        )
+        .await;
 
     // Test pagination
     let response = app
@@ -472,11 +503,9 @@ async fn test_approval_list_status_filter_all_statuses() {
     let statuses = ["pending", "approved", "rejected", "expired", "orphaned"];
 
     for (i, status) in statuses.iter().enumerate() {
-        let asset_id = create_simple_ssh_asset(
-            &mut conn,
-            &format!("status-filter-asset-{}", i),
-            user_id,
-        ).await;
+        let asset_id =
+            create_simple_ssh_asset(&mut conn, &format!("status-filter-asset-{}", i), user_id)
+                .await;
         let approval_uuid = create_approval_request(&mut conn, user_id, asset_id).await;
 
         // Update the status
@@ -488,7 +517,9 @@ async fn test_approval_list_status_filter_all_statuses() {
             .expect("Failed to update approval status");
     }
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     // Test 1: No filter - should show all approvals
     let response_no_filter = app
@@ -605,7 +636,9 @@ async fn test_approval_detail_page_loads() {
     let asset_id = create_simple_ssh_asset(&mut conn, "test-approval-asset", user_id).await;
     let session_uuid = create_approval_request(&mut conn, user_id, asset_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), "test_approval_detail", true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), "test_approval_detail", true, true)
+        .await;
 
     let response = app
         .server
@@ -625,12 +658,14 @@ async fn test_approval_detail_page_loads() {
 async fn test_approval_detail_not_found() {
     let app = TestApp::spawn().await;
 
-    let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
-        "test_appr_notfound",
-        true,
-        true,
-    ).await;
+    let token = app
+        .generate_test_token(
+            &Uuid::new_v4().to_string(),
+            "test_appr_notfound",
+            true,
+            true,
+        )
+        .await;
 
     let fake_uuid = Uuid::new_v4();
     let response = app
@@ -641,7 +676,10 @@ async fn test_approval_detail_not_found() {
 
     // Not found redirects to list page with flash message
     assert_status(&response, 303);
-    let location = response.headers().get("location").and_then(|v| v.to_str().ok());
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok());
     assert_eq!(location, Some("/sessions/approvals"));
 }
 
@@ -660,7 +698,8 @@ async fn test_asset_delete_soft_deletes_and_updates_related_data() {
     let asset_name = unique_name("delete-asset");
     let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, user_id).await;
     let approval_uuid = create_approval_request(&mut conn, user_id, asset_id).await;
-    let active_session_id = create_test_session(&mut conn, user_id, asset_id, "ssh", "active").await;
+    let active_session_id =
+        create_test_session(&mut conn, user_id, asset_id, "ssh", "active").await;
     let asset_uuid = get_asset_uuid(&mut conn, asset_id).await;
 
     // Create an admin user in the database to perform the deletion
@@ -668,7 +707,9 @@ async fn test_asset_delete_soft_deletes_and_updates_related_data() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     let response = app
@@ -712,7 +753,11 @@ async fn test_asset_delete_soft_deletes_and_updates_related_data() {
         .first(&mut conn)
         .await
         .expect("Asset should exist");
-    assert!(is_deleted, "Asset should be soft deleted (asset_id={})", asset_id);
+    assert!(
+        is_deleted,
+        "Asset should be soft deleted (asset_id={})",
+        asset_id
+    );
     assert!(deleted_at.is_some(), "deleted_at should be set");
 
     use vauban_web::schema::proxy_sessions::dsl as ps;
@@ -753,7 +798,9 @@ async fn test_asset_delete_rejects_missing_csrf() {
     let admin_username = unique_name("admin_csrf_test");
     let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
+        .await;
 
     let invalid_csrf = "invalid-token";
     let response = app
@@ -800,12 +847,14 @@ async fn test_asset_delete_rejects_missing_csrf() {
 async fn test_asset_group_list_page_loads() {
     let app = TestApp::spawn().await;
 
-    let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
-        "test_assetgroup_list",
-        true,
-        true,
-    ).await;
+    let token = app
+        .generate_test_token(
+            &Uuid::new_v4().to_string(),
+            "test_assetgroup_list",
+            true,
+            true,
+        )
+        .await;
 
     let response = app
         .server
@@ -825,12 +874,14 @@ async fn test_asset_group_list_page_loads() {
 async fn test_asset_group_list_with_search() {
     let app = TestApp::spawn().await;
 
-    let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
-        "test_assetgroup_search",
-        true,
-        true,
-    ).await;
+    let token = app
+        .generate_test_token(
+            &Uuid::new_v4().to_string(),
+            "test_assetgroup_search",
+            true,
+            true,
+        )
+        .await;
 
     // Test with ILIKE search
     let response = app
@@ -851,12 +902,14 @@ async fn test_asset_group_list_with_search() {
 async fn test_asset_group_list_with_special_chars_search() {
     let app = TestApp::spawn().await;
 
-    let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
-        "test_assetgroup_special",
-        true,
-        true,
-    ).await;
+    let token = app
+        .generate_test_token(
+            &Uuid::new_v4().to_string(),
+            "test_assetgroup_special",
+            true,
+            true,
+        )
+        .await;
 
     // Test SQL injection protection in ILIKE search (URL-encoded)
     // The single quote is URL-encoded as %27
@@ -889,7 +942,9 @@ async fn test_asset_group_list_empty_search_shows_all() {
     let group_name = unique_name("assetgrp-search-test");
     create_test_asset_group(&mut conn, &group_name).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
+        .await;
 
     // Test 1: No filter - page loads with groups
     let response_no_filter = app
@@ -970,12 +1025,14 @@ async fn test_asset_group_detail_page_loads() {
     // Create test asset group
     let group_uuid = create_test_asset_group(&mut conn, &unique_name("test-detail-group")).await;
 
-    let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
-        "test_assetgroup_detail",
-        true,
-        true,
-    ).await;
+    let token = app
+        .generate_test_token(
+            &Uuid::new_v4().to_string(),
+            "test_assetgroup_detail",
+            true,
+            true,
+        )
+        .await;
 
     let response = app
         .server
@@ -995,12 +1052,14 @@ async fn test_asset_group_detail_page_loads() {
 async fn test_asset_group_detail_not_found() {
     let app = TestApp::spawn().await;
 
-    let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
-        "test_group_notfound",
-        true,
-        true,
-    ).await;
+    let token = app
+        .generate_test_token(
+            &Uuid::new_v4().to_string(),
+            "test_group_notfound",
+            true,
+            true,
+        )
+        .await;
 
     let fake_uuid = Uuid::new_v4();
     let response = app
@@ -1011,7 +1070,10 @@ async fn test_asset_group_detail_not_found() {
 
     // Not found redirects to list page with flash message
     assert_status(&response, 303);
-    let location = response.headers().get("location").and_then(|v| v.to_str().ok());
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok());
     assert_eq!(location, Some("/assets/groups"));
 }
 
@@ -1026,12 +1088,14 @@ async fn test_asset_group_edit_page_loads() {
 
     let group_uuid = create_test_asset_group(&mut conn, &unique_name("test-edit-group")).await;
 
-    let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
-        "test_assetgroup_edit",
-        true,
-        true,
-    ).await;
+    let token = app
+        .generate_test_token(
+            &Uuid::new_v4().to_string(),
+            "test_assetgroup_edit",
+            true,
+            true,
+        )
+        .await;
 
     let response = app
         .server
@@ -1061,8 +1125,9 @@ async fn test_asset_detail_page_loads() {
     let asset_id = create_simple_ssh_asset(&mut conn, "test-asset-detail", user_id).await;
     let asset_uuid = get_asset_uuid(&mut conn, asset_id).await;
 
-    let token =
-        app.generate_test_token(&user_uuid.to_string(), "test_asset_detail_page", true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), "test_asset_detail_page", true, true)
+        .await;
 
     let response = app
         .server
@@ -1084,21 +1149,25 @@ async fn test_asset_detail_with_group() {
     let mut conn = app.get_conn().await;
 
     let user_id = create_simple_user(&mut conn, &unique_name("test_asset_group")).await;
-    let group_uuid = create_test_asset_group(&mut conn, &unique_name("test-asset-group-link")).await;
+    let group_uuid =
+        create_test_asset_group(&mut conn, &unique_name("test-asset-group-link")).await;
     let asset_id = create_test_asset_in_group(
         &mut conn,
         &unique_name("test-asset-in-group"),
         user_id,
         &group_uuid,
-    ).await;
+    )
+    .await;
     let asset_uuid = get_asset_uuid(&mut conn, asset_id).await;
 
-    let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
-        "test_asset_with_group",
-        true,
-        true,
-    ).await;
+    let token = app
+        .generate_test_token(
+            &Uuid::new_v4().to_string(),
+            "test_asset_with_group",
+            true,
+            true,
+        )
+        .await;
 
     let response = app
         .server
@@ -1118,12 +1187,14 @@ async fn test_asset_detail_with_group() {
 async fn test_asset_detail_not_found() {
     let app = TestApp::spawn().await;
 
-    let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
-        "test_asset_notfound",
-        true,
-        true,
-    ).await;
+    let token = app
+        .generate_test_token(
+            &Uuid::new_v4().to_string(),
+            "test_asset_notfound",
+            true,
+            true,
+        )
+        .await;
 
     // Use a random UUID that doesn't exist
     let non_existent_uuid = Uuid::new_v4();
@@ -1135,7 +1206,10 @@ async fn test_asset_detail_not_found() {
 
     // Not found redirects to list page with flash message
     assert_status(&response, 303);
-    let location = response.headers().get("location").and_then(|v| v.to_str().ok());
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok());
     assert_eq!(location, Some("/assets"));
 }
 
@@ -1147,7 +1221,9 @@ async fn test_asset_detail_not_found() {
 async fn test_group_list_page_loads() {
     let app = TestApp::spawn().await;
 
-    let token = app.generate_test_token(&Uuid::new_v4().to_string(), "test_group_list", true, true).await;
+    let token = app
+        .generate_test_token(&Uuid::new_v4().to_string(), "test_group_list", true, true)
+        .await;
 
     let response = app
         .server
@@ -1167,8 +1243,9 @@ async fn test_group_list_page_loads() {
 async fn test_group_list_with_search() {
     let app = TestApp::spawn().await;
 
-    let token =
-        app.generate_test_token(&Uuid::new_v4().to_string(), "test_group_search", true, true).await;
+    let token = app
+        .generate_test_token(&Uuid::new_v4().to_string(), "test_group_search", true, true)
+        .await;
 
     let response = app
         .server
@@ -1198,7 +1275,9 @@ async fn test_vauban_group_list_empty_search_shows_all() {
     let group_name = unique_name("search-test-group");
     create_test_vauban_group(&mut conn, &group_name).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
+        .await;
 
     // Test 1: No filter - page loads with groups
     let response_no_filter = app
@@ -1274,12 +1353,14 @@ async fn test_group_detail_page_loads() {
 
     let group_uuid = create_test_vauban_group(&mut conn, &unique_name("test-vauban-group")).await;
 
-    let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
-        "test_vauban_group_detail",
-        true,
-        true,
-    ).await;
+    let token = app
+        .generate_test_token(
+            &Uuid::new_v4().to_string(),
+            "test_vauban_group_detail",
+            true,
+            true,
+        )
+        .await;
 
     let response = app
         .server
@@ -1299,12 +1380,14 @@ async fn test_group_detail_page_loads() {
 async fn test_group_detail_not_found() {
     let app = TestApp::spawn().await;
 
-    let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
-        "test_vgroup_notfound",
-        true,
-        true,
-    ).await;
+    let token = app
+        .generate_test_token(
+            &Uuid::new_v4().to_string(),
+            "test_vgroup_notfound",
+            true,
+            true,
+        )
+        .await;
 
     let fake_uuid = Uuid::new_v4();
     let response = app
@@ -1315,7 +1398,10 @@ async fn test_group_detail_not_found() {
 
     // Not found redirects to list page with flash message
     assert_status(&response, 303);
-    let location = response.headers().get("location").and_then(|v| v.to_str().ok());
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok());
     assert_eq!(location, Some("/accounts/groups"));
 }
 
@@ -1329,12 +1415,14 @@ async fn test_vauban_group_edit_form_loads() {
     let mut conn = app.get_conn().await;
 
     let group_uuid = create_test_vauban_group(&mut conn, &unique_name("edit-form-group")).await;
-    let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
-        "test_vgroup_edit_form",
-        true,
-        true,
-    ).await;
+    let token = app
+        .generate_test_token(
+            &Uuid::new_v4().to_string(),
+            "test_vgroup_edit_form",
+            true,
+            true,
+        )
+        .await;
 
     let response = app
         .server
@@ -1353,12 +1441,14 @@ async fn test_vauban_group_update_success() {
     let mut conn = app.get_conn().await;
 
     let group_uuid = create_test_vauban_group(&mut conn, &unique_name("update-group")).await;
-    let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
-        "test_vgroup_update",
-        true,
-        true,
-    ).await;
+    let token = app
+        .generate_test_token(
+            &Uuid::new_v4().to_string(),
+            "test_vgroup_update",
+            true,
+            true,
+        )
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     let response = app
@@ -1389,12 +1479,14 @@ async fn test_vauban_group_add_member_form_loads() {
     let mut conn = app.get_conn().await;
 
     let group_uuid = create_test_vauban_group(&mut conn, &unique_name("add-member-form")).await;
-    let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
-        "test_add_member_form",
-        true,
-        true,
-    ).await;
+    let token = app
+        .generate_test_token(
+            &Uuid::new_v4().to_string(),
+            "test_add_member_form",
+            true,
+            true,
+        )
+        .await;
 
     let response = app
         .server
@@ -1419,12 +1511,9 @@ async fn test_vauban_group_add_member_success() {
     let user_id = create_simple_user(&mut conn, &unique_name("new-member")).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
-        "test_add_member",
-        true,
-        true,
-    ).await;
+    let token = app
+        .generate_test_token(&Uuid::new_v4().to_string(), "test_add_member", true, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     // Verify no members initially
@@ -1471,12 +1560,14 @@ async fn test_vauban_group_remove_member_success() {
     let count_before = count_vauban_group_members(&mut conn, &group_uuid).await;
     assert_eq!(count_before, 1, "Group should have 1 member initially");
 
-    let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
-        "test_remove_member",
-        true,
-        true,
-    ).await;
+    let token = app
+        .generate_test_token(
+            &Uuid::new_v4().to_string(),
+            "test_remove_member",
+            true,
+            true,
+        )
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     let response = app
@@ -1511,12 +1602,9 @@ async fn test_vauban_group_delete_empty_success() {
 
     let group_uuid = create_test_vauban_group(&mut conn, &unique_name("delete-empty-grp")).await;
 
-    let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
-        "test_delete_empty",
-        true,
-        true,
-    ).await;
+    let token = app
+        .generate_test_token(&Uuid::new_v4().to_string(), "test_delete_empty", true, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     let response = app
@@ -1560,12 +1648,14 @@ async fn test_vauban_group_delete_with_members_fails() {
     // Add member to group
     add_user_to_vauban_group(&mut conn, user_id, &group_uuid).await;
 
-    let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
-        "test_delete_members",
-        true,
-        true,
-    ).await;
+    let token = app
+        .generate_test_token(
+            &Uuid::new_v4().to_string(),
+            "test_delete_members",
+            true,
+            true,
+        )
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     let response = app
@@ -1606,12 +1696,14 @@ async fn test_vauban_group_delete_requires_admin() {
     let group_uuid = create_test_vauban_group(&mut conn, &unique_name("delete-nonadmin")).await;
 
     // Regular user (not staff, not superuser)
-    let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
-        "test_delete_nonadmin",
-        false,
-        false,
-    ).await;
+    let token = app
+        .generate_test_token(
+            &Uuid::new_v4().to_string(),
+            "test_delete_nonadmin",
+            false,
+            false,
+        )
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     let response = app
@@ -1659,7 +1751,9 @@ async fn test_update_asset_web_form_redirects_on_success() {
     let asset_id = create_simple_ssh_asset(&mut conn, "test-form-asset", user_id).await;
     let asset_uuid = get_asset_uuid(&mut conn, asset_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), "test_asset_form", true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), "test_asset_form", true, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     // Submit form with valid data
@@ -1699,7 +1793,9 @@ async fn test_update_asset_web_form_validation_error() {
     let asset_id = create_simple_ssh_asset(&mut conn, "test-val-asset", user_id).await;
     let asset_uuid = get_asset_uuid(&mut conn, asset_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), "test_asset_val", true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), "test_asset_val", true, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     // Submit form with invalid port
@@ -1713,7 +1809,7 @@ async fn test_update_asset_web_form_validation_error() {
         .form(&[
             ("name", "Test Asset"),
             ("hostname", "test.example.com"),
-            ("port", "99999"),  // Invalid port
+            ("port", "99999"), // Invalid port
             ("status", "online"),
             ("csrf_token", csrf_token.as_str()),
         ])
@@ -1738,7 +1834,9 @@ async fn test_update_asset_group_web_form_redirects_on_success() {
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
     let group_uuid = create_test_asset_group(&mut conn, "test-form-group").await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), "test_group_form", true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), "test_group_form", true, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     // Submit form with valid data
@@ -1778,7 +1876,9 @@ async fn test_update_asset_group_web_form_validation_error() {
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
     let group_uuid = create_test_asset_group(&mut conn, "test-val-group").await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), "test_group_val", true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), "test_group_val", true, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     // Submit form with empty name (validation error)
@@ -1790,7 +1890,7 @@ async fn test_update_asset_group_web_form_validation_error() {
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
         )
         .form(&[
-            ("name", ""),  // Empty name - validation error
+            ("name", ""), // Empty name - validation error
             ("slug", "valid-slug"),
             ("color", "#FF5733"),
             ("icon", "server"),
@@ -1876,7 +1976,9 @@ async fn test_invalid_ip_address_shows_flash_error() {
     let asset_id = create_simple_ssh_asset(&mut conn, "test-ip-asset", user_id).await;
     let asset_uuid = get_asset_uuid(&mut conn, asset_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), "test_ip_error", true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), "test_ip_error", true, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     // Submit form with invalid IP address (192.168.1.400 is invalid)
@@ -1890,7 +1992,7 @@ async fn test_invalid_ip_address_shows_flash_error() {
         .form(&[
             ("name", "Test Asset"),
             ("hostname", "test.example.com"),
-            ("ip_address", "192.168.1.400"),  // Invalid IP address
+            ("ip_address", "192.168.1.400"), // Invalid IP address
             ("port", "22"),
             ("status", "online"),
             ("csrf_token", csrf_token.as_str()),
@@ -1940,7 +2042,9 @@ async fn test_edit_page_displays_flash_messages() {
     let asset_id = create_simple_ssh_asset(&mut conn, "test-flash-asset", user_id).await;
     let asset_uuid = get_asset_uuid(&mut conn, asset_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), "test_flash_display", true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), "test_flash_display", true, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     // First, submit form with invalid IP to set flash cookie
@@ -1954,7 +2058,7 @@ async fn test_edit_page_displays_flash_messages() {
         .form(&[
             ("name", "Test Asset"),
             ("hostname", "test.example.com"),
-            ("ip_address", "invalid-ip"),  // Invalid IP address
+            ("ip_address", "invalid-ip"), // Invalid IP address
             ("port", "22"),
             ("status", "online"),
             ("csrf_token", csrf_token.as_str()),
@@ -1979,7 +2083,10 @@ async fn test_edit_page_displays_flash_messages() {
     let get_response = app
         .server
         .get(&format!("/assets/{}/edit", asset_uuid))
-        .add_header(COOKIE, format!("access_token={}; {}", token, flash_cookie.unwrap()))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; {}", token, flash_cookie.unwrap()),
+        )
         .await;
 
     // Should return 200 with HTML containing error message
@@ -2004,7 +2111,9 @@ async fn test_asset_group_empty_name_shows_flash_error() {
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
     let group_uuid = create_test_asset_group(&mut conn, &unique_name("test-name-err-grp")).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), "test_group_name_err", true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), "test_group_name_err", true, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     // Submit form with empty name (validation error)
@@ -2016,7 +2125,7 @@ async fn test_asset_group_empty_name_shows_flash_error() {
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
         )
         .form(&[
-            ("name", ""),  // Empty name - validation error
+            ("name", ""), // Empty name - validation error
             ("slug", "valid-slug"),
             ("color", "#FF5733"),
             ("icon", "server"),
@@ -2066,7 +2175,9 @@ async fn test_asset_group_empty_slug_shows_flash_error() {
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
     let group_uuid = create_test_asset_group(&mut conn, &unique_name("test-slug-err-grp")).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), "test_group_slug_err", true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), "test_group_slug_err", true, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     // Submit form with empty slug (validation error)
@@ -2079,7 +2190,7 @@ async fn test_asset_group_empty_slug_shows_flash_error() {
         )
         .form(&[
             ("name", "Valid Group Name"),
-            ("slug", ""),  // Empty slug - validation error
+            ("slug", ""), // Empty slug - validation error
             ("color", "#FF5733"),
             ("icon", "server"),
             ("csrf_token", csrf_token.as_str()),
@@ -2115,7 +2226,9 @@ async fn test_asset_group_edit_page_displays_flash_messages() {
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
     let group_uuid = create_test_asset_group(&mut conn, &unique_name("test-grp-flash-disp")).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), "test_group_flash", true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), "test_group_flash", true, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     // First, submit form with empty name to set flash cookie
@@ -2127,7 +2240,7 @@ async fn test_asset_group_edit_page_displays_flash_messages() {
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
         )
         .form(&[
-            ("name", ""),  // Empty name - validation error
+            ("name", ""), // Empty name - validation error
             ("slug", "valid-slug"),
             ("color", "#FF5733"),
             ("icon", "server"),
@@ -2153,7 +2266,10 @@ async fn test_asset_group_edit_page_displays_flash_messages() {
     let get_response = app
         .server
         .get(&format!("/assets/groups/{}/edit", group_uuid))
-        .add_header(COOKIE, format!("access_token={}; {}", token, flash_cookie.unwrap()))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; {}", token, flash_cookie.unwrap()),
+        )
         .await;
 
     // Should return 200 with HTML containing error message
@@ -2162,7 +2278,10 @@ async fn test_asset_group_edit_page_displays_flash_messages() {
     // Check that the response body contains error message
     let body = get_response.text();
     assert!(
-        body.contains("name") || body.contains("required") || body.contains("bg-red-50") || body.contains("error"),
+        body.contains("name")
+            || body.contains("required")
+            || body.contains("bg-red-50")
+            || body.contains("error"),
         "Edit page should display error flash message. Body excerpt: {}...",
         &body[..std::cmp::min(500, body.len())]
     );
@@ -2181,7 +2300,9 @@ async fn test_asset_group_create_form_loads_for_admin() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
 
     let response = app
         .server
@@ -2206,7 +2327,9 @@ async fn test_asset_group_create_form_requires_admin() {
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, false, false)
+        .await;
 
     let response = app
         .server
@@ -2231,7 +2354,9 @@ async fn test_asset_group_create_success() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     let group_name = unique_name("new-test-group");
@@ -2270,7 +2395,10 @@ async fn test_asset_group_create_success() {
         .optional()
         .unwrap();
 
-    assert!(created.is_some(), "Asset group should be created in database");
+    assert!(
+        created.is_some(),
+        "Asset group should be created in database"
+    );
 }
 
 #[tokio::test]
@@ -2282,7 +2410,9 @@ async fn test_asset_group_create_normal_user_forbidden() {
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, false, false)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     let group_name = unique_name("forbidden-group");
@@ -2320,7 +2450,10 @@ async fn test_asset_group_create_normal_user_forbidden() {
         .optional()
         .unwrap();
 
-    assert!(created.is_none(), "Normal user should not create asset group");
+    assert!(
+        created.is_none(),
+        "Normal user should not create asset group"
+    );
 }
 
 #[tokio::test]
@@ -2332,7 +2465,9 @@ async fn test_asset_group_create_duplicate_slug_rejected() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     // Create first group
@@ -2383,7 +2518,9 @@ async fn test_asset_group_create_duplicate_slug_shows_flash_error() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     // Create first group
@@ -2426,13 +2563,18 @@ async fn test_asset_group_create_duplicate_slug_shows_flash_error() {
         .get("/assets/groups/new")
         .add_header(
             COOKIE,
-            format!("access_token={}; __vauban_csrf={}; {}", token, csrf_token, flash_cookie.unwrap()),
+            format!(
+                "access_token={}; __vauban_csrf={}; {}",
+                token,
+                csrf_token,
+                flash_cookie.unwrap()
+            ),
         )
         .await;
 
     assert_status(&get_response, 200);
     let body = get_response.text();
-    
+
     assert!(
         body.contains("slug already exists") || body.contains("bg-red-50"),
         "Create page should display error flash message about duplicate slug"
@@ -2448,7 +2590,9 @@ async fn test_asset_group_delete_success() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     // Create a group to delete
@@ -2493,12 +2637,20 @@ async fn test_asset_group_delete_with_assets() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     // Create a group with an asset
     let group_uuid = create_test_asset_group(&mut conn, &unique_name("del-with-assets")).await;
-    let _asset_id = create_test_asset_in_group(&mut conn, &unique_name("asset-in-grp"), admin_id, &group_uuid).await;
+    let _asset_id = create_test_asset_in_group(
+        &mut conn,
+        &unique_name("asset-in-grp"),
+        admin_id,
+        &group_uuid,
+    )
+    .await;
 
     let response = app
         .server
@@ -2527,7 +2679,10 @@ async fn test_asset_group_delete_with_assets() {
         .optional()
         .unwrap();
 
-    assert!(exists.is_none(), "Asset group should be deleted even with assets");
+    assert!(
+        exists.is_none(),
+        "Asset group should be deleted even with assets"
+    );
 
     // Verify assets are unlinked (group_id set to NULL)
     use vauban_web::schema::assets;
@@ -2540,7 +2695,10 @@ async fn test_asset_group_delete_with_assets() {
         .unwrap();
 
     if let Some(group_id) = asset_group_id {
-        assert!(group_id.is_none(), "Asset should have NULL group_id after group deletion");
+        assert!(
+            group_id.is_none(),
+            "Asset should have NULL group_id after group deletion"
+        );
     }
 }
 
@@ -2559,7 +2717,9 @@ async fn test_asset_group_add_asset_form_loads() {
 
     let group_uuid = create_test_asset_group(&mut conn, &unique_name("add-asset-form-grp")).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
 
     let response = app
         .server
@@ -2569,9 +2729,18 @@ async fn test_asset_group_add_asset_form_loads() {
 
     assert_status(&response, 200);
     let body = response.text();
-    assert!(body.contains("Add Asset"), "Page should show 'Add Asset' title");
-    assert!(body.contains("asset-search"), "Page should have search input");
-    assert!(body.contains("x-model=\"search\""), "Page should use Alpine.js for filtering");
+    assert!(
+        body.contains("Add Asset"),
+        "Page should show 'Add Asset' title"
+    );
+    assert!(
+        body.contains("asset-search"),
+        "Page should have search input"
+    );
+    assert!(
+        body.contains("x-model=\"search\""),
+        "Page should use Alpine.js for filtering"
+    );
 }
 
 #[tokio::test]
@@ -2583,9 +2752,12 @@ async fn test_asset_group_add_asset_form_requires_admin() {
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let group_uuid = create_test_asset_group(&mut conn, &unique_name("add-asset-form-denied")).await;
+    let group_uuid =
+        create_test_asset_group(&mut conn, &unique_name("add-asset-form-denied")).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, false, false)
+        .await;
 
     let response = app
         .server
@@ -2622,7 +2794,9 @@ async fn test_asset_group_add_asset_success() {
         .await
         .unwrap();
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     let response = app
@@ -2681,9 +2855,12 @@ async fn test_asset_group_add_multiple_assets_success() {
     let group_uuid = create_test_asset_group(&mut conn, &unique_name("add-multi-grp")).await;
 
     // Create multiple assets
-    let asset1_id = create_simple_ssh_asset(&mut conn, &unique_name("multi-asset1"), admin_id).await;
-    let asset2_id = create_simple_ssh_asset(&mut conn, &unique_name("multi-asset2"), admin_id).await;
-    let asset3_id = create_simple_ssh_asset(&mut conn, &unique_name("multi-asset3"), admin_id).await;
+    let asset1_id =
+        create_simple_ssh_asset(&mut conn, &unique_name("multi-asset1"), admin_id).await;
+    let asset2_id =
+        create_simple_ssh_asset(&mut conn, &unique_name("multi-asset2"), admin_id).await;
+    let asset3_id =
+        create_simple_ssh_asset(&mut conn, &unique_name("multi-asset3"), admin_id).await;
 
     // Get asset UUIDs
     use vauban_web::schema::assets;
@@ -2706,7 +2883,9 @@ async fn test_asset_group_add_multiple_assets_success() {
         .await
         .unwrap();
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     // Submit form with multiple asset_uuids (simulating multiple checkboxes)
@@ -2770,7 +2949,8 @@ async fn test_asset_group_add_asset_normal_user_forbidden() {
 
     let admin_id = create_simple_admin_user(&mut conn, &unique_name("add_asset_admin2")).await;
     let group_uuid = create_test_asset_group(&mut conn, &unique_name("add-asset-denied")).await;
-    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("asset-add-denied"), admin_id).await;
+    let asset_id =
+        create_simple_ssh_asset(&mut conn, &unique_name("asset-add-denied"), admin_id).await;
 
     // Get asset UUID
     use vauban_web::schema::assets;
@@ -2781,7 +2961,9 @@ async fn test_asset_group_add_asset_normal_user_forbidden() {
         .await
         .unwrap();
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, false, false)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     let response = app
@@ -2829,7 +3011,13 @@ async fn test_asset_group_add_asset_already_in_group() {
 
     // Create first group and add asset to it
     let group1_uuid = create_test_asset_group(&mut conn, &unique_name("add-asset-grp1")).await;
-    let asset_id = create_test_asset_in_group(&mut conn, &unique_name("asset-in-grp1"), admin_id, &group1_uuid).await;
+    let asset_id = create_test_asset_in_group(
+        &mut conn,
+        &unique_name("asset-in-grp1"),
+        admin_id,
+        &group1_uuid,
+    )
+    .await;
 
     // Get asset UUID
     use vauban_web::schema::assets;
@@ -2843,7 +3031,9 @@ async fn test_asset_group_add_asset_already_in_group() {
     // Create second group and try to add the same asset
     let group2_uuid = create_test_asset_group(&mut conn, &unique_name("add-asset-grp2")).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     let response = app
@@ -2899,7 +3089,13 @@ async fn test_asset_group_remove_asset_success() {
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
     let group_uuid = create_test_asset_group(&mut conn, &unique_name("rem-asset-grp")).await;
-    let asset_id = create_test_asset_in_group(&mut conn, &unique_name("asset-to-rem"), admin_id, &group_uuid).await;
+    let asset_id = create_test_asset_in_group(
+        &mut conn,
+        &unique_name("asset-to-rem"),
+        admin_id,
+        &group_uuid,
+    )
+    .await;
 
     // Get asset UUID
     use vauban_web::schema::assets;
@@ -2910,7 +3106,9 @@ async fn test_asset_group_remove_asset_success() {
         .await
         .unwrap();
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     let response = app
@@ -2958,7 +3156,13 @@ async fn test_asset_group_remove_asset_normal_user_forbidden() {
 
     let admin_id = create_simple_admin_user(&mut conn, &unique_name("rem_asset_admin2")).await;
     let group_uuid = create_test_asset_group(&mut conn, &unique_name("rem-asset-denied")).await;
-    let asset_id = create_test_asset_in_group(&mut conn, &unique_name("asset-rem-denied"), admin_id, &group_uuid).await;
+    let asset_id = create_test_asset_in_group(
+        &mut conn,
+        &unique_name("asset-rem-denied"),
+        admin_id,
+        &group_uuid,
+    )
+    .await;
 
     // Get asset UUID
     use vauban_web::schema::assets;
@@ -2969,7 +3173,9 @@ async fn test_asset_group_remove_asset_normal_user_forbidden() {
         .await
         .unwrap();
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, false, false)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     let response = app
@@ -3026,7 +3232,9 @@ async fn test_asset_group_detail_shows_add_asset_button() {
 
     let group_uuid = create_test_asset_group(&mut conn, &unique_name("det-add-btn-grp")).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
 
     let response = app
         .server
@@ -3056,9 +3264,17 @@ async fn test_asset_group_detail_shows_remove_button() {
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
     let group_uuid = create_test_asset_group(&mut conn, &unique_name("det-rem-btn-grp")).await;
-    let _asset_id = create_test_asset_in_group(&mut conn, &unique_name("asset-rem-btn"), admin_id, &group_uuid).await;
+    let _asset_id = create_test_asset_in_group(
+        &mut conn,
+        &unique_name("asset-rem-btn"),
+        admin_id,
+        &group_uuid,
+    )
+    .await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
 
     let response = app
         .server
@@ -3087,7 +3303,9 @@ async fn test_asset_group_delete_normal_user_forbidden() {
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, false, false)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     // Create a group to try to delete
@@ -3120,7 +3338,10 @@ async fn test_asset_group_delete_normal_user_forbidden() {
         .optional()
         .unwrap();
 
-    assert!(exists.is_some(), "Normal user should not delete asset group");
+    assert!(
+        exists.is_some(),
+        "Normal user should not delete asset group"
+    );
 }
 
 #[tokio::test]
@@ -3132,7 +3353,9 @@ async fn test_asset_group_detail_has_delete_button() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
 
     let group_uuid = create_test_asset_group(&mut conn, &unique_name("del-btn-group")).await;
 
@@ -3159,15 +3382,19 @@ async fn test_asset_group_icons_rendered_correctly() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
 
     // Create groups with different icons
-    let icons = ["server", "database", "code", "desktop", "wifi", "cloud", "folder"];
-    
+    let icons = [
+        "server", "database", "code", "desktop", "wifi", "cloud", "folder",
+    ];
+
     for icon_name in &icons {
         let group_slug = unique_name(&format!("icon-{}", icon_name));
         let group_name = unique_name(&format!("Test-{}", icon_name));
-        
+
         // Insert group with specific icon
         use vauban_web::schema::asset_groups;
         let group_uuid = uuid::Uuid::new_v4();
@@ -3193,7 +3420,7 @@ async fn test_asset_group_icons_rendered_correctly() {
 
         assert_status(&response, 200);
         let body = response.text();
-        
+
         // Each icon should have unique SVG path patterns
         match *icon_name {
             "database" => assert!(
@@ -3237,31 +3464,36 @@ async fn test_asset_group_create_form_fields_present() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     let response = app
         .server
         .get("/assets/groups/new")
-        .add_header(COOKIE, format!("access_token={}; __vauban_csrf={}", token, csrf_token))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
         .await;
 
     assert_status(&response, 200);
     let body = response.text();
-    
+
     // Verify form action is correct
     assert!(
         body.contains("action=\"/assets/groups\"") && body.contains("method=\"POST\""),
         "Form should have correct action and method"
     );
-    
+
     // Verify CSRF token value is present in the form
     assert!(
         body.contains(&format!("value=\"{}\"", csrf_token)),
         "Form should contain csrf_token value. Body: {}",
         &body[..std::cmp::min(2000, body.len())]
     );
-    
+
     // Verify required fields are present
     assert!(
         body.contains("name=\"name\""),
@@ -3279,30 +3511,32 @@ async fn test_asset_group_create_form_fields_present() {
         body.contains("name=\"icon\""),
         "Form should have icon field"
     );
-    
+
     // Verify submit button is inside the form
     assert!(
         body.contains("type=\"submit\"") && body.contains("Create Group"),
         "Form should have submit button"
     );
-    
+
     // Verify the form structure: form opens before submit and closes after
     let form_start = body.find("action=\"/assets/groups\"");
     let submit_button = body.find("Create Group");
     let form_end = body.rfind("</form>");
-    
+
     assert!(form_start.is_some(), "Form start should exist");
     assert!(submit_button.is_some(), "Submit button should exist");
     assert!(form_end.is_some(), "Form end should exist");
-    
+
     let form_start_pos = form_start.unwrap();
     let submit_pos = submit_button.unwrap();
     let form_end_pos = form_end.unwrap();
-    
+
     assert!(
         form_start_pos < submit_pos && submit_pos < form_end_pos,
         "Submit button must be inside form. Positions: form_start={}, submit={}, form_end={}",
-        form_start_pos, submit_pos, form_end_pos
+        form_start_pos,
+        submit_pos,
+        form_end_pos
     );
 }
 
@@ -3322,7 +3556,9 @@ async fn test_user_list_filter_by_all_statuses() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
+        .await;
 
     // Test 1: No filter - page should load successfully
     let response_no_filter = app
@@ -3415,7 +3651,9 @@ async fn test_user_list_search_by_username() {
     let searchable_user = format!("searchuser{}", &unique_suffix[..16]);
     create_simple_user(&mut conn, &searchable_user).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
+        .await;
 
     // Test 1: Search for the unique username - should find it
     let response = app
@@ -3426,7 +3664,10 @@ async fn test_user_list_search_by_username() {
 
     assert_eq!(response.status_code().as_u16(), 200);
     let body = response.text();
-    assert!(body.contains(&searchable_user), "Should find user by exact username");
+    assert!(
+        body.contains(&searchable_user),
+        "Should find user by exact username"
+    );
 
     // Test 2: Partial search using the first 12 chars of the unique name
     let partial_search = &searchable_user[..12];
@@ -3440,7 +3681,9 @@ async fn test_user_list_search_by_username() {
     let body_partial = response_partial.text();
     assert!(
         body_partial.contains(&searchable_user),
-        "Partial search '{}' should find user '{}'", partial_search, searchable_user
+        "Partial search '{}' should find user '{}'",
+        partial_search,
+        searchable_user
     );
 
     // Test 3: Case-insensitive search using uppercase of the partial
@@ -3455,7 +3698,9 @@ async fn test_user_list_search_by_username() {
     let body_case = response_case.text();
     assert!(
         body_case.contains(&searchable_user),
-        "Case-insensitive search '{}' should find user '{}'", uppercase_search, searchable_user
+        "Case-insensitive search '{}' should find user '{}'",
+        uppercase_search,
+        searchable_user
     );
 
     // Test 4: Empty search should load page normally (regression test for empty string bug)
@@ -3510,13 +3755,18 @@ async fn test_user_list_combined_filters() {
         .await
         .expect("Failed to deactivate user");
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
+        .await;
 
     // Test 1: Search for specific active user with active status filter
     // Use the full username to avoid matching other test data
     let response = app
         .server
-        .get(&format!("/accounts/users?search={}&status=active", active_user))
+        .get(&format!(
+            "/accounts/users?search={}&status=active",
+            active_user
+        ))
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -3531,7 +3781,10 @@ async fn test_user_list_combined_filters() {
     // Test 2: Search for specific inactive user with inactive status filter
     let response_inactive = app
         .server
-        .get(&format!("/accounts/users?search={}&status=inactive", inactive_user))
+        .get(&format!(
+            "/accounts/users?search={}&status=inactive",
+            inactive_user
+        ))
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -3572,7 +3825,9 @@ async fn test_user_create_form_requires_admin() {
     let username = unique_name("regular_user");
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, false, false)
+        .await;
 
     let response = app
         .server
@@ -3597,7 +3852,9 @@ async fn test_user_create_form_loads_for_admin() {
     let admin_username = unique_name("admin_create_form");
     let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
+        .await;
 
     let response = app
         .server
@@ -3618,7 +3875,9 @@ async fn test_user_create_success() {
     let admin_username = unique_name("admin_create_user");
     let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     let new_username = unique_name("newuser");
@@ -3627,7 +3886,10 @@ async fn test_user_create_success() {
     let response = app
         .server
         .post("/accounts/users")
-        .add_header(COOKIE, format!("access_token={}; __vauban_csrf={}", token, csrf_token))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
         .form(&[
             ("csrf_token", csrf_token.as_str()),
             ("username", &new_username),
@@ -3666,7 +3928,9 @@ async fn test_user_create_validates_password_length() {
     let admin_username = unique_name("admin_pw_val");
     let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     let new_username = unique_name("shortpw");
@@ -3676,7 +3940,10 @@ async fn test_user_create_validates_password_length() {
     let response = app
         .server
         .post("/accounts/users")
-        .add_header(COOKIE, format!("access_token={}; __vauban_csrf={}", token, csrf_token))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
         .form(&[
             ("csrf_token", csrf_token.as_str()),
             ("username", &new_username),
@@ -3733,7 +4000,9 @@ async fn test_user_create_staff_cannot_create_superuser() {
             .unwrap()
     };
     let staff_uuid = get_user_uuid(&mut conn, staff_id).await;
-    let token = app.generate_test_token(&staff_uuid.to_string(), &staff_username, false, true).await;
+    let token = app
+        .generate_test_token(&staff_uuid.to_string(), &staff_username, false, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     let new_username = unique_name("wannabe_super");
@@ -3743,7 +4012,10 @@ async fn test_user_create_staff_cannot_create_superuser() {
     let response = app
         .server
         .post("/accounts/users")
-        .add_header(COOKIE, format!("access_token={}; __vauban_csrf={}", token, csrf_token))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
         .form(&[
             ("csrf_token", csrf_token.as_str()),
             ("username", &new_username),
@@ -3769,7 +4041,10 @@ async fn test_user_create_staff_cannot_create_superuser() {
         .optional()
         .unwrap();
 
-    assert!(created.is_none(), "Superuser should NOT be created by staff");
+    assert!(
+        created.is_none(),
+        "Superuser should NOT be created by staff"
+    );
 }
 
 #[tokio::test]
@@ -3780,7 +4055,9 @@ async fn test_user_edit_form_loads() {
     let admin_username = unique_name("admin_edit_form");
     let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
+        .await;
 
     // Create a user to edit
     let target_username = unique_name("edit_target");
@@ -3806,7 +4083,9 @@ async fn test_user_update_success() {
     let admin_username = unique_name("admin_update");
     let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     // Create a user to update
@@ -3819,7 +4098,10 @@ async fn test_user_update_success() {
     let response = app
         .server
         .post(&format!("/accounts/users/{}", target_uuid))
-        .add_header(COOKIE, format!("access_token={}; __vauban_csrf={}", token, csrf_token))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
         .form(&[
             ("csrf_token", csrf_token.as_str()),
             ("username", &target_username),
@@ -3875,7 +4157,9 @@ async fn test_user_update_staff_cannot_edit_superuser() {
             .unwrap()
     };
     let staff_uuid = get_user_uuid(&mut conn, staff_id).await;
-    let token = app.generate_test_token(&staff_uuid.to_string(), &staff_username, false, true).await;
+    let token = app
+        .generate_test_token(&staff_uuid.to_string(), &staff_username, false, true)
+        .await;
 
     // Create a superuser to try to edit
     let super_username = unique_name("super_target");
@@ -3906,7 +4190,9 @@ async fn test_user_delete_soft_deletes() {
     let admin_username = unique_name("admin_delete");
     let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     // Create a user to delete
@@ -3917,7 +4203,10 @@ async fn test_user_delete_soft_deletes() {
     let response = app
         .server
         .post(&format!("/accounts/users/{}/delete", target_uuid))
-        .add_header(COOKIE, format!("access_token={}; __vauban_csrf={}", token, csrf_token))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
         .form(&[("csrf_token", csrf_token.as_str())])
         .await;
 
@@ -3948,8 +4237,8 @@ async fn test_user_delete_protects_last_superuser() {
     // deleting them should fail. Uses serial_test to run in isolation.
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
-    use vauban_web::schema::users;
     use chrono::Utc;
+    use vauban_web::schema::users;
 
     // First, record IDs of users we modify so we can restore them
     let other_superuser_ids: Vec<i32> = users::table
@@ -3988,21 +4277,38 @@ async fn test_user_delete_protects_last_superuser() {
         .get_result(&mut conn)
         .await
         .unwrap();
-    assert_eq!(superuser_count, 1, "Should have exactly 1 active superuser for this test");
+    assert_eq!(
+        superuser_count, 1,
+        "Should have exactly 1 active superuser for this test"
+    );
 
-    let token = app.generate_test_token(&last_super_uuid.to_string(), &last_super_username, true, true).await;
+    let token = app
+        .generate_test_token(
+            &last_super_uuid.to_string(),
+            &last_super_username,
+            true,
+            true,
+        )
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     // Try to delete self (the last active superuser)
     let response = app
         .server
         .post(&format!("/accounts/users/{}/delete", last_super_uuid))
-        .add_header(COOKIE, format!("access_token={}; __vauban_csrf={}", token, csrf_token))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
         .form(&[("csrf_token", csrf_token.as_str())])
         .await;
 
     let status = response.status_code().as_u16();
-    assert!(status == 303 || status == 302, "Expected redirect, got {}", status);
+    assert!(
+        status == 303 || status == 302,
+        "Expected redirect, got {}",
+        status
+    );
 
     // Verify user is NOT deleted (protection worked)
     let is_deleted: bool = users::table
@@ -4016,13 +4322,11 @@ async fn test_user_delete_protects_last_superuser() {
 
     // Cleanup: reactivate ONLY the superusers we deactivated
     if !other_superuser_ids.is_empty() {
-        diesel::update(
-            users::table.filter(users::id.eq_any(&other_superuser_ids)),
-        )
-        .set((users::is_active.eq(true), users::updated_at.eq(now)))
-        .execute(&mut conn)
-        .await
-        .ok();
+        diesel::update(users::table.filter(users::id.eq_any(&other_superuser_ids)))
+            .set((users::is_active.eq(true), users::updated_at.eq(now)))
+            .execute(&mut conn)
+            .await
+            .ok();
     }
 }
 
@@ -4054,7 +4358,9 @@ async fn test_user_delete_staff_cannot_delete_superuser() {
             .unwrap()
     };
     let staff_uuid = get_user_uuid(&mut conn, staff_id).await;
-    let token = app.generate_test_token(&staff_uuid.to_string(), &staff_username, false, true).await;
+    let token = app
+        .generate_test_token(&staff_uuid.to_string(), &staff_username, false, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     // Create a superuser to try to delete
@@ -4066,7 +4372,10 @@ async fn test_user_delete_staff_cannot_delete_superuser() {
     let response = app
         .server
         .post(&format!("/accounts/users/{}/delete", super_uuid))
-        .add_header(COOKIE, format!("access_token={}; __vauban_csrf={}", token, csrf_token))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
         .form(&[("csrf_token", csrf_token.as_str())])
         .await;
 
@@ -4093,7 +4402,9 @@ async fn test_user_delete_rejects_csrf_invalid() {
     let admin_username = unique_name("admin_csrf_del");
     let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
+        .await;
 
     let target_username = unique_name("csrf_del_target");
     let target_id = create_simple_user(&mut conn, &target_username).await;
@@ -4103,7 +4414,10 @@ async fn test_user_delete_rejects_csrf_invalid() {
     let response = app
         .server
         .post(&format!("/accounts/users/{}/delete", target_uuid))
-        .add_header(COOKIE, format!("access_token={}; __vauban_csrf={}", token, invalid_csrf))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, invalid_csrf),
+        )
         .form(&[("csrf_token", invalid_csrf)])
         .await;
 
@@ -4137,7 +4451,9 @@ async fn test_vauban_group_create_form_loads_for_superuser() {
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
     // Superuser can access create form
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
+        .await;
 
     let response = app
         .server
@@ -4147,7 +4463,10 @@ async fn test_vauban_group_create_form_loads_for_superuser() {
 
     assert_status(&response, 200);
     let body = response.text();
-    assert!(body.contains("Create New Group"), "Should show create group form");
+    assert!(
+        body.contains("Create New Group"),
+        "Should show create group form"
+    );
 }
 
 #[tokio::test]
@@ -4168,7 +4487,9 @@ async fn test_vauban_group_create_form_requires_superuser() {
     let staff_uuid = get_user_uuid(&mut conn, staff_id).await;
 
     // Staff member cannot access create form
-    let token = app.generate_test_token(&staff_uuid.to_string(), &staff_username, false, true).await;
+    let token = app
+        .generate_test_token(&staff_uuid.to_string(), &staff_username, false, true)
+        .await;
 
     let response = app
         .server
@@ -4195,7 +4516,9 @@ async fn test_vauban_group_create_success() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     let group_name = unique_name("new-test-group");
@@ -4253,7 +4576,9 @@ async fn test_vauban_group_create_staff_cannot_create() {
     let staff_uuid = get_user_uuid(&mut conn, staff_id).await;
 
     // Staff member attempts to create group
-    let token = app.generate_test_token(&staff_uuid.to_string(), &staff_username, false, true).await;
+    let token = app
+        .generate_test_token(&staff_uuid.to_string(), &staff_username, false, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     let group_name = unique_name("staff-create-grp");
@@ -4264,10 +4589,7 @@ async fn test_vauban_group_create_staff_cannot_create() {
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
         )
-        .form(&[
-            ("csrf_token", csrf_token.as_str()),
-            ("name", &group_name),
-        ])
+        .form(&[("csrf_token", csrf_token.as_str()), ("name", &group_name)])
         .await;
 
     let status = response.status_code().as_u16();
@@ -4311,7 +4633,9 @@ async fn test_vauban_group_edit_requires_superuser() {
     let staff_uuid = get_user_uuid(&mut conn, staff_id).await;
 
     // Staff member attempts to access edit form
-    let token = app.generate_test_token(&staff_uuid.to_string(), &staff_username, false, true).await;
+    let token = app
+        .generate_test_token(&staff_uuid.to_string(), &staff_username, false, true)
+        .await;
 
     let response = app
         .server
@@ -4348,7 +4672,9 @@ async fn test_vauban_group_update_requires_superuser() {
     let staff_uuid = get_user_uuid(&mut conn, staff_id).await;
 
     // Staff member attempts to update group
-    let token = app.generate_test_token(&staff_uuid.to_string(), &staff_username, false, true).await;
+    let token = app
+        .generate_test_token(&staff_uuid.to_string(), &staff_username, false, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     let new_name = "staff-updated-name-should-fail";
@@ -4359,10 +4685,7 @@ async fn test_vauban_group_update_requires_superuser() {
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
         )
-        .form(&[
-            ("csrf_token", csrf_token.as_str()),
-            ("name", new_name),
-        ])
+        .form(&[("csrf_token", csrf_token.as_str()), ("name", new_name)])
         .await;
 
     let status = response.status_code().as_u16();
@@ -4381,8 +4704,14 @@ async fn test_vauban_group_update_requires_superuser() {
         .await
         .unwrap();
 
-    assert_ne!(current_name, new_name, "Staff should NOT be able to update group to new name");
-    assert!(current_name.starts_with("update-staff-grp"), "Group name should still have original prefix");
+    assert_ne!(
+        current_name, new_name,
+        "Staff should NOT be able to update group to new name"
+    );
+    assert!(
+        current_name.starts_with("update-staff-grp"),
+        "Group name should still have original prefix"
+    );
 }
 
 #[tokio::test]
@@ -4405,7 +4734,9 @@ async fn test_vauban_group_delete_requires_superuser_not_staff() {
     let staff_uuid = get_user_uuid(&mut conn, staff_id).await;
 
     // Staff member attempts to delete group
-    let token = app.generate_test_token(&staff_uuid.to_string(), &staff_username, false, true).await;
+    let token = app
+        .generate_test_token(&staff_uuid.to_string(), &staff_username, false, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     let response = app
@@ -4454,7 +4785,9 @@ async fn test_recordings_page_requires_admin() {
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
     // User is neither superuser nor staff
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, false, false)
+        .await;
 
     let response = app
         .server
@@ -4479,7 +4812,9 @@ async fn test_recordings_page_accessible_to_superuser() {
     let user_id = create_simple_admin_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     let response = app
         .server
@@ -4511,7 +4846,9 @@ async fn test_recordings_page_accessible_to_staff() {
         .unwrap();
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, false, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, false, true)
+        .await;
 
     let response = app
         .server
@@ -4549,11 +4886,14 @@ async fn test_recordings_filter_by_all_formats() {
             &mut conn,
             &format!("rec-format-asset-{}-{}", format, i),
             user_id,
-        ).await;
+        )
+        .await;
         create_recorded_session_with_type(&mut conn, user_id, asset_id, format).await;
     }
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     // Test 1: No filter - should show all recordings
     let response_no_filter = app
@@ -4670,7 +5010,9 @@ async fn test_recordings_filter_by_asset_name() {
         create_recorded_session_with_type(&mut conn, user_id, asset_id, "ssh").await;
     }
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     // Test 1: Search for exact asset name
     let response = app
@@ -4768,7 +5110,9 @@ async fn test_recordings_combined_filters() {
     create_recorded_session_with_type(&mut conn, user_id, asset2, "rdp").await;
     create_recorded_session_with_type(&mut conn, user_id, asset3, "vnc").await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     // Test 1: Filter by format=ssh AND asset=linux
     let response = app
@@ -4834,7 +5178,9 @@ async fn test_recording_play_requires_admin() {
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, false, false)
+        .await;
 
     let response = app
         .server
@@ -4849,7 +5195,10 @@ async fn test_recording_play_requires_admin() {
         "Normal user should be redirected from recordings, got {}",
         status
     );
-    let location = response.headers().get("location").and_then(|v| v.to_str().ok());
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok());
     assert_eq!(location, Some("/sessions/recordings"));
 }
 
@@ -4862,7 +5211,9 @@ async fn test_approvals_page_requires_admin() {
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, false, false)
+        .await;
 
     let response = app
         .server
@@ -4887,7 +5238,9 @@ async fn test_active_sessions_requires_admin() {
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, false, false)
+        .await;
 
     let response = app
         .server
@@ -4919,7 +5272,9 @@ async fn test_asset_detail_requires_admin() {
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, false, false)
+        .await;
 
     let response = app
         .server
@@ -4934,7 +5289,10 @@ async fn test_asset_detail_requires_admin() {
         "Normal user should be redirected from asset details, got {}",
         status
     );
-    let location = response.headers().get("location").and_then(|v| v.to_str().ok());
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok());
     assert_eq!(location, Some("/assets"));
 }
 
@@ -4953,7 +5311,9 @@ async fn test_asset_list_filter_by_all_types() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
+        .await;
 
     // Test 1: No filter - page should load
     let response_no_filter = app
@@ -5037,7 +5397,9 @@ async fn test_asset_list_filter_by_all_statuses() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
+        .await;
 
     // Test 1: No filter
     let response_no_filter = app
@@ -5091,10 +5453,15 @@ async fn test_asset_list_search_by_name() {
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
     // Create an asset with a unique searchable name
-    let asset_name = format!("searchable-asset-xyz-{}", Uuid::new_v4().to_string().split('-').next().unwrap());
+    let asset_name = format!(
+        "searchable-asset-xyz-{}",
+        Uuid::new_v4().to_string().split('-').next().unwrap()
+    );
     create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
+        .await;
 
     // Test 1: Search for the unique asset name
     let response = app
@@ -5152,7 +5519,9 @@ async fn test_asset_list_combined_filters() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
+        .await;
 
     // Test 1: All three filters combined
     let response = app
@@ -5215,7 +5584,9 @@ async fn test_asset_list_accessible_to_normal_user() {
     // Create an asset
     let _asset_id = create_simple_ssh_asset(&mut conn, &unique_name("list-asset"), user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, false, false)
+        .await;
 
     let response = app
         .server
@@ -5244,9 +5615,12 @@ async fn test_asset_list_admin_has_view_links() {
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
     // Create an asset
-    let _asset_id = create_simple_ssh_asset(&mut conn, &unique_name("admin-list-asset"), admin_id).await;
+    let _asset_id =
+        create_simple_ssh_asset(&mut conn, &unique_name("admin-list-asset"), admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
 
     let response = app
         .server
@@ -5277,7 +5651,9 @@ async fn test_assets_new_does_not_conflict_with_uuid_route() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
 
     let response = app
         .server
@@ -5308,7 +5684,9 @@ async fn test_assets_new_requires_admin() {
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, false, false)
+        .await;
 
     let response = app
         .server
@@ -5333,7 +5711,9 @@ async fn test_asset_create_form_loads_for_admin() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
 
     let response = app
         .server
@@ -5358,7 +5738,9 @@ async fn test_asset_create_success() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     let asset_name = unique_name("new-test-asset");
@@ -5410,7 +5792,9 @@ async fn test_asset_create_normal_user_forbidden() {
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, false, false)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     let asset_name = unique_name("forbidden-asset");
@@ -5460,7 +5844,8 @@ async fn test_asset_edit_page_normal_user_forbidden() {
     // Create an admin and an asset
     let admin_name = unique_name("asset_edit_admin");
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
-    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("edit-forbid-asset"), admin_id).await;
+    let asset_id =
+        create_simple_ssh_asset(&mut conn, &unique_name("edit-forbid-asset"), admin_id).await;
 
     // Get asset UUID
     use vauban_web::schema::assets;
@@ -5476,7 +5861,9 @@ async fn test_asset_edit_page_normal_user_forbidden() {
     let user_id = create_simple_user(&mut conn, &user_name).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &user_name, false, false).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
+        .await;
 
     // Try to access edit page
     let response = app
@@ -5492,7 +5879,10 @@ async fn test_asset_edit_page_normal_user_forbidden() {
         "Normal user should be redirected from asset edit page, got {}",
         status
     );
-    let location = response.headers().get("location").and_then(|v| v.to_str().ok());
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok());
     assert_eq!(location, Some("/assets"));
 }
 
@@ -5504,7 +5894,8 @@ async fn test_asset_update_normal_user_forbidden() {
     // Create an admin and an asset
     let admin_name = unique_name("asset_upd_admin");
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
-    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("upd-forbid-asset"), admin_id).await;
+    let asset_id =
+        create_simple_ssh_asset(&mut conn, &unique_name("upd-forbid-asset"), admin_id).await;
 
     // Get asset UUID
     use vauban_web::schema::assets;
@@ -5520,7 +5911,9 @@ async fn test_asset_update_normal_user_forbidden() {
     let user_id = create_simple_user(&mut conn, &user_name).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &user_name, false, false).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     // Try to submit update
@@ -5575,7 +5968,9 @@ async fn test_asset_group_edit_page_normal_user_forbidden() {
     let user_id = create_simple_user(&mut conn, &user_name).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &user_name, false, false).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
+        .await;
 
     // Try to access edit page
     let response = app
@@ -5591,7 +5986,10 @@ async fn test_asset_group_edit_page_normal_user_forbidden() {
         "Normal user should be redirected from asset group edit page, got {}",
         status
     );
-    let location = response.headers().get("location").and_then(|v| v.to_str().ok());
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok());
     assert_eq!(location, Some("/assets/groups"));
 }
 
@@ -5608,7 +6006,9 @@ async fn test_asset_group_update_normal_user_forbidden() {
     let user_id = create_simple_user(&mut conn, &user_name).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &user_name, false, false).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     // Try to submit update
@@ -5659,7 +6059,9 @@ async fn test_asset_create_with_checkboxes() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     let asset_name = unique_name("checkbox-test-asset");
@@ -5704,7 +6106,10 @@ async fn test_asset_create_with_checkboxes() {
 
     assert!(created.is_some(), "Asset should be created in database");
     let (require_mfa, require_justification) = created.unwrap();
-    assert!(require_mfa, "require_mfa should be true when checkbox is 'on'");
+    assert!(
+        require_mfa,
+        "require_mfa should be true when checkbox is 'on'"
+    );
     assert!(
         require_justification,
         "require_justification should be true when checkbox is 'on'"
@@ -5720,7 +6125,9 @@ async fn test_asset_create_without_checkboxes() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     let asset_name = unique_name("no-checkbox-asset");
@@ -5763,7 +6170,10 @@ async fn test_asset_create_without_checkboxes() {
 
     assert!(created.is_some(), "Asset should be created in database");
     let (require_mfa, require_justification) = created.unwrap();
-    assert!(!require_mfa, "require_mfa should be false when checkbox is absent");
+    assert!(
+        !require_mfa,
+        "require_mfa should be false when checkbox is absent"
+    );
     assert!(
         !require_justification,
         "require_justification should be false when checkbox is absent"
@@ -5779,7 +6189,9 @@ async fn test_asset_create_reactivates_soft_deleted() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     // Create a unique hostname for this test
@@ -5871,7 +6283,10 @@ async fn test_asset_create_reactivates_soft_deleted() {
         .get_result(&mut conn)
         .await
         .unwrap();
-    assert_eq!(count, 1, "Should only have one asset with this hostname+port");
+    assert_eq!(
+        count, 1,
+        "Should only have one asset with this hostname+port"
+    );
 }
 
 #[tokio::test]
@@ -5883,7 +6298,9 @@ async fn test_asset_create_fails_for_active_duplicate() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
     let csrf_token = app.generate_csrf_token();
 
     // Create a unique hostname for this test

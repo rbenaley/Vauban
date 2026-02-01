@@ -205,7 +205,6 @@ pub struct CreateApiKeyRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     #[test]
     fn test_generate_key_format() {

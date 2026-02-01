@@ -40,24 +40,13 @@ macro_rules! unwrap_ok {
     ($expr:expr) => {
         match $expr {
             Ok(val) => val,
-            Err(e) => panic!(
-                "{}:{} - Expected Ok, got Err: {:?}",
-                file!(),
-                line!(),
-                e
-            ),
+            Err(e) => panic!("{}:{} - Expected Ok, got Err: {:?}", file!(), line!(), e),
         }
     };
     ($expr:expr, $msg:expr) => {
         match $expr {
             Ok(val) => val,
-            Err(e) => panic!(
-                "{}:{} - {}: {:?}",
-                file!(),
-                line!(),
-                $msg,
-                e
-            ),
+            Err(e) => panic!("{}:{} - {}: {:?}", file!(), line!(), $msg, e),
         }
     };
 }
@@ -83,22 +72,13 @@ macro_rules! unwrap_some {
     ($expr:expr) => {
         match $expr {
             Some(val) => val,
-            None => panic!(
-                "{}:{} - Expected Some, got None",
-                file!(),
-                line!()
-            ),
+            None => panic!("{}:{} - Expected Some, got None", file!(), line!()),
         }
     };
     ($expr:expr, $msg:expr) => {
         match $expr {
             Some(val) => val,
-            None => panic!(
-                "{}:{} - {}: got None",
-                file!(),
-                line!(),
-                $msg
-            ),
+            None => panic!("{}:{} - {}: got None", file!(), line!(), $msg),
         }
     };
 }
@@ -122,12 +102,7 @@ macro_rules! assert_ok {
         let result = $expr;
         match &result {
             Ok(_) => {}
-            Err(e) => panic!(
-                "{}:{} - Expected Ok, got Err: {:?}",
-                file!(),
-                line!(),
-                e
-            ),
+            Err(e) => panic!("{}:{} - Expected Ok, got Err: {:?}", file!(), line!(), e),
         }
         // SAFETY: We just verified it's Ok above
         #[allow(clippy::unwrap_used)]
@@ -154,11 +129,7 @@ macro_rules! assert_some {
         let option = $expr;
         match &option {
             Some(_) => {}
-            None => panic!(
-                "{}:{} - Expected Some, got None",
-                file!(),
-                line!()
-            ),
+            None => panic!("{}:{} - Expected Some, got None", file!(), line!()),
         }
         // SAFETY: We just verified it's Some above
         #[allow(clippy::unwrap_used)]

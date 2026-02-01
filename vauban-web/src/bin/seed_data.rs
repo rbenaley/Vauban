@@ -16,10 +16,10 @@
 use anyhow::{Context, Result};
 use argon2::{Algorithm, Argon2, Params, PasswordHasher, Version, password_hash::SaltString};
 use chrono::{Duration, Utc};
-use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel::sql_types::{BigInt, Bool, Integer, Nullable, Text};
-use diesel_async::pooled_connection::deadpool::Pool;
+use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::pooled_connection::AsyncDieselConnectionManager;
+use diesel_async::pooled_connection::deadpool::Pool;
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use rand::Rng;
 use rand::rngs::OsRng;
@@ -41,15 +41,17 @@ async fn main() -> Result<()> {
     let config = Config::load().context("Failed to load configuration from config/*.toml")?;
 
     // Create async connection pool
-    let manager = AsyncDieselConnectionManager::<AsyncPgConnection>::new(
-        config.database.url.expose_secret(),
-    );
+    let manager =
+        AsyncDieselConnectionManager::<AsyncPgConnection>::new(config.database.url.expose_secret());
     let pool = Pool::builder(manager)
         .max_size(5)
         .build()
         .context("Failed to create database pool")?;
 
-    let mut conn = pool.get().await.context("Failed to get database connection")?;
+    let mut conn = pool
+        .get()
+        .await
+        .context("Failed to get database connection")?;
 
     // Create users
     println!("👥 Creating users...");
@@ -80,7 +82,8 @@ async fn main() -> Result<()> {
             &user_ids,
             &asset_ids,
             30 - existing_sessions as i32,
-        ).await;
+        )
+        .await;
         println!(
             "   ✅ Created {} new sessions (total: {})\n",
             session_count,
@@ -108,7 +111,8 @@ async fn main() -> Result<()> {
             &user_ids,
             &asset_ids,
             20 - existing_approvals as i32,
-        ).await;
+        )
+        .await;
         println!(
             "   ✅ Created {} new approval requests (total: {})\n",
             approval_count,
@@ -142,7 +146,7 @@ async fn main() -> Result<()> {
 }
 
 /// Hash a password using Argon2.
-/// 
+///
 /// # Panics
 /// Panics if Argon2 parameters are invalid (configuration error).
 #[allow(clippy::expect_used)]
@@ -167,7 +171,7 @@ fn hash_password(password: &str, config: &Config) -> String {
 /// Create test users (idempotent).
 async fn create_users(conn: &mut AsyncPgConnection, config: &Config) -> Vec<i32> {
     use diesel::BoolExpressionMethods;
-    
+
     let mut user_ids = Vec::new();
 
     // Define users: (username, email, first_name, last_name, is_staff, is_superuser)
@@ -332,7 +336,7 @@ async fn create_assets(conn: &mut AsyncPgConnection, admin_id: i32) -> Vec<i32> 
         let require_justification = rng.gen_bool(0.2);
         let result = diesel::sql_query(
             "INSERT INTO assets (uuid, name, hostname, ip_address, port, asset_type, status, os_type, os_version, description, created_by_id, require_mfa, require_justification, connection_config)
-             VALUES (uuid_generate_v4(), $1, $2, $3, 22, 'ssh', $4, 'linux', $5, $6, $7, $8, $9, '{}')
+             VALUES (uuid_generate_v4(), $1, $2, $3::inet, 22, 'ssh', $4, 'linux', $5, $6, $7, $8, $9, '{}')
              ON CONFLICT (hostname, port) DO UPDATE SET status = EXCLUDED.status
              RETURNING id"
         )
@@ -347,6 +351,11 @@ async fn create_assets(conn: &mut AsyncPgConnection, admin_id: i32) -> Vec<i32> 
         .bind::<Bool, _>(require_justification)
         .get_result::<AssetId>(conn)
         .await;
+
+        match &result {
+            Err(e) => eprintln!("   ⚠ Failed to create asset {}: {}", name, e),
+            Ok(_) => {}
+        }
 
         if let Ok(asset) = result {
             asset_ids.push(asset.id);
@@ -396,7 +405,7 @@ async fn create_assets(conn: &mut AsyncPgConnection, admin_id: i32) -> Vec<i32> 
         let require_justification = rng.gen_bool(0.4);
         let result = diesel::sql_query(
             "INSERT INTO assets (uuid, name, hostname, ip_address, port, asset_type, status, os_type, os_version, description, created_by_id, require_mfa, require_justification, connection_config)
-             VALUES (uuid_generate_v4(), $1, $2, $3, 3389, 'rdp', $4, 'windows', $5, $6, $7, $8, $9, '{}')
+             VALUES (uuid_generate_v4(), $1, $2, $3::inet, 3389, 'rdp', $4, 'windows', $5, $6, $7, $8, $9, '{}')
              ON CONFLICT (hostname, port) DO UPDATE SET status = EXCLUDED.status
              RETURNING id"
         )
@@ -411,6 +420,11 @@ async fn create_assets(conn: &mut AsyncPgConnection, admin_id: i32) -> Vec<i32> 
         .bind::<Bool, _>(require_justification)
         .get_result::<AssetId>(conn)
         .await;
+
+        match &result {
+            Err(e) => eprintln!("   ⚠ Failed to create asset {}: {}", name, e),
+            Ok(_) => {}
+        }
 
         if let Ok(asset) = result {
             asset_ids.push(asset.id);
@@ -452,7 +466,7 @@ async fn create_assets(conn: &mut AsyncPgConnection, admin_id: i32) -> Vec<i32> 
         let hostname = format!("{}.vauban.local", name);
         let result = diesel::sql_query(
             "INSERT INTO assets (uuid, name, hostname, ip_address, port, asset_type, status, os_type, os_version, description, created_by_id, require_mfa, require_justification, connection_config)
-             VALUES (uuid_generate_v4(), $1, $2, $3, 5900, 'vnc', $4, 'linux', $5, $6, $7, true, true, '{}')
+             VALUES (uuid_generate_v4(), $1, $2, $3::inet, 5900, 'vnc', $4, 'linux', $5, $6, $7, true, true, '{}')
              ON CONFLICT (hostname, port) DO UPDATE SET status = EXCLUDED.status
              RETURNING id"
         )
@@ -465,6 +479,11 @@ async fn create_assets(conn: &mut AsyncPgConnection, admin_id: i32) -> Vec<i32> 
         .bind::<Integer, _>(admin_id)
         .get_result::<AssetId>(conn)
         .await;
+
+        match &result {
+            Err(e) => eprintln!("   ⚠ Failed to create asset {}: {}", name, e),
+            Ok(_) => {}
+        }
 
         if let Ok(asset) = result {
             asset_ids.push(asset.id);

@@ -32,19 +32,18 @@ use axum::{
     extract::{Form, Query, State},
     response::{Html, IntoResponse, Redirect, Response},
 };
+use axum_extra::extract::CookieJar;
 use diesel::prelude::*;
 use diesel::sql_types::{BigInt, Integer, Nullable, Text, Uuid as DieselUuid};
 use diesel_async::{AsyncConnection, RunQueryDsl};
-use std::collections::HashMap;
 use secrecy::ExposeSecret;
-use axum_extra::extract::CookieJar;
+use std::collections::HashMap;
 
 use crate::AppState;
 use crate::error::{AppError, AppResult};
 use crate::middleware::auth::{AuthUser, OptionalAuthUser, WebAuthUser};
 use crate::middleware::flash::{IncomingFlash, flash_redirect};
 use crate::schema::{api_keys, assets, auth_sessions, proxy_sessions};
-use crate::utils::format_duration;
 use crate::templates::accounts::{
     ApiKeyItem, ApikeyListTemplate, AuthSessionItem, GroupDetailTemplate, GroupListTemplate,
     LoginTemplate, MfaSetupTemplate, ProfileDetail, ProfileSession, ProfileTemplate,
@@ -64,6 +63,7 @@ use crate::templates::sessions::{
     ActiveListTemplate, ApprovalDetailTemplate, ApprovalListTemplate, RecordingListTemplate,
     SessionListTemplate as WebSessionListTemplate,
 };
+use crate::utils::format_duration;
 use askama::Template;
 
 /// Helper to convert AuthUser to UserContext for templates.
@@ -137,7 +137,7 @@ fn get_or_create_csrf_token(
     secret: &[u8],
 ) -> (String, Option<axum_extra::extract::cookie::Cookie<'static>>) {
     use crate::middleware::csrf::{
-        build_csrf_cookie, generate_csrf_token, verify_csrf_token, CSRF_COOKIE_NAME,
+        CSRF_COOKIE_NAME, build_csrf_cookie, generate_csrf_token, verify_csrf_token,
     };
 
     // Check if we have a valid existing token
@@ -231,7 +231,11 @@ pub async fn user_list(
         base.into_fields();
 
     // Load users from database
-    let mut conn = state.db_pool.get().await.map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
     // Filter out empty strings - form sends empty string when "All" is selected
     let search_filter = params.get("search").filter(|s| !s.is_empty()).cloned();
@@ -291,7 +295,8 @@ pub async fn user_list(
         ))
         .order(users::username.asc())
         .limit(50)
-        .load(&mut conn).await?;
+        .load(&mut conn)
+        .await?;
 
     let user_items: Vec<UserListItem> = db_users
         .into_iter()
@@ -418,7 +423,8 @@ pub async fn user_detail(
             users::last_login,
             users::created_at,
         ))
-        .first(&mut conn).await
+        .first(&mut conn)
+        .await
         .optional()
     {
         Ok(user) => user,
@@ -548,8 +554,7 @@ pub async fn user_create_form(
     }
 
     let user = Some(user_context_from_auth(&auth_user));
-    let base =
-        BaseTemplate::new("New User".to_string(), user).with_current_path("/accounts/users");
+    let base = BaseTemplate::new("New User".to_string(), user).with_current_path("/accounts/users");
 
     let password_min_length = state.config.security.password_min_length;
     let can_manage_superusers = auth_user.is_superuser;
@@ -629,10 +634,7 @@ pub async fn create_user_web(
     let min_len = state.config.security.password_min_length;
     if form.password.len() < min_len {
         return flash_redirect(
-            flash.error(format!(
-                "Password must be at least {} characters",
-                min_len
-            )),
+            flash.error(format!("Password must be at least {} characters", min_len)),
             "/accounts/users/new",
         );
     }
@@ -656,7 +658,8 @@ pub async fn create_user_web(
         )
         .filter(users::is_deleted.eq(false))
         .select(users::id)
-        .first(&mut conn).await
+        .first(&mut conn)
+        .await
         .optional()
         .unwrap_or(None);
 
@@ -696,7 +699,8 @@ pub async fn create_user_web(
             users::auth_source.eq("local"),
             users::preferences.eq(serde_json::json!({})),
         ))
-        .execute(&mut conn).await;
+        .execute(&mut conn)
+        .await;
 
     match result {
         Ok(_) => flash_redirect(
@@ -770,7 +774,8 @@ pub async fn user_edit_form(
             users::is_staff,
             users::is_superuser,
         ))
-        .first(&mut conn).await
+        .first(&mut conn)
+        .await
         .optional()
     {
         Ok(user) => user,
@@ -899,7 +904,8 @@ pub async fn update_user_web(
         .filter(users::uuid.eq(parsed_uuid))
         .filter(users::is_deleted.eq(false))
         .select((users::id, users::is_superuser))
-        .first(&mut conn).await
+        .first(&mut conn)
+        .await
         .optional()
         .unwrap_or(None);
 
@@ -945,7 +951,8 @@ pub async fn update_user_web(
         .filter(users::id.ne(user_id))
         .filter(users::is_deleted.eq(false))
         .select(users::id)
-        .first(&mut conn).await
+        .first(&mut conn)
+        .await
         .optional()
         .unwrap_or(None);
 
@@ -962,10 +969,7 @@ pub async fn update_user_web(
             let min_len = state.config.security.password_min_length;
             if password.len() < min_len {
                 return flash_redirect(
-                    flash.error(format!(
-                        "Password must be at least {} characters",
-                        min_len
-                    )),
+                    flash.error(format!("Password must be at least {} characters", min_len)),
                     &format!("/accounts/users/{}/edit", user_uuid),
                 );
             }
@@ -1003,7 +1007,8 @@ pub async fn update_user_web(
                 users::is_superuser.eq(wants_superuser),
                 users::updated_at.eq(now),
             ))
-            .execute(&mut conn).await
+            .execute(&mut conn)
+            .await
     } else {
         diesel::update(users::table.filter(users::id.eq(user_id)))
             .set((
@@ -1016,7 +1021,8 @@ pub async fn update_user_web(
                 users::is_superuser.eq(wants_superuser),
                 users::updated_at.eq(now),
             ))
-            .execute(&mut conn).await
+            .execute(&mut conn)
+            .await
     };
 
     match result {
@@ -1090,7 +1096,8 @@ pub async fn delete_user_web(
         .filter(users::uuid.eq(parsed_uuid))
         .filter(users::is_deleted.eq(false))
         .select((users::id, users::is_superuser, users::is_active))
-        .first(&mut conn).await
+        .first(&mut conn)
+        .await
         .optional()
         .unwrap_or(None);
 
@@ -1119,7 +1126,8 @@ pub async fn delete_user_web(
             .filter(users::is_active.eq(true))
             .filter(users::is_deleted.eq(false))
             .count()
-            .get_result(&mut conn).await
+            .get_result(&mut conn)
+            .await
             .unwrap_or(0);
 
         if superuser_count <= 1 {
@@ -1138,10 +1146,14 @@ pub async fn delete_user_web(
             users::deleted_at.eq(now),
             users::updated_at.eq(now),
         ))
-        .execute(&mut conn).await;
+        .execute(&mut conn)
+        .await;
 
     match result {
-        Ok(_) => flash_redirect(flash.success("User deleted successfully"), "/accounts/users"),
+        Ok(_) => flash_redirect(
+            flash.success("User deleted successfully"),
+            "/accounts/users",
+        ),
         Err(_) => flash_redirect(
             flash.error("Failed to delete user. Please try again."),
             &format!("/accounts/users/{}", user_uuid),
@@ -1160,7 +1172,11 @@ pub async fn profile(
     use crate::schema::users;
     use sha3::{Digest, Sha3_256};
 
-    let mut conn = state.db_pool.get().await.map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
     // Parse the UUID from the auth user
     let user_uuid = uuid::Uuid::parse_str(&auth_user.uuid)
@@ -1170,7 +1186,8 @@ pub async fn profile(
     let db_user: User = users::table
         .filter(users::uuid.eq(user_uuid))
         .filter(users::is_deleted.eq(false))
-        .first(&mut conn).await
+        .first(&mut conn)
+        .await
         .map_err(|e| match e {
             diesel::result::Error::NotFound => AppError::NotFound("User not found".to_string()),
             _ => AppError::Database(e),
@@ -1227,7 +1244,8 @@ pub async fn profile(
         .filter(auth_sessions::user_id.eq(db_user.id))
         .filter(auth_sessions::expires_at.gt(chrono::Utc::now()))
         .order(auth_sessions::created_at.desc())
-        .load(&mut conn).await
+        .load(&mut conn)
+        .await
         .unwrap_or_default();
 
     let sessions: Vec<ProfileSession> = db_sessions
@@ -1290,7 +1308,11 @@ pub async fn mfa_setup(
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         base.into_fields();
 
-    let mut conn = state.db_pool.get().await.map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
     let user_uuid = UuidType::parse_str(&auth_user.uuid)
         .map_err(|_| AppError::Validation("Invalid user UUID".to_string()))?;
 
@@ -1303,7 +1325,8 @@ pub async fn mfa_setup(
             crate::schema::users::username,
             crate::schema::users::mfa_secret,
         ))
-        .first(&mut conn).await
+        .first(&mut conn)
+        .await
         .map_err(AppError::Database)?;
 
     let (user_id, user_username, existing_secret) = user_data;
@@ -1316,7 +1339,8 @@ pub async fn mfa_setup(
         let (new_secret, _uri) = AuthService::generate_totp_secret(&user_username, "VAUBAN")?;
         diesel::update(crate::schema::users::table.filter(crate::schema::users::id.eq(user_id)))
             .set(crate::schema::users::mfa_secret.eq(Some(&new_secret)))
-            .execute(&mut conn).await
+            .execute(&mut conn)
+            .await
             .map_err(AppError::Database)?;
         new_secret
     };
@@ -1358,7 +1382,11 @@ pub async fn user_sessions(
         base.into_fields();
 
     // Load user sessions from database
-    let mut conn = state.db_pool.get().await.map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
     // Get current token hash to identify the real current session
     let current_token_hash = jar.get("access_token").map(|cookie| {
@@ -1370,16 +1398,14 @@ pub async fn user_sessions(
     // Debug: log auth_user UUID
     tracing::debug!(auth_uuid = %auth_user.uuid, "Loading sessions for user");
 
-    let parsed_uuid = auth_user
-        .uuid
-        .parse::<uuid::Uuid>()
-        .ok();
+    let parsed_uuid = auth_user.uuid.parse::<uuid::Uuid>().ok();
     let user_id: i32 = if let Some(uuid_val) = parsed_uuid {
         use crate::schema::users;
         users::table
             .filter(users::uuid.eq(uuid_val))
             .select(users::id)
-            .first::<i32>(&mut conn).await
+            .first::<i32>(&mut conn)
+            .await
             .unwrap_or(0)
     } else {
         0
@@ -1392,7 +1418,8 @@ pub async fn user_sessions(
         .filter(auth_sessions::user_id.eq(user_id))
         .filter(auth_sessions::expires_at.gt(chrono::Utc::now()))
         .order(auth_sessions::created_at.desc())
-        .load(&mut conn).await
+        .load(&mut conn)
+        .await
         .unwrap_or_default();
 
     // Debug: log number of sessions found
@@ -1456,17 +1483,19 @@ pub async fn api_keys(
         base.into_fields();
 
     // Load user API keys from database
-    let mut conn = state.db_pool.get().await.map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
-    let parsed_uuid = auth_user
-        .uuid
-        .parse::<uuid::Uuid>()
-        .ok();
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+    let parsed_uuid = auth_user.uuid.parse::<uuid::Uuid>().ok();
     let user_id: i32 = if let Some(uuid_val) = parsed_uuid {
         use crate::schema::users;
         users::table
             .filter(users::uuid.eq(uuid_val))
             .select(users::id)
-            .first::<i32>(&mut conn).await
+            .first::<i32>(&mut conn)
+            .await
             .unwrap_or(0)
     } else {
         0
@@ -1475,7 +1504,8 @@ pub async fn api_keys(
     let db_keys: Vec<ApiKey> = api_keys::table
         .filter(api_keys::user_id.eq(user_id))
         .order(api_keys::created_at.desc())
-        .load(&mut conn).await
+        .load(&mut conn)
+        .await
         .unwrap_or_default();
 
     let api_keys_list: Vec<ApiKeyItem> = db_keys
@@ -1538,19 +1568,21 @@ pub async fn revoke_session(
         }
     };
 
-    let mut conn = state.db_pool.get().await.map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
     // Get user ID
-    let parsed_uuid = auth_user
-        .uuid
-        .parse::<uuid::Uuid>()
-        .ok();
+    let parsed_uuid = auth_user.uuid.parse::<uuid::Uuid>().ok();
     let user_id: i32 = if let Some(uuid_val) = parsed_uuid {
         use crate::schema::users;
         users::table
             .filter(users::uuid.eq(uuid_val))
             .select(users::id)
-            .first::<i32>(&mut conn).await
+            .first::<i32>(&mut conn)
+            .await
             .unwrap_or(0)
     } else {
         0
@@ -1562,7 +1594,8 @@ pub async fn revoke_session(
             .filter(auth_sessions::uuid.eq(session_uuid))
             .filter(auth_sessions::user_id.eq(user_id)),
     )
-    .execute(&mut conn).await
+    .execute(&mut conn)
+    .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to revoke session: {}", e)))?;
 
     // Send WebSocket notification if session was deleted
@@ -1591,7 +1624,8 @@ pub async fn broadcast_sessions_update(state: &AppState, user_uuid: &str, user_i
             .filter(auth_sessions::user_id.eq(user_id))
             .filter(auth_sessions::expires_at.gt(chrono::Utc::now()))
             .order(auth_sessions::created_at.desc())
-            .load(&mut conn).await
+            .load(&mut conn)
+            .await
             .unwrap_or_default(),
         Err(_) => return,
     };
@@ -1715,19 +1749,21 @@ pub async fn revoke_api_key(
         }
     };
 
-    let mut conn = state.db_pool.get().await.map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
     // Get user ID
-    let parsed_uuid = auth_user
-        .uuid
-        .parse::<uuid::Uuid>()
-        .ok();
+    let parsed_uuid = auth_user.uuid.parse::<uuid::Uuid>().ok();
     let user_id: i32 = if let Some(uuid_val) = parsed_uuid {
         use crate::schema::users;
         users::table
             .filter(users::uuid.eq(uuid_val))
             .select(users::id)
-            .first::<i32>(&mut conn).await
+            .first::<i32>(&mut conn)
+            .await
             .unwrap_or(0)
     } else {
         0
@@ -1740,7 +1776,8 @@ pub async fn revoke_api_key(
             .filter(api_keys::user_id.eq(user_id)),
     )
     .set(api_keys::is_active.eq(false))
-    .execute(&mut conn).await
+    .execute(&mut conn)
+    .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to revoke API key: {}", e)))?;
 
     let revoked_html = format!(
@@ -1801,7 +1838,11 @@ pub async fn create_api_key(
         return Err(AppError::Validation("Invalid CSRF token".to_string()));
     }
 
-    let mut conn = state.db_pool.get().await.map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
     // Get user ID
     let parsed_uuid = auth_user
@@ -1853,7 +1894,8 @@ pub async fn create_api_key(
 
     diesel::insert_into(api_keys::table)
         .values(&new_key)
-        .execute(&mut conn).await
+        .execute(&mut conn)
+        .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to create API key: {}", e)))?;
 
     // Return success message with the key (only shown once)
@@ -1999,7 +2041,10 @@ pub async fn create_asset_web(
         return flash_redirect(flash.error("Hostname is required"), "/assets/new");
     }
     if form.port < 1 || form.port > 65535 {
-        return flash_redirect(flash.error("Port must be between 1 and 65535"), "/assets/new");
+        return flash_redirect(
+            flash.error("Port must be between 1 and 65535"),
+            "/assets/new",
+        );
     }
 
     let mut conn = match state.db_pool.get().await {
@@ -2017,7 +2062,8 @@ pub async fn create_asset_web(
         .filter(a::port.eq(form.port))
         .filter(a::is_deleted.eq(false))
         .select(a::id)
-        .first(&mut conn).await
+        .first(&mut conn)
+        .await
         .optional()
         .unwrap_or(None);
 
@@ -2034,7 +2080,8 @@ pub async fn create_asset_web(
         .filter(a::port.eq(form.port))
         .filter(a::is_deleted.eq(true))
         .select((a::id, a::uuid))
-        .first(&mut conn).await
+        .first(&mut conn)
+        .await
         .optional()
         .unwrap_or(None);
 
@@ -2054,18 +2101,17 @@ pub async fn create_asset_web(
                 a::deleted_at.eq(None::<chrono::DateTime<chrono::Utc>>),
                 a::updated_at.eq(now),
             ))
-            .execute(&mut conn).await;
+            .execute(&mut conn)
+            .await;
 
         return match result {
-            Ok(_) => {
-                flash_redirect(
-                    flash.success(format!(
-                        "Asset '{}' reactivated successfully",
-                        form.name.trim()
-                    )),
-                    &format!("/assets/{}", deleted_uuid),
-                )
-            }
+            Ok(_) => flash_redirect(
+                flash.success(format!(
+                    "Asset '{}' reactivated successfully",
+                    form.name.trim()
+                )),
+                &format!("/assets/{}", deleted_uuid),
+            ),
             Err(e) => {
                 tracing::error!("Failed to reactivate asset: {}", e);
                 flash_redirect(flash.error("Failed to reactivate asset"), "/assets/new")
@@ -2091,15 +2137,14 @@ pub async fn create_asset_web(
             a::created_at.eq(now),
             a::updated_at.eq(now),
         ))
-        .execute(&mut conn).await;
+        .execute(&mut conn)
+        .await;
 
     match result {
-        Ok(_) => {
-            flash_redirect(
-                flash.success(format!("Asset '{}' created successfully", form.name.trim())),
-                &format!("/assets/{}", new_uuid),
-            )
-        }
+        Ok(_) => flash_redirect(
+            flash.success(format!("Asset '{}' created successfully", form.name.trim())),
+            &format!("/assets/{}", new_uuid),
+        ),
         Err(e) => {
             tracing::error!("Failed to create asset: {}", e);
             flash_redirect(flash.error("Failed to create asset"), "/assets/new")
@@ -2122,7 +2167,11 @@ pub async fn asset_list(
     let user_is_admin = is_admin(&auth_user);
 
     // Load assets from database
-    let mut conn = state.db_pool.get().await.map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
     // Filter out empty strings - form sends empty string when "All" is selected
     let search_filter = params.get("search").filter(|s| !s.is_empty()).cloned();
@@ -2168,7 +2217,8 @@ pub async fn asset_list(
         ))
         .order(assets::name.asc())
         .limit(50)
-        .load(&mut conn).await?;
+        .load(&mut conn)
+        .await?;
 
     let asset_items: Vec<AssetListItem> = db_assets
         .into_iter()
@@ -2231,7 +2281,11 @@ pub async fn asset_search(
         return Ok(Html(String::new()));
     }
 
-    let mut conn = state.db_pool.get().await.map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
     let pattern = format!("%{}%", query);
 
     let rows: Vec<(uuid::Uuid, String, String, String, String)> = a::assets
@@ -2240,7 +2294,8 @@ pub async fn asset_search(
         .select((a::uuid, a::name, a::hostname, a::asset_type, a::status))
         .order(a::name.asc())
         .limit(8)
-        .load(&mut conn).await?;
+        .load(&mut conn)
+        .await?;
 
     if rows.is_empty() {
         return Ok(Html(String::new()));
@@ -2296,10 +2351,7 @@ pub async fn asset_detail(
     let asset_uuid = match ::uuid::Uuid::parse_str(&asset_uuid_str) {
         Ok(uuid) => uuid,
         Err(_) => {
-            return flash_redirect(
-                flash.error("Invalid asset identifier"),
-                "/assets",
-            );
+            return flash_redirect(flash.error("Invalid asset identifier"), "/assets");
         }
     };
 
@@ -2369,7 +2421,8 @@ pub async fn asset_detail(
             a::created_at,
             a::updated_at,
         ))
-        .first(&mut conn).await
+        .first(&mut conn)
+        .await
     {
         Ok(row) => row,
         Err(diesel::result::Error::NotFound) => {
@@ -2538,7 +2591,8 @@ pub async fn asset_edit(
             a::require_mfa,
             a::require_justification,
         ))
-        .first(&mut conn).await
+        .first(&mut conn)
+        .await
     {
         Ok(row) => row,
         Err(diesel::result::Error::NotFound) => {
@@ -2608,13 +2662,18 @@ pub async fn dashboard_widget_stats(
     use crate::templates::dashboard::widgets::StatsData;
     use chrono::{Duration, Utc};
 
-    let mut conn = state.db_pool.get().await.map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
     // Count active sessions
     let active_sessions: i64 = proxy_sessions::table
         .filter(proxy_sessions::status.eq("active"))
         .count()
-        .get_result(&mut conn).await?;
+        .get_result(&mut conn)
+        .await?;
 
     // Count today's sessions
     // SAFETY: 0, 0, 0 are always valid hour, minute, second values
@@ -2623,14 +2682,16 @@ pub async fn dashboard_widget_stats(
     let today_sessions: i64 = proxy_sessions::table
         .filter(proxy_sessions::created_at.ge(today_start.and_utc()))
         .count()
-        .get_result(&mut conn).await?;
+        .get_result(&mut conn)
+        .await?;
 
     // Count this week's sessions
     let week_start = Utc::now() - Duration::days(7);
     let week_sessions: i64 = proxy_sessions::table
         .filter(proxy_sessions::created_at.ge(week_start))
         .count()
-        .get_result(&mut conn).await?;
+        .get_result(&mut conn)
+        .await?;
 
     let template = StatsWidget {
         stats: StatsData {
@@ -2653,7 +2714,11 @@ pub async fn dashboard_widget_active_sessions(
 ) -> Result<impl IntoResponse, AppError> {
     use crate::templates::dashboard::widgets::ActiveSessionItem;
 
-    let mut conn = state.db_pool.get().await.map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
     // Load active sessions with asset info
     let active_sessions: Vec<(i32, String, String, String, chrono::DateTime<chrono::Utc>)> =
@@ -2669,13 +2734,16 @@ pub async fn dashboard_widget_active_sessions(
             ))
             .order(proxy_sessions::created_at.desc())
             .limit(5)
-            .load(&mut conn).await?;
+            .load(&mut conn)
+            .await?;
 
     let sessions: Vec<ActiveSessionItem> = active_sessions
         .into_iter()
         .map(
             |(id, asset_name, asset_hostname, session_type, started_at)| {
-                let duration_secs = chrono::Utc::now().signed_duration_since(started_at).num_seconds();
+                let duration_secs = chrono::Utc::now()
+                    .signed_duration_since(started_at)
+                    .num_seconds();
                 ActiveSessionItem {
                     id,
                     asset_name,
@@ -2726,7 +2794,11 @@ pub async fn session_list(
         base.into_fields();
 
     // Load sessions from database
-    let mut conn = state.db_pool.get().await.map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
     // Filter out empty strings - form sends empty string when "All" is selected
     let status_filter = params.get("status").filter(|s| !s.is_empty()).cloned();
@@ -2810,7 +2882,8 @@ pub async fn session_list(
         ))
         .order(proxy_sessions::created_at.desc())
         .limit(50)
-        .load(&mut conn).await?;
+        .load(&mut conn)
+        .await?;
 
     let sessions: Vec<SessionListItem> = db_sessions
         .into_iter()
@@ -2923,10 +2996,7 @@ pub async fn session_detail(
     let id: i32 = match id_str.parse() {
         Ok(parsed_id) => parsed_id,
         Err(_) => {
-            return flash_redirect(
-                flash.error("Invalid session identifier"),
-                "/sessions",
-            );
+            return flash_redirect(flash.error("Invalid session identifier"), "/sessions");
         }
     };
 
@@ -3140,7 +3210,11 @@ pub async fn recording_list(
         base.into_fields();
 
     // Load recordings from database (sessions with is_recorded = true)
-    let mut conn = state.db_pool.get().await.map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
     let format_filter = params.get("format").cloned();
     let asset_filter = params.get("asset").cloned();
@@ -3185,7 +3259,8 @@ pub async fn recording_list(
         ))
         .order(proxy_sessions::created_at.desc())
         .limit(50)
-        .load(&mut conn).await?;
+        .load(&mut conn)
+        .await?;
 
     let recordings: Vec<RecordingListItem> = db_recordings
         .into_iter()
@@ -3291,7 +3366,8 @@ pub async fn recording_play(
          WHERE ps.id = $1 AND ps.is_recorded = true",
     )
     .bind::<Integer, _>(id)
-    .get_result(&mut conn).await
+    .get_result(&mut conn)
+    .await
     {
         Ok(data) => data,
         Err(diesel::result::Error::NotFound) => {
@@ -3414,7 +3490,11 @@ pub async fn approval_list(
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         base.into_fields();
 
-    let mut conn = state.db_pool.get().await.map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
     // Filter out empty strings - "All statuses" sends status="" which should be treated as None
     let status_filter = params.get("status").filter(|s| !s.is_empty()).cloned();
     let page = params
@@ -3447,8 +3527,9 @@ pub async fn approval_list(
     let offset = ((page - 1) * items_per_page) as i64;
 
     // NOTE: Raw SQL required - triple JOIN with inet::text cast, using parameterized queries
-    let approvals_data: Vec<ApprovalQueryResult> = if let Some(ref status) = status_filter {
-        diesel::sql_query(
+    let approvals_data: Vec<ApprovalQueryResult> =
+        if let Some(ref status) = status_filter {
+            diesel::sql_query(
             "SELECT ps.uuid, u.username, a.hostname as asset_name, a.asset_type, ps.session_type, 
                     ps.justification, ps.client_ip::text as client_ip, ps.created_at, ps.status
              FROM proxy_sessions ps
@@ -3463,8 +3544,8 @@ pub async fn approval_list(
         .bind::<BigInt, _>(offset)
         .load(&mut conn).await
         .map_err(AppError::Database)?
-    } else {
-        diesel::sql_query(
+        } else {
+            diesel::sql_query(
             "SELECT ps.uuid, u.username, a.hostname as asset_name, a.asset_type, ps.session_type, 
                     ps.justification, ps.client_ip::text as client_ip, ps.created_at, ps.status
              FROM proxy_sessions ps
@@ -3478,7 +3559,7 @@ pub async fn approval_list(
         .bind::<BigInt, _>(offset)
         .load(&mut conn).await
         .map_err(AppError::Database)?
-    };
+        };
 
     let approvals: Vec<crate::templates::sessions::approval_list::ApprovalListItem> =
         approvals_data
@@ -3716,7 +3797,11 @@ pub async fn active_sessions(
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         base.into_fields();
 
-    let mut conn = state.db_pool.get().await.map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
     // NOTE: Raw SQL required - triple JOIN with inet::text cast
     let sessions_data: Vec<ActiveSessionQueryResult> = diesel::sql_query(
@@ -3728,7 +3813,8 @@ pub async fn active_sessions(
          WHERE ps.status = 'active' AND ps.connected_at IS NOT NULL
          ORDER BY ps.connected_at DESC",
     )
-    .load(&mut conn).await
+    .load(&mut conn)
+    .await
     .map_err(AppError::Database)?;
 
     let sessions: Vec<crate::templates::sessions::active_list::ActiveSessionItem> = sessions_data
@@ -3809,7 +3895,11 @@ pub async fn group_list(
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         base.into_fields();
 
-    let mut conn = state.db_pool.get().await.map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
     // Filter out empty strings - form sends empty string when search is cleared
     let search_filter = params.get("search").filter(|s| !s.is_empty()).cloned();
 
@@ -3862,14 +3952,16 @@ pub async fn group_list(
 
     // Get member counts - migrated to Diesel DSL
     use crate::schema::user_groups::dsl::{group_id as ug_group_id, user_groups};
-    let mut group_items: Vec<crate::templates::accounts::group_list::GroupListItem> = Vec::with_capacity(groups_data.len());
+    let mut group_items: Vec<crate::templates::accounts::group_list::GroupListItem> =
+        Vec::with_capacity(groups_data.len());
     for (group_uuid, group_name, group_description, group_source, group_created_at) in groups_data {
         // Get member count for this group using JOIN
         let member_count: i64 = user_groups
             .inner_join(vauban_groups.on(id.eq(ug_group_id)))
             .filter(uuid.eq(group_uuid))
             .count()
-            .get_result(&mut conn).await
+            .get_result(&mut conn)
+            .await
             .unwrap_or(0);
 
         group_items.push(crate::templates::accounts::group_list::GroupListItem {
@@ -3970,7 +4062,8 @@ pub async fn group_detail(
             vg::updated_at,
             vg::last_synced,
         ))
-        .first(&mut conn).await
+        .first(&mut conn)
+        .await
     {
         Ok(row) => row,
         Err(diesel::result::Error::NotFound) => {
@@ -4021,7 +4114,8 @@ pub async fn group_detail(
             u::last_name,
             u::is_active,
         ))
-        .load(&mut conn).await
+        .load(&mut conn)
+        .await
     {
         Ok(data) => data,
         Err(_) => {
@@ -4222,7 +4316,8 @@ pub async fn create_vauban_group_web(
     let existing: Option<i32> = vg::vauban_groups
         .filter(vg::name.eq(&form.name))
         .select(vg::id)
-        .first(&mut conn).await
+        .first(&mut conn)
+        .await
         .optional()
         .unwrap_or(None);
 
@@ -4247,7 +4342,8 @@ pub async fn create_vauban_group_web(
             vg::created_at.eq(now),
             vg::updated_at.eq(now),
         ))
-        .execute(&mut conn).await;
+        .execute(&mut conn)
+        .await;
 
     match insert_result {
         Ok(_) => flash_redirect(
@@ -4287,14 +4383,19 @@ pub async fn vauban_group_edit_form(
         .map(|c| c.value().to_string())
         .unwrap_or_default();
 
-    let mut conn = state.db_pool.get().await.map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
     let group_uuid = ::uuid::Uuid::parse_str(&uuid_str)
         .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
 
     let group_row: (::uuid::Uuid, String, Option<String>, String) = vg::vauban_groups
         .filter(vg::uuid.eq(group_uuid))
         .select((vg::uuid, vg::name, vg::description, vg::source))
-        .first(&mut conn).await
+        .first(&mut conn)
+        .await
         .map_err(|e| match e {
             diesel::result::Error::NotFound => AppError::NotFound("Group not found".to_string()),
             _ => AppError::Database(e),
@@ -4402,7 +4503,8 @@ pub async fn update_vauban_group_web(
             vg::description.eq(&form.description.as_ref().filter(|s| !s.is_empty())),
             vg::updated_at.eq(now),
         ))
-        .execute(&mut conn).await;
+        .execute(&mut conn)
+        .await;
 
     match result {
         Ok(0) => flash_redirect(flash.error("Group not found"), "/accounts/groups"),
@@ -4435,7 +4537,11 @@ pub async fn group_add_member_form(
         ));
     }
 
-    let mut conn = state.db_pool.get().await.map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
     let group_uuid = ::uuid::Uuid::parse_str(&uuid_str)
         .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
 
@@ -4443,7 +4549,8 @@ pub async fn group_add_member_form(
     let group_row: (::uuid::Uuid, String, i32) = vg::vauban_groups
         .filter(vg::uuid.eq(group_uuid))
         .select((vg::uuid, vg::name, vg::id))
-        .first(&mut conn).await
+        .first(&mut conn)
+        .await
         .map_err(|e| match e {
             diesel::result::Error::NotFound => AppError::NotFound("Group not found".to_string()),
             _ => AppError::Database(e),
@@ -4455,7 +4562,8 @@ pub async fn group_add_member_form(
     let existing_member_ids: Vec<i32> = ug::user_groups
         .filter(ug::group_id.eq(group_id))
         .select(ug::user_id)
-        .load(&mut conn).await
+        .load(&mut conn)
+        .await
         .map_err(AppError::Database)?;
 
     let available_users_data: Vec<(::uuid::Uuid, String, String)> = u::users
@@ -4465,7 +4573,8 @@ pub async fn group_add_member_form(
         .order(u::username.asc())
         .select((u::uuid, u::username, u::email))
         .limit(50)
-        .load(&mut conn).await
+        .load(&mut conn)
+        .await
         .map_err(AppError::Database)?;
 
     let available_users: Vec<AvailableUser> = available_users_data
@@ -4526,7 +4635,11 @@ pub async fn group_member_search(
         ));
     }
 
-    let mut conn = state.db_pool.get().await.map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
     let group_uuid = ::uuid::Uuid::parse_str(&uuid_str)
         .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
 
@@ -4536,7 +4649,8 @@ pub async fn group_member_search(
     let group_id: i32 = vg::vauban_groups
         .filter(vg::uuid.eq(group_uuid))
         .select(vg::id)
-        .first(&mut conn).await
+        .first(&mut conn)
+        .await
         .map_err(|e| match e {
             diesel::result::Error::NotFound => AppError::NotFound("Group not found".to_string()),
             _ => AppError::Database(e),
@@ -4546,7 +4660,8 @@ pub async fn group_member_search(
     let existing_member_ids: Vec<i32> = ug::user_groups
         .filter(ug::group_id.eq(group_id))
         .select(ug::user_id)
-        .load(&mut conn).await
+        .load(&mut conn)
+        .await
         .map_err(AppError::Database)?;
 
     let available_users_data: Vec<(::uuid::Uuid, String, String)> = if search_term.is_empty() {
@@ -4557,7 +4672,8 @@ pub async fn group_member_search(
             .order(u::username.asc())
             .select((u::uuid, u::username, u::email))
             .limit(50)
-            .load(&mut conn).await
+            .load(&mut conn)
+            .await
             .map_err(AppError::Database)?
     } else {
         let pattern = format!("%{}%", search_term);
@@ -4565,17 +4681,16 @@ pub async fn group_member_search(
             .filter(u::is_deleted.eq(false))
             .filter(u::is_active.eq(true))
             .filter(u::id.ne_all(&existing_member_ids))
-            .filter(
-                sql::<diesel::sql_types::Bool>(&format!(
-                    "(username ILIKE '{}' OR email ILIKE '{}')",
-                    pattern.replace('\'', "''"),
-                    pattern.replace('\'', "''")
-                )),
-            )
+            .filter(sql::<diesel::sql_types::Bool>(&format!(
+                "(username ILIKE '{}' OR email ILIKE '{}')",
+                pattern.replace('\'', "''"),
+                pattern.replace('\'', "''")
+            )))
             .order(u::username.asc())
             .select((u::uuid, u::username, u::email))
             .limit(50)
-            .load(&mut conn).await
+            .load(&mut conn)
+            .await
             .map_err(AppError::Database)?
     };
 
@@ -4691,7 +4806,8 @@ pub async fn add_group_member_web(
     let group_id: Option<i32> = vg::vauban_groups
         .filter(vg::uuid.eq(group_uuid))
         .select(vg::id)
-        .first(&mut conn).await
+        .first(&mut conn)
+        .await
         .optional()
         .unwrap_or(None);
 
@@ -4707,7 +4823,8 @@ pub async fn add_group_member_web(
         .filter(u::uuid.eq(user_uuid))
         .filter(u::is_deleted.eq(false))
         .select(u::id)
-        .first(&mut conn).await
+        .first(&mut conn)
+        .await
         .optional()
         .unwrap_or(None);
 
@@ -4724,7 +4841,8 @@ pub async fn add_group_member_web(
     // Insert membership
     let result = diesel::insert_into(ug::user_groups)
         .values((ug::user_id.eq(user_id), ug::group_id.eq(group_id)))
-        .execute(&mut conn).await;
+        .execute(&mut conn)
+        .await;
 
     match result {
         Ok(_) => flash_redirect(
@@ -4820,7 +4938,8 @@ pub async fn remove_group_member_web(
     let group_id: Option<i32> = vg::vauban_groups
         .filter(vg::uuid.eq(group_uuid))
         .select(vg::id)
-        .first(&mut conn).await
+        .first(&mut conn)
+        .await
         .optional()
         .unwrap_or(None);
 
@@ -4835,7 +4954,8 @@ pub async fn remove_group_member_web(
     let user_id: Option<i32> = u::users
         .filter(u::uuid.eq(user_uuid))
         .select(u::id)
-        .first(&mut conn).await
+        .first(&mut conn)
+        .await
         .optional()
         .unwrap_or(None);
 
@@ -4855,7 +4975,8 @@ pub async fn remove_group_member_web(
             .filter(ug::user_id.eq(user_id))
             .filter(ug::group_id.eq(group_id)),
     )
-    .execute(&mut conn).await;
+    .execute(&mut conn)
+    .await;
 
     match result {
         Ok(0) => flash_redirect(
@@ -4932,7 +5053,8 @@ pub async fn delete_vauban_group_web(
     let group_id: Option<i32> = vg::vauban_groups
         .filter(vg::uuid.eq(group_uuid))
         .select(vg::id)
-        .first(&mut conn).await
+        .first(&mut conn)
+        .await
         .optional()
         .unwrap_or(None);
 
@@ -4947,7 +5069,8 @@ pub async fn delete_vauban_group_web(
     let member_count: i64 = ug::user_groups
         .filter(ug::group_id.eq(group_id))
         .count()
-        .get_result(&mut conn).await
+        .get_result(&mut conn)
+        .await
         .unwrap_or(0);
 
     if member_count > 0 {
@@ -4962,11 +5085,16 @@ pub async fn delete_vauban_group_web(
     }
 
     // Delete the group
-    let result = diesel::delete(vg::vauban_groups.filter(vg::id.eq(group_id))).execute(&mut conn).await;
+    let result = diesel::delete(vg::vauban_groups.filter(vg::id.eq(group_id)))
+        .execute(&mut conn)
+        .await;
 
     match result {
         Ok(0) => flash_redirect(flash.error("Group not found"), "/accounts/groups"),
-        Ok(_) => flash_redirect(flash.success("Group deleted successfully"), "/accounts/groups"),
+        Ok(_) => flash_redirect(
+            flash.success("Group deleted successfully"),
+            "/accounts/groups",
+        ),
         Err(_) => flash_redirect(
             flash.error("Failed to delete group. Please try again."),
             &format!("/accounts/groups/{}", uuid_str),
@@ -5013,7 +5141,11 @@ pub async fn asset_group_list(
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         base.into_fields();
 
-    let mut conn = state.db_pool.get().await.map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
     // Filter out empty strings - form sends empty string when search is cleared
     let search_filter = params.get("search").filter(|s| !s.is_empty()).cloned();
 
@@ -5134,7 +5266,8 @@ pub async fn asset_group_detail(
          FROM asset_groups WHERE uuid = $1 AND is_deleted = false",
     )
     .bind::<DieselUuid, _>(group_uuid)
-    .get_result(&mut conn).await
+    .get_result(&mut conn)
+    .await
     {
         Ok(data) => data,
         Err(diesel::result::Error::NotFound) => {
@@ -5157,7 +5290,8 @@ pub async fn asset_group_detail(
          ORDER BY a.name ASC",
     )
     .bind::<DieselUuid, _>(group_uuid)
-    .load(&mut conn).await
+    .load(&mut conn)
+    .await
     {
         Ok(data) => data,
         Err(_) => {
@@ -5280,7 +5414,11 @@ pub async fn asset_group_add_asset_form(
         })
         .collect();
 
-    let mut conn = state.db_pool.get().await.map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
     let group_uuid = ::uuid::Uuid::parse_str(&uuid_str)
         .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
 
@@ -5290,7 +5428,8 @@ pub async fn asset_group_add_asset_form(
         .filter(ag::uuid.eq(group_uuid))
         .filter(ag::is_deleted.eq(false))
         .select((ag::uuid, ag::name))
-        .first(&mut conn).await
+        .first(&mut conn)
+        .await
         .map_err(|e| match e {
             diesel::result::Error::NotFound => {
                 AppError::NotFound("Asset group not found".to_string())
@@ -5306,26 +5445,21 @@ pub async fn asset_group_add_asset_form(
     // Get ALL assets (not deleted) with their current group name if assigned
     // Assets already in a group will be displayed as grayed out and non-selectable
     use crate::schema::assets::dsl as a;
-    let available_asset_rows: Vec<(
-        ::uuid::Uuid,
-        String,
-        String,
-        String,
-        String,
-        Option<i32>,
-    )> = a::assets
-        .filter(a::is_deleted.eq(false))
-        .select((
-            a::uuid,
-            a::name,
-            a::hostname,
-            a::asset_type,
-            a::status,
-            a::group_id,
-        ))
-        .order(a::name.asc())
-        .load(&mut conn).await
-        .map_err(AppError::Database)?;
+    let available_asset_rows: Vec<(::uuid::Uuid, String, String, String, String, Option<i32>)> =
+        a::assets
+            .filter(a::is_deleted.eq(false))
+            .select((
+                a::uuid,
+                a::name,
+                a::hostname,
+                a::asset_type,
+                a::status,
+                a::group_id,
+            ))
+            .order(a::name.asc())
+            .load(&mut conn)
+            .await
+            .map_err(AppError::Database)?;
 
     // Get all group names for lookup
     let group_names: std::collections::HashMap<i32, String> = ag::asset_groups
@@ -5360,9 +5494,12 @@ pub async fn asset_group_add_asset_form(
         .map(|c| c.value().to_string())
         .unwrap_or_default();
 
-    let base = BaseTemplate::new(format!("Add Asset to {} - Asset Group", group.name), user.clone())
-        .with_current_path("/assets/groups")
-        .with_messages(flash_messages);
+    let base = BaseTemplate::new(
+        format!("Add Asset to {} - Asset Group", group.name),
+        user.clone(),
+    )
+    .with_current_path("/assets/groups")
+    .with_messages(flash_messages);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         base.into_fields();
 
@@ -5497,14 +5634,12 @@ pub async fn asset_group_add_asset(
         .filter(ag::uuid.eq(group_uuid))
         .filter(ag::is_deleted.eq(false))
         .select(ag::id)
-        .first(&mut conn).await
+        .first(&mut conn)
+        .await
     {
         Ok(id) => id,
         Err(diesel::result::Error::NotFound) => {
-            return flash_redirect(
-                flash.error("Asset group not found"),
-                "/assets/groups",
-            );
+            return flash_redirect(flash.error("Asset group not found"), "/assets/groups");
         }
         Err(_) => {
             return flash_redirect(
@@ -5524,7 +5659,8 @@ pub async fn asset_group_add_asset(
             a::group_id.eq(Some(group_id)),
             a::updated_at.eq(chrono::Utc::now()),
         ))
-        .execute(&mut conn).await;
+        .execute(&mut conn)
+        .await;
 
     match updated {
         Ok(0) => {
@@ -5540,7 +5676,10 @@ pub async fn asset_group_add_asset(
             } else {
                 format!("{} assets added to group successfully", count)
             };
-            flash_redirect(flash.success(&message), &format!("/assets/groups/{}", uuid_str))
+            flash_redirect(
+                flash.success(&message),
+                &format!("/assets/groups/{}", uuid_str),
+            )
         }
         Err(_) => flash_redirect(
             flash.error("Failed to add assets to group. Please try again."),
@@ -5626,7 +5765,8 @@ pub async fn asset_group_remove_asset(
             a::group_id.eq(None::<i32>),
             a::updated_at.eq(chrono::Utc::now()),
         ))
-        .execute(&mut conn).await;
+        .execute(&mut conn)
+        .await;
 
     match updated {
         Ok(0) => flash_redirect(
@@ -5696,7 +5836,8 @@ pub async fn asset_group_edit(
          FROM asset_groups WHERE uuid = $1 AND is_deleted = false",
     )
     .bind::<DieselUuid, _>(group_uuid)
-    .get_result(&mut conn).await
+    .get_result(&mut conn)
+    .await
     {
         Ok(data) => data,
         Err(diesel::result::Error::NotFound) => {
@@ -5992,7 +6133,10 @@ pub async fn create_asset_group_web(
         Ok(c) => c,
         Err(e) => {
             tracing::error!("Database connection error: {}", e);
-            return flash_redirect(flash.error("Database connection error"), "/assets/groups/new");
+            return flash_redirect(
+                flash.error("Database connection error"),
+                "/assets/groups/new",
+            );
         }
     };
 
@@ -6002,7 +6146,8 @@ pub async fn create_asset_group_web(
         .filter(ag::slug.eq(form.slug.trim()))
         .filter(ag::is_deleted.eq(false))
         .select(ag::id)
-        .first(&mut conn).await
+        .first(&mut conn)
+        .await
         .optional()
         .unwrap_or(None);
 
@@ -6029,7 +6174,8 @@ pub async fn create_asset_group_web(
             ag::created_at.eq(now),
             ag::updated_at.eq(now),
         ))
-        .execute(&mut conn).await;
+        .execute(&mut conn)
+        .await;
 
     match result {
         Ok(_) => flash_redirect(
@@ -6114,7 +6260,8 @@ pub async fn delete_asset_group_web(
         .filter(ag::uuid.eq(group_uuid))
         .filter(ag::is_deleted.eq(false))
         .select((ag::id, ag::name))
-        .first(&mut conn).await
+        .first(&mut conn)
+        .await
         .optional()
         .unwrap_or(None);
 
@@ -6129,11 +6276,13 @@ pub async fn delete_asset_group_web(
     use crate::schema::assets::dsl as a;
     let _ = diesel::update(a::assets.filter(a::group_id.eq(group_id)))
         .set(a::group_id.eq(None::<i32>))
-        .execute(&mut conn).await;
+        .execute(&mut conn)
+        .await;
 
     // Hard delete the asset group
-    let result =
-        diesel::delete(ag::asset_groups.filter(ag::id.eq(group_id))).execute(&mut conn).await;
+    let result = diesel::delete(ag::asset_groups.filter(ag::id.eq(group_id)))
+        .execute(&mut conn)
+        .await;
 
     match result {
         Ok(_) => flash_redirect(
@@ -6186,10 +6335,7 @@ pub async fn delete_asset_web(
     let asset_uuid = match ::uuid::Uuid::parse_str(&uuid_str) {
         Ok(uuid) => uuid,
         Err(_) => {
-            return flash_redirect(
-                flash.error("Invalid asset identifier"),
-                "/assets",
-            );
+            return flash_redirect(flash.error("Invalid asset identifier"), "/assets");
         }
     };
 
@@ -6211,14 +6357,12 @@ pub async fn delete_asset_web(
         .filter(a::uuid.eq(asset_uuid))
         .filter(a::is_deleted.eq(false))
         .select(a::id)
-        .first(&mut conn).await
+        .first(&mut conn)
+        .await
     {
         Ok(id) => id,
         Err(diesel::result::Error::NotFound) => {
-            return flash_redirect(
-                flash.error("Asset not found or already deleted"),
-                "/assets",
-            );
+            return flash_redirect(flash.error("Asset not found or already deleted"), "/assets");
         }
         Err(_) => {
             return flash_redirect(
@@ -6229,31 +6373,35 @@ pub async fn delete_asset_web(
     };
 
     let now = Utc::now();
-    let result = conn.transaction::<_, diesel::result::Error, _>(|conn| {
-        Box::pin(async move {
-            diesel::update(a::assets.filter(a::id.eq(asset_id)))
+    let result = conn
+        .transaction::<_, diesel::result::Error, _>(|conn| {
+            Box::pin(async move {
+                diesel::update(a::assets.filter(a::id.eq(asset_id)))
+                    .set((
+                        a::is_deleted.eq(true),
+                        a::deleted_at.eq(now),
+                        a::updated_at.eq(now),
+                    ))
+                    .execute(conn)
+                    .await?;
+
+                diesel::update(
+                    ps::proxy_sessions
+                        .filter(ps::asset_id.eq(asset_id))
+                        .filter(ps::status.eq("active")),
+                )
                 .set((
-                    a::is_deleted.eq(true),
-                    a::deleted_at.eq(now),
-                    a::updated_at.eq(now),
+                    ps::status.eq("terminated"),
+                    ps::disconnected_at.eq(now),
+                    ps::updated_at.eq(now),
                 ))
-                .execute(conn).await?;
+                .execute(conn)
+                .await?;
 
-            diesel::update(
-                ps::proxy_sessions
-                    .filter(ps::asset_id.eq(asset_id))
-                    .filter(ps::status.eq("active")),
-            )
-            .set((
-                ps::status.eq("terminated"),
-                ps::disconnected_at.eq(now),
-                ps::updated_at.eq(now),
-            ))
-            .execute(conn).await?;
-
-            Ok(())
+                Ok(())
+            })
         })
-    }).await;
+        .await;
 
     match result {
         Ok(_) => {
@@ -6263,7 +6411,8 @@ pub async fn delete_asset_web(
                     .filter(ps::status.eq_any(vec!["pending", "connecting"])),
             )
             .set((ps::status.eq("orphaned"), ps::updated_at.eq(now)))
-            .execute(&mut conn).await
+            .execute(&mut conn)
+            .await
             {
                 tracing::error!("Failed to orphan approvals after delete: {}", err);
             }
@@ -6380,7 +6529,9 @@ pub async fn update_asset_web(
                 Ok(ip) => Some(ipnetwork::IpNetwork::from(ip)),
                 Err(_) => {
                     return flash_redirect(
-                        flash.error("Invalid IP address format. Use format like 192.168.1.1 or 2001:db8::1"),
+                        flash.error(
+                            "Invalid IP address format. Use format like 192.168.1.1 or 2001:db8::1",
+                        ),
                         &format!("/assets/{}/edit", asset_uuid),
                     );
                 }
@@ -6402,8 +6553,16 @@ pub async fn update_asset_web(
     };
 
     // Parse boolean fields from checkbox values
-    let require_mfa = form.require_mfa.as_ref().map(|v| v == "on" || v == "true").unwrap_or(false);
-    let require_justification = form.require_justification.as_ref().map(|v| v == "on" || v == "true").unwrap_or(false);
+    let require_mfa = form
+        .require_mfa
+        .as_ref()
+        .map(|v| v == "on" || v == "true")
+        .unwrap_or(false);
+    let require_justification = form
+        .require_justification
+        .as_ref()
+        .map(|v| v == "on" || v == "true")
+        .unwrap_or(false);
 
     use crate::schema::assets::dsl as a;
     use chrono::Utc;
@@ -6412,15 +6571,13 @@ pub async fn update_asset_web(
     let existing: Result<crate::models::asset::Asset, _> = a::assets
         .filter(a::uuid.eq(asset_uuid))
         .filter(a::is_deleted.eq(false))
-        .first(&mut conn).await;
+        .first(&mut conn)
+        .await;
 
     let existing = match existing {
         Ok(asset) => asset,
         Err(_) => {
-            return flash_redirect(
-                flash.error("Asset not found"),
-                "/assets",
-            );
+            return flash_redirect(flash.error("Asset not found"), "/assets");
         }
     };
 
@@ -6437,7 +6594,8 @@ pub async fn update_asset_web(
             a::require_justification.eq(require_justification),
             a::updated_at.eq(Utc::now()),
         ))
-        .execute(&mut conn).await;
+        .execute(&mut conn)
+        .await;
 
     match result {
         Ok(_) => {
@@ -6461,7 +6619,6 @@ pub async fn update_asset_web(
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     // ==================== user_context_from_auth Tests ====================
 

@@ -144,7 +144,6 @@ impl BaseTemplate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     // ==================== FlashMessage Tests ====================
 

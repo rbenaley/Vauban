@@ -238,7 +238,6 @@ impl AuthService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     /// Get the path to the workspace root config/ directory.
     fn config_dir() -> std::path::PathBuf {
@@ -328,14 +327,13 @@ mod tests {
         let config = load_test_config();
         let auth_service = unwrap_ok!(AuthService::new(config));
 
-        let token = unwrap_ok!(auth_service
-            .generate_access_token(
-                "550e8400-e29b-41d4-a716-446655440000",
-                "testuser",
-                true,
-                false,
-                false,
-            ));
+        let token = unwrap_ok!(auth_service.generate_access_token(
+            "550e8400-e29b-41d4-a716-446655440000",
+            "testuser",
+            true,
+            false,
+            false,
+        ));
 
         // Token should not be empty
         assert!(!token.is_empty());
@@ -351,8 +349,8 @@ mod tests {
         let user_uuid = "550e8400-e29b-41d4-a716-446655440000";
         let username = "testuser";
 
-        let token = unwrap_ok!(auth_service
-            .generate_access_token(user_uuid, username, true, true, true));
+        let token =
+            unwrap_ok!(auth_service.generate_access_token(user_uuid, username, true, true, true));
 
         let claims = unwrap_ok!(auth_service.verify_token(&token));
 
@@ -377,14 +375,13 @@ mod tests {
         let config1 = load_test_config();
         let auth_service1 = unwrap_ok!(AuthService::new(config1));
 
-        let token = unwrap_ok!(auth_service1
-            .generate_access_token(
-                "550e8400-e29b-41d4-a716-446655440000",
-                "testuser",
-                true,
-                false,
-                false,
-            ));
+        let token = unwrap_ok!(auth_service1.generate_access_token(
+            "550e8400-e29b-41d4-a716-446655440000",
+            "testuser",
+            true,
+            false,
+            false,
+        ));
 
         // Create another service with a different secret
         let mut config2 = load_test_config();
@@ -400,14 +397,13 @@ mod tests {
         let config = load_test_config();
         let auth_service = unwrap_ok!(AuthService::new(config));
 
-        let token = unwrap_ok!(auth_service
-            .generate_access_token(
-                "test-uuid",
-                "testuser",
-                false, // mfa_verified
-                true,  // is_superuser
-                false, // is_staff
-            ));
+        let token = unwrap_ok!(auth_service.generate_access_token(
+            "test-uuid",
+            "testuser",
+            false, // mfa_verified
+            true,  // is_superuser
+            false, // is_staff
+        ));
 
         let claims = unwrap_ok!(auth_service.verify_token(&token));
 
@@ -484,7 +480,9 @@ mod tests {
     #[test]
     fn test_generate_totp_qr_code_success() {
         let (secret, _) = unwrap_ok!(AuthService::generate_totp_secret("testuser", "VAUBAN"));
-        let qr_code = unwrap_ok!(AuthService::generate_totp_qr_code(&secret, "testuser", "VAUBAN"));
+        let qr_code = unwrap_ok!(AuthService::generate_totp_qr_code(
+            &secret, "testuser", "VAUBAN"
+        ));
 
         // QR code should be base64 encoded PNG
         assert!(!qr_code.is_empty());
@@ -506,8 +504,8 @@ mod tests {
         let cloned = auth_service.clone();
 
         // Both should work identically
-        let token = unwrap_ok!(auth_service
-            .generate_access_token("user-1", "test", false, false, false));
+        let token =
+            unwrap_ok!(auth_service.generate_access_token("user-1", "test", false, false, false));
         let claims = unwrap_ok!(cloned.verify_token(&token));
         assert_eq!(claims.sub, "user-1");
     }
@@ -646,8 +644,7 @@ mod tests {
         let config = load_test_config();
         let auth_service = unwrap_ok!(AuthService::new(config));
 
-        let token = unwrap_ok!(auth_service
-            .generate_access_token("uuid", "", false, false, false));
+        let token = unwrap_ok!(auth_service.generate_access_token("uuid", "", false, false, false));
         let claims = unwrap_ok!(auth_service.verify_token(&token));
 
         assert_eq!(claims.username, "");
@@ -659,8 +656,8 @@ mod tests {
         let auth_service = unwrap_ok!(AuthService::new(config));
 
         let username = "用户名";
-        let token = unwrap_ok!(auth_service
-            .generate_access_token("uuid", username, false, false, false));
+        let token =
+            unwrap_ok!(auth_service.generate_access_token("uuid", username, false, false, false));
         let claims = unwrap_ok!(auth_service.verify_token(&token));
 
         assert_eq!(claims.username, username);
@@ -700,8 +697,8 @@ mod tests {
         let config = load_test_config();
         let auth_service = unwrap_ok!(AuthService::new(config));
 
-        let token = unwrap_ok!(auth_service
-            .generate_access_token("uuid", "user", false, false, false));
+        let token =
+            unwrap_ok!(auth_service.generate_access_token("uuid", "user", false, false, false));
         let claims = unwrap_ok!(auth_service.verify_token(&token));
 
         let now = Utc::now().timestamp();
@@ -726,8 +723,9 @@ mod tests {
         ];
 
         for (mfa, superuser, staff) in combinations {
-            let token = unwrap_ok!(auth_service
-                .generate_access_token("uuid", "user", mfa, superuser, staff));
+            let token = unwrap_ok!(
+                auth_service.generate_access_token("uuid", "user", mfa, superuser, staff)
+            );
             let claims = unwrap_ok!(auth_service.verify_token(&token));
 
             assert_eq!(claims.mfa_verified, mfa);
@@ -740,8 +738,10 @@ mod tests {
 
     #[test]
     fn test_generate_totp_secret_special_chars_username() {
-        let (secret, uri) =
-            unwrap_ok!(AuthService::generate_totp_secret("user@example.com", "VAUBAN Test"));
+        let (secret, uri) = unwrap_ok!(AuthService::generate_totp_secret(
+            "user@example.com",
+            "VAUBAN Test"
+        ));
 
         assert!(!secret.is_empty());
         assert!(uri.contains("otpauth://"));

@@ -329,10 +329,13 @@ async fn test_update_asset_with_ipv4_persists_to_database() {
 
     // Verify IP was persisted in database
     use vauban_web::schema::assets::dsl::{assets, ip_address, uuid};
-    let db_ip: Option<ipnetwork::IpNetwork> = unwrap_ok!(assets
-        .filter(uuid.eq(asset.asset.uuid))
-        .select(ip_address)
-        .first(&mut conn).await);
+    let db_ip: Option<ipnetwork::IpNetwork> = unwrap_ok!(
+        assets
+            .filter(uuid.eq(asset.asset.uuid))
+            .select(ip_address)
+            .first(&mut conn)
+            .await
+    );
 
     assert_eq!(
         db_ip.map(|ip| ip.to_string()),
@@ -372,10 +375,13 @@ async fn test_update_asset_with_ipv6_persists_to_database() {
 
     // Verify IPv6 was persisted in database
     use vauban_web::schema::assets::dsl::{assets, ip_address, uuid};
-    let db_ip: Option<ipnetwork::IpNetwork> = unwrap_ok!(assets
-        .filter(uuid.eq(asset.asset.uuid))
-        .select(ip_address)
-        .first(&mut conn).await);
+    let db_ip: Option<ipnetwork::IpNetwork> = unwrap_ok!(
+        assets
+            .filter(uuid.eq(asset.asset.uuid))
+            .select(ip_address)
+            .first(&mut conn)
+            .await
+    );
 
     assert_eq!(
         db_ip.map(|ip| ip.to_string()),
@@ -434,10 +440,13 @@ async fn test_update_asset_with_multiple_fields_persists_to_database() {
 
     // Verify IP was persisted in database (ip_address is not serialized in response for security)
     use vauban_web::schema::assets::dsl::{assets, ip_address, uuid};
-    let db_ip: Option<ipnetwork::IpNetwork> = unwrap_ok!(assets
-        .filter(uuid.eq(asset.asset.uuid))
-        .select(ip_address)
-        .first(&mut conn).await);
+    let db_ip: Option<ipnetwork::IpNetwork> = unwrap_ok!(
+        assets
+            .filter(uuid.eq(asset.asset.uuid))
+            .select(ip_address)
+            .first(&mut conn)
+            .await
+    );
 
     assert_eq!(
         db_ip.map(|ip| ip.to_string()),
@@ -514,10 +523,13 @@ async fn test_update_asset_with_string_port() {
 
     // Verify port was updated in database
     use vauban_web::schema::assets::dsl::{assets, port, uuid};
-    let db_port: i32 = unwrap_ok!(assets
-        .filter(uuid.eq(asset.asset.uuid))
-        .select(port)
-        .first(&mut conn).await);
+    let db_port: i32 = unwrap_ok!(
+        assets
+            .filter(uuid.eq(asset.asset.uuid))
+            .select(port)
+            .first(&mut conn)
+            .await
+    );
 
     assert_eq!(db_port, 2222, "Database should contain the updated port");
 
@@ -553,10 +565,13 @@ async fn test_update_asset_with_checkbox_on() {
 
     // Verify require_mfa was updated in database
     use vauban_web::schema::assets::dsl::{assets, require_mfa, uuid};
-    let db_mfa: bool = unwrap_ok!(assets
-        .filter(uuid.eq(asset.asset.uuid))
-        .select(require_mfa)
-        .first(&mut conn).await);
+    let db_mfa: bool = unwrap_ok!(
+        assets
+            .filter(uuid.eq(asset.asset.uuid))
+            .select(require_mfa)
+            .first(&mut conn)
+            .await
+    );
 
     assert!(db_mfa, "Database should have require_mfa set to true");
 
@@ -610,13 +625,29 @@ async fn test_update_asset_full_form_submission() {
         String,
         bool,
         bool,
-    ) = unwrap_ok!(assets
-        .filter(uuid.eq(asset.asset.uuid))
-        .select((name, hostname, port, status, require_mfa, require_justification))
-        .first(&mut conn).await);
+    ) = unwrap_ok!(
+        assets
+            .filter(uuid.eq(asset.asset.uuid))
+            .select((
+                name,
+                hostname,
+                port,
+                status,
+                require_mfa,
+                require_justification
+            ))
+            .first(&mut conn)
+            .await
+    );
 
-    assert!(db_name.starts_with("updated-server"), "Name should start with 'updated-server'");
-    assert!(db_hostname.contains("updated"), "Hostname should contain 'updated'");
+    assert!(
+        db_name.starts_with("updated-server"),
+        "Name should start with 'updated-server'"
+    );
+    assert!(
+        db_hostname.contains("updated"),
+        "Hostname should contain 'updated'"
+    );
     assert_eq!(db_port, 8022);
     assert_eq!(db_status, "maintenance");
     assert!(db_mfa);
@@ -637,14 +668,19 @@ async fn test_get_asset_malformed_uuid_returns_validation_error() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("asset_malformed")).await;
+    let admin = create_admin_user(
+        &mut conn,
+        &app.auth_service,
+        &unique_name("asset_malformed"),
+    )
+    .await;
 
     // Try various malformed UUIDs
     let malformed_uuids = [
         "not-a-uuid",
         "12345",
         "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-        "24d3cc30-d6c0-ooo7-be9a-978dd250ae3e",  // Invalid character 'o'
+        "24d3cc30-d6c0-ooo7-be9a-978dd250ae3e", // Invalid character 'o'
     ];
 
     for bad_uuid in malformed_uuids {
@@ -673,7 +709,12 @@ async fn test_update_asset_malformed_uuid_returns_validation_error() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("asset_upd_malformed")).await;
+    let admin = create_admin_user(
+        &mut conn,
+        &app.auth_service,
+        &unique_name("asset_upd_malformed"),
+    )
+    .await;
 
     let response = app
         .server

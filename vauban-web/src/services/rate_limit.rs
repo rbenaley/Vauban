@@ -58,9 +58,7 @@ impl RateLimiter {
         redis_url: Option<&str>,
         limit_per_minute: u32,
     ) -> AppResult<Self> {
-        if cache_enabled
-            && let Some(url) = redis_url
-        {
+        if cache_enabled && let Some(url) = redis_url {
             match redis::Client::open(url) {
                 Ok(client) => {
                     debug!("Rate limiter using Redis backend");
@@ -70,7 +68,10 @@ impl RateLimiter {
                     });
                 }
                 Err(e) => {
-                    warn!("Failed to connect to Redis for rate limiting: {}. Falling back to in-memory.", e);
+                    warn!(
+                        "Failed to connect to Redis for rate limiting: {}. Falling back to in-memory.",
+                        e
+                    );
                 }
             }
         }
@@ -93,12 +94,14 @@ impl RateLimiter {
     /// Returns `RateLimitResult` with the current status.
     pub async fn check(&self, key: &str) -> AppResult<RateLimitResult> {
         match self {
-            Self::Redis { client, limit_per_minute } => {
-                self.check_redis(client, key, *limit_per_minute).await
-            }
-            Self::InMemory { store, limit_per_minute } => {
-                self.check_in_memory(store, key, *limit_per_minute)
-            }
+            Self::Redis {
+                client,
+                limit_per_minute,
+            } => self.check_redis(client, key, *limit_per_minute).await,
+            Self::InMemory {
+                store,
+                limit_per_minute,
+            } => self.check_in_memory(store, key, *limit_per_minute),
             Self::Disabled => Ok(RateLimitResult {
                 allowed: true,
                 remaining: u32::MAX,
@@ -140,10 +143,7 @@ impl RateLimiter {
         }
 
         // Get TTL for reset time
-        let ttl: i64 = conn
-            .ttl(&redis_key)
-            .await
-            .map_err(AppError::Cache)?;
+        let ttl: i64 = conn.ttl(&redis_key).await.map_err(AppError::Cache)?;
 
         let reset_in_secs = if ttl > 0 { ttl as u64 } else { window_secs };
         let allowed = count <= limit;
@@ -225,9 +225,7 @@ impl RateLimiter {
             // Count entries before cleanup for metrics
             let before_count = store.len();
 
-            store.retain(|_, entry| {
-                now.duration_since(entry.window_start) < window_duration * 2
-            });
+            store.retain(|_, entry| now.duration_since(entry.window_start) < window_duration * 2);
 
             let expired_count = before_count.saturating_sub(store.len());
             if expired_count > 0 {
@@ -240,7 +238,6 @@ impl RateLimiter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     #[tokio::test]
     async fn test_in_memory_rate_limiter_allows_within_limit() {

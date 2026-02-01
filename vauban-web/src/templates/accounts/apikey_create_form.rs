@@ -8,7 +8,6 @@ pub struct ApikeyCreateFormTemplate {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     #[test]
     fn test_apikey_create_form_renders() {

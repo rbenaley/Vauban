@@ -39,10 +39,17 @@ async fn test_mfa_setup_page_renders() {
     // Setup: create user with temporary token (mfa_verified = false)
     let username = unique_name("mfa_setup");
     let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
-    
+
     // Generate a temporary token with mfa_verified = false
-    let temp_token = app.auth_service
-        .generate_access_token(&test_user.user.uuid.to_string(), &username, false, false, false)
+    let temp_token = app
+        .auth_service
+        .generate_access_token(
+            &test_user.user.uuid.to_string(),
+            &username,
+            false,
+            false,
+            false,
+        )
         .unwrap();
 
     // Execute: GET /mfa/setup with temporary auth cookie
@@ -55,9 +62,18 @@ async fn test_mfa_setup_page_renders() {
     // Assert: 200 OK with MFA setup content
     assert_status(&response, 200);
     let body = response.text();
-    assert!(body.contains("Two-Factor Authentication"), "Should contain MFA setup title");
-    assert!(body.contains("QR code"), "Should contain QR code instructions");
-    assert!(body.contains("totp_code"), "Should contain TOTP input field");
+    assert!(
+        body.contains("Two-Factor Authentication"),
+        "Should contain MFA setup title"
+    );
+    assert!(
+        body.contains("QR code"),
+        "Should contain QR code instructions"
+    );
+    assert!(
+        body.contains("totp_code"),
+        "Should contain TOTP input field"
+    );
 
     // Cleanup
     test_db::cleanup(&mut conn).await;
@@ -73,8 +89,15 @@ async fn test_mfa_setup_page_shows_qr_code() {
     // Setup: create user with temporary token
     let username = unique_name("mfa_qr");
     let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
-    let temp_token = app.auth_service
-        .generate_access_token(&test_user.user.uuid.to_string(), &username, false, false, false)
+    let temp_token = app
+        .auth_service
+        .generate_access_token(
+            &test_user.user.uuid.to_string(),
+            &username,
+            false,
+            false,
+            false,
+        )
         .unwrap();
 
     // Execute: GET /mfa/setup
@@ -87,7 +110,10 @@ async fn test_mfa_setup_page_shows_qr_code() {
     // Assert: Contains base64 QR code image
     assert_status(&response, 200);
     let body = response.text();
-    assert!(body.contains("data:image/png;base64,"), "Should contain base64 QR code image");
+    assert!(
+        body.contains("data:image/png;base64,"),
+        "Should contain base64 QR code image"
+    );
 
     // Cleanup
     test_db::cleanup(&mut conn).await;
@@ -125,10 +151,17 @@ async fn test_mfa_verify_page_renders() {
     // Setup: create MFA-enabled user with temporary token
     let username = unique_name("mfa_verify");
     let mfa_user = create_mfa_user(&mut conn, &app.auth_service, &username).await;
-    
+
     // Generate a temporary token with mfa_verified = false
-    let temp_token = app.auth_service
-        .generate_access_token(&mfa_user.user.uuid.to_string(), &username, false, false, false)
+    let temp_token = app
+        .auth_service
+        .generate_access_token(
+            &mfa_user.user.uuid.to_string(),
+            &username,
+            false,
+            false,
+            false,
+        )
         .unwrap();
 
     // Execute: GET /mfa/verify
@@ -141,8 +174,14 @@ async fn test_mfa_verify_page_renders() {
     // Assert: 200 OK with MFA verify content
     assert_status(&response, 200);
     let body = response.text();
-    assert!(body.contains("Two-Factor Authentication"), "Should contain MFA verify title");
-    assert!(body.contains("totp_code"), "Should contain TOTP input field");
+    assert!(
+        body.contains("Two-Factor Authentication"),
+        "Should contain MFA verify title"
+    );
+    assert!(
+        body.contains("totp_code"),
+        "Should contain TOTP input field"
+    );
     assert!(body.contains("Verify"), "Should contain verify button");
 
     // Cleanup
@@ -159,8 +198,15 @@ async fn test_mfa_verify_page_has_code_input() {
     // Setup: create MFA-enabled user with temporary token
     let username = unique_name("mfa_code_input");
     let mfa_user = create_mfa_user(&mut conn, &app.auth_service, &username).await;
-    let temp_token = app.auth_service
-        .generate_access_token(&mfa_user.user.uuid.to_string(), &username, false, false, false)
+    let temp_token = app
+        .auth_service
+        .generate_access_token(
+            &mfa_user.user.uuid.to_string(),
+            &username,
+            false,
+            false,
+            false,
+        )
         .unwrap();
 
     // Execute: GET /mfa/verify
@@ -173,8 +219,14 @@ async fn test_mfa_verify_page_has_code_input() {
     // Assert: Contains 6-digit input field
     assert_status(&response, 200);
     let body = response.text();
-    assert!(body.contains("maxlength=\"6\""), "Should have maxlength=6 for TOTP input");
-    assert!(body.contains("pattern=\"[0-9]{6}\""), "Should have pattern for 6 digits");
+    assert!(
+        body.contains("maxlength=\"6\""),
+        "Should have maxlength=6 for TOTP input"
+    );
+    assert!(
+        body.contains("pattern=\"[0-9]{6}\""),
+        "Should have pattern for 6 digits"
+    );
 
     // Cleanup
     test_db::cleanup(&mut conn).await;
@@ -194,8 +246,15 @@ async fn test_mfa_setup_submit_invalid_code() {
     // Setup: create user with temporary token
     let username = unique_name("mfa_invalid");
     let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
-    let temp_token = app.auth_service
-        .generate_access_token(&test_user.user.uuid.to_string(), &username, false, false, false)
+    let temp_token = app
+        .auth_service
+        .generate_access_token(
+            &test_user.user.uuid.to_string(),
+            &username,
+            false,
+            false,
+            false,
+        )
         .unwrap();
 
     // First, visit setup page to ensure secret is generated
@@ -213,10 +272,7 @@ async fn test_mfa_setup_submit_invalid_code() {
         .server
         .post("/mfa/setup")
         .add_header(COOKIE, format!("access_token={}", temp_token))
-        .form(&[
-            ("totp_code", "000000"),
-            ("csrf_token", "test_csrf_token"),
-        ])
+        .form(&[("totp_code", "000000"), ("csrf_token", "test_csrf_token")])
         .await;
 
     // Assert: Should fail with redirect back to setup or error message
@@ -246,8 +302,15 @@ async fn test_mfa_verify_submit_invalid_code() {
     // Setup: create MFA-enabled user with temporary token
     let username = unique_name("mfa_verify_inv");
     let mfa_user = create_mfa_user(&mut conn, &app.auth_service, &username).await;
-    let temp_token = app.auth_service
-        .generate_access_token(&mfa_user.user.uuid.to_string(), &username, false, false, false)
+    let temp_token = app
+        .auth_service
+        .generate_access_token(
+            &mfa_user.user.uuid.to_string(),
+            &username,
+            false,
+            false,
+            false,
+        )
         .unwrap();
 
     // Execute: POST /mfa/verify with invalid code
@@ -255,10 +318,7 @@ async fn test_mfa_verify_submit_invalid_code() {
         .server
         .post("/mfa/verify")
         .add_header(COOKIE, format!("access_token={}", temp_token))
-        .form(&[
-            ("totp_code", "999999"),
-            ("csrf_token", "test_csrf_token"),
-        ])
+        .form(&[("totp_code", "999999"), ("csrf_token", "test_csrf_token")])
         .await;
 
     // Assert: Should fail with redirect back to verify or error message
@@ -293,7 +353,10 @@ async fn test_login_redirects_to_mfa_setup() {
     let response = app
         .server
         .post("/auth/login")
-        .add_header(header::HeaderName::from_static("hx-request"), header::HeaderValue::from_static("true"))
+        .add_header(
+            header::HeaderName::from_static("hx-request"),
+            header::HeaderValue::from_static("true"),
+        )
         .json(&serde_json::json!({
             "username": username,
             "password": test_user.password
@@ -303,7 +366,7 @@ async fn test_login_redirects_to_mfa_setup() {
     // Assert: Should include HX-Redirect header to /mfa/setup
     let status = response.status_code().as_u16();
     let body = response.text();
-    
+
     // The response should be 200 with HX-Redirect header
     // If CSRF fails, we get an error in the body
     assert!(
@@ -312,7 +375,7 @@ async fn test_login_redirects_to_mfa_setup() {
         status,
         body
     );
-    
+
     // Check for CSRF error in body (if present, the test setup needs adjustment)
     if body.contains("CSRF") || body.contains("csrf") {
         // CSRF validation is blocking - this is expected in tests without proper cookie setup
@@ -339,7 +402,10 @@ async fn test_login_redirects_to_mfa_verify() {
     let response = app
         .server
         .post("/auth/login")
-        .add_header(header::HeaderName::from_static("hx-request"), header::HeaderValue::from_static("true"))
+        .add_header(
+            header::HeaderName::from_static("hx-request"),
+            header::HeaderValue::from_static("true"),
+        )
         .json(&serde_json::json!({
             "username": username,
             "password": mfa_user.password
@@ -349,14 +415,14 @@ async fn test_login_redirects_to_mfa_verify() {
     // Assert: Should include HX-Redirect header to /mfa/verify
     let status = response.status_code().as_u16();
     let body = response.text();
-    
+
     assert!(
         status == 200,
         "Expected 200 with HX-Redirect, got {} with body: {}",
         status,
         body
     );
-    
+
     // Check for CSRF error in body (if present, the test setup needs adjustment)
     if body.contains("CSRF") || body.contains("csrf") {
         // CSRF validation is blocking - this is expected in tests without proper cookie setup

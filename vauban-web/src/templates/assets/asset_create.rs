@@ -41,7 +41,6 @@ pub struct AssetCreateTemplate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     fn create_test_vauban_config() -> VaubanConfig {
         VaubanConfig {
@@ -146,6 +145,9 @@ mod tests {
         };
 
         let result = template.render();
-        assert!(result.is_ok(), "AssetCreateTemplate should render successfully");
+        assert!(
+            result.is_ok(),
+            "AssetCreateTemplate should render successfully"
+        );
     }
 }

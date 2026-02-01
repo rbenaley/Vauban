@@ -188,6 +188,9 @@ mod tests {
 
         assert!(!template.show_view_link);
         let result = template.render();
-        assert!(result.is_ok(), "AssetListTemplate should render without view link");
+        assert!(
+            result.is_ok(),
+            "AssetListTemplate should render without view link"
+        );
     }
 }

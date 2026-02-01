@@ -42,10 +42,14 @@ pub fn validate_password_complexity(password: &str) -> Result<(), validator::Val
     let has_special = password.chars().any(|c| !c.is_alphanumeric());
 
     if !has_uppercase {
-        return Err(validator::ValidationError::new("password_missing_uppercase"));
+        return Err(validator::ValidationError::new(
+            "password_missing_uppercase",
+        ));
     }
     if !has_lowercase {
-        return Err(validator::ValidationError::new("password_missing_lowercase"));
+        return Err(validator::ValidationError::new(
+            "password_missing_lowercase",
+        ));
     }
     if !has_digit {
         return Err(validator::ValidationError::new("password_missing_digit"));
@@ -235,7 +239,10 @@ impl User {
 pub struct CreateUserRequest {
     #[validate(
         length(min = 3, max = 150, message = "Username must be 3-150 characters"),
-        regex(path = "*RE_USERNAME", message = "Username contains invalid characters (use letters, numbers, dots, underscores, hyphens)")
+        regex(
+            path = "*RE_USERNAME",
+            message = "Username contains invalid characters (use letters, numbers, dots, underscores, hyphens)"
+        )
     )]
     pub username: String,
     #[validate(email(message = "Invalid email address"))]
@@ -270,7 +277,7 @@ pub struct UpdateUserRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     use chrono::Duration;
 
     /// Helper to create a test user

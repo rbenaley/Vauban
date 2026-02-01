@@ -8,8 +8,8 @@
 /// - Session permissions
 use crate::common::{TestApp, assertions::assert_status, unwrap_ok};
 use crate::fixtures::{
-    create_recorded_session, create_simple_admin_user, create_simple_ssh_asset,
-    create_simple_user, create_test_session, unique_name,
+    create_recorded_session, create_simple_admin_user, create_simple_ssh_asset, create_simple_user,
+    create_test_session, unique_name,
 };
 use axum::http::header::COOKIE;
 use diesel::{ExpressionMethods, QueryDsl};
@@ -19,11 +19,13 @@ use uuid::Uuid;
 /// Helper to get user UUID from user_id.
 async fn get_user_uuid(conn: &mut AsyncPgConnection, user_id: i32) -> Uuid {
     use vauban_web::schema::users;
-    unwrap_ok!(users::table
-        .filter(users::id.eq(user_id))
-        .select(users::uuid)
-        .first(conn)
-        .await)
+    unwrap_ok!(
+        users::table
+            .filter(users::id.eq(user_id))
+            .select(users::uuid)
+            .first(conn)
+            .await
+    )
 }
 
 // =============================================================================
@@ -40,7 +42,9 @@ async fn test_session_detail_page_loads() {
     let asset_id = create_simple_ssh_asset(&mut conn, "test-session-page-asset", user_id).await;
     let session_id = create_test_session(&mut conn, user_id, asset_id, "ssh", "active").await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), "test_session_page", true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), "test_session_page", true, true)
+        .await;
 
     let response = app
         .server
@@ -60,12 +64,14 @@ async fn test_session_detail_page_loads() {
 async fn test_session_detail_not_found() {
     let app = TestApp::spawn().await;
 
-    let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
-        "test_session_notfound",
-        true,
-        true,
-    ).await;
+    let token = app
+        .generate_test_token(
+            &Uuid::new_v4().to_string(),
+            "test_session_notfound",
+            true,
+            true,
+        )
+        .await;
 
     let response = app
         .server
@@ -75,7 +81,10 @@ async fn test_session_detail_not_found() {
 
     // Not found redirects to list page with flash message
     assert_status(&response, 303);
-    let location = response.headers().get("location").and_then(|v| v.to_str().ok());
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok());
     assert_eq!(location, Some("/sessions"));
 }
 
@@ -93,7 +102,9 @@ async fn test_recording_play_page_with_recorded_session() {
     let asset_id = create_simple_ssh_asset(&mut conn, "test-recording-asset", user_id).await;
     let session_id = create_recorded_session(&mut conn, user_id, asset_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), "test_recording_page", true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), "test_recording_page", true, true)
+        .await;
 
     let response = app
         .server
@@ -113,8 +124,9 @@ async fn test_recording_play_page_with_recorded_session() {
 async fn test_recording_play_not_found() {
     let app = TestApp::spawn().await;
 
-    let token =
-        app.generate_test_token(&Uuid::new_v4().to_string(), "test_rec_notfound", true, true).await;
+    let token = app
+        .generate_test_token(&Uuid::new_v4().to_string(), "test_rec_notfound", true, true)
+        .await;
 
     let response = app
         .server
@@ -124,7 +136,10 @@ async fn test_recording_play_not_found() {
 
     // Not found redirects to list page with flash message
     assert_status(&response, 303);
-    let location = response.headers().get("location").and_then(|v| v.to_str().ok());
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok());
     assert_eq!(location, Some("/sessions/recordings"));
 }
 
@@ -136,12 +151,14 @@ async fn test_recording_play_not_found() {
 async fn test_active_sessions_page_loads() {
     let app = TestApp::spawn().await;
 
-    let token = app.generate_test_token(
-        &Uuid::new_v4().to_string(),
-        "test_active_sessions",
-        true,
-        true,
-    ).await;
+    let token = app
+        .generate_test_token(
+            &Uuid::new_v4().to_string(),
+            "test_active_sessions",
+            true,
+            true,
+        )
+        .await;
 
     let response = app
         .server
@@ -167,7 +184,9 @@ async fn test_active_sessions_with_data() {
     let asset_id = create_simple_ssh_asset(&mut conn, "test-active-asset", user_id).await;
     let _session_id = create_test_session(&mut conn, user_id, asset_id, "ssh", "active").await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), "test_active_data", true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), "test_active_data", true, true)
+        .await;
 
     let response = app
         .server
@@ -196,7 +215,9 @@ async fn test_session_list_filter_by_all_statuses() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
+        .await;
 
     // Test 1: No filter
     let response_no_filter = app
@@ -225,7 +246,13 @@ async fn test_session_list_filter_by_all_statuses() {
     );
 
     // Test all valid statuses
-    let statuses = ["active", "disconnected", "completed", "terminated", "pending"];
+    let statuses = [
+        "active",
+        "disconnected",
+        "completed",
+        "terminated",
+        "pending",
+    ];
 
     for status in &statuses {
         let response = app
@@ -272,7 +299,9 @@ async fn test_session_list_filter_by_all_types() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
+        .await;
 
     // Test 1: No filter
     let response_no_filter = app
@@ -331,7 +360,9 @@ async fn test_session_list_search_by_asset() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
+        .await;
 
     // Test 1: Search with asset name
     let response = app
@@ -374,7 +405,9 @@ async fn test_session_list_combined_filters() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_username, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
+        .await;
 
     // Test 1: All three filters combined
     let response = app
@@ -441,7 +474,9 @@ async fn test_session_list_filters_by_user() {
     let _session1_id = create_test_session(&mut conn, user1_id, asset_id, "ssh", "completed").await;
     let _session2_id = create_test_session(&mut conn, user2_id, asset_id, "ssh", "completed").await;
 
-    let token = app.generate_test_token(&user1_uuid.to_string(), &user1_name, false, false).await;
+    let token = app
+        .generate_test_token(&user1_uuid.to_string(), &user1_name, false, false)
+        .await;
 
     let response = app
         .server
@@ -468,10 +503,13 @@ async fn test_session_list_admin_sees_all() {
 
     let other_name = unique_name("other_sess_user");
     let other_id = create_simple_user(&mut conn, &other_name).await;
-    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("all-sess-asset"), admin_id).await;
+    let asset_id =
+        create_simple_ssh_asset(&mut conn, &unique_name("all-sess-asset"), admin_id).await;
     let _session_id = create_test_session(&mut conn, other_id, asset_id, "ssh", "completed").await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
 
     let response = app
         .server
@@ -510,7 +548,9 @@ async fn test_session_detail_own_session_allowed() {
         .is_ok();
     assert!(session_exists, "Session should exist after creation");
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, false, false).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, false, false)
+        .await;
 
     let response = app
         .server
@@ -522,7 +562,8 @@ async fn test_session_detail_own_session_allowed() {
     assert!(
         status == 200,
         "User should access their own session detail, got {}. Session ID: {}",
-        status, session_id
+        status,
+        session_id
     );
 }
 
@@ -552,7 +593,9 @@ async fn test_session_detail_other_session_forbidden() {
     let other_id = create_simple_user(&mut conn, &other_name).await;
     let other_uuid = get_user_uuid(&mut conn, other_id).await;
 
-    let token = app.generate_test_token(&other_uuid.to_string(), &other_name, false, false).await;
+    let token = app
+        .generate_test_token(&other_uuid.to_string(), &other_name, false, false)
+        .await;
 
     let response = app
         .server
@@ -565,9 +608,13 @@ async fn test_session_detail_other_session_forbidden() {
     assert!(
         status == 303,
         "User should be redirected from other's session, got {}. Session ID: {}",
-        status, session_id
+        status,
+        session_id
     );
-    let location = response.headers().get("location").and_then(|v| v.to_str().ok());
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok());
     assert_eq!(location, Some("/sessions"));
 }
 
@@ -584,7 +631,9 @@ async fn test_session_detail_invalid_id_format() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
 
     // Session ID should be an integer, try with invalid formats
     // All should redirect gracefully to /sessions instead of showing error page
@@ -598,8 +647,11 @@ async fn test_session_detail_invalid_id_format() {
             .await;
 
         let status = response.status_code().as_u16();
-        let location = response.headers().get("location").and_then(|v| v.to_str().ok());
-        
+        let location = response
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok());
+
         assert!(
             status == 303 && location == Some("/sessions"),
             "Invalid session ID '{}' should redirect to /sessions with 303, got status {} location {:?}",
@@ -619,7 +671,9 @@ async fn test_recording_play_invalid_id() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
 
     // Test various invalid recording IDs - all should redirect gracefully
     let invalid_ids = ["abc", "{wqeqwE}", "not-a-number", "12.34"];
@@ -632,7 +686,10 @@ async fn test_recording_play_invalid_id() {
             .await;
 
         let status = response.status_code().as_u16();
-        let location = response.headers().get("location").and_then(|v| v.to_str().ok());
+        let location = response
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok());
 
         assert!(
             status == 303 && location == Some("/sessions/recordings"),
@@ -653,7 +710,9 @@ async fn test_session_detail_negative_id() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
 
     // Negative IDs are valid integers but don't exist - should redirect
     let response = app
@@ -669,7 +728,10 @@ async fn test_session_detail_negative_id() {
         "Non-existent session ID should redirect, got {}",
         status
     );
-    let location = response.headers().get("location").and_then(|v| v.to_str().ok());
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok());
     assert_eq!(location, Some("/sessions"));
 }
 
@@ -682,7 +744,9 @@ async fn test_session_detail_very_large_id() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
 
     // Very large ID that doesn't exist
     let response = app
@@ -708,12 +772,15 @@ async fn test_recording_play_non_recorded_session() {
     let admin_name = unique_name("rec_non_recorded");
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
-    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("non-rec-asset"), admin_id).await;
-    
+    let asset_id =
+        create_simple_ssh_asset(&mut conn, &unique_name("non-rec-asset"), admin_id).await;
+
     // Create a non-recorded session
     let session_id = create_test_session(&mut conn, admin_id, asset_id, "ssh", "completed").await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
 
     // Try to play a non-recorded session
     let response = app
@@ -750,7 +817,9 @@ async fn test_admin_can_view_any_session() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    let token = app.generate_test_token(&admin_uuid.to_string(), &admin_name, true, true).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
 
     // Admin should be able to view any session
     let response = app

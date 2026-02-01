@@ -39,7 +39,9 @@ impl OptionalSecret {
 
     /// Get the wrapped secret as a SecretString if present.
     pub fn as_secret(&self) -> Option<secrecy::SecretString> {
-        self.0.as_ref().map(|s| secrecy::SecretString::from(s.clone()))
+        self.0
+            .as_ref()
+            .map(|s| secrecy::SecretString::from(s.clone()))
     }
 
     /// Get the exposed secret value as an Option<String>.
@@ -412,7 +414,8 @@ impl Config {
             "Configuration directory not found. Searched:\n\
              - VAUBAN_CONFIG_DIR environment variable\n\
              - Workspace root config/ directory\n\
-             - /usr/local/etc/vauban/".to_string()
+             - /usr/local/etc/vauban/"
+                .to_string(),
         ))
     }
 
@@ -609,7 +612,6 @@ pub mod test_fixtures {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     // ==================== Environment Tests ====================
 
@@ -717,7 +719,10 @@ mod tests {
     #[test]
     fn test_config_load_from_config_dir() {
         // Load configuration from config/ directory
-        let config = unwrap_ok!(Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing));
+        let config = unwrap_ok!(Config::load_with_environment(
+            test_fixtures::config_dir(),
+            Environment::Testing
+        ));
 
         assert_eq!(config.environment, Environment::Testing);
         assert!(!config.secret_key.expose_secret().is_empty());
@@ -746,7 +751,10 @@ mod tests {
 
     #[test]
     fn test_config_values_from_testing_toml() {
-        let config = unwrap_ok!(Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing));
+        let config = unwrap_ok!(Config::load_with_environment(
+            test_fixtures::config_dir(),
+            Environment::Testing
+        ));
 
         // Values should come from config/testing.toml
         assert_eq!(config.logging.level, "warn");
@@ -755,7 +763,10 @@ mod tests {
 
     #[test]
     fn test_config_values_from_default_toml() {
-        let config = unwrap_ok!(Config::load_with_environment(test_fixtures::config_dir(), Environment::Development));
+        let config = unwrap_ok!(Config::load_with_environment(
+            test_fixtures::config_dir(),
+            Environment::Development
+        ));
 
         // Server values should come from config/default.toml (or development.toml)
         assert!(config.server.port > 0);
@@ -764,7 +775,10 @@ mod tests {
 
     #[test]
     fn test_config_database_values() {
-        let config = unwrap_ok!(Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing));
+        let config = unwrap_ok!(Config::load_with_environment(
+            test_fixtures::config_dir(),
+            Environment::Testing
+        ));
 
         // Database URL should be set
         assert!(!config.database.url.expose_secret().is_empty());
@@ -773,7 +787,10 @@ mod tests {
 
     #[test]
     fn test_config_security_values() {
-        let config = unwrap_ok!(Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing));
+        let config = unwrap_ok!(Config::load_with_environment(
+            test_fixtures::config_dir(),
+            Environment::Testing
+        ));
 
         // Security values should be reasonable
         assert!(config.security.password_min_length >= 8);
@@ -782,7 +799,10 @@ mod tests {
 
     #[test]
     fn test_config_jwt_values() {
-        let config = unwrap_ok!(Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing));
+        let config = unwrap_ok!(Config::load_with_environment(
+            test_fixtures::config_dir(),
+            Environment::Testing
+        ));
 
         // JWT values should be set
         assert!(config.jwt.access_token_lifetime_minutes > 0);
@@ -855,14 +875,20 @@ mod tests {
 
     #[test]
     fn test_config_clone() {
-        let config = unwrap_ok!(Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing));
+        let config = unwrap_ok!(Config::load_with_environment(
+            test_fixtures::config_dir(),
+            Environment::Testing
+        ));
         let cloned = config.clone();
         assert_eq!(config.environment, cloned.environment);
     }
 
     #[test]
     fn test_config_debug() {
-        let config = unwrap_ok!(Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing));
+        let config = unwrap_ok!(Config::load_with_environment(
+            test_fixtures::config_dir(),
+            Environment::Testing
+        ));
         let debug_str = format!("{:?}", config);
         assert!(debug_str.contains("Config"));
     }
@@ -871,56 +897,80 @@ mod tests {
 
     #[test]
     fn test_database_config_debug() {
-        let config = unwrap_ok!(Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing));
+        let config = unwrap_ok!(Config::load_with_environment(
+            test_fixtures::config_dir(),
+            Environment::Testing
+        ));
         let debug_str = format!("{:?}", config.database);
         assert!(debug_str.contains("DatabaseConfig"));
     }
 
     #[test]
     fn test_server_config_debug() {
-        let config = unwrap_ok!(Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing));
+        let config = unwrap_ok!(Config::load_with_environment(
+            test_fixtures::config_dir(),
+            Environment::Testing
+        ));
         let debug_str = format!("{:?}", config.server);
         assert!(debug_str.contains("ServerConfig"));
     }
 
     #[test]
     fn test_cache_config_debug() {
-        let config = unwrap_ok!(Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing));
+        let config = unwrap_ok!(Config::load_with_environment(
+            test_fixtures::config_dir(),
+            Environment::Testing
+        ));
         let debug_str = format!("{:?}", config.cache);
         assert!(debug_str.contains("CacheConfig"));
     }
 
     #[test]
     fn test_jwt_config_debug() {
-        let config = unwrap_ok!(Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing));
+        let config = unwrap_ok!(Config::load_with_environment(
+            test_fixtures::config_dir(),
+            Environment::Testing
+        ));
         let debug_str = format!("{:?}", config.jwt);
         assert!(debug_str.contains("JwtConfig"));
     }
 
     #[test]
     fn test_security_config_debug() {
-        let config = unwrap_ok!(Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing));
+        let config = unwrap_ok!(Config::load_with_environment(
+            test_fixtures::config_dir(),
+            Environment::Testing
+        ));
         let debug_str = format!("{:?}", config.security);
         assert!(debug_str.contains("SecurityConfig"));
     }
 
     #[test]
     fn test_logging_config_debug() {
-        let config = unwrap_ok!(Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing));
+        let config = unwrap_ok!(Config::load_with_environment(
+            test_fixtures::config_dir(),
+            Environment::Testing
+        ));
         let debug_str = format!("{:?}", config.logging);
         assert!(debug_str.contains("LoggingConfig"));
     }
 
     #[test]
     fn test_tls_config_debug() {
-        let config = unwrap_ok!(Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing));
+        let config = unwrap_ok!(Config::load_with_environment(
+            test_fixtures::config_dir(),
+            Environment::Testing
+        ));
         let debug_str = format!("{:?}", config.server.tls);
         assert!(debug_str.contains("TlsConfig"));
     }
 
     #[test]
     fn test_argon2_config_debug() {
-        let config = unwrap_ok!(Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing));
+        let config = unwrap_ok!(Config::load_with_environment(
+            test_fixtures::config_dir(),
+            Environment::Testing
+        ));
         let debug_str = format!("{:?}", config.security.argon2);
         assert!(debug_str.contains("Argon2Config"));
     }
@@ -1010,7 +1060,11 @@ mod tests {
 
         // Paths should contain the workspace structure
         assert!(
-            dev_config.server.tls.cert_path.contains("vauban-web/certs/"),
+            dev_config
+                .server
+                .tls
+                .cert_path
+                .contains("vauban-web/certs/"),
             "Development cert_path should be in vauban-web/certs/, got: {}",
             dev_config.server.tls.cert_path
         );

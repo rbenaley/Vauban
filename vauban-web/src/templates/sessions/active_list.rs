@@ -58,7 +58,6 @@ pub struct ActiveListStatsWidget {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     fn create_test_active_session_item(session_type: &str) -> ActiveSessionItem {
         ActiveSessionItem {
@@ -163,7 +162,10 @@ mod tests {
             sessions: Vec::new(),
         };
         let result = widget.render();
-        assert!(result.is_ok(), "ActiveListContentWidget should render empty");
+        assert!(
+            result.is_ok(),
+            "ActiveListContentWidget should render empty"
+        );
 
         let html = unwrap_ok!(result);
         assert!(html.contains("No active sessions"));

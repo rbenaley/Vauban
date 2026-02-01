@@ -19,8 +19,7 @@ use crate::templates::dashboard::widgets::{
     StatsWidget,
 };
 use crate::templates::sessions::{
-    ActiveListContentWidget, ActiveListStatsWidget,
-    ActiveSessionItem as FullActiveSessionItem,
+    ActiveListContentWidget, ActiveListStatsWidget, ActiveSessionItem as FullActiveSessionItem,
 };
 
 /// Interval for stats updates (30 seconds).
@@ -74,7 +73,11 @@ async fn stats_updater(broadcast: Arc<BroadcastService>, db_pool: Arc<DbPool>) {
                 match template.render() {
                     Ok(html) => {
                         let msg = WsMessage::new("ws-stats", html);
-                        if broadcast.send(&WsChannel::DashboardStats, msg).await.is_err() {
+                        if broadcast
+                            .send(&WsChannel::DashboardStats, msg)
+                            .await
+                            .is_err()
+                        {
                             debug!("No subscribers for stats channel");
                         }
                     }
@@ -100,7 +103,11 @@ async fn sessions_updater(broadcast: Arc<BroadcastService>, db_pool: Arc<DbPool>
                 match template.render() {
                     Ok(html) => {
                         let msg = WsMessage::new("ws-active-sessions", html);
-                        if broadcast.send(&WsChannel::ActiveSessions, msg).await.is_err() {
+                        if broadcast
+                            .send(&WsChannel::ActiveSessions, msg)
+                            .await
+                            .is_err()
+                        {
                             debug!("No subscribers for sessions channel");
                         }
                     }
@@ -159,7 +166,11 @@ async fn activity_updater(broadcast: Arc<BroadcastService>, db_pool: Arc<DbPool>
                 match template.render() {
                     Ok(html) => {
                         let msg = WsMessage::new("ws-recent-activity", html);
-                        if broadcast.send(&WsChannel::RecentActivity, msg).await.is_err() {
+                        if broadcast
+                            .send(&WsChannel::RecentActivity, msg)
+                            .await
+                            .is_err()
+                        {
                             debug!("No subscribers for activity channel");
                         }
                     }
@@ -180,7 +191,8 @@ async fn fetch_stats(db_pool: &DbPool) -> Result<StatsData, String> {
     let active_sessions_count: i64 = proxy_sessions
         .filter(status.eq("active"))
         .count()
-        .get_result(&mut conn).await
+        .get_result(&mut conn)
+        .await
         .unwrap_or(0);
 
     // Count today's sessions
@@ -193,7 +205,8 @@ async fn fetch_stats(db_pool: &DbPool) -> Result<StatsData, String> {
     let today_sessions_count: i64 = proxy_sessions
         .filter(created_at.ge(today_start))
         .count()
-        .get_result(&mut conn).await
+        .get_result(&mut conn)
+        .await
         .unwrap_or(0);
 
     // Count this week's sessions
@@ -201,7 +214,8 @@ async fn fetch_stats(db_pool: &DbPool) -> Result<StatsData, String> {
     let week_sessions_count: i64 = proxy_sessions
         .filter(created_at.ge(week_start))
         .count()
-        .get_result(&mut conn).await
+        .get_result(&mut conn)
+        .await
         .unwrap_or(0);
 
     Ok(StatsData {
@@ -222,7 +236,8 @@ async fn fetch_active_sessions(db_pool: &DbPool) -> Result<Vec<ActiveSessionItem
         .filter(status.eq("active"))
         .order(created_at.desc())
         .limit(10)
-        .load(&mut conn).await
+        .load(&mut conn)
+        .await
         .unwrap_or_default();
 
     // Calculate duration for each session
@@ -244,7 +259,9 @@ async fn fetch_active_sessions(db_pool: &DbPool) -> Result<Vec<ActiveSessionItem
 }
 
 /// Fetch active sessions with full details for the dedicated page.
-async fn fetch_active_sessions_full(db_pool: &DbPool) -> Result<Vec<FullActiveSessionItem>, String> {
+async fn fetch_active_sessions_full(
+    db_pool: &DbPool,
+) -> Result<Vec<FullActiveSessionItem>, String> {
     let mut conn = db_pool.get().await.map_err(|e| e.to_string())?;
 
     use crate::models::session::ProxySession;
@@ -253,7 +270,8 @@ async fn fetch_active_sessions_full(db_pool: &DbPool) -> Result<Vec<FullActiveSe
     let sessions: Vec<ProxySession> = proxy_sessions
         .filter(status.eq("active"))
         .order(created_at.desc())
-        .load(&mut conn).await
+        .load(&mut conn)
+        .await
         .unwrap_or_default();
 
     let now = Utc::now();
@@ -276,7 +294,6 @@ async fn fetch_active_sessions_full(db_pool: &DbPool) -> Result<Vec<FullActiveSe
         .collect())
 }
 
-
 /// Fetch recent activity from database.
 async fn fetch_recent_activity(db_pool: &DbPool) -> Result<Vec<ActivityItem>, String> {
     let mut conn = db_pool.get().await.map_err(|e| e.to_string())?;
@@ -287,7 +304,8 @@ async fn fetch_recent_activity(db_pool: &DbPool) -> Result<Vec<ActivityItem>, St
     let sessions: Vec<ProxySession> = proxy_sessions
         .order(created_at.desc())
         .limit(10)
-        .load(&mut conn).await
+        .load(&mut conn)
+        .await
         .unwrap_or_default();
 
     Ok(sessions

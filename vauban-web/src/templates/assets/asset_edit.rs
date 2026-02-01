@@ -35,7 +35,6 @@ pub struct AssetEditTemplate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     fn create_test_asset_edit() -> AssetEdit {
         AssetEdit {
@@ -161,7 +160,10 @@ mod tests {
         };
 
         let result = template.render();
-        assert!(result.is_ok(), "AssetEditTemplate should render successfully");
+        assert!(
+            result.is_ok(),
+            "AssetEditTemplate should render successfully"
+        );
     }
 
     #[test]
@@ -185,7 +187,7 @@ mod tests {
     #[test]
     fn test_asset_edit_all_statuses() {
         let mut asset = create_test_asset_edit();
-        
+
         for status in ["online", "offline", "maintenance", "unknown"] {
             asset.status = status.to_string();
             assert_eq!(asset.status, status);

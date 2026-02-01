@@ -31,7 +31,6 @@ pub struct AssetGroupCreateTemplate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     fn create_test_vauban_config() -> VaubanConfig {
         VaubanConfig {

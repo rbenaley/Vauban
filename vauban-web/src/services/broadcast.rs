@@ -234,7 +234,6 @@ impl Default for BroadcastService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     // ==================== WsChannel Tests ====================
 

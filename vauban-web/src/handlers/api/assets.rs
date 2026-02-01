@@ -33,7 +33,11 @@ pub async fn list_assets(
     _user: AuthUser,
     Query(params): Query<ListAssetsParams>,
 ) -> AppResult<Json<Vec<Asset>>> {
-    let mut conn = state.db_pool.get().await.map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
     let mut query = assets.filter(is_deleted.eq(false)).into_boxed();
 
     if let Some(asset_type_val) = params.asset_type {
@@ -47,7 +51,8 @@ pub async fn list_assets(
     let assets_list = query
         .limit(params.limit.unwrap_or(50))
         .offset(params.offset.unwrap_or(0))
-        .load::<Asset>(&mut conn).await?;
+        .load::<Asset>(&mut conn)
+        .await?;
 
     Ok(Json(assets_list))
 }
@@ -62,11 +67,16 @@ pub async fn get_asset(
     let asset_uuid = Uuid::parse_str(&asset_uuid_str)
         .map_err(|_| AppError::Validation("Invalid UUID format".to_string()))?;
 
-    let mut conn = state.db_pool.get().await.map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
     let asset = assets
         .filter(uuid.eq(asset_uuid))
         .filter(is_deleted.eq(false))
-        .first::<Asset>(&mut conn).await
+        .first::<Asset>(&mut conn)
+        .await
         .map_err(|e| match e {
             diesel::result::Error::NotFound => AppError::NotFound("Asset not found".to_string()),
             _ => AppError::Database(e),
@@ -84,7 +94,11 @@ pub async fn create_asset(
     validator::Validate::validate(&request)
         .map_err(|e| AppError::Validation(format!("Validation failed: {:?}", e)))?;
 
-    let mut conn = state.db_pool.get().await.map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
     let asset_type_enum = crate::models::asset::AssetType::parse(&request.asset_type);
     let default_port = request.port.unwrap_or(asset_type_enum.default_port());
@@ -121,7 +135,8 @@ pub async fn create_asset(
 
     let asset: Asset = diesel::insert_into(assets)
         .values(&new_asset)
-        .get_result(&mut conn).await?;
+        .get_result(&mut conn)
+        .await?;
 
     Ok(Json(asset))
 }
@@ -214,8 +229,9 @@ pub async fn update_asset(
             status_col.eq(request.status.unwrap_or(existing.status)),
             description_col.eq(request.description.or(existing.description)),
             require_mfa_col.eq(request.require_mfa.unwrap_or(existing.require_mfa)),
-            require_justification_col
-                .eq(request.require_justification.unwrap_or(existing.require_justification)),
+            require_justification_col.eq(request
+                .require_justification
+                .unwrap_or(existing.require_justification)),
             updated_at.eq(Utc::now()),
         ))
         .get_result(&mut conn)
@@ -283,7 +299,11 @@ pub async fn list_asset_groups(
     use crate::schema::asset_groups::dsl as ag;
     use crate::schema::assets::dsl as a;
 
-    let mut conn = state.db_pool.get().await.map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
     // Get all non-deleted asset groups
     let groups: Vec<AssetGroup> = ag::asset_groups
@@ -291,7 +311,8 @@ pub async fn list_asset_groups(
         .order(ag::name.asc())
         .limit(params.limit.unwrap_or(100))
         .offset(params.offset.unwrap_or(0))
-        .load(&mut conn).await?;
+        .load(&mut conn)
+        .await?;
 
     // Build response with asset counts
     let mut response: Vec<AssetGroupResponse> = Vec::with_capacity(groups.len());
@@ -300,7 +321,8 @@ pub async fn list_asset_groups(
             .filter(a::group_id.eq(group.id))
             .filter(a::is_deleted.eq(false))
             .count()
-            .get_result(&mut conn).await?;
+            .get_result(&mut conn)
+            .await?;
 
         response.push(AssetGroupResponse {
             uuid: group.uuid,
@@ -349,13 +371,18 @@ pub async fn list_group_assets(
     let group_uuid = Uuid::parse_str(&group_uuid_str)
         .map_err(|_| AppError::Validation("Invalid UUID format".to_string()))?;
 
-    let mut conn = state.db_pool.get().await.map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
     // Get the group to verify it exists
     let group: AssetGroup = ag::asset_groups
         .filter(ag::uuid.eq(group_uuid))
         .filter(ag::is_deleted.eq(false))
-        .first(&mut conn).await
+        .first(&mut conn)
+        .await
         .map_err(|e| match e {
             diesel::result::Error::NotFound => {
                 AppError::NotFound("Asset group not found".to_string())
@@ -370,7 +397,8 @@ pub async fn list_group_assets(
         .order(a::name.asc())
         .limit(params.limit.unwrap_or(100))
         .offset(params.offset.unwrap_or(0))
-        .load(&mut conn).await?;
+        .load(&mut conn)
+        .await?;
 
     let response: Vec<GroupAssetResponse> = group_assets
         .into_iter()

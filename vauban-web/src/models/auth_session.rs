@@ -149,7 +149,6 @@ impl AuthSession {
 mod tests {
     use super::*;
     use std::net::IpAddr;
-    
 
     fn create_test_session() -> AuthSession {
         AuthSession {
@@ -238,7 +237,8 @@ mod tests {
     #[test]
     fn test_to_dto_ipv6() {
         let mut session = create_test_session();
-        session.ip_address = unwrap_ok!(IpNetwork::new(IpAddr::from([0, 0, 0, 0, 0, 0, 0, 1]), 128));
+        session.ip_address =
+            unwrap_ok!(IpNetwork::new(IpAddr::from([0, 0, 0, 0, 0, 0, 0, 1]), 128));
 
         let dto = session.to_dto();
         assert_eq!(dto.ip_address, "::1");

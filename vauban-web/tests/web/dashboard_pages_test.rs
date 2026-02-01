@@ -24,11 +24,13 @@ use diesel_async::{AsyncPgConnection, RunQueryDsl};
 /// Helper to get user UUID from user ID.
 async fn get_user_uuid(conn: &mut AsyncPgConnection, user_id: i32) -> Uuid {
     use vauban_web::schema::users;
-    unwrap_ok!(users::table
-        .filter(users::id.eq(user_id))
-        .select(users::uuid)
-        .first(conn)
-        .await)
+    unwrap_ok!(
+        users::table
+            .filter(users::id.eq(user_id))
+            .select(users::uuid)
+            .first(conn)
+            .await
+    )
 }
 
 // =============================================================================
@@ -89,7 +91,9 @@ async fn test_dashboard_home_loads_with_auth() {
             .expect("User should exist")
     };
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     let response = app
         .server
@@ -125,7 +129,9 @@ async fn test_user_sessions_page_contains_html() {
             .expect("User should exist")
     };
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     let response = app
         .server
@@ -168,7 +174,9 @@ async fn test_api_keys_page_contains_html() {
             .expect("User should exist")
     };
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     let response = app
         .server
@@ -210,7 +218,9 @@ async fn test_sessions_list_loads_empty() {
             .expect("User should exist")
     };
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     let response = app
         .server
@@ -248,7 +258,9 @@ async fn test_sessions_list_with_active_sessions() {
             .expect("User should exist")
     };
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     let response = app
         .server
@@ -289,7 +301,9 @@ async fn test_recordings_list_loads() {
             .expect("User should exist")
     };
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     // Note: /sessions/recordings not in test router
     // Test with available endpoint
@@ -315,7 +329,8 @@ async fn test_asset_detail_with_sessions() {
 
     let username = unique_name("asset_sessions");
     let user_id = create_simple_user(&mut conn, &username).await;
-    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("asset-with-sess"), user_id).await;
+    let asset_id =
+        create_simple_ssh_asset(&mut conn, &unique_name("asset-with-sess"), user_id).await;
     let asset_uuid = get_asset_uuid(&mut conn, asset_id).await;
 
     // Create sessions for this asset
@@ -334,7 +349,9 @@ async fn test_asset_detail_with_sessions() {
             .expect("User should exist")
     };
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     let response = app
         .server
@@ -360,7 +377,9 @@ async fn test_sessions_pagination() {
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     // Test various page numbers
     for page in [1, 2, 10, 100] {
@@ -390,7 +409,9 @@ async fn test_asset_groups_pagination() {
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     let response = app
         .server
@@ -416,7 +437,9 @@ async fn test_asset_groups_search() {
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     // Test search with various terms
     let search_terms = ["production", "test", "web", "database"];
@@ -448,7 +471,9 @@ async fn test_user_groups_search() {
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     let response = app
         .server
@@ -485,7 +510,9 @@ async fn test_html_pages_return_html_content_type() {
             .expect("User should exist")
     };
 
-    let token = app.generate_test_token(&user_uuid.to_string(), &username, true, true).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
 
     let response = app
         .server

@@ -127,9 +127,7 @@ pub fn user_friendly_message(error: &str) -> &str {
         "Invalid MFA code" => "The MFA code is incorrect. Please try again",
 
         // Authorization errors
-        "Unauthorized" | "Access denied" => {
-            "You do not have permission to perform this action"
-        }
+        "Unauthorized" | "Access denied" => "You do not have permission to perform this action",
 
         // Not found errors
         "Asset not found" => "The requested asset was not found or has been deleted",
@@ -179,16 +177,12 @@ pub fn htmx_error_response(
     status: StatusCode,
     message: &str,
 ) -> (StatusCode, axum::response::Html<String>) {
-    (
-        status,
-        axum::response::Html(html_error_fragment(message)),
-    )
+    (status, axum::response::Html(html_error_fragment(message)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     // ==================== AppError Display Tests ====================
 
@@ -499,7 +493,8 @@ mod tests {
 
     #[test]
     fn test_htmx_error_response_content() {
-        let (_status, html) = htmx_error_response(StatusCode::BAD_REQUEST, "Invalid IP address format");
+        let (_status, html) =
+            htmx_error_response(StatusCode::BAD_REQUEST, "Invalid IP address format");
         let body = html.0;
         assert!(body.contains("192.168.1.1"));
     }

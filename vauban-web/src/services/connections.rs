@@ -143,7 +143,6 @@ impl UserConnectionRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     #[tokio::test]
     async fn test_register_connection() {
