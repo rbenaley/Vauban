@@ -590,7 +590,7 @@ async fn create_sessions(
 
         let result = diesel::sql_query(
             "INSERT INTO proxy_sessions (uuid, user_id, asset_id, credential_id, credential_username, session_type, status, client_ip, connected_at, disconnected_at, is_recorded, recording_path, bytes_sent, bytes_received, commands_count, justification, metadata)
-             VALUES (uuid_generate_v4(), $1, $2, $3, $4, $5, $6, $7, $8::timestamptz, $9::timestamptz, $10, $11, $12, $13, $14, $15, '{}')
+             VALUES (uuid_generate_v4(), $1, $2, $3, $4, $5, $6, $7::inet, $8::timestamptz, $9::timestamptz, $10, $11, $12, $13, $14, $15, '{}')
              RETURNING id"
         )
         .bind::<Integer, _>(user_id)
@@ -611,10 +611,13 @@ async fn create_sessions(
         .execute(conn)
         .await;
 
-        if result.is_ok() {
-            created += 1;
-            let rec_str = if is_recorded { " (recorded)" } else { "" };
-            println!("   - Session {} [{}]{}", i + 1, status, rec_str);
+        match &result {
+            Err(e) => eprintln!("   ⚠ Failed to create session {}: {}", i + 1, e),
+            Ok(_) => {
+                created += 1;
+                let rec_str = if is_recorded { " (recorded)" } else { "" };
+                println!("   - Session {} [{}]{}", i + 1, status, rec_str);
+            }
         }
     }
 
@@ -674,7 +677,7 @@ async fn create_approval_requests(
 
         let result = diesel::sql_query(
             "INSERT INTO proxy_sessions (uuid, user_id, asset_id, credential_id, credential_username, session_type, status, client_ip, is_recorded, justification, metadata)
-             VALUES (uuid_generate_v4(), $1, $2, $3, $4, $5, 'pending', $6, true, $7, '{\"approval_required\": true}')
+             VALUES (uuid_generate_v4(), $1, $2, $3, $4, $5, 'pending', $6::inet, true, $7, '{\"approval_required\": true}')
              RETURNING id"
         )
         .bind::<Integer, _>(user_id)
@@ -687,13 +690,16 @@ async fn create_approval_requests(
         .execute(conn)
         .await;
 
-        if result.is_ok() {
-            created += 1;
-            println!(
-                "   - Approval #{}: {}",
-                i + 1,
-                &justification[..50.min(justification.len())]
-            );
+        match &result {
+            Err(e) => eprintln!("   ⚠ Failed to create approval {}: {}", i + 1, e),
+            Ok(_) => {
+                created += 1;
+                println!(
+                    "   - Approval #{}: {}",
+                    i + 1,
+                    &justification[..50.min(justification.len())]
+                );
+            }
         }
     }
 
