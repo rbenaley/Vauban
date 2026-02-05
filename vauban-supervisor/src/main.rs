@@ -427,6 +427,19 @@ fn spawn_child(
                 }
             }
             
+            // Clear FD_CLOEXEC on FD passing socket so it survives exec
+            // This must be done before exec because the socket was created with FD_CLOEXEC
+            if let Some(fd) = fd_passing_socket {
+                use nix::fcntl::{fcntl, FcntlArg, FdFlag};
+                use std::os::unix::io::BorrowedFd;
+                // SAFETY: fd is valid and we're in the forked child
+                let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+                if let Err(e) = fcntl(&borrowed, FcntlArg::F_SETFD(FdFlag::empty())) {
+                    eprintln!("Failed to clear FD_CLOEXEC on fd_passing_socket: {}", e);
+                    std::process::exit(1);
+                }
+            }
+            
             // Set environment variables for supervisor IPC FDs
             // SAFETY: We are in a single-threaded child process right after fork(),
             // and the environment is not being accessed by other threads.
