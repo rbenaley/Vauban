@@ -273,7 +273,7 @@ pub enum ControlMessage {
     Drain,                              // Stop accepting new requests
     DrainComplete { pending_requests }, // Service is idle
     Ping { seq },                       // Heartbeat request
-    Pong { seq, stats },               // Heartbeat response
+    Pong { seq, stats },                // Heartbeat response
     Shutdown,                           // Immediate shutdown
 }
 ```
