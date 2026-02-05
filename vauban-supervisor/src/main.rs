@@ -1205,29 +1205,9 @@ fn handle_tcp_connect_request(
     info!("TCP connection established to {} (fd={})", socket_addr, tcp_fd);
     
     // Step 3: Send the FD to the target proxy service via SCM_RIGHTS
-    // First, send a message to tell the proxy which session this FD belongs to
-    // We send the session_id through the regular IPC channel, then send the FD
-    let fd_info = Message::TcpConnectResponse {
-        request_id,
-        session_id: session_id.clone(),
-        success: true,
-        error: None,
-    };
-    
-    // Send to the proxy's regular channel to notify about incoming FD
-    if let Err(e) = target_state.channel.send(&fd_info) {
-        error!("Failed to notify proxy about FD: {}", e);
-        let response = Message::TcpConnectResponse {
-            request_id,
-            session_id,
-            success: false,
-            error: Some(format!("Failed to notify proxy: {}", e)),
-        };
-        let _ = requesting_channel.send(&response);
-        return;
-    }
-    
-    // Now send the FD via SCM_RIGHTS
+    // IMPORTANT: Send the FD FIRST via SCM_RIGHTS, THEN notify the proxy via IPC.
+    // This ensures the FD is available when the proxy receives the notification
+    // and tries to recv_fd(). Otherwise we get EAGAIN errors.
     if let Err(e) = send_fd(fd_socket, tcp_fd) {
         error!("Failed to send FD to proxy: {}", e);
         let response = Message::TcpConnectResponse {
@@ -1242,7 +1222,29 @@ fn handle_tcp_connect_request(
     
     info!("FD {} sent to {} for session {}", tcp_fd, target_key, session_id);
     
-    // Step 4: Send success response back to web
+    // Step 4: Now notify the proxy via regular IPC channel that an FD is waiting
+    let fd_info = Message::TcpConnectResponse {
+        request_id,
+        session_id: session_id.clone(),
+        success: true,
+        error: None,
+    };
+    
+    if let Err(e) = target_state.channel.send(&fd_info) {
+        error!("Failed to notify proxy about FD: {}", e);
+        // FD was already sent, proxy may still receive it but won't know the session_id
+        // This is a partial failure state
+        let response = Message::TcpConnectResponse {
+            request_id,
+            session_id,
+            success: false,
+            error: Some(format!("Failed to notify proxy: {}", e)),
+        };
+        let _ = requesting_channel.send(&response);
+        return;
+    }
+    
+    // Step 5: Send success response back to web
     let response = Message::TcpConnectResponse {
         request_id,
         session_id,
