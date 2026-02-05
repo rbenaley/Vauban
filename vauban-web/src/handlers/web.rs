@@ -7041,7 +7041,7 @@ pub async fn connect_ssh(
     match proxy_client.open_session(request).await {
         Ok(response) => {
             if response.success {
-                tracing::info!(
+                tracing::debug!(
                     user = %auth_user.username,
                     asset = %asset.name,
                     session_id = %session_id,

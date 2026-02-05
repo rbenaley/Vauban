@@ -283,7 +283,7 @@ async fn main_loop(
                                 let fd_result = receive_fd_with_retry(fp.socket_fd, 10, 50).await;
                                 match fd_result {
                                     Ok(fd) => {
-                                        info!(session_id = %session_id, fd = ?fd, "Received TCP connection FD from supervisor");
+                                        debug!(session_id = %session_id, fd = ?fd, "Received TCP connection FD from supervisor");
                                         fp.pending.lock().await.insert(session_id, fd);
                                     }
                                     Err(e) => {
@@ -416,7 +416,7 @@ async fn handle_web_message(
             private_key,
             passphrase,
         } => {
-            info!(
+            debug!(
                 session_id = %session_id,
                 user_id = %user_id,
                 asset_host = %asset_host,
@@ -486,7 +486,7 @@ async fn handle_web_message(
             };
 
             if preconnected_fd.is_some() {
-                info!(session_id = %session_id, "Using pre-established TCP connection from supervisor");
+                debug!(session_id = %session_id, "Using pre-established TCP connection from supervisor");
             }
 
             // Create session configuration

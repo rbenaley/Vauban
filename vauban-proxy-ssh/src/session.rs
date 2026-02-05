@@ -130,7 +130,7 @@ impl SshSession {
         // or open a new connection (non-sandboxed mode, e.g., development on macOS)
         let mut session = if let Some(fd) = config.preconnected_fd {
             // Sandboxed mode: use pre-established connection from supervisor
-            info!(session_id = %config.session_id, "Using pre-established connection from supervisor");
+            debug!(session_id = %config.session_id, "Using pre-established connection from supervisor");
             
             // Convert OwnedFd to tokio TcpStream
             // SAFETY: The FD comes from the supervisor via SCM_RIGHTS and is a valid TCP socket
@@ -151,7 +151,7 @@ impl SshSession {
                 .map_err(|e| SessionError::ConnectionFailed(e.to_string()))?
         };
 
-        info!(session_id = %config.session_id, "TCP connection established");
+        debug!(session_id = %config.session_id, "TCP connection established");
 
         // Authenticate
         use russh::client::AuthResult;
@@ -189,7 +189,7 @@ impl SshSession {
             }
         }
 
-        info!(session_id = %config.session_id, "Authentication successful");
+        debug!(session_id = %config.session_id, "Authentication successful");
 
         // Open a session channel
         let channel = session
@@ -227,7 +227,7 @@ impl SshSession {
             .await
             .map_err(|e| SessionError::ShellStartFailed(e.to_string()))?;
 
-        info!(session_id = %config.session_id, "Shell started, session ready");
+        debug!(session_id = %config.session_id, "Shell started, session ready");
 
         Ok(Self {
             session_id: config.session_id,

@@ -1193,7 +1193,7 @@ fn handle_tcp_connect_request(
         }
     };
     
-    info!("DNS resolved {} -> {}", host, socket_addr);
+    debug!("DNS resolved {} -> {}", host, socket_addr);
     
     // Step 2: Establish TCP connection
     let tcp_stream = match std::net::TcpStream::connect_timeout(
@@ -1215,7 +1215,7 @@ fn handle_tcp_connect_request(
     };
     
     let tcp_fd = tcp_stream.as_raw_fd();
-    info!("TCP connection established to {} (fd={})", socket_addr, tcp_fd);
+    debug!("TCP connection established to {} (fd={})", socket_addr, tcp_fd);
     
     // Step 3: Send the FD to the target proxy service via SCM_RIGHTS
     // IMPORTANT: Send the FD FIRST via SCM_RIGHTS, THEN notify the proxy via IPC.
@@ -1233,7 +1233,7 @@ fn handle_tcp_connect_request(
         return;
     }
     
-    info!("FD {} sent to {} for session {}", tcp_fd, target_key, session_id);
+    debug!("FD {} sent to {} for session {}", tcp_fd, target_key, session_id);
     
     // Step 4: Now notify the proxy via regular IPC channel that an FD is waiting
     let fd_info = Message::TcpConnectResponse {

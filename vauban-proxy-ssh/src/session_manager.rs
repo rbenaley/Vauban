@@ -70,7 +70,7 @@ impl SessionManager {
             }
         }
 
-        info!(session_id = %session_id, "Creating new SSH session");
+        debug!(session_id = %session_id, "Creating new SSH session");
 
         // Extract user_id and asset_id before moving config to SshSession::connect
         let user_id = config.user_id.clone();
@@ -222,7 +222,7 @@ async fn session_task(
     mut commands: mpsc::Receiver<SessionCommand>,
     web_tx: mpsc::Sender<Message>,
 ) {
-    info!(session_id = %session_id, "Session task started");
+    debug!(session_id = %session_id, "Session task started");
 
     loop {
         tokio::select! {
