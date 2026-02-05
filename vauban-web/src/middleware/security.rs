@@ -43,8 +43,8 @@ pub async fn security_headers_middleware(request: Request<Body>, next: Next) -> 
 
     // Content Security Policy
     // - default-src 'self': Only allow resources from same origin
-    // - script-src: Allow scripts from self, inline, and CDNs (Tailwind, HTMX, Alpine)
-    // - style-src: Allow styles from self, inline, and CDNs
+    // - script-src: Allow scripts from self, inline, and CDNs (Tailwind, HTMX, Alpine, xterm.js)
+    // - style-src: Allow styles from self, inline, and CDNs (xterm.js)
     // - img-src 'self' data:: Allow images from same origin and data URIs
     // - font-src 'self': Allow fonts from same origin
     // - connect-src 'self' wss:: Allow WebSocket connections
@@ -54,8 +54,8 @@ pub async fn security_headers_middleware(request: Request<Body>, next: Next) -> 
         "content-security-policy",
         HeaderValue::from_static(
             "default-src 'self'; \
-             script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://unpkg.com; \
-             style-src 'self' 'unsafe-inline'; \
+             script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://unpkg.com https://cdn.jsdelivr.net; \
+             style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; \
              img-src 'self' data:; \
              font-src 'self'; \
              connect-src 'self' wss:"

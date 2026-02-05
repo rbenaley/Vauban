@@ -1,0 +1,303 @@
+{% extends "base.html" %}
+
+{% block title %}{{ title }} - {{ vauban.brand_name }}{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+<style>
+    /* Terminal container styling */
+    #terminal-container {
+        width: 100%;
+        height: calc(100vh - 200px);
+        min-height: 400px;
+        background: #1e1e1e;
+        border-radius: 0.5rem;
+        padding: 0.5rem;
+    }
+
+    #terminal {
+        width: 100%;
+        height: 100%;
+    }
+
+    /* Status bar styling */
+    .terminal-status {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        padding: 0.5rem 1rem;
+        background: #2d2d2d;
+        border-radius: 0.5rem 0.5rem 0 0;
+        color: #ccc;
+        font-size: 0.875rem;
+    }
+
+    .status-indicator {
+        width: 0.5rem;
+        height: 0.5rem;
+        border-radius: 50%;
+    }
+
+    .status-indicator.connecting {
+        background: #f59e0b;
+        animation: pulse 1s infinite;
+    }
+
+    .status-indicator.connected {
+        background: #10b981;
+    }
+
+    .status-indicator.disconnected {
+        background: #ef4444;
+    }
+
+    @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
+    }
+
+    /* Hide scrollbars in terminal for cleaner look */
+    .xterm-viewport::-webkit-scrollbar {
+        width: 8px;
+    }
+
+    .xterm-viewport::-webkit-scrollbar-track {
+        background: #1e1e1e;
+    }
+
+    .xterm-viewport::-webkit-scrollbar-thumb {
+        background: #4b5563;
+        border-radius: 4px;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="space-y-4">
+    <!-- Terminal header -->
+    <div class="flex items-center justify-between">
+        <div class="flex items-center gap-4">
+            <a href="/assets" class="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">
+                <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/>
+                </svg>
+            </a>
+            <h1 class="text-2xl font-semibold text-gray-900 dark:text-white">{{ title }}</h1>
+        </div>
+        <div class="flex items-center gap-2">
+            <button id="btn-fullscreen" class="px-3 py-1.5 text-sm bg-gray-600 hover:bg-gray-700 text-white rounded-md">
+                Fullscreen
+            </button>
+            <button id="btn-disconnect" class="px-3 py-1.5 text-sm bg-red-600 hover:bg-red-700 text-white rounded-md">
+                Disconnect
+            </button>
+        </div>
+    </div>
+
+    <!-- Terminal status bar -->
+    <div class="terminal-status" id="terminal-status">
+        <span class="status-indicator connecting" id="status-indicator"></span>
+        <span id="status-text">Connecting...</span>
+        <span class="ml-auto text-gray-500">Session: {{ session_id|truncate(8) }}</span>
+    </div>
+
+    <!-- Terminal container -->
+    <div id="terminal-container">
+        <div id="terminal"></div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0.11.0/lib/addon-web-links.min.js"></script>
+
+<script>
+(function() {
+    'use strict';
+
+    const sessionId = '{{ session_id }}';
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${wsProtocol}//${window.location.host}/ws/terminal/${sessionId}`;
+
+    // Terminal setup
+    const term = new Terminal({
+        cursorBlink: true,
+        fontSize: 14,
+        fontFamily: '"Fira Code", "Monaco", "Menlo", "Ubuntu Mono", monospace',
+        theme: {
+            background: '#1e1e1e',
+            foreground: '#d4d4d4',
+            cursor: '#d4d4d4',
+            cursorAccent: '#1e1e1e',
+            selectionBackground: '#264f78',
+            black: '#000000',
+            red: '#cd3131',
+            green: '#0dbc79',
+            yellow: '#e5e510',
+            blue: '#2472c8',
+            magenta: '#bc3fbc',
+            cyan: '#11a8cd',
+            white: '#e5e5e5',
+            brightBlack: '#666666',
+            brightRed: '#f14c4c',
+            brightGreen: '#23d18b',
+            brightYellow: '#f5f543',
+            brightBlue: '#3b8eea',
+            brightMagenta: '#d670d6',
+            brightCyan: '#29b8db',
+            brightWhite: '#e5e5e5'
+        },
+        allowProposedApi: true
+    });
+
+    const fitAddon = new FitAddon.FitAddon();
+    const webLinksAddon = new WebLinksAddon.WebLinksAddon();
+
+    term.loadAddon(fitAddon);
+    term.loadAddon(webLinksAddon);
+
+    // Open terminal in container
+    const container = document.getElementById('terminal');
+    term.open(container);
+    fitAddon.fit();
+
+    // Status elements
+    const statusIndicator = document.getElementById('status-indicator');
+    const statusText = document.getElementById('status-text');
+
+    function setStatus(status, text) {
+        statusIndicator.className = 'status-indicator ' + status;
+        statusText.textContent = text;
+    }
+
+    // WebSocket connection
+    let ws = null;
+    let reconnectAttempts = 0;
+    const maxReconnectAttempts = 5;
+
+    function connect() {
+        setStatus('connecting', 'Connecting...');
+        term.write('\r\n\x1b[33mConnecting to SSH session...\x1b[0m\r\n');
+
+        ws = new WebSocket(wsUrl);
+        ws.binaryType = 'arraybuffer';
+
+        ws.onopen = function() {
+            setStatus('connected', 'Connected');
+            term.write('\x1b[32mConnected!\x1b[0m\r\n\r\n');
+            reconnectAttempts = 0;
+
+            // Send initial terminal size
+            sendResize();
+        };
+
+        ws.onmessage = function(event) {
+            if (event.data instanceof ArrayBuffer) {
+                // Binary data from SSH
+                const data = new Uint8Array(event.data);
+                term.write(data);
+            } else {
+                // Text message (could be JSON control message)
+                try {
+                    const msg = JSON.parse(event.data);
+                    if (msg.error) {
+                        term.write('\r\n\x1b[31mError: ' + msg.error + '\x1b[0m\r\n');
+                    }
+                } catch (e) {
+                    // Plain text
+                    term.write(event.data);
+                }
+            }
+        };
+
+        ws.onclose = function(event) {
+            setStatus('disconnected', 'Disconnected');
+            term.write('\r\n\x1b[31mConnection closed.\x1b[0m\r\n');
+
+            if (reconnectAttempts < maxReconnectAttempts && event.code !== 1000) {
+                reconnectAttempts++;
+                const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
+                term.write(`\x1b[33mReconnecting in ${delay/1000}s... (attempt ${reconnectAttempts}/${maxReconnectAttempts})\x1b[0m\r\n`);
+                setTimeout(connect, delay);
+            }
+        };
+
+        ws.onerror = function(error) {
+            console.error('WebSocket error:', error);
+            term.write('\r\n\x1b[31mConnection error.\x1b[0m\r\n');
+        };
+    }
+
+    // Send terminal input to WebSocket
+    term.onData(function(data) {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(data);
+        }
+    });
+
+    // Handle resize
+    function sendResize() {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            const dims = fitAddon.proposeDimensions();
+            if (dims) {
+                ws.send(JSON.stringify({
+                    type: 'resize',
+                    cols: dims.cols,
+                    rows: dims.rows
+                }));
+            }
+        }
+    }
+
+    // Fit terminal on window resize
+    window.addEventListener('resize', function() {
+        fitAddon.fit();
+        sendResize();
+    });
+
+    // Fullscreen button
+    document.getElementById('btn-fullscreen').addEventListener('click', function() {
+        const container = document.getElementById('terminal-container');
+        if (document.fullscreenElement) {
+            document.exitFullscreen();
+        } else {
+            container.requestFullscreen().then(function() {
+                setTimeout(function() {
+                    fitAddon.fit();
+                    sendResize();
+                }, 100);
+            });
+        }
+    });
+
+    // Disconnect button
+    document.getElementById('btn-disconnect').addEventListener('click', function() {
+        if (ws) {
+            reconnectAttempts = maxReconnectAttempts; // Prevent auto-reconnect
+            ws.close(1000, 'User disconnected');
+        }
+        window.location.href = '/assets';
+    });
+
+    // Handle fullscreen changes
+    document.addEventListener('fullscreenchange', function() {
+        setTimeout(function() {
+            fitAddon.fit();
+            sendResize();
+        }, 100);
+    });
+
+    // Start connection
+    connect();
+
+    // Cleanup on page unload
+    window.addEventListener('beforeunload', function() {
+        if (ws) {
+            ws.close(1000, 'Page unload');
+        }
+    });
+})();
+</script>
+{% endblock %}

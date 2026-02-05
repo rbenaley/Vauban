@@ -8,6 +8,7 @@ use axum::{
 };
 use axum_extra::extract::CookieJar;
 use futures_util::{SinkExt, StreamExt};
+use serde::Deserialize;
 use sha3::{Digest, Sha3_256};
 /// VAUBAN Web - WebSocket handlers.
 ///
@@ -21,6 +22,21 @@ use crate::utils::format_duration;
 use crate::AppState;
 use crate::middleware::auth::AuthUser;
 use crate::services::broadcast::WsChannel;
+
+/// Terminal control commands received from the frontend.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+enum TerminalCommand {
+    /// Resize the terminal PTY.
+    Resize {
+        cols: u16,
+        rows: u16,
+    },
+    /// Explicit data to send to terminal (alternative to raw text).
+    Data {
+        data: String,
+    },
+}
 
 /// Ping interval to keep WebSocket connection alive.
 const PING_INTERVAL_SECS: u64 = 30;
@@ -726,6 +742,204 @@ async fn fetch_active_sessions_list(
             }
         })
         .collect())
+}
+
+/// Terminal WebSocket handler for SSH sessions.
+///
+/// Establishes a bidirectional WebSocket connection for interactive SSH terminal.
+/// Receives terminal input from client, forwards to SSH proxy.
+/// Receives SSH output from proxy, forwards to client.
+pub async fn terminal_ws(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+    user: AuthUser,
+) -> impl IntoResponse {
+    info!(
+        user = %user.username,
+        session_id = %session_id,
+        "Terminal WebSocket connection requested"
+    );
+    ws.on_upgrade(move |socket| handle_terminal_socket(socket, state, session_id, user))
+}
+
+/// Handle terminal WebSocket connection for SSH sessions.
+async fn handle_terminal_socket(
+    socket: WebSocket,
+    state: AppState,
+    session_id: String,
+    user: AuthUser,
+) {
+    let (mut sender, mut receiver) = socket.split();
+
+    info!(
+        user = %user.username,
+        session_id = %session_id,
+        "Terminal WebSocket connected"
+    );
+
+    // TODO: Verify session exists and belongs to user via IPC with proxy
+    // For now, we proceed assuming the session exists
+
+    // Check if we have the SSH proxy client
+    let proxy_client = match &state.ssh_proxy {
+        Some(client) => client.clone(),
+        None => {
+            error!(session_id = %session_id, "SSH proxy client not available");
+            let _ = sender
+                .send(Message::Text(
+                    r#"{"error":"SSH proxy not available"}"#.to_string().into(),
+                ))
+                .await;
+            return;
+        }
+    };
+
+    // Subscribe to SSH data for this specific session
+    let mut data_rx = proxy_client.subscribe_session(&session_id).await;
+
+    // Create ping interval
+    let mut ping_interval = interval(Duration::from_secs(PING_INTERVAL_SECS));
+    let mut should_close = false;
+
+    loop {
+        tokio::select! {
+            // Handle incoming messages from client (terminal input)
+            msg = receiver.next() => {
+                match msg {
+                    Some(Ok(Message::Text(text))) => {
+                        // Check if this is a control message (JSON with "type" field)
+                        if text.starts_with('{') {
+                            if let Ok(cmd) = serde_json::from_str::<TerminalCommand>(&text) {
+                                match cmd {
+                                    TerminalCommand::Resize { cols, rows } => {
+                                        debug!(
+                                            session_id = %session_id,
+                                            cols = cols,
+                                            rows = rows,
+                                            "Terminal resize requested"
+                                        );
+                                        if let Err(e) = proxy_client.resize(&session_id, cols, rows) {
+                                            warn!(session_id = %session_id, error = %e, "Failed to resize terminal");
+                                        }
+                                    }
+                                    TerminalCommand::Data { data } => {
+                                        // Explicit data command
+                                        if let Err(e) = proxy_client.send_data(&session_id, data.as_bytes()) {
+                                            error!(session_id = %session_id, error = %e, "Failed to send to SSH proxy");
+                                            should_close = true;
+                                        }
+                                    }
+                                }
+                            } else {
+                                // Not a valid command JSON, treat as terminal input
+                                debug!(
+                                    session_id = %session_id,
+                                    len = text.len(),
+                                    "Received terminal input"
+                                );
+                                if let Err(e) = proxy_client.send_data(&session_id, text.as_bytes()) {
+                                    error!(session_id = %session_id, error = %e, "Failed to send to SSH proxy");
+                                    should_close = true;
+                                }
+                            }
+                        } else {
+                            // Plain text input from terminal
+                            debug!(
+                                session_id = %session_id,
+                                len = text.len(),
+                                "Received terminal input"
+                            );
+                            if let Err(e) = proxy_client.send_data(&session_id, text.as_bytes()) {
+                                error!(session_id = %session_id, error = %e, "Failed to send to SSH proxy");
+                                should_close = true;
+                            }
+                        }
+                    }
+                    Some(Ok(Message::Binary(data))) => {
+                        // Binary input from terminal
+                        debug!(
+                            session_id = %session_id,
+                            len = data.len(),
+                            "Received binary terminal input"
+                        );
+                        if let Err(e) = proxy_client.send_data(&session_id, &data) {
+                            error!(session_id = %session_id, error = %e, "Failed to send to SSH proxy");
+                            should_close = true;
+                        }
+                    }
+                    Some(Ok(Message::Ping(_))) => {
+                        debug!(session_id = %session_id, "Received WS ping");
+                    }
+                    Some(Ok(Message::Pong(_))) => {
+                        debug!(session_id = %session_id, "Received WS pong");
+                    }
+                    Some(Ok(Message::Close(_))) => {
+                        info!(session_id = %session_id, "Client requested close");
+                        // Close the SSH session
+                        if let Err(e) = proxy_client.close_session(&session_id) {
+                            warn!(session_id = %session_id, error = %e, "Failed to close SSH session");
+                        }
+                        should_close = true;
+                    }
+                    Some(Err(e)) => {
+                        error!(session_id = %session_id, error = %e, "WebSocket error");
+                        should_close = true;
+                    }
+                    None => {
+                        info!(session_id = %session_id, "WebSocket stream ended");
+                        should_close = true;
+                    }
+                }
+            }
+
+            // SSH output from proxy -> send to client
+            result = data_rx.recv() => {
+                match result {
+                    Some(data) => {
+                        // Send binary data to terminal
+                        if sender.send(Message::Binary(data.into())).await.is_err() {
+                            warn!(session_id = %session_id, "Failed to send SSH output to WebSocket");
+                            should_close = true;
+                        }
+                    }
+                    None => {
+                        // Channel closed - IPC connection lost or session ended
+                        warn!(session_id = %session_id, "SSH data channel closed");
+                        should_close = true;
+                    }
+                }
+            }
+
+            // Send periodic ping
+            _ = ping_interval.tick() => {
+                if sender.send(Message::Ping(vec![].into())).await.is_err() {
+                    warn!(session_id = %session_id, "Failed to send ping");
+                    should_close = true;
+                }
+            }
+        }
+
+        if should_close {
+            break;
+        }
+    }
+
+    // Unsubscribe from session data
+    proxy_client.unsubscribe_session(&session_id).await;
+
+    info!(
+        user = %user.username,
+        session_id = %session_id,
+        "Terminal WebSocket disconnected"
+    );
+}
+
+/// Terminal resize message from client.
+#[derive(serde::Deserialize)]
+pub struct TerminalResize {
+    pub cols: u16,
+    pub rows: u16,
 }
 
 #[cfg(test)]

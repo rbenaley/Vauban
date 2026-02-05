@@ -118,6 +118,66 @@
             </div>
         </div>
 
+        <!-- Authentication Settings (for SSH/RDP) -->
+        <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden"
+             x-data="{ authType: '{{ asset.ssh_auth_type }}' }">
+            <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
+                <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Authentication</h3>
+                <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">Configure credentials for connecting to this asset.</p>
+            </div>
+            <div class="px-4 py-5 sm:p-6 space-y-6">
+                <div class="grid grid-cols-1 gap-6 sm:grid-cols-2">
+                    <div>
+                        <label for="ssh_username" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Username</label>
+                        <input type="text" name="ssh_username" id="ssh_username" 
+                               value="{{ asset.ssh_username }}"
+                               class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
+                               placeholder="root">
+                        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">SSH/RDP username for authentication</p>
+                    </div>
+                    <div>
+                        <label for="ssh_auth_type" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Authentication Type</label>
+                        <select name="ssh_auth_type" id="ssh_auth_type" x-model="authType"
+                                class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
+                            <option value="password" {% if asset.ssh_auth_type == "password" %}selected{% endif %}>Password</option>
+                            <option value="private_key" {% if asset.ssh_auth_type == "private_key" %}selected{% endif %}>Private Key</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Password field (shown when auth type is password) -->
+                <div x-show="authType === 'password'" x-cloak>
+                    <label for="ssh_password" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Password</label>
+                    <input type="password" name="ssh_password" id="ssh_password"
+                           value="{{ asset.ssh_password }}"
+                           class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
+                           placeholder="Enter password">
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Password for authentication</p>
+                </div>
+
+                <!-- Private key fields (shown when auth type is private_key) -->
+                <div x-show="authType === 'private_key'" x-cloak class="space-y-4">
+                    <div>
+                        <label for="ssh_private_key" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Private Key</label>
+                        <textarea name="ssh_private_key" id="ssh_private_key" rows="6"
+                                  class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm font-mono text-xs"
+                                  placeholder="-----BEGIN OPENSSH PRIVATE KEY-----
+...
+-----END OPENSSH PRIVATE KEY-----">{{ asset.ssh_private_key }}</textarea>
+                        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Paste the full private key content (PEM or OpenSSH format)</p>
+                    </div>
+                    <div>
+                        <label for="ssh_passphrase" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Passphrase (optional)</label>
+                        <input type="password" name="ssh_passphrase" id="ssh_passphrase"
+                               value="{{ asset.ssh_passphrase }}"
+                               class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
+                               placeholder="Key passphrase (if encrypted)">
+                        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Leave empty if the private key is not encrypted</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- System Information -->
         <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
             <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">

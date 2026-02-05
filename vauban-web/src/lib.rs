@@ -32,10 +32,12 @@ pub mod utils;
 use cache::CacheConnection;
 use config::Config;
 use db::DbPool;
+use ipc::ProxySshClient;
 use services::auth::AuthService;
 use services::broadcast::BroadcastService;
 use services::connections::UserConnectionRegistry;
 use services::rate_limit::RateLimiter;
+use std::sync::Arc;
 
 /// Application state.
 #[derive(Clone)]
@@ -49,6 +51,9 @@ pub struct AppState {
     pub user_connections: UserConnectionRegistry,
     /// Rate limiter for login endpoints.
     pub rate_limiter: RateLimiter,
+    /// SSH proxy client for IPC with vauban-proxy-ssh.
+    /// None if proxy is not available (development mode without supervisor).
+    pub ssh_proxy: Option<Arc<ProxySshClient>>,
 }
 
 #[cfg(test)]

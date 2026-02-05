@@ -16,6 +16,12 @@ pub struct AssetEdit {
     pub description: Option<String>,
     pub require_mfa: bool,
     pub require_justification: bool,
+    // SSH credentials extracted from connection_config
+    pub ssh_username: String,
+    pub ssh_auth_type: String,
+    pub ssh_password: String,
+    pub ssh_private_key: String,
+    pub ssh_passphrase: String,
 }
 
 #[derive(Template)]
@@ -48,6 +54,11 @@ mod tests {
             description: Some("Main production server".to_string()),
             require_mfa: true,
             require_justification: false,
+            ssh_username: "root".to_string(),
+            ssh_auth_type: "password".to_string(),
+            ssh_password: String::new(),
+            ssh_private_key: String::new(),
+            ssh_passphrase: String::new(),
         }
     }
 

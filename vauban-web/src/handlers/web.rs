@@ -82,6 +82,52 @@ fn is_admin(auth_user: &WebAuthUser) -> bool {
     auth_user.is_superuser || auth_user.is_staff
 }
 
+/// Build connection_config JSON from SSH credential form fields.
+///
+/// This stores credentials in the connection_config field of the asset.
+/// NOTE: In production, credentials should be stored in the Vault service.
+fn build_connection_config(
+    username: Option<&str>,
+    auth_type: Option<&str>,
+    password: Option<&str>,
+    private_key: Option<&str>,
+    passphrase: Option<&str>,
+) -> serde_json::Value {
+    let mut config = serde_json::Map::new();
+
+    // Add username if provided
+    if let Some(u) = username.filter(|s| !s.trim().is_empty()) {
+        config.insert("username".to_string(), serde_json::Value::String(u.trim().to_string()));
+    }
+
+    // Add auth_type if provided
+    if let Some(at) = auth_type.filter(|s| !s.trim().is_empty()) {
+        config.insert("auth_type".to_string(), serde_json::Value::String(at.to_string()));
+
+        match at {
+            "password" => {
+                // Add password if auth type is password
+                if let Some(p) = password.filter(|s| !s.is_empty()) {
+                    config.insert("password".to_string(), serde_json::Value::String(p.to_string()));
+                }
+            }
+            "private_key" => {
+                // Add private key if auth type is private_key
+                if let Some(pk) = private_key.filter(|s| !s.is_empty()) {
+                    config.insert("private_key".to_string(), serde_json::Value::String(pk.to_string()));
+                }
+                // Add passphrase if provided
+                if let Some(pp) = passphrase.filter(|s| !s.is_empty()) {
+                    config.insert("passphrase".to_string(), serde_json::Value::String(pp.to_string()));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    serde_json::Value::Object(config)
+}
+
 /// Empty response for HTMX modal close and similar use cases.
 /// Returns an empty HTML fragment to clear a target element.
 pub async fn htmx_empty() -> Html<&'static str> {
@@ -2003,6 +2049,17 @@ pub struct CreateAssetWebForm {
     #[serde(default, deserialize_with = "deserialize_checkbox")]
     pub require_justification: bool,
     pub csrf_token: String,
+    // SSH credentials (stored in connection_config)
+    /// SSH username for authentication
+    pub ssh_username: Option<String>,
+    /// Authentication type: "password" or "private_key"
+    pub ssh_auth_type: Option<String>,
+    /// Password for password-based authentication
+    pub ssh_password: Option<String>,
+    /// Private key content for key-based authentication
+    pub ssh_private_key: Option<String>,
+    /// Passphrase for encrypted private keys
+    pub ssh_passphrase: Option<String>,
 }
 
 /// Handle asset creation form submission.
@@ -2122,15 +2179,33 @@ pub async fn create_asset_web(
     // Create new asset
     let new_uuid = ::uuid::Uuid::new_v4();
 
+    // Build connection_config JSON with SSH credentials
+    let connection_config = build_connection_config(
+        form.ssh_username.as_deref(),
+        form.ssh_auth_type.as_deref(),
+        form.ssh_password.as_deref(),
+        form.ssh_private_key.as_deref(),
+        form.ssh_passphrase.as_deref(),
+    );
+
+    // Parse IP address if provided
+    let ip_address: Option<ipnetwork::IpNetwork> = form
+        .ip_address
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .and_then(|s| s.trim().parse().ok());
+
     let result = diesel::insert_into(a::assets)
         .values((
             a::uuid.eq(new_uuid),
             a::name.eq(form.name.trim()),
             a::hostname.eq(form.hostname.trim()),
+            a::ip_address.eq(ip_address),
             a::port.eq(form.port),
             a::asset_type.eq(&form.asset_type),
             a::status.eq(&form.status),
             a::description.eq(form.description.as_deref().filter(|s| !s.is_empty())),
+            a::connection_config.eq(connection_config),
             a::require_mfa.eq(form.require_mfa),
             a::require_justification.eq(form.require_justification),
             a::is_deleted.eq(false),
@@ -2574,6 +2649,7 @@ pub async fn asset_edit(
         String,
         String,
         Option<String>,
+        serde_json::Value,
         bool,
         bool,
     ) = match a::assets
@@ -2588,6 +2664,7 @@ pub async fn asset_edit(
             a::asset_type,
             a::status,
             a::description,
+            a::connection_config,
             a::require_mfa,
             a::require_justification,
         ))
@@ -2612,9 +2689,37 @@ pub async fn asset_edit(
         asset_type_val,
         asset_status,
         asset_description,
+        asset_connection_config,
         asset_require_mfa,
         asset_require_justification,
     ) = asset_row;
+
+    // Extract SSH credentials from connection_config
+    let ssh_username = asset_connection_config
+        .get("username")
+        .and_then(|v| v.as_str())
+        .unwrap_or("root")
+        .to_string();
+    let ssh_auth_type = asset_connection_config
+        .get("auth_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("password")
+        .to_string();
+    let ssh_password = asset_connection_config
+        .get("password")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let ssh_private_key = asset_connection_config
+        .get("private_key")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let ssh_passphrase = asset_connection_config
+        .get("passphrase")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
 
     let asset = crate::templates::assets::asset_edit::AssetEdit {
         uuid: asset_uuid_val.to_string(),
@@ -2627,6 +2732,11 @@ pub async fn asset_edit(
         description: asset_description,
         require_mfa: asset_require_mfa,
         require_justification: asset_require_justification,
+        ssh_username,
+        ssh_auth_type,
+        ssh_password,
+        ssh_private_key,
+        ssh_passphrase,
     };
 
     let base = BaseTemplate::new(format!("Edit {} - Asset", asset_name), user.clone())
@@ -6440,6 +6550,17 @@ pub struct UpdateAssetForm {
     #[serde(default)]
     pub require_justification: Option<String>,
     pub csrf_token: String,
+    // SSH credentials (stored in connection_config)
+    /// SSH username for authentication
+    pub ssh_username: Option<String>,
+    /// Authentication type: "password" or "private_key"
+    pub ssh_auth_type: Option<String>,
+    /// Password for password-based authentication
+    pub ssh_password: Option<String>,
+    /// Private key content for key-based authentication
+    pub ssh_private_key: Option<String>,
+    /// Passphrase for encrypted private keys
+    pub ssh_passphrase: Option<String>,
 }
 
 /// Form data for deleting an asset.
@@ -6581,6 +6702,15 @@ pub async fn update_asset_web(
         }
     };
 
+    // Build connection_config JSON with SSH credentials
+    let connection_config = build_connection_config(
+        form.ssh_username.as_deref(),
+        form.ssh_auth_type.as_deref(),
+        form.ssh_password.as_deref(),
+        form.ssh_private_key.as_deref(),
+        form.ssh_passphrase.as_deref(),
+    );
+
     // Update the asset
     let result = diesel::update(a::assets.filter(a::uuid.eq(asset_uuid)))
         .set((
@@ -6590,6 +6720,7 @@ pub async fn update_asset_web(
             a::port.eq(form.port),
             a::status.eq(&form.status),
             a::description.eq(form.description.as_deref()),
+            a::connection_config.eq(connection_config),
             a::require_mfa.eq(require_mfa),
             a::require_justification.eq(require_justification),
             a::updated_at.eq(Utc::now()),
@@ -6612,6 +6743,361 @@ pub async fn update_asset_web(
                 flash.error("Failed to update asset. Please try again."),
                 &format!("/assets/{}/edit", asset_uuid),
             )
+        }
+    }
+}
+
+// ============================================================================
+// SSH Connection Handler
+// ============================================================================
+
+/// Request form for SSH connection.
+#[derive(Debug, serde::Deserialize)]
+pub struct ConnectSshForm {
+    pub csrf_token: String,
+    /// Optional username override.
+    pub username: Option<String>,
+}
+
+/// Response for SSH connection request.
+#[derive(Debug, serde::Serialize)]
+pub struct ConnectSshResponse {
+    /// Whether the connection was initiated successfully.
+    pub success: bool,
+    /// Session UUID for WebSocket connection.
+    pub session_id: Option<String>,
+    /// Terminal page URL to redirect to.
+    pub redirect_url: Option<String>,
+    /// Error message if connection failed.
+    pub error: Option<String>,
+}
+
+/// Helper to create an HTMX error response (toast notification).
+fn htmx_error_response(message: &str) -> Response {
+    // Return an HX-Trigger header that shows a toast notification
+    // Escape message for JSON
+    let escaped_message = message.replace('\\', r"\\").replace('"', r#"\""#);
+    let trigger_json = format!(
+        r#"{{"showToast": {{"message": "{}", "type": "error"}}}}"#,
+        escaped_message
+    );
+
+    (
+        axum::http::StatusCode::OK,
+        [
+            ("HX-Trigger", trigger_json),
+            ("Content-Type", "text/html".to_string()),
+        ],
+        "",
+    )
+        .into_response()
+}
+
+/// Initiate SSH connection to an asset.
+///
+/// POST /assets/{uuid}/connect
+///
+/// For HTMX requests: Returns HX-Redirect header on success, HX-Trigger toast on error.
+/// For non-HTMX requests: Returns JSON response.
+pub async fn connect_ssh(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    auth_user: AuthUser,
+    axum::extract::Path(asset_uuid_str): axum::extract::Path<String>,
+    Form(form): Form<ConnectSshForm>,
+) -> Response {
+    use axum::Json;
+    use uuid::Uuid;
+
+    // Check if this is an HTMX request
+    let is_htmx = headers.get("HX-Request").is_some();
+
+    // Parse asset UUID
+    let asset_uuid = match Uuid::parse_str(&asset_uuid_str) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            let msg = "Invalid asset identifier";
+            if is_htmx {
+                return htmx_error_response(msg);
+            }
+            return Json(ConnectSshResponse {
+                success: false,
+                session_id: None,
+                redirect_url: None,
+                error: Some(msg.to_string()),
+            })
+            .into_response();
+        }
+    };
+
+    // Get SSH proxy client
+    let proxy_client = match &state.ssh_proxy {
+        Some(client) => client.clone(),
+        None => {
+            let msg = "SSH proxy not available";
+            if is_htmx {
+                return htmx_error_response(msg);
+            }
+            return Json(ConnectSshResponse {
+                success: false,
+                session_id: None,
+                redirect_url: None,
+                error: Some(msg.to_string()),
+            })
+            .into_response();
+        }
+    };
+
+    // Fetch asset from database
+    let mut conn = match state.db_pool.get().await {
+        Ok(conn) => conn,
+        Err(e) => {
+            tracing::error!("Database connection error: {}", e);
+            let msg = "Database connection failed";
+            if is_htmx {
+                return htmx_error_response(msg);
+            }
+            return Json(ConnectSshResponse {
+                success: false,
+                session_id: None,
+                redirect_url: None,
+                error: Some(msg.to_string()),
+            })
+            .into_response();
+        }
+    };
+
+    use crate::models::asset::Asset;
+    use crate::schema::assets::dsl;
+
+    let asset: Asset = match dsl::assets
+        .filter(dsl::uuid.eq(asset_uuid))
+        .first(&mut conn)
+        .await
+    {
+        Ok(asset) => asset,
+        Err(diesel::result::Error::NotFound) => {
+            let msg = "Asset not found";
+            if is_htmx {
+                return htmx_error_response(msg);
+            }
+            return Json(ConnectSshResponse {
+                success: false,
+                session_id: None,
+                redirect_url: None,
+                error: Some(msg.to_string()),
+            })
+            .into_response();
+        }
+        Err(e) => {
+            tracing::error!("Failed to fetch asset: {}", e);
+            let msg = "Failed to fetch asset";
+            if is_htmx {
+                return htmx_error_response(msg);
+            }
+            return Json(ConnectSshResponse {
+                success: false,
+                session_id: None,
+                redirect_url: None,
+                error: Some("Failed to fetch asset".to_string()),
+            })
+            .into_response();
+        }
+    };
+
+    // Verify asset type is SSH
+    if asset.asset_type.to_lowercase() != "ssh" {
+        let msg = format!("Asset type '{}' is not SSH", asset.asset_type);
+        if is_htmx {
+            return htmx_error_response(&msg);
+        }
+        return Json(ConnectSshResponse {
+            success: false,
+            session_id: None,
+            redirect_url: None,
+            error: Some(msg),
+        })
+        .into_response();
+    }
+
+    // Generate session UUID
+    let session_id = Uuid::new_v4().to_string();
+
+    // Extract connection details from asset's connection_config
+    let config = &asset.connection_config;
+
+    // Determine username from:
+    // 1. Form override
+    // 2. connection_config.username (if present in JSON)
+    // 3. Default "root"
+    let config_username = config
+        .get("username")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let username = form
+        .username
+        .filter(|u| !u.is_empty())
+        .or(config_username)
+        .unwrap_or_else(|| "root".to_string());
+
+    // Extract authentication credentials from connection_config
+    let auth_type = config
+        .get("auth_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("password")
+        .to_string();
+
+    let password = config
+        .get("password")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let private_key = config
+        .get("private_key")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let passphrase = config
+        .get("passphrase")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    // Build SSH session open request
+    let request = crate::ipc::SshSessionOpenRequest {
+        session_id: session_id.clone(),
+        user_id: auth_user.uuid.clone(),
+        asset_id: asset.uuid.to_string(),
+        asset_host: asset.hostname.clone(),
+        asset_port: asset.port as u16,
+        username,
+        terminal_cols: 120,
+        terminal_rows: 30,
+        auth_type,
+        password,
+        private_key,
+        passphrase,
+    };
+
+    // Send request to SSH proxy
+    match proxy_client.open_session(request).await {
+        Ok(response) => {
+            if response.success {
+                tracing::info!(
+                    user = %auth_user.username,
+                    asset = %asset.name,
+                    session_id = %session_id,
+                    "SSH session initiated"
+                );
+
+                let redirect_url = format!("/sessions/terminal/{}", session_id);
+
+                if is_htmx {
+                    // Return HX-Trigger with redirect event for client-side navigation
+                    // Using a custom event because HX-Redirect doesn't always work with hx-swap="none"
+                    let trigger_json = format!(
+                        r#"{{"redirectTo": {{"url": "{}"}}}}"#,
+                        redirect_url
+                    );
+                    return (
+                        axum::http::StatusCode::OK,
+                        [("HX-Trigger", trigger_json)],
+                        "",
+                    )
+                        .into_response();
+                }
+
+                Json(ConnectSshResponse {
+                    success: true,
+                    session_id: Some(session_id.clone()),
+                    redirect_url: Some(redirect_url),
+                    error: None,
+                })
+                .into_response()
+            } else {
+                let msg = response.error.unwrap_or_else(|| "Connection failed".to_string());
+                if is_htmx {
+                    return htmx_error_response(&msg);
+                }
+                Json(ConnectSshResponse {
+                    success: false,
+                    session_id: None,
+                    redirect_url: None,
+                    error: Some(msg),
+                })
+                .into_response()
+            }
+        }
+        Err(e) => {
+            tracing::error!(
+                user = %auth_user.username,
+                asset = %asset.name,
+                error = %e,
+                "SSH session initiation failed"
+            );
+
+            let msg = format!("Failed to initiate SSH connection: {}", e);
+            if is_htmx {
+                return htmx_error_response(&msg);
+            }
+
+            Json(ConnectSshResponse {
+                success: false,
+                session_id: None,
+                redirect_url: None,
+                error: Some(msg),
+            })
+            .into_response()
+        }
+    }
+}
+
+/// Terminal page for SSH sessions.
+///
+/// GET /sessions/terminal/{session_id}
+pub async fn terminal_page(
+    State(_state): State<AppState>,
+    incoming_flash: IncomingFlash,
+    auth_user: WebAuthUser,
+    axum::extract::Path(session_id): axum::extract::Path<String>,
+) -> Response {
+    use crate::templates::base::BaseTemplate;
+    use crate::templates::sessions::TerminalTemplate;
+
+    let flash = incoming_flash.flash();
+
+    // Validate session_id format (should be a UUID)
+    if uuid::Uuid::parse_str(&session_id).is_err() {
+        return flash_redirect(flash.error("Invalid session identifier"), "/assets");
+    }
+
+    // TODO: Verify session exists and belongs to user via IPC or database
+
+    let user = Some(user_context_from_auth(&auth_user));
+
+    // Build base template with sidebar
+    let base = BaseTemplate::new("SSH Terminal".to_string(), user.clone())
+        .with_current_path("/assets");
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        base.into_fields();
+
+    let template = TerminalTemplate {
+        title,
+        user: user_ctx,
+        vauban,
+        messages,
+        language_code,
+        sidebar_content,
+        header_user,
+        session_id,
+        websocket_url: String::new(), // Will be constructed client-side
+    };
+
+    match template.render() {
+        Ok(html) => Html(html).into_response(),
+        Err(e) => {
+            tracing::error!("Failed to render terminal template: {}", e);
+            flash_redirect(flash.error("Failed to load terminal page"), "/assets")
         }
     }
 }
@@ -7270,5 +7756,146 @@ mod tests {
 
         assert!(debug_str.contains("AuthUser"));
         assert!(debug_str.contains("debuguser"));
+    }
+
+    // ==================== ConnectSshForm Tests ====================
+
+    #[test]
+    fn test_connect_ssh_form_deserialize_minimal() {
+        let json = r#"{"csrf_token": "test-csrf-token"}"#;
+        let form: ConnectSshForm = unwrap_ok!(serde_json::from_str(json));
+
+        assert_eq!(form.csrf_token, "test-csrf-token");
+        assert!(form.username.is_none());
+    }
+
+    #[test]
+    fn test_connect_ssh_form_deserialize_with_username() {
+        let json = r#"{"csrf_token": "csrf123", "username": "admin"}"#;
+        let form: ConnectSshForm = unwrap_ok!(serde_json::from_str(json));
+
+        assert_eq!(form.csrf_token, "csrf123");
+        assert_eq!(form.username, Some("admin".to_string()));
+    }
+
+    #[test]
+    fn test_connect_ssh_form_deserialize_null_username() {
+        let json = r#"{"csrf_token": "csrf", "username": null}"#;
+        let form: ConnectSshForm = unwrap_ok!(serde_json::from_str(json));
+
+        assert!(form.username.is_none());
+    }
+
+    #[test]
+    fn test_connect_ssh_form_debug() {
+        let form = ConnectSshForm {
+            csrf_token: "token123".to_string(),
+            username: Some("testuser".to_string()),
+        };
+
+        let debug_str = format!("{:?}", form);
+
+        assert!(debug_str.contains("ConnectSshForm"));
+        assert!(debug_str.contains("testuser"));
+    }
+
+    #[test]
+    fn test_connect_ssh_form_missing_csrf() {
+        let json = r#"{"username": "admin"}"#;
+        let result: Result<ConnectSshForm, _> = serde_json::from_str(json);
+
+        assert!(result.is_err());
+    }
+
+    // ==================== ConnectSshResponse Tests ====================
+
+    #[test]
+    fn test_connect_ssh_response_success() {
+        let response = ConnectSshResponse {
+            success: true,
+            session_id: Some("sess-123".to_string()),
+            redirect_url: Some("/sessions/terminal/sess-123".to_string()),
+            error: None,
+        };
+
+        assert!(response.success);
+        assert_eq!(response.session_id, Some("sess-123".to_string()));
+        assert!(response.redirect_url.unwrap().contains("/sessions/terminal/"));
+        assert!(response.error.is_none());
+    }
+
+    #[test]
+    fn test_connect_ssh_response_failure() {
+        let response = ConnectSshResponse {
+            success: false,
+            session_id: None,
+            redirect_url: None,
+            error: Some("Connection refused".to_string()),
+        };
+
+        assert!(!response.success);
+        assert!(response.session_id.is_none());
+        assert!(response.redirect_url.is_none());
+        assert_eq!(response.error, Some("Connection refused".to_string()));
+    }
+
+    #[test]
+    fn test_connect_ssh_response_serialize() {
+        let response = ConnectSshResponse {
+            success: true,
+            session_id: Some("abc-123".to_string()),
+            redirect_url: Some("/terminal/abc-123".to_string()),
+            error: None,
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+
+        assert!(json.contains("\"success\":true"));
+        assert!(json.contains("\"session_id\":\"abc-123\""));
+        assert!(json.contains("\"redirect_url\":\"/terminal/abc-123\""));
+    }
+
+    #[test]
+    fn test_connect_ssh_response_serialize_failure() {
+        let response = ConnectSshResponse {
+            success: false,
+            session_id: None,
+            redirect_url: None,
+            error: Some("Invalid credentials".to_string()),
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+
+        assert!(json.contains("\"success\":false"));
+        assert!(json.contains("\"error\":\"Invalid credentials\""));
+    }
+
+    #[test]
+    fn test_connect_ssh_response_debug() {
+        let response = ConnectSshResponse {
+            success: true,
+            session_id: Some("debug-sess".to_string()),
+            redirect_url: Some("/debug".to_string()),
+            error: None,
+        };
+
+        let debug_str = format!("{:?}", response);
+
+        assert!(debug_str.contains("ConnectSshResponse"));
+        assert!(debug_str.contains("debug-sess"));
+    }
+
+    #[test]
+    fn test_connect_ssh_response_all_none() {
+        let response = ConnectSshResponse {
+            success: false,
+            session_id: None,
+            redirect_url: None,
+            error: None,
+        };
+
+        assert!(!response.success);
+        assert!(response.session_id.is_none());
+        assert!(response.error.is_none());
     }
 }

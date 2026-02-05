@@ -270,3 +270,206 @@ async fn test_asset_detail_accepts_uuid_not_integer_id() {
     // Cleanup
     test_db::cleanup(&mut conn).await;
 }
+
+// =============================================================================
+// SSH Connection Tests
+// =============================================================================
+
+/// Test SSH connect endpoint returns error when SSH proxy is not available.
+/// This is the expected behavior in test environment without vauban-proxy-ssh.
+#[tokio::test]
+#[serial]
+async fn test_ssh_connect_without_proxy() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    // Setup: create admin and SSH asset
+    let admin_name = unique_name("test_admin_ssh_connect");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+    let asset = create_test_ssh_asset(&mut conn, &unique_name("test-ssh-connect-asset")).await;
+
+    // Execute: POST /assets/{uuid}/connect
+    let response = app
+        .server
+        .post(&format!("/assets/{}/connect", asset.asset.uuid))
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .form(&[("csrf_token", "test-csrf")])
+        .await;
+
+    // Assert: Should return JSON with error (SSH proxy not available in tests)
+    let status = response.status_code().as_u16();
+    assert_eq!(status, 200, "Connect endpoint should return 200 with JSON");
+
+    let body = response.text();
+    assert!(
+        body.contains("\"success\":false") || body.contains("SSH proxy not available"),
+        "Response should indicate SSH proxy unavailable: {}",
+        body
+    );
+
+    // Cleanup
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Test SSH connect endpoint requires authentication.
+#[tokio::test]
+#[serial]
+async fn test_ssh_connect_requires_auth() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    // Setup: create SSH asset
+    let asset = create_test_ssh_asset(&mut conn, &unique_name("test-ssh-unauth-asset")).await;
+
+    // Execute: POST /assets/{uuid}/connect without auth
+    let response = app
+        .server
+        .post(&format!("/assets/{}/connect", asset.asset.uuid))
+        .form(&[("csrf_token", "test-csrf")])
+        .await;
+
+    // Assert: 401 Unauthorized or redirect to login
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 401 || status == 302 || status == 303,
+        "Unauthenticated connect should return 401 or redirect, got {}",
+        status
+    );
+
+    // Cleanup
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Test SSH connect endpoint with invalid UUID returns error.
+#[tokio::test]
+#[serial]
+async fn test_ssh_connect_invalid_uuid() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    // Setup: create admin
+    let admin_name = unique_name("test_admin_ssh_invalid");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+
+    // Execute: POST /assets/invalid-uuid/connect
+    let response = app
+        .server
+        .post("/assets/not-a-valid-uuid/connect")
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .form(&[("csrf_token", "test-csrf")])
+        .await;
+
+    // Assert: Should return JSON with error
+    let status = response.status_code().as_u16();
+    assert_eq!(status, 200, "Connect endpoint should return 200 with JSON");
+
+    let body = response.text();
+    assert!(
+        body.contains("\"success\":false") && body.contains("Invalid asset identifier"),
+        "Response should indicate invalid UUID: {}",
+        body
+    );
+
+    // Cleanup
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Test SSH connect endpoint with non-existent asset returns error.
+#[tokio::test]
+#[serial]
+async fn test_ssh_connect_asset_not_found() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    // Setup: create admin
+    let admin_name = unique_name("test_admin_ssh_404");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+
+    let fake_uuid = Uuid::new_v4();
+
+    // Execute: POST /assets/{fake_uuid}/connect
+    let response = app
+        .server
+        .post(&format!("/assets/{}/connect", fake_uuid))
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .form(&[("csrf_token", "test-csrf")])
+        .await;
+
+    // Assert: Should return JSON with "not found" error
+    let status = response.status_code().as_u16();
+    assert_eq!(status, 200, "Connect endpoint should return 200 with JSON");
+
+    let body = response.text();
+    // May return "SSH proxy not available" or "Asset not found" depending on check order
+    assert!(
+        body.contains("\"success\":false"),
+        "Response should indicate failure: {}",
+        body
+    );
+
+    // Cleanup
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Test SSH connect endpoint with RDP asset type returns error.
+#[tokio::test]
+#[serial]
+async fn test_ssh_connect_wrong_asset_type() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    // Setup: create admin and RDP asset (not SSH)
+    let admin_name = unique_name("test_admin_ssh_rdp");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+    let rdp_asset = create_test_rdp_asset(&mut conn, &unique_name("test-rdp-asset")).await;
+
+    // Execute: POST /assets/{rdp_uuid}/connect (trying SSH on RDP asset)
+    let response = app
+        .server
+        .post(&format!("/assets/{}/connect", rdp_asset.asset.uuid))
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .form(&[("csrf_token", "test-csrf")])
+        .await;
+
+    // Assert: Should return JSON with error (depends on SSH proxy availability)
+    let status = response.status_code().as_u16();
+    assert_eq!(status, 200, "Connect endpoint should return 200 with JSON");
+
+    let body = response.text();
+    assert!(
+        body.contains("\"success\":false"),
+        "Response should indicate failure for RDP asset on SSH endpoint: {}",
+        body
+    );
+
+    // Cleanup
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Test SSH connect endpoint with username override.
+#[tokio::test]
+#[serial]
+async fn test_ssh_connect_with_username_override() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    // Setup: create admin and SSH asset
+    let admin_name = unique_name("test_admin_ssh_user");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+    let asset = create_test_ssh_asset(&mut conn, &unique_name("test-ssh-user-asset")).await;
+
+    // Execute: POST /assets/{uuid}/connect with username
+    let response = app
+        .server
+        .post(&format!("/assets/{}/connect", asset.asset.uuid))
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .form(&[("csrf_token", "test-csrf"), ("username", "custom_admin")])
+        .await;
+
+    // Assert: Should return JSON response (success depends on SSH proxy)
+    let status = response.status_code().as_u16();
+    assert_eq!(status, 200, "Connect endpoint should return 200 with JSON");
+
+    // Cleanup
+    test_db::cleanup(&mut conn).await;
+}

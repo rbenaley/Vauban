@@ -163,11 +163,54 @@ use vauban_web::{
     db::create_pool_sandboxed,
     error::AppError,
     handlers, middleware,
+    ipc::ProxySshClient,
     services::auth::AuthService,
     services::broadcast::BroadcastService,
     services::rate_limit::RateLimiter,
     tasks::{start_cleanup_tasks, start_dashboard_tasks},
 };
+
+/// Initialize SSH proxy client if IPC environment variables are set.
+///
+/// Returns Some(Arc<ProxySshClient>) if VAUBAN_PROXY_SSH_IPC_READ and VAUBAN_PROXY_SSH_IPC_WRITE
+/// environment variables are set (running under supervisor), None otherwise.
+fn init_ssh_proxy_client() -> Option<Arc<ProxySshClient>> {
+    use std::os::unix::io::RawFd;
+
+    let read_fd: RawFd = match std::env::var("VAUBAN_PROXY_SSH_IPC_READ") {
+        Ok(val) => match val.parse() {
+            Ok(fd) => fd,
+            Err(_) => return None,
+        },
+        Err(_) => return None,
+    };
+
+    let write_fd: RawFd = match std::env::var("VAUBAN_PROXY_SSH_IPC_WRITE") {
+        Ok(val) => match val.parse() {
+            Ok(fd) => fd,
+            Err(_) => return None,
+        },
+        Err(_) => return None,
+    };
+
+    // Clear environment variables immediately for security
+    // SAFETY: We are early in startup, before spawning async tasks
+    unsafe {
+        std::env::remove_var("VAUBAN_PROXY_SSH_IPC_READ");
+        std::env::remove_var("VAUBAN_PROXY_SSH_IPC_WRITE");
+    }
+
+    match ProxySshClient::new(read_fd, write_fd) {
+        Ok(client) => {
+            tracing::info!("SSH proxy client initialized (running under supervisor)");
+            Some(client)
+        }
+        Err(e) => {
+            tracing::warn!("Failed to initialize SSH proxy client: {}", e);
+            None
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -310,6 +353,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // All resources are now pre-opened, running in sandbox mode.
     // ========================================================================
 
+    // Create SSH proxy client if running under supervisor
+    let ssh_proxy = init_ssh_proxy_client();
+
+    // Spawn SSH proxy IPC processing task if client is available
+    if let Some(ref client) = ssh_proxy {
+        let client_clone = Arc::clone(client);
+        tokio::spawn(async move {
+            if let Err(e) = client_clone.process_incoming().await {
+                tracing::error!(error = %e, "SSH proxy IPC processing task failed");
+            }
+        });
+        tracing::info!("SSH proxy IPC processing task started");
+    }
+
     // Create application state
     let app_state = AppState {
         config: config.clone(),
@@ -319,6 +376,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         broadcast: broadcast.clone(),
         user_connections,
         rate_limiter,
+        ssh_proxy,
     };
 
     // Start background tasks for WebSocket updates
@@ -487,14 +545,9 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
     let flash_secret = state.config.secret_key.expose_secret().as_bytes().to_vec();
 
     // ==========================================================================
-    // WEB ROUTES - Always active (HTML pages for human users)
+    // WEBSOCKET ROUTES - No timeout (long-lived connections)
     // ==========================================================================
-    let web_routes = Router::new()
-        // Health check
-        .route("/health", get(health_check))
-        // Static files (served from static/ directory)
-        .route("/static/{*path}", get(serve_static))
-        // WebSocket routes (real-time updates)
+    let ws_routes = Router::new()
         .route("/ws/dashboard", get(handlers::websocket::dashboard_ws))
         .route("/ws/session/{id}", get(handlers::websocket::session_ws))
         .route(
@@ -505,6 +558,20 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             "/ws/sessions/active",
             get(handlers::websocket::active_sessions_ws),
         )
+        // Terminal WebSocket for SSH sessions
+        .route(
+            "/ws/terminal/{session_id}",
+            get(handlers::websocket::terminal_ws),
+        );
+
+    // ==========================================================================
+    // WEB ROUTES - Always active (HTML pages for human users)
+    // ==========================================================================
+    let web_routes = Router::new()
+        // Health check
+        .route("/health", get(health_check))
+        // Static files (served from static/ directory)
+        .route("/static/{*path}", get(serve_static))
         // HTMX utility routes
         .route("/htmx/empty", get(handlers::web::htmx_empty))
         // Authentication pages and form handlers
@@ -662,7 +729,16 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             "/sessions/approvals/{uuid}",
             get(handlers::web::approval_detail),
         )
-        .route("/sessions/active", get(handlers::web::active_sessions));
+        .route("/sessions/active", get(handlers::web::active_sessions))
+        // SSH connection endpoints
+        .route(
+            "/assets/{uuid}/connect",
+            post(handlers::web::connect_ssh),
+        )
+        .route(
+            "/sessions/terminal/{session_id}",
+            get(handlers::web::terminal_page),
+        );
 
     // ==========================================================================
     // API ROUTES - Conditionally active based on config.api.enabled
@@ -734,39 +810,48 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             )
     };
 
-    // Merge web and API routes
+    // Common middleware layers (applied to all routes)
     let flash_key = middleware::flash::FlashSecretKey(flash_secret);
-    let app = web_routes
+    let common_layers = ServiceBuilder::new()
+        .layer(TraceLayer::new_for_http())
+        // Security headers (XSS, clickjacking, MIME sniffing protection)
+        .layer(axum::middleware::from_fn(
+            middleware::security::security_headers_middleware,
+        ))
+        .layer(cors.clone())
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            middleware::csrf::csrf_cookie_middleware,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            flash_key.clone(),
+            middleware::flash::flash_middleware,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            middleware::auth::auth_middleware,
+        ))
+        .layer(axum::middleware::from_fn(
+            middleware::audit::audit_middleware,
+        ));
+
+    // WebSocket routes - NO timeout (long-lived connections)
+    let ws_app = ws_routes.layer(common_layers.clone());
+
+    // Web and API routes - WITH 30s timeout for regular HTTP requests
+    let http_app = web_routes
         .merge(api_routes)
-        .fallback(handlers::web::fallback_handler)
         .layer(
-            ServiceBuilder::new()
-                .layer(TraceLayer::new_for_http())
-                .layer(TimeoutLayer::with_status_code(
-                    axum::http::StatusCode::REQUEST_TIMEOUT,
-                    std::time::Duration::from_secs(30),
-                ))
-                // Security headers (XSS, clickjacking, MIME sniffing protection)
-                .layer(axum::middleware::from_fn(
-                    middleware::security::security_headers_middleware,
-                ))
-                .layer(cors)
-                .layer(axum::middleware::from_fn_with_state(
-                    state.clone(),
-                    middleware::csrf::csrf_cookie_middleware,
-                ))
-                .layer(axum::middleware::from_fn_with_state(
-                    flash_key,
-                    middleware::flash::flash_middleware,
-                ))
-                .layer(axum::middleware::from_fn_with_state(
-                    state.clone(),
-                    middleware::auth::auth_middleware,
-                ))
-                .layer(axum::middleware::from_fn(
-                    middleware::audit::audit_middleware,
-                )),
-        )
+            common_layers.layer(TimeoutLayer::with_status_code(
+                axum::http::StatusCode::REQUEST_TIMEOUT,
+                std::time::Duration::from_secs(30),
+            )),
+        );
+
+    // Merge all routes
+    let app = ws_app
+        .merge(http_app)
+        .fallback(handlers::web::fallback_handler)
         .with_state(state);
 
     Ok(app)

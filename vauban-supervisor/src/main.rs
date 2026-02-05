@@ -53,12 +53,71 @@ struct PipeTopology {
     to: Service,
 }
 
+/// Extra IPC pipes to pass to a child service.
+#[derive(Default, Clone)]
+struct ServicePipes {
+    /// Pipes where this service is the "from" side (sender)
+    outgoing: Vec<(Service, i32, i32)>, // (target, read_fd, write_fd)
+    /// Pipes where this service is the "to" side (receiver)  
+    incoming: Vec<(Service, i32, i32)>, // (source, read_fd, write_fd)
+}
+
+/// Services that must be restarted together (they share inter-process pipes).
+/// When any of these crash, all must be restarted to re-establish IPC.
+const LINKED_RESTART_GROUPS: &[&[&str]] = &[
+    // Web and SSH proxy share IPC pipes
+    &["web", "proxy_ssh"],
+    // Web and RDP proxy share IPC pipes  
+    &["web", "proxy_rdp"],
+];
+
+/// Check if a service belongs to a linked restart group.
+fn get_linked_services(service_key: &str) -> Option<&'static [&'static str]> {
+    for group in LINKED_RESTART_GROUPS {
+        if group.contains(&service_key) {
+            return Some(group);
+        }
+    }
+    None
+}
+
+/// Convert service key string to Service enum.
+fn service_key_to_service(key: &str) -> Option<Service> {
+    match key {
+        "web" => Some(Service::Web),
+        "auth" => Some(Service::Auth),
+        "rbac" => Some(Service::Rbac),
+        "vault" => Some(Service::Vault),
+        "audit" => Some(Service::Audit),
+        "proxy_ssh" => Some(Service::ProxySsh),
+        "proxy_rdp" => Some(Service::ProxyRdp),
+        _ => None,
+    }
+}
+
+/// Convert Service enum to environment variable suffix.
+fn service_to_env_suffix(service: Service) -> &'static str {
+    match service {
+        Service::Web => "WEB",
+        Service::Auth => "AUTH",
+        Service::Rbac => "RBAC",
+        Service::Vault => "VAULT",
+        Service::Audit => "AUDIT",
+        Service::ProxySsh => "PROXY_SSH",
+        Service::ProxyRdp => "PROXY_RDP",
+        Service::Supervisor => "SUPERVISOR",
+    }
+}
+
 /// All pipe connections in the mesh topology.
 const TOPOLOGY: &[PipeTopology] = &[
     // Web connections
     PipeTopology { from: Service::Web, to: Service::Auth },
     PipeTopology { from: Service::Web, to: Service::Rbac },
     PipeTopology { from: Service::Web, to: Service::Audit },
+    // Web <-> Proxy connections (for SSH/RDP session data)
+    PipeTopology { from: Service::Web, to: Service::ProxySsh },
+    PipeTopology { from: Service::Web, to: Service::ProxyRdp },
     // Auth connections
     PipeTopology { from: Service::Auth, to: Service::Rbac },
     PipeTopology { from: Service::Auth, to: Service::Vault },
@@ -119,6 +178,24 @@ fn run_supervisor() -> Result<()> {
     let pipes = create_pipe_topology()?;
     info!("Created {} pipe connections", pipes.len());
 
+    // Organize pipes by service for easy lookup
+    let mut service_pipes: HashMap<Service, ServicePipes> = HashMap::new();
+    for ((from, to), (from_channel, to_channel)) in &pipes {
+        // The "from" service gets the from_channel (it writes to the pipe)
+        service_pipes
+            .entry(*from)
+            .or_default()
+            .outgoing
+            .push((*to, from_channel.read_fd(), from_channel.write_fd()));
+        
+        // The "to" service gets the to_channel (it reads from the pipe)
+        service_pipes
+            .entry(*to)
+            .or_default()
+            .incoming
+            .push((*from, to_channel.read_fd(), to_channel.write_fd()));
+    }
+
     // Spawn all child services in dependency order
     let mut children: HashMap<String, ChildState> = HashMap::new();
     
@@ -152,7 +229,11 @@ fn run_supervisor() -> Result<()> {
         let (supervisor_channel, child_channel) = IpcChannel::pair()
             .context("Failed to create IPC channel")?;
         
-        match spawn_child(&binary_path, uid, gid, workdir.as_deref(), child_channel) {
+        // Get topology pipes for this service
+        let service = service_key_to_service(service_key);
+        let topology_pipes = service.and_then(|s| service_pipes.get(&s));
+        
+        match spawn_child(&binary_path, uid, gid, workdir.as_deref(), child_channel, topology_pipes) {
             Ok(pid) => {
                 info!("Started {} with pid {}", service_config.name, pid);
                 children.insert(service_key.to_string(), ChildState {
@@ -183,6 +264,7 @@ fn run_supervisor() -> Result<()> {
     watchdog_loop(
         &mut children,
         &config,
+        &service_pipes,
         Duration::from_secs(watchdog_config.heartbeat_interval_secs),
         watchdog_config.max_missed_heartbeats,
         watchdog_config.max_respawns_per_hour,
@@ -239,10 +321,29 @@ fn spawn_child(
     gid: Option<u32>,
     workdir: Option<&str>,
     channel: IpcChannel,
+    topology_pipes: Option<&ServicePipes>,
 ) -> Result<i32> {
     // Get raw FDs before fork (we'll pass them via env vars)
     let read_fd = channel.read_fd();
     let write_fd = channel.write_fd();
+    
+    // Collect topology pipe env vars before fork
+    // Format: VAUBAN_{TARGET}_IPC_READ and VAUBAN_{TARGET}_IPC_WRITE
+    let mut topology_env_vars: Vec<(String, String)> = Vec::new();
+    if let Some(pipes) = topology_pipes {
+        // For outgoing connections (this service -> target)
+        for (target, r_fd, w_fd) in &pipes.outgoing {
+            let suffix = service_to_env_suffix(*target);
+            topology_env_vars.push((format!("VAUBAN_{}_IPC_READ", suffix), r_fd.to_string()));
+            topology_env_vars.push((format!("VAUBAN_{}_IPC_WRITE", suffix), w_fd.to_string()));
+        }
+        // For incoming connections (source -> this service)
+        for (source, r_fd, w_fd) in &pipes.incoming {
+            let suffix = service_to_env_suffix(*source);
+            topology_env_vars.push((format!("VAUBAN_{}_IPC_READ", suffix), r_fd.to_string()));
+            topology_env_vars.push((format!("VAUBAN_{}_IPC_WRITE", suffix), w_fd.to_string()));
+        }
+    }
 
     // SAFETY: fork() is unsafe because it's inherently dangerous in multi-threaded
     // Rust programs. We ensure safety by:
@@ -276,12 +377,17 @@ fn spawn_child(
                 }
             }
             
-            // Set environment variables for IPC FDs
+            // Set environment variables for supervisor IPC FDs
             // SAFETY: We are in a single-threaded child process right after fork(),
             // and the environment is not being accessed by other threads.
             unsafe {
                 std::env::set_var("VAUBAN_IPC_READ", read_fd.to_string());
                 std::env::set_var("VAUBAN_IPC_WRITE", write_fd.to_string());
+                
+                // Set topology pipe environment variables
+                for (name, value) in &topology_env_vars {
+                    std::env::set_var(name, value);
+                }
             }
             
             // Exec the child binary
@@ -313,15 +419,26 @@ fn spawn_child(
 fn watchdog_loop(
     children: &mut HashMap<String, ChildState>,
     config: &SupervisorConfig,
+    service_pipes: &HashMap<Service, ServicePipes>,
     heartbeat_interval: Duration,
     max_missed_heartbeats: u32,
     max_respawns_per_hour: u32,
 ) -> Result<()> {
     let mut last_heartbeat = Instant::now();
+    // Track services that need linked restart (will be processed after reaping)
+    let mut pending_linked_restarts: Vec<String> = Vec::new();
 
     loop {
-        // Reap any dead children
-        reap_children(children, config, max_respawns_per_hour);
+        // Reap any dead children and collect services needing restart
+        reap_children(children, config, service_pipes, max_respawns_per_hour, &mut pending_linked_restarts);
+        
+        // Process pending linked restarts (restart entire groups)
+        while let Some(service_key) = pending_linked_restarts.pop() {
+            if let Some(linked_group) = get_linked_services(&service_key) {
+                info!("Restarting linked group for {}: {:?}", service_key, linked_group);
+                respawn_linked_group(children, config, service_pipes, linked_group);
+            }
+        }
 
         // Send heartbeats periodically
         if last_heartbeat.elapsed() >= heartbeat_interval {
@@ -332,6 +449,7 @@ fn watchdog_loop(
         }
 
         // Check for unresponsive children
+        let mut services_to_restart: Vec<String> = Vec::new();
         for (service_key, state) in children.iter_mut() {
             match should_force_restart(state, max_missed_heartbeats) {
                 RestartDecision::NotNeeded => {}
@@ -340,12 +458,34 @@ fn watchdog_loop(
                         "{} is unresponsive with active work (connections={}, pending={}), draining first",
                         service_key, active, pending
                     );
-                    drain_and_restart(state, config);
+                    // Check if this service is in a linked group
+                    if get_linked_services(service_key).is_some() {
+                        services_to_restart.push(service_key.clone());
+                    } else {
+                        let topology = service_key_to_service(service_key)
+                            .and_then(|s| service_pipes.get(&s));
+                        drain_and_restart(state, config, topology);
+                    }
                 }
                 RestartDecision::ForceNow => {
                     warn!("{} is unresponsive, forcing restart", service_key);
-                    kill_and_respawn(state, config);
+                    // Check if this service is in a linked group
+                    if get_linked_services(service_key).is_some() {
+                        services_to_restart.push(service_key.clone());
+                    } else {
+                        let topology = service_key_to_service(service_key)
+                            .and_then(|s| service_pipes.get(&s));
+                        kill_and_respawn(state, config, topology);
+                    }
                 }
+            }
+        }
+        
+        // Process linked restarts for unresponsive services
+        for service_key in services_to_restart {
+            if let Some(linked_group) = get_linked_services(&service_key) {
+                info!("Restarting linked group due to unresponsive {}: {:?}", service_key, linked_group);
+                respawn_linked_group(children, config, service_pipes, linked_group);
             }
         }
 
@@ -357,41 +497,79 @@ fn watchdog_loop(
 fn reap_children(
     children: &mut HashMap<String, ChildState>,
     config: &SupervisorConfig,
+    service_pipes: &HashMap<Service, ServicePipes>,
     max_respawns_per_hour: u32,
+    pending_linked_restarts: &mut Vec<String>,
 ) {
     loop {
         match waitpid(Pid::from_raw(-1), Some(WaitPidFlag::WNOHANG)) {
             Ok(WaitStatus::Exited(pid, exit_code)) => {
                 // Find which service this was
+                let mut found_service: Option<String> = None;
                 for (service_key, state) in children.iter_mut() {
                     if state.pid == pid.as_raw() {
                         warn!("{} exited with code {}", service_key, exit_code);
-                        
-                        // Respawn if not too many recent respawns
-                        if should_respawn(state, max_respawns_per_hour) {
-                            info!("Respawning {}", service_key);
-                            respawn_service(state, config);
-                        } else {
-                            error!("{} has crashed too many times, not respawning", service_key);
-                        }
+                        found_service = Some(service_key.clone());
+                        // Mark as dead (pid = 0 indicates not running)
+                        state.pid = 0;
                         break;
+                    }
+                }
+                
+                if let Some(service_key) = found_service {
+                    // Check if this service should be respawned
+                    let state = children.get_mut(&service_key).unwrap();
+                    if should_respawn(state, max_respawns_per_hour) {
+                        // Check if this service is in a linked group
+                        if get_linked_services(&service_key).is_some() {
+                            // Queue for linked restart (will restart entire group)
+                            if !pending_linked_restarts.contains(&service_key) {
+                                pending_linked_restarts.push(service_key.clone());
+                            }
+                        } else {
+                            // Regular respawn for non-linked services
+                            info!("Respawning {}", service_key);
+                            let topology = service_key_to_service(&service_key)
+                                .and_then(|s| service_pipes.get(&s));
+                            respawn_service(state, config, topology);
+                        }
+                    } else {
+                        error!("{} has crashed too many times, not respawning", service_key);
                     }
                 }
             }
             Ok(WaitStatus::Signaled(pid, signal, _core_dumped)) => {
                 // Find which service this was
+                let mut found_service: Option<String> = None;
                 for (service_key, state) in children.iter_mut() {
                     if state.pid == pid.as_raw() {
                         warn!("{} killed by signal {:?}", service_key, signal);
-                        
-                        // Respawn if not too many recent respawns
-                        if should_respawn(state, max_respawns_per_hour) {
-                            info!("Respawning {}", service_key);
-                            respawn_service(state, config);
-                        } else {
-                            error!("{} has crashed too many times, not respawning", service_key);
-                        }
+                        found_service = Some(service_key.clone());
+                        // Mark as dead (pid = 0 indicates not running)
+                        state.pid = 0;
                         break;
+                    }
+                }
+                
+                if let Some(service_key) = found_service {
+                    // Check if this service should be respawned
+                    let state = children.get_mut(&service_key).unwrap();
+                    if should_respawn(state, max_respawns_per_hour) {
+                        // Check if this service is in a linked group
+                        if get_linked_services(&service_key).is_some() {
+                            // Queue for linked restart (will restart entire group)
+                            if !pending_linked_restarts.contains(&service_key) {
+                                pending_linked_restarts.push(service_key.clone());
+                            }
+                        } else {
+                            // Regular respawn for non-linked services
+                            info!("Respawning {}", service_key);
+                            let topology = service_key_to_service(&service_key)
+                                .and_then(|s| service_pipes.get(&s));
+                            respawn_service(state, config, topology);
+                        }
+                    } else {
+                        error!("{} has crashed too many times, not respawning", service_key);
                     }
                 }
             }
@@ -416,6 +594,7 @@ fn reap_children(
 
 fn send_heartbeat(service_key: &str, state: &mut ChildState) {
     use shared::ipc::poll_readable;
+    use std::io::ErrorKind;
     
     state.heartbeat_seq += 1;
     let ping = Message::Control(ControlMessage::Ping { seq: state.heartbeat_seq });
@@ -431,39 +610,86 @@ fn send_heartbeat(service_key: &str, state: &mut ChildState) {
     let fds = [state.channel.read_fd()];
     match poll_readable(&fds, timeout_ms) {
         Ok(ready_indices) if !ready_indices.is_empty() => {
-            // Data available, try to read the response
-            match state.channel.recv() {
-                Ok(Message::Control(ControlMessage::Pong { seq, stats })) => {
-                    if seq == state.heartbeat_seq {
-                        // Valid Pong received, reset missed count and store stats
-                        state.missed_heartbeats = 0;
-                        state.last_pong = Instant::now();
-                        
-                        // Log stats at DEBUG level
-                        debug!(
-                            "{}: pong received (latency: {:?}), uptime={}s, active_connections={}, pending={}",
-                            service_key,
-                            state.last_pong.elapsed(),
-                            stats.uptime_secs,
-                            stats.active_connections,
-                            stats.pending_requests
-                        );
-                        
-                        // Store stats for decision making
-                        state.last_stats = Some(stats);
-                    } else {
-                        warn!("{}: Pong seq mismatch (expected {}, got {})", 
-                              service_key, state.heartbeat_seq, seq);
-                        state.missed_heartbeats += 1;
+            // Data available - drain all messages and find the best pong
+            // This handles the case where pongs have accumulated in the buffer
+            let mut best_pong: Option<(u64, ServiceStats)> = None;
+            
+            loop {
+                match state.channel.try_recv() {
+                    Ok(Message::Control(ControlMessage::Pong { seq, stats })) => {
+                        // Keep track of the highest sequence pong we've seen
+                        match &best_pong {
+                            Some((best_seq, _)) if seq > *best_seq => {
+                                best_pong = Some((seq, stats));
+                            }
+                            None => {
+                                best_pong = Some((seq, stats));
+                            }
+                            _ => {
+                                // Ignore older pongs
+                            }
+                        }
+                    }
+                    Ok(_) => {
+                        // Other message types - skip them
+                        // (the service might be sending data to other components)
+                    }
+                    Err(shared::ipc::IpcError::Io(ref e)) if e.kind() == ErrorKind::WouldBlock => {
+                        // Buffer drained
+                        break;
+                    }
+                    Err(_) => {
+                        // Error reading - stop draining
+                        break;
                     }
                 }
-                Ok(_) => {
-                    // Received some other message, not a Pong
-                    // This is fine, the service might be sending other messages
-                    // Don't count as missed, but also don't reset
+            }
+            
+            // Evaluate the best pong we found
+            match best_pong {
+                Some((seq, stats)) if seq >= state.heartbeat_seq => {
+                    // Got a valid or recent pong - service is responsive
+                    state.missed_heartbeats = 0;
+                    state.last_pong = Instant::now();
+                    state.last_stats = Some(stats.clone());
+                    
+                    debug!(
+                        "{}: pong received (seq={}, expected={}), uptime={}s, active_connections={}, pending={}",
+                        service_key,
+                        seq,
+                        state.heartbeat_seq,
+                        stats.uptime_secs,
+                        stats.active_connections,
+                        stats.pending_requests
+                    );
                 }
-                Err(e) => {
-                    warn!("Failed to receive Pong from {}: {}", service_key, e);
+                Some((seq, stats)) => {
+                    // Got an older pong - service is responding but lagging
+                    // This is still better than no response at all
+                    // Only count as missed if we're more than 2 sequences behind
+                    let lag = state.heartbeat_seq - seq;
+                    if lag <= 2 {
+                        // Small lag is acceptable - reset missed count
+                        state.missed_heartbeats = 0;
+                        state.last_pong = Instant::now();
+                        state.last_stats = Some(stats.clone());
+                        debug!(
+                            "{}: pong received (seq={}, expected={}, lag={}), service is slightly behind",
+                            service_key, seq, state.heartbeat_seq, lag
+                        );
+                    } else {
+                        // Significant lag - count as partial miss
+                        debug!(
+                            "{}: pong seq lag too high (seq={}, expected={}, lag={})",
+                            service_key, seq, state.heartbeat_seq, lag
+                        );
+                        state.missed_heartbeats += 1;
+                        // Still update stats since we got some response
+                        state.last_stats = Some(stats);
+                    }
+                }
+                None => {
+                    // No pong found in buffer at all
                     state.missed_heartbeats += 1;
                 }
             }
@@ -523,7 +749,7 @@ fn should_force_restart(state: &ChildState, max_missed: u32) -> RestartDecision 
     RestartDecision::ForceNow
 }
 
-fn kill_and_respawn(state: &mut ChildState, config: &SupervisorConfig) {
+fn kill_and_respawn(state: &mut ChildState, config: &SupervisorConfig, topology_pipes: Option<&ServicePipes>) {
     let pid = Pid::from_raw(state.pid);
     
     // Send SIGTERM
@@ -545,10 +771,10 @@ fn kill_and_respawn(state: &mut ChildState, config: &SupervisorConfig) {
         }
     }
 
-    respawn_service(state, config);
+    respawn_service(state, config, topology_pipes);
 }
 
-fn respawn_service(state: &mut ChildState, config: &SupervisorConfig) {
+fn respawn_service(state: &mut ChildState, config: &SupervisorConfig, topology_pipes: Option<&ServicePipes>) {
     let uid = config.effective_uid(&state.service_key);
     let gid = config.effective_gid(&state.service_key);
     let workdir = config.effective_workdir(&state.service_key);
@@ -569,7 +795,7 @@ fn respawn_service(state: &mut ChildState, config: &SupervisorConfig) {
         }
     };
 
-    match spawn_child(&binary_path, uid, gid, workdir.as_deref(), child_channel) {
+    match spawn_child(&binary_path, uid, gid, workdir.as_deref(), child_channel, topology_pipes) {
         Ok(pid) => {
             info!("Respawned {} with pid {}", state.service_key, pid);
             state.pid = pid;
@@ -588,18 +814,196 @@ fn respawn_service(state: &mut ChildState, config: &SupervisorConfig) {
     }
 }
 
+/// Respawn all services in a linked group together.
+/// 
+/// When services share inter-process pipes (e.g., Web <-> ProxySsh),
+/// a crash of one service breaks the pipe. Both services must be
+/// restarted together with fresh pipes to re-establish communication.
+fn respawn_linked_group(
+    children: &mut HashMap<String, ChildState>,
+    config: &SupervisorConfig,
+    service_pipes: &HashMap<Service, ServicePipes>,
+    group: &[&str],
+) {
+    info!("Starting linked group restart for: {:?}", group);
+    
+    // Step 1: Kill any still-running services in the group
+    for &service_key in group {
+        if let Some(state) = children.get_mut(service_key) {
+            if state.pid > 0 {
+                info!("Killing {} (pid {}) for linked restart", service_key, state.pid);
+                let _ = nix::sys::signal::kill(
+                    nix::unistd::Pid::from_raw(state.pid),
+                    nix::sys::signal::Signal::SIGTERM
+                );
+                // Give it a moment to die gracefully
+                std::thread::sleep(Duration::from_millis(100));
+                // Force kill if still alive
+                let _ = nix::sys::signal::kill(
+                    nix::unistd::Pid::from_raw(state.pid),
+                    nix::sys::signal::Signal::SIGKILL
+                );
+                state.pid = 0;
+            }
+        }
+    }
+    
+    // Step 2: Wait for all services in the group to be reaped
+    std::thread::sleep(Duration::from_millis(200));
+    
+    // Step 3: Reap any remaining zombie processes from the group
+    loop {
+        match waitpid(Pid::from_raw(-1), Some(WaitPidFlag::WNOHANG)) {
+            Ok(WaitStatus::Exited(pid, _)) | Ok(WaitStatus::Signaled(pid, _, _)) => {
+                // Update state if this was one of our children
+                for (_, state) in children.iter_mut() {
+                    if state.pid == pid.as_raw() {
+                        state.pid = 0;
+                        break;
+                    }
+                }
+            }
+            Ok(WaitStatus::StillAlive) | Err(nix::errno::Errno::ECHILD) => break,
+            _ => {}
+        }
+    }
+    
+    // Step 4: Create new pipes for the linked services
+    // For Web <-> ProxySsh, we need fresh pipe pairs
+    let mut new_pipes: HashMap<(Service, Service), (IpcChannel, IpcChannel)> = HashMap::new();
+    
+    // Find which pipe connections exist between services in this group
+    for topology_entry in TOPOLOGY.iter() {
+        let from_key = service_to_key(topology_entry.from);
+        let to_key = service_to_key(topology_entry.to);
+        
+        if group.contains(&from_key) && group.contains(&to_key) {
+            // Create fresh pipes for this connection
+            match IpcChannel::pair() {
+                Ok((from_channel, to_channel)) => {
+                    info!("Created new pipe: {} -> {}", from_key, to_key);
+                    new_pipes.insert((topology_entry.from, topology_entry.to), (from_channel, to_channel));
+                }
+                Err(e) => {
+                    error!("Failed to create pipe {} -> {}: {}", from_key, to_key, e);
+                }
+            }
+        }
+    }
+    
+    // Step 5: Build new ServicePipes for each service in the group
+    let mut group_service_pipes: HashMap<Service, ServicePipes> = HashMap::new();
+    
+    // Initialize with existing pipes to supervisor/other services (from original service_pipes)
+    for &service_key in group {
+        if let Some(service) = service_key_to_service(service_key) {
+            let mut pipes = ServicePipes::default();
+            
+            // Copy existing pipes that are NOT between services in this group
+            if let Some(existing) = service_pipes.get(&service) {
+                for &(target, read_fd, write_fd) in &existing.outgoing {
+                    let target_key = service_to_key(target);
+                    if !group.contains(&target_key) {
+                        pipes.outgoing.push((target, read_fd, write_fd));
+                    }
+                }
+                for &(source, read_fd, write_fd) in &existing.incoming {
+                    let source_key = service_to_key(source);
+                    if !group.contains(&source_key) {
+                        pipes.incoming.push((source, read_fd, write_fd));
+                    }
+                }
+            }
+            
+            group_service_pipes.insert(service, pipes);
+        }
+    }
+    
+    // Add the new pipes between services in the group
+    for ((from, to), (from_channel, to_channel)) in &new_pipes {
+        if let Some(pipes) = group_service_pipes.get_mut(from) {
+            pipes.outgoing.push((*to, from_channel.read_fd(), from_channel.write_fd()));
+        }
+        if let Some(pipes) = group_service_pipes.get_mut(to) {
+            pipes.incoming.push((*from, to_channel.read_fd(), to_channel.write_fd()));
+        }
+    }
+    
+    // Step 6: Respawn each service in the group with their new pipes
+    for &service_key in group {
+        if let Some(state) = children.get_mut(service_key) {
+            let service = service_key_to_service(service_key);
+            let topology = service.and_then(|s| group_service_pipes.get(&s));
+            
+            let uid = config.effective_uid(&state.service_key);
+            let gid = config.effective_gid(&state.service_key);
+            let workdir = config.effective_workdir(&state.service_key);
+            let binary_path = match config.binary_path(&state.service_key) {
+                Some(p) => p,
+                None => {
+                    error!("Cannot respawn {}: no binary path", state.service_key);
+                    continue;
+                }
+            };
+
+            // Create new IPC channel for supervisor
+            let (supervisor_channel, child_channel) = match IpcChannel::pair() {
+                Ok((s, c)) => (s, c),
+                Err(e) => {
+                    error!("Failed to create IPC channel for {}: {}", service_key, e);
+                    continue;
+                }
+            };
+
+            match spawn_child(&binary_path, uid, gid, workdir.as_deref(), child_channel, topology) {
+                Ok(pid) => {
+                    info!("Respawned {} (linked group) with pid {}", service_key, pid);
+                    state.pid = pid;
+                    state.channel = supervisor_channel;
+                    state.missed_heartbeats = 0;
+                    state.respawn_count += 1;
+                    state.last_respawn = Instant::now();
+                    state.last_pong = Instant::now();
+                    state.last_stats = None;
+                    state.is_draining = false;
+                    state.drain_started = None;
+                }
+                Err(e) => {
+                    error!("Failed to respawn {} in linked group: {}", service_key, e);
+                }
+            }
+        }
+    }
+    
+    info!("Linked group restart completed for: {:?}", group);
+}
+
+/// Convert Service enum to service key string.
+fn service_to_key(service: Service) -> &'static str {
+    match service {
+        Service::Web => "web",
+        Service::Auth => "auth",
+        Service::Rbac => "rbac",
+        Service::Vault => "vault",
+        Service::Audit => "audit",
+        Service::ProxySsh => "proxy_ssh",
+        Service::ProxyRdp => "proxy_rdp",
+        Service::Supervisor => "supervisor",
+    }
+}
+
 /// Initiate drain on a service and wait for completion before restart.
 ///
 /// This sends a Drain message, waits for DrainComplete with pending_requests=0,
 /// then proceeds with the standard kill_and_respawn sequence.
-fn drain_and_restart(state: &mut ChildState, config: &SupervisorConfig) {
+fn drain_and_restart(state: &mut ChildState, config: &SupervisorConfig, topology_pipes: Option<&ServicePipes>) {
     use shared::ipc::poll_readable;
     
     // 1. Send Drain message
     let drain_msg = Message::Control(ControlMessage::Drain);
     if let Err(e) = state.channel.send(&drain_msg) {
         warn!("{}: failed to send Drain, proceeding with kill: {}", state.service_key, e);
-        kill_and_respawn(state, config);
+        kill_and_respawn(state, config, topology_pipes);
         return;
     }
     
@@ -655,7 +1059,7 @@ fn drain_and_restart(state: &mut ChildState, config: &SupervisorConfig) {
     let shutdown_msg = Message::Control(ControlMessage::Shutdown);
     let _ = state.channel.send(&shutdown_msg);
     
-    kill_and_respawn(state, config);
+    kill_and_respawn(state, config, topology_pipes);
 }
 
 /// Frontend services: drained in parallel (no dependencies between them)

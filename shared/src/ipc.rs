@@ -135,6 +135,63 @@ impl IpcChannel {
             bincode::serde::decode_from_slice(&data, bincode::config::standard())?;
         Ok(msg)
     }
+
+    /// Try to receive a message without blocking.
+    ///
+    /// Returns `Err(IpcError::Io)` with `WouldBlock` kind if no data is available.
+    /// The file descriptor must be in non-blocking mode for this to work correctly.
+    pub fn try_recv(&self) -> Result<Message> {
+        // Try to read length header
+        let mut len_bytes = [0u8; 4];
+        try_read_exact_fd(self.read_fd.as_raw_fd(), &mut len_bytes)?;
+
+        let len = u32::from_le_bytes(len_bytes) as usize;
+
+        if len > MAX_MESSAGE_SIZE {
+            return Err(IpcError::MessageTooLarge { size: len });
+        }
+
+        if len == 0 {
+            return Err(IpcError::InvalidHeader);
+        }
+
+        // Read message data (blocking now that we have the header)
+        let mut data = vec![0u8; len];
+        read_exact_fd(self.read_fd.as_raw_fd(), &mut data)?;
+
+        let (msg, _): (Message, _) =
+            bincode::serde::decode_from_slice(&data, bincode::config::standard())?;
+        Ok(msg)
+    }
+}
+
+/// Try to read exact number of bytes without blocking.
+/// Returns WouldBlock if no data is available.
+fn try_read_exact_fd(fd: RawFd, buf: &mut [u8]) -> Result<()> {
+    // SAFETY: We borrow the fd for the duration of this function.
+    let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+
+    let mut pos = 0;
+    while pos < buf.len() {
+        match read(borrowed, &mut buf[pos..]) {
+            Ok(0) => return Err(IpcError::ConnectionClosed),
+            Ok(n) => pos += n,
+            Err(nix::errno::Errno::EINTR) => continue,
+            Err(nix::errno::Errno::EAGAIN) => {
+                if pos == 0 {
+                    // No data available at all
+                    return Err(IpcError::Io(std::io::Error::new(
+                        std::io::ErrorKind::WouldBlock,
+                        "no data available",
+                    )));
+                }
+                // Partial read - continue with blocking reads
+                continue;
+            }
+            Err(e) => return Err(IpcError::Io(e.into())),
+        }
+    }
+    Ok(())
 }
 
 /// Write all bytes to a file descriptor.

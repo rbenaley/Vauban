@@ -99,6 +99,7 @@ impl TestApp {
             broadcast: broadcast.clone(),
             user_connections: user_connections.clone(),
             rate_limiter,
+            ssh_proxy: None, // No SSH proxy in tests
         };
 
         // Build router
@@ -425,6 +426,20 @@ fn build_test_router(state: AppState) -> Router {
         .route(
             "/accounts/apikeys/{uuid}/revoke",
             post(handlers::web::revoke_api_key),
+        )
+        // SSH connection endpoints
+        .route(
+            "/assets/{uuid}/connect",
+            post(handlers::web::connect_ssh),
+        )
+        .route(
+            "/sessions/terminal/{session_id}",
+            get(handlers::web::terminal_page),
+        )
+        // Terminal WebSocket
+        .route(
+            "/ws/terminal/{session_id}",
+            get(handlers::websocket::terminal_ws),
         )
         // Health check
         .route("/health", get(|| async { "OK" }))

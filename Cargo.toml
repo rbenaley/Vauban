@@ -39,7 +39,14 @@ nix = { version = "0.31", features = ["process", "signal", "poll", "fs", "user",
 # Configuration loading
 config = { version = "0.15", default-features = false, features = ["toml"] }
 
-# Tokio is used ONLY by vauban-web (not shared)
+# Async runtime - used by vauban-web and proxy services (vauban-proxy-ssh, vauban-proxy-rdp)
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "macros", "time"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+
+# SSH client (async, pure Rust) - used by vauban-proxy-ssh
+# Note: russh 0.57+ includes keys module directly (no separate russh-keys crate)
+russh = "0.57"
+async-trait = "0.1"
 
 [profile.release]
 opt-level = 3

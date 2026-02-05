@@ -417,3 +417,103 @@ async fn test_broadcast_channel_isolation() {
     let sessions_result = timeout(Duration::from_millis(100), sessions_rx.recv()).await;
     assert!(sessions_result.is_err()); // Timeout = no message received
 }
+
+// ==================== Terminal WebSocket Tests ====================
+
+/// Test terminal WebSocket endpoint exists.
+#[tokio::test]
+#[serial]
+async fn test_terminal_ws_endpoint_exists() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let admin = create_admin_user(&mut *conn, &app.auth_service, &unique_name("wsterminal")).await;
+    drop(conn);
+    {
+        let mut c = app.get_conn().await;
+        test_db::cleanup(&mut *c).await;
+    }
+
+    let response = app
+        .server
+        .get("/ws/terminal/test-session-id")
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::UPGRADE, "websocket")
+        .add_header(header::CONNECTION, "Upgrade")
+        .add_header(header::SEC_WEBSOCKET_KEY, "dGhlIHNhbXBsZSBub25jZQ==")
+        .add_header(header::SEC_WEBSOCKET_VERSION, "13")
+        .await;
+
+    let status = response.status_code().as_u16();
+    // Without SSH proxy, endpoint should fail gracefully or return upgrade error
+    assert!(
+        status == 101 || status == 400 || status == 426 || status == 500,
+        "Expected 101, 400, 426, or 500 (no SSH proxy), got {}",
+        status
+    );
+}
+
+/// Test terminal WebSocket requires authentication.
+#[tokio::test]
+#[serial]
+async fn test_terminal_ws_requires_auth() {
+    let app = TestApp::spawn().await;
+    {
+        let mut c = app.get_conn().await;
+        test_db::cleanup(&mut *c).await;
+    }
+
+    let response = app
+        .server
+        .get("/ws/terminal/test-session-id")
+        .add_header(header::UPGRADE, "websocket")
+        .add_header(header::CONNECTION, "Upgrade")
+        .add_header(header::SEC_WEBSOCKET_KEY, "dGhlIHNhbXBsZSBub25jZQ==")
+        .add_header(header::SEC_WEBSOCKET_VERSION, "13")
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 401 || status == 303 || status == 400 || status == 426,
+        "Expected 401, 303, 400, or 426, got {}",
+        status
+    );
+}
+
+/// Test terminal WebSocket with UUID session ID format.
+#[tokio::test]
+#[serial]
+async fn test_terminal_ws_uuid_session_id() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let admin = create_admin_user(
+        &mut *conn,
+        &app.auth_service,
+        &unique_name("wsterminaluuid"),
+    )
+    .await;
+    drop(conn);
+    {
+        let mut c = app.get_conn().await;
+        test_db::cleanup(&mut *c).await;
+    }
+
+    // Use a proper UUID format for session ID
+    let session_uuid = "550e8400-e29b-41d4-a716-446655440000";
+    let response = app
+        .server
+        .get(&format!("/ws/terminal/{}", session_uuid))
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::UPGRADE, "websocket")
+        .add_header(header::CONNECTION, "Upgrade")
+        .add_header(header::SEC_WEBSOCKET_KEY, "dGhlIHNhbXBsZSBub25jZQ==")
+        .add_header(header::SEC_WEBSOCKET_VERSION, "13")
+        .await;
+
+    let status = response.status_code().as_u16();
+    // Endpoint should exist and respond appropriately
+    assert!(
+        status == 101 || status == 400 || status == 426 || status == 500,
+        "Expected 101, 400, 426, or 500 (no SSH proxy), got {}",
+        status
+    );
+}

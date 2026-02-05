@@ -8,10 +8,27 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
+# Shared IPC and sandboxing utilities
 shared.workspace = true
+
+# Core dependencies
 libc.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 serde.workspace = true
+
+# Async runtime (exception to minimalist philosophy for proxy services)
+tokio.workspace = true
+tokio-util.workspace = true
+
+# SSH client (async, pure Rust)
+# Note: russh 0.57+ includes keys module directly
+russh.workspace = true
+async-trait.workspace = true
+
+[dev-dependencies]
+# Testing utilities
+tokio = { workspace = true, features = ["test-util"] }
+nix.workspace = true

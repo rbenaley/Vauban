@@ -20,6 +20,12 @@ pub struct AssetCreateForm {
     pub require_mfa: bool,
     pub require_justification: bool,
     pub csrf_token: String,
+    // SSH credentials
+    pub ssh_username: Option<String>,
+    pub ssh_auth_type: Option<String>,
+    pub ssh_password: Option<String>,
+    pub ssh_private_key: Option<String>,
+    pub ssh_passphrase: Option<String>,
 }
 
 #[derive(Template)]
@@ -62,6 +68,11 @@ mod tests {
             require_mfa: false,
             require_justification: false,
             csrf_token: "test_token".to_string(),
+            ssh_username: None,
+            ssh_auth_type: None,
+            ssh_password: None,
+            ssh_private_key: None,
+            ssh_passphrase: None,
         }
     }
 
