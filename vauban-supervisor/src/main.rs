@@ -1225,7 +1225,7 @@ mod tests {
 
     #[test]
     fn test_topology_count() {
-        assert_eq!(TOPOLOGY.len(), 11);
+        assert_eq!(TOPOLOGY.len(), 13);
     }
 
     #[test]
@@ -1235,8 +1235,8 @@ mod tests {
             .filter(|conn| conn.from == Service::Web)
             .collect();
         
-        // Web connects to: Auth, Rbac, Audit
-        assert_eq!(web_connections.len(), 3);
+        // Web connects to: Auth, Rbac, Audit, ProxySsh, ProxyRdp
+        assert_eq!(web_connections.len(), 5);
     }
 
     #[test]
@@ -1685,7 +1685,7 @@ mod tests {
             channel: supervisor_channel,
             last_pong: Instant::now(),
             missed_heartbeats: 0,
-            heartbeat_seq: 0,
+            heartbeat_seq: 10, // Start at 10, so after increment it's 11
             respawn_count: 0,
             last_respawn: Instant::now(),
             last_stats: None,
@@ -1693,13 +1693,13 @@ mod tests {
             drain_started: None,
         };
         
-        // Spawn thread to respond with wrong seq
+        // Spawn thread to respond with a seq that has lag > 2
         let service_thread = std::thread::spawn(move || {
             let msg = service_channel.recv().unwrap();
             if let Message::Control(ControlMessage::Ping { seq: _ }) = msg {
-                // Send Pong with WRONG seq
+                // Send Pong with OLD seq (lag = 11 - 5 = 6 > 2, counts as missed)
                 let stats = ServiceStats::default();
-                let pong = Message::Control(ControlMessage::Pong { seq: 999, stats });
+                let pong = Message::Control(ControlMessage::Pong { seq: 5, stats });
                 service_channel.send(&pong).unwrap();
             }
             service_channel
@@ -1708,8 +1708,8 @@ mod tests {
         send_heartbeat("bad_seq_service", &mut state);
         let _ = service_thread.join().unwrap();
         
-        // Seq mismatch should count as missed
-        assert_eq!(state.missed_heartbeats, 1, "Seq mismatch should count as missed heartbeat");
+        // Significant seq lag should count as missed
+        assert_eq!(state.missed_heartbeats, 1, "Significant seq lag should count as missed heartbeat");
     }
 
     #[test]

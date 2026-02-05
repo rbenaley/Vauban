@@ -59,11 +59,21 @@ impl IpcChannel {
     /// Create a pair of connected IPC channels.
     ///
     /// Returns (parent_channel, child_channel).
+    /// Both channels have their read file descriptors set to non-blocking mode
+    /// to support `try_recv()`.
     pub fn pair() -> Result<(Self, Self)> {
+        use nix::fcntl::{fcntl, FcntlArg, OFlag};
+
         // Create two pipes: one for each direction
         // nix::unistd::pipe() returns (read_fd, write_fd) as OwnedFd
         let (p2c_read, p2c_write) = pipe().map_err(|e| IpcError::Io(e.into()))?;
         let (c2p_read, c2p_write) = pipe().map_err(|e| IpcError::Io(e.into()))?;
+
+        // Set read file descriptors to non-blocking mode for try_recv() support
+        fcntl(&p2c_read, FcntlArg::F_SETFL(OFlag::O_NONBLOCK))
+            .map_err(|e| IpcError::Io(e.into()))?;
+        fcntl(&c2p_read, FcntlArg::F_SETFL(OFlag::O_NONBLOCK))
+            .map_err(|e| IpcError::Io(e.into()))?;
 
         // Parent reads from child_to_parent, writes to parent_to_child
         // Child reads from parent_to_child, writes to child_to_parent
@@ -212,17 +222,30 @@ fn write_all_fd(fd: RawFd, mut buf: &[u8]) -> Result<()> {
 }
 
 /// Read exact number of bytes from a file descriptor.
+/// Handles non-blocking FDs by waiting with poll when EAGAIN is returned.
 fn read_exact_fd(fd: RawFd, buf: &mut [u8]) -> Result<()> {
     // SAFETY: We borrow the fd for the duration of this function.
     // The caller ensures the fd is valid.
     let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
-    
+
     let mut pos = 0;
     while pos < buf.len() {
         match read(borrowed, &mut buf[pos..]) {
             Ok(0) => return Err(IpcError::ConnectionClosed),
             Ok(n) => pos += n,
             Err(nix::errno::Errno::EINTR) => continue,
+            Err(nix::errno::Errno::EAGAIN) => {
+                // Non-blocking FD with no data available - wait for data using poll
+                loop {
+                    let pollfd = PollFd::new(borrowed, PollFlags::POLLIN);
+                    match nix::poll::poll(&mut [pollfd], PollTimeout::NONE) {
+                        Ok(_) => break,
+                        Err(nix::errno::Errno::EINTR) => continue,
+                        Err(e) => return Err(IpcError::Io(e.into())),
+                    }
+                }
+                continue;
+            }
             Err(e) => return Err(IpcError::Io(e.into())),
         }
     }
