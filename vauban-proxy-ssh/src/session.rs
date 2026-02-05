@@ -5,8 +5,10 @@ use russh::client::{self, Handle};
 use russh::{Channel, ChannelId, ChannelMsg, Disconnect, Preferred};
 use russh::keys::decode_secret_key;
 use std::borrow::Cow;
+use std::os::unix::io::{FromRawFd, IntoRawFd, OwnedFd};
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::net::TcpStream;
 use tracing::{debug, info, warn};
 
 /// SSH credential types supported by the proxy.
@@ -26,7 +28,7 @@ pub enum SshCredential {
 }
 
 /// Configuration for creating a new SSH session.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct SessionConfig {
     /// Unique session identifier (UUID).
     pub session_id: String,
@@ -46,6 +48,10 @@ pub struct SessionConfig {
     pub terminal_rows: u16,
     /// SSH credential for authentication.
     pub credential: SshCredential,
+    /// Pre-established TCP connection from supervisor (for sandboxed operation).
+    /// When running in Capsicum sandbox, the proxy cannot open network connections.
+    /// The supervisor establishes the TCP connection and passes the FD via SCM_RIGHTS.
+    pub preconnected_fd: Option<OwnedFd>,
 }
 
 /// Active SSH session with bidirectional channel.
@@ -120,11 +126,30 @@ impl SshSession {
         // Create handler for SSH events
         let handler = SshHandler::new(config.session_id.clone());
 
-        // Connect to the SSH server
-        let addr = format!("{}:{}", config.host, config.port);
-        let mut session = client::connect(ssh_config, addr.clone(), handler)
-            .await
-            .map_err(|e| SessionError::ConnectionFailed(e.to_string()))?;
+        // Connect to the SSH server - use pre-established FD if provided (sandboxed mode)
+        // or open a new connection (non-sandboxed mode, e.g., development on macOS)
+        let mut session = if let Some(fd) = config.preconnected_fd {
+            // Sandboxed mode: use pre-established connection from supervisor
+            info!(session_id = %config.session_id, "Using pre-established connection from supervisor");
+            
+            // Convert OwnedFd to tokio TcpStream
+            // SAFETY: The FD comes from the supervisor via SCM_RIGHTS and is a valid TCP socket
+            let std_stream = unsafe { std::net::TcpStream::from_raw_fd(fd.into_raw_fd()) };
+            std_stream.set_nonblocking(true)
+                .map_err(|e| SessionError::ConnectionFailed(format!("Failed to set non-blocking: {}", e)))?;
+            let stream = TcpStream::from_std(std_stream)
+                .map_err(|e| SessionError::ConnectionFailed(format!("Failed to create tokio stream: {}", e)))?;
+            
+            client::connect_stream(ssh_config, stream, handler)
+                .await
+                .map_err(|e| SessionError::ConnectionFailed(e.to_string()))?
+        } else {
+            // Non-sandboxed mode: open connection directly (development/macOS)
+            let addr = format!("{}:{}", config.host, config.port);
+            client::connect(ssh_config, addr, handler)
+                .await
+                .map_err(|e| SessionError::ConnectionFailed(e.to_string()))?
+        };
 
         info!(session_id = %config.session_id, "TCP connection established");
 
@@ -422,29 +447,11 @@ mod tests {
             terminal_cols: 80,
             terminal_rows: 24,
             credential: SshCredential::Password("pass".to_string()),
+            preconnected_fd: None,
         };
         assert_eq!(config.session_id, "sess-123");
         assert_eq!(config.port, 22);
         assert_eq!(config.terminal_cols, 80);
-    }
-
-    #[test]
-    fn test_session_config_clone() {
-        let config = SessionConfig {
-            session_id: "sess-abc".to_string(),
-            user_id: "user-xyz".to_string(),
-            asset_id: "asset-123".to_string(),
-            host: "server.local".to_string(),
-            port: 2222,
-            username: "root".to_string(),
-            terminal_cols: 120,
-            terminal_rows: 40,
-            credential: SshCredential::Password("secret".to_string()),
-        };
-        let cloned = config.clone();
-        assert_eq!(config.session_id, cloned.session_id);
-        assert_eq!(config.host, cloned.host);
-        assert_eq!(config.port, cloned.port);
     }
 
     #[test]
@@ -459,6 +466,7 @@ mod tests {
             terminal_cols: 80,
             terminal_rows: 24,
             credential: SshCredential::Password("pass".to_string()),
+            preconnected_fd: None,
         };
         let debug = format!("{:?}", config);
         assert!(debug.contains("SessionConfig"));
@@ -478,6 +486,7 @@ mod tests {
                 terminal_cols: 80,
                 terminal_rows: 24,
                 credential: SshCredential::Password("pass".to_string()),
+                preconnected_fd: None,
             };
             assert_eq!(config.port, port);
         }
@@ -495,6 +504,7 @@ mod tests {
             terminal_cols: 200,
             terminal_rows: 50,
             credential: SshCredential::Password("pass".to_string()),
+            preconnected_fd: None,
         };
         assert_eq!(config.terminal_cols, 200);
         assert_eq!(config.terminal_rows, 50);

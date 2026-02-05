@@ -252,6 +252,50 @@ fn read_exact_fd(fd: RawFd, buf: &mut [u8]) -> Result<()> {
     Ok(())
 }
 
+/// Create a Unix socket pair suitable for passing file descriptors via SCM_RIGHTS.
+///
+/// Returns (parent_socket, child_socket) as OwnedFd.
+/// The parent socket is used by the supervisor to send FDs, the child socket
+/// is passed to the target service to receive FDs.
+///
+/// Unlike pipes, Unix sockets support ancillary data (SCM_RIGHTS) for FD passing.
+#[cfg(target_os = "freebsd")]
+pub fn socketpair_for_fd_passing() -> Result<(OwnedFd, OwnedFd)> {
+    use nix::fcntl::{fcntl, FcntlArg, FdFlag};
+    use nix::sys::socket::{socketpair, AddressFamily, SockFlag, SockType};
+
+    let (sock1, sock2) =
+        socketpair(AddressFamily::Unix, SockType::Stream, None, SockFlag::empty())
+            .map_err(|e| IpcError::Io(e.into()))?;
+
+    // Set close-on-exec flag for both sockets
+    fcntl(&sock1, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC)).map_err(|e| IpcError::Io(e.into()))?;
+    fcntl(&sock2, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC)).map_err(|e| IpcError::Io(e.into()))?;
+
+    Ok((sock1, sock2))
+}
+
+/// Create a Unix socket pair for FD passing (non-FreeBSD stub for development).
+///
+/// On non-FreeBSD platforms, this creates a socket pair but FD passing won't work.
+#[cfg(not(target_os = "freebsd"))]
+pub fn socketpair_for_fd_passing() -> Result<(OwnedFd, OwnedFd)> {
+    use nix::fcntl::{fcntl, FcntlArg, FdFlag};
+    use nix::sys::socket::{socketpair, AddressFamily, SockFlag, SockType};
+
+    tracing::warn!("socketpair_for_fd_passing: SCM_RIGHTS FD passing only works on FreeBSD");
+
+    let (sock1, sock2) =
+        socketpair(AddressFamily::Unix, SockType::Stream, None, SockFlag::empty())
+            .map_err(|e| IpcError::Io(e.into()))?;
+
+    // Set close-on-exec flag for both sockets
+    fcntl(&sock1, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC)).map_err(|e| IpcError::Io(e.into()))?;
+    fcntl(&sock2, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC)).map_err(|e| IpcError::Io(e.into()))?;
+
+    Ok((sock1, sock2))
+}
+
 /// Send a file descriptor over a Unix socket using SCM_RIGHTS.
 ///
 /// This is used to pass sockets between processes (e.g., for connection handoff).
@@ -365,6 +409,7 @@ pub fn poll_readable(fds: &[RawFd], timeout_ms: i32) -> Result<Vec<usize>> {
 mod tests {
     use super::*;
     use crate::messages::{ControlMessage, Message, ServiceStats};
+    use std::os::fd::AsRawFd;
 
     // ==================== IpcChannel Tests ====================
 
@@ -598,6 +643,18 @@ mod tests {
     #[test]
     fn test_max_message_size_constant() {
         assert_eq!(MAX_MESSAGE_SIZE, 16 * 1024);
+    }
+
+    #[test]
+    fn test_socketpair_for_fd_passing() {
+        let result = socketpair_for_fd_passing();
+        assert!(result.is_ok());
+        let (sock1, sock2) = result.unwrap();
+
+        // Both sockets should have valid FDs
+        assert!(sock1.as_raw_fd() >= 0);
+        assert!(sock2.as_raw_fd() >= 0);
+        assert_ne!(sock1.as_raw_fd(), sock2.as_raw_fd());
     }
 
     // ==================== Integration-style Tests ====================

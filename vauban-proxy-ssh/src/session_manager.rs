@@ -72,8 +72,12 @@ impl SessionManager {
 
         info!(session_id = %session_id, "Creating new SSH session");
 
-        // Connect to SSH server
-        let ssh_session = SshSession::connect(config.clone()).await?;
+        // Extract user_id and asset_id before moving config to SshSession::connect
+        let user_id = config.user_id.clone();
+        let asset_id = config.asset_id.clone();
+
+        // Connect to SSH server (consumes config because of OwnedFd)
+        let ssh_session = SshSession::connect(config).await?;
 
         // Create command channel for this session
         let (cmd_tx, cmd_rx) = mpsc::channel(32);
@@ -81,8 +85,8 @@ impl SessionManager {
         // Create session handle
         let handle = SessionHandle {
             tx: cmd_tx,
-            user_id: config.user_id.clone(),
-            asset_id: config.asset_id.clone(),
+            user_id,
+            asset_id,
             created_at: Instant::now(),
         };
 

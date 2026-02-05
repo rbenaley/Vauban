@@ -15,8 +15,10 @@ use config::SupervisorConfig;
 use nix::sys::signal::{kill, Signal};
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::{execv, fork, setgid, setuid, ForkResult, Gid, Pid, Uid};
-use shared::ipc::IpcChannel;
+use shared::ipc::{poll_readable, send_fd, IpcChannel, socketpair_for_fd_passing};
 use shared::messages::{ControlMessage, Message, Service, ServiceStats};
+use std::net::ToSocketAddrs;
+use std::os::unix::io::{AsRawFd, OwnedFd};
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::process::ExitCode;
@@ -45,6 +47,9 @@ struct ChildState {
     is_draining: bool,
     /// When drain was initiated for this service.
     drain_started: Option<Instant>,
+    /// Unix socket for passing file descriptors via SCM_RIGHTS (proxies only).
+    /// The supervisor uses this to send pre-established TCP connection FDs.
+    fd_passing_socket: Option<OwnedFd>,
 }
 
 /// Pipe connection topology.
@@ -60,6 +65,15 @@ struct ServicePipes {
     outgoing: Vec<(Service, i32, i32)>, // (target, read_fd, write_fd)
     /// Pipes where this service is the "to" side (receiver)  
     incoming: Vec<(Service, i32, i32)>, // (source, read_fd, write_fd)
+}
+
+/// Unix socket pairs for passing file descriptors via SCM_RIGHTS.
+/// Used by supervisor to pass TCP connection FDs to sandboxed proxy services.
+struct FdPassingSockets {
+    /// Supervisor's end of the socket pair (for sending FDs)
+    supervisor_socket: OwnedFd,
+    /// Child's end of the socket pair (passed to the service for receiving FDs)
+    child_socket_fd: i32,
 }
 
 /// Services that must be restarted together (they share inter-process pipes).
@@ -196,6 +210,31 @@ fn run_supervisor() -> Result<()> {
             .push((*from, to_channel.read_fd(), to_channel.write_fd()));
     }
 
+    // Create FD passing socket pairs for proxy services.
+    // These are used by the supervisor to send pre-established TCP connection FDs
+    // to sandboxed proxies that cannot open network connections themselves.
+    let mut fd_passing_sockets: HashMap<Service, FdPassingSockets> = HashMap::new();
+    
+    for proxy_service in [Service::ProxySsh, Service::ProxyRdp] {
+        match socketpair_for_fd_passing() {
+            Ok((supervisor_socket, child_socket)) => {
+                let child_fd = child_socket.as_raw_fd();
+                // We need to keep child_socket alive until after fork
+                // Store the raw fd and leak the OwnedFd to prevent close
+                std::mem::forget(child_socket);
+                
+                fd_passing_sockets.insert(proxy_service, FdPassingSockets {
+                    supervisor_socket,
+                    child_socket_fd: child_fd,
+                });
+                info!("Created FD passing socketpair for {:?}", proxy_service);
+            }
+            Err(e) => {
+                error!("Failed to create FD passing socketpair for {:?}: {}", proxy_service, e);
+            }
+        }
+    }
+
     // Spawn all child services in dependency order
     let mut children: HashMap<String, ChildState> = HashMap::new();
     
@@ -233,9 +272,18 @@ fn run_supervisor() -> Result<()> {
         let service = service_key_to_service(service_key);
         let topology_pipes = service.and_then(|s| service_pipes.get(&s));
         
-        match spawn_child(&binary_path, uid, gid, workdir.as_deref(), child_channel, topology_pipes) {
+        // Get FD passing socket for proxy services
+        let fd_passing_child_fd = service.and_then(|s| fd_passing_sockets.get(&s).map(|fps| fps.child_socket_fd));
+        
+        match spawn_child(&binary_path, uid, gid, workdir.as_deref(), child_channel, topology_pipes, fd_passing_child_fd) {
             Ok(pid) => {
                 info!("Started {} with pid {}", service_config.name, pid);
+                
+                // Extract the supervisor's FD passing socket for proxies
+                let fd_passing_socket = service.and_then(|s| {
+                    fd_passing_sockets.remove(&s).map(|fps| fps.supervisor_socket)
+                });
+                
                 children.insert(service_key.to_string(), ChildState {
                     pid,
                     service_key: service_key.to_string(),
@@ -248,6 +296,7 @@ fn run_supervisor() -> Result<()> {
                     last_stats: None,
                     is_draining: false,
                     drain_started: None,
+                    fd_passing_socket,
                 });
             }
             Err(e) => {
@@ -322,6 +371,7 @@ fn spawn_child(
     workdir: Option<&str>,
     channel: IpcChannel,
     topology_pipes: Option<&ServicePipes>,
+    fd_passing_socket: Option<i32>,
 ) -> Result<i32> {
     // Get raw FDs before fork (we'll pass them via env vars)
     let read_fd = channel.read_fd();
@@ -388,6 +438,11 @@ fn spawn_child(
                 for (name, value) in &topology_env_vars {
                     std::env::set_var(name, value);
                 }
+                
+                // Set FD passing socket for proxy services (used to receive TCP connections)
+                if let Some(fd) = fd_passing_socket {
+                    std::env::set_var("VAUBAN_FD_PASSING_SOCKET", fd.to_string());
+                }
             }
             
             // Exec the child binary
@@ -439,6 +494,9 @@ fn watchdog_loop(
                 respawn_linked_group(children, config, service_pipes, linked_group);
             }
         }
+
+        // Process incoming messages from services (TcpConnectRequest, etc.)
+        process_service_messages(children);
 
         // Send heartbeats periodically
         if last_heartbeat.elapsed() >= heartbeat_interval {
@@ -795,7 +853,24 @@ fn respawn_service(state: &mut ChildState, config: &SupervisorConfig, topology_p
         }
     };
 
-    match spawn_child(&binary_path, uid, gid, workdir.as_deref(), child_channel, topology_pipes) {
+    // Create new FD passing socketpair for proxy services
+    let (fd_passing_socket, fd_passing_child_fd) = if state.service_key == "proxy_ssh" || state.service_key == "proxy_rdp" {
+        match socketpair_for_fd_passing() {
+            Ok((supervisor_socket, child_socket)) => {
+                let child_fd = child_socket.as_raw_fd();
+                std::mem::forget(child_socket); // Prevent close until after fork
+                (Some(supervisor_socket), Some(child_fd))
+            }
+            Err(e) => {
+                error!("Failed to create FD passing socketpair for {}: {}", state.service_key, e);
+                (None, None)
+            }
+        }
+    } else {
+        (None, None)
+    };
+
+    match spawn_child(&binary_path, uid, gid, workdir.as_deref(), child_channel, topology_pipes, fd_passing_child_fd) {
         Ok(pid) => {
             info!("Respawned {} with pid {}", state.service_key, pid);
             state.pid = pid;
@@ -807,6 +882,7 @@ fn respawn_service(state: &mut ChildState, config: &SupervisorConfig, topology_p
             state.last_stats = None;
             state.is_draining = false;
             state.drain_started = None;
+            state.fd_passing_socket = fd_passing_socket;
         }
         Err(e) => {
             error!("Failed to respawn {}: {}", state.service_key, e);
@@ -955,7 +1031,24 @@ fn respawn_linked_group(
                 }
             };
 
-            match spawn_child(&binary_path, uid, gid, workdir.as_deref(), child_channel, topology) {
+            // Create new FD passing socketpair for proxy services
+            let (fd_passing_socket, fd_passing_child_fd) = if service_key == "proxy_ssh" || service_key == "proxy_rdp" {
+                match socketpair_for_fd_passing() {
+                    Ok((supervisor_socket, child_socket)) => {
+                        let child_fd = child_socket.as_raw_fd();
+                        std::mem::forget(child_socket); // Prevent close until after fork
+                        (Some(supervisor_socket), Some(child_fd))
+                    }
+                    Err(e) => {
+                        error!("Failed to create FD passing socketpair for {}: {}", service_key, e);
+                        (None, None)
+                    }
+                }
+            } else {
+                (None, None)
+            };
+
+            match spawn_child(&binary_path, uid, gid, workdir.as_deref(), child_channel, topology, fd_passing_child_fd) {
                 Ok(pid) => {
                     info!("Respawned {} (linked group) with pid {}", service_key, pid);
                     state.pid = pid;
@@ -967,6 +1060,7 @@ fn respawn_linked_group(
                     state.last_stats = None;
                     state.is_draining = false;
                     state.drain_started = None;
+                    state.fd_passing_socket = fd_passing_socket;
                 }
                 Err(e) => {
                     error!("Failed to respawn {} in linked group: {}", service_key, e);
@@ -989,6 +1083,257 @@ fn service_to_key(service: Service) -> &'static str {
         Service::ProxySsh => "proxy_ssh",
         Service::ProxyRdp => "proxy_rdp",
         Service::Supervisor => "supervisor",
+    }
+}
+
+/// Handle a TcpConnectRequest from vauban-web.
+///
+/// This function:
+/// 1. Performs DNS resolution on the target host
+/// 2. Establishes a TCP connection to the target
+/// 3. Sends the connected socket FD to the target proxy service via SCM_RIGHTS
+/// 4. Sends a TcpConnectResponse back to the requesting service (web)
+fn handle_tcp_connect_request(
+    request_id: u64,
+    session_id: String,
+    host: String,
+    port: u16,
+    target_service: Service,
+    requesting_channel: &IpcChannel,
+    children: &HashMap<String, ChildState>,
+) {
+    // Convert target service to service key
+    let target_key = match target_service {
+        Service::ProxySsh => "proxy_ssh",
+        Service::ProxyRdp => "proxy_rdp",
+        _ => {
+            warn!("TcpConnectRequest for unsupported target service: {:?}", target_service);
+            let response = Message::TcpConnectResponse {
+                request_id,
+                session_id,
+                success: false,
+                error: Some(format!("Unsupported target service: {:?}", target_service)),
+            };
+            let _ = requesting_channel.send(&response);
+            return;
+        }
+    };
+    
+    // Get the target service's FD passing socket
+    let target_state = match children.get(target_key) {
+        Some(state) => state,
+        None => {
+            error!("Target service {} not found for TcpConnectRequest", target_key);
+            let response = Message::TcpConnectResponse {
+                request_id,
+                session_id,
+                success: false,
+                error: Some(format!("Target service {} not running", target_key)),
+            };
+            let _ = requesting_channel.send(&response);
+            return;
+        }
+    };
+    
+    let fd_socket = match &target_state.fd_passing_socket {
+        Some(sock) => sock.as_raw_fd(),
+        None => {
+            error!("No FD passing socket for service {}", target_key);
+            let response = Message::TcpConnectResponse {
+                request_id,
+                session_id,
+                success: false,
+                error: Some("FD passing not available for target service".to_string()),
+            };
+            let _ = requesting_channel.send(&response);
+            return;
+        }
+    };
+    
+    // Step 1: DNS resolution
+    let addr_str = format!("{}:{}", host, port);
+    let socket_addr = match addr_str.to_socket_addrs() {
+        Ok(mut addrs) => match addrs.next() {
+            Some(addr) => addr,
+            None => {
+                warn!("DNS resolution failed for {}: no addresses returned", host);
+                let response = Message::TcpConnectResponse {
+                    request_id,
+                    session_id,
+                    success: false,
+                    error: Some(format!("DNS resolution failed for {}: no addresses", host)),
+                };
+                let _ = requesting_channel.send(&response);
+                return;
+            }
+        },
+        Err(e) => {
+            warn!("DNS resolution failed for {}: {}", host, e);
+            let response = Message::TcpConnectResponse {
+                request_id,
+                session_id,
+                success: false,
+                error: Some(format!("DNS resolution failed for {}: {}", host, e)),
+            };
+            let _ = requesting_channel.send(&response);
+            return;
+        }
+    };
+    
+    info!("DNS resolved {} -> {}", host, socket_addr);
+    
+    // Step 2: Establish TCP connection
+    let tcp_stream = match std::net::TcpStream::connect_timeout(
+        &socket_addr,
+        Duration::from_secs(10),
+    ) {
+        Ok(stream) => stream,
+        Err(e) => {
+            warn!("TCP connection to {} failed: {}", socket_addr, e);
+            let response = Message::TcpConnectResponse {
+                request_id,
+                session_id,
+                success: false,
+                error: Some(format!("Connection to {} failed: {}", socket_addr, e)),
+            };
+            let _ = requesting_channel.send(&response);
+            return;
+        }
+    };
+    
+    let tcp_fd = tcp_stream.as_raw_fd();
+    info!("TCP connection established to {} (fd={})", socket_addr, tcp_fd);
+    
+    // Step 3: Send the FD to the target proxy service via SCM_RIGHTS
+    // First, send a message to tell the proxy which session this FD belongs to
+    // We send the session_id through the regular IPC channel, then send the FD
+    let fd_info = Message::TcpConnectResponse {
+        request_id,
+        session_id: session_id.clone(),
+        success: true,
+        error: None,
+    };
+    
+    // Send to the proxy's regular channel to notify about incoming FD
+    if let Err(e) = target_state.channel.send(&fd_info) {
+        error!("Failed to notify proxy about FD: {}", e);
+        let response = Message::TcpConnectResponse {
+            request_id,
+            session_id,
+            success: false,
+            error: Some(format!("Failed to notify proxy: {}", e)),
+        };
+        let _ = requesting_channel.send(&response);
+        return;
+    }
+    
+    // Now send the FD via SCM_RIGHTS
+    if let Err(e) = send_fd(fd_socket, tcp_fd) {
+        error!("Failed to send FD to proxy: {}", e);
+        let response = Message::TcpConnectResponse {
+            request_id,
+            session_id,
+            success: false,
+            error: Some(format!("Failed to pass connection to proxy: {}", e)),
+        };
+        let _ = requesting_channel.send(&response);
+        return;
+    }
+    
+    info!("FD {} sent to {} for session {}", tcp_fd, target_key, session_id);
+    
+    // Step 4: Send success response back to web
+    let response = Message::TcpConnectResponse {
+        request_id,
+        session_id,
+        success: true,
+        error: None,
+    };
+    
+    if let Err(e) = requesting_channel.send(&response) {
+        error!("Failed to send TcpConnectResponse to web: {}", e);
+    }
+    
+    // Keep the TcpStream alive until after the FD has been sent
+    // The child will have its own copy of the FD after SCM_RIGHTS
+    drop(tcp_stream);
+}
+
+/// Poll all service channels and process incoming messages.
+///
+/// This handles TcpConnectRequest messages from vauban-web that need
+/// the supervisor to establish TCP connections on behalf of sandboxed proxies.
+fn process_service_messages(children: &HashMap<String, ChildState>) {
+    // Collect all read FDs from services
+    let service_fds: Vec<(String, i32)> = children
+        .iter()
+        .map(|(key, state)| (key.clone(), state.channel.read_fd()))
+        .collect();
+    
+    if service_fds.is_empty() {
+        return;
+    }
+    
+    let fds: Vec<i32> = service_fds.iter().map(|(_, fd)| *fd).collect();
+    
+    // Poll with a short timeout (10ms) to not block the main loop
+    match poll_readable(&fds, 10) {
+        Ok(ready_indices) => {
+            for idx in ready_indices {
+                if idx >= service_fds.len() {
+                    continue;
+                }
+                
+                let (service_key, _) = &service_fds[idx];
+                let state = match children.get(service_key) {
+                    Some(s) => s,
+                    None => continue,
+                };
+                
+                // Try to read a message
+                match state.channel.try_recv() {
+                    Ok(Message::TcpConnectRequest {
+                        request_id,
+                        session_id,
+                        host,
+                        port,
+                        target_service,
+                    }) => {
+                        info!(
+                            "Received TcpConnectRequest from {} for {}:{} -> {:?}",
+                            service_key, host, port, target_service
+                        );
+                        handle_tcp_connect_request(
+                            request_id,
+                            session_id,
+                            host,
+                            port,
+                            target_service,
+                            &state.channel,
+                            children,
+                        );
+                    }
+                    Ok(Message::Control(ControlMessage::Pong { .. })) => {
+                        // Pong messages are handled by send_heartbeat, skip here
+                    }
+                    Ok(msg) => {
+                        // Other message types - log and ignore
+                        debug!("Received unexpected message from {}: {:?}", service_key, msg);
+                    }
+                    Err(shared::ipc::IpcError::Io(ref e))
+                        if e.kind() == std::io::ErrorKind::WouldBlock =>
+                    {
+                        // No more messages
+                    }
+                    Err(e) => {
+                        debug!("Error reading from {}: {}", service_key, e);
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            debug!("Poll error in process_service_messages: {}", e);
+        }
     }
 }
 
@@ -1340,6 +1685,7 @@ mod tests {
             last_stats: None,
             is_draining: false,
             drain_started: None,
+            fd_passing_socket: None,
         };
         
         // First respawn should always be allowed
@@ -1360,6 +1706,7 @@ mod tests {
             last_stats: None,
             is_draining: false,
             drain_started: None,
+            fd_passing_socket: None,
         };
         
         // Under limit (5 < 10), should be allowed
@@ -1380,6 +1727,7 @@ mod tests {
             last_stats: None,
             is_draining: false,
             drain_started: None,
+            fd_passing_socket: None,
         };
         
         // At limit (10 >= 10), should NOT be allowed
@@ -1400,6 +1748,7 @@ mod tests {
             last_stats: None,
             is_draining: false,
             drain_started: None,
+            fd_passing_socket: None,
         };
         
         // Over limit (15 >= 10), should NOT be allowed
@@ -1425,6 +1774,7 @@ mod tests {
             last_stats: None,
             is_draining: false,
             drain_started: None,
+            fd_passing_socket: None,
         };
         
         // With max_missed = 3, and only 1 missed, should not restart
@@ -1445,6 +1795,7 @@ mod tests {
             last_stats: None, // No stats available
             is_draining: false,
             drain_started: None,
+            fd_passing_socket: None,
         };
         
         // Above threshold with no stats, should force restart
@@ -1471,6 +1822,7 @@ mod tests {
             }),
             is_draining: false,
             drain_started: None,
+            fd_passing_socket: None,
         };
         
         // Above threshold with no active work, should force restart
@@ -1497,6 +1849,7 @@ mod tests {
             }),
             is_draining: false,
             drain_started: None,
+            fd_passing_socket: None,
         };
         
         // Above threshold with active connections, should drain first
@@ -1526,6 +1879,7 @@ mod tests {
             }),
             is_draining: false,
             drain_started: None,
+            fd_passing_socket: None,
         };
         
         // Above threshold with pending requests, should drain first
@@ -1552,6 +1906,7 @@ mod tests {
             last_stats: None,
             is_draining: false,
             drain_started: None,
+            fd_passing_socket: None,
         };
         
         assert_eq!(state.pid, 12345);
@@ -1561,6 +1916,7 @@ mod tests {
         assert!(state.last_stats.is_none());
         assert!(!state.is_draining);
         assert!(state.drain_started.is_none());
+        assert!(state.fd_passing_socket.is_none());
     }
 
     // ==================== Integration-style Tests ====================
@@ -1615,6 +1971,7 @@ mod tests {
             last_stats: None,
             is_draining: false,
             drain_started: None,
+            fd_passing_socket: None,
         };
         
         // Spawn a thread to simulate the service responding to Ping
@@ -1664,6 +2021,7 @@ mod tests {
             last_stats: None,
             is_draining: false,
             drain_started: None,
+            fd_passing_socket: None,
         };
         
         // Send heartbeat - service won't respond, will timeout
@@ -1691,6 +2049,7 @@ mod tests {
             last_stats: None,
             is_draining: false,
             drain_started: None,
+            fd_passing_socket: None,
         };
         
         // Spawn thread to respond with a seq that has lag > 2
@@ -1728,6 +2087,7 @@ mod tests {
             last_stats: None,
             is_draining: false,
             drain_started: None,
+            fd_passing_socket: None,
         };
         
         // Spawn thread to respond correctly
@@ -1768,6 +2128,7 @@ mod tests {
             last_stats: None,
             is_draining: false,
             drain_started: None,
+            fd_passing_socket: None,
         };
         
         // One more miss should trigger restart
@@ -1798,6 +2159,7 @@ mod tests {
             last_stats: None,
             is_draining: false,
             drain_started: None,
+            fd_passing_socket: None,
         };
         
         // Expected stats from service
@@ -1960,6 +2322,7 @@ mod tests {
             last_stats: None,
             is_draining: false,
             drain_started: None,
+            fd_passing_socket: None,
         };
         
         // Initial drain state
@@ -1984,5 +2347,144 @@ mod tests {
         let decision = RestartDecision::DrainFirst { active: 10, pending: 5 };
         let cloned = decision.clone();
         assert_eq!(decision, cloned);
+    }
+
+    // ==================== TCP Connection Brokering Tests ====================
+
+    #[test]
+    fn test_tcp_connect_request_via_ipc() {
+        use shared::messages::Service;
+
+        // Create IPC channel pair
+        let (sender, receiver) = IpcChannel::pair().unwrap();
+
+        // Send TcpConnectRequest
+        let msg = Message::TcpConnectRequest {
+            request_id: 42,
+            session_id: "sess-123".to_string(),
+            host: "example.com".to_string(),
+            port: 22,
+            target_service: Service::ProxySsh,
+        };
+        sender.send(&msg).unwrap();
+
+        // Receive and verify
+        let received = receiver.recv().unwrap();
+        if let Message::TcpConnectRequest {
+            request_id,
+            session_id,
+            host,
+            port,
+            target_service,
+        } = received
+        {
+            assert_eq!(request_id, 42);
+            assert_eq!(session_id, "sess-123");
+            assert_eq!(host, "example.com");
+            assert_eq!(port, 22);
+            assert_eq!(target_service, Service::ProxySsh);
+        } else {
+            panic!("Expected TcpConnectRequest");
+        }
+    }
+
+    #[test]
+    fn test_tcp_connect_response_via_ipc_success() {
+        let (sender, receiver) = IpcChannel::pair().unwrap();
+
+        let msg = Message::TcpConnectResponse {
+            request_id: 42,
+            session_id: "sess-123".to_string(),
+            success: true,
+            error: None,
+        };
+        sender.send(&msg).unwrap();
+
+        let received = receiver.recv().unwrap();
+        if let Message::TcpConnectResponse {
+            request_id,
+            session_id,
+            success,
+            error,
+        } = received
+        {
+            assert_eq!(request_id, 42);
+            assert_eq!(session_id, "sess-123");
+            assert!(success);
+            assert!(error.is_none());
+        } else {
+            panic!("Expected TcpConnectResponse");
+        }
+    }
+
+    #[test]
+    fn test_tcp_connect_response_via_ipc_failure() {
+        let (sender, receiver) = IpcChannel::pair().unwrap();
+
+        let msg = Message::TcpConnectResponse {
+            request_id: 42,
+            session_id: "sess-123".to_string(),
+            success: false,
+            error: Some("Connection refused".to_string()),
+        };
+        sender.send(&msg).unwrap();
+
+        let received = receiver.recv().unwrap();
+        if let Message::TcpConnectResponse {
+            success, error, ..
+        } = received
+        {
+            assert!(!success);
+            assert_eq!(error, Some("Connection refused".to_string()));
+        } else {
+            panic!("Expected TcpConnectResponse");
+        }
+    }
+
+    #[cfg(target_os = "freebsd")]
+    #[test]
+    fn test_socketpair_for_fd_passing_creates_valid_pair() {
+        let result = socketpair_for_fd_passing();
+        assert!(result.is_ok(), "socketpair_for_fd_passing should succeed on FreeBSD");
+
+        let (sock1, sock2) = result.unwrap();
+        // Both sockets should have valid file descriptors
+        use std::os::unix::io::AsRawFd;
+        assert!(sock1.as_raw_fd() >= 0);
+        assert!(sock2.as_raw_fd() >= 0);
+        assert_ne!(sock1.as_raw_fd(), sock2.as_raw_fd());
+    }
+
+    #[test]
+    fn test_child_state_with_fd_passing_socket() {
+        let channel = IpcChannel::pair().unwrap().0;
+
+        // Test that fd_passing_socket field exists and can be None
+        let state_without_fd = ChildState {
+            pid: 12345,
+            service_key: "web".to_string(),
+            channel,
+            last_pong: Instant::now(),
+            missed_heartbeats: 0,
+            heartbeat_seq: 0,
+            respawn_count: 0,
+            last_respawn: Instant::now(),
+            last_stats: None,
+            is_draining: false,
+            drain_started: None,
+            fd_passing_socket: None,
+        };
+
+        assert!(state_without_fd.fd_passing_socket.is_none());
+    }
+
+    #[test]
+    fn test_service_to_env_suffix_proxy_services() {
+        use shared::messages::Service;
+
+        // Verify proxy services have correct env var suffixes
+        assert_eq!(service_to_env_suffix(Service::ProxySsh), "PROXY_SSH");
+        assert_eq!(service_to_env_suffix(Service::ProxyRdp), "PROXY_RDP");
+        assert_eq!(service_to_env_suffix(Service::Web), "WEB");
     }
 }

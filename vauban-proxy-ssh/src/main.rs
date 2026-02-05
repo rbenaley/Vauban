@@ -22,14 +22,15 @@ use ipc::AsyncIpcChannel;
 use session::{SessionConfig, SshCredential};
 use session_manager::SessionManager;
 use shared::capsicum;
-use shared::ipc::IpcChannel;
+use shared::ipc::{recv_fd, IpcChannel};
 use shared::messages::{ControlMessage, Message, ServiceStats};
-use std::os::unix::io::RawFd;
+use std::collections::HashMap;
+use std::os::unix::io::{OwnedFd, RawFd};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, warn};
 
 /// Service runtime state (shared across async tasks).
@@ -38,6 +39,19 @@ struct ServiceState {
     requests_processed: AtomicU64,
     requests_failed: AtomicU64,
     draining: AtomicBool,
+}
+
+/// Pending TCP connections received from supervisor via FD passing.
+/// Maps session_id -> pre-established TCP connection FD.
+type PendingConnections = Arc<Mutex<HashMap<String, OwnedFd>>>;
+
+/// FD passing socket for receiving TCP connections from supervisor.
+/// The supervisor establishes TCP connections and passes the FDs here via SCM_RIGHTS.
+struct FdPassingState {
+    /// Unix socket for receiving FDs from supervisor.
+    socket_fd: RawFd,
+    /// Pending connections waiting to be used by SSH sessions.
+    pending: PendingConnections,
 }
 
 impl Default for ServiceState {
@@ -121,12 +135,19 @@ async fn run_service() -> Result<()> {
         .parse()
         .context("Invalid VAUBAN_WEB_IPC_WRITE")?;
 
+    // Get FD passing socket for receiving TCP connections from supervisor
+    // This socket is used with SCM_RIGHTS to receive pre-established TCP connections
+    let fd_passing_socket: Option<RawFd> = std::env::var("VAUBAN_FD_PASSING_SOCKET")
+        .ok()
+        .and_then(|s| s.parse().ok());
+
     // SAFETY: We clear environment variables immediately after reading.
     unsafe {
         std::env::remove_var("VAUBAN_IPC_READ");
         std::env::remove_var("VAUBAN_IPC_WRITE");
         std::env::remove_var("VAUBAN_WEB_IPC_READ");
         std::env::remove_var("VAUBAN_WEB_IPC_WRITE");
+        std::env::remove_var("VAUBAN_FD_PASSING_SOCKET");
     }
 
     // Create IPC channels
@@ -135,6 +156,19 @@ async fn run_service() -> Result<()> {
     let web_channel = unsafe { IpcChannel::from_raw_fds(web_read_fd, web_write_fd) };
 
     info!("IPC channels established");
+
+    // Initialize FD passing state if socket is available
+    let fd_passing = fd_passing_socket.map(|fd| {
+        info!("FD passing socket available (fd={})", fd);
+        Arc::new(FdPassingState {
+            socket_fd: fd,
+            pending: Arc::new(Mutex::new(HashMap::new())),
+        })
+    });
+
+    if fd_passing.is_none() {
+        warn!("FD passing socket not configured - SSH connections may fail in sandbox mode");
+    }
 
     // Create async wrappers for IPC
     let supervisor_async = AsyncIpcChannel::new(supervisor_channel)
@@ -149,9 +183,19 @@ async fn run_service() -> Result<()> {
 
     info!("Resources opened, preparing to enter sandbox");
 
-    // Collect all IPC file descriptors for sandboxing
-    let ipc_fds = [supervisor_read_fd, supervisor_write_fd, web_read_fd, web_write_fd];
-    capsicum::setup_service_sandbox(&ipc_fds, None).context("Failed to setup sandbox")?;
+    // Collect IPC file descriptors for sandboxing (read/write pipes)
+    let ipc_fds = vec![supervisor_read_fd, supervisor_write_fd, web_read_fd, web_write_fd];
+
+    // FD passing socket needs different rights (receive-only for SCM_RIGHTS)
+    let fd_receiver_fds: Option<Vec<RawFd>> = fd_passing_socket.map(|fd| vec![fd]);
+
+    // Enter Capsicum sandbox with appropriate rights for each FD type
+    capsicum::setup_service_sandbox_extended(
+        &ipc_fds,
+        None, // No database connection
+        fd_receiver_fds.as_deref(),
+    )
+    .context("Failed to setup sandbox")?;
 
     info!("Entered Capsicum sandbox, starting main loop");
 
@@ -163,7 +207,7 @@ async fn run_service() -> Result<()> {
     let (web_tx, web_rx) = mpsc::channel::<Message>(256);
 
     // Run the main event loop
-    main_loop(supervisor_async, web_async, state, sessions, web_tx, web_rx).await
+    main_loop(supervisor_async, web_async, state, sessions, web_tx, web_rx, fd_passing).await
 }
 
 async fn main_loop(
@@ -173,6 +217,7 @@ async fn main_loop(
     sessions: Arc<SessionManager>,
     web_tx: mpsc::Sender<Message>,
     mut web_rx: mpsc::Receiver<Message>,
+    fd_passing: Option<Arc<FdPassingState>>,
 ) -> Result<()> {
     info!("Main event loop started");
 
@@ -180,13 +225,37 @@ async fn main_loop(
     // This allows session creation to run in the background without blocking heartbeats.
     let (response_tx, mut response_rx) = mpsc::unbounded_channel::<Message>();
 
+    // Get pending connections reference for passing to handlers
+    let pending_connections = fd_passing.as_ref().map(|fp| Arc::clone(&fp.pending));
+
     loop {
         tokio::select! {
-            // Handle supervisor messages (ping/pong, drain, shutdown)
+            // Handle supervisor messages (ping/pong, drain, shutdown, TcpConnectResponse)
             result = supervisor_channel.recv() => {
                 match result {
                     Ok(Message::Control(ctrl)) => {
                         handle_control_message(&supervisor_channel, &state, &sessions, ctrl).await?;
+                    }
+                    Ok(Message::TcpConnectResponse { session_id, success, error, .. }) => {
+                        // Supervisor is notifying us about an incoming FD
+                        if success {
+                            if let Some(ref fp) = fd_passing {
+                                // Receive the FD via SCM_RIGHTS
+                                match recv_fd(fp.socket_fd) {
+                                    Ok(fd) => {
+                                        info!(session_id = %session_id, fd = ?fd, "Received TCP connection FD from supervisor");
+                                        fp.pending.lock().await.insert(session_id, fd);
+                                    }
+                                    Err(e) => {
+                                        error!(session_id = %session_id, error = %e, "Failed to receive FD from supervisor");
+                                    }
+                                }
+                            } else {
+                                warn!(session_id = %session_id, "TcpConnectResponse received but FD passing not configured");
+                            }
+                        } else {
+                            warn!(session_id = %session_id, error = ?error, "TCP connection failed");
+                        }
                     }
                     Ok(msg) => {
                         debug!(?msg, "Received non-control message from supervisor");
@@ -212,6 +281,7 @@ async fn main_loop(
                             Arc::clone(&sessions),
                             web_tx.clone(),
                             msg,
+                            pending_connections.clone(),
                         ).await {
                             warn!(error = %e, "Error handling web message");
                             state.increment_failed();
@@ -288,6 +358,7 @@ async fn handle_web_message(
     sessions: Arc<SessionManager>,
     web_tx: mpsc::Sender<Message>,
     msg: Message,
+    pending_connections: Option<PendingConnections>,
 ) -> Result<()> {
     match msg {
         Message::SshSessionOpen {
@@ -366,6 +437,18 @@ async fn handle_web_message(
                 }
             };
 
+            // Check if we have a pre-established TCP connection for this session
+            // (provided by the supervisor via FD passing for sandboxed operation)
+            let preconnected_fd = if let Some(ref pending) = pending_connections {
+                pending.lock().await.remove(&session_id)
+            } else {
+                None
+            };
+
+            if preconnected_fd.is_some() {
+                info!(session_id = %session_id, "Using pre-established TCP connection from supervisor");
+            }
+
             // Create session configuration
             let config = SessionConfig {
                 session_id: session_id.clone(),
@@ -377,6 +460,7 @@ async fn handle_web_message(
                 terminal_cols,
                 terminal_rows,
                 credential,
+                preconnected_fd,
             };
 
             // Spawn session creation in a separate task to avoid blocking the main loop.

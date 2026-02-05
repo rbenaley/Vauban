@@ -222,6 +222,37 @@ pub enum Message {
         cols: u16,
         rows: u16,
     },
+
+    // ========== TCP Connection Brokering (Web -> Supervisor -> ProxySsh) ==========
+    /// Request supervisor to establish a TCP connection on behalf of the sandboxed proxy.
+    ///
+    /// The supervisor performs DNS resolution and TCP connect, then passes the
+    /// connected socket FD to the proxy via SCM_RIGHTS over a Unix socket pair.
+    /// This allows sandboxed processes (Capsicum) to receive pre-established connections
+    /// without requiring network access.
+    TcpConnectRequest {
+        request_id: u64,
+        /// Session ID to correlate the FD with subsequent SshSessionOpen.
+        session_id: String,
+        /// Target hostname (DNS resolution performed by supervisor).
+        host: String,
+        /// Target port.
+        port: u16,
+        /// Target service that will receive the FD (e.g., Service::ProxySsh).
+        target_service: Service,
+    },
+
+    /// Response from supervisor after establishing (or failing) TCP connection.
+    ///
+    /// If success is true, the FD has been sent to the target service via SCM_RIGHTS.
+    /// The target service should have already received the FD before this message arrives.
+    TcpConnectResponse {
+        request_id: u64,
+        session_id: String,
+        success: bool,
+        /// Error message if connection failed (DNS resolution, connection refused, etc.).
+        error: Option<String>,
+    },
 }
 
 impl Message {
@@ -239,7 +270,9 @@ impl Message {
             | Message::VaultGetCredential { request_id, .. }
             | Message::VaultCredentialResponse { request_id, .. }
             | Message::SshSessionOpen { request_id, .. }
-            | Message::SshSessionOpened { request_id, .. } => Some(*request_id),
+            | Message::SshSessionOpened { request_id, .. }
+            | Message::TcpConnectRequest { request_id, .. }
+            | Message::TcpConnectResponse { request_id, .. } => Some(*request_id),
             _ => None,
         }
     }
@@ -866,6 +899,128 @@ mod tests {
             let deserialized: Message = deserialize(&serialized);
             // Just verify it doesn't panic
             let _ = deserialized.request_id();
+        }
+    }
+
+    // ==================== TCP Connection Brokering Tests ====================
+
+    #[test]
+    fn test_message_tcp_connect_request() {
+        let msg = Message::TcpConnectRequest {
+            request_id: 600,
+            session_id: "sess-tcp-123".to_string(),
+            host: "example.com".to_string(),
+            port: 22,
+            target_service: Service::ProxySsh,
+        };
+        assert_eq!(msg.request_id(), Some(600));
+
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::TcpConnectRequest {
+            request_id,
+            session_id,
+            host,
+            port,
+            target_service,
+        } = deserialized
+        {
+            assert_eq!(request_id, 600);
+            assert_eq!(session_id, "sess-tcp-123");
+            assert_eq!(host, "example.com");
+            assert_eq!(port, 22);
+            assert_eq!(target_service, Service::ProxySsh);
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_message_tcp_connect_response_success() {
+        let msg = Message::TcpConnectResponse {
+            request_id: 600,
+            session_id: "sess-tcp-123".to_string(),
+            success: true,
+            error: None,
+        };
+        assert_eq!(msg.request_id(), Some(600));
+
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::TcpConnectResponse {
+            request_id,
+            success,
+            error,
+            ..
+        } = deserialized
+        {
+            assert_eq!(request_id, 600);
+            assert!(success);
+            assert!(error.is_none());
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_message_tcp_connect_response_failure() {
+        let msg = Message::TcpConnectResponse {
+            request_id: 601,
+            session_id: "sess-tcp-456".to_string(),
+            success: false,
+            error: Some("DNS resolution failed: unknown host".to_string()),
+        };
+        assert_eq!(msg.request_id(), Some(601));
+
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::TcpConnectResponse {
+            success, error, ..
+        } = deserialized
+        {
+            assert!(!success);
+            assert_eq!(error, Some("DNS resolution failed: unknown host".to_string()));
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_tcp_connect_messages_serialization_roundtrip() {
+        let messages: Vec<Message> = vec![
+            Message::TcpConnectRequest {
+                request_id: 1,
+                session_id: "s1".to_string(),
+                host: "192.168.1.100".to_string(),
+                port: 22,
+                target_service: Service::ProxySsh,
+            },
+            Message::TcpConnectRequest {
+                request_id: 2,
+                session_id: "s2".to_string(),
+                host: "rdp-server.internal".to_string(),
+                port: 3389,
+                target_service: Service::ProxyRdp,
+            },
+            Message::TcpConnectResponse {
+                request_id: 1,
+                session_id: "s1".to_string(),
+                success: true,
+                error: None,
+            },
+            Message::TcpConnectResponse {
+                request_id: 2,
+                session_id: "s2".to_string(),
+                success: false,
+                error: Some("Connection refused".to_string()),
+            },
+        ];
+
+        for msg in messages {
+            let serialized = serialize(&msg);
+            let deserialized: Message = deserialize(&serialized);
+            // Verify request_id extraction works
+            assert!(deserialized.request_id().is_some());
         }
     }
 }

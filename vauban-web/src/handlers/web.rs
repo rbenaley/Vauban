@@ -6979,6 +6979,64 @@ pub async fn connect_ssh(
         passphrase,
     };
 
+    // If supervisor is available (sandboxed mode), request TCP connection brokering.
+    // The supervisor performs DNS resolution and TCP connect, then passes the FD
+    // to the SSH proxy via SCM_RIGHTS. This enables Capsicum sandboxed operation.
+    if let Some(ref supervisor) = state.supervisor {
+        tracing::debug!(
+            session_id = %session_id,
+            host = %asset.hostname,
+            port = asset.port,
+            "Requesting TCP connection from supervisor (sandboxed mode)"
+        );
+
+        match supervisor
+            .request_tcp_connect(
+                &session_id,
+                &asset.hostname,
+                asset.port as u16,
+                shared::messages::Service::ProxySsh,
+            )
+            .await
+        {
+            Ok(result) if result.success => {
+                tracing::debug!(
+                    session_id = %session_id,
+                    "TCP connection established by supervisor"
+                );
+            }
+            Ok(result) => {
+                let msg = result
+                    .error
+                    .unwrap_or_else(|| "Failed to establish TCP connection".to_string());
+                tracing::error!(session_id = %session_id, error = %msg, "TCP connect failed");
+                if is_htmx {
+                    return htmx_error_response(&msg);
+                }
+                return Json(ConnectSshResponse {
+                    success: false,
+                    session_id: None,
+                    redirect_url: None,
+                    error: Some(msg),
+                })
+                .into_response();
+            }
+            Err(e) => {
+                tracing::error!(session_id = %session_id, error = %e, "TCP connect request failed");
+                if is_htmx {
+                    return htmx_error_response(&e);
+                }
+                return Json(ConnectSshResponse {
+                    success: false,
+                    session_id: None,
+                    redirect_url: None,
+                    error: Some(e),
+                })
+                .into_response();
+            }
+        }
+    }
+
     // Send request to SSH proxy
     match proxy_client.open_session(request).await {
         Ok(response) => {

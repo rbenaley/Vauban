@@ -151,6 +151,21 @@ impl CapRights {
             ..Default::default()
         }
     }
+
+    /// Create rights for a Unix socket used to receive file descriptors via SCM_RIGHTS.
+    ///
+    /// This socket is used by sandboxed processes to receive pre-established
+    /// connections from the supervisor. Rights are read-only since we only
+    /// receive data and file descriptors through this socket.
+    pub fn fd_receiver_socket() -> Self {
+        Self {
+            read: true,    // Required for recvmsg (receives data and SCM_RIGHTS)
+            event: true,   // Required for poll/kqueue (async I/O)
+            fstat: true,   // Required for status checks
+            getsockopt: true, // May be needed for socket options
+            ..Default::default()
+        }
+    }
 }
 
 /// Enter capability mode (point of no return).
@@ -277,6 +292,23 @@ pub fn limit_fd_rights(_fd: RawFd, _rights: &CapRights) -> Result<()> {
 ///
 /// Call this after opening all required resources but before the main loop.
 pub fn setup_service_sandbox(ipc_fds: &[RawFd], db_fd: Option<RawFd>) -> Result<()> {
+    setup_service_sandbox_extended(ipc_fds, db_fd, None)
+}
+
+/// Extended sandbox setup with support for FD receiver sockets.
+///
+/// This function handles the additional case of Unix sockets used to receive
+/// file descriptors via SCM_RIGHTS (for Capsicum sandboxing support).
+///
+/// # Arguments
+/// * `ipc_fds` - Standard IPC pipe file descriptors (read/write)
+/// * `db_fd` - Optional database connection file descriptor
+/// * `fd_receiver_fds` - Optional FDs for receiving file descriptors via SCM_RIGHTS
+pub fn setup_service_sandbox_extended(
+    ipc_fds: &[RawFd],
+    db_fd: Option<RawFd>,
+    fd_receiver_fds: Option<&[RawFd]>,
+) -> Result<()> {
     // Limit IPC pipe rights
     for &fd in ipc_fds {
         limit_fd_rights(fd, &CapRights::read_write())?;
@@ -285,6 +317,13 @@ pub fn setup_service_sandbox(ipc_fds: &[RawFd], db_fd: Option<RawFd>) -> Result<
     // Limit database socket rights if present
     if let Some(fd) = db_fd {
         limit_fd_rights(fd, &CapRights::connected_socket())?;
+    }
+
+    // Limit FD receiver socket rights if present
+    if let Some(fds) = fd_receiver_fds {
+        for &fd in fds {
+            limit_fd_rights(fd, &CapRights::fd_receiver_socket())?;
+        }
     }
 
     // Enter capability mode
@@ -525,5 +564,33 @@ mod tests {
         assert!(!rights.listen);
         assert!(!rights.bind);
         assert!(!rights.connect);
+    }
+
+    #[test]
+    fn test_cap_rights_fd_receiver_socket() {
+        let rights = CapRights::fd_receiver_socket();
+        // Should have minimal read-only rights for receiving FDs via SCM_RIGHTS
+        assert!(rights.read);
+        assert!(rights.event);
+        assert!(rights.fstat);
+        assert!(rights.getsockopt);
+        // Should NOT have write or connection rights
+        assert!(!rights.write);
+        assert!(!rights.connect);
+        assert!(!rights.accept);
+        assert!(!rights.listen);
+        assert!(!rights.bind);
+    }
+
+    #[test]
+    fn test_setup_service_sandbox_extended_with_fd_receiver() {
+        let (ch1, _) = crate::ipc::IpcChannel::pair().unwrap();
+        let (ch2, _) = crate::ipc::IpcChannel::pair().unwrap();
+
+        let ipc_fds = [ch1.read_fd(), ch1.write_fd()];
+        let fd_receiver_fds = [ch2.read_fd()];
+
+        let result = setup_service_sandbox_extended(&ipc_fds, None, Some(&fd_receiver_fds));
+        assert!(result.is_ok());
     }
 }

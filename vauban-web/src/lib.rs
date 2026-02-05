@@ -54,6 +54,10 @@ pub struct AppState {
     /// SSH proxy client for IPC with vauban-proxy-ssh.
     /// None if proxy is not available (development mode without supervisor).
     pub ssh_proxy: Option<Arc<ProxySshClient>>,
+    /// Supervisor client for IPC with vauban-supervisor.
+    /// Used for TCP connection brokering (Capsicum sandbox support).
+    /// None if not running under supervisor (development mode).
+    pub supervisor: Option<Arc<ipc::SupervisorClient>>,
 }
 
 #[cfg(test)]

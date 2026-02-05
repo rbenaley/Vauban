@@ -1,7 +1,7 @@
 # Vauban Privilege Separation Architecture
 
 **Version:** 1.1  
-**Date:** 4 February 2026  
+**Date:** 5 February 2026  
 **Author:** Richard Ben Aleya
 
 ---
@@ -437,8 +437,182 @@ pub fn get_connection_or_exit(pool: &DbPool) -> DbConnection {
 | `vauban-rbac` | Yes | IPC only |
 | `vauban-vault` | Yes | IPC + HSM |
 | `vauban-audit` | Yes | IPC + audit storage |
-| `vauban-proxy-ssh` | Yes | IPC + pre-bound socket |
-| `vauban-proxy-rdp` | Yes | IPC + pre-bound socket |
+| `vauban-proxy-ssh` | Yes | IPC + pre-established connections via FD passing |
+| `vauban-proxy-rdp` | Yes | IPC + pre-established connections via FD passing |
+
+### 5.6 TCP Connection Brokering for Sandboxed Proxies
+
+#### 5.6.1 The Problem
+
+After entering Capsicum capability mode, sandboxed processes cannot:
+
+1. **Perform DNS resolution** - Requires access to `/etc/resolv.conf` and DNS servers
+2. **Open new TCP connections** - Requires the `connect()` system call on new sockets
+
+This creates a challenge for proxy services (`vauban-proxy-ssh`, `vauban-proxy-rdp`) that need to connect to target hosts on demand.
+
+#### 5.6.2 The Solution: Supervisor-Brokered Connections
+
+The supervisor acts as a **connection broker** for sandboxed proxies:
+
+1. The supervisor remains outside the sandbox (never calls `cap_enter()`)
+2. Proxies request TCP connections via IPC messages
+3. The supervisor performs DNS resolution and TCP connect
+4. The connected socket is passed to the proxy via **SCM_RIGHTS** over a Unix socket pair
+
+This approach maintains the OpenSSH-style privilege separation model: sandboxed processes handle protocol logic while privileged operations (network access) remain in the supervisor.
+
+#### 5.6.3 Architecture Diagram
+
+```mermaid
+flowchart TB
+    subgraph supervisor [vauban-supervisor - NOT sandboxed]
+        S["Process Manager<br/>DNS Resolution<br/>TCP Connection Broker"]
+    end
+
+    subgraph web [vauban-web - Sandboxed]
+        W["HTTPS Server<br/>WebSocket Handler"]
+    end
+
+    subgraph proxy [vauban-proxy-ssh - Sandboxed]
+        P["SSH Protocol<br/>Session Management"]
+    end
+
+    subgraph target [Target Host]
+        T["SSH Server"]
+    end
+
+    W -->|"1. TcpConnectRequest"| S
+    S -->|"2. DNS + TCP connect"| T
+    S -->|"3. Send FD via SCM_RIGHTS"| P
+    S -->|"4. TcpConnectResponse"| W
+    W -->|"5. SshSessionOpen"| P
+    P <-->|"6. SSH Protocol"| T
+```
+
+#### 5.6.4 File Descriptor Passing with SCM_RIGHTS
+
+Unix sockets support passing file descriptors between processes using the `SCM_RIGHTS` control message type. This mechanism allows the supervisor to:
+
+1. Create a TCP connection to the target host
+2. Send the connected socket's file descriptor to the proxy
+3. The proxy receives a fully functional TCP connection without ever calling `connect()`
+
+```mermaid
+sequenceDiagram
+    participant W as vauban-web
+    participant S as vauban-supervisor
+    participant P as vauban-proxy-ssh
+    participant T as Target Host
+
+    Note over S,P: At startup, supervisor creates<br/>Unix socketpair for FD passing
+
+    W->>S: TcpConnectRequest(session_id, host, port)
+    S->>S: DNS resolution: host -> IP
+    S->>T: TCP connect(IP:port)
+    T->>S: Connection established
+    
+    Note over S,P: SCM_RIGHTS over Unix socketpair
+    S->>P: send_fd(connected_socket)
+    P->>P: recv_fd() -> OwnedFd
+    P->>P: Store FD in pending_connections[session_id]
+    
+    S->>W: TcpConnectResponse(success=true)
+    W->>P: SshSessionOpen(session_id, ...)
+    
+    Note over P: Retrieve pre-connected FD
+    P->>P: pending_connections.remove(session_id)
+    P->>T: SSH handshake over pre-connected socket
+```
+
+#### 5.6.5 Unix Socketpair for FD Passing
+
+Standard Unix pipes do not support `SCM_RIGHTS`. A dedicated Unix socket pair is created for file descriptor passing:
+
+```rust
+// Create socketpair at service spawn time
+let (supervisor_socket, proxy_socket) = socketpair(
+    AddressFamily::Unix,
+    SockType::Stream,
+    None,
+    SockFlag::empty()
+)?;
+
+// Pass proxy_socket to the child via environment variable
+env::set_var("VAUBAN_FD_PASSING_SOCKET", proxy_socket.as_raw_fd().to_string());
+
+// Supervisor keeps supervisor_socket for sending FDs
+fd_passing_sockets.insert(Service::ProxySsh, supervisor_socket);
+```
+
+#### 5.6.6 Message Types
+
+```rust
+// Request supervisor to establish a TCP connection
+TcpConnectRequest {
+    request_id: u64,
+    session_id: String,    // Correlates FD with subsequent SshSessionOpen
+    host: String,          // Hostname (DNS resolved by supervisor)
+    port: u16,
+    target_service: Service,  // ProxySsh or ProxyRdp
+}
+
+// Response after connection attempt
+TcpConnectResponse {
+    request_id: u64,
+    session_id: String,
+    success: bool,
+    error: Option<String>,  // DNS failure, connection refused, etc.
+}
+```
+
+#### 5.6.7 Capsicum Rights for FD Receiver Socket
+
+The Unix socket used to receive file descriptors has minimal capabilities:
+
+| Capability | Purpose |
+|------------|---------|
+| `CAP_READ` | Receive data and `SCM_RIGHTS` messages |
+| `CAP_EVENT` | Poll/kqueue for async I/O |
+| `CAP_FSTAT` | Socket status checks |
+| `CAP_GETSOCKOPT` | Socket option queries |
+
+The socket does **not** have `CAP_WRITE`, `CAP_CONNECT`, or `CAP_ACCEPT` since it only receives.
+
+#### 5.6.8 Development Mode (macOS/Linux)
+
+On platforms without Capsicum, proxies can still open connections directly:
+
+```rust
+let session = if let Some(fd) = config.preconnected_fd {
+    // Sandboxed mode: use pre-established connection
+    let stream = TcpStream::from_std(unsafe { 
+        std::net::TcpStream::from_raw_fd(fd.into_raw_fd()) 
+    })?;
+    client::connect_stream(ssh_config, stream, handler).await?
+} else {
+    // Development mode: connect directly
+    client::connect(ssh_config, addr, handler).await?
+};
+```
+
+#### 5.6.9 Error Handling
+
+| Error Condition | Handling |
+|----------------|----------|
+| DNS resolution failure | Return error in `TcpConnectResponse` |
+| Connection refused | Return error in `TcpConnectResponse` |
+| Connection timeout | Return error in `TcpConnectResponse` |
+| FD passing failure | Log error, return failure in response |
+| Session ID mismatch | Log warning, ignore orphaned FD |
+
+#### 5.6.10 Security Benefits
+
+1. **Complete Network Isolation**: Sandboxed proxies have zero network capabilities
+2. **Controlled DNS**: Only supervisor can resolve hostnames (prevents DNS-based attacks)
+3. **Connection Validation**: Supervisor can validate target hosts before connecting
+4. **Audit Trail**: All connection requests pass through supervisor (loggable)
+5. **Rate Limiting**: Supervisor can limit connection attempts per session/user
 
 ---
 
@@ -923,10 +1097,13 @@ sequenceDiagram
 
 ### B.2 SSH Session Flow (Web Terminal)
 
+This diagram shows the complete flow including TCP connection brokering for sandboxed proxies:
+
 ```mermaid
 sequenceDiagram
     participant U as User Browser
     participant W as vauban-web
+    participant S as vauban-supervisor
     participant P as vauban-proxy-ssh
     participant R as vauban-rbac
     participant V as vauban-vault
@@ -934,12 +1111,23 @@ sequenceDiagram
     participant T as Target Server
 
     U->>W: Click "Connect" on SSH asset
+    
+    Note over W,S: TCP Connection Brokering (Capsicum support)
+    W->>S: TcpConnectRequest(session_id, host, port)
+    S->>S: DNS Resolution
+    S->>T: TCP connect
+    T->>S: Connection established
+    S->>P: send_fd(connected_socket) via SCM_RIGHTS
+    S->>W: TcpConnectResponse(success)
+    
+    Note over W,P: SSH Session Setup
     W->>P: SshSessionOpen (via IPC pipe)
+    P->>P: Retrieve pre-connected FD for session_id
     P->>R: RbacCheck (user, target, ssh)
     R->>P: RbacResponse (allowed)
     P->>V: VaultGetCredential (target)
     V->>P: VaultCredentialResponse (SSH key/password)
-    P->>T: SSH Connect with credentials
+    P->>T: SSH Handshake (over pre-connected socket)
     P->>Au: AuditEvent (SessionStart)
     P->>W: SshSessionOpened (success)
     W->>U: Redirect to /sessions/terminal/{id}
