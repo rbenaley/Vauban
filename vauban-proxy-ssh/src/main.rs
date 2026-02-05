@@ -54,6 +54,43 @@ struct FdPassingState {
     pending: PendingConnections,
 }
 
+/// Receive a file descriptor with retry and async polling.
+///
+/// The FD and IPC notification travel on separate channels, so there's a race condition.
+/// This function polls the socket and retries until the FD arrives or timeout.
+async fn receive_fd_with_retry(
+    socket_fd: RawFd,
+    max_retries: u32,
+    delay_ms: u64,
+) -> Result<OwnedFd, shared::ipc::IpcError> {
+    use shared::ipc::poll_readable;
+
+    for attempt in 0..max_retries {
+        // Check if socket has data available
+        match poll_readable(&[socket_fd], 0) {
+            Ok(ready) if !ready.is_empty() => {
+                // Socket is readable, try to receive
+                return recv_fd(socket_fd);
+            }
+            Ok(_) => {
+                // Not ready yet, wait and retry
+                if attempt < max_retries - 1 {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+                }
+            }
+            Err(e) => {
+                warn!(attempt, error = %e, "poll_readable failed");
+                if attempt < max_retries - 1 {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+                }
+            }
+        }
+    }
+
+    // Final attempt without poll
+    recv_fd(socket_fd)
+}
+
 impl Default for ServiceState {
     fn default() -> Self {
         Self {
@@ -240,8 +277,11 @@ async fn main_loop(
                         // Supervisor is notifying us about an incoming FD
                         if success {
                             if let Some(ref fp) = fd_passing {
-                                // Receive the FD via SCM_RIGHTS
-                                match recv_fd(fp.socket_fd) {
+                                // Wait for the FD to be available, then receive it via SCM_RIGHTS.
+                                // The FD travels on a separate socket from the IPC message,
+                                // so we need to poll until it arrives.
+                                let fd_result = receive_fd_with_retry(fp.socket_fd, 10, 50).await;
+                                match fd_result {
                                     Ok(fd) => {
                                         info!(session_id = %session_id, fd = ?fd, "Received TCP connection FD from supervisor");
                                         fp.pending.lock().await.insert(session_id, fd);
