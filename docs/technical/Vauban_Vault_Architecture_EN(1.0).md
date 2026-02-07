@@ -145,7 +145,7 @@ flowchart TB
 vauban-vault/
 ├── Cargo.toml
 └── src/
-    ├── main.rs          # Entry point, sandbox setup, main loop
+    ├── main.rs           # Entry point, sandbox setup, main loop
     ├── crypto.rs         # AES-256-GCM encrypt/decrypt primitives
     ├── keyring.rs        # Versioned key derivation, rotation, rewrap
     └── transit.rs        # IPC message handlers (encrypt, decrypt, MFA)
@@ -176,7 +176,7 @@ libc.workspace = true              # System calls
 - `tokio` -- synchronous service, no async runtime needed
 - `reqwest`/`ureq` -- no HTTP, no network access
 - `diesel`/`sqlx` -- no database access
-- `sha2` -- replaced by `sha3` for PQC alignment per Rust Best Practices Skill (Section 4.7)
+- `sha2` -- replaced by `sha3` for PQC alignment
 - `serde_json` -- no JSON; IPC uses bincode via `shared`
 - `secrecy` -- used by callers (`vauban-web`); vault uses `zeroize` directly on raw buffers
 
@@ -629,7 +629,7 @@ chown vauban_vault:vauban_vault /var/vauban/vault/master.key
 
 ### 6.3 Key Derivation
 
-Each domain derives its encryption keys from the master key using HKDF-SHA3-256 (PQC-aligned per Rust Best Practices Skill, Section 4.7):
+Each domain derives its encryption keys from the master key using HKDF-SHA3-256 (PQC-aligned):
 
 ```rust
 use sha3::Sha3_256;
@@ -838,21 +838,21 @@ Handlers check this before deciding whether to call `VaultDecrypt`:
 | Key derivation | HKDF-SHA3-256 with domain separation |
 | Brute force resistance | 2^256 operations (infeasible) |
 
-### 8.2 Compliance with Rust Best Practices Skill
+### 8.2 Compliance
 
-| Requirement (Section 4.4) | Implementation |
+| Requirement | Implementation |
 |---------------------------|----------------|
 | Encrypt sensitive data at rest using AES-256-GCM | AES-256-GCM via `aes-gcm` crate |
 | Never hardcode secrets in source code | Master key from file, cleared from env |
 | Mask and redact sensitive data in all outputs and logs | `SensitiveString` (IPC), `Zeroize` on drop |
 
-| Requirement (Section 4.7) | Implementation |
+| Requirement | Implementation |
 |---------------------------|----------------|
 | SHA-3 or BLAKE3 for hashing (not SHA-256) | HKDF uses SHA3-256 (`sha3` crate) |
 | Symmetric keys minimum 256-bit (AES-256) | AES-256-GCM (256-bit keys) |
 | All cryptographic material zeroized after use | `Zeroize` on drop for all key types |
 
-| Requirement (Section 4.8) | Implementation |
+| Requirement | Implementation |
 |---------------------------|----------------|
 | Implement `Zeroize` trait for all secret-containing types | `MasterKey`, `DerivedKey`, plaintext buffers |
 | Redact secrets in Debug/Display | `SensitiveString` prints `[REDACTED]` |
@@ -1046,7 +1046,7 @@ fn test_vault_has_no_network_dependency() {
 | Database | None | Stateless service; ciphertexts stored by callers in existing schema |
 | Async runtime | None (synchronous `poll(2)`) | Consistent with all core services; low throughput doesn't justify async |
 | Key storage | File (`master.key`) read once | Simplest secure option; cleared from memory path after `cap_enter()` |
-| Key derivation | HKDF-SHA3-256 with domain labels | Deterministic, restartable, domain-separated, PQC-aligned per Skill 4.7 |
+| Key derivation | HKDF-SHA3-256 with domain labels | Deterministic, restartable, domain-separated, PQC-aligned |
 | Key rotation | Version counter + multi-version keyring | No downtime, no re-encryption required, rewrap optional |
 | Ciphertext format | `v{N}:{base64}` | Self-describing, compact, fits existing DB columns |
 | TOTP handling | In-process generation and verification | Secret never leaves vault; only QR code and boolean result are returned |
