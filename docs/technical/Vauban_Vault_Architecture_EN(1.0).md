@@ -1,7 +1,7 @@
 # Vauban Vault Architecture
 
 **Version:** 1.0  
-**Date:** 6 February 2026  
+**Date:** 7 February 2026  
 **Author:** Richard Ben Aleya
 
 ---
