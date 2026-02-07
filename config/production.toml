@@ -118,3 +118,6 @@ max_failed_login_attempts = 3
 session_max_duration_secs = 14400   # 4 hours
 session_idle_timeout_secs = 900     # 15 minutes
 rate_limit_per_minute = 60
+# Add the IPs of your reverse proxy (nginx, HAProxy, etc.)
+# Example: trusted_proxies = ["127.0.0.1", "::1"]
+trusted_proxies = ["127.0.0.1", "::1"]

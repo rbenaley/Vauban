@@ -17,7 +17,10 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use tracing::{debug, error, info, warn};
 
 /// Request to open an SSH session.
-#[derive(Debug, Clone)]
+///
+/// `Debug` is manually implemented to redact `password`, `private_key`, and
+/// `passphrase` fields, preventing credential leaks in logs (H-4 / H-10).
+#[derive(Clone)]
 pub struct SshSessionOpenRequest {
     /// Unique session ID (UUID).
     pub session_id: String,
@@ -43,6 +46,25 @@ pub struct SshSessionOpenRequest {
     pub private_key: Option<String>,
     /// Passphrase for encrypted private key.
     pub passphrase: Option<String>,
+}
+
+impl std::fmt::Debug for SshSessionOpenRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SshSessionOpenRequest")
+            .field("session_id", &self.session_id)
+            .field("user_id", &self.user_id)
+            .field("asset_id", &self.asset_id)
+            .field("asset_host", &self.asset_host)
+            .field("asset_port", &self.asset_port)
+            .field("username", &self.username)
+            .field("terminal_cols", &self.terminal_cols)
+            .field("terminal_rows", &self.terminal_rows)
+            .field("auth_type", &self.auth_type)
+            .field("password", &self.password.as_ref().map(|_| "[REDACTED]"))
+            .field("private_key", &self.private_key.as_ref().map(|_| "[REDACTED]"))
+            .field("passphrase", &self.passphrase.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
 }
 
 /// Response from opening an SSH session.
@@ -397,14 +419,31 @@ mod tests {
     }
 
     #[test]
-    fn test_ssh_session_open_request_debug() {
-        let request = make_test_request("debug-sess", "host.local", 22);
+    fn test_ssh_session_open_request_debug_redacts_secrets() {
+        let mut request = make_test_request("debug-sess", "host.local", 22);
+        request.password = Some("super-secret-password".to_string());
+        request.private_key = Some("-----BEGIN RSA PRIVATE KEY-----".to_string());
+        request.passphrase = Some("my-passphrase".to_string());
 
         let debug_str = format!("{:?}", request);
 
         assert!(debug_str.contains("SshSessionOpenRequest"));
         assert!(debug_str.contains("debug-sess"));
         assert!(debug_str.contains("host.local"));
+        // Secrets MUST be redacted (H-4 / H-10)
+        assert!(
+            !debug_str.contains("super-secret-password"),
+            "Password must not appear in Debug output"
+        );
+        assert!(
+            !debug_str.contains("BEGIN RSA PRIVATE KEY"),
+            "Private key must not appear in Debug output"
+        );
+        assert!(
+            !debug_str.contains("my-passphrase"),
+            "Passphrase must not appear in Debug output"
+        );
+        assert!(debug_str.contains("[REDACTED]"));
     }
 
     #[test]

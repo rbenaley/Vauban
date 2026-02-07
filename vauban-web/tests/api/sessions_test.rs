@@ -34,14 +34,14 @@ async fn test_list_sessions_as_admin() {
     test_db::cleanup(&mut conn).await;
 }
 
-/// Test list sessions as regular user (sees own sessions only).
+/// Test list sessions as regular user is forbidden (requires staff/superuser).
 #[tokio::test]
 #[serial]
-async fn test_list_sessions_user_own() {
+async fn test_list_sessions_user_forbidden() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    // Setup: create user
+    // Setup: create regular user (non-staff, non-superuser)
     let username = unique_name("test_user_sess");
     let user = create_test_user(&mut conn, &app.auth_service, &username).await;
 
@@ -52,8 +52,8 @@ async fn test_list_sessions_user_own() {
         .add_header(header::AUTHORIZATION, app.auth_header(&user.token))
         .await;
 
-    // Assert: 200 OK (may return empty list or user's sessions only)
-    assert_status(&response, 200);
+    // Assert: 403 Forbidden (regular users cannot list all sessions)
+    assert_status(&response, 403);
 
     // Cleanup
     test_db::cleanup(&mut conn).await;

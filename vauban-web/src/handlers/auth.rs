@@ -36,7 +36,10 @@ fn is_htmx_request(headers: &HeaderMap) -> bool {
 }
 
 /// Login request.
-#[derive(Debug, Deserialize, Validate)]
+///
+/// `Debug` is manually implemented to redact the `password` and `mfa_code`
+/// fields, preventing accidental credential leaks in logs (H-4).
+#[derive(Deserialize, Validate)]
 pub struct LoginRequest {
     #[validate(length(min = 3))]
     pub username: String,
@@ -44,6 +47,17 @@ pub struct LoginRequest {
     pub password: String,
     pub mfa_code: Option<String>,
     pub csrf_token: Option<String>,
+}
+
+impl std::fmt::Debug for LoginRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoginRequest")
+            .field("username", &self.username)
+            .field("password", &"[REDACTED]")
+            .field("mfa_code", &self.mfa_code.as_ref().map(|_| "[REDACTED]"))
+            .field("csrf_token", &self.csrf_token)
+            .finish()
+    }
 }
 
 /// Login response.
@@ -194,7 +208,8 @@ pub async fn login(
 
         // Create auth session with temporary token
         let token_hash = hash_token(&temp_token);
-        let client_ip = extract_client_ip(&headers, client_addr);
+        let trusted = state.config.security.parsed_trusted_proxies();
+        let client_ip = extract_client_ip(&headers, client_addr, &trusted);
         let user_agent_str = headers
             .get("User-Agent")
             .and_then(|v| v.to_str().ok())
@@ -311,7 +326,8 @@ pub async fn login(
 
     // Create auth session record for session management
     let token_hash = hash_token(&access_token);
-    let client_ip = extract_client_ip(&headers, client_addr);
+    let trusted = state.config.security.parsed_trusted_proxies();
+    let client_ip = extract_client_ip(&headers, client_addr, &trusted);
     let user_agent_str = headers
         .get("User-Agent")
         .and_then(|v| v.to_str().ok())
@@ -481,26 +497,21 @@ fn lockout_duration_for_attempts(failed_attempts: i32, threshold: u32) -> Option
 }
 
 /// Extract client IP from headers (X-Forwarded-For, X-Real-IP) or connection address.
-fn extract_client_ip(headers: &HeaderMap, connect_addr: SocketAddr) -> IpNetwork {
-    // Try X-Forwarded-For first (comma-separated list, first is original client)
-    if let Some(xff) = headers.get("X-Forwarded-For")
-        && let Ok(xff_str) = xff.to_str()
-        && let Some(first_ip) = xff_str.split(',').next()
-        && let Ok(ip) = first_ip.trim().parse::<std::net::IpAddr>()
-    {
-        return IpNetwork::from(ip);
-    }
-
-    // Try X-Real-IP
-    if let Some(real_ip) = headers.get("X-Real-IP")
-        && let Ok(ip_str) = real_ip.to_str()
-        && let Ok(ip) = ip_str.parse::<std::net::IpAddr>()
-    {
-        return IpNetwork::from(ip);
-    }
-
-    // Fallback to the actual TCP connection address
-    IpNetwork::from(connect_addr.ip())
+///
+/// Proxy headers are only trusted when the direct TCP connection originates from
+/// an address listed in `trusted_proxies`.  This prevents spoofing of client IPs
+/// by arbitrary clients injecting `X-Forwarded-For` / `X-Real-IP` headers.
+fn extract_client_ip(
+    headers: &HeaderMap,
+    connect_addr: SocketAddr,
+    trusted_proxies: &[std::net::IpAddr],
+) -> IpNetwork {
+    let resolved = crate::middleware::resolve_client_ip(
+        headers,
+        connect_addr.ip(),
+        trusted_proxies,
+    );
+    IpNetwork::from(resolved)
 }
 
 /// Logout handler.
@@ -1120,10 +1131,26 @@ mod tests {
         );
 
         let fallback_addr: SocketAddr = unwrap_ok!("192.168.1.1:12345".parse());
-        let ip = extract_client_ip(&headers, fallback_addr);
+        // Connection from trusted proxy -> XFF honoured
+        let trusted = vec![unwrap_ok!("192.168.1.1".parse())];
+        let ip = extract_client_ip(&headers, fallback_addr, &trusted);
 
-        // Should return the first IP in X-Forwarded-For (the original client)
         assert_eq!(ip.ip().to_string(), "203.0.113.50");
+    }
+
+    #[test]
+    fn test_extract_client_ip_xff_ignored_untrusted() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "X-Forwarded-For",
+            unwrap_ok!("203.0.113.50".parse()),
+        );
+
+        let fallback_addr: SocketAddr = unwrap_ok!("192.168.1.1:12345".parse());
+        // Connection NOT from trusted proxy -> XFF ignored
+        let ip = extract_client_ip(&headers, fallback_addr, &[]);
+
+        assert_eq!(ip.ip().to_string(), "192.168.1.1");
     }
 
     #[test]
@@ -1132,7 +1159,8 @@ mod tests {
         headers.insert("X-Forwarded-For", unwrap_ok!("8.8.8.8".parse()));
 
         let fallback_addr: SocketAddr = unwrap_ok!("192.168.1.1:12345".parse());
-        let ip = extract_client_ip(&headers, fallback_addr);
+        let trusted = vec![unwrap_ok!("192.168.1.1".parse())];
+        let ip = extract_client_ip(&headers, fallback_addr, &trusted);
 
         assert_eq!(ip.ip().to_string(), "8.8.8.8");
     }
@@ -1143,7 +1171,8 @@ mod tests {
         headers.insert("X-Real-IP", unwrap_ok!("1.2.3.4".parse()));
 
         let fallback_addr: SocketAddr = unwrap_ok!("192.168.1.1:12345".parse());
-        let ip = extract_client_ip(&headers, fallback_addr);
+        let trusted = vec![unwrap_ok!("192.168.1.1".parse())];
+        let ip = extract_client_ip(&headers, fallback_addr, &trusted);
 
         assert_eq!(ip.ip().to_string(), "1.2.3.4");
     }
@@ -1155,9 +1184,9 @@ mod tests {
         headers.insert("X-Real-IP", unwrap_ok!("1.2.3.4".parse()));
 
         let fallback_addr: SocketAddr = unwrap_ok!("192.168.1.1:12345".parse());
-        let ip = extract_client_ip(&headers, fallback_addr);
+        let trusted = vec![unwrap_ok!("192.168.1.1".parse())];
+        let ip = extract_client_ip(&headers, fallback_addr, &trusted);
 
-        // X-Forwarded-For should take priority
         assert_eq!(ip.ip().to_string(), "203.0.113.50");
     }
 
@@ -1166,9 +1195,8 @@ mod tests {
         let headers = HeaderMap::new(); // No proxy headers
 
         let fallback_addr: SocketAddr = unwrap_ok!("85.123.45.67:54321".parse());
-        let ip = extract_client_ip(&headers, fallback_addr);
+        let ip = extract_client_ip(&headers, fallback_addr, &[]);
 
-        // Should use the TCP connection address
         assert_eq!(ip.ip().to_string(), "85.123.45.67");
     }
 
@@ -1178,7 +1206,8 @@ mod tests {
         headers.insert("X-Forwarded-For", unwrap_ok!("2001:db8::1".parse()));
 
         let fallback_addr: SocketAddr = unwrap_ok!("[::1]:12345".parse());
-        let ip = extract_client_ip(&headers, fallback_addr);
+        let trusted = vec![unwrap_ok!("::1".parse())];
+        let ip = extract_client_ip(&headers, fallback_addr, &trusted);
 
         assert_eq!(ip.ip().to_string(), "2001:db8::1");
     }
@@ -1188,7 +1217,7 @@ mod tests {
         let headers = HeaderMap::new();
 
         let fallback_addr: SocketAddr = unwrap_ok!("[2001:db8::abcd]:443".parse());
-        let ip = extract_client_ip(&headers, fallback_addr);
+        let ip = extract_client_ip(&headers, fallback_addr, &[]);
 
         assert_eq!(ip.ip().to_string(), "2001:db8::abcd");
     }
@@ -1199,7 +1228,8 @@ mod tests {
         headers.insert("X-Forwarded-For", unwrap_ok!("not-an-ip-address".parse()));
 
         let fallback_addr: SocketAddr = unwrap_ok!("10.0.0.1:8080".parse());
-        let ip = extract_client_ip(&headers, fallback_addr);
+        let trusted = vec![unwrap_ok!("10.0.0.1".parse())];
+        let ip = extract_client_ip(&headers, fallback_addr, &trusted);
 
         // Should fallback to connection address when header is invalid
         assert_eq!(ip.ip().to_string(), "10.0.0.1");
@@ -1273,7 +1303,8 @@ mod tests {
         );
 
         let fallback: SocketAddr = unwrap_ok!("10.0.0.1:8080".parse());
-        let ip = extract_client_ip(&headers, fallback);
+        let trusted = vec![unwrap_ok!("10.0.0.1".parse())];
+        let ip = extract_client_ip(&headers, fallback, &trusted);
 
         assert_eq!(ip.ip().to_string(), "1.2.3.4");
     }
@@ -1287,7 +1318,8 @@ mod tests {
         );
 
         let fallback: SocketAddr = unwrap_ok!("127.0.0.1:8080".parse());
-        let ip = extract_client_ip(&headers, fallback);
+        let trusted = vec![unwrap_ok!("127.0.0.1".parse())];
+        let ip = extract_client_ip(&headers, fallback, &trusted);
 
         assert!(
             ip.ip().to_string().contains("192.168.1.1") || ip.ip().to_string().contains("ffff")
@@ -1300,7 +1332,8 @@ mod tests {
         headers.insert("X-Real-IP", unwrap_ok!("not-valid".parse()));
 
         let fallback: SocketAddr = unwrap_ok!("172.16.0.1:443".parse());
-        let ip = extract_client_ip(&headers, fallback);
+        let trusted = vec![unwrap_ok!("172.16.0.1".parse())];
+        let ip = extract_client_ip(&headers, fallback, &trusted);
 
         assert_eq!(ip.ip().to_string(), "172.16.0.1");
     }
@@ -1310,7 +1343,7 @@ mod tests {
         let headers = HeaderMap::new();
 
         let fallback: SocketAddr = unwrap_ok!("127.0.0.1:3000".parse());
-        let ip = extract_client_ip(&headers, fallback);
+        let ip = extract_client_ip(&headers, fallback, &[]);
 
         assert_eq!(ip.ip().to_string(), "127.0.0.1");
     }
@@ -1404,7 +1437,7 @@ mod tests {
     // ==================== LoginRequest Debug Tests ====================
 
     #[test]
-    fn test_login_request_debug() {
+    fn test_login_request_debug_redacts_password() {
         let request = LoginRequest {
             username: "testuser".to_string(),
             password: "securepassword".to_string(),
@@ -1416,6 +1449,16 @@ mod tests {
 
         assert!(debug_str.contains("LoginRequest"));
         assert!(debug_str.contains("testuser"));
+        // Password and mfa_code MUST be redacted (H-4)
+        assert!(
+            !debug_str.contains("securepassword"),
+            "Password must not appear in Debug output"
+        );
+        assert!(
+            !debug_str.contains("123456"),
+            "MFA code must not appear in Debug output"
+        );
+        assert!(debug_str.contains("[REDACTED]"));
     }
 
     // ==================== LoginResponse Debug Tests ====================

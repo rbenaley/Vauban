@@ -39,6 +39,8 @@ pub async fn list_sessions(
     user: AuthUser,
     Query(params): Query<ListSessionsParams>,
 ) -> AppResult<Json<Vec<ProxySession>>> {
+    super::require_staff(&user)?;
+
     let mut conn = state
         .db_pool
         .get()
@@ -68,9 +70,11 @@ pub async fn list_sessions(
 /// Get session by UUID handler.
 pub async fn get_session(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
     Path(session_uuid_str): Path<String>,
 ) -> AppResult<Json<ProxySession>> {
+    super::require_staff(&user)?;
+
     // Parse UUID manually for better error messages
     let session_uuid = Uuid::parse_str(&session_uuid_str)
         .map_err(|_| AppError::Validation("Invalid UUID format".to_string()))?;
@@ -95,9 +99,11 @@ pub async fn get_session(
 /// Create session handler.
 pub async fn create_session(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
     Json(request): Json<CreateSessionRequest>,
 ) -> AppResult<Json<ProxySession>> {
+    super::require_staff(&user)?;
+
     validator::Validate::validate(&request)
         .map_err(|e| AppError::Validation(format!("Validation failed: {:?}", e)))?;
 
@@ -149,9 +155,11 @@ pub async fn create_session(
 pub async fn terminate_session(
     State(state): State<AppState>,
     headers: HeaderMap,
-    _user: AuthUser,
+    user: AuthUser,
     Path(session_id_str): Path<String>,
 ) -> AppResult<Response> {
+    super::require_staff(&user)?;
+
     // Parse session ID manually for better error messages
     let session_id: i32 = session_id_str
         .parse()

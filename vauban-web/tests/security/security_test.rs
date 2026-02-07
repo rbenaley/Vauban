@@ -21,7 +21,7 @@ use serde_json::json;
 use serial_test::serial;
 
 use crate::common::{TestApp, assertions::*, test_db, unwrap_ok, unwrap_some};
-use crate::fixtures::{create_test_user, unique_name};
+use crate::fixtures::{create_admin_user, create_test_user, unique_name};
 
 // =============================================================================
 // SQL Injection Prevention Tests
@@ -37,14 +37,15 @@ async fn test_sql_injection_prevention_user_creation() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
+    // Use admin user since create_user now requires staff/superuser
     let username = unique_name("test_sql_inj");
-    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
+    let admin = create_admin_user(&mut conn, &app.auth_service, &username).await;
 
     // Test SQL injection in username
     let response = app
         .server
         .post("/api/v1/accounts")
-        .add_header(header::AUTHORIZATION, app.auth_header(&test_user.token))
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .json(&json!({
             "username": "' OR '1'='1",
             "email": "hacker@example.com",
@@ -64,7 +65,7 @@ async fn test_sql_injection_prevention_user_creation() {
     let response = app
         .server
         .post("/api/v1/accounts")
-        .add_header(header::AUTHORIZATION, app.auth_header(&test_user.token))
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .json(&json!({
             "username": "admin'--",
             "email": "test@example.com",
@@ -90,14 +91,15 @@ async fn test_sql_injection_prevention_user_search() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
+    // Use admin user since list_users now requires staff/superuser
     let username = unique_name("test_search");
-    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
+    let admin = create_admin_user(&mut conn, &app.auth_service, &username).await;
 
     // API should handle malicious query parameters safely
     let response = app
         .server
         .get("/api/v1/accounts")
-        .add_header(header::AUTHORIZATION, app.auth_header(&test_user.token))
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .await;
 
     // Should return valid response, not crash
@@ -107,6 +109,570 @@ async fn test_sql_injection_prevention_user_search() {
         "Expected 200 or 400, got {}",
         status
     );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+// =============================================================================
+// SQL Injection Prevention: Group Search (C-1 regression tests)
+// =============================================================================
+
+/// Test that group search handles SQL injection payloads safely.
+///
+/// Regression test for C-1: SQL Injection in group_list handler.
+/// Previously, the handler used raw SQL string interpolation with format!()
+/// which could be exploited. Now uses Diesel DSL .ilike() with parameterized queries.
+#[tokio::test]
+#[serial]
+async fn test_sql_injection_group_search_single_quote() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("test_sqli_grp_admin");
+    let admin = crate::fixtures::create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+
+    // Classic SQL injection with single quote to break out of string literal
+    // URL-encoded: ' = %27, space = %20, = is %3D
+    let response = app
+        .server
+        .get("/accounts/groups?search=%27%20OR%20%271%27%3D%271")
+        .add_header(axum::http::header::COOKIE, format!("access_token={}", admin.token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 200 || status == 303,
+        "SQL injection payload should not crash the server, got {}",
+        status
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Test SQL injection with comment syntax (--) in group search.
+#[tokio::test]
+#[serial]
+async fn test_sql_injection_group_search_comment() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("test_sqli_grp_cmt");
+    let admin = crate::fixtures::create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+
+    // SQL comment injection attempt
+    let response = app
+        .server
+        .get("/accounts/groups?search=test'--")
+        .add_header(axum::http::header::COOKIE, format!("access_token={}", admin.token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 200 || status == 303,
+        "SQL injection with comment syntax should not crash the server, got {}",
+        status
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Test SQL injection with UNION SELECT in group search.
+#[tokio::test]
+#[serial]
+async fn test_sql_injection_group_search_union() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("test_sqli_grp_union");
+    let admin = crate::fixtures::create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+
+    // UNION-based injection attempt
+    // URL-encoded: ' = %27, space = %20
+    let response = app
+        .server
+        .get("/accounts/groups?search=%27%20UNION%20SELECT%20uuid%2C%20username%2C%20email%2C%20password_hash%2C%20created_at%20FROM%20users--")
+        .add_header(axum::http::header::COOKIE, format!("access_token={}", admin.token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 200 || status == 303,
+        "SQL injection with UNION SELECT should not crash the server, got {}",
+        status
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Test SQL injection with semicolon (stacked queries) in group search.
+#[tokio::test]
+#[serial]
+async fn test_sql_injection_group_search_stacked() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("test_sqli_grp_stack");
+    let admin = crate::fixtures::create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+
+    // Stacked query injection attempt
+    // URL-encoded: ' = %27, ; = %3B, space = %20
+    let response = app
+        .server
+        .get("/accounts/groups?search=test%27%3B%20DROP%20TABLE%20vauban_groups%3B--")
+        .add_header(axum::http::header::COOKIE, format!("access_token={}", admin.token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 200 || status == 303,
+        "SQL injection with stacked queries should not crash the server, got {}",
+        status
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Test SQL injection with backslash escape bypass in group search.
+#[tokio::test]
+#[serial]
+async fn test_sql_injection_group_search_backslash_escape() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("test_sqli_grp_bslash");
+    let admin = crate::fixtures::create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+
+    // Backslash escape bypass (the old replace('\'', "''") was vulnerable to this)
+    // URL-encoded: \ = %5C, ' = %27, space = %20, = is %3D
+    let response = app
+        .server
+        .get("/accounts/groups?search=%5C%27%20OR%201%3D1--")
+        .add_header(axum::http::header::COOKIE, format!("access_token={}", admin.token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 200 || status == 303,
+        "SQL injection with backslash escape should not crash the server, got {}",
+        status
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Test that legitimate group search still works correctly after the fix.
+#[tokio::test]
+#[serial]
+async fn test_group_search_legitimate_query_works() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("test_grp_search_ok");
+    let admin = crate::fixtures::create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+
+    // Create a group with a known name for searching
+    let group_name = unique_name("test-searchable-grp");
+    crate::fixtures::create_test_vauban_group(&mut conn, &group_name).await;
+
+    // Search for the group using a partial name
+    let response = app
+        .server
+        .get(&format!("/accounts/groups?search={}", &group_name[..10]))
+        .add_header(axum::http::header::COOKIE, format!("access_token={}", admin.token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert_eq!(status, 200, "Legitimate search should return 200, got {}", status);
+
+    let body = response.text();
+    assert!(
+        body.contains("Groups"),
+        "Search results page should contain 'Groups' title"
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+// =============================================================================
+// SQL Injection Prevention: Group Member Search (C-1 regression tests)
+// =============================================================================
+
+/// Test SQL injection in group member search endpoint.
+///
+/// Regression test for C-1: SQL Injection in group_member_search handler.
+/// The available_users_data query was also vulnerable to string interpolation.
+#[tokio::test]
+#[serial]
+async fn test_sql_injection_group_member_search_single_quote() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("test_sqli_mbr_admin");
+    let admin = crate::fixtures::create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+
+    // Create a group to search members in
+    let group_uuid = crate::fixtures::create_test_vauban_group(
+        &mut conn,
+        &unique_name("test-sqli-mbr-grp"),
+    )
+    .await;
+
+    // SQL injection attempt on member search
+    // URL-encoded: ' = %27, space = %20, = is %3D
+    let response = app
+        .server
+        .get(&format!(
+            "/accounts/groups/{}/members/search?user-search=%27%20OR%20%271%27%3D%271",
+            group_uuid
+        ))
+        .add_header(axum::http::header::COOKIE, format!("access_token={}", admin.token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 200 || status == 303,
+        "SQL injection in member search should not crash the server, got {}",
+        status
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Test SQL injection with UNION SELECT in member search.
+#[tokio::test]
+#[serial]
+async fn test_sql_injection_group_member_search_union() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("test_sqli_mbr_union");
+    let admin = crate::fixtures::create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+
+    let group_uuid = crate::fixtures::create_test_vauban_group(
+        &mut conn,
+        &unique_name("test-sqli-mbr-u-grp"),
+    )
+    .await;
+
+    // URL-encoded: ' = %27, space = %20, , = %2C
+    let response = app
+        .server
+        .get(&format!(
+            "/accounts/groups/{}/members/search?user-search=%27%20UNION%20SELECT%20uuid%2C%20password_hash%2C%20email%20FROM%20users--",
+            group_uuid
+        ))
+        .add_header(axum::http::header::COOKIE, format!("access_token={}", admin.token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 200 || status == 303,
+        "SQL injection with UNION in member search should not crash, got {}",
+        status
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Test SQL injection with semicolon in member search.
+#[tokio::test]
+#[serial]
+async fn test_sql_injection_group_member_search_stacked() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("test_sqli_mbr_stack");
+    let admin = crate::fixtures::create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+
+    let group_uuid = crate::fixtures::create_test_vauban_group(
+        &mut conn,
+        &unique_name("test-sqli-mbr-s-grp"),
+    )
+    .await;
+
+    // URL-encoded: ' = %27, ; = %3B, space = %20
+    let response = app
+        .server
+        .get(&format!(
+            "/accounts/groups/{}/members/search?user-search=x%27%3B%20DELETE%20FROM%20users%3B--",
+            group_uuid
+        ))
+        .add_header(axum::http::header::COOKIE, format!("access_token={}", admin.token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 200 || status == 303,
+        "SQL injection with stacked query in member search should not crash, got {}",
+        status
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Test that legitimate member search works after the fix.
+#[tokio::test]
+#[serial]
+async fn test_group_member_search_legitimate_query_works() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("test_mbr_search_ok");
+    let admin = crate::fixtures::create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+
+    let group_uuid = crate::fixtures::create_test_vauban_group(
+        &mut conn,
+        &unique_name("test-mbr-search-grp"),
+    )
+    .await;
+
+    // Create a user that should be findable
+    let searchable_name = unique_name("test_findable_usr");
+    crate::fixtures::create_test_user(&mut conn, &app.auth_service, &searchable_name).await;
+
+    // Search for the user using a partial name
+    let response = app
+        .server
+        .get(&format!(
+            "/accounts/groups/{}/members/search?user-search={}",
+            group_uuid,
+            &searchable_name[..8]
+        ))
+        .add_header(axum::http::header::COOKIE, format!("access_token={}", admin.token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert_eq!(
+        status, 200,
+        "Legitimate member search should return 200, got {}",
+        status
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+// =============================================================================
+// API Authorization Tests (H-1 regression tests)
+// =============================================================================
+
+/// Test that regular users cannot create users via the API.
+///
+/// Regression test for H-1: No authorization checks on API endpoints.
+/// Previously, any authenticated user could create/modify users, assets, etc.
+/// Now requires staff or superuser privileges.
+#[tokio::test]
+#[serial]
+async fn test_regular_user_cannot_create_user() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("test_authz_create");
+    let regular_user = create_test_user(&mut conn, &app.auth_service, &username).await;
+
+    let response = app
+        .server
+        .post("/api/v1/accounts")
+        .add_header(header::AUTHORIZATION, app.auth_header(&regular_user.token))
+        .json(&json!({
+            "username": "should_fail",
+            "email": "shouldfail@test.io",
+            "password": "Password123!"
+        }))
+        .await;
+
+    assert_status(&response, 403);
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Test that regular users cannot update users via the API.
+#[tokio::test]
+#[serial]
+async fn test_regular_user_cannot_update_user() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("test_authz_upd");
+    let regular_user = create_test_user(&mut conn, &app.auth_service, &username).await;
+
+    let target_name = unique_name("test_authz_target");
+    let target = create_test_user(&mut conn, &app.auth_service, &target_name).await;
+
+    let response = app
+        .server
+        .put(&format!("/api/v1/accounts/{}", target.user.uuid))
+        .add_header(header::AUTHORIZATION, app.auth_header(&regular_user.token))
+        .json(&json!({
+            "first_name": "Hacked"
+        }))
+        .await;
+
+    assert_status(&response, 403);
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Test that regular users cannot list users via the API.
+#[tokio::test]
+#[serial]
+async fn test_regular_user_cannot_list_users() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("test_authz_list");
+    let regular_user = create_test_user(&mut conn, &app.auth_service, &username).await;
+
+    let response = app
+        .server
+        .get("/api/v1/accounts")
+        .add_header(header::AUTHORIZATION, app.auth_header(&regular_user.token))
+        .await;
+
+    assert_status(&response, 403);
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Test that regular users cannot create assets via the API.
+#[tokio::test]
+#[serial]
+async fn test_regular_user_cannot_create_asset() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("test_authz_asset");
+    let regular_user = create_test_user(&mut conn, &app.auth_service, &username).await;
+
+    let response = app
+        .server
+        .post("/api/v1/assets")
+        .add_header(header::AUTHORIZATION, app.auth_header(&regular_user.token))
+        .json(&json!({
+            "name": "Unauthorized Asset",
+            "hostname": "evil.example.com",
+            "port": 22,
+            "asset_type": "ssh"
+        }))
+        .await;
+
+    assert_status(&response, 403);
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Test that regular users cannot create sessions via the API.
+#[tokio::test]
+#[serial]
+async fn test_regular_user_cannot_create_session() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("test_authz_sess");
+    let regular_user = create_test_user(&mut conn, &app.auth_service, &username).await;
+
+    let response = app
+        .server
+        .post("/api/v1/sessions")
+        .add_header(header::AUTHORIZATION, app.auth_header(&regular_user.token))
+        .json(&json!({
+            "asset_id": "00000000-0000-0000-0000-000000000000",
+            "credential_id": "cred-123",
+            "session_type": "ssh"
+        }))
+        .await;
+
+    assert_status(&response, 403);
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Test that regular users cannot list sessions via the API.
+#[tokio::test]
+#[serial]
+async fn test_regular_user_cannot_list_sessions() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("test_authz_lsess");
+    let regular_user = create_test_user(&mut conn, &app.auth_service, &username).await;
+
+    let response = app
+        .server
+        .get("/api/v1/sessions")
+        .add_header(header::AUTHORIZATION, app.auth_header(&regular_user.token))
+        .await;
+
+    assert_status(&response, 403);
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Test that admin users CAN still access protected endpoints.
+#[tokio::test]
+#[serial]
+async fn test_admin_user_can_access_protected_endpoints() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("test_authz_admin");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+
+    // Admin should be able to list users
+    let response = app
+        .server
+        .get("/api/v1/accounts")
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .await;
+    assert_status(&response, 200);
+
+    // Admin should be able to list sessions
+    let response = app
+        .server
+        .get("/api/v1/sessions")
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .await;
+    assert_status(&response, 200);
+
+    // Admin should be able to create a user
+    let new_username = unique_name("test_authz_newuser");
+    let response = app
+        .server
+        .post("/api/v1/accounts")
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .json(&json!({
+            "username": new_username,
+            "email": format!("{}@test.io", new_username),
+            "password": "SecurePassword123!"
+        }))
+        .await;
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 200 || status == 201,
+        "Admin should be able to create users, got {}",
+        status
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Test that regular users can still read assets (non-admin read operation).
+#[tokio::test]
+#[serial]
+async fn test_regular_user_can_list_assets() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("test_authz_rasset");
+    let regular_user = create_test_user(&mut conn, &app.auth_service, &username).await;
+
+    // Regular users should be able to list assets (needed for connection UI)
+    let response = app
+        .server
+        .get("/api/v1/assets")
+        .add_header(header::AUTHORIZATION, app.auth_header(&regular_user.token))
+        .await;
+
+    assert_status(&response, 200);
 
     test_db::cleanup(&mut conn).await;
 }
@@ -122,8 +688,9 @@ async fn test_input_validation_user_creation() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
+    // Use admin user since create_user now requires staff/superuser
     let username = unique_name("test_input_val");
-    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
+    let test_user = create_admin_user(&mut conn, &app.auth_service, &username).await;
 
     // Test empty username
     let response = app
@@ -192,8 +759,9 @@ async fn test_input_validation_asset_creation() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
+    // Use admin user since create_asset now requires staff/superuser
     let username = unique_name("test_asset");
-    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
+    let test_user = create_admin_user(&mut conn, &app.auth_service, &username).await;
 
     // Test invalid IP address
     let response = app
@@ -261,8 +829,9 @@ async fn test_xss_prevention_user_fields() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
+    // Use admin user since create_user now requires staff/superuser
     let username = unique_name("test_xss");
-    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
+    let test_user = create_admin_user(&mut conn, &app.auth_service, &username).await;
 
     // Test XSS in username - should be handled without crashing
     // VAUBAN sanitizes output via Askama templates (HTML escaping)
@@ -621,8 +1190,9 @@ async fn test_jwt_expiration() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
+    // Use admin user since /api/v1/accounts requires staff/superuser (H-1)
     let username = unique_name("test_jwt_exp");
-    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
+    let test_user = create_admin_user(&mut conn, &app.auth_service, &username).await;
 
     let response = app
         .server
@@ -665,8 +1235,9 @@ async fn test_password_complexity() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
+    // Use admin user since create_user now requires staff/superuser
     let username = unique_name("test_pwd_complex");
-    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
+    let test_user = create_admin_user(&mut conn, &app.auth_service, &username).await;
 
     // Password too short - should be rejected
     let response = app
@@ -723,8 +1294,9 @@ async fn test_data_sanitization() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
+    // Use admin user since create_user now requires staff/superuser
     let username = unique_name("test_sanitize");
-    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
+    let test_user = create_admin_user(&mut conn, &app.auth_service, &username).await;
 
     // Valid input with unique name
     let new_username = unique_name("admin_test");
@@ -900,6 +1472,187 @@ async fn test_csrf_protection() {
 
     // Should require proper authentication
     assert_status(&response, 401);
+}
+
+// =============================================================================
+// CSRF Validation: connect_ssh (C-3 regression tests)
+// =============================================================================
+
+/// Test that connect_ssh rejects requests without a CSRF token.
+///
+/// Regression test for C-3: Missing CSRF Validation in connect_ssh.
+/// Previously, the handler accepted but never validated the csrf_token field,
+/// enabling CSRF attacks to initiate SSH connections on behalf of authenticated users.
+#[tokio::test]
+#[serial]
+async fn test_connect_ssh_rejects_missing_csrf_token() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("test_ssh_csrf_miss");
+    let admin = crate::fixtures::create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+
+    // Create a test SSH asset
+    let test_asset = crate::fixtures::create_test_ssh_asset(&mut conn, &unique_name("test-ssh-csrf")).await;
+
+    // POST to connect_ssh with empty CSRF token (no CSRF cookie)
+    let response = app
+        .server
+        .post(&format!("/assets/{}/connect", test_asset.asset.uuid))
+        .add_header(axum::http::header::COOKIE, format!("access_token={}", admin.token))
+        .form(&json!({
+            "csrf_token": "",
+        }))
+        .await;
+
+    // Should fail with CSRF error, not succeed
+    let body = response.text();
+    assert!(
+        body.contains("CSRF") || body.contains("csrf") || body.contains("Invalid"),
+        "Request without CSRF token should be rejected. Got body: {}",
+        body
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Test that connect_ssh rejects requests with an invalid CSRF token.
+#[tokio::test]
+#[serial]
+async fn test_connect_ssh_rejects_invalid_csrf_token() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("test_ssh_csrf_inv");
+    let admin = crate::fixtures::create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+
+    let test_asset = crate::fixtures::create_test_ssh_asset(&mut conn, &unique_name("test-ssh-csrf2")).await;
+
+    // POST with a forged CSRF token that doesn't match the cookie
+    let response = app
+        .server
+        .post(&format!("/assets/{}/connect", test_asset.asset.uuid))
+        .add_header(
+            axum::http::header::COOKIE,
+            format!(
+                "access_token={}; __vauban_csrf=valid_cookie_token",
+                admin.token
+            ),
+        )
+        .form(&json!({
+            "csrf_token": "forged_different_token",
+        }))
+        .await;
+
+    let body = response.text();
+    assert!(
+        body.contains("CSRF") || body.contains("csrf") || body.contains("Invalid"),
+        "Request with mismatched CSRF token should be rejected. Got body: {}",
+        body
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Test that connect_ssh rejects HTMX requests with an invalid CSRF token.
+#[tokio::test]
+#[serial]
+async fn test_connect_ssh_rejects_invalid_csrf_htmx() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("test_ssh_csrf_htmx");
+    let admin = crate::fixtures::create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+
+    let test_asset = crate::fixtures::create_test_ssh_asset(&mut conn, &unique_name("test-ssh-csrf3")).await;
+
+    // HTMX request with forged CSRF token
+    let response = app
+        .server
+        .post(&format!("/assets/{}/connect", test_asset.asset.uuid))
+        .add_header(axum::http::header::COOKIE, format!("access_token={}", admin.token))
+        .add_header("HX-Request", "true")
+        .form(&json!({
+            "csrf_token": "forged_csrf_token",
+        }))
+        .await;
+
+    // HTMX error response should contain toast with error message
+    let body = response.text();
+    let has_error = body.contains("CSRF")
+        || body.contains("csrf")
+        || body.contains("Invalid")
+        || response
+            .headers()
+            .get("HX-Trigger")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.contains("error") || v.contains("CSRF") || v.contains("Invalid"))
+            .unwrap_or(false);
+
+    assert!(
+        has_error,
+        "HTMX request with invalid CSRF should return error toast. Headers: {:?}, Body: {}",
+        response.headers(),
+        body
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Test that connect_ssh accepts a valid CSRF token.
+///
+/// The request will fail later (SSH proxy not available in tests), but it
+/// should NOT fail on CSRF validation -- proving the token is correctly validated.
+#[tokio::test]
+#[serial]
+async fn test_connect_ssh_accepts_valid_csrf_token() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("test_ssh_csrf_ok");
+    let admin = crate::fixtures::create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+
+    let test_asset = crate::fixtures::create_test_ssh_asset(&mut conn, &unique_name("test-ssh-csrf4")).await;
+
+    // Generate a valid CSRF token
+    let csrf_token = app.generate_csrf_token();
+
+    // POST with valid CSRF token (cookie and form match)
+    let response = app
+        .server
+        .post(&format!("/assets/{}/connect", test_asset.asset.uuid))
+        .add_header(
+            axum::http::header::COOKIE,
+            format!(
+                "access_token={}; __vauban_csrf={}",
+                admin.token, csrf_token
+            ),
+        )
+        .form(&json!({
+            "csrf_token": csrf_token,
+        }))
+        .await;
+
+    // Should NOT fail on CSRF validation.
+    // It will fail on "SSH proxy not available" which is expected in test env.
+    let body = response.text();
+    assert!(
+        !body.contains("CSRF") && !body.contains("csrf"),
+        "Valid CSRF token should be accepted. Got: {}",
+        body
+    );
+
+    // Verify we get the expected "SSH proxy not available" error (not CSRF error)
+    let has_proxy_error = body.contains("SSH proxy")
+        || body.contains("proxy")
+        || body.contains("not available");
+    assert!(
+        has_proxy_error,
+        "With valid CSRF, should reach SSH proxy check. Got: {}",
+        body
+    );
+
+    test_db::cleanup(&mut conn).await;
 }
 
 // =============================================================================
@@ -1120,6 +1873,847 @@ async fn test_csrf_fresh_session_works() {
         body.contains("name=\"csrf_token\"") && body.contains("value=\""),
         "Login form should have a csrf_token input with a value"
     );
+}
+
+// =============================================================================
+// H-4: Credential Leak via Debug Derive Tests
+// =============================================================================
+// These tests verify that Debug implementations for LoginRequest and
+// SshSessionOpenRequest redact sensitive fields (password, mfa_code,
+// private_key, passphrase) to prevent credential leaks in logs.
+
+/// Test that LoginRequest Debug output does not contain the plaintext password.
+#[test]
+fn test_login_request_debug_does_not_leak_password() {
+    use vauban_web::handlers::auth::LoginRequest;
+
+    let request = LoginRequest {
+        username: "admin".to_string(),
+        password: "MyS3cretP@ssword!".to_string(),
+        mfa_code: None,
+        csrf_token: None,
+    };
+
+    let debug_str = format!("{:?}", request);
+
+    assert!(
+        !debug_str.contains("MyS3cretP@ssword!"),
+        "LoginRequest Debug must NOT contain the plaintext password. Got: {}",
+        debug_str
+    );
+    assert!(
+        debug_str.contains("[REDACTED]"),
+        "LoginRequest Debug must show [REDACTED] for password. Got: {}",
+        debug_str
+    );
+    // Username should still be visible (it's not a secret)
+    assert!(
+        debug_str.contains("admin"),
+        "LoginRequest Debug should contain the username. Got: {}",
+        debug_str
+    );
+}
+
+/// Test that LoginRequest Debug output does not contain the MFA code.
+#[test]
+fn test_login_request_debug_does_not_leak_mfa_code() {
+    use vauban_web::handlers::auth::LoginRequest;
+
+    let request = LoginRequest {
+        username: "admin".to_string(),
+        password: "irrelevant-password".to_string(),
+        mfa_code: Some("987654".to_string()),
+        csrf_token: Some("csrf-value".to_string()),
+    };
+
+    let debug_str = format!("{:?}", request);
+
+    assert!(
+        !debug_str.contains("987654"),
+        "LoginRequest Debug must NOT contain the MFA code. Got: {}",
+        debug_str
+    );
+    assert!(
+        !debug_str.contains("irrelevant-password"),
+        "LoginRequest Debug must NOT contain the password. Got: {}",
+        debug_str
+    );
+    // CSRF token is not a secret (it's also in the cookie), so it can appear
+    assert!(debug_str.contains("csrf-value"));
+}
+
+/// Test that SshSessionOpenRequest Debug output does not contain SSH password.
+#[test]
+fn test_ssh_request_debug_does_not_leak_password() {
+    use vauban_web::ipc::SshSessionOpenRequest;
+
+    let request = SshSessionOpenRequest {
+        session_id: "sess-001".to_string(),
+        user_id: "user-001".to_string(),
+        asset_id: "asset-001".to_string(),
+        asset_host: "10.0.0.1".to_string(),
+        asset_port: 22,
+        username: "root".to_string(),
+        terminal_cols: 80,
+        terminal_rows: 24,
+        auth_type: "password".to_string(),
+        password: Some("ssh-p@ssw0rd!".to_string()),
+        private_key: None,
+        passphrase: None,
+    };
+
+    let debug_str = format!("{:?}", request);
+
+    assert!(
+        !debug_str.contains("ssh-p@ssw0rd!"),
+        "SshSessionOpenRequest Debug must NOT contain the SSH password. Got: {}",
+        debug_str
+    );
+    assert!(debug_str.contains("[REDACTED]"));
+    // Non-secret fields should still be visible
+    assert!(debug_str.contains("sess-001"));
+    assert!(debug_str.contains("10.0.0.1"));
+    assert!(debug_str.contains("root"));
+}
+
+/// Test that SshSessionOpenRequest Debug output does not contain private key.
+#[test]
+fn test_ssh_request_debug_does_not_leak_private_key() {
+    use vauban_web::ipc::SshSessionOpenRequest;
+
+    let request = SshSessionOpenRequest {
+        session_id: "sess-002".to_string(),
+        user_id: "user-002".to_string(),
+        asset_id: "asset-002".to_string(),
+        asset_host: "10.0.0.2".to_string(),
+        asset_port: 22,
+        username: "deploy".to_string(),
+        terminal_cols: 80,
+        terminal_rows: 24,
+        auth_type: "private_key".to_string(),
+        password: None,
+        private_key: Some(
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nbase64data\n-----END OPENSSH PRIVATE KEY-----"
+                .to_string(),
+        ),
+        passphrase: Some("key-unlock-phrase".to_string()),
+    };
+
+    let debug_str = format!("{:?}", request);
+
+    assert!(
+        !debug_str.contains("BEGIN OPENSSH PRIVATE KEY"),
+        "SshSessionOpenRequest Debug must NOT contain the private key. Got: {}",
+        debug_str
+    );
+    assert!(
+        !debug_str.contains("base64data"),
+        "SshSessionOpenRequest Debug must NOT contain key data. Got: {}",
+        debug_str
+    );
+    assert!(
+        !debug_str.contains("key-unlock-phrase"),
+        "SshSessionOpenRequest Debug must NOT contain the passphrase. Got: {}",
+        debug_str
+    );
+}
+
+/// Test that None secrets in SshSessionOpenRequest show None, not [REDACTED].
+#[test]
+fn test_ssh_request_debug_none_secrets_show_none() {
+    use vauban_web::ipc::SshSessionOpenRequest;
+
+    let request = SshSessionOpenRequest {
+        session_id: "sess-003".to_string(),
+        user_id: "user-003".to_string(),
+        asset_id: "asset-003".to_string(),
+        asset_host: "10.0.0.3".to_string(),
+        asset_port: 22,
+        username: "user".to_string(),
+        terminal_cols: 80,
+        terminal_rows: 24,
+        auth_type: "password".to_string(),
+        password: None,
+        private_key: None,
+        passphrase: None,
+    };
+
+    let debug_str = format!("{:?}", request);
+
+    // When secrets are None, they should show as None (not [REDACTED])
+    assert!(
+        debug_str.contains("None"),
+        "None secrets should show as None in Debug output. Got: {}",
+        debug_str
+    );
+}
+
+// =============================================================================
+// H-3: X-Forwarded-For Header Spoofing Tests
+// =============================================================================
+// These tests verify that X-Forwarded-For / X-Real-IP headers are NOT trusted
+// when the request does not originate from a configured trusted proxy.
+// Before the fix, any client could inject these headers to spoof their IP,
+// bypassing rate limiting and poisoning audit logs.
+
+/// Test that the resolve_client_ip utility ignores XFF from untrusted sources.
+/// This is a unit-level regression test for the core H-3 fix.
+#[test]
+fn test_resolve_client_ip_ignores_xff_without_trusted_proxy() {
+    use axum::http::HeaderMap;
+    use std::net::IpAddr;
+
+    let mut headers = HeaderMap::new();
+    headers.insert("X-Forwarded-For", "1.2.3.4".parse().unwrap());
+
+    let connect_ip: IpAddr = "10.0.0.99".parse().unwrap();
+    // Empty trusted list -> headers must be ignored
+    let result = vauban_web::middleware::resolve_client_ip(&headers, connect_ip, &[]);
+
+    assert_eq!(
+        result.to_string(),
+        "10.0.0.99",
+        "XFF should be ignored when trusted_proxies is empty"
+    );
+}
+
+/// Test that XFF is ignored when the connection comes from a non-trusted IP.
+#[test]
+fn test_resolve_client_ip_ignores_xff_from_non_trusted_ip() {
+    use axum::http::HeaderMap;
+    use std::net::IpAddr;
+
+    let mut headers = HeaderMap::new();
+    headers.insert("X-Forwarded-For", "1.2.3.4".parse().unwrap());
+
+    let connect_ip: IpAddr = "10.0.0.99".parse().unwrap();
+    // Trusted list does NOT include 10.0.0.99
+    let trusted: Vec<IpAddr> = vec!["127.0.0.1".parse().unwrap()];
+    let result = vauban_web::middleware::resolve_client_ip(&headers, connect_ip, &trusted);
+
+    assert_eq!(
+        result.to_string(),
+        "10.0.0.99",
+        "XFF should be ignored when connection is not from a trusted proxy"
+    );
+}
+
+/// Test that X-Real-IP is also ignored from untrusted sources.
+#[test]
+fn test_resolve_client_ip_ignores_x_real_ip_without_trusted_proxy() {
+    use axum::http::HeaderMap;
+    use std::net::IpAddr;
+
+    let mut headers = HeaderMap::new();
+    headers.insert("X-Real-IP", "8.8.8.8".parse().unwrap());
+
+    let connect_ip: IpAddr = "192.168.1.50".parse().unwrap();
+    let result = vauban_web::middleware::resolve_client_ip(&headers, connect_ip, &[]);
+
+    assert_eq!(
+        result.to_string(),
+        "192.168.1.50",
+        "X-Real-IP should be ignored when trusted_proxies is empty"
+    );
+}
+
+/// Test that XFF IS honoured when the connection comes from a trusted proxy.
+#[test]
+fn test_resolve_client_ip_trusts_xff_from_trusted_proxy() {
+    use axum::http::HeaderMap;
+    use std::net::IpAddr;
+
+    let mut headers = HeaderMap::new();
+    headers.insert("X-Forwarded-For", "203.0.113.50".parse().unwrap());
+
+    let connect_ip: IpAddr = "127.0.0.1".parse().unwrap();
+    let trusted: Vec<IpAddr> = vec!["127.0.0.1".parse().unwrap()];
+    let result = vauban_web::middleware::resolve_client_ip(&headers, connect_ip, &trusted);
+
+    assert_eq!(
+        result.to_string(),
+        "203.0.113.50",
+        "XFF should be trusted when connection is from a trusted proxy"
+    );
+}
+
+/// Test that only the first IP in the XFF chain is used (leftmost = original client).
+#[test]
+fn test_resolve_client_ip_uses_first_xff_entry() {
+    use axum::http::HeaderMap;
+    use std::net::IpAddr;
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "X-Forwarded-For",
+        "203.0.113.50, 70.41.3.18, 150.172.238.178"
+            .parse()
+            .unwrap(),
+    );
+
+    let connect_ip: IpAddr = "127.0.0.1".parse().unwrap();
+    let trusted: Vec<IpAddr> = vec!["127.0.0.1".parse().unwrap()];
+    let result = vauban_web::middleware::resolve_client_ip(&headers, connect_ip, &trusted);
+
+    assert_eq!(
+        result.to_string(),
+        "203.0.113.50",
+        "Should use the leftmost (original client) IP from the XFF chain"
+    );
+}
+
+/// Test that the parsed_trusted_proxies method correctly parses valid IPs
+/// and silently skips invalid ones.
+#[test]
+fn test_security_config_parsed_trusted_proxies() {
+    use vauban_web::config::SecurityConfig;
+
+    let config = SecurityConfig {
+        password_min_length: 12,
+        max_failed_login_attempts: 5,
+        session_max_duration_secs: 28800,
+        session_idle_timeout_secs: 1800,
+        rate_limit_per_minute: 10,
+        argon2: vauban_web::config::Argon2Config {
+            memory_size_kb: 1024,
+            iterations: 1,
+            parallelism: 1,
+        },
+        trusted_proxies: vec![
+            "127.0.0.1".to_string(),
+            "::1".to_string(),
+            "not-a-valid-ip".to_string(), // Should be silently skipped
+            "10.0.0.1".to_string(),
+        ],
+    };
+
+    let parsed = config.parsed_trusted_proxies();
+    assert_eq!(parsed.len(), 3, "Invalid entries should be silently skipped");
+    assert_eq!(parsed[0].to_string(), "127.0.0.1");
+    assert_eq!(parsed[1].to_string(), "::1");
+    assert_eq!(parsed[2].to_string(), "10.0.0.1");
+}
+
+/// Test that an empty trusted_proxies config results in headers never being trusted.
+#[test]
+fn test_security_config_empty_trusted_proxies() {
+    use vauban_web::config::SecurityConfig;
+
+    let config = SecurityConfig {
+        password_min_length: 12,
+        max_failed_login_attempts: 5,
+        session_max_duration_secs: 28800,
+        session_idle_timeout_secs: 1800,
+        rate_limit_per_minute: 10,
+        argon2: vauban_web::config::Argon2Config {
+            memory_size_kb: 1024,
+            iterations: 1,
+            parallelism: 1,
+        },
+        trusted_proxies: vec![],
+    };
+
+    let parsed = config.parsed_trusted_proxies();
+    assert!(parsed.is_empty());
+}
+
+/// Integration test: verify that login endpoint records the correct client IP
+/// (i.e. the TCP peer address, not a spoofed X-Forwarded-For header).
+/// In the test environment, trusted_proxies defaults to empty, so XFF is ignored.
+#[tokio::test]
+#[serial]
+async fn test_login_ignores_spoofed_xff_header() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("test_xff_login");
+    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
+
+    // Attempt login with a spoofed X-Forwarded-For header
+    let response = app
+        .server
+        .post("/api/v1/auth/login")
+        .add_header(
+            header::HeaderName::from_static("x-forwarded-for"),
+            "6.6.6.6".parse::<header::HeaderValue>().unwrap(),
+        )
+        .json(&json!({
+            "username": username,
+            "password": test_user.password
+        }))
+        .await;
+
+    // Login should succeed regardless of XFF
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 200 || status == 303,
+        "Login should succeed, got {}",
+        status
+    );
+
+    // Verify the session was created with the real connection IP (127.0.0.1)
+    // and NOT the spoofed 6.6.6.6
+    {
+        use diesel::{ExpressionMethods, QueryDsl};
+        use diesel_async::RunQueryDsl;
+        use vauban_web::schema::auth_sessions;
+
+        let session_ip: ipnetwork::IpNetwork = unwrap_ok!(
+            auth_sessions::table
+                .filter(auth_sessions::user_id.eq(test_user.user.id))
+                .order(auth_sessions::created_at.desc())
+                .select(auth_sessions::ip_address)
+                .first(&mut conn)
+                .await
+        );
+
+        let ip_str = session_ip.ip().to_string();
+        assert!(
+            !ip_str.contains("6.6.6.6"),
+            "Session IP should NOT be the spoofed XFF value 6.6.6.6, got: {}",
+            ip_str
+        );
+    }
+
+    test_db::cleanup(&mut conn).await;
+}
+
+// =============================================================================
+// H-2: Session Revocation Bypass Tests
+// =============================================================================
+// These tests verify that a JWT token whose session has been revoked (deleted)
+// from the database is correctly rejected by the auth middleware.
+// Before the fix, require_auth only validated the JWT signature without checking
+// the database, allowing revoked tokens to remain valid.
+
+/// Test that an API request with a valid JWT but a revoked session is rejected.
+/// This is the core H-2 regression test.
+#[tokio::test]
+#[serial]
+async fn test_revoked_session_token_rejected_on_api() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    // Create an admin user with a valid session
+    let username = unique_name("test_revoked_api");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &username).await;
+
+    // Verify the token works before revocation
+    let response = app
+        .server
+        .get("/api/v1/assets")
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .await;
+    assert_status(&response, 200);
+
+    // Revoke the session by deleting it from the database
+    {
+        use diesel::{ExpressionMethods, QueryDsl};
+        use diesel_async::RunQueryDsl;
+        use vauban_web::schema::auth_sessions;
+
+        unwrap_ok!(
+            diesel::delete(
+                auth_sessions::table.filter(auth_sessions::user_id.eq(admin.user.id)),
+            )
+            .execute(&mut conn)
+            .await
+        );
+    }
+
+    // The same token should now be rejected (JWT is still valid, but session is revoked)
+    let response = app
+        .server
+        .get("/api/v1/assets")
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 401 || status == 403,
+        "Expected 401 or 403 for revoked session token on API, got {}",
+        status
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Test that a web page request with a revoked session redirects to login.
+#[tokio::test]
+#[serial]
+async fn test_revoked_session_token_redirects_on_web() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("test_revoked_web");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &username).await;
+
+    // Verify the token works before revocation (web page)
+    let response = app
+        .server
+        .get("/accounts/sessions")
+        .add_header(
+            header::COOKIE,
+            format!("access_token={}", admin.token).parse::<header::HeaderValue>().unwrap(),
+        )
+        .await;
+    assert_status(&response, 200);
+
+    // Revoke the session
+    {
+        use diesel::{ExpressionMethods, QueryDsl};
+        use diesel_async::RunQueryDsl;
+        use vauban_web::schema::auth_sessions;
+
+        unwrap_ok!(
+            diesel::delete(
+                auth_sessions::table.filter(auth_sessions::user_id.eq(admin.user.id)),
+            )
+            .execute(&mut conn)
+            .await
+        );
+    }
+
+    // The same token should redirect to login
+    let response = app
+        .server
+        .get("/accounts/sessions")
+        .add_header(
+            header::COOKIE,
+            format!("access_token={}", admin.token).parse::<header::HeaderValue>().unwrap(),
+        )
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 303 || status == 401,
+        "Expected redirect (303) or 401 for revoked session on web page, got {}",
+        status
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Test that re-creating a session after revocation restores access.
+/// This verifies that the system correctly handles session lifecycle.
+#[tokio::test]
+#[serial]
+async fn test_new_session_works_after_revocation() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("test_reauth");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &username).await;
+
+    // Revoke the session
+    {
+        use diesel::{ExpressionMethods, QueryDsl};
+        use diesel_async::RunQueryDsl;
+        use vauban_web::schema::auth_sessions;
+
+        unwrap_ok!(
+            diesel::delete(
+                auth_sessions::table.filter(auth_sessions::user_id.eq(admin.user.id)),
+            )
+            .execute(&mut conn)
+            .await
+        );
+    }
+
+    // Old token should be rejected
+    let response = app
+        .server
+        .get("/api/v1/assets")
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .await;
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 401 || status == 403,
+        "Old token should be rejected after revocation, got {}",
+        status
+    );
+
+    // Generate a new token and session for the same user
+    let new_token = app
+        .generate_test_token(
+            &admin.user.uuid.to_string(),
+            &admin.user.username,
+            true,
+            true,
+        )
+        .await;
+
+    // New token should work
+    let response = app
+        .server
+        .get("/api/v1/assets")
+        .add_header(header::AUTHORIZATION, app.auth_header(&new_token))
+        .await;
+    assert_status(&response, 200);
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Test that an idle-expired session is rejected even with a valid JWT.
+/// Sessions that exceed the idle timeout should be treated as invalid.
+#[tokio::test]
+#[serial]
+async fn test_idle_expired_session_rejected_on_api() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("test_idle_api");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &username).await;
+
+    // Verify token works
+    let response = app
+        .server
+        .get("/api/v1/assets")
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .await;
+    assert_status(&response, 200);
+
+    // Set last_activity to 2 hours ago (exceeds idle timeout)
+    {
+        use chrono::{Duration, Utc};
+        use diesel::{ExpressionMethods, QueryDsl};
+        use diesel_async::RunQueryDsl;
+        use vauban_web::schema::auth_sessions;
+
+        unwrap_ok!(
+            diesel::update(
+                auth_sessions::table.filter(auth_sessions::user_id.eq(admin.user.id)),
+            )
+            .set(auth_sessions::last_activity.eq(Utc::now() - Duration::hours(2)))
+            .execute(&mut conn)
+            .await
+        );
+    }
+
+    // Token should be rejected due to idle timeout
+    let response = app
+        .server
+        .get("/api/v1/assets")
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 401 || status == 403,
+        "Expected 401/403 for idle-expired session on API, got {}",
+        status
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Test that a session that exceeded max duration is rejected.
+#[tokio::test]
+#[serial]
+async fn test_max_duration_exceeded_session_rejected_on_api() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("test_maxdur_api");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &username).await;
+
+    // Verify token works
+    let response = app
+        .server
+        .get("/api/v1/assets")
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .await;
+    assert_status(&response, 200);
+
+    // Set created_at to 10 hours ago (exceeds max_duration of 8h)
+    {
+        use chrono::{Duration, Utc};
+        use diesel::{ExpressionMethods, QueryDsl};
+        use diesel_async::RunQueryDsl;
+        use vauban_web::schema::auth_sessions;
+
+        unwrap_ok!(
+            diesel::update(
+                auth_sessions::table.filter(auth_sessions::user_id.eq(admin.user.id)),
+            )
+            .set(auth_sessions::created_at.eq(Utc::now() - Duration::hours(10)))
+            .execute(&mut conn)
+            .await
+        );
+    }
+
+    // Token should be rejected due to max duration
+    let response = app
+        .server
+        .get("/api/v1/assets")
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 401 || status == 403,
+        "Expected 401/403 for max-duration-exceeded session on API, got {}",
+        status
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Test that a valid session with recent activity is accepted.
+/// This is a positive test to ensure session validation doesn't block valid sessions.
+#[tokio::test]
+#[serial]
+async fn test_valid_session_accepted_on_api() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("test_valid_sess");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &username).await;
+
+    // Token with fresh session should work on API
+    let response = app
+        .server
+        .get("/api/v1/assets")
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .await;
+    assert_status(&response, 200);
+
+    // Also works on web pages
+    let response = app
+        .server
+        .get("/accounts/sessions")
+        .add_header(
+            header::COOKIE,
+            format!("access_token={}", admin.token).parse::<header::HeaderValue>().unwrap(),
+        )
+        .await;
+    assert_status(&response, 200);
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Test that revoking one session doesn't affect other users' sessions.
+#[tokio::test]
+#[serial]
+async fn test_revoking_one_user_doesnt_affect_other() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    // Create two users
+    let username1 = unique_name("test_revoke_u1");
+    let username2 = unique_name("test_revoke_u2");
+    let admin1 = create_admin_user(&mut conn, &app.auth_service, &username1).await;
+    let admin2 = create_admin_user(&mut conn, &app.auth_service, &username2).await;
+
+    // Both should work initially
+    let response1 = app
+        .server
+        .get("/api/v1/assets")
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin1.token))
+        .await;
+    assert_status(&response1, 200);
+
+    let response2 = app
+        .server
+        .get("/api/v1/assets")
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin2.token))
+        .await;
+    assert_status(&response2, 200);
+
+    // Revoke user1's session only
+    {
+        use diesel::{ExpressionMethods, QueryDsl};
+        use diesel_async::RunQueryDsl;
+        use vauban_web::schema::auth_sessions;
+
+        unwrap_ok!(
+            diesel::delete(
+                auth_sessions::table.filter(auth_sessions::user_id.eq(admin1.user.id)),
+            )
+            .execute(&mut conn)
+            .await
+        );
+    }
+
+    // User1 should be rejected
+    let response1 = app
+        .server
+        .get("/api/v1/assets")
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin1.token))
+        .await;
+    let status1 = response1.status_code().as_u16();
+    assert!(
+        status1 == 401 || status1 == 403,
+        "User1 should be rejected after revocation, got {}",
+        status1
+    );
+
+    // User2 should still work
+    let response2 = app
+        .server
+        .get("/api/v1/assets")
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin2.token))
+        .await;
+    assert_status(&response2, 200);
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Test that a regular (non-staff) user's revoked session is also rejected.
+/// Ensures revocation applies uniformly regardless of user role.
+#[tokio::test]
+#[serial]
+async fn test_regular_user_revoked_session_rejected() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("test_revoke_reg");
+    let regular = create_test_user(&mut conn, &app.auth_service, &username).await;
+
+    // Regular user accessing their own sessions page (no staff required)
+    let response = app
+        .server
+        .get("/accounts/sessions")
+        .add_header(
+            header::COOKIE,
+            format!("access_token={}", regular.token).parse::<header::HeaderValue>().unwrap(),
+        )
+        .await;
+    assert_status(&response, 200);
+
+    // Revoke the session
+    {
+        use diesel::{ExpressionMethods, QueryDsl};
+        use diesel_async::RunQueryDsl;
+        use vauban_web::schema::auth_sessions;
+
+        unwrap_ok!(
+            diesel::delete(
+                auth_sessions::table.filter(auth_sessions::user_id.eq(regular.user.id)),
+            )
+            .execute(&mut conn)
+            .await
+        );
+    }
+
+    // Should be rejected after revocation
+    let response = app
+        .server
+        .get("/accounts/sessions")
+        .add_header(
+            header::COOKIE,
+            format!("access_token={}", regular.token).parse::<header::HeaderValue>().unwrap(),
+        )
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 303 || status == 401,
+        "Regular user should be rejected after session revocation, got {}",
+        status
+    );
+
+    test_db::cleanup(&mut conn).await;
 }
 
 /// Helper function to extract CSRF token from HTML.

@@ -27,9 +27,11 @@ pub struct ListUsersParams {
 /// List users handler.
 pub async fn list_users(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
     Query(params): Query<ListUsersParams>,
 ) -> AppResult<Json<Vec<UserDto>>> {
+    super::require_staff(&user)?;
+
     let mut conn = state
         .db_pool
         .get()
@@ -57,9 +59,11 @@ pub async fn list_users(
 /// Get user by UUID handler.
 pub async fn get_user(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
     Path(user_uuid_str): Path<String>,
 ) -> AppResult<Json<UserDto>> {
+    super::require_staff(&user)?;
+
     // Parse UUID manually for better error messages
     let user_uuid = Uuid::parse_str(&user_uuid_str)
         .map_err(|_| AppError::Validation("Invalid UUID format".to_string()))?;
@@ -91,9 +95,11 @@ fn sanitize_text(value: Option<String>) -> Option<String> {
 /// Create user handler.
 pub async fn create_user(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
     Json(request): Json<CreateUserRequest>,
 ) -> AppResult<Json<UserDto>> {
+    super::require_staff(&user)?;
+
     validator::Validate::validate(&request)
         .map_err(|e| AppError::Validation(format!("Validation failed: {:?}", e)))?;
 
@@ -142,10 +148,12 @@ pub async fn create_user(
 /// Update user handler.
 pub async fn update_user(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
     Path(user_uuid_str): Path<String>,
     Json(request): Json<UpdateUserRequest>,
 ) -> AppResult<Json<UserDto>> {
+    super::require_staff(&user)?;
+
     // Parse UUID manually for better error messages
     let user_uuid = Uuid::parse_str(&user_uuid_str)
         .map_err(|_| AppError::Validation("Invalid UUID format".to_string()))?;

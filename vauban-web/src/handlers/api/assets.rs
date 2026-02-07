@@ -88,9 +88,11 @@ pub async fn get_asset(
 /// Create asset handler.
 pub async fn create_asset(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
     Json(request): Json<CreateAssetRequest>,
 ) -> AppResult<Json<Asset>> {
+    super::require_staff(&user)?;
+
     validator::Validate::validate(&request)
         .map_err(|e| AppError::Validation(format!("Validation failed: {:?}", e)))?;
 
@@ -148,12 +150,16 @@ pub async fn create_asset(
 /// - HTML error fragment on failure (for display in error container)
 pub async fn update_asset(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
     headers: HeaderMap,
     Path(asset_uuid_str): Path<String>,
     Json(request): Json<UpdateAssetRequest>,
 ) -> Response {
     use crate::error::{htmx_error_response, is_htmx_request};
+
+    if let Err(e) = super::require_staff(&user) {
+        return e.into_response();
+    }
 
     let is_htmx = is_htmx_request(&headers);
 

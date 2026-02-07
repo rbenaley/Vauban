@@ -4016,7 +4016,6 @@ pub async fn group_list(
     // Query groups with member count
     // Groups list query - migrated to Diesel DSL
     use crate::schema::vauban_groups::dsl::*;
-    use diesel::dsl::sql;
 
     #[allow(clippy::type_complexity)]
     let groups_data: Vec<(
@@ -4026,14 +4025,9 @@ pub async fn group_list(
         String,
         chrono::DateTime<chrono::Utc>,
     )> = if let Some(ref s) = search_filter {
-        // NOTE: ILIKE requires raw SQL fragment for OR condition on nullable column
         let pattern = format!("%{}%", s);
         vauban_groups
-            .filter(sql::<diesel::sql_types::Bool>(&format!(
-                "name ILIKE '{}' OR description ILIKE '{}'",
-                pattern.replace('\'', "''"),
-                pattern.replace('\'', "''")
-            )))
+            .filter(name.ilike(&pattern).or(description.ilike(&pattern)))
             .order(name.asc())
             .select((uuid, name, description, source, created_at))
             .load::<(
@@ -4736,7 +4730,6 @@ pub async fn group_member_search(
     use crate::schema::user_groups::dsl as ug;
     use crate::schema::users::dsl as u;
     use crate::schema::vauban_groups::dsl as vg;
-    use diesel::dsl::sql;
 
     // Only staff or superuser can manage members
     if !auth_user.is_superuser && !auth_user.is_staff {
@@ -4791,11 +4784,7 @@ pub async fn group_member_search(
             .filter(u::is_deleted.eq(false))
             .filter(u::is_active.eq(true))
             .filter(u::id.ne_all(&existing_member_ids))
-            .filter(sql::<diesel::sql_types::Bool>(&format!(
-                "(username ILIKE '{}' OR email ILIKE '{}')",
-                pattern.replace('\'', "''"),
-                pattern.replace('\'', "''")
-            )))
+            .filter(u::username.ilike(&pattern).or(u::email.ilike(&pattern)))
             .order(u::username.asc())
             .select((u::uuid, u::username, u::email))
             .limit(50)
@@ -6802,6 +6791,7 @@ fn htmx_error_response(message: &str) -> Response {
 pub async fn connect_ssh(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
+    jar: CookieJar,
     auth_user: AuthUser,
     axum::extract::Path(asset_uuid_str): axum::extract::Path<String>,
     Form(form): Form<ConnectSshForm>,
@@ -6811,6 +6801,27 @@ pub async fn connect_ssh(
 
     // Check if this is an HTMX request
     let is_htmx = headers.get("HX-Request").is_some();
+
+    // CSRF validation
+    let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
+    let secret = state.config.secret_key.expose_secret().as_bytes();
+    if !crate::middleware::csrf::validate_double_submit(
+        secret,
+        csrf_cookie.map(|c| c.value()),
+        &form.csrf_token,
+    ) {
+        let msg = "Invalid CSRF token";
+        if is_htmx {
+            return htmx_error_response(msg);
+        }
+        return Json(ConnectSshResponse {
+            success: false,
+            session_id: None,
+            redirect_url: None,
+            error: Some(msg.to_string()),
+        })
+        .into_response();
+    }
 
     // Parse asset UUID
     let asset_uuid = match Uuid::parse_str(&asset_uuid_str) {

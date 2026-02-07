@@ -288,12 +288,18 @@ async fn test_ssh_connect_without_proxy() {
     let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
     let asset = create_test_ssh_asset(&mut conn, &unique_name("test-ssh-connect-asset")).await;
 
+    // Generate valid CSRF token for double-submit
+    let csrf_token = app.generate_csrf_token();
+
     // Execute: POST /assets/{uuid}/connect
     let response = app
         .server
         .post(&format!("/assets/{}/connect", asset.asset.uuid))
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
-        .form(&[("csrf_token", "test-csrf")])
+        .add_header(
+            header::COOKIE,
+            format!("access_token={}; __vauban_csrf={}", admin.token, csrf_token),
+        )
+        .form(&[("csrf_token", &csrf_token)])
         .await;
 
     // Assert: Should return JSON with error (SSH proxy not available in tests)
@@ -351,12 +357,18 @@ async fn test_ssh_connect_invalid_uuid() {
     let admin_name = unique_name("test_admin_ssh_invalid");
     let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
+    // Generate valid CSRF token for double-submit
+    let csrf_token = app.generate_csrf_token();
+
     // Execute: POST /assets/invalid-uuid/connect
     let response = app
         .server
         .post("/assets/not-a-valid-uuid/connect")
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
-        .form(&[("csrf_token", "test-csrf")])
+        .add_header(
+            header::COOKIE,
+            format!("access_token={}; __vauban_csrf={}", admin.token, csrf_token),
+        )
+        .form(&[("csrf_token", &csrf_token)])
         .await;
 
     // Assert: Should return JSON with error
@@ -387,12 +399,18 @@ async fn test_ssh_connect_asset_not_found() {
 
     let fake_uuid = Uuid::new_v4();
 
+    // Generate valid CSRF token for double-submit
+    let csrf_token = app.generate_csrf_token();
+
     // Execute: POST /assets/{fake_uuid}/connect
     let response = app
         .server
         .post(&format!("/assets/{}/connect", fake_uuid))
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
-        .form(&[("csrf_token", "test-csrf")])
+        .add_header(
+            header::COOKIE,
+            format!("access_token={}; __vauban_csrf={}", admin.token, csrf_token),
+        )
+        .form(&[("csrf_token", &csrf_token)])
         .await;
 
     // Assert: Should return JSON with "not found" error
@@ -423,12 +441,18 @@ async fn test_ssh_connect_wrong_asset_type() {
     let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
     let rdp_asset = create_test_rdp_asset(&mut conn, &unique_name("test-rdp-asset")).await;
 
+    // Generate valid CSRF token for double-submit
+    let csrf_token = app.generate_csrf_token();
+
     // Execute: POST /assets/{rdp_uuid}/connect (trying SSH on RDP asset)
     let response = app
         .server
         .post(&format!("/assets/{}/connect", rdp_asset.asset.uuid))
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
-        .form(&[("csrf_token", "test-csrf")])
+        .add_header(
+            header::COOKIE,
+            format!("access_token={}; __vauban_csrf={}", admin.token, csrf_token),
+        )
+        .form(&[("csrf_token", &csrf_token)])
         .await;
 
     // Assert: Should return JSON with error (depends on SSH proxy availability)
@@ -458,12 +482,18 @@ async fn test_ssh_connect_with_username_override() {
     let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
     let asset = create_test_ssh_asset(&mut conn, &unique_name("test-ssh-user-asset")).await;
 
+    // Generate valid CSRF token for double-submit
+    let csrf_token = app.generate_csrf_token();
+
     // Execute: POST /assets/{uuid}/connect with username
     let response = app
         .server
         .post(&format!("/assets/{}/connect", asset.asset.uuid))
-        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
-        .form(&[("csrf_token", "test-csrf"), ("username", "custom_admin")])
+        .add_header(
+            header::COOKIE,
+            format!("access_token={}; __vauban_csrf={}", admin.token, csrf_token),
+        )
+        .form(&[("csrf_token", csrf_token.as_str()), ("username", "custom_admin")])
         .await;
 
     // Assert: Should return JSON response (success depends on SSH proxy)

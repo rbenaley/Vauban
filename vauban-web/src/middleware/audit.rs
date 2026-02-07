@@ -1,11 +1,17 @@
 /// VAUBAN Web - Audit logging middleware.
 ///
 /// Logs security events and user actions.
-use axum::{extract::Request, middleware::Next, response::Response};
+use axum::{
+    extract::{ConnectInfo, Request, State},
+    middleware::Next,
+    response::Response,
+};
 use chrono::Utc;
+use std::net::SocketAddr;
 use std::time::Instant;
 use tracing::{error, info, warn};
 
+use crate::AppState;
 use crate::middleware::auth::AuthUser;
 
 /// Audit log entry.
@@ -43,22 +49,33 @@ pub fn format_apache_combined(log: &AuditLog) -> String {
 }
 
 /// Audit middleware that logs requests.
-pub async fn audit_middleware(request: Request, next: Next) -> Response {
+///
+/// Proxy headers (`X-Forwarded-For`, `X-Real-IP`) are only trusted when the
+/// TCP connection originates from an address in `config.security.trusted_proxies`.
+pub async fn audit_middleware(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Response {
     let start = Instant::now();
     let method = request.method().clone();
     let path = request.uri().path().to_string();
 
-    let ip = request
-        .headers()
-        .get("x-forwarded-for")
-        .and_then(|h| h.to_str().ok())
-        .or_else(|| {
-            request
-                .headers()
-                .get("x-real-ip")
-                .and_then(|h| h.to_str().ok())
-        })
-        .map(|s| s.to_string());
+    // Resolve client IP using trusted proxy validation
+    let trusted = state.config.security.parsed_trusted_proxies();
+    let connect_ip = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0.ip());
+    let ip = if let Some(peer_ip) = connect_ip {
+        Some(
+            super::resolve_client_ip(request.headers(), peer_ip, &trusted).to_string(),
+        )
+    } else {
+        // ConnectInfo not available (e.g. in tests) – fall back to
+        // peer address only; never trust proxy headers without a known peer.
+        None
+    };
 
     let user_agent = request
         .headers()

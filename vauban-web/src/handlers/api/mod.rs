@@ -17,6 +17,25 @@ pub mod assets;
 pub mod groups;
 pub mod sessions;
 
+use crate::error::AppError;
+use crate::middleware::auth::AuthUser;
+
+/// Verify the authenticated user has staff or superuser privileges.
+///
+/// Used by API endpoints that perform administrative operations such as
+/// creating/modifying users, assets, sessions, or accessing sensitive data.
+/// Returns `Err(AppError::Authorization)` with a 403 Forbidden if the user
+/// does not have sufficient privileges.
+pub fn require_staff(user: &AuthUser) -> Result<(), AppError> {
+    if user.is_staff || user.is_superuser {
+        Ok(())
+    } else {
+        Err(AppError::Authorization(
+            "Insufficient privileges: staff or superuser role required".to_string(),
+        ))
+    }
+}
+
 // Re-export all API handlers for convenient access
 pub use accounts::{create_user, get_user, list_users, update_user};
 pub use assets::{

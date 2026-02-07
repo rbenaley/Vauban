@@ -103,6 +103,10 @@ max_failed_login_attempts = 5
 session_max_duration_secs = 28800   # 8 hours
 session_idle_timeout_secs = 1800    # 30 minutes
 rate_limit_per_minute = 10
+# Trusted reverse proxy IPs. X-Forwarded-For / X-Real-IP headers are only
+# honoured when the TCP connection originates from one of these addresses.
+# Empty list = proxy headers are never trusted (safe default).
+trusted_proxies = []
 
 [security.argon2]
 memory_size_kb = 65536

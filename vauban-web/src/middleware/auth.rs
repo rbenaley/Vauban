@@ -17,7 +17,6 @@ use sha3::{Digest, Sha3_256};
 use crate::AppState;
 use crate::error::AppError;
 use crate::schema::auth_sessions;
-use crate::services::auth::AuthService;
 
 /// Authenticated user context.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -211,8 +210,10 @@ fn extract_token(jar: &CookieJar, request: &Request) -> Result<Option<String>, A
 }
 
 /// Require authentication.
+/// Validates the JWT token AND verifies the session exists in the database
+/// (to support session revocation). Also updates last_activity.
 pub async fn require_auth(
-    State(auth_service): State<AuthService>,
+    State(state): State<AppState>,
     jar: CookieJar,
     request: Request,
     next: Next,
@@ -220,7 +221,13 @@ pub async fn require_auth(
     let token = extract_token(&jar, &request)?
         .ok_or_else(|| AppError::Auth("Authentication required".to_string()))?;
 
-    let claims = auth_service.verify_token(&token)?;
+    let claims = state.auth_service.verify_token(&token)?;
+
+    // Verify session exists in database and check timeouts (revocation support)
+    let token_hash = verify_session_with_timeouts(&state, &token)
+        .await
+        .ok_or_else(|| AppError::Auth("Session revoked or expired".to_string()))?;
+
     let user = AuthUser {
         uuid: claims.sub,
         username: claims.username,
@@ -232,12 +239,17 @@ pub async fn require_auth(
     let mut request = request;
     request.extensions_mut().insert(user);
 
+    // Update last_activity in the background
+    update_last_activity(&state, &token_hash).await;
+
     Ok(next.run(request).await)
 }
 
 /// Require MFA verification.
+/// Validates the JWT token, verifies MFA status, AND verifies the session
+/// exists in the database (to support session revocation). Also updates last_activity.
 pub async fn require_mfa(
-    State(auth_service): State<AuthService>,
+    State(state): State<AppState>,
     jar: CookieJar,
     request: Request,
     next: Next,
@@ -245,13 +257,18 @@ pub async fn require_mfa(
     let token = extract_token(&jar, &request)?
         .ok_or_else(|| AppError::Auth("Authentication required".to_string()))?;
 
-    let claims = auth_service.verify_token(&token)?;
+    let claims = state.auth_service.verify_token(&token)?;
 
     if !claims.mfa_verified {
         return Err(AppError::Authorization(
             "MFA verification required".to_string(),
         ));
     }
+
+    // Verify session exists in database and check timeouts (revocation support)
+    let token_hash = verify_session_with_timeouts(&state, &token)
+        .await
+        .ok_or_else(|| AppError::Auth("Session revoked or expired".to_string()))?;
 
     let user = AuthUser {
         uuid: claims.sub,
@@ -263,6 +280,9 @@ pub async fn require_mfa(
 
     let mut request = request;
     request.extensions_mut().insert(user);
+
+    // Update last_activity in the background
+    update_last_activity(&state, &token_hash).await;
 
     Ok(next.run(request).await)
 }

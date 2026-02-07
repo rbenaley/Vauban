@@ -41,9 +41,11 @@ pub struct ListMembersResponse {
 /// This is a read-only endpoint.
 pub async fn list_group_members(
     State(state): State<AppState>,
-    _auth_user: AuthUser,
+    auth_user: AuthUser,
     Path(uuid_str): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
+    super::require_staff(&auth_user)?;
+
     use crate::schema::user_groups::dsl as ug;
     use crate::schema::users::dsl as u;
     use crate::schema::vauban_groups::dsl as vg;

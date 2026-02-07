@@ -734,7 +734,8 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             state.clone(),
             middleware::auth::auth_middleware,
         ))
-        .layer(axum::middleware::from_fn(
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
             middleware::audit::audit_middleware,
         ));
 

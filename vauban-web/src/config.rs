@@ -291,6 +291,23 @@ pub struct SecurityConfig {
     pub session_idle_timeout_secs: u64,
     pub rate_limit_per_minute: u32,
     pub argon2: Argon2Config,
+    /// List of trusted reverse proxy IP addresses (e.g. `["127.0.0.1", "::1"]`).
+    /// `X-Forwarded-For` and `X-Real-IP` headers are only trusted when the TCP
+    /// connection originates from one of these addresses.  An empty list means
+    /// proxy headers are **never** trusted and the TCP peer address is always used.
+    #[serde(default)]
+    pub trusted_proxies: Vec<String>,
+}
+
+impl SecurityConfig {
+    /// Parse `trusted_proxies` into a `Vec<IpAddr>`, silently skipping
+    /// entries that cannot be parsed.
+    pub fn parsed_trusted_proxies(&self) -> Vec<std::net::IpAddr> {
+        self.trusted_proxies
+            .iter()
+            .filter_map(|s| s.parse::<std::net::IpAddr>().ok())
+            .collect()
+    }
 }
 
 /// Argon2 configuration.
