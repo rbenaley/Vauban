@@ -23,6 +23,107 @@ use crate::AppState;
 use crate::middleware::auth::AuthUser;
 use crate::services::broadcast::WsChannel;
 
+/// Verify that a proxy session exists and belongs to the authenticated user.
+///
+/// Returns `Ok(())` if:
+/// - The session exists in the database with the given UUID
+/// - The session's `user_id` matches the authenticated user's UUID
+/// - OR the user is staff/superuser (admin monitoring)
+///
+/// Returns `Err(StatusCode)` otherwise.
+async fn verify_session_ownership(
+    state: &AppState,
+    session_uuid_str: &str,
+    user: &AuthUser,
+) -> Result<(), axum::http::StatusCode> {
+    use crate::schema::{proxy_sessions, users};
+    use diesel::prelude::*;
+    use diesel_async::RunQueryDsl;
+
+    // Parse the session UUID
+    let session_uuid: uuid::Uuid = session_uuid_str
+        .parse()
+        .map_err(|_| axum::http::StatusCode::BAD_REQUEST)?;
+
+    // Parse the authenticated user's UUID
+    let user_uuid: uuid::Uuid = user
+        .uuid
+        .parse()
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // Query: join proxy_sessions with users to check ownership via UUID
+    let owner_uuid: Option<uuid::Uuid> = proxy_sessions::table
+        .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
+        .filter(proxy_sessions::uuid.eq(session_uuid))
+        .select(users::uuid)
+        .first(&mut conn)
+        .await
+        .optional()
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    match owner_uuid {
+        None => {
+            // Session not found
+            warn!(
+                session_id = %session_uuid_str,
+                user = %user.username,
+                "WebSocket rejected: session not found"
+            );
+            Err(axum::http::StatusCode::NOT_FOUND)
+        }
+        Some(owner) if owner == user_uuid || user.is_staff || user.is_superuser => {
+            // Session belongs to user, or user is admin
+            Ok(())
+        }
+        Some(_) => {
+            // Session belongs to another user and requester is not admin
+            warn!(
+                session_id = %session_uuid_str,
+                user = %user.username,
+                "WebSocket rejected: session belongs to another user"
+            );
+            Err(axum::http::StatusCode::FORBIDDEN)
+        }
+    }
+}
+
+/// Middleware guard for session-specific WebSocket routes.
+///
+/// Extracts the session ID from the last URI path segment and verifies
+/// that the authenticated user owns the session (or is staff/superuser).
+///
+/// This middleware MUST run before the WebSocket handler so that
+/// ownership is checked before the WebSocket upgrade extractor.
+pub async fn ws_session_guard(
+    State(state): State<AppState>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    // Extract AuthUser from request extensions (set by auth middleware)
+    let user = match request.extensions().get::<AuthUser>() {
+        Some(user) => user.clone(),
+        None => {
+            return axum::http::StatusCode::UNAUTHORIZED.into_response();
+        }
+    };
+
+    // Extract session ID from the last path segment
+    // Routes: /ws/terminal/{session_id} and /ws/session/{id}
+    let path = request.uri().path().to_string();
+    let session_id = path.rsplit('/').next().unwrap_or("");
+
+    match verify_session_ownership(&state, session_id, &user).await {
+        Err(status) => status.into_response(),
+        Ok(()) => next.run(request).await,
+    }
+}
+
 /// Terminal control commands received from the frontend.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
@@ -340,6 +441,10 @@ async fn fetch_initial_activity(
 /// Session live WebSocket handler.
 ///
 /// Establishes a WebSocket connection for live session updates.
+///
+/// Security: Session ownership is verified by the `ws_session_guard` middleware
+/// before this handler is called. Only the session owner or staff/superuser
+/// users can reach this handler.
 pub async fn session_ws(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
@@ -351,6 +456,7 @@ pub async fn session_ws(
         session_id = %session_id,
         "Session WebSocket connection requested"
     );
+
     ws.on_upgrade(move |socket| handle_session_socket(socket, state, session_id, user))
 }
 
@@ -749,6 +855,10 @@ async fn fetch_active_sessions_list(
 /// Establishes a bidirectional WebSocket connection for interactive SSH terminal.
 /// Receives terminal input from client, forwards to SSH proxy.
 /// Receives SSH output from proxy, forwards to client.
+///
+/// Security: Session ownership is verified by the `ws_session_guard` middleware
+/// before this handler is called. Only the session owner or staff/superuser
+/// users can reach this handler.
 pub async fn terminal_ws(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
@@ -760,6 +870,7 @@ pub async fn terminal_ws(
         session_id = %session_id,
         "Terminal WebSocket connection requested"
     );
+
     ws.on_upgrade(move |socket| handle_terminal_socket(socket, state, session_id, user))
 }
 
@@ -778,8 +889,7 @@ async fn handle_terminal_socket(
         "Terminal WebSocket connected"
     );
 
-    // TODO: Verify session exists and belongs to user via IPC with proxy
-    // For now, we proceed assuming the session exists
+    // Session ownership has been verified in terminal_ws() before the upgrade.
 
     // Check if we have the SSH proxy client
     let proxy_client = match &state.ssh_proxy {

@@ -495,6 +495,49 @@ pub async fn create_test_session(
     session_id
 }
 
+/// Create a test session and return both (session_id, session_uuid).
+pub async fn create_test_session_with_uuid(
+    conn: &mut AsyncPgConnection,
+    user_id: i32,
+    asset_id: i32,
+    session_type: &str,
+    status: &str,
+) -> (i32, Uuid) {
+    use vauban_web::schema::proxy_sessions;
+
+    let session_uuid = Uuid::new_v4();
+    let ip: ipnetwork::IpNetwork = unwrap_ok!("127.0.0.1".parse());
+
+    let (connected_at, disconnected_at) = if status == "active" {
+        (Some(Utc::now()), None)
+    } else {
+        (Some(Utc::now() - Duration::hours(1)), Some(Utc::now()))
+    };
+
+    let session_id: i32 = unwrap_ok!(
+        diesel::insert_into(proxy_sessions::table)
+            .values((
+                proxy_sessions::uuid.eq(session_uuid),
+                proxy_sessions::user_id.eq(user_id),
+                proxy_sessions::asset_id.eq(asset_id),
+                proxy_sessions::credential_id.eq("cred-123"),
+                proxy_sessions::credential_username.eq("testuser"),
+                proxy_sessions::session_type.eq(session_type),
+                proxy_sessions::status.eq(status),
+                proxy_sessions::client_ip.eq(ip),
+                proxy_sessions::connected_at.eq(connected_at),
+                proxy_sessions::disconnected_at.eq(disconnected_at),
+                proxy_sessions::is_recorded.eq(false),
+                proxy_sessions::metadata.eq(serde_json::json!({})),
+            ))
+            .returning(proxy_sessions::id)
+            .get_result(conn)
+            .await
+    );
+
+    (session_id, session_uuid)
+}
+
 /// Create a recorded session and return session_id.
 pub async fn create_recorded_session(
     conn: &mut AsyncPgConnection,

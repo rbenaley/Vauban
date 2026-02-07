@@ -283,7 +283,7 @@ pub fn socketpair_for_fd_passing() -> Result<(OwnedFd, OwnedFd)> {
     use nix::fcntl::{fcntl, FcntlArg, FdFlag};
     use nix::sys::socket::{socketpair, AddressFamily, SockFlag, SockType};
 
-    tracing::warn!("socketpair_for_fd_passing: SCM_RIGHTS FD passing only works on FreeBSD");
+    tracing::debug!("socketpair_for_fd_passing: SCM_RIGHTS FD passing not available, proxy will connect directly");
 
     let (sock1, sock2) =
         socketpair(AddressFamily::Unix, SockType::Stream, None, SockFlag::empty())
@@ -351,17 +351,21 @@ pub fn recv_fd(socket_fd: RawFd) -> Result<OwnedFd> {
 }
 
 /// Stub implementations for non-FreeBSD platforms (development).
+/// On platforms without Capsicum, FD passing is a no-op: the proxy
+/// falls back to connecting directly to the target host.
 #[cfg(not(target_os = "freebsd"))]
 pub fn send_fd(_socket_fd: RawFd, _fd_to_send: RawFd) -> Result<()> {
-    tracing::warn!("send_fd: SCM_RIGHTS not implemented on this platform");
+    tracing::debug!("send_fd: skipped (no SCM_RIGHTS on this platform, proxy will connect directly)");
     Ok(())
 }
 
 #[cfg(not(target_os = "freebsd"))]
 pub fn recv_fd(_socket_fd: RawFd) -> Result<OwnedFd> {
+    // Return a specific error that callers can handle gracefully.
+    // This is NOT a failure: the proxy will fall back to a direct connection.
     Err(IpcError::Io(io::Error::new(
         io::ErrorKind::Unsupported,
-        "SCM_RIGHTS not implemented on this platform",
+        "FD passing not available (non-FreeBSD platform), using direct connection",
     )))
 }
 

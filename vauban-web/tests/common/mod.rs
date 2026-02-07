@@ -233,12 +233,21 @@ fn build_test_router(state: AppState) -> Router {
     use vauban_web::handlers;
     use vauban_web::middleware;
 
+    // Session ownership middleware for WS routes
+    let session_guard = axum::middleware::from_fn_with_state(
+        state.clone(),
+        handlers::websocket::ws_session_guard,
+    );
+
     Router::new()
         // Login page (for redirect tests)
         .route("/login", get(handlers::web::login_page))
         // WebSocket routes
         .route("/ws/dashboard", get(handlers::websocket::dashboard_ws))
-        .route("/ws/session/{id}", get(handlers::websocket::session_ws))
+        .route(
+            "/ws/session/{id}",
+            get(handlers::websocket::session_ws).layer(session_guard.clone()),
+        )
         .route(
             "/ws/notifications",
             get(handlers::websocket::notifications_ws),
@@ -437,10 +446,10 @@ fn build_test_router(state: AppState) -> Router {
             "/sessions/terminal/{session_id}",
             get(handlers::web::terminal_page),
         )
-        // Terminal WebSocket
+        // Terminal WebSocket (with session ownership guard)
         .route(
             "/ws/terminal/{session_id}",
-            get(handlers::websocket::terminal_ws),
+            get(handlers::websocket::terminal_ws).layer(session_guard),
         )
         // Health check
         .route("/health", get(|| async { "OK" }))

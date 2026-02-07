@@ -73,7 +73,7 @@ async fn test_dashboard_ws_requires_auth() {
 
 // ==================== Session WebSocket Tests ====================
 
-/// Test session WebSocket endpoint exists.
+/// Test session WebSocket endpoint exists (with invalid session ID -> 400).
 #[tokio::test]
 #[serial]
 async fn test_session_ws_endpoint_exists() {
@@ -86,6 +86,7 @@ async fn test_session_ws_endpoint_exists() {
         test_db::cleanup(&mut *c).await;
     }
 
+    // "test-session-id" is not a valid UUID -> ownership check returns 400
     let response = app
         .server
         .get("/ws/session/test-session-id")
@@ -98,8 +99,8 @@ async fn test_session_ws_endpoint_exists() {
 
     let status = response.status_code().as_u16();
     assert!(
-        status == 101 || status == 400 || status == 426,
-        "Expected 101, 400, or 426, got {}",
+        status == 400 || status == 426,
+        "Expected 400 or 426, got {}",
         status
     );
 }
@@ -420,7 +421,7 @@ async fn test_broadcast_channel_isolation() {
 
 // ==================== Terminal WebSocket Tests ====================
 
-/// Test terminal WebSocket endpoint exists.
+/// Test terminal WebSocket endpoint exists (with invalid session ID -> 400).
 #[tokio::test]
 #[serial]
 async fn test_terminal_ws_endpoint_exists() {
@@ -433,6 +434,7 @@ async fn test_terminal_ws_endpoint_exists() {
         test_db::cleanup(&mut *c).await;
     }
 
+    // "test-session-id" is not a valid UUID -> ownership check returns 400
     let response = app
         .server
         .get("/ws/terminal/test-session-id")
@@ -444,10 +446,9 @@ async fn test_terminal_ws_endpoint_exists() {
         .await;
 
     let status = response.status_code().as_u16();
-    // Without SSH proxy, endpoint should fail gracefully or return upgrade error
     assert!(
-        status == 101 || status == 400 || status == 426 || status == 500,
-        "Expected 101, 400, 426, or 500 (no SSH proxy), got {}",
+        status == 400 || status == 426,
+        "Expected 400 or 426, got {}",
         status
     );
 }
@@ -479,7 +480,7 @@ async fn test_terminal_ws_requires_auth() {
     );
 }
 
-/// Test terminal WebSocket with UUID session ID format.
+/// Test terminal WebSocket with UUID session ID that does not exist -> 404.
 #[tokio::test]
 #[serial]
 async fn test_terminal_ws_uuid_session_id() {
@@ -497,7 +498,7 @@ async fn test_terminal_ws_uuid_session_id() {
         test_db::cleanup(&mut *c).await;
     }
 
-    // Use a proper UUID format for session ID
+    // Valid UUID format but no corresponding session in DB -> ownership check returns 404
     let session_uuid = "550e8400-e29b-41d4-a716-446655440000";
     let response = app
         .server
@@ -510,10 +511,9 @@ async fn test_terminal_ws_uuid_session_id() {
         .await;
 
     let status = response.status_code().as_u16();
-    // Endpoint should exist and respond appropriately
     assert!(
-        status == 101 || status == 400 || status == 426 || status == 500,
-        "Expected 101, 400, 426, or 500 (no SSH proxy), got {}",
+        status == 404,
+        "Expected 404 (session not found), got {}",
         status
     );
 }

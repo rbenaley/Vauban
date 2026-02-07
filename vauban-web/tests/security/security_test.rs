@@ -21,7 +21,10 @@ use serde_json::json;
 use serial_test::serial;
 
 use crate::common::{TestApp, assertions::*, test_db, unwrap_ok, unwrap_some};
-use crate::fixtures::{create_admin_user, create_test_user, unique_name};
+use crate::fixtures::{
+    create_admin_user, create_simple_ssh_asset, create_test_session_with_uuid, create_test_user,
+    unique_name,
+};
 
 // =============================================================================
 // SQL Injection Prevention Tests
@@ -2716,6 +2719,515 @@ async fn test_regular_user_revoked_session_rejected() {
     test_db::cleanup(&mut conn).await;
 }
 
+// =============================================================================
+// H-5: XSS Sanitization Regression Tests
+// =============================================================================
+// These tests verify that HTML tags and XSS payloads are stripped from all
+// user-supplied text fields in both web (Form) and API (JSON) handlers.
+
+/// Test that creating a user via web form sanitizes first_name (XSS payload).
+#[tokio::test]
+#[serial]
+async fn test_xss_sanitized_in_web_user_create_first_name() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("admin_xss_create");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+    let csrf_token = app.generate_csrf_token();
+
+    let xss_payload = "<script>alert('xss')</script>John";
+    let new_username = unique_name("xss_user_create");
+    let new_email = format!("{}@test.vauban.io", new_username);
+
+    let _response = app
+        .server
+        .post("/accounts/users")
+        .add_header(
+            header::COOKIE,
+            format!("access_token={}; __vauban_csrf={}", admin.token, csrf_token),
+        )
+        .form(&[
+            ("csrf_token", csrf_token.as_str()),
+            ("username", new_username.as_str()),
+            ("email", new_email.as_str()),
+            ("password", "SecurePassword123!"),
+            ("first_name", xss_payload),
+            ("last_name", "<img src=x onerror=alert(1)>Doe"),
+            ("is_active", "on"),
+        ])
+        .await;
+
+    // Verify that HTML tags were stripped from the stored values
+    use diesel::{ExpressionMethods, QueryDsl};
+    use diesel_async::RunQueryDsl;
+    use vauban_web::schema::users;
+
+    let (stored_first, stored_last): (Option<String>, Option<String>) = users::table
+        .filter(users::username.eq(&new_username))
+        .select((users::first_name, users::last_name))
+        .first(&mut conn)
+        .await
+        .expect("User should exist");
+
+    let first = stored_first.expect("first_name should be set");
+    let last = stored_last.expect("last_name should be set");
+
+    assert!(
+        !first.contains("<script>"),
+        "first_name must not contain <script> tag, got: {}",
+        first
+    );
+    assert!(
+        !first.contains("alert("),
+        "first_name must not contain alert(), got: {}",
+        first
+    );
+    assert!(
+        first.contains("John"),
+        "first_name should preserve plain text 'John', got: {}",
+        first
+    );
+
+    assert!(
+        !last.contains("<img"),
+        "last_name must not contain <img> tag, got: {}",
+        last
+    );
+    assert!(
+        !last.contains("onerror"),
+        "last_name must not contain onerror attribute, got: {}",
+        last
+    );
+    assert!(
+        last.contains("Doe"),
+        "last_name should preserve plain text 'Doe', got: {}",
+        last
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Test that updating a user via web form sanitizes first_name and last_name.
+#[tokio::test]
+#[serial]
+async fn test_xss_sanitized_in_web_user_update() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("admin_xss_update");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+    let csrf_token = app.generate_csrf_token();
+
+    // Create a regular user to update
+    let target_name = unique_name("xss_target_update");
+    let target = create_admin_user(&mut conn, &app.auth_service, &target_name).await;
+
+    let xss_first = "<div onmouseover=steal()>Alice</div>";
+    let xss_last = "<a href='javascript:void(0)'>Smith</a>";
+
+    let _response = app
+        .server
+        .post(&format!("/accounts/users/{}", target.user.uuid))
+        .add_header(
+            header::COOKIE,
+            format!("access_token={}; __vauban_csrf={}", admin.token, csrf_token),
+        )
+        .form(&[
+            ("csrf_token", csrf_token.as_str()),
+            ("username", target.user.username.as_str()),
+            ("email", &format!("{}@test.vauban.io", target.user.username)),
+            ("first_name", xss_first),
+            ("last_name", xss_last),
+            ("is_active", "on"),
+        ])
+        .await;
+
+    use diesel::{ExpressionMethods, QueryDsl};
+    use diesel_async::RunQueryDsl;
+    use vauban_web::schema::users;
+
+    let (stored_first, stored_last): (Option<String>, Option<String>) = users::table
+        .filter(users::username.eq(&target.user.username))
+        .select((users::first_name, users::last_name))
+        .first::<(Option<String>, Option<String>)>(&mut conn)
+        .await
+        .expect("User should exist");
+
+    let first = stored_first.expect("first_name should be set");
+    let last = stored_last.expect("last_name should be set");
+
+    assert!(
+        !first.contains("<div"),
+        "first_name must not contain <div> tag, got: {}",
+        first
+    );
+    assert!(
+        !first.contains("onmouseover"),
+        "first_name must not contain event handler, got: {}",
+        first
+    );
+    assert!(
+        first.contains("Alice"),
+        "first_name should preserve text 'Alice', got: {}",
+        first
+    );
+
+    assert!(
+        !last.contains("javascript:"),
+        "last_name must not contain javascript: URI, got: {}",
+        last
+    );
+    assert!(
+        last.contains("Smith"),
+        "last_name should preserve text 'Smith', got: {}",
+        last
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Test that the API create user handler sanitizes text fields.
+#[tokio::test]
+#[serial]
+async fn test_xss_sanitized_in_api_create_user() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("admin_xss_api_create");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+
+    let new_username = unique_name("xss_api_user");
+
+    let response = app
+        .server
+        .post("/api/v1/accounts")
+        .add_header(header::AUTHORIZATION, format!("Bearer {}", admin.token))
+        .json(&json!({
+            "username": new_username,
+            "email": format!("{}@test.vauban.io", new_username),
+            "password": "SecurePassword123!",
+            "first_name": "<script>document.cookie</script>Eve",
+            "last_name": "<b onmouseover=alert('xss')>Hacker</b>"
+        }))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 200 || status == 201,
+        "API create user should succeed, got {}",
+        status
+    );
+
+    let body: serde_json::Value = response.json();
+    let first = body["first_name"].as_str().unwrap_or("");
+    let last = body["last_name"].as_str().unwrap_or("");
+
+    assert!(
+        !first.contains("<script>"),
+        "API response first_name must not contain <script>, got: {}",
+        first
+    );
+    assert!(
+        first.contains("Eve"),
+        "API response first_name should preserve 'Eve', got: {}",
+        first
+    );
+
+    assert!(
+        !last.contains("onmouseover"),
+        "API response last_name must not contain event handler, got: {}",
+        last
+    );
+    assert!(
+        last.contains("Hacker"),
+        "API response last_name should preserve 'Hacker', got: {}",
+        last
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Test that the API update user handler sanitizes text fields.
+#[tokio::test]
+#[serial]
+async fn test_xss_sanitized_in_api_update_user() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("admin_xss_api_upd");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+
+    let target_name = unique_name("xss_api_target");
+    let target = create_admin_user(&mut conn, &app.auth_service, &target_name).await;
+
+    let response = app
+        .server
+        .put(&format!("/api/v1/accounts/{}", target.user.uuid))
+        .add_header(header::AUTHORIZATION, format!("Bearer {}", admin.token))
+        .json(&json!({
+            "first_name": "<iframe src=evil.com></iframe>Bob",
+            "last_name": "<svg/onload=alert(1)>Jones"
+        }))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert_eq!(status, 200, "API update user should succeed, got {}", status);
+
+    let body: serde_json::Value = response.json();
+    let first = body["first_name"].as_str().unwrap_or("");
+    let last = body["last_name"].as_str().unwrap_or("");
+
+    assert!(
+        !first.contains("<iframe"),
+        "API first_name must not contain <iframe>, got: {}",
+        first
+    );
+    assert!(
+        first.contains("Bob"),
+        "API first_name should preserve 'Bob', got: {}",
+        first
+    );
+
+    assert!(
+        !last.contains("<svg"),
+        "API last_name must not contain <svg>, got: {}",
+        last
+    );
+    assert!(
+        !last.contains("onload"),
+        "API last_name must not contain onload, got: {}",
+        last
+    );
+    assert!(
+        last.contains("Jones"),
+        "API last_name should preserve 'Jones', got: {}",
+        last
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Test that creating an asset via web form sanitizes name and description.
+#[tokio::test]
+#[serial]
+async fn test_xss_sanitized_in_web_asset_create() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("admin_xss_asset");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+    let csrf_token = app.generate_csrf_token();
+
+    let xss_name = "<script>alert('xss')</script>Server01";
+    let xss_desc = "<img src=x onerror=steal()>Production server";
+    let asset_hostname = format!("{}.example.com", unique_name("xss-host"));
+
+    let _response = app
+        .server
+        .post("/assets")
+        .add_header(
+            header::COOKIE,
+            format!("access_token={}; __vauban_csrf={}", admin.token, csrf_token),
+        )
+        .form(&[
+            ("csrf_token", csrf_token.as_str()),
+            ("name", xss_name),
+            ("hostname", asset_hostname.as_str()),
+            ("port", "22"),
+            ("asset_type", "ssh"),
+            ("status", "active"),
+            ("description", xss_desc),
+        ])
+        .await;
+
+    use diesel::{ExpressionMethods, QueryDsl};
+    use diesel_async::RunQueryDsl;
+    use vauban_web::schema::assets;
+
+    let result: Option<(String, Option<String>)> = assets::table
+        .filter(assets::hostname.eq(&asset_hostname))
+        .filter(assets::is_deleted.eq(false))
+        .select((assets::name, assets::description))
+        .first(&mut conn)
+        .await
+        .ok();
+
+    let (stored_name, stored_desc) = result.expect("Asset should be created");
+
+    assert!(
+        !stored_name.contains("<script>"),
+        "Asset name must not contain <script>, got: {}",
+        stored_name
+    );
+    assert!(
+        stored_name.contains("Server01"),
+        "Asset name should preserve 'Server01', got: {}",
+        stored_name
+    );
+
+    let desc = stored_desc.expect("description should be set");
+    assert!(
+        !desc.contains("<img"),
+        "Asset description must not contain <img>, got: {}",
+        desc
+    );
+    assert!(
+        !desc.contains("onerror"),
+        "Asset description must not contain onerror, got: {}",
+        desc
+    );
+    assert!(
+        desc.contains("Production server"),
+        "Asset description should preserve text, got: {}",
+        desc
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Test that creating a vauban group via web form sanitizes name and description.
+#[tokio::test]
+#[serial]
+async fn test_xss_sanitized_in_web_group_create() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("admin_xss_grp");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+    let csrf_token = app.generate_csrf_token();
+
+    // Generate a unique plain name, then wrap it in XSS payload
+    let plain_name = unique_name("xss_grp");
+    let xss_group_name = format!("<b onmouseover=alert(1)>{}</b>", plain_name);
+    let xss_group_desc = "<script>steal()</script>Team description";
+
+    let _response = app
+        .server
+        .post("/accounts/groups")
+        .add_header(
+            header::COOKIE,
+            format!("access_token={}; __vauban_csrf={}", admin.token, csrf_token),
+        )
+        .form(&[
+            ("csrf_token", csrf_token.as_str()),
+            ("name", xss_group_name.as_str()),
+            ("description", xss_group_desc),
+        ])
+        .await;
+
+    use diesel::{ExpressionMethods, QueryDsl};
+    use diesel_async::RunQueryDsl;
+    use vauban_web::schema::vauban_groups;
+
+    // Search by the exact sanitized name (plain text only, no HTML)
+    let result: Option<(String, Option<String>)> = vauban_groups::table
+        .filter(vauban_groups::name.eq(&plain_name))
+        .select((vauban_groups::name, vauban_groups::description))
+        .first::<(String, Option<String>)>(&mut conn)
+        .await
+        .ok();
+
+    assert!(
+        result.is_some(),
+        "Group should be created with sanitized name '{}'",
+        plain_name
+    );
+
+    let (stored_name, stored_desc) = result.unwrap();
+
+    assert!(
+        !stored_name.contains("<b"),
+        "Group name must not contain <b> tag, got: {}",
+        stored_name
+    );
+    assert!(
+        !stored_name.contains("onmouseover"),
+        "Group name must not contain event handler, got: {}",
+        stored_name
+    );
+    assert_eq!(
+        stored_name, plain_name,
+        "Group name should be the plain text without HTML"
+    );
+
+    if let Some(desc) = stored_desc {
+        assert!(
+            !desc.contains("<script>"),
+            "Group description must not contain <script>, got: {}",
+            desc
+        );
+        assert!(
+            desc.contains("Team description"),
+            "Group description should preserve text, got: {}",
+            desc
+        );
+    }
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Test that the API create asset handler sanitizes name and description.
+#[tokio::test]
+#[serial]
+async fn test_xss_sanitized_in_api_create_asset() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("admin_xss_api_asset");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+
+    let asset_hostname = format!("{}.example.com", unique_name("xss-api-host"));
+
+    let response = app
+        .server
+        .post("/api/v1/assets")
+        .add_header(header::AUTHORIZATION, format!("Bearer {}", admin.token))
+        .json(&json!({
+            "name": "<script>alert('xss')</script>APIServer",
+            "hostname": asset_hostname,
+            "port": 22,
+            "asset_type": "ssh",
+            "description": "<img src=x onerror=alert(1)>API asset"
+        }))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 200 || status == 201,
+        "API create asset should succeed, got {}",
+        status
+    );
+
+    let body: serde_json::Value = response.json();
+    let name = body["name"].as_str().unwrap_or("");
+    let desc = body["description"].as_str().unwrap_or("");
+
+    assert!(
+        !name.contains("<script>"),
+        "API asset name must not contain <script>, got: {}",
+        name
+    );
+    assert!(
+        name.contains("APIServer"),
+        "API asset name should preserve 'APIServer', got: {}",
+        name
+    );
+
+    assert!(
+        !desc.contains("<img"),
+        "API asset description must not contain <img>, got: {}",
+        desc
+    );
+    assert!(
+        desc.contains("API asset"),
+        "API asset description should preserve text, got: {}",
+        desc
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
 /// Helper function to extract CSRF token from HTML.
 fn extract_csrf_token_from_html(html: &str) -> Option<String> {
     // Look for: <input type="hidden" name="csrf_token" value="TOKEN" />
@@ -2755,4 +3267,233 @@ fn extract_csrf_token_from_html(html: &str) -> Option<String> {
     }
 
     None
+}
+
+// ==================== H-6: WebSocket Session Ownership Verification ====================
+
+/// Helper: send a GET request to the terminal WebSocket endpoint.
+///
+/// We intentionally omit WebSocket upgrade headers so that
+/// the ownership middleware can be tested with plain HTTP.
+/// If the middleware rejects: returns 400/403/404.
+/// If the middleware passes: the handler's WebSocketUpgrade extractor
+/// fails, returning 426 (Upgrade Required).
+async fn ws_terminal_request(
+    app: &TestApp,
+    session_uuid: &str,
+    token: &str,
+) -> axum_test::TestResponse {
+    app.server
+        .get(&format!("/ws/terminal/{}", session_uuid))
+        .add_header(header::AUTHORIZATION, app.auth_header(token))
+        .await
+}
+
+/// Helper: send a GET request to the session monitoring WebSocket endpoint.
+/// Same strategy as ws_terminal_request (no WS headers).
+async fn ws_session_request(
+    app: &TestApp,
+    session_uuid: &str,
+    token: &str,
+) -> axum_test::TestResponse {
+    app.server
+        .get(&format!("/ws/session/{}", session_uuid))
+        .add_header(header::AUTHORIZATION, app.auth_header(token))
+        .await
+}
+
+/// H-6 Regression: A regular user cannot access another user's terminal WebSocket.
+#[tokio::test]
+#[serial]
+async fn test_terminal_ws_forbidden_for_non_owner() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    // Create two regular users
+    let owner = create_test_user(&mut *conn, &app.auth_service, &unique_name("ws_owner")).await;
+    let attacker =
+        create_test_user(&mut *conn, &app.auth_service, &unique_name("ws_attacker")).await;
+
+    // Create an asset and a session owned by `owner`
+    let asset_id = create_simple_ssh_asset(&mut *conn, &unique_name("ws_asset"), owner.user.id).await;
+    let (_session_id, session_uuid) =
+        create_test_session_with_uuid(&mut *conn, owner.user.id, asset_id, "ssh", "active").await;
+
+    drop(conn);
+
+    // Attacker tries to access owner's terminal session -> must be 403
+    let response = ws_terminal_request(&app, &session_uuid.to_string(), &attacker.token).await;
+    let status = response.status_code().as_u16();
+    assert_eq!(
+        status, 403,
+        "Regular user must not access another user's terminal WebSocket, got {}",
+        status
+    );
+}
+
+/// H-6 Regression: A regular user cannot access another user's session monitoring WebSocket.
+#[tokio::test]
+#[serial]
+async fn test_session_ws_forbidden_for_non_owner() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let owner = create_test_user(&mut *conn, &app.auth_service, &unique_name("ws_own2")).await;
+    let attacker =
+        create_test_user(&mut *conn, &app.auth_service, &unique_name("ws_atk2")).await;
+
+    let asset_id = create_simple_ssh_asset(&mut *conn, &unique_name("ws_asset2"), owner.user.id).await;
+    let (_session_id, session_uuid) =
+        create_test_session_with_uuid(&mut *conn, owner.user.id, asset_id, "ssh", "active").await;
+
+    drop(conn);
+
+    let response = ws_session_request(&app, &session_uuid.to_string(), &attacker.token).await;
+    let status = response.status_code().as_u16();
+    assert_eq!(
+        status, 403,
+        "Regular user must not access another user's session WebSocket, got {}",
+        status
+    );
+}
+
+/// H-6 Regression: The session owner can access their own terminal WebSocket.
+/// Without WS headers, the ownership middleware passes and the handler returns
+/// 426 (Upgrade Required) because no actual WebSocket upgrade is attempted.
+#[tokio::test]
+#[serial]
+async fn test_terminal_ws_allowed_for_owner() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let owner = create_test_user(&mut *conn, &app.auth_service, &unique_name("ws_own3")).await;
+    let asset_id = create_simple_ssh_asset(&mut *conn, &unique_name("ws_asset3"), owner.user.id).await;
+    let (_session_id, session_uuid) =
+        create_test_session_with_uuid(&mut *conn, owner.user.id, asset_id, "ssh", "active").await;
+
+    drop(conn);
+
+    // Owner accesses their own terminal -> middleware passes, handler returns 400
+    // (no WebSocket upgrade headers) instead of 403/404 (rejected by guard).
+    let response = ws_terminal_request(&app, &session_uuid.to_string(), &owner.token).await;
+    let status = response.status_code().as_u16();
+    assert!(
+        status != 403 && status != 404,
+        "Session owner should pass ownership check, got {} (expected 400 or 426)",
+        status
+    );
+}
+
+/// H-6 Regression: The session owner can access their own session monitoring WebSocket.
+#[tokio::test]
+#[serial]
+async fn test_session_ws_allowed_for_owner() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let owner = create_test_user(&mut *conn, &app.auth_service, &unique_name("ws_own4")).await;
+    let asset_id = create_simple_ssh_asset(&mut *conn, &unique_name("ws_asset4"), owner.user.id).await;
+    let (_session_id, session_uuid) =
+        create_test_session_with_uuid(&mut *conn, owner.user.id, asset_id, "ssh", "active").await;
+
+    drop(conn);
+
+    let response = ws_session_request(&app, &session_uuid.to_string(), &owner.token).await;
+    let status = response.status_code().as_u16();
+    assert!(
+        status != 403 && status != 404,
+        "Session owner should pass ownership check, got {} (expected 400 or 426)",
+        status
+    );
+}
+
+/// H-6 Regression: An admin/staff user can access another user's terminal WebSocket.
+#[tokio::test]
+#[serial]
+async fn test_terminal_ws_allowed_for_admin() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let owner = create_test_user(&mut *conn, &app.auth_service, &unique_name("ws_own5")).await;
+    let admin =
+        create_admin_user(&mut *conn, &app.auth_service, &unique_name("ws_admin5")).await;
+    let asset_id = create_simple_ssh_asset(&mut *conn, &unique_name("ws_asset5"), owner.user.id).await;
+    let (_session_id, session_uuid) =
+        create_test_session_with_uuid(&mut *conn, owner.user.id, asset_id, "ssh", "active").await;
+
+    drop(conn);
+
+    // Admin accesses another user's terminal -> middleware passes, handler returns 400
+    // (no WebSocket upgrade headers) instead of 403/404 (rejected by guard).
+    let response = ws_terminal_request(&app, &session_uuid.to_string(), &admin.token).await;
+    let status = response.status_code().as_u16();
+    assert!(
+        status != 403 && status != 404,
+        "Admin should pass ownership check, got {} (expected 400 or 426)",
+        status
+    );
+}
+
+/// H-6 Regression: An admin/staff user can access another user's session monitoring WebSocket.
+#[tokio::test]
+#[serial]
+async fn test_session_ws_allowed_for_admin() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let owner = create_test_user(&mut *conn, &app.auth_service, &unique_name("ws_own6")).await;
+    let admin =
+        create_admin_user(&mut *conn, &app.auth_service, &unique_name("ws_admin6")).await;
+    let asset_id = create_simple_ssh_asset(&mut *conn, &unique_name("ws_asset6"), owner.user.id).await;
+    let (_session_id, session_uuid) =
+        create_test_session_with_uuid(&mut *conn, owner.user.id, asset_id, "ssh", "active").await;
+
+    drop(conn);
+
+    let response = ws_session_request(&app, &session_uuid.to_string(), &admin.token).await;
+    let status = response.status_code().as_u16();
+    assert!(
+        status != 403 && status != 404,
+        "Admin should pass ownership check, got {} (expected 400 or 426)",
+        status
+    );
+}
+
+/// H-6 Regression: Non-existent session UUID returns 404.
+#[tokio::test]
+#[serial]
+async fn test_terminal_ws_nonexistent_session_returns_404() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let user = create_test_user(&mut *conn, &app.auth_service, &unique_name("ws_user7")).await;
+    drop(conn);
+
+    let fake_uuid = uuid::Uuid::new_v4();
+    let response = ws_terminal_request(&app, &fake_uuid.to_string(), &user.token).await;
+    let status = response.status_code().as_u16();
+    assert_eq!(
+        status, 404,
+        "Non-existent session should return 404, got {}",
+        status
+    );
+}
+
+/// H-6 Regression: Invalid session ID (not a UUID) returns 400.
+#[tokio::test]
+#[serial]
+async fn test_terminal_ws_invalid_session_id_returns_400() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let user = create_test_user(&mut *conn, &app.auth_service, &unique_name("ws_user8")).await;
+    drop(conn);
+
+    let response = ws_terminal_request(&app, "not-a-valid-uuid", &user.token).await;
+    let status = response.status_code().as_u16();
+    assert_eq!(
+        status, 400,
+        "Invalid session ID should return 400, got {}",
+        status
+    );
 }

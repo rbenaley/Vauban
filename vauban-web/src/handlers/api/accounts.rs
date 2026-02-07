@@ -86,10 +86,15 @@ pub async fn get_user(
     Ok(Json(user.to_dto()))
 }
 
-/// Sanitize optional string fields to prevent XSS.
-/// Removes all HTML tags and attributes.
+/// Strip ALL HTML tags from an optional string to prevent stored XSS.
+/// Uses ammonia with an empty tag allowlist so every tag is removed.
 fn sanitize_text(value: Option<String>) -> Option<String> {
-    value.map(|s| ammonia::clean(&s))
+    value.map(|s| {
+        ammonia::Builder::new()
+            .tags(std::collections::HashSet::new())
+            .clean(&s)
+            .to_string()
+    })
 }
 
 /// Create user handler.
@@ -170,10 +175,14 @@ pub async fn update_user(
     use crate::models::user::UserUpdate;
     use crate::schema::users::dsl::{users, uuid};
 
+    // Sanitize text fields to prevent XSS
+    let sanitized_first_name = sanitize_text(request.first_name);
+    let sanitized_last_name = sanitize_text(request.last_name);
+
     let update_data = UserUpdate {
         email: request.email,
-        first_name: request.first_name,
-        last_name: request.last_name,
+        first_name: sanitized_first_name,
+        last_name: sanitized_last_name,
         phone: request.phone,
         is_active: request.is_active,
         preferences: request.preferences,

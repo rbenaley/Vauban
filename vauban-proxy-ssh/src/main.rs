@@ -286,6 +286,9 @@ async fn main_loop(
                                         debug!(session_id = %session_id, fd = ?fd, "Received TCP connection FD from supervisor");
                                         fp.pending.lock().await.insert(session_id, fd);
                                     }
+                                    Err(e) if e.to_string().contains("not available") || e.to_string().contains("Unsupported") => {
+                                        debug!(session_id = %session_id, "FD passing not available on this platform, session will connect directly");
+                                    }
                                     Err(e) => {
                                         error!(session_id = %session_id, error = %e, "Failed to receive FD from supervisor");
                                     }

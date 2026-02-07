@@ -450,9 +450,21 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
     // ==========================================================================
     // WEBSOCKET ROUTES - No timeout (long-lived connections)
     // ==========================================================================
+
+    // Session ownership middleware: verifies the authenticated user owns the
+    // session (or is staff/superuser) before allowing WebSocket upgrade.
+    let session_guard = axum::middleware::from_fn_with_state(
+        state.clone(),
+        handlers::websocket::ws_session_guard,
+    );
+
     let ws_routes = Router::new()
         .route("/ws/dashboard", get(handlers::websocket::dashboard_ws))
-        .route("/ws/session/{id}", get(handlers::websocket::session_ws))
+        // Session-specific routes get the ownership guard middleware
+        .route(
+            "/ws/session/{id}",
+            get(handlers::websocket::session_ws).layer(session_guard.clone()),
+        )
         .route(
             "/ws/notifications",
             get(handlers::websocket::notifications_ws),
@@ -461,10 +473,9 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             "/ws/sessions/active",
             get(handlers::websocket::active_sessions_ws),
         )
-        // Terminal WebSocket for SSH sessions
         .route(
             "/ws/terminal/{session_id}",
-            get(handlers::websocket::terminal_ws),
+            get(handlers::websocket::terminal_ws).layer(session_guard),
         );
 
     // ==========================================================================

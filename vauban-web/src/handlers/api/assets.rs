@@ -115,16 +115,26 @@ pub async fn create_asset(
         None
     };
 
+    // Sanitize text fields to prevent XSS (strip ALL HTML tags)
+    let strip = |s: &str| -> String {
+        ammonia::Builder::new()
+            .tags(std::collections::HashSet::new())
+            .clean(s)
+            .to_string()
+    };
+    let sanitized_name = strip(&request.name);
+    let sanitized_description = request.description.map(|d| strip(&d));
+
     let new_asset = NewAsset {
         uuid: Uuid::new_v4(),
-        name: request.name,
+        name: sanitized_name,
         hostname: request.hostname,
         ip_address: ip_addr_network,
         port: default_port,
         asset_type: request.asset_type,
         status: "unknown".to_string(),
         group_id: request.group_id,
-        description: request.description,
+        description: sanitized_description,
         os_type: None,
         os_version: None,
         connection_config: serde_json::json!({}),
@@ -225,15 +235,28 @@ pub async fn update_asset(
         None
     };
 
+    // Sanitize text fields to prevent XSS (strip ALL HTML tags)
+    let strip = |s: &str| -> String {
+        ammonia::Builder::new()
+            .tags(std::collections::HashSet::new())
+            .clean(s)
+            .to_string()
+    };
+    let sanitized_name = request.name.map(|n| strip(&n)).unwrap_or(existing.name);
+    let sanitized_description = request
+        .description
+        .map(|d| strip(&d))
+        .or(existing.description);
+
     // Build update with provided values or keep existing
     let asset: Asset = match diesel::update(assets.filter(uuid.eq(asset_uuid)))
         .set((
-            name_col.eq(request.name.unwrap_or(existing.name)),
+            name_col.eq(sanitized_name),
             hostname_col.eq(request.hostname.unwrap_or(existing.hostname)),
             ip_address_col.eq(new_ip_address.or(existing.ip_address)),
             port_col.eq(request.port.unwrap_or(existing.port)),
             status_col.eq(request.status.unwrap_or(existing.status)),
-            description_col.eq(request.description.or(existing.description)),
+            description_col.eq(sanitized_description),
             require_mfa_col.eq(request.require_mfa.unwrap_or(existing.require_mfa)),
             require_justification_col.eq(request
                 .require_justification

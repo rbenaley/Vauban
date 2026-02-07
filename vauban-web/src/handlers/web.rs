@@ -82,6 +82,26 @@ fn is_admin(auth_user: &WebAuthUser) -> bool {
     auth_user.is_superuser || auth_user.is_staff
 }
 
+/// Strip ALL HTML tags from a string to prevent stored XSS.
+/// Uses ammonia with an empty tag allowlist so every tag is removed,
+/// keeping only the text content.
+fn sanitize(value: &str) -> String {
+    ammonia::Builder::new()
+        .tags(std::collections::HashSet::new())
+        .clean(value)
+        .to_string()
+}
+
+/// Strip ALL HTML tags from an optional string to prevent stored XSS.
+fn sanitize_opt(value: Option<String>) -> Option<String> {
+    value.map(|s| sanitize(&s))
+}
+
+/// Strip ALL HTML tags from an optional string reference to prevent stored XSS.
+fn sanitize_opt_ref(value: Option<&String>) -> Option<String> {
+    value.map(|s| sanitize(s))
+}
+
 /// Build connection_config JSON from SSH credential form fields.
 ///
 /// This stores credentials in the connection_config field of the asset.
@@ -731,14 +751,18 @@ pub async fn create_user_web(
     let is_active = form.is_active.as_deref() == Some("on");
     let is_staff = form.is_staff.as_deref() == Some("on");
 
+    // Sanitize text fields to prevent stored XSS
+    let sanitized_first_name = sanitize_opt(form.first_name.filter(|s| !s.is_empty()));
+    let sanitized_last_name = sanitize_opt(form.last_name.filter(|s| !s.is_empty()));
+
     let result = diesel::insert_into(users::table)
         .values((
             users::uuid.eq(user_uuid),
             users::username.eq(&form.username),
             users::email.eq(&form.email),
             users::password_hash.eq(&password_hash),
-            users::first_name.eq(&form.first_name.filter(|s| !s.is_empty())),
-            users::last_name.eq(&form.last_name.filter(|s| !s.is_empty())),
+            users::first_name.eq(&sanitized_first_name),
+            users::last_name.eq(&sanitized_last_name),
             users::is_active.eq(is_active),
             users::is_staff.eq(is_staff),
             users::is_superuser.eq(wants_superuser),
@@ -1039,6 +1063,10 @@ pub async fn update_user_web(
     let is_staff = form.is_staff.as_deref() == Some("on");
     let now = Utc::now();
 
+    // Sanitize text fields to prevent stored XSS
+    let sanitized_first_name = sanitize_opt_ref(form.first_name.as_ref().filter(|s| !s.is_empty()));
+    let sanitized_last_name = sanitize_opt_ref(form.last_name.as_ref().filter(|s| !s.is_empty()));
+
     // Update with or without password
     let result = if let Some(ref hash) = password_hash {
         diesel::update(users::table.filter(users::id.eq(user_id)))
@@ -1046,8 +1074,8 @@ pub async fn update_user_web(
                 users::username.eq(&form.username),
                 users::email.eq(&form.email),
                 users::password_hash.eq(hash),
-                users::first_name.eq(&form.first_name.as_ref().filter(|s| !s.is_empty())),
-                users::last_name.eq(&form.last_name.as_ref().filter(|s| !s.is_empty())),
+                users::first_name.eq(&sanitized_first_name),
+                users::last_name.eq(&sanitized_last_name),
                 users::is_active.eq(is_active),
                 users::is_staff.eq(is_staff),
                 users::is_superuser.eq(wants_superuser),
@@ -1060,8 +1088,8 @@ pub async fn update_user_web(
             .set((
                 users::username.eq(&form.username),
                 users::email.eq(&form.email),
-                users::first_name.eq(&form.first_name.as_ref().filter(|s| !s.is_empty())),
-                users::last_name.eq(&form.last_name.as_ref().filter(|s| !s.is_empty())),
+                users::first_name.eq(&sanitized_first_name),
+                users::last_name.eq(&sanitized_last_name),
                 users::is_active.eq(is_active),
                 users::is_staff.eq(is_staff),
                 users::is_superuser.eq(wants_superuser),
@@ -2144,14 +2172,20 @@ pub async fn create_asset_web(
 
     let now = chrono::Utc::now();
 
+    // Sanitize text fields to prevent stored XSS
+    let sanitized_name = sanitize(form.name.trim());
+    let sanitized_description = sanitize_opt(
+        form.description.as_ref().filter(|s| !s.is_empty()).cloned(),
+    );
+
     if let Some((deleted_id, deleted_uuid)) = existing_deleted {
         // Reactivate the soft-deleted asset with new data
         let result = diesel::update(a::assets.filter(a::id.eq(deleted_id)))
             .set((
-                a::name.eq(form.name.trim()),
+                a::name.eq(&sanitized_name),
                 a::asset_type.eq(&form.asset_type),
                 a::status.eq(&form.status),
-                a::description.eq(form.description.as_deref().filter(|s| !s.is_empty())),
+                a::description.eq(&sanitized_description),
                 a::require_mfa.eq(form.require_mfa),
                 a::require_justification.eq(form.require_justification),
                 a::is_deleted.eq(false),
@@ -2165,7 +2199,7 @@ pub async fn create_asset_web(
             Ok(_) => flash_redirect(
                 flash.success(format!(
                     "Asset '{}' reactivated successfully",
-                    form.name.trim()
+                    sanitized_name
                 )),
                 &format!("/assets/{}", deleted_uuid),
             ),
@@ -2198,13 +2232,13 @@ pub async fn create_asset_web(
     let result = diesel::insert_into(a::assets)
         .values((
             a::uuid.eq(new_uuid),
-            a::name.eq(form.name.trim()),
+            a::name.eq(&sanitized_name),
             a::hostname.eq(form.hostname.trim()),
             a::ip_address.eq(ip_address),
             a::port.eq(form.port),
             a::asset_type.eq(&form.asset_type),
             a::status.eq(&form.status),
-            a::description.eq(form.description.as_deref().filter(|s| !s.is_empty())),
+            a::description.eq(&sanitized_description),
             a::connection_config.eq(connection_config),
             a::require_mfa.eq(form.require_mfa),
             a::require_justification.eq(form.require_justification),
@@ -2217,7 +2251,7 @@ pub async fn create_asset_web(
 
     match result {
         Ok(_) => flash_redirect(
-            flash.success(format!("Asset '{}' created successfully", form.name.trim())),
+            flash.success(format!("Asset '{}' created successfully", sanitized_name)),
             &format!("/assets/{}", new_uuid),
         ),
         Err(e) => {
@@ -4435,13 +4469,16 @@ pub async fn create_vauban_group_web(
     // Create the group
     let new_uuid = ::uuid::Uuid::new_v4();
     let now = Utc::now();
-    let description = form.description.filter(|d| !d.trim().is_empty());
+
+    // Sanitize text fields to prevent stored XSS
+    let sanitized_name = sanitize(&form.name);
+    let sanitized_description = sanitize_opt(form.description.filter(|d| !d.trim().is_empty()));
 
     let insert_result = diesel::insert_into(vg::vauban_groups)
         .values((
             vg::uuid.eq(new_uuid),
-            vg::name.eq(&form.name),
-            vg::description.eq(&description),
+            vg::name.eq(&sanitized_name),
+            vg::description.eq(&sanitized_description),
             vg::source.eq("local"),
             vg::created_at.eq(now),
             vg::updated_at.eq(now),
@@ -4451,7 +4488,7 @@ pub async fn create_vauban_group_web(
 
     match insert_result {
         Ok(_) => flash_redirect(
-            flash.success(format!("Group '{}' created successfully", form.name)),
+            flash.success(format!("Group '{}' created successfully", sanitized_name)),
             &format!("/accounts/groups/{}", new_uuid),
         ),
         Err(e) => {
@@ -4601,10 +4638,15 @@ pub async fn update_vauban_group_web(
     };
 
     let now = Utc::now();
+
+    // Sanitize text fields to prevent stored XSS
+    let sanitized_name = sanitize(form.name.trim());
+    let sanitized_description = sanitize_opt_ref(form.description.as_ref().filter(|s| !s.is_empty()));
+
     let result = diesel::update(vg::vauban_groups.filter(vg::uuid.eq(group_uuid)))
         .set((
-            vg::name.eq(form.name.trim()),
-            vg::description.eq(&form.description.as_ref().filter(|s| !s.is_empty())),
+            vg::name.eq(&sanitized_name),
+            vg::description.eq(&sanitized_description),
             vg::updated_at.eq(now),
         ))
         .execute(&mut conn)
@@ -6085,14 +6127,18 @@ pub async fn update_asset_group(
         }
     };
 
+    // Sanitize text fields to prevent stored XSS
+    let sanitized_name = sanitize(&form.name);
+    let sanitized_description = sanitize_opt(form.description.clone());
+
     // NOTE: Raw SQL - UPDATE with NOW() PostgreSQL function, using parameterized queries
     let result = diesel::sql_query(
         "UPDATE asset_groups SET name = $1, slug = $2, description = $3, color = $4, icon = $5, updated_at = NOW()
          WHERE uuid = $6 AND is_deleted = false"
     )
-    .bind::<Text, _>(&form.name)
+    .bind::<Text, _>(&sanitized_name)
     .bind::<Text, _>(&form.slug)
-    .bind::<Nullable<Text>, _>(form.description.as_deref())
+    .bind::<Nullable<Text>, _>(sanitized_description.as_deref())
     .bind::<Text, _>(&form.color)
     .bind::<Text, _>(&form.icon)
     .bind::<DieselUuid, _>(group_uuid)
@@ -6261,12 +6307,18 @@ pub async fn create_asset_group_web(
     let new_uuid = ::uuid::Uuid::new_v4();
     let now = chrono::Utc::now();
 
+    // Sanitize text fields to prevent stored XSS
+    let sanitized_name = sanitize(form.name.trim());
+    let sanitized_description = sanitize_opt(
+        form.description.as_ref().filter(|s| !s.is_empty()).cloned(),
+    );
+
     let result = diesel::insert_into(ag::asset_groups)
         .values((
             ag::uuid.eq(new_uuid),
-            ag::name.eq(form.name.trim()),
+            ag::name.eq(&sanitized_name),
             ag::slug.eq(form.slug.trim()),
-            ag::description.eq(form.description.as_deref().filter(|s| !s.is_empty())),
+            ag::description.eq(&sanitized_description),
             ag::color.eq(&form.color),
             ag::icon.eq(&form.icon),
             ag::is_deleted.eq(false),
@@ -6280,7 +6332,7 @@ pub async fn create_asset_group_web(
         Ok(_) => flash_redirect(
             flash.success(format!(
                 "Asset group '{}' created successfully",
-                form.name.trim()
+                sanitized_name
             )),
             &format!("/assets/groups/{}", new_uuid),
         ),
@@ -6700,15 +6752,19 @@ pub async fn update_asset_web(
         form.ssh_passphrase.as_deref(),
     );
 
+    // Sanitize text fields to prevent stored XSS
+    let sanitized_name = sanitize(&form.name);
+    let sanitized_description = sanitize_opt(form.description.clone());
+
     // Update the asset
     let result = diesel::update(a::assets.filter(a::uuid.eq(asset_uuid)))
         .set((
-            a::name.eq(&form.name),
+            a::name.eq(&sanitized_name),
             a::hostname.eq(&form.hostname),
             a::ip_address.eq(new_ip_address.or(existing.ip_address)),
             a::port.eq(form.port),
             a::status.eq(&form.status),
-            a::description.eq(form.description.as_deref()),
+            a::description.eq(sanitized_description.as_deref()),
             a::connection_config.eq(connection_config),
             a::require_mfa.eq(require_mfa),
             a::require_justification.eq(require_justification),
@@ -6932,7 +6988,50 @@ pub async fn connect_ssh(
     }
 
     // Generate session UUID
-    let session_id = Uuid::new_v4().to_string();
+    let session_uuid = Uuid::new_v4();
+    let session_id = session_uuid.to_string();
+
+    // Resolve authenticated user's integer ID for database insertion
+    let user_id: i32 = {
+        use crate::schema::users;
+        match auth_user.uuid.parse::<Uuid>() {
+            Ok(user_uuid) => match users::table
+                .filter(users::uuid.eq(user_uuid))
+                .select(users::id)
+                .first(&mut conn)
+                .await
+            {
+                Ok(id) => id,
+                Err(e) => {
+                    tracing::error!("Failed to resolve user ID: {}", e);
+                    let msg = "User not found";
+                    if is_htmx {
+                        return htmx_error_response(msg);
+                    }
+                    return Json(ConnectSshResponse {
+                        success: false,
+                        session_id: None,
+                        redirect_url: None,
+                        error: Some(msg.to_string()),
+                    })
+                    .into_response();
+                }
+            },
+            Err(_) => {
+                let msg = "Invalid user identifier";
+                if is_htmx {
+                    return htmx_error_response(msg);
+                }
+                return Json(ConnectSshResponse {
+                    success: false,
+                    session_id: None,
+                    redirect_url: None,
+                    error: Some(msg.to_string()),
+                })
+                .into_response();
+            }
+        }
+    };
 
     // Extract connection details from asset's connection_config
     let config = &asset.connection_config;
@@ -6973,6 +7072,53 @@ pub async fn connect_ssh(
         .get("passphrase")
         .and_then(|v| v.as_str())
         .map(String::from);
+
+    // Record the session in the database for ownership tracking.
+    // This allows the ws_session_guard middleware to verify that the
+    // WebSocket client owns the session before allowing the upgrade.
+    {
+        use crate::models::session::NewProxySession;
+        let client_ip: ipnetwork::IpNetwork = "0.0.0.0/0"
+            .parse()
+            .unwrap_or_else(|_| "0.0.0.0/0".parse().expect("valid CIDR"));
+        let new_session = NewProxySession {
+            uuid: session_uuid,
+            user_id,
+            asset_id: asset.id,
+            credential_id: "local".to_string(),
+            credential_username: username.clone(),
+            session_type: "ssh".to_string(),
+            status: "connecting".to_string(),
+            client_ip,
+            client_user_agent: headers
+                .get(axum::http::header::USER_AGENT)
+                .and_then(|v| v.to_str().ok())
+                .map(String::from),
+            proxy_instance: None,
+            justification: None,
+            is_recorded: true,
+            metadata: serde_json::json!({}),
+        };
+
+        if let Err(e) = diesel::insert_into(proxy_sessions::table)
+            .values(&new_session)
+            .execute(&mut conn)
+            .await
+        {
+            tracing::error!(session_id = %session_id, error = %e, "Failed to record proxy session");
+            let msg = "Failed to create session record";
+            if is_htmx {
+                return htmx_error_response(msg);
+            }
+            return Json(ConnectSshResponse {
+                success: false,
+                session_id: None,
+                redirect_url: None,
+                error: Some(msg.to_string()),
+            })
+            .into_response();
+        }
+    }
 
     // Build SSH session open request
     let request = crate::ipc::SshSessionOpenRequest {
