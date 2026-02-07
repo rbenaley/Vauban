@@ -19,7 +19,7 @@ mod session_manager;
 use anyhow::{Context, Result};
 use error::SessionError;
 use ipc::AsyncIpcChannel;
-use session::{SessionConfig, SshCredential};
+use session::{SessionConfig, SshCredential, fetch_host_key};
 use session_manager::SessionManager;
 use shared::capsicum;
 use shared::ipc::{recv_fd, IpcChannel};
@@ -418,6 +418,7 @@ async fn handle_web_message(
             password,
             private_key,
             passphrase,
+            expected_host_key,
         } => {
             debug!(
                 session_id = %session_id,
@@ -504,6 +505,7 @@ async fn handle_web_message(
                 terminal_rows,
                 credential,
                 preconnected_fd,
+                expected_host_key,
             };
 
             // Spawn session creation in a separate task to avoid blocking the main loop.
@@ -567,6 +569,54 @@ async fn handle_web_message(
             if let Err(e) = sessions.close_session(&session_id).await {
                 warn!(session_id = %session_id, error = %e, "Failed to close session");
             }
+        }
+
+        // SSH host key fetch request
+        Message::SshFetchHostKey {
+            request_id,
+            asset_host,
+            asset_port,
+        } => {
+            info!(
+                asset_host = %asset_host,
+                asset_port = asset_port,
+                "SSH host key fetch request"
+            );
+
+            // Check if we have a pre-established TCP connection for this fetch
+            // Use a synthetic session_id for the fetch operation
+            let fetch_session_id = format!("fetch-hostkey-{}", request_id);
+            let preconnected_fd = if let Some(ref pending) = pending_connections {
+                pending.lock().await.remove(&fetch_session_id)
+            } else {
+                None
+            };
+
+            let response_tx_clone = response_tx.clone();
+            let host = asset_host.clone();
+            let port = asset_port;
+
+            tokio::spawn(async move {
+                let result: Result<(String, String), SessionError> =
+                    fetch_host_key(&host, port, preconnected_fd).await;
+                let response = match result {
+                    Ok((host_key, fingerprint)) => Message::SshHostKeyResult {
+                        request_id,
+                        success: true,
+                        host_key: Some(host_key),
+                        key_fingerprint: Some(fingerprint),
+                        error: None,
+                    },
+                    Err(e) => Message::SshHostKeyResult {
+                        request_id,
+                        success: false,
+                        host_key: None,
+                        key_fingerprint: None,
+                        error: Some(e.to_string()),
+                    },
+                };
+                let _ = response_tx_clone.send(response);
+            });
         }
 
         // Handle responses from other services (RBAC, Vault)

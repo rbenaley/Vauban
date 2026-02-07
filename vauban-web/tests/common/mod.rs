@@ -227,6 +227,30 @@ impl TestApp {
     }
 }
 
+/// Serve static files from the compiled-in asset registry (test version).
+///
+/// Mirrors the production `serve_static` handler in main.rs.
+async fn serve_static_test(
+    axum::extract::Path(path): axum::extract::Path<String>,
+) -> Result<axum::response::Response, axum::http::StatusCode> {
+    use axum::body::Body;
+    use axum::http::{Response, header};
+
+    if path.contains("..") || path.contains('\0') {
+        return Err(axum::http::StatusCode::FORBIDDEN);
+    }
+
+    let asset = vauban_web::static_assets::lookup(&path)
+        .ok_or(axum::http::StatusCode::NOT_FOUND)?;
+
+    Response::builder()
+        .status(axum::http::StatusCode::OK)
+        .header(header::CONTENT_TYPE, asset.content_type)
+        .header(header::CACHE_CONTROL, "public, max-age=3600")
+        .body(Body::from(asset.content))
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)
+}
+
 /// Build the test router with all routes.
 fn build_test_router(state: AppState) -> Router {
     use axum::routing::{get, post, put};
@@ -442,6 +466,20 @@ fn build_test_router(state: AppState) -> Router {
             "/assets/{uuid}/connect",
             post(handlers::web::connect_ssh),
         )
+        // SSH host key management (H-9)
+        .route(
+            "/assets/{uuid}/fetch-host-key",
+            post(handlers::web::fetch_ssh_host_key),
+        )
+        .route(
+            "/assets/{uuid}/verify-host-key",
+            get(handlers::web::verify_ssh_host_key),
+        )
+        .route(
+            "/api/v1/assets/{uuid}/ssh-host-key",
+            get(handlers::api::get_ssh_host_key_status)
+                .post(handlers::api::fetch_ssh_host_key_api),
+        )
         .route(
             "/sessions/terminal/{session_id}",
             get(handlers::web::terminal_page),
@@ -451,6 +489,8 @@ fn build_test_router(state: AppState) -> Router {
             "/ws/terminal/{session_id}",
             get(handlers::websocket::terminal_ws).layer(session_guard),
         )
+        // Static file serving
+        .route("/static/{*path}", get(serve_static_test))
         // Health check
         .route("/health", get(|| async { "OK" }))
         // Dashboard home

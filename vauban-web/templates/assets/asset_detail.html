@@ -153,6 +153,72 @@
         </div>
     </div>
 
+    <!-- SSH Host Key Verification (H-9) - Only for SSH assets -->
+    {% if asset.asset_type == "ssh" %}
+    <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
+            <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">SSH Host Key</h3>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                Verify the server's SSH host key to prevent man-in-the-middle attacks.
+            </p>
+        </div>
+        <div class="px-4 py-5 sm:p-6">
+            <!-- Auto-verify host key against remote server on page load (H-9).
+                 HTMX replaces this placeholder with the real state once the
+                 verify endpoint responds.  The initial server-rendered content
+                 provides a meaningful fallback if JS/HTMX is unavailable. -->
+            {% if let Some(fp) = asset.ssh_host_key_fingerprint %}
+            <div id="ssh-host-key-section"
+                 hx-get="/assets/{{ asset.uuid }}/verify-host-key"
+                 hx-trigger="load"
+                 hx-swap="outerHTML"
+                 class="p-4 bg-gray-50 dark:bg-gray-700/30 border border-gray-200 dark:border-gray-600 rounded-lg">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <div class="flex items-center gap-2 text-gray-500 dark:text-gray-400">
+                            <svg class="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            <span class="font-medium">Verifying host key...</span>
+                        </div>
+                        <p class="mt-1 text-sm text-gray-500 dark:text-gray-400 font-mono">{{ fp }}</p>
+                    </div>
+                </div>
+            </div>
+            {% else %}
+            <!-- No key stored - no need to verify against server -->
+            <div id="ssh-host-key-section" class="p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <div class="flex items-center gap-2 text-amber-700 dark:text-amber-400">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"></path></svg>
+                            <span class="font-medium">No Host Key Stored</span>
+                        </div>
+                        <p class="mt-1 text-sm text-gray-600 dark:text-gray-400">
+                            Connections to this server are not protected against MITM attacks.
+                            Fetch the host key to enable verification.
+                        </p>
+                    </div>
+                    <button
+                        hx-post="/assets/{{ asset.uuid }}/fetch-host-key"
+                        hx-target="#ssh-host-key-section"
+                        hx-swap="outerHTML"
+                        hx-indicator="#host-key-loading"
+                        class="px-3 py-1.5 text-sm bg-vauban-600 hover:bg-vauban-500 text-white rounded-md transition-colors flex items-center gap-2">
+                        <svg class="w-4 h-4 htmx-indicator hidden animate-spin" id="host-key-loading" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        Fetch Host Key
+                    </button>
+                </div>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+
     <!-- System Information -->
     <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
         <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">

@@ -39,6 +39,8 @@ use services::connections::UserConnectionRegistry;
 use services::rate_limit::RateLimiter;
 use std::sync::Arc;
 
+pub mod static_assets;
+
 /// Application state.
 #[derive(Clone)]
 pub struct AppState {

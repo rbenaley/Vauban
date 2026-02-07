@@ -23,6 +23,10 @@ pub struct AssetDetail {
     pub last_seen: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// SSH host key fingerprint (from connection_config JSONB).
+    pub ssh_host_key_fingerprint: Option<String>,
+    /// True when the stored host key is known to mismatch the server's current key.
+    pub ssh_host_key_mismatch: bool,
 }
 
 impl AssetDetail {
@@ -98,6 +102,8 @@ mod tests {
             last_seen: Some("2026-01-03 10:00:00".to_string()),
             created_at: "2026-01-01 00:00:00".to_string(),
             updated_at: "2026-01-02 00:00:00".to_string(),
+            ssh_host_key_fingerprint: None,
+            ssh_host_key_mismatch: false,
         }
     }
 

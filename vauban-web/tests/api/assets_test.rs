@@ -702,6 +702,374 @@ async fn test_get_asset_malformed_uuid_returns_validation_error() {
     test_db::cleanup(&mut conn).await;
 }
 
+// =============================================================================
+// SSH Host Key Status API Tests (H-9 Three States)
+// =============================================================================
+
+/// Helper: update an asset's connection_config directly in the DB.
+async fn set_connection_config(
+    conn: &mut diesel_async::AsyncPgConnection,
+    asset_uuid: uuid::Uuid,
+    config: serde_json::Value,
+) {
+    use diesel::prelude::*;
+    use diesel_async::RunQueryDsl;
+    use vauban_web::schema::assets::dsl;
+
+    unwrap_ok!(
+        diesel::update(dsl::assets.filter(dsl::uuid.eq(asset_uuid)))
+            .set(dsl::connection_config.eq(config))
+            .execute(conn)
+            .await
+    );
+}
+
+/// GET /api/v1/assets/{uuid}/ssh-host-key returns "no_key" when no host key
+/// has ever been stored for the asset.
+#[tokio::test]
+#[serial]
+async fn test_ssh_host_key_status_no_key() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("admin_hk_nokey");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+    let asset = create_test_ssh_asset(&mut conn, &unique_name("hk-nokey")).await;
+
+    let response = app
+        .server
+        .get(&format!(
+            "/api/v1/assets/{}/ssh-host-key",
+            asset.asset.uuid
+        ))
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .await;
+
+    assert_status(&response, 200);
+    let json: serde_json::Value = response.json();
+    assert_eq!(
+        json.get("status").and_then(|v| v.as_str()),
+        Some("no_key"),
+        "Should return 'no_key' when no host key is stored"
+    );
+    assert!(
+        json.get("fingerprint").is_none(),
+        "Should NOT include fingerprint when status is no_key"
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// GET /api/v1/assets/{uuid}/ssh-host-key returns "verified" when a host key
+/// is stored without any mismatch flag.
+#[tokio::test]
+#[serial]
+async fn test_ssh_host_key_status_verified() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("admin_hk_verified");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+    let asset = create_test_ssh_asset(&mut conn, &unique_name("hk-verified")).await;
+
+    // Store a host key in connection_config
+    set_connection_config(
+        &mut conn,
+        asset.asset.uuid,
+        serde_json::json!({
+            "ssh_host_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAATEST",
+            "ssh_host_key_fingerprint": "SHA256:TestFingerprint123"
+        }),
+    )
+    .await;
+
+    let response = app
+        .server
+        .get(&format!(
+            "/api/v1/assets/{}/ssh-host-key",
+            asset.asset.uuid
+        ))
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .await;
+
+    assert_status(&response, 200);
+    let json: serde_json::Value = response.json();
+    assert_eq!(
+        json.get("status").and_then(|v| v.as_str()),
+        Some("verified"),
+        "Should return 'verified' when host key is stored without mismatch"
+    );
+    assert_eq!(
+        json.get("fingerprint").and_then(|v| v.as_str()),
+        Some("SHA256:TestFingerprint123"),
+        "Should include the stored fingerprint"
+    );
+    assert_eq!(
+        json.get("host_key").and_then(|v| v.as_str()),
+        Some("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAATEST"),
+        "Should include the stored host key"
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// GET /api/v1/assets/{uuid}/ssh-host-key returns "mismatch" when a host key
+/// is stored AND the mismatch flag has been set by a failed connection.
+#[tokio::test]
+#[serial]
+async fn test_ssh_host_key_status_mismatch() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("admin_hk_mismatch");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+    let asset = create_test_ssh_asset(&mut conn, &unique_name("hk-mismatch")).await;
+
+    // Store a host key with mismatch flag
+    set_connection_config(
+        &mut conn,
+        asset.asset.uuid,
+        serde_json::json!({
+            "ssh_host_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAOLD",
+            "ssh_host_key_fingerprint": "SHA256:OldFingerprint",
+            "ssh_host_key_mismatch": true
+        }),
+    )
+    .await;
+
+    let response = app
+        .server
+        .get(&format!(
+            "/api/v1/assets/{}/ssh-host-key",
+            asset.asset.uuid
+        ))
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .await;
+
+    assert_status(&response, 200);
+    let json: serde_json::Value = response.json();
+    assert_eq!(
+        json.get("status").and_then(|v| v.as_str()),
+        Some("mismatch"),
+        "Should return 'mismatch' when ssh_host_key_mismatch flag is true"
+    );
+    assert_eq!(
+        json.get("fingerprint").and_then(|v| v.as_str()),
+        Some("SHA256:OldFingerprint"),
+        "Should include the stored (old) fingerprint"
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// GET /api/v1/assets/{uuid}/ssh-host-key returns 400 for non-SSH asset types.
+#[tokio::test]
+#[serial]
+async fn test_ssh_host_key_status_rejects_non_ssh() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("admin_hk_rdp");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+    let rdp_asset = create_test_rdp_asset(&mut conn, &unique_name("hk-rdp")).await;
+
+    let response = app
+        .server
+        .get(&format!(
+            "/api/v1/assets/{}/ssh-host-key",
+            rdp_asset.asset.uuid
+        ))
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 400 || status == 422,
+        "Non-SSH asset should return 400 or 422, got {}",
+        status
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// GET /api/v1/assets/{uuid}/ssh-host-key returns 401 without authentication.
+#[tokio::test]
+#[serial]
+async fn test_ssh_host_key_status_requires_auth() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let asset = create_test_ssh_asset(&mut conn, &unique_name("hk-noauth")).await;
+
+    let response = app
+        .server
+        .get(&format!(
+            "/api/v1/assets/{}/ssh-host-key",
+            asset.asset.uuid
+        ))
+        .await;
+
+    assert_status(&response, 401);
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// GET /api/v1/assets/{uuid}/ssh-host-key returns 404 for non-existent asset.
+#[tokio::test]
+#[serial]
+async fn test_ssh_host_key_status_not_found() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("admin_hk_notfound");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+
+    let fake_uuid = Uuid::new_v4();
+
+    let response = app
+        .server
+        .get(&format!("/api/v1/assets/{}/ssh-host-key", fake_uuid))
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .await;
+
+    assert_status(&response, 404);
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// After storing a host key with mismatch=true, verify that reading the full
+/// asset via GET /api/v1/assets/{uuid} also exposes the mismatch in
+/// connection_config so consumers can detect it.
+#[tokio::test]
+#[serial]
+async fn test_get_asset_exposes_mismatch_in_connection_config() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("admin_hk_full");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+    let asset = create_test_ssh_asset(&mut conn, &unique_name("hk-full")).await;
+
+    set_connection_config(
+        &mut conn,
+        asset.asset.uuid,
+        serde_json::json!({
+            "ssh_host_key": "ssh-ed25519 AAAATESKEY",
+            "ssh_host_key_fingerprint": "SHA256:FP",
+            "ssh_host_key_mismatch": true
+        }),
+    )
+    .await;
+
+    let response = app
+        .server
+        .get(&format!("/api/v1/assets/{}", asset.asset.uuid))
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .await;
+
+    assert_status(&response, 200);
+    let json: serde_json::Value = response.json();
+    let config = json.get("connection_config");
+    assert!(config.is_some(), "Response should include connection_config");
+    let config = config.unwrap();
+    assert_eq!(
+        config.get("ssh_host_key_mismatch").and_then(|v| v.as_bool()),
+        Some(true),
+        "connection_config should contain ssh_host_key_mismatch = true"
+    );
+    assert_eq!(
+        config
+            .get("ssh_host_key_fingerprint")
+            .and_then(|v| v.as_str()),
+        Some("SHA256:FP"),
+        "connection_config should contain the fingerprint"
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Verify that the mismatch flag is cleared (via connection_config) when a
+/// host key is successfully stored. We simulate this by setting the mismatch
+/// flag, then using the update_asset endpoint to clear it.
+#[tokio::test]
+#[serial]
+async fn test_mismatch_flag_cleared_after_update() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("admin_hk_clear");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+    let asset = create_test_ssh_asset(&mut conn, &unique_name("hk-clear")).await;
+
+    // Set mismatch flag
+    set_connection_config(
+        &mut conn,
+        asset.asset.uuid,
+        serde_json::json!({
+            "ssh_host_key": "ssh-ed25519 OLD",
+            "ssh_host_key_fingerprint": "SHA256:OLD",
+            "ssh_host_key_mismatch": true
+        }),
+    )
+    .await;
+
+    // Verify mismatch state via API
+    let response = app
+        .server
+        .get(&format!(
+            "/api/v1/assets/{}/ssh-host-key",
+            asset.asset.uuid
+        ))
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .await;
+    assert_status(&response, 200);
+    let json: serde_json::Value = response.json();
+    assert_eq!(
+        json.get("status").and_then(|v| v.as_str()),
+        Some("mismatch")
+    );
+
+    // Simulate clearing mismatch by updating connection_config
+    // (this is what the fetch handler does when confirm=true)
+    set_connection_config(
+        &mut conn,
+        asset.asset.uuid,
+        serde_json::json!({
+            "ssh_host_key": "ssh-ed25519 NEW",
+            "ssh_host_key_fingerprint": "SHA256:NEW"
+        }),
+    )
+    .await;
+
+    // Verify it's now "verified"
+    let response = app
+        .server
+        .get(&format!(
+            "/api/v1/assets/{}/ssh-host-key",
+            asset.asset.uuid
+        ))
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .await;
+    assert_status(&response, 200);
+    let json: serde_json::Value = response.json();
+    assert_eq!(
+        json.get("status").and_then(|v| v.as_str()),
+        Some("verified"),
+        "After clearing mismatch flag, status should be 'verified'"
+    );
+    assert_eq!(
+        json.get("fingerprint").and_then(|v| v.as_str()),
+        Some("SHA256:NEW"),
+        "Fingerprint should be the new one"
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+// =============================================================================
+// Malformed UUID Tests
+// =============================================================================
+
 /// Test update asset with malformed UUID returns validation error.
 #[tokio::test]
 #[serial]

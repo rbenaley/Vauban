@@ -194,6 +194,10 @@ pub enum Message {
         private_key: Option<String>,
         /// Passphrase for encrypted private key.
         passphrase: Option<String>,
+        /// Expected SSH host key in OpenSSH format (e.g. "ssh-ed25519 AAAA...").
+        /// If set, the proxy MUST verify the server key matches before continuing.
+        /// If None, host key verification is skipped (insecure, logged as warning).
+        expected_host_key: Option<String>,
     },
 
     /// Response confirming session opened or error.
@@ -221,6 +225,30 @@ pub enum Message {
         session_id: String,
         cols: u16,
         rows: u16,
+    },
+
+    // ========== SSH Host Key (Web <-> ProxySsh) ==========
+    /// Request to fetch the SSH host key from a target server.
+    /// The proxy performs a minimal SSH handshake (key exchange only, no auth)
+    /// and returns the server's public key.
+    SshFetchHostKey {
+        request_id: u64,
+        /// Target hostname or IP address.
+        asset_host: String,
+        /// SSH port.
+        asset_port: u16,
+    },
+
+    /// Response with the fetched SSH host key.
+    SshHostKeyResult {
+        request_id: u64,
+        success: bool,
+        /// Host key in OpenSSH format (e.g. "ssh-ed25519 AAAA...").
+        host_key: Option<String>,
+        /// SHA-256 fingerprint for display (e.g. "SHA256:abc123...").
+        key_fingerprint: Option<String>,
+        /// Error message if success is false.
+        error: Option<String>,
     },
 
     // ========== TCP Connection Brokering (Web -> Supervisor -> ProxySsh) ==========
@@ -271,6 +299,8 @@ impl Message {
             | Message::VaultCredentialResponse { request_id, .. }
             | Message::SshSessionOpen { request_id, .. }
             | Message::SshSessionOpened { request_id, .. }
+            | Message::SshFetchHostKey { request_id, .. }
+            | Message::SshHostKeyResult { request_id, .. }
             | Message::TcpConnectRequest { request_id, .. }
             | Message::TcpConnectResponse { request_id, .. } => Some(*request_id),
             _ => None,
@@ -714,6 +744,7 @@ mod tests {
             password: Some("secret123".to_string()),
             private_key: None,
             passphrase: None,
+            expected_host_key: Some("ssh-ed25519 AAAA...".to_string()),
         };
         assert_eq!(msg.request_id(), Some(500));
 
@@ -873,6 +904,7 @@ mod tests {
                 password: Some("pass".to_string()),
                 private_key: None,
                 passphrase: None,
+                expected_host_key: None,
             },
             Message::SshSessionOpened {
                 request_id: 1,
@@ -1021,6 +1053,152 @@ mod tests {
             let deserialized: Message = deserialize(&serialized);
             // Verify request_id extraction works
             assert!(deserialized.request_id().is_some());
+        }
+    }
+
+    // ==================== SSH Host Key Message Tests ====================
+
+    #[test]
+    fn test_message_ssh_fetch_host_key() {
+        let msg = Message::SshFetchHostKey {
+            request_id: 700,
+            asset_host: "10.0.0.1".to_string(),
+            asset_port: 22,
+        };
+        assert_eq!(msg.request_id(), Some(700));
+
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::SshFetchHostKey {
+            request_id,
+            asset_host,
+            asset_port,
+        } = deserialized
+        {
+            assert_eq!(request_id, 700);
+            assert_eq!(asset_host, "10.0.0.1");
+            assert_eq!(asset_port, 22);
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_message_ssh_host_key_result_success() {
+        let msg = Message::SshHostKeyResult {
+            request_id: 700,
+            success: true,
+            host_key: Some("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA".to_string()),
+            key_fingerprint: Some("SHA256:abcdef123456".to_string()),
+            error: None,
+        };
+        assert_eq!(msg.request_id(), Some(700));
+
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::SshHostKeyResult {
+            success,
+            host_key,
+            key_fingerprint,
+            error,
+            ..
+        } = deserialized
+        {
+            assert!(success);
+            assert!(host_key.unwrap().contains("ssh-ed25519"));
+            assert!(key_fingerprint.unwrap().contains("SHA256"));
+            assert!(error.is_none());
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_message_ssh_host_key_result_failure() {
+        let msg = Message::SshHostKeyResult {
+            request_id: 701,
+            success: false,
+            host_key: None,
+            key_fingerprint: None,
+            error: Some("Connection refused".to_string()),
+        };
+        assert_eq!(msg.request_id(), Some(701));
+
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::SshHostKeyResult {
+            success, error, ..
+        } = deserialized
+        {
+            assert!(!success);
+            assert_eq!(error, Some("Connection refused".to_string()));
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_message_ssh_session_open_with_host_key() {
+        let msg = Message::SshSessionOpen {
+            request_id: 800,
+            session_id: "s1".to_string(),
+            user_id: "u1".to_string(),
+            asset_id: "a1".to_string(),
+            asset_host: "host".to_string(),
+            asset_port: 22,
+            username: "user".to_string(),
+            terminal_cols: 80,
+            terminal_rows: 24,
+            auth_type: "password".to_string(),
+            password: Some("pass".to_string()),
+            private_key: None,
+            passphrase: None,
+            expected_host_key: Some("ssh-ed25519 AAAA...test".to_string()),
+        };
+
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::SshSessionOpen {
+            expected_host_key, ..
+        } = deserialized
+        {
+            assert_eq!(
+                expected_host_key,
+                Some("ssh-ed25519 AAAA...test".to_string())
+            );
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_message_ssh_session_open_without_host_key() {
+        let msg = Message::SshSessionOpen {
+            request_id: 801,
+            session_id: "s1".to_string(),
+            user_id: "u1".to_string(),
+            asset_id: "a1".to_string(),
+            asset_host: "host".to_string(),
+            asset_port: 22,
+            username: "user".to_string(),
+            terminal_cols: 80,
+            terminal_rows: 24,
+            auth_type: "password".to_string(),
+            password: Some("pass".to_string()),
+            private_key: None,
+            passphrase: None,
+            expected_host_key: None,
+        };
+
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::SshSessionOpen {
+            expected_host_key, ..
+        } = deserialized
+        {
+            assert!(expected_host_key.is_none());
+        } else {
+            panic!("Wrong variant");
         }
     }
 }

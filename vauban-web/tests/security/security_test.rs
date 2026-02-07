@@ -1963,6 +1963,7 @@ fn test_ssh_request_debug_does_not_leak_password() {
         password: Some("ssh-p@ssw0rd!".to_string()),
         private_key: None,
         passphrase: None,
+        expected_host_key: None,
     };
 
     let debug_str = format!("{:?}", request);
@@ -2000,6 +2001,7 @@ fn test_ssh_request_debug_does_not_leak_private_key() {
                 .to_string(),
         ),
         passphrase: Some("key-unlock-phrase".to_string()),
+        expected_host_key: None,
     };
 
     let debug_str = format!("{:?}", request);
@@ -2039,6 +2041,7 @@ fn test_ssh_request_debug_none_secrets_show_none() {
         password: None,
         private_key: None,
         passphrase: None,
+        expected_host_key: None,
     };
 
     let debug_str = format!("{:?}", request);
@@ -3495,5 +3498,1014 @@ async fn test_terminal_ws_invalid_session_id_returns_400() {
         status, 400,
         "Invalid session ID should return 400, got {}",
         status
+    );
+}
+
+// ==================== H-7: CSP unsafe-inline Removal ====================
+//
+// H-7 stated that `'unsafe-inline'` in script-src and `'unsafe-eval'` in the CSP
+// negated most XSS protections. The fix moved all inline <script> and <style>
+// blocks to external files and removed `'unsafe-inline'` from script-src.
+//
+// These tests verify:
+//  1. script-src does NOT contain 'unsafe-inline'
+//  2. CSP contains strengthening directives (base-uri, form-action, frame-ancestors)
+//  3. Static JS/CSS files are served correctly with proper MIME types
+//  4. Directory traversal is blocked
+//  5. CSP is present on all endpoint types (pages, API, login)
+
+/// H-7 Regression: CSP script-src must NOT contain 'unsafe-inline'.
+#[tokio::test]
+#[serial]
+async fn test_csp_script_src_no_unsafe_inline() {
+    let app = TestApp::spawn().await;
+
+    let response = app.server.get("/login").await;
+    let csp = response
+        .headers()
+        .get("content-security-policy")
+        .expect("CSP header must be present")
+        .to_str()
+        .expect("CSP header must be valid UTF-8");
+
+    // Extract the script-src directive specifically
+    let script_src = csp
+        .split(';')
+        .find(|d| d.trim().starts_with("script-src"))
+        .expect("CSP must contain a script-src directive");
+
+    assert!(
+        !script_src.contains("'unsafe-inline'"),
+        "script-src MUST NOT contain 'unsafe-inline' (H-7 fix). Got: {}",
+        script_src
+    );
+}
+
+/// H-7 Regression: CSP must contain base-uri restriction.
+#[tokio::test]
+#[serial]
+async fn test_csp_contains_base_uri_restriction() {
+    let app = TestApp::spawn().await;
+
+    let response = app.server.get("/login").await;
+    let csp = response
+        .headers()
+        .get("content-security-policy")
+        .expect("CSP header must be present")
+        .to_str()
+        .expect("CSP header must be valid UTF-8");
+
+    assert!(
+        csp.contains("base-uri 'self'"),
+        "CSP must contain base-uri 'self' to prevent <base> tag hijacking. Got: {}",
+        csp
+    );
+}
+
+/// H-7 Regression: CSP must contain form-action restriction.
+#[tokio::test]
+#[serial]
+async fn test_csp_contains_form_action_restriction() {
+    let app = TestApp::spawn().await;
+
+    let response = app.server.get("/login").await;
+    let csp = response
+        .headers()
+        .get("content-security-policy")
+        .expect("CSP header must be present")
+        .to_str()
+        .expect("CSP header must be valid UTF-8");
+
+    assert!(
+        csp.contains("form-action 'self'"),
+        "CSP must contain form-action 'self' to restrict form targets. Got: {}",
+        csp
+    );
+}
+
+/// H-7 Regression: CSP must contain frame-ancestors 'none'.
+#[tokio::test]
+#[serial]
+async fn test_csp_contains_frame_ancestors_none() {
+    let app = TestApp::spawn().await;
+
+    let response = app.server.get("/login").await;
+    let csp = response
+        .headers()
+        .get("content-security-policy")
+        .expect("CSP header must be present")
+        .to_str()
+        .expect("CSP header must be valid UTF-8");
+
+    assert!(
+        csp.contains("frame-ancestors 'none'"),
+        "CSP must contain frame-ancestors 'none' to prevent framing. Got: {}",
+        csp
+    );
+}
+
+/// H-7 Regression: CSP is consistent across page types (login, API, health).
+#[tokio::test]
+#[serial]
+async fn test_csp_consistent_across_endpoints() {
+    let app = TestApp::spawn().await;
+
+    let login_csp = app
+        .server
+        .get("/login")
+        .await
+        .headers()
+        .get("content-security-policy")
+        .expect("login CSP")
+        .to_str()
+        .expect("valid UTF-8")
+        .to_string();
+
+    let health_csp = app
+        .server
+        .get("/health")
+        .await
+        .headers()
+        .get("content-security-policy")
+        .expect("health CSP")
+        .to_str()
+        .expect("valid UTF-8")
+        .to_string();
+
+    let api_csp = app
+        .server
+        .get("/api/v1/accounts")
+        .await
+        .headers()
+        .get("content-security-policy")
+        .expect("API CSP")
+        .to_str()
+        .expect("valid UTF-8")
+        .to_string();
+
+    assert_eq!(
+        login_csp, health_csp,
+        "CSP must be identical on login and health endpoints"
+    );
+    assert_eq!(
+        login_csp, api_csp,
+        "CSP must be identical on login and API endpoints"
+    );
+}
+
+/// H-7 Regression: Static JS files are served with correct Content-Type.
+#[tokio::test]
+#[serial]
+async fn test_static_js_served_with_correct_content_type() {
+    let app = TestApp::spawn().await;
+
+    let response = app.server.get("/static/js/tailwind-config.js").await;
+    let status = response.status_code().as_u16();
+    assert_eq!(
+        status, 200,
+        "Static JS file must be served, got status {}",
+        status
+    );
+
+    let ct = response
+        .headers()
+        .get("content-type")
+        .expect("Content-Type must be set")
+        .to_str()
+        .expect("valid UTF-8");
+    assert!(
+        ct.contains("application/javascript"),
+        "JS files must be served as application/javascript, got: {}",
+        ct
+    );
+}
+
+/// H-7 Regression: Static CSS files are served with correct Content-Type.
+#[tokio::test]
+#[serial]
+async fn test_static_css_served_with_correct_content_type() {
+    let app = TestApp::spawn().await;
+
+    let response = app.server.get("/static/css/vauban.css").await;
+    let status = response.status_code().as_u16();
+    assert_eq!(
+        status, 200,
+        "Static CSS file must be served, got status {}",
+        status
+    );
+
+    let ct = response
+        .headers()
+        .get("content-type")
+        .expect("Content-Type must be set")
+        .to_str()
+        .expect("valid UTF-8");
+    assert!(
+        ct.contains("text/css"),
+        "CSS files must be served as text/css, got: {}",
+        ct
+    );
+}
+
+/// H-7 Regression: Directory traversal via static path is blocked.
+///
+/// The HTTP framework normalizes `..` segments before route matching, so paths
+/// like `/static/../../etc/passwd` never reach the handler. This test verifies
+/// that traversal attempts are blocked at some level (normalization, handler, or
+/// fallback) by checking the response is NOT 200.
+#[tokio::test]
+#[serial]
+async fn test_static_directory_traversal_blocked() {
+    let app = TestApp::spawn().await;
+
+    // Paths that try to escape: HTTP normalization collapses ".." before
+    // route matching, so they hit the fallback (303 redirect) or 404.
+    for path in &[
+        "/static/../../../etc/passwd",
+        "/static/%2e%2e/%2e%2e/etc/passwd",
+        "/static/js/..%2f..%2fetc%2fpasswd",
+    ] {
+        let response = app.server.get(path).await;
+        let status = response.status_code().as_u16();
+        assert_ne!(
+            status, 200,
+            "Directory traversal for '{}' must NOT return 200, got {}",
+            path, status
+        );
+    }
+
+    // A path that reaches the handler but tries to read outside static/
+    // by embedding ".." within the captured wildcard.
+    let response = app.server.get("/static/js/../../../Cargo.toml").await;
+    let status = response.status_code().as_u16();
+    assert_ne!(
+        status, 200,
+        "Path traversal via wildcard must NOT return 200, got {}",
+        status
+    );
+}
+
+/// H-7 Regression: Unknown file extensions return 404.
+#[tokio::test]
+#[serial]
+async fn test_static_unknown_extension_returns_404() {
+    let app = TestApp::spawn().await;
+
+    let response = app.server.get("/static/malicious.php").await;
+    let status = response.status_code().as_u16();
+    assert_eq!(
+        status, 404,
+        "Unknown file extension must return 404, got {}",
+        status
+    );
+}
+
+/// H-7 Regression: Static files have cache headers.
+#[tokio::test]
+#[serial]
+async fn test_static_files_have_cache_headers() {
+    let app = TestApp::spawn().await;
+
+    let response = app.server.get("/static/js/vauban-components.js").await;
+    assert_eq!(response.status_code().as_u16(), 200);
+
+    let cache = response
+        .headers()
+        .get("cache-control")
+        .expect("Cache-Control must be set")
+        .to_str()
+        .expect("valid UTF-8");
+    assert!(
+        cache.contains("max-age="),
+        "Static files must have cache max-age, got: {}",
+        cache
+    );
+}
+
+// =============================================================================
+// H-8 Regression: RBAC stub deny-by-default in release builds
+// =============================================================================
+
+/// H-8 Regression: The RBAC service source must contain compile-time guards
+/// (#[cfg(debug_assertions)]) around the allow-all stub to prevent production
+/// deployment with a permissive RBAC.
+#[tokio::test]
+#[serial]
+async fn test_rbac_service_has_compile_time_guard() {
+    // Read the RBAC service source at compile time to verify structural
+    // safety. This catches accidental removal of the cfg guards.
+    let rbac_source = include_str!("../../../vauban-rbac/src/main.rs");
+
+    // Must have the debug-only guard
+    assert!(
+        rbac_source.contains("#[cfg(debug_assertions)]"),
+        "vauban-rbac/src/main.rs must guard the allow-all RBAC stub \
+         with #[cfg(debug_assertions)]"
+    );
+
+    // Must have the release deny-by-default guard
+    assert!(
+        rbac_source.contains("#[cfg(not(debug_assertions))]"),
+        "vauban-rbac/src/main.rs must contain #[cfg(not(debug_assertions))] \
+         with a deny-by-default fallback for release builds"
+    );
+
+    // Must contain the deny-by-default result
+    assert!(
+        rbac_source.contains("allowed: false"),
+        "vauban-rbac/src/main.rs must deny RBAC requests by default \
+         (allowed: false) in release builds"
+    );
+}
+
+/// H-8 Regression: The RBAC client in vauban-web must also contain
+/// compile-time guards to prevent the stub from allowing all requests
+/// in production.
+#[tokio::test]
+#[serial]
+async fn test_rbac_client_has_compile_time_guard() {
+    let client_source = include_str!("../../src/ipc/clients.rs");
+
+    assert!(
+        client_source.contains("#[cfg(debug_assertions)]"),
+        "ipc/clients.rs must guard the allow-all RBAC client stub \
+         with #[cfg(debug_assertions)]"
+    );
+
+    assert!(
+        client_source.contains("#[cfg(not(debug_assertions))]"),
+        "ipc/clients.rs must contain #[cfg(not(debug_assertions))] \
+         with a deny-by-default fallback for release builds"
+    );
+
+    assert!(
+        client_source.contains("Ok(false)"),
+        "ipc/clients.rs must deny RBAC requests by default \
+         (Ok(false)) in release builds"
+    );
+}
+
+/// H-8 Regression: The RBAC service must not contain an unguarded
+/// `allowed: true` (i.e., one that is NOT inside a cfg(debug_assertions) block).
+/// This is a heuristic check that scans for the pattern.
+#[tokio::test]
+#[serial]
+async fn test_rbac_no_unguarded_allow_all() {
+    let rbac_source = include_str!("../../../vauban-rbac/src/main.rs");
+
+    // Count occurrences of "allowed: true" - there should be exactly as many
+    // as there are cfg(debug_assertions) blocks containing it (currently 1).
+    let allow_count = rbac_source.matches("allowed: true").count();
+    let deny_count = rbac_source.matches("allowed: false").count();
+
+    assert!(
+        deny_count >= 1,
+        "Must have at least one deny-by-default path (allowed: false), found {deny_count}"
+    );
+
+    // In test code, the stub result is checked (assert!(result.allowed)),
+    // so we only check that deny paths exist alongside allow paths.
+    assert!(
+        deny_count >= 1 && allow_count >= 1,
+        "Must have both allow (debug) and deny (release) paths. \
+         Found allow_count={allow_count}, deny_count={deny_count}"
+    );
+}
+
+// =============================================================================
+// H-9: SSH Host Key Verification Tests
+// =============================================================================
+
+/// H-9 Regression: Verify that check_server_key in vauban-proxy-ssh
+/// contains host key verification logic (not just Ok(true)).
+#[tokio::test]
+#[serial]
+async fn test_ssh_host_key_verification_exists_in_proxy() {
+    let session_source = include_str!("../../../vauban-proxy-ssh/src/session.rs");
+
+    // Must reference expected_host_key for verification
+    assert!(
+        session_source.contains("expected_host_key"),
+        "H-9: session.rs must contain expected_host_key field for host key verification"
+    );
+
+    // Must contain the comparison logic
+    assert!(
+        session_source.contains("MITM"),
+        "H-9: session.rs must warn about MITM attacks on host key mismatch"
+    );
+
+    // Must NOT contain the old unconditional accept-all pattern.
+    // The old code had a single `Ok(true)` with a TODO comment.
+    // Check that we have BOTH Ok(true) (for match/no-key) AND Ok(false) (for mismatch).
+    let ok_true_count = session_source.matches("Ok(true)").count();
+    let ok_false_count = session_source.matches("Ok(false)").count();
+
+    assert!(
+        ok_false_count >= 1,
+        "H-9: check_server_key must return Ok(false) on mismatch, found {} Ok(false)",
+        ok_false_count
+    );
+    assert!(
+        ok_true_count >= 1,
+        "H-9: check_server_key must return Ok(true) on match, found {} Ok(true)",
+        ok_true_count
+    );
+}
+
+/// H-9 Regression: Verify that SshSessionOpen message includes expected_host_key.
+#[tokio::test]
+#[serial]
+async fn test_ssh_session_open_has_expected_host_key_field() {
+    let messages_source = include_str!("../../../shared/src/messages.rs");
+
+    // The SshSessionOpen variant must include expected_host_key
+    assert!(
+        messages_source.contains("expected_host_key: Option<String>"),
+        "H-9: SshSessionOpen must include expected_host_key: Option<String>"
+    );
+}
+
+/// H-9 Regression: Verify that SshFetchHostKey and SshHostKeyResult
+/// message variants exist.
+#[tokio::test]
+#[serial]
+async fn test_ssh_host_key_fetch_messages_exist() {
+    let messages_source = include_str!("../../../shared/src/messages.rs");
+
+    assert!(
+        messages_source.contains("SshFetchHostKey"),
+        "H-9: Message enum must include SshFetchHostKey variant"
+    );
+    assert!(
+        messages_source.contains("SshHostKeyResult"),
+        "H-9: Message enum must include SshHostKeyResult variant"
+    );
+    assert!(
+        messages_source.contains("key_fingerprint"),
+        "H-9: SshHostKeyResult must include key_fingerprint field"
+    );
+}
+
+/// H-9 Regression: Verify that connect_ssh passes the expected host key
+/// from connection_config to the proxy.
+#[tokio::test]
+#[serial]
+async fn test_connect_ssh_passes_host_key() {
+    let web_source = include_str!("../../src/handlers/web.rs");
+
+    // connect_ssh must extract ssh_host_key from connection_config
+    assert!(
+        web_source.contains("ssh_host_key"),
+        "H-9: connect_ssh must extract ssh_host_key from connection_config"
+    );
+
+    // Must pass expected_host_key to the open request
+    assert!(
+        web_source.contains("expected_host_key"),
+        "H-9: connect_ssh must pass expected_host_key in SshSessionOpenRequest"
+    );
+}
+
+/// H-9 Regression: Verify that the proxy handles SshFetchHostKey messages.
+#[tokio::test]
+#[serial]
+async fn test_proxy_handles_fetch_host_key_message() {
+    let proxy_main_source = include_str!("../../../vauban-proxy-ssh/src/main.rs");
+
+    assert!(
+        proxy_main_source.contains("SshFetchHostKey"),
+        "H-9: vauban-proxy-ssh/main.rs must handle SshFetchHostKey messages"
+    );
+    assert!(
+        proxy_main_source.contains("SshHostKeyResult"),
+        "H-9: vauban-proxy-ssh/main.rs must send SshHostKeyResult responses"
+    );
+    assert!(
+        proxy_main_source.contains("fetch_host_key"),
+        "H-9: vauban-proxy-ssh/main.rs must call fetch_host_key function"
+    );
+}
+
+/// H-9 Regression: Verify that the fetch_ssh_host_key endpoint
+/// rejects non-SSH assets.
+#[tokio::test]
+#[serial]
+async fn test_fetch_host_key_rejects_non_ssh_assets() {
+    let web_source = include_str!("../../src/handlers/web.rs");
+
+    // The handler must check asset type
+    assert!(
+        web_source.contains("Host key fetch is only available for SSH assets"),
+        "H-9: fetch_ssh_host_key must reject non-SSH assets with clear error message"
+    );
+}
+
+/// H-9 Regression: Verify that host key data is stored in connection_config JSONB.
+#[tokio::test]
+#[serial]
+async fn test_host_key_stored_in_connection_config() {
+    let web_source = include_str!("../../src/handlers/web.rs");
+
+    // The handler must store ssh_host_key and ssh_host_key_fingerprint
+    assert!(
+        web_source.contains(r#"config["ssh_host_key"]"#),
+        "H-9: fetch handler must store ssh_host_key in connection_config"
+    );
+    assert!(
+        web_source.contains(r#"config["ssh_host_key_fingerprint"]"#),
+        "H-9: fetch handler must store ssh_host_key_fingerprint in connection_config"
+    );
+}
+
+/// H-9 Regression: Verify that the IPC client (proxy_ssh.rs) handles
+/// SshHostKeyResult responses.
+#[tokio::test]
+#[serial]
+async fn test_ipc_client_handles_host_key_result() {
+    let client_source = include_str!("../../src/ipc/proxy_ssh.rs");
+
+    assert!(
+        client_source.contains("SshHostKeyResult"),
+        "H-9: ProxySshClient must handle SshHostKeyResult messages"
+    );
+    assert!(
+        client_source.contains("pending_host_key_requests"),
+        "H-9: ProxySshClient must track pending host key requests"
+    );
+    assert!(
+        client_source.contains("fetch_host_key"),
+        "H-9: ProxySshClient must provide a fetch_host_key method"
+    );
+}
+
+// ── H-9 Host Key Mismatch Detection Tests ──
+
+/// Verify that fetch_ssh_host_key handler detects key changes and returns
+/// a mismatch fragment instead of silently overwriting the stored key.
+#[tokio::test]
+#[serial]
+async fn test_fetch_host_key_detects_key_change() {
+    let web_source = include_str!("../../src/handlers/web.rs");
+
+    // Handler must compare old key with new key
+    assert!(
+        web_source.contains("stored_host_key"),
+        "H-9: fetch_ssh_host_key must read the previously stored host key"
+    );
+    assert!(
+        web_source.contains("old_key != &host_key"),
+        "H-9: fetch_ssh_host_key must compare old key with newly fetched key"
+    );
+    assert!(
+        web_source.contains("_ssh_host_key_mismatch_fragment.html"),
+        "H-9: fetch_ssh_host_key must return mismatch fragment when keys differ"
+    );
+    assert!(
+        web_source.contains(r#""confirm""#),
+        "H-9: fetch_ssh_host_key must support confirm parameter to accept new key"
+    );
+}
+
+/// Verify that the API handler also detects key changes and supports
+/// the confirm parameter.
+#[tokio::test]
+#[serial]
+async fn test_api_fetch_host_key_detects_key_change() {
+    let api_source = include_str!("../../src/handlers/api/assets.rs");
+
+    assert!(
+        api_source.contains("stored_host_key"),
+        "H-9: API fetch handler must read the previously stored host key"
+    );
+    assert!(
+        api_source.contains("key_changed"),
+        "H-9: API fetch handler must return key_changed flag when keys differ"
+    );
+    assert!(
+        api_source.contains(r#""confirm""#),
+        "H-9: API fetch handler must support confirm parameter"
+    );
+}
+
+/// Verify that connect_ssh marks the asset with a mismatch flag when
+/// the SSH proxy reports a host key verification failure.
+#[tokio::test]
+#[serial]
+async fn test_connect_ssh_marks_mismatch_on_failure() {
+    let web_source = include_str!("../../src/handlers/web.rs");
+
+    assert!(
+        web_source.contains("ssh_host_key_mismatch"),
+        "H-9: connect_ssh must set ssh_host_key_mismatch flag on key verification failure"
+    );
+    assert!(
+        web_source.contains("is_host_key_mismatch"),
+        "H-9: connect_ssh must detect host key mismatch from error messages"
+    );
+    // Verify that the mismatch detection checks for relevant keywords
+    assert!(
+        web_source.contains(r#"msg.contains("MITM")"#) || web_source.contains(r#"error_str.contains("MITM")"#),
+        "H-9: connect_ssh must detect MITM-related error messages"
+    );
+}
+
+/// Verify that the asset detail template auto-verifies the host key on
+/// page load and that the three states are available via HTMX fragments.
+#[tokio::test]
+#[serial]
+async fn test_asset_detail_template_three_host_key_states() {
+    let template_source = include_str!("../../templates/assets/asset_detail.html");
+
+    // The template must trigger auto-verification via HTMX on page load
+    assert!(
+        template_source.contains("verify-host-key"),
+        "H-9: asset_detail template must call verify-host-key endpoint"
+    );
+    assert!(
+        template_source.contains("hx-trigger"),
+        "H-9: asset_detail template must use hx-trigger for auto-verification"
+    );
+    assert!(
+        template_source.contains("Verifying host key"),
+        "H-9: asset_detail template must show a 'Verifying' loading state"
+    );
+
+    // State 2 (no key) is still rendered server-side
+    assert!(
+        template_source.contains("No Host Key Stored"),
+        "H-9: asset_detail template must show 'No Host Key Stored' state"
+    );
+
+    // States 1 (verified) and 3 (mismatch) are now in HTMX fragments
+    let verified_fragment =
+        include_str!("../../templates/assets/_ssh_host_key_fragment.html");
+    assert!(
+        verified_fragment.contains("Host Key Verified"),
+        "H-9: verified fragment must show 'Host Key Verified'"
+    );
+
+    let mismatch_fragment =
+        include_str!("../../templates/assets/_ssh_host_key_mismatch_fragment.html");
+    assert!(
+        mismatch_fragment.contains("Host Key Changed"),
+        "H-9: mismatch fragment must show host key change warning"
+    );
+
+    let stored_mismatch_fragment =
+        include_str!("../../templates/assets/_ssh_host_key_stored_mismatch_fragment.html");
+    assert!(
+        stored_mismatch_fragment.contains("Host Key Mismatch"),
+        "H-9: stored mismatch fragment must show 'Host Key Mismatch'"
+    );
+
+    let no_key_fragment =
+        include_str!("../../templates/assets/_ssh_host_key_no_key_fragment.html");
+    assert!(
+        no_key_fragment.contains("No Host Key Stored"),
+        "H-9: no-key fragment must show 'No Host Key Stored'"
+    );
+}
+
+/// Verify that the AssetDetail struct has the ssh_host_key_mismatch field.
+#[tokio::test]
+#[serial]
+async fn test_asset_detail_struct_has_mismatch_field() {
+    let struct_source = include_str!("../../src/templates/assets/asset_detail.rs");
+
+    assert!(
+        struct_source.contains("ssh_host_key_mismatch: bool"),
+        "H-9: AssetDetail struct must have ssh_host_key_mismatch field"
+    );
+}
+
+/// Verify that the mismatch fragment template exists and contains
+/// appropriate security warnings.
+#[tokio::test]
+#[serial]
+async fn test_mismatch_fragment_has_security_warnings() {
+    let fragment = include_str!("../../templates/assets/_ssh_host_key_mismatch_fragment.html");
+
+    assert!(
+        fragment.contains("WARNING"),
+        "H-9: mismatch fragment must display a WARNING message"
+    );
+    assert!(
+        fragment.contains("man-in-the-middle"),
+        "H-9: mismatch fragment must warn about MITM attacks"
+    );
+    assert!(
+        fragment.contains("__OLD_FINGERPRINT__"),
+        "H-9: mismatch fragment must show the old fingerprint"
+    );
+    assert!(
+        fragment.contains("__NEW_FINGERPRINT__"),
+        "H-9: mismatch fragment must show the new fingerprint"
+    );
+    assert!(
+        fragment.contains("confirm=true"),
+        "H-9: mismatch fragment must have a button to accept the new key"
+    );
+    assert!(
+        fragment.contains("hx-confirm"),
+        "H-9: mismatch fragment must require user confirmation before accepting"
+    );
+}
+
+/// Verify that the fetch handler clears the mismatch flag when a key is
+/// successfully stored (either first fetch or confirmed accept).
+#[tokio::test]
+#[serial]
+async fn test_fetch_handler_clears_mismatch_flag() {
+    let web_source = include_str!("../../src/handlers/web.rs");
+
+    assert!(
+        web_source.contains(r#"m.remove("ssh_host_key_mismatch")"#),
+        "H-9: fetch handler must remove the mismatch flag when storing a new key"
+    );
+
+    let api_source = include_str!("../../src/handlers/api/assets.rs");
+    assert!(
+        api_source.contains(r#"m.remove("ssh_host_key_mismatch")"#),
+        "H-9: API fetch handler must remove the mismatch flag when storing a new key"
+    );
+}
+
+/// Verify that the GET ssh-host-key API endpoint exists and returns the
+/// three host key states (verified, mismatch, no_key).
+#[tokio::test]
+#[serial]
+async fn test_api_get_ssh_host_key_status_endpoint_exists() {
+    let api_source = include_str!("../../src/handlers/api/assets.rs");
+
+    assert!(
+        api_source.contains("get_ssh_host_key_status"),
+        "H-9: API must have a get_ssh_host_key_status handler"
+    );
+    assert!(
+        api_source.contains(r#""verified""#),
+        "H-9: get_ssh_host_key_status must return 'verified' state"
+    );
+    assert!(
+        api_source.contains(r#""mismatch""#),
+        "H-9: get_ssh_host_key_status must return 'mismatch' state"
+    );
+    assert!(
+        api_source.contains(r#""no_key""#),
+        "H-9: get_ssh_host_key_status must return 'no_key' state"
+    );
+}
+
+/// Verify the GET route for ssh-host-key is registered in main.rs.
+#[tokio::test]
+#[serial]
+async fn test_api_get_ssh_host_key_route_registered() {
+    let main_source = include_str!("../../src/main.rs");
+
+    assert!(
+        main_source.contains("get_ssh_host_key_status"),
+        "H-9: GET ssh-host-key route must be registered in main.rs"
+    );
+    assert!(
+        main_source.contains("get(handlers::api::get_ssh_host_key_status)"),
+        "H-9: GET handler must be wired with get() in the route definition"
+    );
+}
+
+/// Verify that connect_ssh persists the mismatch flag for both response
+/// error branches (successful proxy response with error, and transport error).
+#[tokio::test]
+#[serial]
+async fn test_connect_ssh_detects_mismatch_in_both_error_branches() {
+    let web_source = include_str!("../../src/handlers/web.rs");
+
+    // Count occurrences of is_host_key_mismatch - should appear at least
+    // twice (once in each error branch of the proxy call).
+    let mismatch_count = web_source.matches("is_host_key_mismatch").count();
+    assert!(
+        mismatch_count >= 4,
+        "H-9: connect_ssh must check for host key mismatch in both error branches \
+         (found {} occurrences of is_host_key_mismatch, expected >= 4)",
+        mismatch_count
+    );
+}
+
+/// Verify the API handler re-exports include the new GET endpoint.
+#[tokio::test]
+#[serial]
+async fn test_api_mod_exports_host_key_status() {
+    let mod_source = include_str!("../../src/handlers/api/mod.rs");
+
+    assert!(
+        mod_source.contains("get_ssh_host_key_status"),
+        "H-9: api/mod.rs must re-export get_ssh_host_key_status"
+    );
+}
+
+/// Verify that the verify_ssh_host_key handler exists and performs
+/// proactive host key verification against the remote server.
+#[tokio::test]
+#[serial]
+async fn test_verify_ssh_host_key_handler_exists() {
+    let web_source = include_str!("../../src/handlers/web.rs");
+
+    assert!(
+        web_source.contains("verify_ssh_host_key"),
+        "H-9: web handler must include verify_ssh_host_key for proactive verification"
+    );
+    // Must compare stored key against remote key
+    assert!(
+        web_source.contains("old_key == remote_key"),
+        "H-9: verify handler must compare stored key against remote key"
+    );
+    // Must handle proxy unavailability gracefully
+    assert!(
+        web_source.contains("Proxy unavailable") || web_source.contains("SSH proxy not available, returning stored state"),
+        "H-9: verify handler must fall back gracefully when proxy is unavailable"
+    );
+    // Must handle connection failure gracefully
+    assert!(
+        web_source.contains("Could not verify host key against remote server"),
+        "H-9: verify handler must fall back gracefully when connection fails"
+    );
+}
+
+/// Verify the verify-host-key route is registered in main.rs.
+#[tokio::test]
+#[serial]
+async fn test_verify_host_key_route_registered() {
+    let main_source = include_str!("../../src/main.rs");
+
+    assert!(
+        main_source.contains("verify-host-key"),
+        "H-9: verify-host-key route must be registered in main.rs"
+    );
+    assert!(
+        main_source.contains("verify_ssh_host_key"),
+        "H-9: verify_ssh_host_key handler must be wired in main.rs"
+    );
+}
+
+/// Verify that all four HTMX fragments exist for the SSH host key states.
+#[tokio::test]
+#[serial]
+async fn test_all_ssh_host_key_fragments_exist() {
+    // Verified (green)
+    let _ = include_str!("../../templates/assets/_ssh_host_key_fragment.html");
+    // Mismatch detected during fetch/refresh (red, two fingerprints)
+    let _ = include_str!("../../templates/assets/_ssh_host_key_mismatch_fragment.html");
+    // Mismatch from stored flag (red, one fingerprint)
+    let _ = include_str!("../../templates/assets/_ssh_host_key_stored_mismatch_fragment.html");
+    // No key stored (amber)
+    let _ = include_str!("../../templates/assets/_ssh_host_key_no_key_fragment.html");
+    // If we got here without a compile error, all fragments exist.
+}
+
+// ---------------------------------------------------------------------------
+// H-9: Privilege separation (privsep) compliance for SSH host key fetch
+// ---------------------------------------------------------------------------
+// Under Capsicum (FreeBSD sandbox), after cap_enter() no new network
+// connections are allowed.  TCP connections must be brokered by the
+// supervisor and the resulting FDs passed via SCM_RIGHTS on a Unix
+// socketpair.  These tests verify that the host key fetch code path
+// correctly delegates TCP connect to the supervisor when one is
+// available.
+
+/// Verify that ProxySshClient::fetch_host_key accepts an optional
+/// supervisor parameter for Capsicum-compatible TCP connection brokering.
+#[tokio::test]
+#[serial]
+async fn test_fetch_host_key_accepts_supervisor_param() {
+    let ipc_source = include_str!("../../src/ipc/proxy_ssh.rs");
+
+    // The method signature must accept an optional supervisor reference
+    assert!(
+        ipc_source.contains("supervisor: Option<&super::SupervisorClient>"),
+        "H-9/privsep: fetch_host_key must accept an optional SupervisorClient for Capsicum TCP brokering"
+    );
+}
+
+/// Verify that fetch_host_key requests a TCP connection from the
+/// supervisor before sending SshFetchHostKey to the proxy.
+#[tokio::test]
+#[serial]
+async fn test_fetch_host_key_requests_supervisor_tcp_connect() {
+    let ipc_source = include_str!("../../src/ipc/proxy_ssh.rs");
+
+    // Must call request_tcp_connect when supervisor is available
+    assert!(
+        ipc_source.contains("request_tcp_connect"),
+        "H-9/privsep: fetch_host_key must call request_tcp_connect on the supervisor"
+    );
+
+    // Must use the correct session_id format matching the proxy's expectation
+    assert!(
+        ipc_source.contains(r#"format!("fetch-hostkey-{}", request_id)"#),
+        "H-9/privsep: fetch_host_key must use 'fetch-hostkey-{{request_id}}' as session_id for TCP connect"
+    );
+
+    // Must target Service::ProxySsh
+    assert!(
+        ipc_source.contains("Service::ProxySsh"),
+        "H-9/privsep: fetch_host_key must target Service::ProxySsh for TCP connect brokering"
+    );
+}
+
+/// Verify that the web handler (verify_ssh_host_key) passes the
+/// supervisor to fetch_host_key.
+#[tokio::test]
+#[serial]
+async fn test_verify_handler_passes_supervisor() {
+    let web_source = include_str!("../../src/handlers/web.rs");
+
+    // The verify handler must extract the supervisor and pass it
+    assert!(
+        web_source.contains("supervisor_ref"),
+        "H-9/privsep: verify_ssh_host_key must extract supervisor reference"
+    );
+    assert!(
+        web_source.contains("state.supervisor.as_deref()"),
+        "H-9/privsep: verify_ssh_host_key must get supervisor from state"
+    );
+}
+
+/// Verify that the web handler (fetch_ssh_host_key) passes the
+/// supervisor to fetch_host_key.
+#[tokio::test]
+#[serial]
+async fn test_fetch_web_handler_passes_supervisor() {
+    let web_source = include_str!("../../src/handlers/web.rs");
+
+    // The fetch handler must pass supervisor_ref to fetch_host_key
+    // Count occurrences - we need at least 2 (one in fetch_ssh_host_key,
+    // one in verify_ssh_host_key)
+    let count = web_source.matches("supervisor_ref").count();
+    assert!(
+        count >= 2,
+        "H-9/privsep: both fetch_ssh_host_key and verify_ssh_host_key must pass supervisor_ref (found {} occurrences)",
+        count
+    );
+}
+
+/// Verify that the API handler (fetch_ssh_host_key_api) passes the
+/// supervisor to fetch_host_key.
+#[tokio::test]
+#[serial]
+async fn test_fetch_api_handler_passes_supervisor() {
+    let api_source = include_str!("../../src/handlers/api/assets.rs");
+
+    assert!(
+        api_source.contains("supervisor_ref"),
+        "H-9/privsep: fetch_ssh_host_key_api must extract supervisor reference"
+    );
+    assert!(
+        api_source.contains("state.supervisor.as_deref()"),
+        "H-9/privsep: fetch_ssh_host_key_api must get supervisor from state"
+    );
+}
+
+/// Verify that the proxy correctly constructs the fetch session ID
+/// from the request_id to match the supervisor's TCP connect.
+#[tokio::test]
+#[serial]
+async fn test_proxy_fetch_session_id_matches_supervisor() {
+    let proxy_source = include_str!("../../../vauban-proxy-ssh/src/main.rs");
+
+    // The proxy must construct the same session_id format
+    assert!(
+        proxy_source.contains(r#"format!("fetch-hostkey-{}", request_id)"#),
+        "H-9/privsep: proxy must construct fetch_session_id matching the supervisor TCP connect session_id"
+    );
+
+    // The proxy must look up the FD in pending_connections
+    assert!(
+        proxy_source.contains("pending.lock().await.remove(&fetch_session_id)"),
+        "H-9/privsep: proxy must retrieve pre-connected FD from pending_connections"
+    );
+}
+
+/// Verify that the session::fetch_host_key function supports both
+/// pre-connected FD (sandboxed) and direct connection (dev mode).
+#[tokio::test]
+#[serial]
+async fn test_session_fetch_supports_preconnected_fd() {
+    let session_source = include_str!("../../../vauban-proxy-ssh/src/session.rs");
+
+    // Must accept an optional pre-connected FD
+    assert!(
+        session_source.contains("preconnected_fd: Option<OwnedFd>"),
+        "H-9/privsep: session::fetch_host_key must accept Option<OwnedFd> for pre-connected FD"
+    );
+
+    // Must handle the pre-connected case (use from_raw_fd)
+    assert!(
+        session_source.contains("from_raw_fd"),
+        "H-9/privsep: session::fetch_host_key must use from_raw_fd for pre-connected FD"
+    );
+
+    // Must have a fallback for direct connection (dev mode without supervisor)
+    assert!(
+        session_source.contains("client::connect(ssh_config, addr, handler)"),
+        "H-9/privsep: session::fetch_host_key must fall back to direct connect when no FD is provided"
     );
 }

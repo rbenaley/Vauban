@@ -4,6 +4,8 @@
 /// the privilege-separated Vauban services (auth, rbac, vault, audit).
 use std::time::Duration;
 use tracing::warn;
+#[cfg(not(debug_assertions))]
+use tracing::error;
 
 use crate::config::Config;
 use crate::error::AppResult;
@@ -52,15 +54,26 @@ impl RbacClient {
     /// Check permission.
     ///
     /// TODO: Implement actual IPC communication with vauban-rbac.
+    ///
+    /// Security: the stub allow-all is only compiled in debug builds.
+    /// In release builds, all requests are denied by default until the
+    /// IPC communication with vauban-rbac is implemented.
     pub async fn check_permission(
         &self,
         _user_id: &str,
         _resource: &str,
         _action: &str,
     ) -> AppResult<bool> {
-        // TODO: Send RbacCheck message via IPC pipe
-        warn!("RBAC check_permission called but IPC not yet implemented");
-        Ok(true) // Mock: allow all in development
+        #[cfg(debug_assertions)]
+        {
+            warn!("RBAC stub: allowing (debug build). NOT safe for production.");
+            Ok(true)
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            error!("RBAC IPC not implemented - denying by default");
+            Ok(false)
+        }
     }
 }
 
@@ -152,5 +165,54 @@ mod tests {
     fn test_ipc_client_default() {
         let client = IpcClient::default();
         let _ = client;
+    }
+
+    // ==================== H-8 Regression Tests ====================
+
+    /// Verify that in debug builds, the RBAC client stub allows all
+    /// requests. This test documents the intentional debug behavior.
+    /// In release builds (cargo test --release), the stub denies by default.
+    #[tokio::test]
+    #[cfg(debug_assertions)]
+    async fn test_rbac_client_allows_in_debug_build() {
+        let client = RbacClient {
+            client: IpcClient::new(),
+        };
+
+        let result = client
+            .check_permission("user:alice", "asset:server1", "ssh")
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "RBAC client check_permission must not error in debug builds"
+        );
+        assert!(
+            result.unwrap(),
+            "RBAC client stub must return true (allow) in debug builds"
+        );
+    }
+
+    /// Structural regression test: verify that the RBAC client source code
+    /// contains cfg(debug_assertions) guards around the allow-all stub.
+    #[test]
+    fn test_rbac_client_has_cfg_debug_guard() {
+        let source = include_str!("clients.rs");
+
+        assert!(
+            source.contains("#[cfg(debug_assertions)]"),
+            "ipc/clients.rs must contain #[cfg(debug_assertions)] \
+             to guard the RBAC allow-all stub"
+        );
+        assert!(
+            source.contains("#[cfg(not(debug_assertions))]"),
+            "ipc/clients.rs must contain #[cfg(not(debug_assertions))] \
+             with a deny-by-default fallback"
+        );
+        assert!(
+            source.contains("Ok(false)"),
+            "ipc/clients.rs must contain a deny-by-default path \
+             (Ok(false)) for release builds"
+        );
     }
 }

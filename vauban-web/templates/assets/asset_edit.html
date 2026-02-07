@@ -178,6 +178,26 @@
             </div>
         </div>
 
+        <!-- SSH Host Key (read-only, H-9) -->
+        {% if asset.asset_type == "ssh" %}
+        {% if let Some(fp) = asset.ssh_host_key_fingerprint %}
+        <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+            <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
+                <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">SSH Host Key</h3>
+            </div>
+            <div class="px-4 py-5 sm:p-6">
+                <div>
+                    <label class="block text-sm font-medium text-gray-500 dark:text-gray-400">Fingerprint</label>
+                    <p class="mt-1 text-sm text-gray-900 dark:text-white font-mono">{{ fp }}</p>
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                        To refresh the host key, use the asset detail page.
+                    </p>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+        {% endif %}
+
         <!-- System Information -->
         <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
             <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">

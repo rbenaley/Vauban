@@ -243,6 +243,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.security.rate_limit_per_minute
     );
 
+    // 8. Static files are embedded in the binary (see static_assets module).
+    //    No filesystem access needed - files are compiled in via include_bytes!().
+    tracing::info!(
+        files = vauban_web::static_assets::STATIC_FILES.len(),
+        "Static assets compiled into binary"
+    );
+
     // ========================================================================
     // PHASE 2: Enter Capsicum sandbox (point of no return)
     // After this, no new file descriptors can be opened.
@@ -649,6 +656,15 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             "/assets/{uuid}/connect",
             post(handlers::web::connect_ssh),
         )
+        // SSH host key management (H-9)
+        .route(
+            "/assets/{uuid}/fetch-host-key",
+            post(handlers::web::fetch_ssh_host_key),
+        )
+        .route(
+            "/assets/{uuid}/verify-host-key",
+            get(handlers::web::verify_ssh_host_key),
+        )
         .route(
             "/sessions/terminal/{session_id}",
             get(handlers::web::terminal_page),
@@ -684,6 +700,12 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             .route(
                 "/api/v1/assets/{uuid}",
                 axum::routing::delete(|| async { "Not implemented" }),
+            )
+            // SSH host key API (H-9)
+            .route(
+                "/api/v1/assets/{uuid}/ssh-host-key",
+                get(handlers::api::get_ssh_host_key_status)
+                    .post(handlers::api::fetch_ssh_host_key_api),
             )
             // Asset Groups API
             .route(
@@ -815,12 +837,38 @@ async fn health_check(
     (StatusCode::OK, "OK")
 }
 
-/// Serve static files (placeholder - implement proper static file serving).
+/// Serve static files from the compiled-in asset registry.
+///
+/// All static files are embedded in the binary via `include_bytes!()` (see
+/// the [`vauban_web::static_assets`] module).  This handler performs a simple
+/// lookup in the compile-time registry -- no filesystem access at all.
+///
+/// Security:
+/// - Only files explicitly listed in `static_assets::STATIC_FILES` can be served.
+/// - An attacker who compromises the filesystem cannot inject new assets.
+/// - Rejects paths containing `..` or null bytes as an extra precaution.
 async fn serve_static(
-    axum::extract::Path(_path): axum::extract::Path<String>,
+    axum::extract::Path(path): axum::extract::Path<String>,
 ) -> Result<axum::response::Response, axum::http::StatusCode> {
-    // TODO: Implement proper static file serving
-    Err(axum::http::StatusCode::NOT_FOUND)
+    use axum::body::Body;
+    use axum::http::{Response, header};
+
+    // Extra defence-in-depth: reject traversal even though the lookup is a
+    // simple string match against the compiled registry.
+    if path.contains("..") || path.contains('\0') {
+        return Err(axum::http::StatusCode::FORBIDDEN);
+    }
+
+    let asset = vauban_web::static_assets::lookup(&path)
+        .ok_or(axum::http::StatusCode::NOT_FOUND)?;
+
+    Response::builder()
+        .status(axum::http::StatusCode::OK)
+        .header(header::CONTENT_TYPE, asset.content_type)
+        // Cache static assets for 1 hour (browser), allow CDN caching
+        .header(header::CACHE_CONTROL, "public, max-age=3600")
+        .body(Body::from(asset.content))
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 #[cfg(test)]
@@ -841,19 +889,30 @@ mod tests {
 
     // ==================== serve_static Tests ====================
 
-    #[tokio::test]
-    async fn test_serve_static_returns_not_found() {
-        let path = axum::extract::Path("test.css".to_string());
-        let result = serve_static(path).await;
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), axum::http::StatusCode::NOT_FOUND);
+    #[test]
+    fn test_static_assets_registry_not_empty() {
+        assert!(
+            !vauban_web::static_assets::STATIC_FILES.is_empty(),
+            "Static assets registry must contain at least one file"
+        );
     }
 
-    #[tokio::test]
-    async fn test_serve_static_any_path_returns_not_found() {
-        let path = axum::extract::Path("js/app.js".to_string());
-        let result = serve_static(path).await;
-        assert!(result.is_err());
+    #[test]
+    fn test_static_assets_lookup_known_files() {
+        assert!(
+            vauban_web::static_assets::lookup("js/tailwind-config.js").is_some(),
+            "tailwind-config.js must be in the compiled registry"
+        );
+        assert!(
+            vauban_web::static_assets::lookup("css/vauban.css").is_some(),
+            "vauban.css must be in the compiled registry"
+        );
+    }
+
+    #[test]
+    fn test_static_assets_lookup_rejects_unknown() {
+        assert!(vauban_web::static_assets::lookup("malicious.php").is_none());
+        assert!(vauban_web::static_assets::lookup("../../../etc/passwd").is_none());
     }
 
     // ==================== Configuration Tests ====================
@@ -877,27 +936,56 @@ mod tests {
         assert!(addr.is_ok());
     }
 
-    // ==================== serve_static Tests ====================
+    // ==================== serve_static Security Tests ====================
 
     #[tokio::test]
-    async fn test_serve_static_nested_path() {
-        let path = axum::extract::Path("images/logo.png".to_string());
-        let result = serve_static(path).await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_serve_static_empty_path() {
-        let path = axum::extract::Path("".to_string());
-        let result = serve_static(path).await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_serve_static_with_dots() {
+    async fn test_serve_static_rejects_traversal() {
         let path = axum::extract::Path("../../../etc/passwd".to_string());
         let result = serve_static(path).await;
         assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), axum::http::StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_serve_static_rejects_null_byte() {
+        let path = axum::extract::Path("js/app\0.js".to_string());
+        let result = serve_static(path).await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), axum::http::StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_serve_static_returns_not_found_for_unknown() {
+        let path = axum::extract::Path("nonexistent.js".to_string());
+        let result = serve_static(path).await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), axum::http::StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_serve_static_serves_compiled_js() {
+        let path = axum::extract::Path("js/tailwind-config.js".to_string());
+        let result = serve_static(path).await;
+        assert!(result.is_ok(), "Must serve compiled-in JS file");
+        let response = result.unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(
+            response.headers().get("content-type").unwrap(),
+            "application/javascript; charset=utf-8"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_serve_static_serves_compiled_css() {
+        let path = axum::extract::Path("css/vauban.css".to_string());
+        let result = serve_static(path).await;
+        assert!(result.is_ok(), "Must serve compiled-in CSS file");
+        let response = result.unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(
+            response.headers().get("content-type").unwrap(),
+            "text/css; charset=utf-8"
+        );
     }
 
     // ==================== SocketAddr Tests ====================

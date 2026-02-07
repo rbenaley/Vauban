@@ -39,7 +39,8 @@ pub fn require_staff(user: &AuthUser) -> Result<(), AppError> {
 // Re-export all API handlers for convenient access
 pub use accounts::{create_user, get_user, list_users, update_user};
 pub use assets::{
-    create_asset, get_asset, list_asset_groups, list_assets, list_group_assets, update_asset,
+    create_asset, fetch_ssh_host_key_api, get_asset, get_ssh_host_key_status, list_asset_groups,
+    list_assets, list_group_assets, update_asset,
 };
 pub use groups::list_group_members;
 pub use sessions::{create_session, get_session, list_sessions, terminate_session};

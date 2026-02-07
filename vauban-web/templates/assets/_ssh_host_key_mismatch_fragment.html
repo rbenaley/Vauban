@@ -1,0 +1,46 @@
+<div id="ssh-host-key-section" class="p-4 bg-red-50 dark:bg-red-900/20 border-2 border-red-300 dark:border-red-700 rounded-lg">
+  <div class="flex items-start gap-3">
+    <div class="flex-shrink-0 mt-0.5">
+      <svg class="w-6 h-6 text-red-600 dark:text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"></path>
+      </svg>
+    </div>
+    <div class="flex-1">
+      <h4 class="text-base font-semibold text-red-700 dark:text-red-400">
+        WARNING: SSH Host Key Changed
+      </h4>
+      <p class="mt-1 text-sm text-red-600 dark:text-red-300">
+        The remote server's SSH host key has changed since it was last recorded.
+        This could indicate a <strong>man-in-the-middle attack</strong>, a server
+        reinstallation, or a legitimate key rotation.
+      </p>
+      <p class="mt-2 text-sm font-medium text-red-700 dark:text-red-300">
+        Do NOT accept the new key unless you have verified the change with the server administrator.
+      </p>
+      <div class="mt-3 space-y-2">
+        <div class="flex items-start gap-2">
+          <span class="text-xs font-medium text-red-600 dark:text-red-400 uppercase tracking-wider w-24 flex-shrink-0 pt-0.5">Previously:</span>
+          <code class="text-sm font-mono text-gray-700 dark:text-gray-300 break-all">__OLD_FINGERPRINT__</code>
+        </div>
+        <div class="flex items-start gap-2">
+          <span class="text-xs font-medium text-red-600 dark:text-red-400 uppercase tracking-wider w-24 flex-shrink-0 pt-0.5">Now:</span>
+          <code class="text-sm font-mono text-gray-700 dark:text-gray-300 break-all">__NEW_FINGERPRINT__</code>
+        </div>
+      </div>
+      <div class="mt-4 flex items-center gap-3">
+        <button
+          hx-post="/assets/__ASSET_UUID__/fetch-host-key?confirm=true"
+          hx-target="#ssh-host-key-section"
+          hx-swap="outerHTML"
+          hx-confirm="The SSH host key has changed. Are you sure you want to trust the new key? Only accept if you have verified this change with the server administrator."
+          class="px-3 py-1.5 text-sm bg-red-600 hover:bg-red-700 text-white rounded-md transition-colors font-medium"
+        >
+          Accept New Key
+        </button>
+        <span class="text-xs text-red-500 dark:text-red-400">
+          This will replace the stored key with the new one.
+        </span>
+      </div>
+    </div>
+  </div>
+</div>

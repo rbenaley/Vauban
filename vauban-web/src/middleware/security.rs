@@ -18,10 +18,26 @@ use axum::{
 /// - `X-Content-Type-Options: nosniff`
 /// - `X-Frame-Options: DENY`
 /// - `X-XSS-Protection: 1; mode=block`
-/// - `Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' wss:`
+/// - `Content-Security-Policy` (see below for directives)
 /// - `Strict-Transport-Security: max-age=31536000; includeSubDomains`
 /// - `Referrer-Policy: strict-origin-when-cross-origin`
 /// - `Permissions-Policy: geolocation=(), camera=(), microphone=()`
+///
+/// ## Content-Security-Policy
+///
+/// All inline `<script>` and `<style>` blocks have been moved to external
+/// files served from `/static/`, which allows the CSP to drop `'unsafe-inline'`
+/// from both `script-src` and `style-src`.
+///
+/// `'unsafe-inline'` is kept **only** in `style-src` to support dynamic inline
+/// `style=""` attributes used for theming (e.g. `background-color: {{ color }}`).
+/// CSS-based injection is vastly less dangerous than script injection, and
+/// moving to CSS custom-properties will allow removing it later.
+///
+/// `'unsafe-eval'` remains in `script-src` because Alpine.js (standard build)
+/// requires `new Function()` for inline expressions such as `x-data="{...}"`.
+/// To remove it, switch to the `@alpinejs/csp` build and pre-register all
+/// data components.
 pub async fn security_headers_middleware(request: Request<Body>, next: Next) -> Response<Body> {
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
@@ -42,23 +58,33 @@ pub async fn security_headers_middleware(request: Request<Body>, next: Next) -> 
     );
 
     // Content Security Policy
-    // - default-src 'self': Only allow resources from same origin
-    // - script-src: Allow scripts from self, inline, and CDNs (Tailwind, HTMX, Alpine, xterm.js)
-    // - style-src: Allow styles from self, inline, and CDNs (xterm.js)
-    // - img-src 'self' data:: Allow images from same origin and data URIs
-    // - font-src 'self': Allow fonts from same origin
-    // - connect-src 'self' wss:: Allow WebSocket connections
     //
-    // Note: CDN URLs are required for development. In production, bundle assets locally.
+    // - default-src 'self':  Only allow resources from same origin
+    // - script-src:          Allow scripts from self + CDNs; NO 'unsafe-inline'
+    //                        'unsafe-eval' kept for Alpine.js (see doc-comment)
+    // - style-src:           Allow styles from self + CDN; 'unsafe-inline' only
+    //                        for dynamic style="" attributes (see doc-comment)
+    // - img-src 'self' data: Allow images from same origin and data: URIs
+    // - font-src 'self':     Allow fonts from same origin only
+    // - connect-src:         Allow XHR/fetch to self and WebSocket connections
+    // - base-uri 'self':     Prevent <base> tag hijacking
+    // - form-action 'self':  Restrict form submissions to same origin
+    // - frame-ancestors:     Prevent framing (mirrors X-Frame-Options)
+    //
+    // Note: CDN URLs are required for dev. In production, bundle assets locally
+    //       and remove the CDN origins for a stricter policy.
     headers.insert(
         "content-security-policy",
         HeaderValue::from_static(
             "default-src 'self'; \
-             script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://unpkg.com https://cdn.jsdelivr.net; \
+             script-src 'self' 'unsafe-eval' https://cdn.tailwindcss.com https://unpkg.com https://cdn.jsdelivr.net; \
              style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; \
              img-src 'self' data:; \
              font-src 'self'; \
-             connect-src 'self' wss:"
+             connect-src 'self' wss:; \
+             base-uri 'self'; \
+             form-action 'self'; \
+             frame-ancestors 'none'"
         ),
     );
 
@@ -152,6 +178,43 @@ mod tests {
         assert!(csp.contains("default-src 'self'"));
         assert!(csp.contains("script-src"));
         assert!(csp.contains("style-src"));
+        assert!(csp.contains("base-uri 'self'"));
+        assert!(csp.contains("form-action 'self'"));
+        assert!(csp.contains("frame-ancestors 'none'"));
+    }
+
+    #[tokio::test]
+    async fn test_csp_no_unsafe_inline_in_script_src() {
+        let app = Router::new()
+            .route("/", get(test_handler))
+            .layer(axum::middleware::from_fn(security_headers_middleware));
+
+        let response = unwrap_ok!(
+            app.oneshot(unwrap_ok!(Request::builder().uri("/").body(Body::empty())))
+                .await
+        );
+
+        let csp = unwrap_ok!(
+            unwrap_ok!(
+                response
+                    .headers()
+                    .get("content-security-policy")
+                    .ok_or("missing header")
+            )
+            .to_str()
+        );
+
+        // Extract the script-src directive
+        let script_src = csp
+            .split(';')
+            .find(|d| d.trim().starts_with("script-src"))
+            .expect("CSP must contain script-src directive");
+
+        assert!(
+            !script_src.contains("'unsafe-inline'"),
+            "script-src MUST NOT contain 'unsafe-inline', got: {}",
+            script_src
+        );
     }
 
     #[tokio::test]

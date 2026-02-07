@@ -1,0 +1,32 @@
+/* VAUBAN custom styles */
+
+[x-cloak] { display: none !important; }
+
+/* HTMX animations */
+.htmx-indicator {
+    opacity: 0;
+    transition: opacity 200ms ease-in;
+}
+.htmx-request .htmx-indicator {
+    opacity: 1;
+}
+.htmx-request.htmx-indicator {
+    opacity: 1;
+}
+
+/* Skeleton loading */
+.skeleton {
+    animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: .5; }
+}
+
+/* Error container visibility - hidden when empty, shown when has content */
+.error-container:empty {
+    display: none;
+}
+.error-container:not(:empty) {
+    display: block;
+}

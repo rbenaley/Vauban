@@ -22,6 +22,8 @@ pub struct AssetEdit {
     pub ssh_password: String,
     pub ssh_private_key: String,
     pub ssh_passphrase: String,
+    /// SSH host key fingerprint (read-only, from connection_config).
+    pub ssh_host_key_fingerprint: Option<String>,
 }
 
 #[derive(Template)]
@@ -59,6 +61,7 @@ mod tests {
             ssh_password: String::new(),
             ssh_private_key: String::new(),
             ssh_passphrase: String::new(),
+            ssh_host_key_fingerprint: None,
         }
     }
 

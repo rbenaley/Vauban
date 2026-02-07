@@ -9,7 +9,7 @@ use std::os::unix::io::{FromRawFd, IntoRawFd, OwnedFd};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::net::TcpStream;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// SSH credential types supported by the proxy.
 #[derive(Debug, Clone)]
@@ -52,6 +52,10 @@ pub struct SessionConfig {
     /// When running in Capsicum sandbox, the proxy cannot open network connections.
     /// The supervisor establishes the TCP connection and passes the FD via SCM_RIGHTS.
     pub preconnected_fd: Option<OwnedFd>,
+    /// Expected SSH host key in OpenSSH format (e.g. "ssh-ed25519 AAAA...").
+    /// If set, the server key MUST match during handshake or the connection is refused.
+    /// If None, host key verification is skipped (logged as warning).
+    pub expected_host_key: Option<String>,
 }
 
 /// Active SSH session with bidirectional channel.
@@ -123,8 +127,11 @@ impl SshSession {
         };
         let ssh_config = Arc::new(ssh_config);
 
-        // Create handler for SSH events
-        let handler = SshHandler::new(config.session_id.clone());
+        // Create handler for SSH events (with host key verification)
+        let handler = SshHandler::new(
+            config.session_id.clone(),
+            config.expected_host_key.clone(),
+        );
 
         // Connect to the SSH server - use pre-established FD if provided (sandboxed mode)
         // or open a new connection (non-sandboxed mode, e.g., development on macOS)
@@ -339,33 +346,183 @@ impl SshSession {
     }
 }
 
+/// Handler for fetching host keys using shared state (Arc<Mutex<>>).
+/// This is necessary because russh consumes the handler during `connect`.
+struct HostKeyFetchHandler {
+    captured: Arc<tokio::sync::Mutex<(Option<String>, Option<String>)>>,
+}
+
+impl client::Handler for HostKeyFetchHandler {
+    type Error = russh::Error;
+
+    async fn check_server_key(
+        &mut self,
+        server_public_key: &russh::keys::PublicKey,
+    ) -> Result<bool, Self::Error> {
+        let key_str = server_public_key
+            .to_openssh()
+            .unwrap_or_else(|_| format!("{:?}", server_public_key.algorithm()));
+        let fingerprint = server_public_key
+            .fingerprint(russh::keys::HashAlg::Sha256)
+            .to_string();
+
+        debug!(
+            key_type = ?server_public_key.algorithm(),
+            fingerprint = %fingerprint,
+            "Host key fetched from server"
+        );
+
+        let mut guard = self.captured.lock().await;
+        *guard = (Some(key_str), Some(fingerprint));
+        Ok(true)
+    }
+}
+
+/// Fetch the SSH host key from a remote server by performing a minimal
+/// SSH handshake (key exchange only, no authentication).
+///
+/// Returns `(host_key_openssh, sha256_fingerprint)` on success.
+pub async fn fetch_host_key(
+    host: &str,
+    port: u16,
+    preconnected_fd: Option<OwnedFd>,
+) -> SessionResult<(String, String)> {
+    info!(host = %host, port = port, "Fetching SSH host key");
+
+    let ssh_config = client::Config {
+        preferred: Preferred {
+            kex: Cow::Borrowed(&[
+                russh::kex::CURVE25519,
+                russh::kex::CURVE25519_PRE_RFC_8731,
+                russh::kex::ECDH_SHA2_NISTP256,
+                russh::kex::ECDH_SHA2_NISTP384,
+                russh::kex::ECDH_SHA2_NISTP521,
+                russh::kex::DH_G16_SHA512,
+                russh::kex::DH_G14_SHA256,
+            ]),
+            cipher: Cow::Borrowed(&[
+                russh::cipher::CHACHA20_POLY1305,
+                russh::cipher::AES_256_GCM,
+                russh::cipher::AES_128_GCM,
+                russh::cipher::AES_256_CTR,
+                russh::cipher::AES_128_CTR,
+            ]),
+            ..Preferred::default()
+        },
+        ..client::Config::default()
+    };
+    let ssh_config = Arc::new(ssh_config);
+
+    let captured = Arc::new(tokio::sync::Mutex::new((None, None)));
+    let handler = HostKeyFetchHandler {
+        captured: Arc::clone(&captured),
+    };
+
+    // Connect - the handshake (including key exchange) happens during connect.
+    // We don't need to authenticate; we just need the server's host key.
+    let result = if let Some(fd) = preconnected_fd {
+        let std_stream = unsafe { std::net::TcpStream::from_raw_fd(fd.into_raw_fd()) };
+        std_stream
+            .set_nonblocking(true)
+            .map_err(|e| SessionError::ConnectionFailed(format!("Failed to set non-blocking: {}", e)))?;
+        let stream = TcpStream::from_std(std_stream)
+            .map_err(|e| SessionError::ConnectionFailed(format!("Failed to create tokio stream: {}", e)))?;
+        client::connect_stream(ssh_config, stream, handler).await
+    } else {
+        let addr = format!("{}:{}", host, port);
+        client::connect(ssh_config, addr, handler).await
+    };
+
+    // Disconnect gracefully (ignore errors - we have the key)
+    if let Ok(session) = result {
+        let _ = session
+            .disconnect(Disconnect::ByApplication, "Host key fetch complete", "en")
+            .await;
+    }
+    // Even if connect failed after key exchange (e.g., no compatible auth),
+    // the handler's check_server_key should have been called.
+
+    let guard = captured.lock().await;
+    match &*guard {
+        (Some(key), Some(fp)) => {
+            info!(fingerprint = %fp, "SSH host key fetched successfully");
+            Ok((key.clone(), fp.clone()))
+        }
+        _ => Err(SessionError::ConnectionFailed(
+            "Failed to retrieve host key during SSH handshake".to_string(),
+        )),
+    }
+}
+
 /// Handler for SSH client events.
 struct SshHandler {
     session_id: String,
+    /// Expected host key for verification (OpenSSH format).
+    expected_host_key: Option<String>,
 }
 
 impl SshHandler {
-    fn new(session_id: String) -> Self {
-        Self { session_id }
+    fn new(session_id: String, expected_host_key: Option<String>) -> Self {
+        Self {
+            session_id,
+            expected_host_key,
+        }
     }
 }
 
 impl client::Handler for SshHandler {
     type Error = russh::Error;
 
-    /// Called when server sends its public key. For now, accept all keys.
-    /// TODO: Implement proper host key verification using known_hosts.
+    /// Verify the SSH server's host key against the expected key.
+    ///
+    /// Behavior:
+    /// - If `expected_host_key` is set: compare and accept only if match
+    /// - If `expected_host_key` is None: accept with a warning (insecure)
     async fn check_server_key(
         &mut self,
         server_public_key: &russh::keys::PublicKey,
     ) -> Result<bool, Self::Error> {
-        debug!(
-            session_id = %self.session_id,
-            key_type = ?server_public_key.algorithm(),
-            "Server key received (accepting all keys for now)"
-        );
-        // TODO: Verify against known_hosts database
-        Ok(true)
+        let received_key = server_public_key
+            .to_openssh()
+            .unwrap_or_else(|_| format!("{:?}", server_public_key.algorithm()));
+
+        match &self.expected_host_key {
+            Some(expected) => {
+                // Compare the key data (ignore trailing whitespace/comments)
+                let received_trimmed = received_key.trim();
+                let expected_trimmed = expected.trim();
+
+                if received_trimmed == expected_trimmed {
+                    info!(
+                        session_id = %self.session_id,
+                        key_type = ?server_public_key.algorithm(),
+                        "SSH host key verified successfully"
+                    );
+                    Ok(true)
+                } else {
+                    // Compute fingerprints for readable error reporting
+                    let received_fp = server_public_key
+                        .fingerprint(russh::keys::HashAlg::Sha256);
+                    error!(
+                        session_id = %self.session_id,
+                        received_fingerprint = %received_fp,
+                        "SSH host key MISMATCH - possible MITM attack. \
+                         Connection refused. Update the stored host key if \
+                         the server key was intentionally changed."
+                    );
+                    Ok(false)
+                }
+            }
+            None => {
+                warn!(
+                    session_id = %self.session_id,
+                    key_type = ?server_public_key.algorithm(),
+                    "No expected host key configured - accepting server key (INSECURE). \
+                     Fetch the host key from the asset detail page to enable verification."
+                );
+                Ok(true)
+            }
+        }
     }
 }
 
@@ -448,6 +605,7 @@ mod tests {
             terminal_rows: 24,
             credential: SshCredential::Password("pass".to_string()),
             preconnected_fd: None,
+            expected_host_key: None,
         };
         assert_eq!(config.session_id, "sess-123");
         assert_eq!(config.port, 22);
@@ -467,6 +625,7 @@ mod tests {
             terminal_rows: 24,
             credential: SshCredential::Password("pass".to_string()),
             preconnected_fd: None,
+            expected_host_key: None,
         };
         let debug = format!("{:?}", config);
         assert!(debug.contains("SessionConfig"));
@@ -487,6 +646,7 @@ mod tests {
                 terminal_rows: 24,
                 credential: SshCredential::Password("pass".to_string()),
                 preconnected_fd: None,
+                expected_host_key: None,
             };
             assert_eq!(config.port, port);
         }
@@ -505,16 +665,85 @@ mod tests {
             terminal_rows: 50,
             credential: SshCredential::Password("pass".to_string()),
             preconnected_fd: None,
+            expected_host_key: None,
         };
         assert_eq!(config.terminal_cols, 200);
         assert_eq!(config.terminal_rows, 50);
+    }
+
+    #[test]
+    fn test_session_config_with_expected_host_key() {
+        let config = SessionConfig {
+            session_id: "sess".to_string(),
+            user_id: "user".to_string(),
+            asset_id: "asset".to_string(),
+            host: "host".to_string(),
+            port: 22,
+            username: "user".to_string(),
+            terminal_cols: 80,
+            terminal_rows: 24,
+            credential: SshCredential::Password("pass".to_string()),
+            preconnected_fd: None,
+            expected_host_key: Some("ssh-ed25519 AAAA...".to_string()),
+        };
+        assert_eq!(
+            config.expected_host_key,
+            Some("ssh-ed25519 AAAA...".to_string())
+        );
     }
 
     // ==================== SshHandler Tests ====================
 
     #[test]
     fn test_ssh_handler_new() {
-        let handler = SshHandler::new("test-session".to_string());
+        let handler = SshHandler::new("test-session".to_string(), None);
         assert_eq!(handler.session_id, "test-session");
+        assert!(handler.expected_host_key.is_none());
+    }
+
+    #[test]
+    fn test_ssh_handler_with_expected_key() {
+        let handler = SshHandler::new(
+            "test-session".to_string(),
+            Some("ssh-ed25519 AAAA...".to_string()),
+        );
+        assert_eq!(handler.session_id, "test-session");
+        assert_eq!(
+            handler.expected_host_key,
+            Some("ssh-ed25519 AAAA...".to_string())
+        );
+    }
+
+    // ==================== H-9 Regression: Host Key Verification ====================
+
+    /// Structural test: verify that check_server_key contains host key
+    /// verification logic (not just Ok(true)).
+    #[test]
+    fn test_check_server_key_has_verification_logic() {
+        let source = include_str!("session.rs");
+
+        // Must contain the comparison logic
+        assert!(
+            source.contains("expected_host_key"),
+            "session.rs must reference expected_host_key for verification"
+        );
+
+        // Must NOT contain the old unconditional Ok(true) accepting all keys.
+        // (We split the needle so this test itself does not produce a false match.)
+        let old_todo = format!(
+            "// {}: Verify against known_hosts database",
+            "TODO"
+        );
+        assert!(
+            // Count occurrences: the only match should be this test itself if any
+            source.matches(&old_todo).count() == 0,
+            "session.rs must not contain the old TODO placeholder for host key verification"
+        );
+
+        // Must contain MITM warning
+        assert!(
+            source.contains("MITM"),
+            "session.rs must warn about MITM attacks on key mismatch"
+        );
     }
 }

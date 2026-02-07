@@ -1121,17 +1121,28 @@ sequenceDiagram
     S->>W: TcpConnectResponse(success)
     
     Note over W,P: SSH Session Setup
-    W->>P: SshSessionOpen (via IPC pipe)
+    W->>W: Read expected_host_key from connection_config
+    W->>P: SshSessionOpen(expected_host_key) via IPC pipe
     P->>P: Retrieve pre-connected FD for session_id
     P->>R: RbacCheck (user, target, ssh)
     R->>P: RbacResponse (allowed)
     P->>V: VaultGetCredential (target)
     V->>P: VaultCredentialResponse (SSH key/password)
     P->>T: SSH Handshake (over pre-connected socket)
-    P->>Au: AuditEvent (SessionStart)
-    P->>W: SshSessionOpened (success)
-    W->>U: Redirect to /sessions/terminal/{id}
-    U->>W: WebSocket connect
+    
+    Note over P,T: Host Key Verification (H-9)
+    T-->>P: Server public key
+    P->>P: Compare with expected_host_key
+    alt Key matches or no key stored
+        P->>Au: AuditEvent (SessionStart)
+        P->>W: SshSessionOpened (success)
+        W->>U: Redirect to /sessions/terminal/{id}
+        U->>W: WebSocket connect
+    else Key MISMATCH
+        P->>Au: AuditEvent (AccessDenied, host key mismatch)
+        P->>W: SshSessionOpened (success=false, "host key mismatch")
+        W->>U: Error: possible MITM attack
+    end
     
     loop Terminal Session
         U->>W: Terminal input (WebSocket)
@@ -1146,6 +1157,40 @@ sequenceDiagram
     U->>W: Disconnect
     W->>P: SshSessionClose
     P->>Au: AuditEvent (SessionEnd)
+```
+
+#### B.2.1 SSH Host Key Fetch Flow
+
+This diagram shows the optional flow for retrieving and storing a server's SSH host key
+(triggered from the asset detail page via the "Fetch Host Key" button):
+
+```mermaid
+sequenceDiagram
+    participant U as Admin Browser
+    participant W as vauban-web
+    participant S as vauban-supervisor
+    participant P as vauban-proxy-ssh
+    participant T as Target Server
+    participant DB as PostgreSQL
+
+    U->>W: POST /assets/{uuid}/fetch-host-key (HTMX)
+    W->>W: Verify staff/superuser & asset type == SSH
+    
+    Note over W,S: TCP Connection Brokering
+    W->>S: TcpConnectRequest(fetch-hostkey-{id}, host, port)
+    S->>T: TCP connect
+    S->>P: send_fd via SCM_RIGHTS
+    S->>W: TcpConnectResponse(success)
+    
+    Note over W,P: Host Key Retrieval
+    W->>P: SshFetchHostKey(host, port)
+    P->>T: SSH handshake (key exchange only)
+    T-->>P: Server public key
+    P->>P: Extract OpenSSH format + SHA-256 fingerprint
+    P-->>W: SshHostKeyResult(key, fingerprint)
+    
+    W->>DB: UPDATE assets SET connection_config.ssh_host_key = key
+    W-->>U: HTMX fragment with fingerprint display
 ```
 
 ---

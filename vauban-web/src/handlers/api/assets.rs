@@ -450,6 +450,198 @@ pub async fn list_group_assets(
     Ok(Json(response))
 }
 
+/// Fetch SSH host key API endpoint.
+///
+/// POST /api/v1/assets/{uuid}/ssh-host-key
+///
+/// Fetches the SSH host key from the remote server and returns it as JSON.
+/// If a key was already stored and the new key differs, the response includes
+/// a `key_changed` flag set to `true` and both fingerprints. In that case the
+/// stored key is NOT updated unless `?confirm=true` is passed.
+/// Requires staff/superuser authentication.
+pub async fn fetch_ssh_host_key_api(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(asset_uuid_str): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> AppResult<Json<serde_json::Value>> {
+    super::require_staff(&user)?;
+
+    let confirm = params.get("confirm").map(|v| v == "true").unwrap_or(false);
+
+    let asset_uuid = Uuid::parse_str(&asset_uuid_str)
+        .map_err(|_| AppError::Validation("Invalid UUID format".to_string()))?;
+
+    // Get proxy client
+    let proxy_client = state
+        .ssh_proxy
+        .as_ref()
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("SSH proxy not available")))?;
+
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+
+    let asset: Asset = assets
+        .filter(uuid.eq(asset_uuid))
+        .filter(is_deleted.eq(false))
+        .first::<Asset>(&mut conn)
+        .await
+        .map_err(|e| match e {
+            diesel::result::Error::NotFound => AppError::NotFound("Asset not found".to_string()),
+            _ => AppError::Database(e),
+        })?;
+
+    if asset.asset_type.to_lowercase() != "ssh" {
+        return Err(AppError::Validation(
+            "Host key fetch is only available for SSH assets".to_string(),
+        ));
+    }
+
+    // Retrieve previously stored key
+    let stored_host_key = asset
+        .connection_config
+        .get("ssh_host_key")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let stored_fingerprint = asset
+        .connection_config
+        .get("ssh_host_key_fingerprint")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    // In sandboxed mode (Capsicum), the supervisor brokers the TCP
+    // connection and passes the FD to the SSH proxy via SCM_RIGHTS.
+    let supervisor_ref = state.supervisor.as_deref();
+    let (host_key, fingerprint) = proxy_client
+        .fetch_host_key(&asset.hostname, asset.port as u16, supervisor_ref)
+        .await?;
+
+    // Detect key change
+    if let Some(ref old_key) = stored_host_key
+        && old_key != &host_key
+        && !confirm
+    {
+        let old_fp = stored_fingerprint.as_deref().unwrap_or("unknown");
+        tracing::warn!(
+            asset_uuid = %asset_uuid,
+            old_fingerprint = %old_fp,
+            new_fingerprint = %fingerprint,
+            "SSH host key CHANGED on remote server - possible MITM attack"
+        );
+        return Ok(Json(serde_json::json!({
+            "success": false,
+            "key_changed": true,
+            "old_fingerprint": old_fp,
+            "new_fingerprint": fingerprint,
+            "message": "The remote server's SSH host key has changed. \
+                This could indicate a man-in-the-middle attack. \
+                Pass ?confirm=true to accept the new key."
+        })));
+    }
+
+    // Store in connection_config and clear mismatch flag
+    let mut config = asset.connection_config.clone();
+    config["ssh_host_key"] = serde_json::Value::String(host_key.clone());
+    config["ssh_host_key_fingerprint"] = serde_json::Value::String(fingerprint.clone());
+    config.as_object_mut().map(|m| m.remove("ssh_host_key_mismatch"));
+
+    use crate::schema::assets::dsl::connection_config as config_col;
+    use crate::schema::assets::dsl::updated_at;
+    use chrono::Utc;
+
+    diesel::update(assets.filter(uuid.eq(asset_uuid)))
+        .set((config_col.eq(&config), updated_at.eq(Utc::now())))
+        .execute(&mut conn)
+        .await?;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "host_key": host_key,
+        "fingerprint": fingerprint,
+    })))
+}
+
+/// Get the SSH host key verification status for an asset.
+///
+/// GET /api/v1/assets/{uuid}/ssh-host-key
+///
+/// Returns a JSON object with one of three statuses:
+/// - `"verified"`: a host key is stored and no mismatch has been detected.
+/// - `"mismatch"`: a host key is stored but a connection attempt detected
+///   that the server's key has changed.
+/// - `"no_key"`: no host key has been stored yet.
+///
+/// Example responses:
+///
+/// ```json
+/// { "status": "verified", "fingerprint": "SHA256:...", "host_key": "ssh-ed25519 AAAA..." }
+/// { "status": "mismatch", "fingerprint": "SHA256:...", "host_key": "ssh-ed25519 AAAA..." }
+/// { "status": "no_key" }
+/// ```
+pub async fn get_ssh_host_key_status(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    Path(asset_uuid_str): Path<String>,
+) -> AppResult<Json<serde_json::Value>> {
+    let asset_uuid = Uuid::parse_str(&asset_uuid_str)
+        .map_err(|_| AppError::Validation("Invalid UUID format".to_string()))?;
+
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+
+    let asset: Asset = assets
+        .filter(uuid.eq(asset_uuid))
+        .filter(is_deleted.eq(false))
+        .first::<Asset>(&mut conn)
+        .await
+        .map_err(|e| match e {
+            diesel::result::Error::NotFound => AppError::NotFound("Asset not found".to_string()),
+            _ => AppError::Database(e),
+        })?;
+
+    if asset.asset_type.to_lowercase() != "ssh" {
+        return Err(AppError::Validation(
+            "Host key status is only available for SSH assets".to_string(),
+        ));
+    }
+
+    let host_key = asset
+        .connection_config
+        .get("ssh_host_key")
+        .and_then(|v| v.as_str());
+    let fingerprint = asset
+        .connection_config
+        .get("ssh_host_key_fingerprint")
+        .and_then(|v| v.as_str());
+    let is_mismatch = asset
+        .connection_config
+        .get("ssh_host_key_mismatch")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let response = match (host_key, fingerprint) {
+        (Some(key), Some(fp)) => {
+            let key_status = if is_mismatch { "mismatch" } else { "verified" };
+            serde_json::json!({
+                "status": key_status,
+                "fingerprint": fp,
+                "host_key": key,
+            })
+        }
+        _ => serde_json::json!({
+            "status": "no_key",
+        }),
+    };
+
+    Ok(Json(response))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -46,6 +46,9 @@ pub struct SshSessionOpenRequest {
     pub private_key: Option<String>,
     /// Passphrase for encrypted private key.
     pub passphrase: Option<String>,
+    /// Expected SSH host key in OpenSSH format (e.g. "ssh-ed25519 AAAA...").
+    /// If set, the proxy verifies the server key matches before continuing.
+    pub expected_host_key: Option<String>,
 }
 
 impl std::fmt::Debug for SshSessionOpenRequest {
@@ -63,6 +66,10 @@ impl std::fmt::Debug for SshSessionOpenRequest {
             .field("password", &self.password.as_ref().map(|_| "[REDACTED]"))
             .field("private_key", &self.private_key.as_ref().map(|_| "[REDACTED]"))
             .field("passphrase", &self.passphrase.as_ref().map(|_| "[REDACTED]"))
+            .field("expected_host_key", &self.expected_host_key.as_ref().map(|k| {
+                // Show only algorithm and first 16 chars of key data
+                if k.len() > 30 { format!("{}...", &k[..30]) } else { k.clone() }
+            }))
             .finish()
     }
 }
@@ -96,6 +103,8 @@ pub struct ProxySshClient {
     /// Per-session data receivers waiting to be claimed by WebSocket.
     /// Created during open_session, taken by subscribe_session.
     session_data_receivers: Mutex<HashMap<String, mpsc::Receiver<Vec<u8>>>>,
+    /// Pending host key fetch requests waiting for responses.
+    pending_host_key_requests: Mutex<HashMap<u64, oneshot::Sender<(bool, Option<String>, Option<String>, Option<String>)>>>,
 }
 
 impl ProxySshClient {
@@ -118,6 +127,7 @@ impl ProxySshClient {
             pending_requests: Mutex::new(HashMap::new()),
             session_data_senders: Mutex::new(HashMap::new()),
             session_data_receivers: Mutex::new(HashMap::new()),
+            pending_host_key_requests: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -207,6 +217,7 @@ impl ProxySshClient {
             password: request.password,
             private_key: request.private_key,
             passphrase: request.passphrase,
+            expected_host_key: request.expected_host_key,
         };
 
         self.channel
@@ -263,6 +274,124 @@ impl ProxySshClient {
         self.channel
             .send(&msg)
             .map_err(|e| AppError::Ipc(format!("IPC send failed: {}", e)))
+    }
+
+    /// Fetch the SSH host key from a remote server.
+    ///
+    /// Sends a `SshFetchHostKey` request to the proxy, which performs a minimal
+    /// SSH handshake and returns the server's public key.
+    ///
+    /// When a `supervisor` is provided (sandboxed / Capsicum mode), the method
+    /// first asks the supervisor to establish a TCP connection to `host:port`
+    /// and pass the resulting FD to the SSH proxy via `SCM_RIGHTS`.  The
+    /// session ID used for the TCP connect follows the convention
+    /// `"fetch-hostkey-{request_id}"` so the proxy can match the pre-connected
+    /// FD to the incoming `SshFetchHostKey` message.
+    ///
+    /// Returns `(host_key_openssh, sha256_fingerprint)` on success.
+    pub async fn fetch_host_key(
+        &self,
+        host: &str,
+        port: u16,
+        supervisor: Option<&super::SupervisorClient>,
+    ) -> AppResult<(String, String)> {
+        let request_id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
+
+        debug!(
+            request_id = request_id,
+            host = %host,
+            port = port,
+            "Fetching SSH host key"
+        );
+
+        // If running under supervisor (Capsicum sandbox), request TCP
+        // connection brokering BEFORE sending the fetch request to the
+        // proxy.  The supervisor performs DNS resolution + TCP connect
+        // and passes the socket FD to the SSH proxy via SCM_RIGHTS.
+        if let Some(sv) = supervisor {
+            let fetch_session_id = format!("fetch-hostkey-{}", request_id);
+            debug!(
+                request_id = request_id,
+                fetch_session_id = %fetch_session_id,
+                "Requesting TCP connection from supervisor for host key fetch"
+            );
+            match sv
+                .request_tcp_connect(
+                    &fetch_session_id,
+                    host,
+                    port,
+                    shared::messages::Service::ProxySsh,
+                )
+                .await
+            {
+                Ok(result) if result.success => {
+                    debug!(
+                        request_id = request_id,
+                        "Supervisor established TCP connection for host key fetch"
+                    );
+                }
+                Ok(result) => {
+                    let err = result
+                        .error
+                        .unwrap_or_else(|| "TCP connect failed".to_string());
+                    warn!(
+                        request_id = request_id,
+                        error = %err,
+                        "Supervisor TCP connect failed for host key fetch"
+                    );
+                    return Err(AppError::Ipc(format!(
+                        "Supervisor TCP connect failed: {}",
+                        err
+                    )));
+                }
+                Err(e) => {
+                    warn!(
+                        request_id = request_id,
+                        error = %e,
+                        "Supervisor TCP connect request failed for host key fetch"
+                    );
+                    return Err(AppError::Ipc(format!(
+                        "Supervisor TCP connect request failed: {}",
+                        e
+                    )));
+                }
+            }
+        }
+
+        // Create a oneshot channel for the response
+        let (tx, rx) = oneshot::channel::<(bool, Option<String>, Option<String>, Option<String>)>();
+
+        // Store the pending request
+        {
+            let mut pending = self.pending_host_key_requests.lock().await;
+            pending.insert(request_id, tx);
+        }
+
+        // Send the fetch request
+        let msg = Message::SshFetchHostKey {
+            request_id,
+            asset_host: host.to_string(),
+            asset_port: port,
+        };
+
+        self.channel
+            .send(&msg)
+            .map_err(|e| AppError::Ipc(format!("IPC send failed: {}", e)))?;
+
+        // Wait for response with timeout
+        match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
+            Ok(Ok((true, Some(key), Some(fp), _))) => Ok((key, fp)),
+            Ok(Ok((false, _, _, Some(err)))) => {
+                Err(AppError::Ipc(format!("Host key fetch failed: {}", err)))
+            }
+            Ok(Ok(_)) => Err(AppError::Ipc("Host key fetch returned unexpected response".to_string())),
+            Ok(Err(_)) => Err(AppError::Ipc("Host key response channel dropped".to_string())),
+            Err(_) => {
+                let mut pending = self.pending_host_key_requests.lock().await;
+                pending.remove(&request_id);
+                Err(AppError::Ipc("Host key fetch timeout".to_string()))
+            }
+        }
     }
 
     /// Process incoming messages from the proxy.
@@ -334,6 +463,25 @@ impl ProxySshClient {
                 }
             }
 
+            Message::SshHostKeyResult {
+                request_id,
+                success,
+                host_key,
+                key_fingerprint,
+                error,
+            } => {
+                debug!(
+                    request_id = request_id,
+                    success = success,
+                    "SSH host key result received"
+                );
+
+                let mut pending = self.pending_host_key_requests.lock().await;
+                if let Some(tx) = pending.remove(&request_id) {
+                    let _ = tx.send((success, host_key, key_fingerprint, error));
+                }
+            }
+
             Message::SshData { session_id, data } => {
                 // Forward data to the session's subscribed WebSocket
                 let senders = self.session_data_senders.lock().await;
@@ -390,6 +538,7 @@ mod tests {
             password: Some("test-password".to_string()),
             private_key: None,
             passphrase: None,
+            expected_host_key: None,
         }
     }
 
@@ -483,6 +632,7 @@ mod tests {
             password: None,
             private_key: Some("-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----".to_string()),
             passphrase: Some("key-passphrase".to_string()),
+            expected_host_key: None,
         };
 
         assert_eq!(request.auth_type, "private_key");

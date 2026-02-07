@@ -207,6 +207,11 @@ cargo build --release
 - `GET /api/v1/assets/:uuid` - Get asset
 - `PUT /api/v1/assets/:uuid` - Update asset
 
+### SSH Host Key Verification (SSH assets only)
+- `GET /api/v1/assets/:uuid/ssh-host-key` - Get host key status (`verified`, `mismatch`, or `no_key`)
+- `POST /api/v1/assets/:uuid/ssh-host-key` - Fetch host key from remote server (detects key changes)
+- `POST /api/v1/assets/:uuid/ssh-host-key?confirm=true` - Accept a changed host key
+
 ### Asset Groups (Read-Only)
 - `GET /api/v1/assets/groups` - List asset groups
 - `GET /api/v1/assets/groups/:uuid/assets` - List assets in a group
