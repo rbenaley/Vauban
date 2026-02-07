@@ -87,12 +87,10 @@ const LINKED_RESTART_GROUPS: &[&[&str]] = &[
 
 /// Check if a service belongs to a linked restart group.
 fn get_linked_services(service_key: &str) -> Option<&'static [&'static str]> {
-    for group in LINKED_RESTART_GROUPS {
-        if group.contains(&service_key) {
-            return Some(group);
-        }
-    }
-    None
+    LINKED_RESTART_GROUPS
+        .iter()
+        .find(|group| group.contains(&service_key))
+        .copied()
 }
 
 /// Convert service key string to Service enum.
@@ -404,27 +402,27 @@ fn spawn_child(
             // Child process
             
             // Change working directory if specified
-            if let Some(dir) = workdir {
-                if std::env::set_current_dir(dir).is_err() {
-                    eprintln!("Failed to chdir to {}: {}", dir, std::io::Error::last_os_error());
-                    std::process::exit(1);
-                }
+            if let Some(dir) = workdir
+                && std::env::set_current_dir(dir).is_err()
+            {
+                eprintln!("Failed to chdir to {}: {}", dir, std::io::Error::last_os_error());
+                std::process::exit(1);
             }
             
             // Drop privileges if configured (production mode)
             // Must set GID before UID
-            if let Some(g) = gid {
-                if let Err(e) = setgid(Gid::from_raw(g)) {
-                    eprintln!("Failed to setgid({}): {}", g, e);
-                    std::process::exit(1);
-                }
+            if let Some(g) = gid
+                && let Err(e) = setgid(Gid::from_raw(g))
+            {
+                eprintln!("Failed to setgid({}): {}", g, e);
+                std::process::exit(1);
             }
             
-            if let Some(u) = uid {
-                if let Err(e) = setuid(Uid::from_raw(u)) {
-                    eprintln!("Failed to setuid({}): {}", u, e);
-                    std::process::exit(1);
-                }
+            if let Some(u) = uid
+                && let Err(e) = setuid(Uid::from_raw(u))
+            {
+                eprintln!("Failed to setuid({}): {}", u, e);
+                std::process::exit(1);
             }
             
             // Clear FD_CLOEXEC on FD passing socket so it survives exec
@@ -434,7 +432,7 @@ fn spawn_child(
                 use std::os::unix::io::BorrowedFd;
                 // SAFETY: fd is valid and we're in the forked child
                 let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
-                if let Err(e) = fcntl(&borrowed, FcntlArg::F_SETFD(FdFlag::empty())) {
+                if let Err(e) = fcntl(borrowed, FcntlArg::F_SETFD(FdFlag::empty())) {
                     eprintln!("Failed to clear FD_CLOEXEC on fd_passing_socket: {}", e);
                     std::process::exit(1);
                 }
@@ -808,13 +806,13 @@ fn should_force_restart(state: &ChildState, max_missed: u32) -> RestartDecision 
     }
     
     // Check stats from last successful Pong
-    if let Some(ref stats) = state.last_stats {
-        if stats.active_connections > 0 || stats.pending_requests > 0 {
-            return RestartDecision::DrainFirst {
-                active: stats.active_connections,
-                pending: stats.pending_requests,
-            };
-        }
+    if let Some(ref stats) = state.last_stats
+        && (stats.active_connections > 0 || stats.pending_requests > 0)
+    {
+        return RestartDecision::DrainFirst {
+            active: stats.active_connections,
+            pending: stats.pending_requests,
+        };
     }
     
     RestartDecision::ForceNow
@@ -918,22 +916,22 @@ fn respawn_linked_group(
     
     // Step 1: Kill any still-running services in the group
     for &service_key in group {
-        if let Some(state) = children.get_mut(service_key) {
-            if state.pid > 0 {
-                info!("Killing {} (pid {}) for linked restart", service_key, state.pid);
-                let _ = nix::sys::signal::kill(
-                    nix::unistd::Pid::from_raw(state.pid),
-                    nix::sys::signal::Signal::SIGTERM
-                );
-                // Give it a moment to die gracefully
-                std::thread::sleep(Duration::from_millis(100));
-                // Force kill if still alive
-                let _ = nix::sys::signal::kill(
-                    nix::unistd::Pid::from_raw(state.pid),
-                    nix::sys::signal::Signal::SIGKILL
-                );
-                state.pid = 0;
-            }
+        if let Some(state) = children.get_mut(service_key)
+            && state.pid > 0
+        {
+            info!("Killing {} (pid {}) for linked restart", service_key, state.pid);
+            let _ = nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(state.pid),
+                nix::sys::signal::Signal::SIGTERM
+            );
+            // Give it a moment to die gracefully
+            std::thread::sleep(Duration::from_millis(100));
+            // Force kill if still alive
+            let _ = nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(state.pid),
+                nix::sys::signal::Signal::SIGKILL
+            );
+            state.pid = 0;
         }
     }
     
@@ -1471,18 +1469,16 @@ fn graceful_shutdown_all(children: &mut HashMap<String, ChildState>, config: &Su
             
             if let Some(state) = children.get_mut(*key) {
                 let fds = [state.channel.read_fd()];
-                if let Ok(ready) = poll_readable(&fds, 100) {
-                    if !ready.is_empty() {
-                        if let Ok(Message::Control(ControlMessage::DrainComplete { pending_requests })) 
-                            = state.channel.recv() 
-                        {
-                            if pending_requests == 0 {
-                                info!("{}: drain complete", key);
-                                frontend_complete[i] = true;
-                            } else {
-                                debug!("{}: draining, {} pending", key, pending_requests);
-                            }
-                        }
+                if let Ok(ready) = poll_readable(&fds, 100)
+                    && !ready.is_empty()
+                    && let Ok(Message::Control(ControlMessage::DrainComplete { pending_requests }))
+                        = state.channel.recv()
+                {
+                    if pending_requests == 0 {
+                        info!("{}: drain complete", key);
+                        frontend_complete[i] = true;
+                    } else {
+                        debug!("{}: draining, {} pending", key, pending_requests);
                     }
                 }
             }
@@ -1517,17 +1513,14 @@ fn graceful_shutdown_all(children: &mut HashMap<String, ChildState>, config: &Su
             let fds = [state.channel.read_fd()];
             let backend_start = Instant::now();
             while backend_start.elapsed() < Duration::from_secs(5) {
-                if let Ok(ready) = poll_readable(&fds, 1000) {
-                    if !ready.is_empty() {
-                        if let Ok(Message::Control(ControlMessage::DrainComplete { pending_requests })) 
-                            = state.channel.recv() 
-                        {
-                            if pending_requests == 0 {
-                                info!("{}: drain complete", key);
-                                break;
-                            }
-                        }
-                    }
+                if let Ok(ready) = poll_readable(&fds, 1000)
+                    && !ready.is_empty()
+                    && let Ok(Message::Control(ControlMessage::DrainComplete { pending_requests }))
+                        = state.channel.recv()
+                    && pending_requests == 0
+                {
+                    info!("{}: drain complete", key);
+                    break;
                 }
             }
         }

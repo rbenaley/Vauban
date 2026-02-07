@@ -1948,6 +1948,7 @@ fn test_login_request_debug_does_not_leak_mfa_code() {
 /// Test that SshSessionOpenRequest Debug output does not contain SSH password.
 #[test]
 fn test_ssh_request_debug_does_not_leak_password() {
+    use secrecy::SecretString;
     use vauban_web::ipc::SshSessionOpenRequest;
 
     let request = SshSessionOpenRequest {
@@ -1960,7 +1961,7 @@ fn test_ssh_request_debug_does_not_leak_password() {
         terminal_cols: 80,
         terminal_rows: 24,
         auth_type: "password".to_string(),
-        password: Some("ssh-p@ssw0rd!".to_string()),
+        password: Some(SecretString::from("ssh-p@ssw0rd!".to_string())),
         private_key: None,
         passphrase: None,
         expected_host_key: None,
@@ -1983,6 +1984,7 @@ fn test_ssh_request_debug_does_not_leak_password() {
 /// Test that SshSessionOpenRequest Debug output does not contain private key.
 #[test]
 fn test_ssh_request_debug_does_not_leak_private_key() {
+    use secrecy::SecretString;
     use vauban_web::ipc::SshSessionOpenRequest;
 
     let request = SshSessionOpenRequest {
@@ -1996,11 +1998,11 @@ fn test_ssh_request_debug_does_not_leak_private_key() {
         terminal_rows: 24,
         auth_type: "private_key".to_string(),
         password: None,
-        private_key: Some(
+        private_key: Some(SecretString::from(
             "-----BEGIN OPENSSH PRIVATE KEY-----\nbase64data\n-----END OPENSSH PRIVATE KEY-----"
                 .to_string(),
-        ),
-        passphrase: Some("key-unlock-phrase".to_string()),
+        )),
+        passphrase: Some(SecretString::from("key-unlock-phrase".to_string())),
         expected_host_key: None,
     };
 
@@ -4507,5 +4509,230 @@ async fn test_session_fetch_supports_preconnected_fd() {
     assert!(
         session_source.contains("client::connect(ssh_config, addr, handler)"),
         "H-9/privsep: session::fetch_host_key must fall back to direct connect when no FD is provided"
+    );
+}
+
+// =============================================================================
+// H-10: SSH Secrets Zeroization and Redaction Tests
+// =============================================================================
+// These tests verify that credential fields (password, private_key, passphrase)
+// are protected with secrecy/zeroize wrappers at every layer:
+// - SshSessionOpenRequest uses SecretString (vauban-web)
+// - Message::SshSessionOpen uses SensitiveString (shared IPC transport)
+// - SshCredential uses SecretString (vauban-proxy-ssh)
+//
+// Protection goals:
+// - Zeroize on drop: memory is scrubbed when credentials go out of scope
+// - Redacted Debug: format!("{:?}") never reveals credential values
+// - Compile-time enforcement: expose_secret() required to access the value
+
+/// H-10: SshSessionOpenRequest credential fields MUST be SecretString, not String.
+#[test]
+fn test_h10_ssh_session_open_request_uses_secret_string() {
+    let source = include_str!("../../src/ipc/proxy_ssh.rs");
+
+    // password field must be Option<SecretString>
+    assert!(
+        source.contains("pub password: Option<SecretString>"),
+        "H-10: SshSessionOpenRequest.password must be Option<SecretString>"
+    );
+
+    // private_key field must be Option<SecretString>
+    assert!(
+        source.contains("pub private_key: Option<SecretString>"),
+        "H-10: SshSessionOpenRequest.private_key must be Option<SecretString>"
+    );
+
+    // passphrase field must be Option<SecretString>
+    assert!(
+        source.contains("pub passphrase: Option<SecretString>"),
+        "H-10: SshSessionOpenRequest.passphrase must be Option<SecretString>"
+    );
+}
+
+/// H-10: Message::SshSessionOpen credential fields MUST be SensitiveString for IPC transport.
+#[test]
+fn test_h10_message_ssh_session_open_uses_sensitive_string() {
+    let source = include_str!("../../../shared/src/messages.rs");
+
+    // SensitiveString type must exist
+    assert!(
+        source.contains("pub struct SensitiveString"),
+        "H-10: shared/messages.rs must define SensitiveString type"
+    );
+
+    // password field in SshSessionOpen must use SensitiveString
+    assert!(
+        source.contains("password: Option<SensitiveString>"),
+        "H-10: Message::SshSessionOpen.password must be Option<SensitiveString>"
+    );
+
+    // private_key field must use SensitiveString
+    assert!(
+        source.contains("private_key: Option<SensitiveString>"),
+        "H-10: Message::SshSessionOpen.private_key must be Option<SensitiveString>"
+    );
+
+    // passphrase field must use SensitiveString
+    assert!(
+        source.contains("passphrase: Option<SensitiveString>"),
+        "H-10: Message::SshSessionOpen.passphrase must be Option<SensitiveString>"
+    );
+}
+
+/// H-10: SensitiveString must implement Zeroize on Drop.
+#[test]
+fn test_h10_sensitive_string_has_zeroize_drop() {
+    let source = include_str!("../../../shared/src/messages.rs");
+
+    // Must use zeroize crate
+    assert!(
+        source.contains("use zeroize::Zeroize"),
+        "H-10: shared/messages.rs must import zeroize::Zeroize"
+    );
+
+    // Drop impl must call zeroize
+    assert!(
+        source.contains("self.0.zeroize()"),
+        "H-10: SensitiveString Drop must call zeroize() on inner string"
+    );
+}
+
+/// H-10: SensitiveString Debug must print [REDACTED], not the secret value.
+#[test]
+fn test_h10_sensitive_string_debug_redacted() {
+    use shared::messages::SensitiveString;
+
+    let secret = SensitiveString::new("top-secret-password-12345".to_string());
+    let debug = format!("{:?}", secret);
+
+    assert!(
+        !debug.contains("top-secret-password"),
+        "H-10: SensitiveString Debug must NOT reveal the secret. Got: {}",
+        debug
+    );
+    assert!(
+        debug.contains("REDACTED"),
+        "H-10: SensitiveString Debug must show [REDACTED]. Got: {}",
+        debug
+    );
+}
+
+/// H-10: SensitiveString must be serde-transparent (no IPC protocol break).
+#[test]
+fn test_h10_sensitive_string_serde_transparent() {
+    let source = include_str!("../../../shared/src/messages.rs");
+
+    assert!(
+        source.contains("#[serde(transparent)]"),
+        "H-10: SensitiveString must use #[serde(transparent)] for IPC compatibility"
+    );
+}
+
+/// H-10: SshCredential (proxy side) must use SecretString, not plain String.
+#[test]
+fn test_h10_ssh_credential_uses_secret_string() {
+    let source = include_str!("../../../vauban-proxy-ssh/src/session.rs");
+
+    // Password variant must use SecretString
+    assert!(
+        source.contains("Password(SecretString)"),
+        "H-10: SshCredential::Password must wrap SecretString, not String"
+    );
+
+    // PrivateKey key_pem must use SecretString
+    assert!(
+        source.contains("key_pem: SecretString"),
+        "H-10: SshCredential::PrivateKey.key_pem must be SecretString"
+    );
+
+    // PrivateKey passphrase must use Option<SecretString>
+    assert!(
+        source.contains("passphrase: Option<SecretString>"),
+        "H-10: SshCredential::PrivateKey.passphrase must be Option<SecretString>"
+    );
+}
+
+/// H-10: SshCredential Debug must not derive automatically; must be redacted.
+#[test]
+fn test_h10_ssh_credential_debug_not_derived() {
+    let source = include_str!("../../../vauban-proxy-ssh/src/session.rs");
+
+    // SshCredential must NOT have #[derive(Debug)]
+    // It should have a manual Debug impl with [REDACTED]
+    assert!(
+        source.contains("impl std::fmt::Debug for SshCredential"),
+        "H-10: SshCredential must have manual Debug impl (not derive)"
+    );
+
+    assert!(
+        source.contains("REDACTED"),
+        "H-10: SshCredential Debug impl must use [REDACTED]"
+    );
+}
+
+/// H-10: Proxy main.rs must convert SensitiveString -> SecretString.
+#[test]
+fn test_h10_proxy_converts_sensitive_to_secret() {
+    let source = include_str!("../../../vauban-proxy-ssh/src/main.rs");
+
+    // Must import SecretString
+    assert!(
+        source.contains("use secrecy::SecretString"),
+        "H-10: proxy main.rs must import secrecy::SecretString"
+    );
+
+    // Must use into_inner() to extract from SensitiveString
+    assert!(
+        source.contains("into_inner()"),
+        "H-10: proxy must call SensitiveString::into_inner() for conversion"
+    );
+}
+
+/// H-10: connect_ssh handler must wrap credentials in SecretString.
+#[test]
+fn test_h10_connect_ssh_wraps_credentials() {
+    let source = include_str!("../../src/handlers/web.rs");
+
+    // Must use SecretString::from() or secrecy::SecretString for credentials
+    assert!(
+        source.contains("secrecy::SecretString::from(s.to_string())"),
+        "H-10: connect_ssh must wrap extracted credentials in SecretString"
+    );
+}
+
+/// H-10: open_session() must convert SecretString -> SensitiveString for IPC.
+#[test]
+fn test_h10_open_session_converts_secret_to_sensitive() {
+    let source = include_str!("../../src/ipc/proxy_ssh.rs");
+
+    // Must use expose_secret() to access credential before IPC transport
+    assert!(
+        source.contains("expose_secret()"),
+        "H-10: open_session must call expose_secret() when converting to SensitiveString"
+    );
+
+    // Must create SensitiveString for IPC message
+    assert!(
+        source.contains("SensitiveString::new"),
+        "H-10: open_session must construct SensitiveString for IPC message fields"
+    );
+}
+
+/// H-10: SshCredential authentication must use expose_secret().
+#[test]
+fn test_h10_credential_auth_uses_expose_secret() {
+    let source = include_str!("../../../vauban-proxy-ssh/src/session.rs");
+
+    // Password auth must call expose_secret()
+    assert!(
+        source.contains("password.expose_secret()"),
+        "H-10: password authentication must call .expose_secret()"
+    );
+
+    // Private key auth must call expose_secret()
+    assert!(
+        source.contains("key_pem.expose_secret()"),
+        "H-10: private key decoding must call .expose_secret()"
     );
 }

@@ -27,7 +27,7 @@ pub enum CapsicumError {
 pub type Result<T> = std::result::Result<T, CapsicumError>;
 
 /// Capability rights flags (mirrors FreeBSD cap_rights).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct CapRights {
     pub read: bool,
     pub write: bool,
@@ -44,28 +44,6 @@ pub struct CapRights {
     pub getsockname: bool,
     pub getsockopt: bool,
     pub setsockopt: bool,
-}
-
-impl Default for CapRights {
-    fn default() -> Self {
-        Self {
-            read: false,
-            write: false,
-            seek: false,
-            mmap: false,
-            event: false,
-            fcntl: false,
-            fstat: false,
-            connect: false,
-            accept: false,
-            listen: false,
-            bind: false,
-            getpeername: false,
-            getsockname: false,
-            getsockopt: false,
-            setsockopt: false,
-        }
-    }
 }
 
 impl CapRights {

@@ -67,15 +67,11 @@ pub async fn audit_middleware(
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
         .map(|ci| ci.0.ip());
-    let ip = if let Some(peer_ip) = connect_ip {
-        Some(
-            super::resolve_client_ip(request.headers(), peer_ip, &trusted).to_string(),
-        )
-    } else {
-        // ConnectInfo not available (e.g. in tests) – fall back to
-        // peer address only; never trust proxy headers without a known peer.
-        None
-    };
+    // ConnectInfo not available (e.g. in tests) -> None;
+    // never trust proxy headers without a known peer.
+    let ip = connect_ip.map(|peer_ip| {
+        super::resolve_client_ip(request.headers(), peer_ip, &trusted).to_string()
+    });
 
     let user_agent = request
         .headers()

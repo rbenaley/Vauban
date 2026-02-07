@@ -443,7 +443,7 @@ impl Config {
     fn workspace_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
-            .expect("vauban-web should be in a workspace")
+            .unwrap_or_else(|| Path::new("."))
             .to_path_buf()
     }
 

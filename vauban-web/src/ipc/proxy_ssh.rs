@@ -4,8 +4,9 @@
 //! and receive output from SSH sessions.
 
 use crate::error::{AppError, AppResult};
+use secrecy::{ExposeSecret, SecretString};
 use shared::ipc::IpcChannel;
-use shared::messages::Message;
+use shared::messages::{Message, SensitiveString};
 use std::collections::HashMap;
 use std::io;
 use std::os::unix::io::RawFd;
@@ -20,6 +21,11 @@ use tracing::{debug, error, info, warn};
 ///
 /// `Debug` is manually implemented to redact `password`, `private_key`, and
 /// `passphrase` fields, preventing credential leaks in logs (H-4 / H-10).
+///
+/// Credential fields use `SecretString` (H-10) for:
+/// - Zeroize on drop (memory is scrubbed when the request is dropped)
+/// - Compile-time enforcement via `.expose_secret()`
+/// - Automatic Debug redaction by `SecretString` itself
 #[derive(Clone)]
 pub struct SshSessionOpenRequest {
     /// Unique session ID (UUID).
@@ -40,12 +46,12 @@ pub struct SshSessionOpenRequest {
     pub terminal_rows: u16,
     /// Authentication type: "password" or "private_key".
     pub auth_type: String,
-    /// Password for password authentication.
-    pub password: Option<String>,
-    /// PEM-encoded private key for key authentication.
-    pub private_key: Option<String>,
-    /// Passphrase for encrypted private key.
-    pub passphrase: Option<String>,
+    /// Password for password authentication (H-10: SecretString).
+    pub password: Option<SecretString>,
+    /// PEM-encoded private key for key authentication (H-10: SecretString).
+    pub private_key: Option<SecretString>,
+    /// Passphrase for encrypted private key (H-10: SecretString).
+    pub passphrase: Option<SecretString>,
     /// Expected SSH host key in OpenSSH format (e.g. "ssh-ed25519 AAAA...").
     /// If set, the proxy verifies the server key matches before continuing.
     pub expected_host_key: Option<String>,
@@ -87,6 +93,11 @@ pub struct SshSessionOpened {
     pub error: Option<String>,
 }
 
+/// Sender type for pending host key fetch responses.
+///
+/// Carries `(success, host_key, fingerprint, error)`.
+type HostKeyResponseSender = oneshot::Sender<(bool, Option<String>, Option<String>, Option<String>)>;
+
 /// Async client for communicating with vauban-proxy-ssh.
 pub struct ProxySshClient {
     /// Underlying IPC channel.
@@ -104,7 +115,7 @@ pub struct ProxySshClient {
     /// Created during open_session, taken by subscribe_session.
     session_data_receivers: Mutex<HashMap<String, mpsc::Receiver<Vec<u8>>>>,
     /// Pending host key fetch requests waiting for responses.
-    pending_host_key_requests: Mutex<HashMap<u64, oneshot::Sender<(bool, Option<String>, Option<String>, Option<String>)>>>,
+    pending_host_key_requests: Mutex<HashMap<u64, HostKeyResponseSender>>,
 }
 
 impl ProxySshClient {
@@ -202,7 +213,7 @@ impl ProxySshClient {
             pending.insert(request_id, tx);
         }
 
-        // Send request
+        // Send request -- convert SecretString -> SensitiveString for IPC transport (H-10)
         let msg = Message::SshSessionOpen {
             request_id,
             session_id,
@@ -214,9 +225,15 @@ impl ProxySshClient {
             terminal_cols: request.terminal_cols,
             terminal_rows: request.terminal_rows,
             auth_type: request.auth_type,
-            password: request.password,
-            private_key: request.private_key,
-            passphrase: request.passphrase,
+            password: request
+                .password
+                .map(|s| SensitiveString::new(s.expose_secret().to_string())),
+            private_key: request
+                .private_key
+                .map(|s| SensitiveString::new(s.expose_secret().to_string())),
+            passphrase: request
+                .passphrase
+                .map(|s| SensitiveString::new(s.expose_secret().to_string())),
             expected_host_key: request.expected_host_key,
         };
 
@@ -535,7 +552,7 @@ mod tests {
             terminal_cols: 80,
             terminal_rows: 24,
             auth_type: "password".to_string(),
-            password: Some("test-password".to_string()),
+            password: Some(SecretString::from("test-password".to_string())),
             private_key: None,
             passphrase: None,
             expected_host_key: None,
@@ -570,9 +587,9 @@ mod tests {
     #[test]
     fn test_ssh_session_open_request_debug_redacts_secrets() {
         let mut request = make_test_request("debug-sess", "host.local", 22);
-        request.password = Some("super-secret-password".to_string());
-        request.private_key = Some("-----BEGIN RSA PRIVATE KEY-----".to_string());
-        request.passphrase = Some("my-passphrase".to_string());
+        request.password = Some(SecretString::from("super-secret-password".to_string()));
+        request.private_key = Some(SecretString::from("-----BEGIN RSA PRIVATE KEY-----".to_string()));
+        request.passphrase = Some(SecretString::from("my-passphrase".to_string()));
 
         let debug_str = format!("{:?}", request);
 
@@ -630,8 +647,8 @@ mod tests {
             terminal_rows: 24,
             auth_type: "private_key".to_string(),
             password: None,
-            private_key: Some("-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----".to_string()),
-            passphrase: Some("key-passphrase".to_string()),
+            private_key: Some(SecretString::from("-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----".to_string())),
+            passphrase: Some(SecretString::from("key-passphrase".to_string())),
             expected_host_key: None,
         };
 

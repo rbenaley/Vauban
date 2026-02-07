@@ -48,6 +48,10 @@ tokio-util = { version = "0.7", features = ["codec"] }
 russh = "0.57"
 async-trait = "0.1"
 
+# Secret management and memory zeroization (H-10)
+secrecy = { version = "0.10", features = ["serde"] }
+zeroize = { version = "1.8", features = ["derive"] }
+
 [profile.release]
 opt-level = 3
 lto = true

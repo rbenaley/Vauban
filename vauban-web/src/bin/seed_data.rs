@@ -148,7 +148,8 @@ async fn main() -> Result<()> {
     println!("   ✅ {} users ready\n", user_ids.len());
 
     // Get first user id for ownership
-    let owner_id = user_ids.get(0).copied().unwrap_or(1);
+    // Note: use [..] to call slice::first() instead of diesel QueryDsl::first()
+    let owner_id = user_ids[..].first().copied().unwrap_or(1);
 
     // Create assets
     println!("📦 Creating assets...");
@@ -376,11 +377,11 @@ async fn create_users(conn: &mut AsyncPgConnection, config: &Config) -> Vec<i32>
         .optional()
         .expect("Failed to query users");
 
-    if let Some(uid) = mnemonic_id {
-        if !user_ids.contains(&uid) {
-            user_ids.push(uid);
-            println!("   - mnemonic (existing) included");
-        }
+    if let Some(uid) = mnemonic_id
+        && !user_ids.contains(&uid)
+    {
+        user_ids.push(uid);
+        println!("   - mnemonic (existing) included");
     }
 
     user_ids

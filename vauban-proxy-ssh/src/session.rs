@@ -4,6 +4,7 @@ use crate::error::{SessionError, SessionResult};
 use russh::client::{self, Handle};
 use russh::{Channel, ChannelId, ChannelMsg, Disconnect, Preferred};
 use russh::keys::decode_secret_key;
+use secrecy::{ExposeSecret, SecretString};
 use std::borrow::Cow;
 use std::os::unix::io::{FromRawFd, IntoRawFd, OwnedFd};
 use std::sync::Arc;
@@ -11,20 +12,90 @@ use std::time::Instant;
 use tokio::net::TcpStream;
 use tracing::{debug, error, info, warn};
 
+/// Supported key exchange algorithms, ordered from most secure to legacy.
+///
+/// This list is shared by `SshSession::connect` and `fetch_host_key` to
+/// guarantee identical algorithm negotiation for both session establishment
+/// and host-key-only probes.  Legacy algorithms (DH group exchange, DH G1)
+/// are included for compatibility with older SSH servers.
+const PREFERRED_KEX: &[russh::kex::Name] = &[
+    russh::kex::CURVE25519,
+    russh::kex::CURVE25519_PRE_RFC_8731,
+    russh::kex::ECDH_SHA2_NISTP256,
+    russh::kex::ECDH_SHA2_NISTP384,
+    russh::kex::ECDH_SHA2_NISTP521,
+    russh::kex::DH_G16_SHA512,
+    russh::kex::DH_G14_SHA256,
+    russh::kex::DH_GEX_SHA256, // diffie-hellman-group-exchange-sha256
+    russh::kex::DH_GEX_SHA1,   // diffie-hellman-group-exchange-sha1
+    russh::kex::DH_G14_SHA1,
+    russh::kex::DH_G1_SHA1,
+];
+
+/// Supported cipher algorithms, ordered from most secure to legacy.
+///
+/// See [`PREFERRED_KEX`] -- same rationale.  CBC ciphers are included for
+/// compatibility with servers that do not advertise CTR/GCM modes.
+const PREFERRED_CIPHER: &[russh::cipher::Name] = &[
+    russh::cipher::CHACHA20_POLY1305,
+    russh::cipher::AES_256_GCM,
+    russh::cipher::AES_128_GCM,
+    russh::cipher::AES_256_CTR,
+    russh::cipher::AES_192_CTR,
+    russh::cipher::AES_128_CTR,
+    russh::cipher::AES_256_CBC,
+    russh::cipher::AES_192_CBC,
+    russh::cipher::AES_128_CBC,
+];
+
+/// Build an `Arc<client::Config>` with the project-wide algorithm preferences.
+///
+/// Called by `SshSession::connect` and `fetch_host_key` so that every SSH
+/// handshake (session or host-key probe) uses the exact same configuration.
+fn make_ssh_config() -> Arc<client::Config> {
+    Arc::new(client::Config {
+        preferred: Preferred {
+            kex: Cow::Borrowed(PREFERRED_KEX),
+            cipher: Cow::Borrowed(PREFERRED_CIPHER),
+            ..Preferred::default()
+        },
+        ..client::Config::default()
+    })
+}
+
 /// SSH credential types supported by the proxy.
-#[derive(Debug, Clone)]
+///
+/// Wraps credentials in `SecretString` (H-10) to ensure:
+/// - Memory is zeroized when the credential is dropped
+/// - `.expose_secret()` is required for access (compile-time enforcement)
+/// - `Debug` output never contains the actual credential values
+#[derive(Clone)]
 pub enum SshCredential {
     /// Password-based authentication.
-    Password(String),
+    Password(SecretString),
     /// Private key authentication with optional passphrase.
-    /// Will be used when private key authentication is implemented.
-    #[allow(dead_code)]
     PrivateKey {
         /// PEM-encoded private key.
-        key_pem: String,
+        key_pem: SecretString,
         /// Optional passphrase for encrypted keys.
-        passphrase: Option<String>,
+        passphrase: Option<SecretString>,
     },
+}
+
+impl std::fmt::Debug for SshCredential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SshCredential::Password(_) => {
+                f.debug_tuple("Password").field(&"[REDACTED]").finish()
+            }
+            SshCredential::PrivateKey { .. } => {
+                f.debug_struct("PrivateKey")
+                    .field("key_pem", &"[REDACTED]")
+                    .field("passphrase", &"[REDACTED]")
+                    .finish()
+            }
+        }
+    }
 }
 
 /// Configuration for creating a new SSH session.
@@ -91,41 +162,7 @@ impl SshSession {
             "Connecting to SSH server"
         );
 
-        // Create SSH client configuration with broad algorithm support
-        // This ensures compatibility with most SSH servers (including older ones)
-        let ssh_config = client::Config {
-            preferred: Preferred {
-                // Key exchange algorithms (from most secure to legacy)
-                kex: Cow::Borrowed(&[
-                    russh::kex::CURVE25519,
-                    russh::kex::CURVE25519_PRE_RFC_8731,
-                    russh::kex::ECDH_SHA2_NISTP256,
-                    russh::kex::ECDH_SHA2_NISTP384,
-                    russh::kex::ECDH_SHA2_NISTP521,
-                    russh::kex::DH_G16_SHA512,
-                    russh::kex::DH_G14_SHA256,
-                    russh::kex::DH_GEX_SHA256,  // diffie-hellman-group-exchange-sha256
-                    russh::kex::DH_GEX_SHA1,    // diffie-hellman-group-exchange-sha1
-                    russh::kex::DH_G14_SHA1,
-                    russh::kex::DH_G1_SHA1,
-                ]),
-                // Ciphers (from most secure to legacy)
-                cipher: Cow::Borrowed(&[
-                    russh::cipher::CHACHA20_POLY1305,
-                    russh::cipher::AES_256_GCM,
-                    russh::cipher::AES_128_GCM,
-                    russh::cipher::AES_256_CTR,
-                    russh::cipher::AES_192_CTR,
-                    russh::cipher::AES_128_CTR,
-                    russh::cipher::AES_256_CBC,
-                    russh::cipher::AES_192_CBC,
-                    russh::cipher::AES_128_CBC,
-                ]),
-                ..Preferred::default()
-            },
-            ..client::Config::default()
-        };
-        let ssh_config = Arc::new(ssh_config);
+        let ssh_config = make_ssh_config();
 
         // Create handler for SSH events (with host key verification)
         let handler = SshHandler::new(
@@ -167,14 +204,17 @@ impl SshSession {
             SshCredential::Password(password) => {
                 debug!(session_id = %config.session_id, "Authenticating with password");
                 session
-                    .authenticate_password(&config.username, password)
+                    .authenticate_password(&config.username, password.expose_secret())
                     .await
                     .map_err(|e| SessionError::AuthenticationFailed(e.to_string()))?
             }
             SshCredential::PrivateKey { key_pem, passphrase } => {
                 debug!(session_id = %config.session_id, "Authenticating with private key");
-                let key = decode_secret_key(key_pem, passphrase.as_deref())
-                    .map_err(|e| SessionError::InvalidKey(e.to_string()))?;
+                let key = decode_secret_key(
+                    key_pem.expose_secret(),
+                    passphrase.as_ref().map(|p| p.expose_secret()),
+                )
+                .map_err(|e| SessionError::InvalidKey(e.to_string()))?;
                 // russh 0.57+ requires PrivateKeyWithHashAlg for public key auth
                 let key_with_alg = russh::keys::PrivateKeyWithHashAlg::new(
                     Arc::new(key),
@@ -389,58 +429,89 @@ pub async fn fetch_host_key(
 ) -> SessionResult<(String, String)> {
     info!(host = %host, port = port, "Fetching SSH host key");
 
-    let ssh_config = client::Config {
-        preferred: Preferred {
-            kex: Cow::Borrowed(&[
-                russh::kex::CURVE25519,
-                russh::kex::CURVE25519_PRE_RFC_8731,
-                russh::kex::ECDH_SHA2_NISTP256,
-                russh::kex::ECDH_SHA2_NISTP384,
-                russh::kex::ECDH_SHA2_NISTP521,
-                russh::kex::DH_G16_SHA512,
-                russh::kex::DH_G14_SHA256,
-            ]),
-            cipher: Cow::Borrowed(&[
-                russh::cipher::CHACHA20_POLY1305,
-                russh::cipher::AES_256_GCM,
-                russh::cipher::AES_128_GCM,
-                russh::cipher::AES_256_CTR,
-                russh::cipher::AES_128_CTR,
-            ]),
-            ..Preferred::default()
-        },
-        ..client::Config::default()
-    };
-    let ssh_config = Arc::new(ssh_config);
-
     let captured = Arc::new(tokio::sync::Mutex::new((None, None)));
-    let handler = HostKeyFetchHandler {
-        captured: Arc::clone(&captured),
-    };
 
-    // Connect - the handshake (including key exchange) happens during connect.
-    // We don't need to authenticate; we just need the server's host key.
+    // Reuse the project-wide SSH config builder (same algorithms as SshSession::connect)
+
+    // Helper: direct TCP connect (used as primary path or fallback).
+    let direct_connect =
+        |cap: Arc<tokio::sync::Mutex<(Option<String>, Option<String>)>>,
+         h: &str,
+         p: u16| {
+            let host_owned = h.to_string();
+            async move {
+                let handler = HostKeyFetchHandler {
+                    captured: cap,
+                };
+                let addr = format!("{}:{}", host_owned, p);
+                client::connect(make_ssh_config(), addr, handler).await
+            }
+        };
+
+    // Attempt connection -- try pre-connected FD first, then fall back to direct.
+    // The pre-connected FD is provided by the supervisor for sandboxed (Capsicum)
+    // operation. If it fails (e.g. FD is stale due to race condition), we fall
+    // back to direct TCP connect which works in non-sandboxed environments.
+    let mut used_preconnected = false;
     let result = if let Some(fd) = preconnected_fd {
-        let std_stream = unsafe { std::net::TcpStream::from_raw_fd(fd.into_raw_fd()) };
-        std_stream
-            .set_nonblocking(true)
-            .map_err(|e| SessionError::ConnectionFailed(format!("Failed to set non-blocking: {}", e)))?;
-        let stream = TcpStream::from_std(std_stream)
-            .map_err(|e| SessionError::ConnectionFailed(format!("Failed to create tokio stream: {}", e)))?;
-        client::connect_stream(ssh_config, stream, handler).await
+        used_preconnected = true;
+        debug!(host = %host, port = port, "Using pre-connected FD for host key fetch");
+
+        let handler = HostKeyFetchHandler {
+            captured: Arc::clone(&captured),
+        };
+
+        // Try to use the pre-connected FD
+        let preconn_result = async {
+            let std_stream = unsafe { std::net::TcpStream::from_raw_fd(fd.into_raw_fd()) };
+            std_stream
+                .set_nonblocking(true)
+                .map_err(|e| format!("set_nonblocking: {}", e))?;
+            let stream = TcpStream::from_std(std_stream)
+                .map_err(|e| format!("from_std: {}", e))?;
+            client::connect_stream(make_ssh_config(), stream, handler)
+                .await
+                .map_err(|e| format!("connect_stream: {}", e))
+        }
+        .await;
+
+        match preconn_result {
+            Ok(session) => Ok(session),
+            Err(e) => {
+                warn!(
+                    host = %host,
+                    port = port,
+                    error = %e,
+                    "Pre-connected FD handshake failed, falling back to direct connect"
+                );
+                direct_connect(Arc::clone(&captured), host, port).await
+            }
+        }
     } else {
-        let addr = format!("{}:{}", host, port);
-        client::connect(ssh_config, addr, handler).await
+        debug!(host = %host, port = port, "Using direct connect for host key fetch");
+        direct_connect(Arc::clone(&captured), host, port).await
     };
 
     // Disconnect gracefully (ignore errors - we have the key)
-    if let Ok(session) = result {
-        let _ = session
-            .disconnect(Disconnect::ByApplication, "Host key fetch complete", "en")
-            .await;
+    match &result {
+        Ok(session) => {
+            let _ = session
+                .disconnect(Disconnect::ByApplication, "Host key fetch complete", "en")
+                .await;
+        }
+        Err(e) => {
+            // Log the actual SSH error for diagnostics. Even if connect failed
+            // *after* key exchange (e.g. no compatible auth), check_server_key
+            // should have been called and `captured` will contain the key.
+            warn!(
+                host = %host,
+                port = port,
+                used_preconnected = used_preconnected,
+                error = %e,
+                "SSH handshake error during host key fetch (key may still have been captured)"
+            );
+        }
     }
-    // Even if connect failed after key exchange (e.g., no compatible auth),
-    // the handler's check_server_key should have been called.
 
     let guard = captured.lock().await;
     match &*guard {
@@ -449,7 +520,10 @@ pub async fn fetch_host_key(
             Ok((key.clone(), fp.clone()))
         }
         _ => Err(SessionError::ConnectionFailed(
-            "Failed to retrieve host key during SSH handshake".to_string(),
+            format!(
+                "Failed to retrieve host key during SSH handshake (pre-connected FD: {})",
+                if used_preconnected { "yes" } else { "no" },
+            ),
         )),
     }
 }
@@ -534,9 +608,9 @@ mod tests {
 
     #[test]
     fn test_ssh_credential_password() {
-        let cred = SshCredential::Password("secret123".to_string());
-        match cred {
-            SshCredential::Password(p) => assert_eq!(p, "secret123"),
+        let cred = SshCredential::Password(SecretString::from("secret123".to_string()));
+        match &cred {
+            SshCredential::Password(p) => assert_eq!(p.expose_secret(), "secret123"),
             _ => panic!("Expected password credential"),
         }
     }
@@ -544,13 +618,13 @@ mod tests {
     #[test]
     fn test_ssh_credential_private_key() {
         let cred = SshCredential::PrivateKey {
-            key_pem: "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----".to_string(),
-            passphrase: Some("secret".to_string()),
+            key_pem: SecretString::from("-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----".to_string()),
+            passphrase: Some(SecretString::from("secret".to_string())),
         };
-        match cred {
+        match &cred {
             SshCredential::PrivateKey { key_pem, passphrase } => {
-                assert!(key_pem.contains("PRIVATE KEY"));
-                assert_eq!(passphrase, Some("secret".to_string()));
+                assert!(key_pem.expose_secret().contains("PRIVATE KEY"));
+                assert_eq!(passphrase.as_ref().map(|p| p.expose_secret()), Some("secret"));
             }
             _ => panic!("Expected private key credential"),
         }
@@ -559,10 +633,10 @@ mod tests {
     #[test]
     fn test_ssh_credential_private_key_no_passphrase() {
         let cred = SshCredential::PrivateKey {
-            key_pem: "key-data".to_string(),
+            key_pem: SecretString::from("key-data".to_string()),
             passphrase: None,
         };
-        match cred {
+        match &cred {
             SshCredential::PrivateKey { passphrase, .. } => {
                 assert!(passphrase.is_none());
             }
@@ -572,11 +646,11 @@ mod tests {
 
     #[test]
     fn test_ssh_credential_clone() {
-        let cred = SshCredential::Password("test".to_string());
+        let cred = SshCredential::Password(SecretString::from("test".to_string()));
         let cloned = cred.clone();
-        match (cred, cloned) {
+        match (&cred, &cloned) {
             (SshCredential::Password(a), SshCredential::Password(b)) => {
-                assert_eq!(a, b);
+                assert_eq!(a.expose_secret(), b.expose_secret());
             }
             _ => panic!("Clone should produce same variant"),
         }
@@ -584,10 +658,12 @@ mod tests {
 
     #[test]
     fn test_ssh_credential_debug() {
-        let cred = SshCredential::Password("secret".to_string());
+        let cred = SshCredential::Password(SecretString::from("secret".to_string()));
         let debug = format!("{:?}", cred);
-        // Debug should show Password variant (but ideally not the actual secret)
         assert!(debug.contains("Password"));
+        // H-10: Debug must NOT contain actual secret
+        assert!(!debug.contains("secret"), "H-10: credential debug must be redacted");
+        assert!(debug.contains("REDACTED"), "H-10: credential debug must show [REDACTED]");
     }
 
     // ==================== SessionConfig Tests ====================
@@ -603,7 +679,7 @@ mod tests {
             username: "admin".to_string(),
             terminal_cols: 80,
             terminal_rows: 24,
-            credential: SshCredential::Password("pass".to_string()),
+            credential: SshCredential::Password(SecretString::from("pass".to_string())),
             preconnected_fd: None,
             expected_host_key: None,
         };
@@ -623,7 +699,7 @@ mod tests {
             username: "test".to_string(),
             terminal_cols: 80,
             terminal_rows: 24,
-            credential: SshCredential::Password("pass".to_string()),
+            credential: SshCredential::Password(SecretString::from("pass".to_string())),
             preconnected_fd: None,
             expected_host_key: None,
         };
@@ -644,7 +720,7 @@ mod tests {
                 username: "user".to_string(),
                 terminal_cols: 80,
                 terminal_rows: 24,
-                credential: SshCredential::Password("pass".to_string()),
+                credential: SshCredential::Password(SecretString::from("pass".to_string())),
                 preconnected_fd: None,
                 expected_host_key: None,
             };
@@ -663,7 +739,7 @@ mod tests {
             username: "user".to_string(),
             terminal_cols: 200,
             terminal_rows: 50,
-            credential: SshCredential::Password("pass".to_string()),
+            credential: SshCredential::Password(SecretString::from("pass".to_string())),
             preconnected_fd: None,
             expected_host_key: None,
         };
@@ -682,7 +758,7 @@ mod tests {
             username: "user".to_string(),
             terminal_cols: 80,
             terminal_rows: 24,
-            credential: SshCredential::Password("pass".to_string()),
+            credential: SshCredential::Password(SecretString::from("pass".to_string())),
             preconnected_fd: None,
             expected_host_key: Some("ssh-ed25519 AAAA...".to_string()),
         };

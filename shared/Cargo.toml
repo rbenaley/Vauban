@@ -13,6 +13,7 @@ thiserror.workspace = true
 libc.workspace = true
 nix.workspace = true
 tracing.workspace = true
+zeroize.workspace = true
 
 # Binary serialization for IPC
 bincode = { version = "2.0", features = ["serde"] }

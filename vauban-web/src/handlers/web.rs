@@ -7078,20 +7078,21 @@ pub async fn connect_ssh(
         .unwrap_or("password")
         .to_string();
 
+    // H-10: Wrap credentials in SecretString for zeroize-on-drop and expose_secret() enforcement
     let password = config
         .get("password")
         .and_then(|v| v.as_str())
-        .map(String::from);
+        .map(|s| secrecy::SecretString::from(s.to_string()));
 
     let private_key = config
         .get("private_key")
         .and_then(|v| v.as_str())
-        .map(String::from);
+        .map(|s| secrecy::SecretString::from(s.to_string()));
 
     let passphrase = config
         .get("passphrase")
         .and_then(|v| v.as_str())
-        .map(String::from);
+        .map(|s| secrecy::SecretString::from(s.to_string()));
 
     // Extract stored SSH host key for verification (H-9)
     let expected_host_key = config
@@ -7104,9 +7105,11 @@ pub async fn connect_ssh(
     // WebSocket client owns the session before allowing the upgrade.
     {
         use crate::models::session::NewProxySession;
-        let client_ip: ipnetwork::IpNetwork = "0.0.0.0/0"
-            .parse()
-            .unwrap_or_else(|_| "0.0.0.0/0".parse().expect("valid CIDR"));
+        // SAFETY: "0.0.0.0/0" is a valid CIDR; if parse() somehow fails,
+    // fall back to the equivalent IpNetwork constructed from Ipv4Addr.
+    let client_ip: ipnetwork::IpNetwork = "0.0.0.0/0".parse().unwrap_or_else(
+        |_| ipnetwork::IpNetwork::V4(ipnetwork::Ipv4Network::from(std::net::Ipv4Addr::UNSPECIFIED)),
+    );
         let new_session = NewProxySession {
             uuid: session_uuid,
             user_id,

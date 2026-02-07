@@ -19,6 +19,7 @@ mod session_manager;
 use anyhow::{Context, Result};
 use error::SessionError;
 use ipc::AsyncIpcChannel;
+use secrecy::SecretString;
 use session::{SessionConfig, SshCredential, fetch_host_key};
 use session_manager::SessionManager;
 use shared::capsicum;
@@ -446,12 +447,14 @@ async fn handle_web_message(
 
             // Build credential from received authentication data
             // TODO: In production, credentials should come from Vault
+            // Convert SensitiveString credentials (from IPC transport) into
+            // SecretString (H-10: zeroize on drop + expose_secret enforcement).
             let credential = match auth_type.as_str() {
                 "private_key" => {
                     if let Some(key) = private_key {
                         SshCredential::PrivateKey {
-                            key_pem: key,
-                            passphrase,
+                            key_pem: SecretString::from(key.into_inner()),
+                            passphrase: passphrase.map(|p| SecretString::from(p.into_inner())),
                         }
                     } else {
                         let response = Message::SshSessionOpened {
@@ -467,7 +470,7 @@ async fn handle_web_message(
                 _ => {
                     // Default to password authentication
                     if let Some(pwd) = password {
-                        SshCredential::Password(pwd)
+                        SshCredential::Password(SecretString::from(pwd.into_inner()))
                     } else {
                         let response = Message::SshSessionOpened {
                             request_id,

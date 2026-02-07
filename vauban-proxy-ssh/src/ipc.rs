@@ -2,6 +2,7 @@
 
 pub use crate::error::{IpcError, IpcResult};
 use crate::session::SshCredential;
+use secrecy::SecretString;
 use shared::ipc::IpcChannel;
 use shared::messages::Message;
 use std::io;
@@ -214,11 +215,11 @@ impl VaultClient {
                     let ssh_cred = credential.map(|data| {
                         // Try to parse as UTF-8 password first
                         if let Ok(password) = String::from_utf8(data.clone()) {
-                            SshCredential::Password(password)
+                            SshCredential::Password(SecretString::from(password))
                         } else {
                             // Treat as binary key (PEM encoded)
                             SshCredential::PrivateKey {
-                                key_pem: String::from_utf8_lossy(&data).to_string(),
+                                key_pem: SecretString::from(String::from_utf8_lossy(&data).to_string()),
                                 passphrase: None,
                             }
                         }
@@ -314,6 +315,7 @@ impl AuditClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use secrecy::ExposeSecret;
 
     #[test]
     fn test_set_nonblocking() {
@@ -374,10 +376,10 @@ mod tests {
 
     #[test]
     fn test_ssh_credential_password_clone() {
-        let cred = SshCredential::Password("test123".to_string());
+        let cred = SshCredential::Password(SecretString::from("test123".to_string()));
         let cloned = cred.clone();
-        match cloned {
-            SshCredential::Password(p) => assert_eq!(p, "test123"),
+        match &cloned {
+            SshCredential::Password(p) => assert_eq!(p.expose_secret(), "test123"),
             _ => panic!("Expected Password variant"),
         }
     }
@@ -385,13 +387,13 @@ mod tests {
     #[test]
     fn test_ssh_credential_private_key_clone() {
         let cred = SshCredential::PrivateKey {
-            key_pem: "key-data".to_string(),
+            key_pem: SecretString::from("key-data".to_string()),
             passphrase: None,
         };
         let cloned = cred.clone();
-        match cloned {
+        match &cloned {
             SshCredential::PrivateKey { key_pem, passphrase } => {
-                assert_eq!(key_pem, "key-data");
+                assert_eq!(key_pem.expose_secret(), "key-data");
                 assert!(passphrase.is_none());
             }
             _ => panic!("Expected PrivateKey variant"),
@@ -400,8 +402,9 @@ mod tests {
 
     #[test]
     fn test_ssh_credential_debug() {
-        let cred = SshCredential::Password("secret".to_string());
+        let cred = SshCredential::Password(SecretString::from("secret".to_string()));
         let debug = format!("{:?}", cred);
         assert!(debug.contains("Password"));
+        assert!(!debug.contains("secret"), "H-10: credential must be redacted in debug");
     }
 }

@@ -28,6 +28,9 @@ tokio-util.workspace = true
 russh.workspace = true
 async-trait.workspace = true
 
+# Secret management (H-10: credential zeroization)
+secrecy.workspace = true
+
 [dev-dependencies]
 # Testing utilities
 tokio = { workspace = true, features = ["test-util"] }

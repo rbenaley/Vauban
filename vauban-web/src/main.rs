@@ -827,11 +827,11 @@ async fn health_check(
     }
 
     // Check cache connectivity (if Redis is enabled)
-    if state.cache.is_redis() {
-        if let Err(e) = state.cache.validate_connection().await {
-            tracing::warn!("Health check failed: cache unavailable: {}", e);
-            return (StatusCode::SERVICE_UNAVAILABLE, "Cache unavailable");
-        }
+    if state.cache.is_redis()
+        && let Err(e) = state.cache.validate_connection().await
+    {
+        tracing::warn!("Health check failed: cache unavailable: {}", e);
+        return (StatusCode::SERVICE_UNAVAILABLE, "Cache unavailable");
     }
 
     (StatusCode::OK, "OK")

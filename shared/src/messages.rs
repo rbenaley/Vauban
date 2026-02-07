@@ -2,6 +2,80 @@
 
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
+use zeroize::Zeroize;
+
+/// A string wrapper for sensitive data transported via IPC.
+///
+/// `SensitiveString` provides three security properties:
+/// - **Zeroize on drop**: the backing memory is overwritten with zeros when the
+///   value goes out of scope, preventing credential remnants in freed memory.
+/// - **Redacted Debug**: `format!("{:?}", val)` prints `[REDACTED]` instead of
+///   the secret value, so credentials never leak through logging.
+/// - **Transparent serde**: `#[serde(transparent)]` ensures bincode
+///   serialization is byte-identical to a plain `String`, avoiding any IPC
+///   protocol change.
+///
+/// This type is used exclusively inside `Message::SshSessionOpen` for the
+/// credential fields (`password`, `private_key`, `passphrase`).
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SensitiveString(String);
+
+impl SensitiveString {
+    /// Create a new `SensitiveString` from a plain `String`.
+    pub fn new(s: String) -> Self {
+        Self(s)
+    }
+
+    /// Consume `self` and return the inner `String`.
+    ///
+    /// The caller takes ownership and responsibility for the secret material.
+    /// Note: because `self` is consumed (not dropped), the destructor does
+    /// **not** run -- the returned `String` must be consumed or zeroized by
+    /// the caller.
+    pub fn into_inner(self) -> String {
+        // Use ManuallyDrop to prevent the Drop impl from zeroizing the
+        // string we are about to hand out.
+        let md = std::mem::ManuallyDrop::new(self);
+        // SAFETY: we own the value and `ManuallyDrop` is repr(transparent).
+        unsafe { std::ptr::read(&md.0) }
+    }
+
+    /// Borrow the inner string as `&str`.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for SensitiveString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[REDACTED]")
+    }
+}
+
+impl Drop for SensitiveString {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+impl PartialEq for SensitiveString {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl From<String> for SensitiveString {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+impl From<&str> for SensitiveString {
+    fn from(s: &str) -> Self {
+        Self(s.to_string())
+    }
+}
 
 /// Service identifier for routing messages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -189,11 +263,14 @@ pub enum Message {
         /// Authentication type: "password" or "private_key".
         auth_type: String,
         /// Password for password authentication (if auth_type == "password").
-        password: Option<String>,
+        /// Wrapped in `SensitiveString` for zeroize-on-drop and redacted Debug (H-10).
+        password: Option<SensitiveString>,
         /// PEM-encoded private key (if auth_type == "private_key").
-        private_key: Option<String>,
+        /// Wrapped in `SensitiveString` for zeroize-on-drop and redacted Debug (H-10).
+        private_key: Option<SensitiveString>,
         /// Passphrase for encrypted private key.
-        passphrase: Option<String>,
+        /// Wrapped in `SensitiveString` for zeroize-on-drop and redacted Debug (H-10).
+        passphrase: Option<SensitiveString>,
         /// Expected SSH host key in OpenSSH format (e.g. "ssh-ed25519 AAAA...").
         /// If set, the proxy MUST verify the server key matches before continuing.
         /// If None, host key verification is skipped (insecure, logged as warning).
@@ -741,7 +818,7 @@ mod tests {
             terminal_cols: 80,
             terminal_rows: 24,
             auth_type: "password".to_string(),
-            password: Some("secret123".to_string()),
+            password: Some(SensitiveString::new("secret123".to_string())),
             private_key: None,
             passphrase: None,
             expected_host_key: Some("ssh-ed25519 AAAA...".to_string()),
@@ -773,7 +850,7 @@ mod tests {
             assert_eq!(terminal_cols, 80);
             assert_eq!(terminal_rows, 24);
             assert_eq!(auth_type, "password");
-            assert_eq!(password, Some("secret123".to_string()));
+            assert_eq!(password.as_ref().map(|s| s.as_str()), Some("secret123"));
         } else {
             panic!("Wrong variant");
         }
@@ -901,7 +978,7 @@ mod tests {
                 terminal_cols: 80,
                 terminal_rows: 24,
                 auth_type: "password".to_string(),
-                password: Some("pass".to_string()),
+                password: Some(SensitiveString::new("pass".to_string())),
                 private_key: None,
                 passphrase: None,
                 expected_host_key: None,
@@ -1150,7 +1227,7 @@ mod tests {
             terminal_cols: 80,
             terminal_rows: 24,
             auth_type: "password".to_string(),
-            password: Some("pass".to_string()),
+            password: Some(SensitiveString::new("pass".to_string())),
             private_key: None,
             passphrase: None,
             expected_host_key: Some("ssh-ed25519 AAAA...test".to_string()),
@@ -1184,7 +1261,7 @@ mod tests {
             terminal_cols: 80,
             terminal_rows: 24,
             auth_type: "password".to_string(),
-            password: Some("pass".to_string()),
+            password: Some(SensitiveString::new("pass".to_string())),
             private_key: None,
             passphrase: None,
             expected_host_key: None,
@@ -1197,6 +1274,130 @@ mod tests {
         } = deserialized
         {
             assert!(expected_host_key.is_none());
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    // ==================== SensitiveString Tests (H-10) ====================
+
+    #[test]
+    fn test_sensitive_string_debug_redacts() {
+        let secret = SensitiveString::new("my-password".to_string());
+        let debug = format!("{:?}", secret);
+        assert_eq!(debug, "[REDACTED]", "SensitiveString Debug must show [REDACTED]");
+        assert!(
+            !debug.contains("my-password"),
+            "SensitiveString Debug must NOT contain the actual secret"
+        );
+    }
+
+    #[test]
+    fn test_sensitive_string_into_inner() {
+        let secret = SensitiveString::new("secret-value".to_string());
+        let inner = secret.into_inner();
+        assert_eq!(inner, "secret-value");
+    }
+
+    #[test]
+    fn test_sensitive_string_as_str() {
+        let secret = SensitiveString::new("hello".to_string());
+        assert_eq!(secret.as_str(), "hello");
+    }
+
+    #[test]
+    fn test_sensitive_string_clone() {
+        let original = SensitiveString::new("cloneable".to_string());
+        let cloned = original.clone();
+        assert_eq!(original.as_str(), cloned.as_str());
+    }
+
+    #[test]
+    fn test_sensitive_string_partial_eq() {
+        let a = SensitiveString::new("same".to_string());
+        let b = SensitiveString::new("same".to_string());
+        let c = SensitiveString::new("different".to_string());
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn test_sensitive_string_from_string() {
+        let s: SensitiveString = "from-str".into();
+        assert_eq!(s.as_str(), "from-str");
+
+        let s2: SensitiveString = String::from("from-string").into();
+        assert_eq!(s2.as_str(), "from-string");
+    }
+
+    #[test]
+    fn test_sensitive_string_serde_roundtrip() {
+        let original = SensitiveString::new("serde-test".to_string());
+        let serialized = serialize(&original);
+        let deserialized: SensitiveString = deserialize(&serialized);
+        assert_eq!(deserialized.as_str(), "serde-test");
+    }
+
+    #[test]
+    fn test_sensitive_string_in_message_debug_redacted() {
+        let msg = Message::SshSessionOpen {
+            request_id: 999,
+            session_id: "debug-test".to_string(),
+            user_id: "u1".to_string(),
+            asset_id: "a1".to_string(),
+            asset_host: "host".to_string(),
+            asset_port: 22,
+            username: "user".to_string(),
+            terminal_cols: 80,
+            terminal_rows: 24,
+            auth_type: "password".to_string(),
+            password: Some(SensitiveString::new("super-secret-pwd".to_string())),
+            private_key: Some(SensitiveString::new("-----BEGIN KEY-----".to_string())),
+            passphrase: Some(SensitiveString::new("my-passphrase".to_string())),
+            expected_host_key: None,
+        };
+        let debug = format!("{:?}", msg);
+        assert!(
+            !debug.contains("super-secret-pwd"),
+            "H-10: Message Debug must NOT contain password"
+        );
+        assert!(
+            !debug.contains("BEGIN KEY"),
+            "H-10: Message Debug must NOT contain private key"
+        );
+        assert!(
+            !debug.contains("my-passphrase"),
+            "H-10: Message Debug must NOT contain passphrase"
+        );
+        assert!(debug.contains("REDACTED"), "H-10: Message Debug must show [REDACTED]");
+    }
+
+    #[test]
+    fn test_sensitive_string_message_serde_roundtrip() {
+        let msg = Message::SshSessionOpen {
+            request_id: 1000,
+            session_id: "rt-test".to_string(),
+            user_id: "u1".to_string(),
+            asset_id: "a1".to_string(),
+            asset_host: "host".to_string(),
+            asset_port: 22,
+            username: "user".to_string(),
+            terminal_cols: 80,
+            terminal_rows: 24,
+            auth_type: "password".to_string(),
+            password: Some(SensitiveString::new("roundtrip-pwd".to_string())),
+            private_key: None,
+            passphrase: None,
+            expected_host_key: None,
+        };
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::SshSessionOpen { password, .. } = deserialized {
+            assert_eq!(
+                password.as_ref().map(|s| s.as_str()),
+                Some("roundtrip-pwd"),
+                "SensitiveString must survive IPC serialization roundtrip"
+            );
         } else {
             panic!("Wrong variant");
         }

@@ -387,7 +387,7 @@ pub fn poll_readable(fds: &[RawFd], timeout_ms: i32) -> Result<Vec<usize>> {
     let timeout = if timeout_ms < 0 {
         PollTimeout::NONE
     } else {
-        PollTimeout::try_from(timeout_ms as u16).unwrap_or(PollTimeout::MAX)
+        PollTimeout::from(timeout_ms as u16)
     };
 
     match nix::poll::poll(&mut pollfds, timeout) {

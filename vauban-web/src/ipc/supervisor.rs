@@ -60,6 +60,7 @@ impl SupervisorClient {
     /// Create a new supervisor client from IPC file descriptors.
     ///
     /// Spawns a dedicated thread for handling IPC communication.
+    #[allow(clippy::panic)] // Thread spawn failure is unrecoverable
     pub fn new(read_fd: RawFd, write_fd: RawFd) -> Self {
         // Create IPC channel from file descriptors
         // SAFETY: FDs are passed from supervisor and are valid
@@ -81,7 +82,7 @@ impl SupervisorClient {
             .spawn(move || {
                 supervisor_ipc_loop(thread_inner);
             })
-            .expect("Failed to spawn supervisor IPC thread");
+            .unwrap_or_else(|e| panic!("Failed to spawn supervisor IPC thread: {}", e));
 
         Self {
             inner,
@@ -116,7 +117,8 @@ impl SupervisorClient {
         // Create response channel
         let (tx, rx) = oneshot::channel();
         {
-            let mut pending = self.inner.pending_tcp_connects.lock().unwrap();
+            let mut pending = self.inner.pending_tcp_connects.lock()
+                .unwrap_or_else(|e| e.into_inner());
             pending.insert(request_id, PendingTcpConnect { response_tx: tx });
         }
 
@@ -131,7 +133,9 @@ impl SupervisorClient {
 
         if let Err(e) = self.inner.channel.send(&msg) {
             // Remove pending request on send error
-            self.inner.pending_tcp_connects.lock().unwrap().remove(&request_id);
+            self.inner.pending_tcp_connects.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&request_id);
             return Err(format!("Failed to send TcpConnectRequest: {}", e));
         }
 
@@ -144,7 +148,9 @@ impl SupervisorClient {
             }
             Err(_) => {
                 // Timeout
-                self.inner.pending_tcp_connects.lock().unwrap().remove(&request_id);
+                self.inner.pending_tcp_connects.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&request_id);
                 Err("TCP connect request timeout".to_string())
             }
         }
@@ -226,7 +232,9 @@ fn supervisor_ipc_loop(inner: Arc<SupervisorClientInner>) {
                 );
 
                 // Route response to waiting task
-                let pending = inner.pending_tcp_connects.lock().unwrap().remove(&request_id);
+                let pending = inner.pending_tcp_connects.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&request_id);
                 if let Some(pending) = pending {
                     let result = TcpConnectResult { success, error };
                     let _ = pending.response_tx.send(result);
