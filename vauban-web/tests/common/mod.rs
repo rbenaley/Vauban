@@ -99,8 +99,9 @@ impl TestApp {
             broadcast: broadcast.clone(),
             user_connections: user_connections.clone(),
             rate_limiter,
-            ssh_proxy: None,     // No SSH proxy in tests
-            supervisor: None,    // No supervisor in tests
+            ssh_proxy: None,      // No SSH proxy in tests
+            supervisor: None,     // No supervisor in tests
+            vault_client: None,   // No vault in tests (dev mode fallback)
         };
 
         // Build router

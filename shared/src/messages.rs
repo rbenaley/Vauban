@@ -219,6 +219,92 @@ pub enum Message {
         credential: Option<Vec<u8>>,
     },
 
+    // ========== Vault Crypto (Any service -> Vault) ==========
+
+    /// Encrypt plaintext with a named key domain (M-1, C-2).
+    VaultEncrypt {
+        request_id: u64,
+        /// Key domain: "credentials", "mfa", etc.
+        domain: String,
+        /// Plaintext to encrypt.
+        /// Wrapped in `SensitiveString` for zeroize-on-drop during IPC transport.
+        plaintext: SensitiveString,
+    },
+    VaultEncryptResponse {
+        request_id: u64,
+        /// Versioned ciphertext (e.g. "v1:BASE64..."), None on error.
+        ciphertext: Option<String>,
+        error: Option<String>,
+    },
+
+    /// Decrypt ciphertext with a named key domain (M-1, C-2).
+    VaultDecrypt {
+        request_id: u64,
+        /// Key domain: "credentials", "mfa", etc.
+        domain: String,
+        /// Versioned ciphertext as stored in the database.
+        ciphertext: String,
+    },
+    VaultDecryptResponse {
+        request_id: u64,
+        /// Decrypted plaintext, None on error.
+        /// Wrapped in `SensitiveString` for zeroize-on-drop during IPC transport.
+        plaintext: Option<SensitiveString>,
+        error: Option<String>,
+    },
+
+    // ========== Vault MFA (Web -> Vault) ==========
+
+    /// Generate a new TOTP secret, encrypt it, and return the QR code.
+    /// The plaintext secret NEVER leaves the vault process unencrypted.
+    VaultMfaGenerate {
+        request_id: u64,
+        /// Username for the provisioning URI.
+        username: String,
+        /// Issuer for the provisioning URI (e.g. "VAUBAN").
+        issuer: String,
+    },
+    VaultMfaGenerateResponse {
+        request_id: u64,
+        /// Encrypted TOTP secret (store in DB as mfa_secret).
+        encrypted_secret: Option<String>,
+        /// Base64-encoded PNG QR code (display once to user).
+        qr_code_base64: Option<String>,
+        error: Option<String>,
+    },
+
+    /// Verify a TOTP code against an encrypted secret.
+    VaultMfaVerify {
+        request_id: u64,
+        /// Encrypted TOTP secret as stored in DB.
+        encrypted_secret: String,
+        /// 6-digit TOTP code entered by the user.
+        code: String,
+    },
+    VaultMfaVerifyResponse {
+        request_id: u64,
+        /// true if the code is valid for the current or adjacent time step.
+        valid: bool,
+        error: Option<String>,
+    },
+
+    /// Re-generate the QR code from an existing encrypted secret.
+    VaultMfaQrCode {
+        request_id: u64,
+        /// Encrypted TOTP secret as stored in DB.
+        encrypted_secret: String,
+        /// Username for the provisioning URI.
+        username: String,
+        /// Issuer for the provisioning URI.
+        issuer: String,
+    },
+    VaultMfaQrCodeResponse {
+        request_id: u64,
+        /// Base64-encoded PNG QR code.
+        qr_code_base64: Option<String>,
+        error: Option<String>,
+    },
+
     // ========== Audit (Web/Proxy -> Audit) ==========
     AuditEvent {
         timestamp: u64,
@@ -374,6 +460,16 @@ impl Message {
             | Message::VaultSecretResponse { request_id, .. }
             | Message::VaultGetCredential { request_id, .. }
             | Message::VaultCredentialResponse { request_id, .. }
+            | Message::VaultEncrypt { request_id, .. }
+            | Message::VaultEncryptResponse { request_id, .. }
+            | Message::VaultDecrypt { request_id, .. }
+            | Message::VaultDecryptResponse { request_id, .. }
+            | Message::VaultMfaGenerate { request_id, .. }
+            | Message::VaultMfaGenerateResponse { request_id, .. }
+            | Message::VaultMfaVerify { request_id, .. }
+            | Message::VaultMfaVerifyResponse { request_id, .. }
+            | Message::VaultMfaQrCode { request_id, .. }
+            | Message::VaultMfaQrCodeResponse { request_id, .. }
             | Message::SshSessionOpen { request_id, .. }
             | Message::SshSessionOpened { request_id, .. }
             | Message::SshFetchHostKey { request_id, .. }
@@ -1246,6 +1342,262 @@ mod tests {
         } else {
             panic!("Wrong variant");
         }
+    }
+
+    // ==================== Vault Crypto Message Tests (M-1, C-2) ====================
+
+    #[test]
+    fn test_message_vault_encrypt() {
+        let msg = Message::VaultEncrypt {
+            request_id: 900,
+            domain: "credentials".to_string(),
+            plaintext: SensitiveString::new("my-secret-password".to_string()),
+        };
+        assert_eq!(msg.request_id(), Some(900));
+
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::VaultEncrypt {
+            request_id,
+            domain,
+            plaintext,
+        } = deserialized
+        {
+            assert_eq!(request_id, 900);
+            assert_eq!(domain, "credentials");
+            assert_eq!(plaintext.as_str(), "my-secret-password");
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_message_vault_encrypt_response_success() {
+        let msg = Message::VaultEncryptResponse {
+            request_id: 900,
+            ciphertext: Some("v1:SGVsbG8gV29ybGQ=".to_string()),
+            error: None,
+        };
+        assert_eq!(msg.request_id(), Some(900));
+    }
+
+    #[test]
+    fn test_message_vault_encrypt_response_error() {
+        let msg = Message::VaultEncryptResponse {
+            request_id: 901,
+            ciphertext: None,
+            error: Some("Unknown domain".to_string()),
+        };
+        assert_eq!(msg.request_id(), Some(901));
+    }
+
+    #[test]
+    fn test_message_vault_decrypt() {
+        let msg = Message::VaultDecrypt {
+            request_id: 910,
+            domain: "mfa".to_string(),
+            ciphertext: "v1:SGVsbG8gV29ybGQ=".to_string(),
+        };
+        assert_eq!(msg.request_id(), Some(910));
+    }
+
+    #[test]
+    fn test_message_vault_decrypt_response_success() {
+        let msg = Message::VaultDecryptResponse {
+            request_id: 910,
+            plaintext: Some(SensitiveString::new("decrypted-value".to_string())),
+            error: None,
+        };
+        assert_eq!(msg.request_id(), Some(910));
+
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::VaultDecryptResponse {
+            plaintext, error, ..
+        } = deserialized
+        {
+            assert_eq!(plaintext.as_ref().map(|s| s.as_str()), Some("decrypted-value"));
+            assert!(error.is_none());
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_message_vault_decrypt_response_debug_redacted() {
+        let msg = Message::VaultDecryptResponse {
+            request_id: 911,
+            plaintext: Some(SensitiveString::new("super-secret".to_string())),
+            error: None,
+        };
+        let debug = format!("{:?}", msg);
+        assert!(
+            !debug.contains("super-secret"),
+            "VaultDecryptResponse Debug must NOT contain plaintext"
+        );
+        assert!(debug.contains("REDACTED"));
+    }
+
+    #[test]
+    fn test_message_vault_mfa_generate() {
+        let msg = Message::VaultMfaGenerate {
+            request_id: 920,
+            username: "alice".to_string(),
+            issuer: "VAUBAN".to_string(),
+        };
+        assert_eq!(msg.request_id(), Some(920));
+
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::VaultMfaGenerate {
+            username, issuer, ..
+        } = deserialized
+        {
+            assert_eq!(username, "alice");
+            assert_eq!(issuer, "VAUBAN");
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_message_vault_mfa_generate_response() {
+        let msg = Message::VaultMfaGenerateResponse {
+            request_id: 920,
+            encrypted_secret: Some("v1:encrypted".to_string()),
+            qr_code_base64: Some("iVBORw0KGgo...".to_string()),
+            error: None,
+        };
+        assert_eq!(msg.request_id(), Some(920));
+    }
+
+    #[test]
+    fn test_message_vault_mfa_verify() {
+        let msg = Message::VaultMfaVerify {
+            request_id: 930,
+            encrypted_secret: "v1:encrypted-totp".to_string(),
+            code: "123456".to_string(),
+        };
+        assert_eq!(msg.request_id(), Some(930));
+    }
+
+    #[test]
+    fn test_message_vault_mfa_verify_response() {
+        let msg = Message::VaultMfaVerifyResponse {
+            request_id: 930,
+            valid: true,
+            error: None,
+        };
+        assert_eq!(msg.request_id(), Some(930));
+
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::VaultMfaVerifyResponse { valid, error, .. } = deserialized {
+            assert!(valid);
+            assert!(error.is_none());
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_message_vault_mfa_qr_code() {
+        let msg = Message::VaultMfaQrCode {
+            request_id: 940,
+            encrypted_secret: "v1:encrypted-totp".to_string(),
+            username: "bob".to_string(),
+            issuer: "VAUBAN".to_string(),
+        };
+        assert_eq!(msg.request_id(), Some(940));
+    }
+
+    #[test]
+    fn test_message_vault_mfa_qr_code_response() {
+        let msg = Message::VaultMfaQrCodeResponse {
+            request_id: 940,
+            qr_code_base64: Some("iVBORw0KGgo...".to_string()),
+            error: None,
+        };
+        assert_eq!(msg.request_id(), Some(940));
+    }
+
+    #[test]
+    fn test_vault_crypto_messages_serialization_roundtrip() {
+        let messages: Vec<Message> = vec![
+            Message::VaultEncrypt {
+                request_id: 1,
+                domain: "credentials".to_string(),
+                plaintext: SensitiveString::new("secret".to_string()),
+            },
+            Message::VaultEncryptResponse {
+                request_id: 1,
+                ciphertext: Some("v1:abc".to_string()),
+                error: None,
+            },
+            Message::VaultDecrypt {
+                request_id: 2,
+                domain: "mfa".to_string(),
+                ciphertext: "v1:abc".to_string(),
+            },
+            Message::VaultDecryptResponse {
+                request_id: 2,
+                plaintext: Some(SensitiveString::new("secret".to_string())),
+                error: None,
+            },
+            Message::VaultMfaGenerate {
+                request_id: 3,
+                username: "user".to_string(),
+                issuer: "VAUBAN".to_string(),
+            },
+            Message::VaultMfaGenerateResponse {
+                request_id: 3,
+                encrypted_secret: Some("v1:enc".to_string()),
+                qr_code_base64: Some("base64".to_string()),
+                error: None,
+            },
+            Message::VaultMfaVerify {
+                request_id: 4,
+                encrypted_secret: "v1:enc".to_string(),
+                code: "123456".to_string(),
+            },
+            Message::VaultMfaVerifyResponse {
+                request_id: 4,
+                valid: true,
+                error: None,
+            },
+            Message::VaultMfaQrCode {
+                request_id: 5,
+                encrypted_secret: "v1:enc".to_string(),
+                username: "user".to_string(),
+                issuer: "VAUBAN".to_string(),
+            },
+            Message::VaultMfaQrCodeResponse {
+                request_id: 5,
+                qr_code_base64: Some("base64".to_string()),
+                error: None,
+            },
+        ];
+
+        for msg in messages {
+            let serialized = serialize(&msg);
+            let deserialized: Message = deserialize(&serialized);
+            assert!(deserialized.request_id().is_some());
+        }
+    }
+
+    #[test]
+    fn test_message_vault_encrypt_debug_redacts_plaintext() {
+        let msg = Message::VaultEncrypt {
+            request_id: 950,
+            domain: "credentials".to_string(),
+            plaintext: SensitiveString::new("top-secret-password".to_string()),
+        };
+        let debug = format!("{:?}", msg);
+        assert!(
+            !debug.contains("top-secret-password"),
+            "VaultEncrypt Debug must NOT contain plaintext"
+        );
+        assert!(debug.contains("REDACTED"));
     }
 
     #[test]

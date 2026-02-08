@@ -33,6 +33,7 @@ use cache::CacheConnection;
 use config::Config;
 use db::DbPool;
 use ipc::ProxySshClient;
+use ipc::VaultCryptoClient;
 use services::auth::AuthService;
 use services::broadcast::BroadcastService;
 use services::connections::UserConnectionRegistry;
@@ -60,6 +61,10 @@ pub struct AppState {
     /// Used for TCP connection brokering (Capsicum sandbox support).
     /// None if not running under supervisor (development mode).
     pub supervisor: Option<Arc<ipc::SupervisorClient>>,
+    /// Vault crypto client for IPC with vauban-vault (M-1, C-2).
+    /// Provides encrypt/decrypt and MFA operations.
+    /// None if vault is not available (development mode without supervisor).
+    pub vault_client: Option<Arc<VaultCryptoClient>>,
 }
 
 #[cfg(test)]

@@ -5,7 +5,9 @@
 pub mod clients;
 pub mod proxy_ssh;
 pub mod supervisor;
+pub mod vault;
 
 pub use clients::*;
 pub use proxy_ssh::{ProxySshClient, SshSessionOpenRequest, SshSessionOpened};
 pub use supervisor::SupervisorClient;
+pub use vault::VaultCryptoClient;

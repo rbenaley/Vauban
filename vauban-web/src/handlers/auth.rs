@@ -30,6 +30,28 @@ use crate::services::auth::AuthService;
 use crate::templates::accounts::{MfaSetupTemplate, MfaVerifyTemplate};
 use crate::templates::base::BaseTemplate;
 
+/// Check whether a value looks like an encrypted ciphertext from vauban-vault.
+///
+/// Encrypted values have the format `"v{digit(s)}:{base64}"`.
+/// This is used for backward compatibility: plaintext secrets (pre-migration)
+/// are verified directly via `AuthService::verify_totp`, while encrypted
+/// secrets are sent to the vault for decryption + verification.
+fn is_encrypted(value: &str) -> bool {
+    if value.len() < 4 {
+        return false;
+    }
+    if !value.starts_with('v') {
+        return false;
+    }
+    let Some(colon_pos) = value.find(':') else {
+        return false;
+    };
+    if colon_pos < 2 {
+        return false;
+    }
+    value[1..colon_pos].chars().all(|c| c.is_ascii_digit())
+}
+
 /// Check if request is from HTMX (has HX-Request header)
 fn is_htmx_request(headers: &HeaderMap) -> bool {
     headers.get("HX-Request").is_some()
@@ -280,7 +302,34 @@ pub async fn login(
     let mfa_verified = if user.mfa_enabled {
         if let Some(code) = request.mfa_code {
             if let Some(secret) = &user.mfa_secret {
-                if AuthService::verify_totp(secret, &code) {
+                // M-1: Verify TOTP via vault (encrypted secrets) or directly (plaintext, pre-migration)
+                let valid = if let Some(ref vault) = state.vault_client
+                    && is_encrypted(secret)
+                {
+                    vault
+                        .mfa_verify(secret, &code)
+                        .await
+                        .map_err(|e| AppError::Auth(format!("MFA verification error: {}", e)))?
+                } else {
+                    // Direct verification: dev mode without vault, or plaintext secret (pre-migration)
+                    AuthService::verify_totp(secret, &code)
+                };
+                if valid {
+                    // Encrypt-on-read: progressively migrate plaintext MFA secrets
+                    if let Some(ref vault) = state.vault_client
+                        && !is_encrypted(secret)
+                        && let Ok(encrypted) = vault.encrypt("mfa", secret).await
+                    {
+                        diesel::update(users.find(user.id))
+                            .set(mfa_secret.eq(Some(&encrypted)))
+                            .execute(&mut conn)
+                            .await
+                            .ok(); // Best-effort migration
+                        tracing::info!(
+                            user_id = user.id,
+                            "Migrated plaintext MFA secret to encrypted (encrypt-on-read)"
+                        );
+                    }
                     true
                 } else {
                     return Err(AppError::Auth("Invalid MFA code".to_string()));
@@ -649,21 +698,69 @@ pub async fn mfa_setup_page(
     let (user_id, user_username, existing_secret) = user_data;
 
     // Generate or use existing secret
-    let secret = if let Some(s) = existing_secret {
-        s
+    // M-1: When vault is available, secrets are encrypted at rest
+    let (secret, qr_code_base64) = if let Some(ref vault) = state.vault_client {
+        if let Some(s) = existing_secret {
+            if is_encrypted(&s) {
+                // Re-generate QR from existing encrypted secret
+                let qr = vault
+                    .mfa_qr_code(&s, &user_username, "VAUBAN")
+                    .await
+                    .map_err(|e| {
+                        AppError::Internal(anyhow::anyhow!("QR code generation: {}", e))
+                    })?;
+                (s, qr)
+            } else {
+                // Plaintext secret (pre-migration): encrypt-on-read, then generate QR
+                let encrypted = vault.encrypt("mfa", &s).await.map_err(|e| {
+                    AppError::Internal(anyhow::anyhow!("MFA encryption: {}", e))
+                })?;
+                diesel::update(users.filter(crate::schema::users::id.eq(user_id)))
+                    .set(mfa_secret.eq(Some(&encrypted)))
+                    .execute(&mut conn)
+                    .await
+                    .map_err(AppError::Database)?;
+                tracing::info!(
+                    user_id,
+                    "Migrated plaintext MFA secret to encrypted (encrypt-on-read)"
+                );
+                let qr = vault
+                    .mfa_qr_code(&encrypted, &user_username, "VAUBAN")
+                    .await
+                    .map_err(|e| {
+                        AppError::Internal(anyhow::anyhow!("QR code generation: {}", e))
+                    })?;
+                (encrypted, qr)
+            }
+        } else {
+            // Generate new secret via vault (plaintext never leaves vault)
+            let (encrypted_secret, qr) = vault
+                .mfa_generate(&user_username, "VAUBAN")
+                .await
+                .map_err(|e| AppError::Internal(anyhow::anyhow!("MFA generation: {}", e)))?;
+            diesel::update(users.filter(crate::schema::users::id.eq(user_id)))
+                .set(mfa_secret.eq(Some(&encrypted_secret)))
+                .execute(&mut conn)
+                .await
+                .map_err(AppError::Database)?;
+            (encrypted_secret, qr)
+        }
     } else {
-        // Generate new secret and save to database
-        let (new_secret, _uri) = AuthService::generate_totp_secret(&user_username, "VAUBAN")?;
-        diesel::update(users.filter(crate::schema::users::id.eq(user_id)))
-            .set(mfa_secret.eq(Some(&new_secret)))
-            .execute(&mut conn)
-            .await
-            .map_err(AppError::Database)?;
-        new_secret
+        // Fallback: direct generation (dev mode without vault)
+        let secret = if let Some(s) = existing_secret {
+            s
+        } else {
+            let (new_secret, _uri) = AuthService::generate_totp_secret(&user_username, "VAUBAN")?;
+            diesel::update(users.filter(crate::schema::users::id.eq(user_id)))
+                .set(mfa_secret.eq(Some(&new_secret)))
+                .execute(&mut conn)
+                .await
+                .map_err(AppError::Database)?;
+            new_secret
+        };
+        let qr = AuthService::generate_totp_qr_code(&secret, &user_username, "VAUBAN")?;
+        (secret, qr)
     };
-
-    // Generate QR code as base64
-    let qr_code_base64 = AuthService::generate_totp_qr_code(&secret, &user_username, "VAUBAN")?;
 
     // Build template without sidebar (user not fully authenticated yet)
     // Convert incoming flash messages to template FlashMessages
@@ -760,12 +857,36 @@ pub async fn mfa_setup_submit(
         secret_opt.ok_or_else(|| AppError::Internal(anyhow::anyhow!("MFA secret not found")))?;
 
     // Validate TOTP code
+    // M-1: Verify via vault when available (encrypted secrets), or directly (plaintext, pre-migration)
     let code = form.totp_code.trim();
-    if !AuthService::verify_totp(&secret, code) {
+    let valid = if let Some(ref vault) = state.vault_client
+        && is_encrypted(&secret)
+    {
+        vault.mfa_verify(&secret, code).await.unwrap_or(false)
+    } else {
+        AuthService::verify_totp(&secret, code)
+    };
+    if !valid {
         return Ok(flash_redirect(
             flash.error("Invalid verification code. Please try again."),
             "/mfa/setup",
         ));
+    }
+
+    // Encrypt-on-read: progressively migrate plaintext MFA secrets
+    if let Some(ref vault) = state.vault_client
+        && !is_encrypted(&secret)
+        && let Ok(encrypted) = vault.encrypt("mfa", &secret).await
+    {
+        diesel::update(users.filter(crate::schema::users::id.eq(user_id)))
+            .set(mfa_secret.eq(Some(&encrypted)))
+            .execute(&mut conn)
+            .await
+            .ok(); // Best-effort migration
+        tracing::info!(
+            user_id,
+            "Migrated plaintext MFA secret to encrypted (encrypt-on-read)"
+        );
     }
 
     // Enable MFA for user
@@ -905,11 +1026,12 @@ pub async fn mfa_verify_submit(
     let user_uuid = UuidType::parse_str(&claims.sub)
         .map_err(|_| AppError::Validation("Invalid user UUID".to_string()))?;
 
-    // Get user's MFA secret
-    let user_data: (String, Option<String>, bool, bool) = users
+    // Get user's MFA secret (includes user_id for encrypt-on-read migration)
+    let user_data: (i32, String, Option<String>, bool, bool) = users
         .filter(uuid.eq(user_uuid))
         .filter(is_deleted.eq(false))
         .select((
+            crate::schema::users::id,
             crate::schema::users::username,
             crate::schema::users::mfa_secret,
             crate::schema::users::is_superuser,
@@ -919,18 +1041,42 @@ pub async fn mfa_verify_submit(
         .await
         .map_err(AppError::Database)?;
 
-    let (user_username, secret_opt, is_super, is_staff_user) = user_data;
+    let (user_id, user_username, secret_opt, is_super, is_staff_user) = user_data;
 
     let secret =
         secret_opt.ok_or_else(|| AppError::Internal(anyhow::anyhow!("MFA secret not found")))?;
 
     // Validate TOTP code
+    // M-1: Verify via vault when available (encrypted secrets), or directly (plaintext, pre-migration)
     let code = form.totp_code.trim();
-    if !AuthService::verify_totp(&secret, code) {
+    let valid = if let Some(ref vault) = state.vault_client
+        && is_encrypted(&secret)
+    {
+        vault.mfa_verify(&secret, code).await.unwrap_or(false)
+    } else {
+        AuthService::verify_totp(&secret, code)
+    };
+    if !valid {
         return Ok(flash_redirect(
             flash.error("Invalid verification code. Please try again."),
             "/mfa/verify",
         ));
+    }
+
+    // Encrypt-on-read: progressively migrate plaintext MFA secrets
+    if let Some(ref vault) = state.vault_client
+        && !is_encrypted(&secret)
+        && let Ok(encrypted) = vault.encrypt("mfa", &secret).await
+    {
+        diesel::update(users.filter(crate::schema::users::id.eq(user_id)))
+            .set(mfa_secret.eq(Some(&encrypted)))
+            .execute(&mut conn)
+            .await
+            .ok(); // Best-effort migration
+        tracing::info!(
+            user_id,
+            "Migrated plaintext MFA secret to encrypted (encrypt-on-read)"
+        );
     }
 
     // Generate new JWT with mfa_verified = true
@@ -1532,5 +1678,42 @@ mod tests {
             csrf_token: None,
         };
         assert!(request.validate().is_ok());
+    }
+
+    // ==================== is_encrypted Tests (backward compat) ====================
+
+    #[test]
+    fn test_is_encrypted_valid_formats() {
+        assert!(is_encrypted("v1:SGVsbG8="));
+        assert!(is_encrypted("v12:AAAA"));
+        assert!(is_encrypted("v999:longbase64data"));
+    }
+
+    #[test]
+    fn test_is_encrypted_plaintext_totp_secrets() {
+        // Base32-encoded TOTP secrets (the format used before encryption)
+        assert!(!is_encrypted("JBSWY3DPEHPK3PXP"));
+        assert!(!is_encrypted("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"));
+        assert!(!is_encrypted("MFZWIZLTOQ======"));
+    }
+
+    #[test]
+    fn test_is_encrypted_invalid_formats() {
+        assert!(!is_encrypted(""));
+        assert!(!is_encrypted("abc"));
+        assert!(!is_encrypted("v:data")); // no version number
+        assert!(!is_encrypted("v1data")); // no colon
+        assert!(!is_encrypted("va:data")); // non-digit version
+        assert!(!is_encrypted("plaintext-password"));
+    }
+
+    #[test]
+    fn test_is_encrypted_edge_cases() {
+        // Minimum valid format
+        assert!(is_encrypted("v1:x"));
+        // Version 0 is technically valid format (but would fail at keyring level)
+        assert!(is_encrypted("v0:x"));
+        // Very large version number
+        assert!(is_encrypted("v12345:data"));
     }
 }

@@ -105,7 +105,8 @@ fn sanitize_opt_ref(value: Option<&String>) -> Option<String> {
 /// Build connection_config JSON from SSH credential form fields.
 ///
 /// This stores credentials in the connection_config field of the asset.
-/// NOTE: In production, credentials should be stored in the Vault service.
+/// When vault_client is provided (production), credential fields (password,
+/// private_key, passphrase) are encrypted at rest via vauban-vault (C-2).
 fn build_connection_config(
     username: Option<&str>,
     auth_type: Option<&str>,
@@ -146,6 +147,48 @@ fn build_connection_config(
     }
 
     serde_json::Value::Object(config)
+}
+
+/// Encrypt credential fields in a connection_config JSON via vault (C-2).
+///
+/// Encrypts "password", "private_key", and "passphrase" fields in-place.
+/// Non-credential fields (username, auth_type, host_key, etc.) are left as-is.
+async fn encrypt_connection_config(
+    vault: &crate::ipc::VaultCryptoClient,
+    config: &mut serde_json::Value,
+) -> crate::error::AppResult<()> {
+    let credential_fields = ["password", "private_key", "passphrase"];
+    if let Some(obj) = config.as_object_mut() {
+        for field in &credential_fields {
+            if let Some(serde_json::Value::String(val)) = obj.get(*field)
+                && !val.is_empty()
+                && !is_encrypted(val)
+            {
+                let encrypted = vault.encrypt("credentials", val).await?;
+                obj.insert(field.to_string(), serde_json::Value::String(encrypted));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Check whether a value looks like an encrypted ciphertext from vauban-vault.
+///
+/// Encrypted values have the format `"v{digit(s)}:{base64}"`.
+fn is_encrypted(value: &str) -> bool {
+    if value.len() < 4 {
+        return false;
+    }
+    if !value.starts_with('v') {
+        return false;
+    }
+    let Some(colon_pos) = value.find(':') else {
+        return false;
+    };
+    if colon_pos < 2 {
+        return false;
+    }
+    value[1..colon_pos].chars().all(|c| c.is_ascii_digit())
 }
 
 /// Empty response for HTMX modal close and similar use cases.
@@ -1406,21 +1449,44 @@ pub async fn mfa_setup(
     let (user_id, user_username, existing_secret) = user_data;
 
     // Generate or use existing secret
-    let secret = if let Some(s) = existing_secret {
-        s
+    // M-1: When vault is available, secrets are encrypted at rest
+    let (secret, qr_code_base64) = if let Some(ref vault) = state.vault_client {
+        if let Some(s) = existing_secret {
+            // Re-generate QR from existing encrypted secret
+            let qr = vault
+                .mfa_qr_code(&s, &user_username, "VAUBAN")
+                .await
+                .map_err(|e| AppError::Internal(anyhow::anyhow!("QR code generation: {}", e)))?;
+            (s, qr)
+        } else {
+            // Generate new secret via vault (plaintext never leaves vault)
+            let (encrypted_secret, qr) = vault
+                .mfa_generate(&user_username, "VAUBAN")
+                .await
+                .map_err(|e| AppError::Internal(anyhow::anyhow!("MFA generation: {}", e)))?;
+            diesel::update(crate::schema::users::table.filter(crate::schema::users::id.eq(user_id)))
+                .set(crate::schema::users::mfa_secret.eq(Some(&encrypted_secret)))
+                .execute(&mut conn)
+                .await
+                .map_err(AppError::Database)?;
+            (encrypted_secret, qr)
+        }
     } else {
-        // Generate new secret and save to database
-        let (new_secret, _uri) = AuthService::generate_totp_secret(&user_username, "VAUBAN")?;
-        diesel::update(crate::schema::users::table.filter(crate::schema::users::id.eq(user_id)))
-            .set(crate::schema::users::mfa_secret.eq(Some(&new_secret)))
-            .execute(&mut conn)
-            .await
-            .map_err(AppError::Database)?;
-        new_secret
+        // Fallback: direct generation (dev mode without vault)
+        let secret = if let Some(s) = existing_secret {
+            s
+        } else {
+            let (new_secret, _uri) = AuthService::generate_totp_secret(&user_username, "VAUBAN")?;
+            diesel::update(crate::schema::users::table.filter(crate::schema::users::id.eq(user_id)))
+                .set(crate::schema::users::mfa_secret.eq(Some(&new_secret)))
+                .execute(&mut conn)
+                .await
+                .map_err(AppError::Database)?;
+            new_secret
+        };
+        let qr = AuthService::generate_totp_qr_code(&secret, &user_username, "VAUBAN")?;
+        (secret, qr)
     };
-
-    // Generate QR code as base64
-    let qr_code_base64 = AuthService::generate_totp_qr_code(&secret, &user_username, "VAUBAN")?;
 
     let template = MfaSetupTemplate {
         title,
@@ -2214,13 +2280,21 @@ pub async fn create_asset_web(
     let new_uuid = ::uuid::Uuid::new_v4();
 
     // Build connection_config JSON with SSH credentials
-    let connection_config = build_connection_config(
+    let mut connection_config = build_connection_config(
         form.ssh_username.as_deref(),
         form.ssh_auth_type.as_deref(),
         form.ssh_password.as_deref(),
         form.ssh_private_key.as_deref(),
         form.ssh_passphrase.as_deref(),
     );
+
+    // C-2: Encrypt credential fields via vault when available
+    if let Some(ref vault) = state.vault_client
+        && let Err(e) = encrypt_connection_config(vault, &mut connection_config).await
+    {
+        tracing::error!("Failed to encrypt connection config: {}", e);
+        return flash_redirect(flash.error("Failed to encrypt credentials"), "/assets/create");
+    }
 
     // Parse IP address if provided
     let ip_address: Option<ipnetwork::IpNetwork> = form
@@ -6764,13 +6838,24 @@ pub async fn update_asset_web(
     };
 
     // Build connection_config JSON with SSH credentials
-    let connection_config = build_connection_config(
+    let mut connection_config = build_connection_config(
         form.ssh_username.as_deref(),
         form.ssh_auth_type.as_deref(),
         form.ssh_password.as_deref(),
         form.ssh_private_key.as_deref(),
         form.ssh_passphrase.as_deref(),
     );
+
+    // C-2: Encrypt credential fields via vault when available
+    if let Some(ref vault) = state.vault_client
+        && let Err(e) = encrypt_connection_config(vault, &mut connection_config).await
+    {
+        tracing::error!("Failed to encrypt connection config: {}", e);
+        return flash_redirect(
+            flash.error("Failed to encrypt credentials"),
+            &format!("/assets/{}/edit", asset_uuid),
+        );
+    }
 
     // Sanitize text fields to prevent stored XSS
     let sanitized_name = sanitize(&form.name);
@@ -7078,21 +7163,105 @@ pub async fn connect_ssh(
         .unwrap_or("password")
         .to_string();
 
-    // H-10: Wrap credentials in SecretString for zeroize-on-drop and expose_secret() enforcement
-    let password = config
-        .get("password")
-        .and_then(|v| v.as_str())
-        .map(|s| secrecy::SecretString::from(s.to_string()));
+    // C-2 + H-10: Decrypt credentials via vault if encrypted, then wrap in SecretString.
+    // Helper closure for vault-aware credential extraction.
+    let vault_ref = state.vault_client.as_ref();
 
-    let private_key = config
-        .get("private_key")
-        .and_then(|v| v.as_str())
-        .map(|s| secrecy::SecretString::from(s.to_string()));
+    let password = match config.get("password").and_then(|v| v.as_str()) {
+        Some(val) if !val.is_empty() => {
+            if is_encrypted(val) {
+                if let Some(vault) = vault_ref {
+                    match vault.decrypt("credentials", val).await {
+                        Ok(decrypted) => Some(secrecy::SecretString::from(decrypted.into_inner())),
+                        Err(e) => {
+                            tracing::error!("Failed to decrypt password: {}", e);
+                            let msg = "Failed to decrypt credentials";
+                            if is_htmx {
+                                return htmx_error_response(msg);
+                            }
+                            return Json(ConnectSshResponse {
+                                success: false,
+                                session_id: None,
+                                redirect_url: None,
+                                error: Some(msg.to_string()),
+                            })
+                            .into_response();
+                        }
+                    }
+                } else {
+                    tracing::warn!("Encrypted credential found but vault not available");
+                    None
+                }
+            } else {
+                Some(secrecy::SecretString::from(val.to_string()))
+            }
+        }
+        _ => None,
+    };
 
-    let passphrase = config
-        .get("passphrase")
-        .and_then(|v| v.as_str())
-        .map(|s| secrecy::SecretString::from(s.to_string()));
+    let private_key = match config.get("private_key").and_then(|v| v.as_str()) {
+        Some(val) if !val.is_empty() => {
+            if is_encrypted(val) {
+                if let Some(vault) = vault_ref {
+                    match vault.decrypt("credentials", val).await {
+                        Ok(decrypted) => Some(secrecy::SecretString::from(decrypted.into_inner())),
+                        Err(e) => {
+                            tracing::error!("Failed to decrypt private_key: {}", e);
+                            let msg = "Failed to decrypt credentials";
+                            if is_htmx {
+                                return htmx_error_response(msg);
+                            }
+                            return Json(ConnectSshResponse {
+                                success: false,
+                                session_id: None,
+                                redirect_url: None,
+                                error: Some(msg.to_string()),
+                            })
+                            .into_response();
+                        }
+                    }
+                } else {
+                    tracing::warn!("Encrypted credential found but vault not available");
+                    None
+                }
+            } else {
+                Some(secrecy::SecretString::from(val.to_string()))
+            }
+        }
+        _ => None,
+    };
+
+    let passphrase = match config.get("passphrase").and_then(|v| v.as_str()) {
+        Some(val) if !val.is_empty() => {
+            if is_encrypted(val) {
+                if let Some(vault) = vault_ref {
+                    match vault.decrypt("credentials", val).await {
+                        Ok(decrypted) => Some(secrecy::SecretString::from(decrypted.into_inner())),
+                        Err(e) => {
+                            tracing::error!("Failed to decrypt passphrase: {}", e);
+                            let msg = "Failed to decrypt credentials";
+                            if is_htmx {
+                                return htmx_error_response(msg);
+                            }
+                            return Json(ConnectSshResponse {
+                                success: false,
+                                session_id: None,
+                                redirect_url: None,
+                                error: Some(msg.to_string()),
+                            })
+                            .into_response();
+                        }
+                    }
+                } else {
+                    tracing::warn!("Encrypted credential found but vault not available");
+                    None
+                }
+            } else {
+                Some(secrecy::SecretString::from(val.to_string()))
+            }
+        }
+        _ => None,
+    };
 
     // Extract stored SSH host key for verification (H-9)
     let expected_host_key = config

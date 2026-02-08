@@ -165,8 +165,9 @@ Services communicate directly via Unix pipes in a partial mesh topology. This av
 | `proxy-rdp` | `rbac` | Session authorization |
 | `proxy-rdp` | `vault` | Windows credentials |
 | `proxy-rdp` | `audit` | Video capture |
+| `web` | `vault` | Encrypt/decrypt secrets (M-1/C-2) |
 
-**Total: 13 pipe pairs (26 file descriptors)**
+**Total: 14 pipe pairs (28 file descriptors)**
 
 ### 3.3 Topology Diagram
 
@@ -185,6 +186,7 @@ flowchart LR
     Web ---|pipe| Audit
     Web ---|pipe| SSH
     Web ---|pipe| RDP
+    Web ---|pipe| Vault
 
     Auth ---|pipe| Rbac
     Auth ---|pipe| Vault
@@ -246,6 +248,18 @@ pub enum Message {
     VaultSecretResponse { request_id, data },
     VaultGetCredential { request_id, asset_id, credential_type },
     VaultCredentialResponse { request_id, credential },
+
+    // Vault Crypto (Web -> Vault)
+    VaultEncrypt { request_id, domain, plaintext },
+    VaultEncryptResponse { request_id, ciphertext },
+    VaultDecrypt { request_id, domain, ciphertext },
+    VaultDecryptResponse { request_id, plaintext },
+    VaultMfaGenerate { request_id, issuer, account_name },
+    VaultMfaGenerateResponse { request_id, encrypted_secret, qr_code_png },
+    VaultMfaVerify { request_id, encrypted_secret, code },
+    VaultMfaVerifyResponse { request_id, valid },
+    VaultMfaQrCode { request_id, encrypted_secret, issuer, account_name },
+    VaultMfaQrCodeResponse { request_id, qr_code_png },
 
     // Audit (Web/Proxy -> Audit)
     AuditEvent { timestamp, event_type, user_id, session_id, ... },
@@ -662,7 +676,7 @@ async fn main_loop(db: PgPool) -> Result<()> {
 
 The `vauban-supervisor` is responsible for:
 
-1. **Pipe Creation**: Creates all 11 pipe pairs before forking
+1. **Pipe Creation**: Creates all 14 pipe pairs before forking
 2. **Process Spawning**: Forks and execs child processes with proper privileges
 3. **Privilege Dropping**: Children drop to unprivileged users
 4. **Watchdog**: Monitors children with bidirectional heartbeat
@@ -954,7 +968,7 @@ Services are started in dependency order:
 4. `vauban-auth` - Depends on rbac, vault
 5. `vauban-proxy-ssh` - Depends on rbac, vault, audit
 6. `vauban-proxy-rdp` - Depends on rbac, vault, audit
-7. `vauban-web` - Depends on auth, rbac, audit
+7. `vauban-web` - Depends on auth, rbac, vault, audit
 
 ### 10.2 Startup Diagram
 

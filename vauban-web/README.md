@@ -184,6 +184,79 @@ cargo build --release
 ./target/release/vauban-web
 ```
 
+## CLI Utilities
+
+VAUBAN includes several command-line utilities for administration tasks.
+All utilities load their database configuration from `config/*.toml` (same as the main application).
+
+### Create Superuser
+
+Create the initial superuser account:
+
+```bash
+cargo run --bin create_superuser
+```
+
+### Reset Password
+
+Reset a user's password:
+
+```bash
+cargo run --bin reset_password
+```
+
+### Reset 2FA
+
+Disable two-factor authentication for a user (the only way to disable MFA):
+
+```bash
+cargo run --bin reset_2FA
+```
+
+### Seed Data
+
+Populate the database with sample data for development:
+
+```bash
+cargo run --bin seed_data
+```
+
+### Migrate Secrets
+
+Batch-encrypt all plaintext secrets in the database using vauban-vault's keyring.
+This tool addresses M-1 (TOTP secrets) and C-2 (SSH credentials stored in plaintext).
+
+```bash
+# Preview what would be migrated (no changes made)
+cargo run --bin migrate_secrets -- --dry-run
+
+# Run the migration
+cargo run --bin migrate_secrets
+```
+
+**Prerequisites**:
+- The master key must be available at `/var/vauban/vault/master.key` (or set `VAUBAN_VAULT_MASTER_KEY_PATH`)
+- The key version file at `/var/vauban/vault/key_version` (optional, defaults to 1)
+
+**Environment variables**:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VAUBAN_VAULT_MASTER_KEY_PATH` | `/var/vauban/vault/master.key` | Path to the 32-byte master key |
+| `VAUBAN_VAULT_KEY_VERSION` | Read from file | Override key version (must be >= 1) |
+| `VAUBAN_VAULT_KEY_VERSION_PATH` | `/var/vauban/vault/key_version` | Path to key version file |
+
+The tool is **idempotent**: already-encrypted values (`v{N}:...` format) are skipped automatically.
+The `--dry-run` flag is recommended before any production migration.
+
+**What it migrates**:
+- `users.mfa_secret` - TOTP secrets (M-1)
+- `assets.connection_config` - Credential fields: `password`, `private_key`, `passphrase` (C-2)
+
+> **Note**: Encrypt-on-read is also built into the application itself. When a user logs in
+> with a plaintext MFA secret, it is automatically encrypted and updated in the database.
+> The `migrate_secrets` tool is useful for bulk migration of all secrets at once.
+
 ## API Endpoints
 
 ### Authentication

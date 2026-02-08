@@ -4696,7 +4696,8 @@ fn test_h10_connect_ssh_wraps_credentials() {
 
     // Must use SecretString::from() or secrecy::SecretString for credentials
     assert!(
-        source.contains("secrecy::SecretString::from(s.to_string())"),
+        source.contains("secrecy::SecretString::from(val.to_string())")
+            || source.contains("secrecy::SecretString::from(s.to_string())"),
         "H-10: connect_ssh must wrap extracted credentials in SecretString"
     );
 }
@@ -4734,5 +4735,334 @@ fn test_h10_credential_auth_uses_expose_secret() {
     assert!(
         source.contains("key_pem.expose_secret()"),
         "H-10: private key decoding must call .expose_secret()"
+    );
+}
+
+// =============================================================================
+// M-1 / C-2: Vault Structural Regression Tests
+// =============================================================================
+
+/// M-1 / C-2: vauban-vault must NOT depend on tokio (synchronous service).
+#[test]
+fn test_vault_no_tokio_dependency() {
+    let cargo = include_str!("../../../vauban-vault/Cargo.toml");
+    assert!(
+        !cargo.contains("tokio"),
+        "M-1/C-2: vauban-vault must NOT depend on tokio (pure synchronous service)"
+    );
+}
+
+/// M-1 / C-2: vauban-vault must NOT depend on diesel or sqlx (no database).
+#[test]
+fn test_vault_no_database_dependency() {
+    let cargo = include_str!("../../../vauban-vault/Cargo.toml");
+    assert!(
+        !cargo.contains("diesel"),
+        "M-1/C-2: vauban-vault must NOT depend on diesel (no database access)"
+    );
+    assert!(
+        !cargo.contains("sqlx"),
+        "M-1/C-2: vauban-vault must NOT depend on sqlx (no database access)"
+    );
+}
+
+/// M-1 / C-2: vauban-vault must NOT depend on reqwest (no network).
+#[test]
+fn test_vault_no_network_dependency() {
+    let cargo = include_str!("../../../vauban-vault/Cargo.toml");
+    assert!(
+        !cargo.contains("reqwest"),
+        "M-1/C-2: vauban-vault must NOT depend on reqwest (no network access)"
+    );
+    assert!(
+        !cargo.contains("hyper"),
+        "M-1/C-2: vauban-vault must NOT depend on hyper (no network access)"
+    );
+}
+
+/// M-1 / C-2: vauban-vault must depend on zeroize for key material cleanup.
+#[test]
+fn test_vault_has_zeroize_dependency() {
+    let cargo = include_str!("../../../vauban-vault/Cargo.toml");
+    assert!(
+        cargo.contains("zeroize"),
+        "M-1/C-2: vauban-vault must depend on zeroize for key material cleanup"
+    );
+}
+
+/// M-1 / C-2: MasterKey must implement zeroization (ZeroizeOnDrop pattern).
+#[test]
+fn test_vault_master_key_zeroize() {
+    let source = include_str!("../../../vauban-vault/src/keyring.rs");
+    assert!(
+        source.contains("fn drop(&mut self)") && source.contains("zeroize()"),
+        "M-1/C-2: MasterKey must zeroize on drop"
+    );
+}
+
+/// M-1 / C-2: MasterKey Debug must be redacted (no key material in logs).
+#[test]
+fn test_vault_master_key_debug_redacted() {
+    let source = include_str!("../../../vauban-vault/src/keyring.rs");
+    assert!(
+        source.contains("MasterKey([REDACTED])"),
+        "M-1/C-2: MasterKey Debug must show [REDACTED], never raw key bytes"
+    );
+}
+
+/// M-1 / C-2: Vault crypto module uses AES-256-GCM and OsRng for nonces.
+#[test]
+fn test_vault_crypto_uses_aes256_gcm_osrng() {
+    let source = include_str!("../../../vauban-vault/src/crypto.rs");
+    assert!(
+        source.contains("Aes256Gcm"),
+        "M-1/C-2: vault crypto must use AES-256-GCM"
+    );
+    assert!(
+        source.contains("OsRng"),
+        "M-1/C-2: vault crypto must use OsRng for nonce generation"
+    );
+}
+
+/// M-1 / C-2: Vault keyring uses HKDF-SHA3-256 for key derivation (PQC alignment).
+#[test]
+fn test_vault_keyring_uses_hkdf_sha3() {
+    let source = include_str!("../../../vauban-vault/src/keyring.rs");
+    assert!(
+        source.contains("Hkdf::<Sha3_256>"),
+        "M-1/C-2: vault keyring must use HKDF-SHA3-256 for PQC-aligned key derivation"
+    );
+}
+
+/// M-1 / C-2: Vault transit handlers zeroize plaintext after operations.
+#[test]
+fn test_vault_transit_zeroizes_plaintext() {
+    let source = include_str!("../../../vauban-vault/src/transit.rs");
+    assert!(
+        source.contains("zeroize()"),
+        "M-1/C-2: vault transit handlers must zeroize plaintext after operations"
+    );
+}
+
+/// M-1 / C-2: Vault IPC messages use SensitiveString for credential transport.
+#[test]
+fn test_vault_messages_use_sensitive_string() {
+    let source = include_str!("../../../shared/src/messages.rs");
+    // VaultEncrypt must use SensitiveString for plaintext
+    assert!(
+        source.contains("plaintext: SensitiveString"),
+        "M-1/C-2: VaultEncrypt must use SensitiveString for plaintext field"
+    );
+    // VaultDecryptResponse must use SensitiveString for plaintext
+    assert!(
+        source.contains("plaintext: Option<SensitiveString>"),
+        "M-1/C-2: VaultDecryptResponse must use SensitiveString for plaintext field"
+    );
+}
+
+/// C-2: connect_ssh handler must decrypt encrypted credentials via vault.
+#[test]
+fn test_c2_connect_ssh_decrypts_via_vault() {
+    let source = include_str!("../../src/handlers/web.rs");
+    assert!(
+        source.contains("vault.decrypt(\"credentials\""),
+        "C-2: connect_ssh must call vault.decrypt for encrypted credentials"
+    );
+    assert!(
+        source.contains("is_encrypted(val)"),
+        "C-2: connect_ssh must check is_encrypted() for backward compatibility"
+    );
+}
+
+/// C-2: Asset creation must encrypt credentials via vault.
+#[test]
+fn test_c2_asset_creation_encrypts_via_vault() {
+    let source = include_str!("../../src/handlers/web.rs");
+    assert!(
+        source.contains("encrypt_connection_config"),
+        "C-2: asset creation/edit must call encrypt_connection_config for credential encryption"
+    );
+}
+
+/// M-1: MFA handlers must use vault for TOTP generation and verification.
+#[test]
+fn test_m1_mfa_handlers_use_vault() {
+    let source = include_str!("../../src/handlers/auth.rs");
+    assert!(
+        source.contains(".mfa_verify("),
+        "M-1: MFA verification must use vault.mfa_verify"
+    );
+    assert!(
+        source.contains(".mfa_generate("),
+        "M-1: MFA setup must use vault.mfa_generate"
+    );
+}
+
+/// M-1: Vault client in AppState must be available.
+#[test]
+fn test_m1_vault_client_in_appstate() {
+    let source = include_str!("../../src/lib.rs");
+    assert!(
+        source.contains("vault_client: Option<Arc<VaultCryptoClient>>"),
+        "M-1/C-2: AppState must contain vault_client field"
+    );
+}
+
+/// M-1 / C-2: is_encrypted helper must check version prefix format.
+#[test]
+fn test_is_encrypted_helper_exists() {
+    let source = include_str!("../../src/handlers/web.rs");
+    assert!(
+        source.contains("fn is_encrypted("),
+        "C-2: is_encrypted() helper must exist for backward compatibility"
+    );
+}
+
+// =============================================================================
+// M-1 Backward Compatibility: plaintext -> encrypted progressive migration
+// =============================================================================
+
+/// M-1: auth.rs must have is_encrypted() for backward compatibility with plaintext secrets.
+#[test]
+fn test_m1_auth_has_is_encrypted() {
+    let source = include_str!("../../src/handlers/auth.rs");
+    assert!(
+        source.contains("fn is_encrypted("),
+        "M-1: auth.rs must have is_encrypted() for backward compatibility"
+    );
+}
+
+/// M-1: MFA verify in auth.rs must check is_encrypted before sending to vault.
+/// This ensures plaintext secrets (pre-migration) still work via direct verification.
+#[test]
+fn test_m1_mfa_verify_checks_is_encrypted() {
+    let source = include_str!("../../src/handlers/auth.rs");
+    // The pattern: vault is only used when is_encrypted(secret) is true
+    assert!(
+        source.contains("is_encrypted(secret)")
+            || source.contains("is_encrypted(&secret)")
+            || source.contains("is_encrypted(&s)"),
+        "M-1: MFA verification must check is_encrypted() before calling vault"
+    );
+}
+
+/// M-1: auth.rs must implement encrypt-on-read for progressive migration.
+/// When a plaintext secret is verified successfully, it should be encrypted
+/// and updated in the database.
+#[test]
+fn test_m1_encrypt_on_read_in_auth() {
+    let source = include_str!("../../src/handlers/auth.rs");
+    assert!(
+        source.contains("encrypt-on-read")
+            || source.contains("Migrated plaintext MFA secret to encrypted"),
+        "M-1: auth.rs must implement encrypt-on-read for progressive secret migration"
+    );
+    // Must call vault.encrypt for the migration
+    assert!(
+        source.contains("vault.encrypt(\"mfa\""),
+        "M-1: encrypt-on-read must call vault.encrypt(\"mfa\", ...) to encrypt plaintext secrets"
+    );
+}
+
+/// M-1: mfa_setup_page must handle plaintext existing secrets with encrypt-on-read.
+#[test]
+fn test_m1_mfa_setup_page_backward_compat() {
+    let source = include_str!("../../src/handlers/auth.rs");
+    // The mfa_setup_page handler must check is_encrypted on existing secrets
+    // and encrypt-on-read if they are plaintext
+    assert!(
+        source.contains("Plaintext secret (pre-migration)"),
+        "M-1: mfa_setup_page must handle plaintext secrets with encrypt-on-read"
+    );
+}
+
+/// M-1 / C-2: vauban-vault must expose a library crate for reuse by vauban-migrate.
+#[test]
+fn test_vault_has_lib_crate() {
+    let cargo = include_str!("../../../vauban-vault/Cargo.toml");
+    assert!(
+        cargo.contains("[lib]"),
+        "M-1/C-2: vauban-vault must expose a [lib] section for reuse by vauban-migrate"
+    );
+}
+
+/// M-1 / C-2: vauban-vault lib.rs must export crypto and keyring modules.
+#[test]
+fn test_vault_lib_exports_modules() {
+    let source = include_str!("../../../vauban-vault/src/lib.rs");
+    assert!(
+        source.contains("pub mod crypto"),
+        "M-1/C-2: vauban-vault lib must export crypto module"
+    );
+    assert!(
+        source.contains("pub mod keyring"),
+        "M-1/C-2: vauban-vault lib must export keyring module"
+    );
+}
+
+/// M-1 / C-2: migrate_secrets binary must exist in vauban-web/src/bin/.
+#[test]
+fn test_migrate_secrets_binary_exists() {
+    let source = include_str!("../../src/bin/migrate_secrets.rs");
+    assert!(
+        !source.is_empty(),
+        "M-1/C-2: migrate_secrets binary must exist in vauban-web/src/bin/"
+    );
+}
+
+/// M-1 / C-2: vauban-web must depend on vauban-vault for keyring reuse by migrate_secrets.
+#[test]
+fn test_web_depends_on_vault() {
+    let cargo = include_str!("../../Cargo.toml");
+    assert!(
+        cargo.contains("vauban-vault"),
+        "M-1/C-2: vauban-web must depend on vauban-vault for keyring reuse"
+    );
+}
+
+/// M-1 / C-2: migrate_secrets must implement is_encrypted for idempotent migration.
+#[test]
+fn test_migrate_has_is_encrypted() {
+    let source = include_str!("../../src/bin/migrate_secrets.rs");
+    assert!(
+        source.contains("fn is_encrypted("),
+        "M-1/C-2: migrate_secrets must have is_encrypted() for idempotent migration"
+    );
+}
+
+/// M-1 / C-2: migrate_secrets must support --dry-run for safe operation.
+#[test]
+fn test_migrate_supports_dry_run() {
+    let source = include_str!("../../src/bin/migrate_secrets.rs");
+    assert!(
+        source.contains("dry_run") && source.contains("--dry-run"),
+        "M-1/C-2: migrate_secrets must support --dry-run flag for safe operation"
+    );
+}
+
+/// M-1: migrate_secrets must migrate MFA secrets.
+#[test]
+fn test_migrate_handles_mfa_secrets() {
+    let source = include_str!("../../src/bin/migrate_secrets.rs");
+    assert!(
+        source.contains("migrate_mfa_secrets"),
+        "M-1: migrate_secrets must have migrate_mfa_secrets function"
+    );
+}
+
+/// C-2: migrate_secrets must migrate credential secrets in connection_config.
+#[test]
+fn test_migrate_handles_credential_secrets() {
+    let source = include_str!("../../src/bin/migrate_secrets.rs");
+    assert!(
+        source.contains("migrate_credential_secrets"),
+        "C-2: migrate_secrets must have migrate_credential_secrets function"
+    );
+    // Must handle the same credential fields as web.rs
+    assert!(
+        source.contains("\"password\"")
+            && source.contains("\"private_key\"")
+            && source.contains("\"passphrase\""),
+        "C-2: migrate_secrets must encrypt password, private_key, and passphrase fields"
     );
 }

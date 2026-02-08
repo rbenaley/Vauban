@@ -19,8 +19,8 @@ use tower_http::{
 };
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-// Import for supervisor IPC client
-use vauban_web::ipc::SupervisorClient;
+// Import for supervisor and vault IPC clients
+use vauban_web::ipc::{SupervisorClient, VaultCryptoClient};
 
 /// Initialize the supervisor client if running under supervisor.
 ///
@@ -109,6 +109,48 @@ fn init_ssh_proxy_client() -> Option<Arc<ProxySshClient>> {
         }
         Err(e) => {
             tracing::warn!("Failed to initialize SSH proxy client: {}", e);
+            None
+        }
+    }
+}
+
+/// Initialize the vault crypto client if running under supervisor (M-1, C-2).
+///
+/// Returns Some(Arc<VaultCryptoClient>) if VAUBAN_VAULT_IPC_READ and VAUBAN_VAULT_IPC_WRITE
+/// environment variables are set (running under supervisor), None otherwise.
+fn init_vault_client() -> Option<Arc<VaultCryptoClient>> {
+    use std::os::unix::io::RawFd;
+
+    let read_fd: RawFd = match std::env::var("VAUBAN_VAULT_IPC_READ") {
+        Ok(val) => match val.parse() {
+            Ok(fd) => fd,
+            Err(_) => return None,
+        },
+        Err(_) => return None,
+    };
+
+    let write_fd: RawFd = match std::env::var("VAUBAN_VAULT_IPC_WRITE") {
+        Ok(val) => match val.parse() {
+            Ok(fd) => fd,
+            Err(_) => return None,
+        },
+        Err(_) => return None,
+    };
+
+    // Clear environment variables immediately for security
+    // SAFETY: We are early in startup, before spawning async tasks
+    unsafe {
+        std::env::remove_var("VAUBAN_VAULT_IPC_READ");
+        std::env::remove_var("VAUBAN_VAULT_IPC_WRITE");
+    }
+
+    match VaultCryptoClient::new(read_fd, write_fd) {
+        Ok(client) => {
+            tracing::info!("Vault crypto client initialized (running under supervisor)");
+            Some(client)
+        }
+        Err(e) => {
+            tracing::warn!("Failed to initialize vault crypto client: {}", e);
             None
         }
     }
@@ -276,6 +318,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("SSH proxy IPC processing task started");
     }
 
+    // Create vault crypto client if running under supervisor (M-1, C-2)
+    let vault_client = init_vault_client();
+
+    // Spawn vault IPC processing task if client is available
+    if let Some(ref client) = vault_client {
+        let client_clone = Arc::clone(client);
+        tokio::spawn(async move {
+            if let Err(e) = client_clone.process_incoming().await {
+                tracing::error!(error = %e, "Vault IPC processing task failed");
+            }
+        });
+        tracing::info!("Vault IPC processing task started");
+    }
+
     // Create application state
     let app_state = AppState {
         config: config.clone(),
@@ -287,6 +343,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         rate_limiter,
         ssh_proxy,
         supervisor: supervisor_client,
+        vault_client,
     };
 
     // Start background tasks for WebSocket updates

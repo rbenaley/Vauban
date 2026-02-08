@@ -127,6 +127,7 @@ const TOPOLOGY: &[PipeTopology] = &[
     PipeTopology { from: Service::Web, to: Service::Auth },
     PipeTopology { from: Service::Web, to: Service::Rbac },
     PipeTopology { from: Service::Web, to: Service::Audit },
+    PipeTopology { from: Service::Web, to: Service::Vault },  // M-1, C-2: encrypt/decrypt secrets
     // Web <-> Proxy connections (for SSH/RDP session data)
     PipeTopology { from: Service::Web, to: Service::ProxySsh },
     PipeTopology { from: Service::Web, to: Service::ProxyRdp },
@@ -1578,7 +1579,7 @@ mod tests {
 
     #[test]
     fn test_topology_count() {
-        assert_eq!(TOPOLOGY.len(), 13);
+        assert_eq!(TOPOLOGY.len(), 14);
     }
 
     #[test]
@@ -1588,8 +1589,8 @@ mod tests {
             .filter(|conn| conn.from == Service::Web)
             .collect();
         
-        // Web connects to: Auth, Rbac, Audit, ProxySsh, ProxyRdp
-        assert_eq!(web_connections.len(), 5);
+        // Web connects to: Auth, Rbac, Audit, ProxySsh, ProxyRdp, Vault
+        assert_eq!(web_connections.len(), 6);
     }
 
     #[test]

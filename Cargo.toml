@@ -52,6 +52,15 @@ async-trait = "0.1"
 secrecy = { version = "0.10", features = ["serde"] }
 zeroize = { version = "1.8", features = ["derive"] }
 
+# Cryptography for vauban-vault (M-1, C-2)
+aes-gcm = "0.10"
+hkdf = "0.12"
+sha3 = "0.10"
+base64 = "0.22"
+totp-rs = { version = "5", features = ["gen_secret", "otpauth"] }
+qrcode = "0.14"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
 [profile.release]
 opt-level = 3
 lto = true
