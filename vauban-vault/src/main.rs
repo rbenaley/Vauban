@@ -371,20 +371,12 @@ fn handle_vault_request(
             transit::handle_mfa_verify(&state.keyrings, request_id, &encrypted_secret, &code)
         }
 
-        Message::VaultMfaQrCode {
+        Message::VaultMfaGetSecret {
             request_id,
             encrypted_secret,
-            username,
-            issuer,
         } => {
             state.requests_processed += 1;
-            transit::handle_mfa_qr_code(
-                &state.keyrings,
-                request_id,
-                &encrypted_secret,
-                &username,
-                &issuer,
-            )
+            transit::handle_mfa_get_secret(&state.keyrings, request_id, &encrypted_secret)
         }
 
         // Legacy vault messages (placeholder responses)
@@ -420,6 +412,7 @@ fn handle_vault_request(
     };
 
     channel.send(&response)?;
+    // SensitiveString fields in MFA responses are zeroized automatically on drop.
     Ok(())
 }
 
@@ -599,13 +592,13 @@ mod tests {
         let response = client.recv().unwrap();
         if let Message::VaultMfaGenerateResponse {
             encrypted_secret: Some(enc),
-            qr_code_base64: Some(qr),
+            plaintext_secret: Some(pt),
             error: None,
             ..
         } = response
         {
             assert!(enc.starts_with("v1:"));
-            assert!(!qr.is_empty());
+            assert!(!pt.as_str().is_empty());
         } else {
             panic!("Expected MfaGenerateResponse success");
         }

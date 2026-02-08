@@ -32,5 +32,3 @@ zeroize.workspace = true
 
 # TOTP / MFA
 totp-rs.workspace = true
-qrcode.workspace = true
-image.workspace = true

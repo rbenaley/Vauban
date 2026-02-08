@@ -6,7 +6,7 @@ Cryptographic secrets management service for the VAUBAN security bastion platfor
 
 - **AES-256-GCM Encryption**: Authenticated encryption for all secrets stored in the database
 - **HKDF-SHA3-256 Key Derivation**: PQC-aligned key derivation with domain separation and versioning
-- **TOTP Management**: Generate, encrypt, and verify MFA secrets entirely within the vault (plaintext never leaves the process)
+- **TOTP Management**: Generate, encrypt, and verify MFA secrets within the vault (plaintext secret is embedded in the provisioning QR code, then zeroized from memory)
 - **Versioned Key Rotation**: Seamless key rotation with backward-compatible decryption
 - **Zero-Copy Secrets**: All key material is zeroized on drop via `zeroize` crate
 - **Capsicum Sandboxing**: No filesystem, no network, no database access after startup

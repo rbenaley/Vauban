@@ -161,8 +161,10 @@ impl AuthService {
 
     /// Generate QR code PNG for TOTP setup.
     ///
-    /// Returns base64-encoded PNG image data.
-    #[allow(dead_code)]
+    /// Returns base64-encoded PNG image data. The TOTP provisioning URL
+    /// is generated internally by `totp-rs` and not directly accessible
+    /// for zeroization, but the returned base64 string should be zeroized
+    /// by the caller after use (e.g., after template rendering).
     pub fn generate_totp_qr_code(secret: &str, username: &str, issuer: &str) -> AppResult<String> {
         let secret_obj = TotpSecret::Encoded(secret.to_string());
         let secret_bytes = secret_obj

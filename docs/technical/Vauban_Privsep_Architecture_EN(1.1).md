@@ -254,12 +254,12 @@ pub enum Message {
     VaultEncryptResponse { request_id, ciphertext },
     VaultDecrypt { request_id, domain, ciphertext },
     VaultDecryptResponse { request_id, plaintext },
-    VaultMfaGenerate { request_id, issuer, account_name },
-    VaultMfaGenerateResponse { request_id, encrypted_secret, qr_code_png },
+    VaultMfaGenerate { request_id, username, issuer },
+    VaultMfaGenerateResponse { request_id, encrypted_secret, plaintext_secret: SensitiveString },
     VaultMfaVerify { request_id, encrypted_secret, code },
     VaultMfaVerifyResponse { request_id, valid },
-    VaultMfaQrCode { request_id, encrypted_secret, issuer, account_name },
-    VaultMfaQrCodeResponse { request_id, qr_code_png },
+    VaultMfaGetSecret { request_id, encrypted_secret },
+    VaultMfaGetSecretResponse { request_id, plaintext_secret: SensitiveString },
 
     // Audit (Web/Proxy -> Audit)
     AuditEvent { timestamp, event_type, user_id, session_id, ... },

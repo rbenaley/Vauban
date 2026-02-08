@@ -255,21 +255,24 @@ pub enum Message {
 
     // ========== Vault MFA (Web -> Vault) ==========
 
-    /// Generate a new TOTP secret, encrypt it, and return the QR code.
-    /// The plaintext secret NEVER leaves the vault process unencrypted.
+    /// Generate a new TOTP secret, encrypt it, and return both forms.
+    /// The vault generates the secret, encrypts it for DB storage, and returns
+    /// the plaintext as a `SensitiveString` (zeroize-on-drop) so the web layer
+    /// can generate the QR code locally. QR generation is NOT done in the vault.
     VaultMfaGenerate {
         request_id: u64,
-        /// Username for the provisioning URI.
+        /// Username (unused by vault, passed through for consistency).
         username: String,
-        /// Issuer for the provisioning URI (e.g. "VAUBAN").
+        /// Issuer (unused by vault, passed through for consistency).
         issuer: String,
     },
     VaultMfaGenerateResponse {
         request_id: u64,
         /// Encrypted TOTP secret (store in DB as mfa_secret).
         encrypted_secret: Option<String>,
-        /// Base64-encoded PNG QR code (display once to user).
-        qr_code_base64: Option<String>,
+        /// Plaintext TOTP secret in base32 for QR code generation by the web layer.
+        /// Wrapped in `SensitiveString` for zeroize-on-drop during IPC transport.
+        plaintext_secret: Option<SensitiveString>,
         error: Option<String>,
     },
 
@@ -288,20 +291,17 @@ pub enum Message {
         error: Option<String>,
     },
 
-    /// Re-generate the QR code from an existing encrypted secret.
-    VaultMfaQrCode {
+    /// Decrypt an encrypted TOTP secret and return the plaintext.
+    /// Used by vauban-web to re-generate QR codes from existing encrypted secrets.
+    VaultMfaGetSecret {
         request_id: u64,
         /// Encrypted TOTP secret as stored in DB.
         encrypted_secret: String,
-        /// Username for the provisioning URI.
-        username: String,
-        /// Issuer for the provisioning URI.
-        issuer: String,
     },
-    VaultMfaQrCodeResponse {
+    VaultMfaGetSecretResponse {
         request_id: u64,
-        /// Base64-encoded PNG QR code.
-        qr_code_base64: Option<String>,
+        /// Decrypted TOTP secret in base32, wrapped in `SensitiveString` for zeroize-on-drop.
+        plaintext_secret: Option<SensitiveString>,
         error: Option<String>,
     },
 
@@ -468,8 +468,8 @@ impl Message {
             | Message::VaultMfaGenerateResponse { request_id, .. }
             | Message::VaultMfaVerify { request_id, .. }
             | Message::VaultMfaVerifyResponse { request_id, .. }
-            | Message::VaultMfaQrCode { request_id, .. }
-            | Message::VaultMfaQrCodeResponse { request_id, .. }
+            | Message::VaultMfaGetSecret { request_id, .. }
+            | Message::VaultMfaGetSecretResponse { request_id, .. }
             | Message::SshSessionOpen { request_id, .. }
             | Message::SshSessionOpened { request_id, .. }
             | Message::SshFetchHostKey { request_id, .. }
@@ -1465,7 +1465,7 @@ mod tests {
         let msg = Message::VaultMfaGenerateResponse {
             request_id: 920,
             encrypted_secret: Some("v1:encrypted".to_string()),
-            qr_code_base64: Some("iVBORw0KGgo...".to_string()),
+            plaintext_secret: Some(SensitiveString::new("JBSWY3DPEHPK3PXP".to_string())),
             error: None,
         };
         assert_eq!(msg.request_id(), Some(920));
@@ -1501,21 +1501,19 @@ mod tests {
     }
 
     #[test]
-    fn test_message_vault_mfa_qr_code() {
-        let msg = Message::VaultMfaQrCode {
+    fn test_message_vault_mfa_get_secret() {
+        let msg = Message::VaultMfaGetSecret {
             request_id: 940,
             encrypted_secret: "v1:encrypted-totp".to_string(),
-            username: "bob".to_string(),
-            issuer: "VAUBAN".to_string(),
         };
         assert_eq!(msg.request_id(), Some(940));
     }
 
     #[test]
-    fn test_message_vault_mfa_qr_code_response() {
-        let msg = Message::VaultMfaQrCodeResponse {
+    fn test_message_vault_mfa_get_secret_response() {
+        let msg = Message::VaultMfaGetSecretResponse {
             request_id: 940,
-            qr_code_base64: Some("iVBORw0KGgo...".to_string()),
+            plaintext_secret: Some(SensitiveString::new("JBSWY3DPEHPK3PXP".to_string())),
             error: None,
         };
         assert_eq!(msg.request_id(), Some(940));
@@ -1552,7 +1550,7 @@ mod tests {
             Message::VaultMfaGenerateResponse {
                 request_id: 3,
                 encrypted_secret: Some("v1:enc".to_string()),
-                qr_code_base64: Some("base64".to_string()),
+                plaintext_secret: Some(SensitiveString::new("JBSWY3DPEHPK3PXP".to_string())),
                 error: None,
             },
             Message::VaultMfaVerify {
@@ -1565,15 +1563,13 @@ mod tests {
                 valid: true,
                 error: None,
             },
-            Message::VaultMfaQrCode {
+            Message::VaultMfaGetSecret {
                 request_id: 5,
                 encrypted_secret: "v1:enc".to_string(),
-                username: "user".to_string(),
-                issuer: "VAUBAN".to_string(),
             },
-            Message::VaultMfaQrCodeResponse {
+            Message::VaultMfaGetSecretResponse {
                 request_id: 5,
-                qr_code_base64: Some("base64".to_string()),
+                plaintext_secret: Some(SensitiveString::new("JBSWY3DPEHPK3PXP".to_string())),
                 error: None,
             },
         ];

@@ -38,6 +38,7 @@ use diesel::sql_types::{BigInt, Integer, Nullable, Text, Uuid as DieselUuid};
 use diesel_async::{AsyncConnection, RunQueryDsl};
 use secrecy::ExposeSecret;
 use std::collections::HashMap;
+use zeroize::Zeroize;
 
 use crate::AppState;
 use crate::error::{AppError, AppResult};
@@ -1449,26 +1450,69 @@ pub async fn mfa_setup(
     let (user_id, user_username, existing_secret) = user_data;
 
     // Generate or use existing secret
-    // M-1: When vault is available, secrets are encrypted at rest
-    let (secret, qr_code_base64) = if let Some(ref vault) = state.vault_client {
+    // M-1: When vault is available, secrets are encrypted at rest.
+    // QR code is generated locally from the plaintext secret obtained from vault.
+    let (secret, mut qr_code_base64) = if let Some(ref vault) = state.vault_client {
         if let Some(s) = existing_secret {
-            // Re-generate QR from existing encrypted secret
-            let qr = vault
-                .mfa_qr_code(&s, &user_username, "VAUBAN")
-                .await
-                .map_err(|e| AppError::Internal(anyhow::anyhow!("QR code generation: {}", e)))?;
-            (s, qr)
-        } else {
-            // Generate new secret via vault (plaintext never leaves vault)
-            let (encrypted_secret, qr) = vault
-                .mfa_generate(&user_username, "VAUBAN")
-                .await
-                .map_err(|e| AppError::Internal(anyhow::anyhow!("MFA generation: {}", e)))?;
-            diesel::update(crate::schema::users::table.filter(crate::schema::users::id.eq(user_id)))
-                .set(crate::schema::users::mfa_secret.eq(Some(&encrypted_secret)))
+            if is_encrypted(&s) {
+                // Get plaintext secret from vault (decrypt)
+                let plaintext = vault.mfa_get_secret(&s).await.map_err(|e| {
+                    AppError::Internal(anyhow::anyhow!("MFA secret decryption: {}", e))
+                })?;
+                let qr = AuthService::generate_totp_qr_code(
+                    plaintext.as_str(),
+                    &user_username,
+                    "VAUBAN",
+                )?;
+                // plaintext (SensitiveString) zeroized on drop here
+                (s, qr)
+            } else {
+                // Plaintext secret (pre-migration): encrypt-on-read, then generate QR
+                let encrypted = vault.encrypt("mfa", &s).await.map_err(|e| {
+                    AppError::Internal(anyhow::anyhow!("MFA encryption: {}", e))
+                })?;
+                diesel::update(
+                    crate::schema::users::table.filter(crate::schema::users::id.eq(user_id)),
+                )
+                .set(crate::schema::users::mfa_secret.eq(Some(&encrypted)))
                 .execute(&mut conn)
                 .await
                 .map_err(AppError::Database)?;
+                tracing::info!(
+                    user_id,
+                    "Migrated plaintext MFA secret to encrypted (encrypt-on-read)"
+                );
+                // Get plaintext back from vault to generate QR
+                let plaintext = vault.mfa_get_secret(&encrypted).await.map_err(|e| {
+                    AppError::Internal(anyhow::anyhow!("MFA secret decryption: {}", e))
+                })?;
+                let qr = AuthService::generate_totp_qr_code(
+                    plaintext.as_str(),
+                    &user_username,
+                    "VAUBAN",
+                )?;
+                // plaintext (SensitiveString) zeroized on drop here
+                (encrypted, qr)
+            }
+        } else {
+            // Generate new secret via vault
+            let (encrypted_secret, plaintext) = vault
+                .mfa_generate(&user_username, "VAUBAN")
+                .await
+                .map_err(|e| AppError::Internal(anyhow::anyhow!("MFA generation: {}", e)))?;
+            let qr = AuthService::generate_totp_qr_code(
+                plaintext.as_str(),
+                &user_username,
+                "VAUBAN",
+            )?;
+            // plaintext (SensitiveString) zeroized on drop here
+            diesel::update(
+                crate::schema::users::table.filter(crate::schema::users::id.eq(user_id)),
+            )
+            .set(crate::schema::users::mfa_secret.eq(Some(&encrypted_secret)))
+            .execute(&mut conn)
+            .await
+            .map_err(AppError::Database)?;
             (encrypted_secret, qr)
         }
     } else {
@@ -1477,11 +1521,13 @@ pub async fn mfa_setup(
             s
         } else {
             let (new_secret, _uri) = AuthService::generate_totp_secret(&user_username, "VAUBAN")?;
-            diesel::update(crate::schema::users::table.filter(crate::schema::users::id.eq(user_id)))
-                .set(crate::schema::users::mfa_secret.eq(Some(&new_secret)))
-                .execute(&mut conn)
-                .await
-                .map_err(AppError::Database)?;
+            diesel::update(
+                crate::schema::users::table.filter(crate::schema::users::id.eq(user_id)),
+            )
+            .set(crate::schema::users::mfa_secret.eq(Some(&new_secret)))
+            .execute(&mut conn)
+            .await
+            .map_err(AppError::Database)?;
             new_secret
         };
         let qr = AuthService::generate_totp_qr_code(&secret, &user_username, "VAUBAN")?;
@@ -1497,12 +1543,14 @@ pub async fn mfa_setup(
         sidebar_content,
         header_user,
         secret,
-        qr_code_base64,
+        qr_code_base64: qr_code_base64.clone(),
     };
 
     let html = template
         .render()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
+    // Zeroize QR code data after template rendering (contains TOTP secret in image)
+    qr_code_base64.zeroize();
     Ok(Html(html))
 }
 

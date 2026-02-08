@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_256};
 use std::net::SocketAddr;
 use validator::Validate;
+use zeroize::Zeroize;
 
 use askama::Template;
 
@@ -698,17 +699,21 @@ pub async fn mfa_setup_page(
     let (user_id, user_username, existing_secret) = user_data;
 
     // Generate or use existing secret
-    // M-1: When vault is available, secrets are encrypted at rest
-    let (secret, qr_code_base64) = if let Some(ref vault) = state.vault_client {
+    // M-1: When vault is available, secrets are encrypted at rest.
+    // QR code is generated locally from the plaintext secret obtained from vault.
+    let (secret, mut qr_code_base64) = if let Some(ref vault) = state.vault_client {
         if let Some(s) = existing_secret {
             if is_encrypted(&s) {
-                // Re-generate QR from existing encrypted secret
-                let qr = vault
-                    .mfa_qr_code(&s, &user_username, "VAUBAN")
-                    .await
-                    .map_err(|e| {
-                        AppError::Internal(anyhow::anyhow!("QR code generation: {}", e))
-                    })?;
+                // Get plaintext secret from vault (decrypt)
+                let plaintext = vault.mfa_get_secret(&s).await.map_err(|e| {
+                    AppError::Internal(anyhow::anyhow!("MFA secret decryption: {}", e))
+                })?;
+                let qr = AuthService::generate_totp_qr_code(
+                    plaintext.as_str(),
+                    &user_username,
+                    "VAUBAN",
+                )?;
+                // plaintext (SensitiveString) zeroized on drop here
                 (s, qr)
             } else {
                 // Plaintext secret (pre-migration): encrypt-on-read, then generate QR
@@ -724,20 +729,30 @@ pub async fn mfa_setup_page(
                     user_id,
                     "Migrated plaintext MFA secret to encrypted (encrypt-on-read)"
                 );
-                let qr = vault
-                    .mfa_qr_code(&encrypted, &user_username, "VAUBAN")
-                    .await
-                    .map_err(|e| {
-                        AppError::Internal(anyhow::anyhow!("QR code generation: {}", e))
-                    })?;
+                // Get plaintext back from vault to generate QR
+                let plaintext = vault.mfa_get_secret(&encrypted).await.map_err(|e| {
+                    AppError::Internal(anyhow::anyhow!("MFA secret decryption: {}", e))
+                })?;
+                let qr = AuthService::generate_totp_qr_code(
+                    plaintext.as_str(),
+                    &user_username,
+                    "VAUBAN",
+                )?;
+                // plaintext (SensitiveString) zeroized on drop here
                 (encrypted, qr)
             }
         } else {
-            // Generate new secret via vault (plaintext never leaves vault)
-            let (encrypted_secret, qr) = vault
+            // Generate new secret via vault
+            let (encrypted_secret, plaintext) = vault
                 .mfa_generate(&user_username, "VAUBAN")
                 .await
                 .map_err(|e| AppError::Internal(anyhow::anyhow!("MFA generation: {}", e)))?;
+            let qr = AuthService::generate_totp_qr_code(
+                plaintext.as_str(),
+                &user_username,
+                "VAUBAN",
+            )?;
+            // plaintext (SensitiveString) zeroized on drop here
             diesel::update(users.filter(crate::schema::users::id.eq(user_id)))
                 .set(mfa_secret.eq(Some(&encrypted_secret)))
                 .execute(&mut conn)
@@ -785,12 +800,14 @@ pub async fn mfa_setup_page(
         sidebar_content,
         header_user,
         secret,
-        qr_code_base64,
+        qr_code_base64: qr_code_base64.clone(),
     };
 
     let html = template
         .render()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
+    // Zeroize QR code data after template rendering (contains TOTP secret in image)
+    qr_code_base64.zeroize();
     Ok(Html(html).into_response())
 }
 

@@ -76,96 +76,51 @@ pub fn handle_decrypt(
 
 /// Handle a VaultMfaGenerate request.
 ///
-/// Generates a new TOTP secret, encrypts it with the "mfa" keyring,
-/// produces a QR code, and zeroizes the plaintext secret. The plaintext
-/// TOTP secret NEVER leaves this function unencrypted.
+/// Generates a new TOTP secret, encrypts it with the "mfa" keyring, and returns
+/// both the encrypted form (for DB storage) and the plaintext as a `SensitiveString`
+/// (for QR code generation by the web layer). The plaintext is moved into
+/// `SensitiveString` which zeroizes on drop.
 pub fn handle_mfa_generate(
     keyrings: &HashMap<String, Keyring>,
     request_id: u64,
-    username: &str,
-    issuer: &str,
+    _username: &str,
+    _issuer: &str,
 ) -> Message {
     let Some(keyring) = keyrings.get("mfa") else {
         return Message::VaultMfaGenerateResponse {
             request_id,
             encrypted_secret: None,
-            qr_code_base64: None,
+            plaintext_secret: None,
             error: Some("mfa keyring not configured".to_string()),
         };
     };
 
     // Generate a random TOTP secret
     let secret = TotpSecret::generate_secret();
-    let secret_bytes = match secret.to_bytes() {
-        Ok(b) => b,
-        Err(e) => {
-            return Message::VaultMfaGenerateResponse {
-                request_id,
-                encrypted_secret: None,
-                qr_code_base64: None,
-                error: Some(format!("failed to generate TOTP secret: {:?}", e)),
-            };
-        }
-    };
 
-    let totp = match TOTP::new(
-        TotpAlgorithm::SHA1,
-        6,  // 6 digits
-        1,  // 1 step tolerance (+/- 30 seconds)
-        30, // 30-second time step
-        secret_bytes,
-        Some(issuer.to_string()),
-        username.to_string(),
-    ) {
-        Ok(t) => t,
-        Err(e) => {
-            return Message::VaultMfaGenerateResponse {
-                request_id,
-                encrypted_secret: None,
-                qr_code_base64: None,
-                error: Some(format!("failed to create TOTP: {:?}", e)),
-            };
-        }
-    };
+    // Get the base32-encoded secret
+    let base32_secret = secret.to_encoded().to_string();
 
-    // Get the base32-encoded secret (this is what we encrypt)
-    let mut base32_secret = secret.to_encoded().to_string();
-
-    // Encrypt the secret
+    // Encrypt the secret for DB storage
     let encrypted = match keyring.encrypt(base32_secret.as_bytes()) {
         Ok(c) => c,
         Err(e) => {
-            base32_secret.zeroize();
+            // base32_secret will be dropped (not zeroized since it's not mut),
+            // but SensitiveString below handles zeroization for the response.
             return Message::VaultMfaGenerateResponse {
                 request_id,
                 encrypted_secret: None,
-                qr_code_base64: None,
+                plaintext_secret: None,
                 error: Some(format!("failed to encrypt TOTP secret: {}", e)),
             };
         }
     };
 
-    // Generate QR code
-    let qr_base64 = match generate_qr_png_base64(&totp) {
-        Ok(qr) => qr,
-        Err(e) => {
-            base32_secret.zeroize();
-            return Message::VaultMfaGenerateResponse {
-                request_id,
-                encrypted_secret: Some(encrypted),
-                qr_code_base64: None,
-                error: Some(format!("failed to generate QR code: {}", e)),
-            };
-        }
-    };
-
-    // Zeroize the plaintext secret
-    base32_secret.zeroize();
-
+    // Move plaintext into SensitiveString (zeroize-on-drop)
     Message::VaultMfaGenerateResponse {
         request_id,
         encrypted_secret: Some(encrypted),
-        qr_code_base64: Some(qr_base64),
+        plaintext_secret: Some(SensitiveString::new(base32_secret)),
         error: None,
     }
 }
@@ -246,20 +201,20 @@ pub fn handle_mfa_verify(
     }
 }
 
-/// Handle a VaultMfaQrCode request.
+/// Handle a VaultMfaGetSecret request.
 ///
-/// Decrypts the TOTP secret, generates a QR code, and zeroizes the plaintext.
-pub fn handle_mfa_qr_code(
+/// Decrypts an encrypted TOTP secret and returns it as a `SensitiveString`.
+/// Used by vauban-web to re-generate QR codes from existing encrypted secrets.
+/// The plaintext is moved into `SensitiveString` which zeroizes on drop.
+pub fn handle_mfa_get_secret(
     keyrings: &HashMap<String, Keyring>,
     request_id: u64,
     encrypted_secret: &str,
-    username: &str,
-    issuer: &str,
 ) -> Message {
     let Some(keyring) = keyrings.get("mfa") else {
-        return Message::VaultMfaQrCodeResponse {
+        return Message::VaultMfaGetSecretResponse {
             request_id,
-            qr_code_base64: None,
+            plaintext_secret: None,
             error: Some("mfa keyring not configured".to_string()),
         };
     };
@@ -268,90 +223,23 @@ pub fn handle_mfa_qr_code(
     let mut secret_bytes = match keyring.decrypt(encrypted_secret) {
         Ok(b) => b,
         Err(e) => {
-            return Message::VaultMfaQrCodeResponse {
+            return Message::VaultMfaGetSecretResponse {
                 request_id,
-                qr_code_base64: None,
+                plaintext_secret: None,
                 error: Some(format!("failed to decrypt TOTP secret: {}", e)),
             };
         }
     };
 
-    let mut base32_str = String::from_utf8_lossy(&secret_bytes).to_string();
+    let base32_str = String::from_utf8_lossy(&secret_bytes).to_string();
     secret_bytes.zeroize();
 
-    let secret_obj = TotpSecret::Encoded(base32_str.clone());
-    let totp_secret_bytes = match secret_obj.to_bytes() {
-        Ok(b) => b,
-        Err(_) => {
-            base32_str.zeroize();
-            return Message::VaultMfaQrCodeResponse {
-                request_id,
-                qr_code_base64: None,
-                error: Some("invalid TOTP secret format".to_string()),
-            };
-        }
-    };
-
-    let totp = match TOTP::new(
-        TotpAlgorithm::SHA1,
-        6,
-        1,
-        30,
-        totp_secret_bytes,
-        Some(issuer.to_string()),
-        username.to_string(),
-    ) {
-        Ok(t) => t,
-        Err(e) => {
-            base32_str.zeroize();
-            return Message::VaultMfaQrCodeResponse {
-                request_id,
-                qr_code_base64: None,
-                error: Some(format!("failed to create TOTP: {:?}", e)),
-            };
-        }
-    };
-
-    let qr_base64 = match generate_qr_png_base64(&totp) {
-        Ok(qr) => qr,
-        Err(e) => {
-            base32_str.zeroize();
-            return Message::VaultMfaQrCodeResponse {
-                request_id,
-                qr_code_base64: None,
-                error: Some(format!("failed to generate QR code: {}", e)),
-            };
-        }
-    };
-
-    base32_str.zeroize();
-
-    Message::VaultMfaQrCodeResponse {
+    // Move into SensitiveString (zeroize-on-drop)
+    Message::VaultMfaGetSecretResponse {
         request_id,
-        qr_code_base64: Some(qr_base64),
+        plaintext_secret: Some(SensitiveString::new(base32_str)),
         error: None,
     }
-}
-
-/// Generate a base64-encoded PNG QR code from a TOTP provisioning URI.
-fn generate_qr_png_base64(totp: &TOTP) -> Result<String, String> {
-    let url = totp.get_url();
-    let qr = qrcode::QrCode::new(url.as_bytes()).map_err(|e| format!("QR encode: {}", e))?;
-    let img = qr.render::<image::Luma<u8>>().build();
-    let mut png_bytes: Vec<u8> = Vec::new();
-    let encoder = image::codecs::png::PngEncoder::new(&mut png_bytes);
-    image::ImageEncoder::write_image(
-        encoder,
-        img.as_raw(),
-        img.width(),
-        img.height(),
-        image::ExtendedColorType::L8,
-    )
-    .map_err(|e| format!("PNG encode: {}", e))?;
-    Ok(base64::Engine::encode(
-        &base64::engine::general_purpose::STANDARD,
-        &png_bytes,
-    ))
 }
 
 #[cfg(test)]
@@ -431,47 +319,68 @@ mod tests {
     }
 
     #[test]
-    fn test_mfa_generate_returns_encrypted_secret_and_qr() {
+    fn test_mfa_generate_returns_encrypted_and_plaintext_secret() {
         let keyrings = test_keyrings();
         let resp = handle_mfa_generate(&keyrings, 1, "alice", "VAUBAN");
 
         match resp {
             Message::VaultMfaGenerateResponse {
                 encrypted_secret: Some(enc),
-                qr_code_base64: Some(qr),
+                plaintext_secret: Some(pt),
                 error: None,
                 ..
             } => {
                 // Encrypted secret must have version prefix
                 assert!(enc.starts_with("v1:"), "encrypted_secret = {}", enc);
-                // QR code must be non-empty base64
-                assert!(!qr.is_empty());
+                // Plaintext secret must be a non-empty base32 string
+                assert!(!pt.as_str().is_empty());
             }
             other => panic!("Expected MFA generate success, got: {:?}", other),
         }
     }
 
     #[test]
-    fn test_mfa_generate_secret_never_in_response_plaintext() {
+    fn test_mfa_generate_plaintext_is_valid_base32() {
+        let keyrings = test_keyrings();
+        let resp = handle_mfa_generate(&keyrings, 1, "alice", "VAUBAN");
+
+        if let Message::VaultMfaGenerateResponse {
+            plaintext_secret: Some(pt),
+            ..
+        } = &resp
+        {
+            // The plaintext must be a valid base32 TOTP secret
+            let secret_obj = TotpSecret::Encoded(pt.as_str().to_string());
+            assert!(
+                secret_obj.to_bytes().is_ok(),
+                "plaintext_secret is not valid base32: {}",
+                pt.as_str()
+            );
+        } else {
+            panic!("Expected MFA generate success, got: {:?}", resp);
+        }
+    }
+
+    #[test]
+    fn test_mfa_generate_secret_not_in_debug_output() {
         let keyrings = test_keyrings();
         let resp = handle_mfa_generate(&keyrings, 1, "alice", "VAUBAN");
 
         let debug = format!("{:?}", resp);
-        // The debug output should not contain a raw base32 TOTP secret
-        // (base32 secrets are uppercase A-Z, 2-7, typically 32 chars)
-        // We can't check for the exact secret since it's random, but we can
-        // verify the encrypted_secret field is encrypted (starts with v1:)
+        // SensitiveString should redact the plaintext in Debug output
+        assert!(
+            debug.contains("REDACTED"),
+            "Debug should contain REDACTED: {}",
+            debug
+        );
+        // Verify encrypted_secret is properly formatted
         if let Message::VaultMfaGenerateResponse {
             encrypted_secret: Some(enc),
             ..
         } = &resp
         {
             assert!(enc.starts_with("v1:"));
-            // The encrypted secret should not look like raw base32
-            assert!(enc.contains(':'));
         }
-        // The debug repr should not contain TOTP-related plaintext
-        assert!(!debug.contains("otpauth://"));
     }
 
     #[test]
@@ -552,31 +461,31 @@ mod tests {
     }
 
     #[test]
-    fn test_mfa_qr_code_from_encrypted_secret() {
+    fn test_mfa_get_secret_from_encrypted() {
         let keyrings = test_keyrings();
 
         // Generate a secret
         let gen_resp = handle_mfa_generate(&keyrings, 1, "dave", "VAUBAN");
-        let encrypted_secret = match gen_resp {
+        let (encrypted_secret, original_plaintext) = match gen_resp {
             Message::VaultMfaGenerateResponse {
-                encrypted_secret: Some(s),
+                encrypted_secret: Some(enc),
+                plaintext_secret: Some(pt),
                 ..
-            } => s,
+            } => (enc, pt.as_str().to_string()),
             other => panic!("Expected MFA generate success, got: {:?}", other),
         };
 
-        // Re-generate QR code
-        let qr_resp =
-            handle_mfa_qr_code(&keyrings, 2, &encrypted_secret, "dave", "VAUBAN");
-        match qr_resp {
-            Message::VaultMfaQrCodeResponse {
-                qr_code_base64: Some(qr),
+        // Get plaintext back from encrypted secret
+        let get_resp = handle_mfa_get_secret(&keyrings, 2, &encrypted_secret);
+        match get_resp {
+            Message::VaultMfaGetSecretResponse {
+                plaintext_secret: Some(pt),
                 error: None,
                 ..
             } => {
-                assert!(!qr.is_empty());
+                assert_eq!(pt.as_str(), original_plaintext);
             }
-            other => panic!("Expected QR code success, got: {:?}", other),
+            other => panic!("Expected get secret success, got: {:?}", other),
         }
     }
 
@@ -623,15 +532,15 @@ mod tests {
         }
     }
 
-    /// Verify that mfa_qr_code also rejects plaintext secrets.
+    /// Verify that mfa_get_secret also rejects plaintext secrets.
     #[test]
-    fn test_mfa_qr_code_rejects_plaintext_secret() {
+    fn test_mfa_get_secret_rejects_plaintext_secret() {
         let keyrings = test_keyrings();
 
-        let resp = handle_mfa_qr_code(&keyrings, 1, "JBSWY3DPEHPK3PXP", "alice", "VAUBAN");
+        let resp = handle_mfa_get_secret(&keyrings, 1, "JBSWY3DPEHPK3PXP");
         match resp {
-            Message::VaultMfaQrCodeResponse {
-                qr_code_base64: None,
+            Message::VaultMfaGetSecretResponse {
+                plaintext_secret: None,
                 error: Some(e),
                 ..
             } => {

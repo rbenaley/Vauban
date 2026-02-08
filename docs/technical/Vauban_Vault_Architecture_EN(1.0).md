@@ -56,7 +56,7 @@ This document covers the internal architecture of `vauban-vault`. It is a compan
 | Threat | Mitigation |
 |--------|------------|
 | Database compromise (SQL injection, backup theft) | Secrets are ciphertext; master key is not in the database |
-| `vauban-web` process compromise | Web process never sees plaintext secrets or encryption keys |
+| `vauban-web` process compromise | Web process never sees encryption keys; plaintext TOTP secrets are transiently visible for local QR generation, then zeroized |
 | `vauban-vault` memory dump | Plaintext zeroized immediately after use; master key zeroized on drop |
 | Log leakage | `SensitiveString` and `SecretString` redact on `Debug`/`Display` |
 | Master key file theft | File permissions `0400` owner `vauban_vault`; read once then closed |
@@ -68,7 +68,7 @@ This document covers the internal architecture of `vauban-vault`. It is a compan
 
 ### 2.1 Role in the System
 
-`vauban-vault` is a **pure cryptographic service** with no storage, no database, and no network access. It receives plaintext via IPC, encrypts it, and returns ciphertext -- or receives ciphertext and returns plaintext. The encryption keys never leave the vault process.
+`vauban-vault` is a **pure cryptographic service** with no storage, no database, and no network access. It receives plaintext via IPC, encrypts it, and returns ciphertext -- or receives ciphertext and returns plaintext. For TOTP provisioning, it generates and encrypts the secret, then returns the plaintext as a `SensitiveString` (zeroize-on-drop) so the web layer can generate the QR code locally. The encryption keys never leave the vault process.
 
 ```mermaid
 flowchart LR
@@ -163,9 +163,7 @@ hkdf = "0.12"                      # HKDF-SHA256 key derivation (RFC 5869)
 sha3 = "0.10"                      # SHA3-256 for HKDF (RustCrypto, PQC-aligned)
 base64 = "0.22"                    # Ciphertext encoding for DB storage
 zeroize = { workspace = true }     # Memory scrubbing on drop
-totp-rs = "5"                      # TOTP generation and verification
-qrcode = "0.14"                    # QR code generation for MFA setup
-image = { version = "0.25", default-features = false, features = ["png"] }
+totp-rs = "5"                      # TOTP generation and verification (QR moved to vauban-web)
 tracing.workspace = true           # Structured logging
 tracing-subscriber.workspace = true
 anyhow.workspace = true            # Error handling
@@ -344,21 +342,20 @@ VaultDecryptResponse {
 
 // ========== Vault MFA (Web -> Vault) ==========
 
-/// Generate a new TOTP secret, encrypt it, and return the QR code.
-/// The plaintext secret NEVER leaves the vault process.
+/// Generate a new TOTP secret, encrypt it, and return both forms.
+/// The vault returns the plaintext as a SensitiveString (zeroize-on-drop)
+/// so the web layer can generate the QR code locally.
 VaultMfaGenerate {
     request_id: u64,
-    /// Username for the provisioning URI.
     username: String,
-    /// Issuer for the provisioning URI (e.g. "VAUBAN").
     issuer: String,
 },
 VaultMfaGenerateResponse {
     request_id: u64,
     /// Encrypted TOTP secret (store in DB as mfa_secret).
     encrypted_secret: Option<String>,
-    /// Base64-encoded PNG QR code (display once to user).
-    qr_code_base64: Option<String>,
+    /// Plaintext TOTP secret in base32, wrapped in SensitiveString.
+    plaintext_secret: Option<SensitiveString>,
     error: Option<String>,
 },
 
@@ -377,17 +374,16 @@ VaultMfaVerifyResponse {
     error: Option<String>,
 },
 
-/// Re-generate the QR code from an existing encrypted secret.
-/// Used when the MFA setup page is reloaded.
-VaultMfaQrCode {
+/// Decrypt an encrypted TOTP secret and return the plaintext.
+/// Used by vauban-web to re-generate QR codes from existing encrypted secrets.
+VaultMfaGetSecret {
     request_id: u64,
     encrypted_secret: String,
-    username: String,
-    issuer: String,
 },
-VaultMfaQrCodeResponse {
+VaultMfaGetSecretResponse {
     request_id: u64,
-    qr_code_base64: Option<String>,
+    /// Decrypted TOTP secret in base32, wrapped in SensitiveString.
+    plaintext_secret: Option<SensitiveString>,
     error: Option<String>,
 },
 ```
@@ -406,13 +402,15 @@ sequenceDiagram
     
     alt No existing secret
         W->>V: VaultMfaGenerate(username, "VAUBAN")
-        Note over V: Generate TOTP secret (in-memory)<br/>Encrypt with keyring["mfa"]<br/>Generate QR code<br/>Zeroize plaintext
-        V->>W: VaultMfaGenerateResponse(encrypted_secret, qr_code_base64)
+        Note over V: Generate TOTP secret (in-memory)<br/>Encrypt with keyring["mfa"]<br/>Return encrypted + plaintext (SensitiveString)
+        V->>W: VaultMfaGenerateResponse(encrypted_secret, plaintext_secret)
         W->>DB: UPDATE users SET mfa_secret = encrypted_secret
+        Note over W: Generate QR code from plaintext_secret<br/>Zeroize plaintext + QR after render
     else Existing encrypted secret
-        W->>V: VaultMfaQrCode(encrypted_secret, username, "VAUBAN")
-        Note over V: Decrypt secret<br/>Generate QR code<br/>Zeroize plaintext
-        V->>W: VaultMfaQrCodeResponse(qr_code_base64)
+        W->>V: VaultMfaGetSecret(encrypted_secret)
+        Note over V: Decrypt secret<br/>Return plaintext (SensitiveString)
+        V->>W: VaultMfaGetSecretResponse(plaintext_secret)
+        Note over W: Generate QR code from plaintext_secret<br/>Zeroize plaintext + QR after render
     end
     
     W->>U: Display QR code for scanning
@@ -754,10 +752,10 @@ Five points of intervention in `vauban-web`:
 | File | Function | Current (plaintext) | Target (encrypted) |
 |------|----------|--------------------|--------------------|
 | `handlers/auth.rs:282` | Login API (MFA inline) | `AuthService::verify_totp(secret, code)` | `vault_client.mfa_verify(encrypted_secret, code)` |
-| `handlers/auth.rs:652` | MFA setup page | `generate_totp_secret()` + store plaintext | `vault_client.mfa_generate()` + store ciphertext |
+| `handlers/auth.rs:652` | MFA setup page | `generate_totp_secret()` + store plaintext | `vault_client.mfa_generate()` + local QR generation + store ciphertext |
 | `handlers/auth.rs:764` | MFA setup confirm | `AuthService::verify_totp(&secret, code)` | `vault_client.mfa_verify(encrypted_secret, code)` |
 | `handlers/auth.rs:929` | MFA verify page | `AuthService::verify_totp(&secret, code)` | `vault_client.mfa_verify(encrypted_secret, code)` |
-| `handlers/web.rs:1409` | Profile MFA setup | `generate_totp_secret()` + `generate_qr_code()` | `vault_client.mfa_generate()` |
+| `handlers/web.rs:1409` | Profile MFA setup | `generate_totp_secret()` + `generate_qr_code()` | `vault_client.mfa_generate()` + local QR generation |
 
 #### 7.1.3 vauban-web: SSH Credential Handlers
 
@@ -950,10 +948,13 @@ fn test_decrypt_with_unknown_version_fails() { ... }
 
 ```rust
 #[test]
-fn test_mfa_generate_returns_encrypted_secret_and_qr() { ... }
+fn test_mfa_generate_returns_encrypted_and_plaintext_secret() { ... }
 
 #[test]
-fn test_mfa_generate_secret_never_in_response_plaintext() { ... }
+fn test_mfa_generate_plaintext_is_valid_base32() { ... }
+
+#[test]
+fn test_mfa_generate_secret_not_in_debug_output() { ... }
 
 #[test]
 fn test_mfa_verify_valid_code_returns_true() { ... }
@@ -1004,7 +1005,10 @@ fn test_sensitive_string_debug_is_redacted() { ... }
 fn test_ciphertext_does_not_contain_plaintext() { ... }
 
 #[test]
-fn test_qr_code_base64_does_not_contain_raw_secret() { ... }
+fn test_mfa_get_secret_from_encrypted() { ... }
+
+#[test]
+fn test_mfa_get_secret_rejects_plaintext_secret() { ... }
 ```
 
 ### 9.6 Structural Tests (Compile-Time Guarantees)
@@ -1049,7 +1053,7 @@ fn test_vault_has_no_network_dependency() {
 | Key derivation | HKDF-SHA3-256 with domain labels | Deterministic, restartable, domain-separated, PQC-aligned |
 | Key rotation | Version counter + multi-version keyring | No downtime, no re-encryption required, rewrap optional |
 | Ciphertext format | `v{N}:{base64}` | Self-describing, compact, fits existing DB columns |
-| TOTP handling | In-process generation and verification | Secret never leaves vault; only QR code and boolean result are returned |
+| TOTP handling | Secret generation, encryption, decryption, and verification | Encryption keys never leave vault; TOTP plaintext is returned as SensitiveString (zeroize-on-drop) for QR generation by vauban-web |
 | IPC transport of secrets | `SensitiveString` | Zeroize-on-drop + redacted Debug, compatible with bincode (H-10) |
 
 ### 10.2 Scope and Boundaries
@@ -1060,7 +1064,7 @@ The vault is a **pure cryptographic service**. Business logic belongs in higher 
 |------------|---------------------|-----------------------------|
 | Symmetric encrypt/decrypt | Yes (AES-256-GCM) | Calls vault via IPC |
 | Key derivation and rotation | Yes (HKDF-SHA3-256, keyring) | Triggers rotation via restart |
-| TOTP generate/verify | Yes (secret never leaves vault) | Stores encrypted secret in DB |
+| TOTP generate/verify | Yes (keys never leave vault; plaintext returned as SensitiveString for web-side QR generation) | Stores encrypted secret in DB; generates QR code locally |
 | SSH/Unix/Windows credentials | Yes (encrypt/decrypt any string) | Stores ciphertext in DB, manages asset model |
 | Third-party secrets (config files, API keys) | Yes (encrypt/decrypt any blob) | `vauban-web` exposes REST API, handles authN/authZ |
 | SSH certificate signing (CA) | Future (asymmetric crypto extension) | Certificate lifecycle, policy |
@@ -1077,7 +1081,7 @@ The vault is a **pure cryptographic service**. Business logic belongs in higher 
 Core encryption-at-rest resolving M-1 and C-2:
 
 - `VaultEncrypt` / `VaultDecrypt` with domain-separated keyrings
-- `VaultMfaGenerate` / `VaultMfaVerify` / `VaultMfaQrCode`
+- `VaultMfaGenerate` / `VaultMfaVerify` / `VaultMfaGetSecret`
 - Supports: SSH passwords, private keys, passphrases, TOTP secrets
 
 #### Phase 2 -- Credential Types Expansion
@@ -1235,9 +1239,7 @@ All credential-type values fit within `VARCHAR(255)`. Larger secrets (SSH privat
 | `base64` | 0.22 | MIT/Apache-2.0 | Widely used | Ciphertext encoding |
 | `zeroize` | 1.8 | MIT/Apache-2.0 | RustCrypto, security-focused | Memory scrubbing |
 | `totp-rs` | 5 | MIT | TOTP-focused | TOTP generation/verification |
-| `qrcode` | 0.14 | MIT/Apache-2.0 | QR generation | MFA setup QR codes |
-| `image` | 0.25 | MIT/Apache-2.0 | PNG encoding only | QR code to PNG |
 
-Total new dependencies: 8 crates (+ their transitive deps from RustCrypto which are already in the workspace via `secrecy`/`zeroize`).
+Total new dependencies: 6 crates (+ their transitive deps from RustCrypto which are already in the workspace via `secrecy`/`zeroize`). Note: `qrcode` and `image` are no longer vault dependencies; QR generation is handled by `vauban-web` via `totp-rs`'s `qr` feature.
 
 ---

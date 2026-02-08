@@ -32,15 +32,15 @@ enum VaultResponse {
     },
     MfaGenerate {
         encrypted_secret: Option<String>,
-        qr_code_base64: Option<String>,
+        plaintext_secret: Option<SensitiveString>,
         error: Option<String>,
     },
     MfaVerify {
         valid: bool,
         error: Option<String>,
     },
-    MfaQrCode {
-        qr_code_base64: Option<String>,
+    MfaGetSecret {
+        plaintext_secret: Option<SensitiveString>,
         error: Option<String>,
     },
 }
@@ -152,15 +152,17 @@ impl VaultCryptoClient {
         }
     }
 
-    /// Generate a new MFA TOTP secret, encrypt it, and return the QR code.
+    /// Generate a new MFA TOTP secret and encrypt it.
     ///
-    /// Returns `(encrypted_secret, qr_code_base64)`.
-    /// The plaintext TOTP secret NEVER leaves the vault process.
+    /// Returns `(encrypted_secret, plaintext_secret)`.
+    /// The vault generates and encrypts the secret; the plaintext is returned
+    /// as a `SensitiveString` (zeroize-on-drop) for QR code generation by the
+    /// web layer.
     pub async fn mfa_generate(
         &self,
         username: &str,
         issuer: &str,
-    ) -> AppResult<(String, String)> {
+    ) -> AppResult<(String, SensitiveString)> {
         let request_id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
 
@@ -184,9 +186,9 @@ impl VaultCryptoClient {
         match resp {
             VaultResponse::MfaGenerate {
                 encrypted_secret: Some(enc),
-                qr_code_base64: Some(qr),
+                plaintext_secret: Some(pt),
                 error: None,
-            } => Ok((enc, qr)),
+            } => Ok((enc, pt)),
             VaultResponse::MfaGenerate {
                 error: Some(e), ..
             } => Err(AppError::Ipc(format!("vault mfa_generate error: {}", e))),
@@ -229,44 +231,43 @@ impl VaultCryptoClient {
         }
     }
 
-    /// Re-generate a QR code from an existing encrypted TOTP secret.
-    pub async fn mfa_qr_code(
+    /// Decrypt an encrypted TOTP secret and return the plaintext.
+    ///
+    /// Used to re-generate QR codes from existing encrypted secrets.
+    /// Returns a `SensitiveString` (zeroize-on-drop).
+    pub async fn mfa_get_secret(
         &self,
         encrypted_secret: &str,
-        username: &str,
-        issuer: &str,
-    ) -> AppResult<String> {
+    ) -> AppResult<SensitiveString> {
         let request_id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
 
         self.pending_requests.lock().await.insert(request_id, tx);
 
-        let msg = Message::VaultMfaQrCode {
+        let msg = Message::VaultMfaGetSecret {
             request_id,
             encrypted_secret: encrypted_secret.to_string(),
-            username: username.to_string(),
-            issuer: issuer.to_string(),
         };
         self.channel
             .send(&msg)
             .map_err(|e| AppError::Ipc(format!("vault send error: {}", e)))?;
 
-        debug!(request_id, username, "VaultMfaQrCode request sent");
+        debug!(request_id, "VaultMfaGetSecret request sent");
 
         let resp = rx
             .await
             .map_err(|_| AppError::Ipc("vault response channel dropped".to_string()))?;
 
         match resp {
-            VaultResponse::MfaQrCode {
-                qr_code_base64: Some(qr),
+            VaultResponse::MfaGetSecret {
+                plaintext_secret: Some(pt),
                 error: None,
-            } => Ok(qr),
-            VaultResponse::MfaQrCode {
+            } => Ok(pt),
+            VaultResponse::MfaGetSecret {
                 error: Some(e), ..
-            } => Err(AppError::Ipc(format!("vault mfa_qr_code error: {}", e))),
+            } => Err(AppError::Ipc(format!("vault mfa_get_secret error: {}", e))),
             _ => Err(AppError::Ipc(
-                "unexpected vault mfa_qr_code response".to_string(),
+                "unexpected vault mfa_get_secret response".to_string(),
             )),
         }
     }
@@ -326,12 +327,12 @@ impl VaultCryptoClient {
 
             Message::VaultMfaGenerateResponse {
                 encrypted_secret,
-                qr_code_base64,
+                plaintext_secret,
                 error,
                 ..
             } => VaultResponse::MfaGenerate {
                 encrypted_secret,
-                qr_code_base64,
+                plaintext_secret,
                 error,
             },
 
@@ -339,12 +340,12 @@ impl VaultCryptoClient {
                 VaultResponse::MfaVerify { valid, error }
             }
 
-            Message::VaultMfaQrCodeResponse {
-                qr_code_base64,
+            Message::VaultMfaGetSecretResponse {
+                plaintext_secret,
                 error,
                 ..
-            } => VaultResponse::MfaQrCode {
-                qr_code_base64,
+            } => VaultResponse::MfaGetSecret {
+                plaintext_secret,
                 error,
             },
 
@@ -433,11 +434,13 @@ mod tests {
     fn test_vault_response_mfa_generate() {
         let resp = VaultResponse::MfaGenerate {
             encrypted_secret: Some("v1:enc".to_string()),
-            qr_code_base64: Some("base64data".to_string()),
+            plaintext_secret: Some(SensitiveString::new("JBSWY3DPEHPK3PXP".to_string())),
             error: None,
         };
         let debug = format!("{:?}", resp);
         assert!(debug.contains("MfaGenerate"));
+        // SensitiveString should be redacted in debug output
+        assert!(debug.contains("REDACTED"));
     }
 
     #[test]
