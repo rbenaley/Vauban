@@ -34,7 +34,7 @@ use ipc::ProxySshClient;
 use ipc::VaultCryptoClient;
 use services::auth::AuthService;
 use services::broadcast::BroadcastService;
-use services::connections::UserConnectionRegistry;
+use services::connections::{UserConnectionRegistry, WsConnectionCounter};
 use services::rate_limit::RateLimiter;
 use std::sync::Arc;
 
@@ -50,6 +50,9 @@ pub struct AppState {
     pub broadcast: BroadcastService,
     /// Registry for WebSocket connections with personalized context.
     pub user_connections: UserConnectionRegistry,
+    /// Per-user WebSocket connection counter (L-8).
+    /// Applied as middleware on all WS routes to enforce the configured limit.
+    pub ws_counter: WsConnectionCounter,
     /// Rate limiter for login endpoints.
     pub rate_limiter: RateLimiter,
     /// SSH proxy client for IPC with vauban-proxy-ssh.

@@ -32,6 +32,7 @@ pub struct TestApp {
     pub config: Config,
     pub broadcast: BroadcastService,
     pub user_connections: vauban_web::services::connections::UserConnectionRegistry,
+    pub ws_counter: vauban_web::services::connections::WsConnectionCounter,
 }
 
 /// Global test app instance (lazy initialization).
@@ -80,8 +81,11 @@ impl TestApp {
         // Create broadcast service
         let broadcast = BroadcastService::new();
 
-        // Create user connection registry
+        // Create user connection registry + WS counter
         let user_connections = vauban_web::services::connections::UserConnectionRegistry::new();
+        let ws_counter = vauban_web::services::connections::WsConnectionCounter::new(
+            config.websocket.max_connections_per_user,
+        );
 
         // Create rate limiter (in-memory for tests, with higher limit)
         // Use 1000 requests per minute in tests to avoid rate limiting interference
@@ -98,6 +102,7 @@ impl TestApp {
             auth_service: auth_service.clone(),
             broadcast: broadcast.clone(),
             user_connections: user_connections.clone(),
+            ws_counter: ws_counter.clone(),
             rate_limiter,
             ssh_proxy: None,      // No SSH proxy in tests
             supervisor: None,     // No supervisor in tests
@@ -117,6 +122,7 @@ impl TestApp {
             config,
             broadcast,
             user_connections,
+            ws_counter,
         }
     }
 
@@ -264,10 +270,14 @@ fn build_test_router(state: AppState) -> Router {
         handlers::websocket::ws_session_guard,
     );
 
-    Router::new()
-        // Login page (for redirect tests)
-        .route("/login", get(handlers::web::login_page))
-        // WebSocket routes
+    // L-8: Per-user WS connection limit middleware
+    let ws_limit_layer = axum::middleware::from_fn_with_state(
+        state.clone(),
+        handlers::websocket::ws_connection_limit,
+    );
+
+    // WebSocket routes with connection limit middleware
+    let ws_routes = Router::new()
         .route("/ws/dashboard", get(handlers::websocket::dashboard_ws))
         .route(
             "/ws/session/{id}",
@@ -281,6 +291,13 @@ fn build_test_router(state: AppState) -> Router {
             "/ws/sessions/active",
             get(handlers::websocket::active_sessions_ws),
         )
+        .layer(ws_limit_layer);
+
+    Router::new()
+        // Login page (for redirect tests)
+        .route("/login", get(handlers::web::login_page))
+        // WebSocket routes (with L-8 connection limit layer)
+        .merge(ws_routes)
         // Auth routes
         .route("/api/v1/auth/login", post(handlers::auth::login))
         .route("/api/v1/auth/logout", post(handlers::auth::logout))

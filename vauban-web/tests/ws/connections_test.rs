@@ -20,7 +20,7 @@ async fn test_user_connection_registry() {
     let token_hash = "test_token_hash".to_string();
 
     // Register a connection
-    let (conn_id, _receiver) = app.user_connections.register(&user_uuid, token_hash).await.unwrap();
+    let (conn_id, _receiver) = app.user_connections.register(&user_uuid, token_hash).await;
 
     // Check if user has connections
     let count = app.user_connections.connection_count(&user_uuid).await;
@@ -48,18 +48,15 @@ async fn test_user_multiple_connections() {
     let (conn1, _rx1) = app
         .user_connections
         .register(&user_uuid, "hash1".to_string())
-        .await
-        .unwrap();
+        .await;
     let (conn2, _rx2) = app
         .user_connections
         .register(&user_uuid, "hash2".to_string())
-        .await
-        .unwrap();
+        .await;
     let (conn3, _rx3) = app
         .user_connections
         .register(&user_uuid, "hash3".to_string())
-        .await
-        .unwrap();
+        .await;
 
     assert_eq!(app.user_connections.connection_count(&user_uuid).await, 3);
 
@@ -90,18 +87,15 @@ async fn test_total_connections() {
     let (_conn1, _rx1) = app
         .user_connections
         .register(&user1, "hash1".to_string())
-        .await
-        .unwrap();
+        .await;
     let (_conn2, _rx2) = app
         .user_connections
         .register(&user1, "hash2".to_string())
-        .await
-        .unwrap();
+        .await;
     let (_conn3, _rx3) = app
         .user_connections
         .register(&user2, "hash3".to_string())
-        .await
-        .unwrap();
+        .await;
 
     // Total should be 3
     let total = app.user_connections.total_connections().await;

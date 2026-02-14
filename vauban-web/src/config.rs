@@ -230,6 +230,9 @@ pub struct Config {
     /// API configuration for M2M endpoints.
     #[serde(default)]
     pub api: ApiConfig,
+    /// WebSocket configuration.
+    #[serde(default)]
+    pub websocket: WebSocketConfig,
 }
 
 debug_redacted_struct!(
@@ -381,6 +384,25 @@ impl Default for ApiConfig {
         Self {
             enabled: true,
             prefix: "/api/v1".to_string(),
+        }
+    }
+}
+
+/// WebSocket configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebSocketConfig {
+    /// Maximum number of concurrent WebSocket connections per user (L-8).
+    /// Prevents a single user from exhausting server resources.
+    /// Each browser tab can open multiple WebSocket connections (dashboard,
+    /// notifications, terminal, session, active-sessions), so this should be
+    /// set high enough to support legitimate use (e.g. 10 SSH tabs ~ 30 WS).
+    pub max_connections_per_user: usize,
+}
+
+impl Default for WebSocketConfig {
+    fn default() -> Self {
+        Self {
+            max_connections_per_user: 30,
         }
     }
 }

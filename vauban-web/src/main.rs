@@ -282,7 +282,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::debug!("Broadcast service initialized");
 
     let user_connections = vauban_web::services::connections::UserConnectionRegistry::new();
-    tracing::debug!("User connection registry initialized");
+    let ws_counter = vauban_web::services::connections::WsConnectionCounter::new(
+        config.websocket.max_connections_per_user,
+    );
+    tracing::info!(
+        max_per_user = config.websocket.max_connections_per_user,
+        "WebSocket connection counter initialized"
+    );
 
     // 7. Create rate limiter (may open Redis connection)
     let rate_limiter = RateLimiter::new(
@@ -355,6 +361,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         auth_service,
         broadcast: broadcast.clone(),
         user_connections,
+        ws_counter,
         rate_limiter,
         ssh_proxy,
         supervisor: supervisor_client,
@@ -541,6 +548,14 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
         handlers::websocket::ws_session_guard,
     );
 
+    // L-8: ws_connection_limit middleware enforces per-user WebSocket connection limit
+    // on ALL WS routes. Every current and future handler added to ws_routes is
+    // automatically protected.
+    let ws_limit_layer = axum::middleware::from_fn_with_state(
+        state.clone(),
+        handlers::websocket::ws_connection_limit,
+    );
+
     let ws_routes = Router::new()
         .route("/ws/dashboard", get(handlers::websocket::dashboard_ws))
         // Session-specific routes get the ownership guard middleware
@@ -559,7 +574,9 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
         .route(
             "/ws/terminal/{session_id}",
             get(handlers::websocket::terminal_ws).layer(session_guard),
-        );
+        )
+        // L-8: Apply per-user connection limit to ALL WebSocket routes
+        .layer(ws_limit_layer);
 
     // ==========================================================================
     // WEB ROUTES - Always active (HTML pages for human users)

@@ -517,3 +517,206 @@ async fn test_terminal_ws_uuid_session_id() {
         status
     );
 }
+
+// ==================== L-8: Connection Limit Integration Tests ====================
+
+/// Test L-8: WebSocket connection limit is enforced via middleware.
+///
+/// Pre-fills the WsConnectionCounter to the limit, then verifies that
+/// new WebSocket requests are rejected with 429 Too Many Requests.
+#[tokio::test]
+#[serial]
+async fn test_l8_ws_connection_limit_enforced() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let admin = create_admin_user(&mut *conn, &app.auth_service, &unique_name("wslimit")).await;
+    drop(conn);
+    {
+        let mut c = app.get_conn().await;
+        test_db::cleanup(&mut *c).await;
+    }
+
+    let limit = app.config.websocket.max_connections_per_user;
+
+    // Pre-fill the counter to the limit by acquiring guards directly.
+    // These guards simulate existing WS connections for this user.
+    let mut guards = Vec::new();
+    for _ in 0..limit {
+        let guard = app
+            .ws_counter
+            .try_acquire(&admin.user.uuid.to_string())
+            .await
+            .expect("Should be able to acquire up to the limit");
+        guards.push(guard);
+    }
+
+    // Verify the counter is at the limit
+    assert_eq!(
+        app.ws_counter.count(&admin.user.uuid.to_string()).await,
+        limit,
+        "Counter should be at the limit"
+    );
+
+    // Now try to open a WebSocket -- should be rejected with 429
+    let response = app
+        .server
+        .get("/ws/dashboard")
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::UPGRADE, "websocket")
+        .add_header(header::CONNECTION, "Upgrade")
+        .add_header(header::SEC_WEBSOCKET_KEY, "dGhlIHNhbXBsZSBub25jZQ==")
+        .add_header(header::SEC_WEBSOCKET_VERSION, "13")
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert_eq!(
+        status, 429,
+        "L-8: WebSocket request should be rejected with 429 when limit is reached, got {}",
+        status
+    );
+
+    // Drop all guards to free the slots
+    drop(guards);
+
+    // After dropping guards, new connections should be allowed again
+    assert_eq!(
+        app.ws_counter.count(&admin.user.uuid.to_string()).await,
+        0,
+        "Counter should be 0 after dropping all guards"
+    );
+
+    // This request should now succeed (101 or 400/426 in test env)
+    let response = app
+        .server
+        .get("/ws/dashboard")
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::UPGRADE, "websocket")
+        .add_header(header::CONNECTION, "Upgrade")
+        .add_header(header::SEC_WEBSOCKET_KEY, "dGhlIHNhbXBsZSBub25jZQ==")
+        .add_header(header::SEC_WEBSOCKET_VERSION, "13")
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 101 || status == 400 || status == 426,
+        "L-8: WebSocket request should succeed after limit is freed, got {}",
+        status
+    );
+}
+
+/// Test L-8: Connection limit rejection message contains useful info.
+#[tokio::test]
+#[serial]
+async fn test_l8_ws_rejection_contains_limit_message() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let admin = create_admin_user(&mut *conn, &app.auth_service, &unique_name("wslimmsg")).await;
+    drop(conn);
+    {
+        let mut c = app.get_conn().await;
+        test_db::cleanup(&mut *c).await;
+    }
+
+    let limit = app.config.websocket.max_connections_per_user;
+
+    // Fill the counter
+    let mut guards = Vec::new();
+    for _ in 0..limit {
+        guards.push(
+            app.ws_counter
+                .try_acquire(&admin.user.uuid.to_string())
+                .await
+                .unwrap(),
+        );
+    }
+
+    // Request should be rejected
+    let response = app
+        .server
+        .get("/ws/notifications")
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::UPGRADE, "websocket")
+        .add_header(header::CONNECTION, "Upgrade")
+        .add_header(header::SEC_WEBSOCKET_KEY, "dGhlIHNhbXBsZSBub25jZQ==")
+        .add_header(header::SEC_WEBSOCKET_VERSION, "13")
+        .await;
+
+    assert_eq!(response.status_code().as_u16(), 429);
+    let body = response.text();
+    assert!(
+        body.contains("connection limit reached"),
+        "L-8: Rejection body should contain 'connection limit reached', got: {}",
+        body
+    );
+    assert!(
+        body.contains(&format!("{}", limit)),
+        "L-8: Rejection body should contain the limit value ({}), got: {}",
+        limit,
+        body
+    );
+
+    drop(guards);
+}
+
+/// Test L-8: Different users have independent limits.
+#[tokio::test]
+#[serial]
+async fn test_l8_ws_limit_per_user_independent() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let admin1 = create_admin_user(&mut *conn, &app.auth_service, &unique_name("wslim1")).await;
+    let admin2 = create_admin_user(&mut *conn, &app.auth_service, &unique_name("wslim2")).await;
+    drop(conn);
+    {
+        let mut c = app.get_conn().await;
+        test_db::cleanup(&mut *c).await;
+    }
+
+    let limit = app.config.websocket.max_connections_per_user;
+
+    // Fill user1 to the limit
+    let mut guards = Vec::new();
+    for _ in 0..limit {
+        guards.push(
+            app.ws_counter
+                .try_acquire(&admin1.user.uuid.to_string())
+                .await
+                .unwrap(),
+        );
+    }
+
+    // user1 should be rejected
+    let response = app
+        .server
+        .get("/ws/dashboard")
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin1.token))
+        .add_header(header::UPGRADE, "websocket")
+        .add_header(header::CONNECTION, "Upgrade")
+        .add_header(header::SEC_WEBSOCKET_KEY, "dGhlIHNhbXBsZSBub25jZQ==")
+        .add_header(header::SEC_WEBSOCKET_VERSION, "13")
+        .await;
+    assert_eq!(
+        response.status_code().as_u16(),
+        429,
+        "L-8: user1 should be rejected (at limit)"
+    );
+
+    // user2 should still be allowed (independent counter)
+    let response = app
+        .server
+        .get("/ws/dashboard")
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin2.token))
+        .add_header(header::UPGRADE, "websocket")
+        .add_header(header::CONNECTION, "Upgrade")
+        .add_header(header::SEC_WEBSOCKET_KEY, "dGhlIHNhbXBsZSBub25jZQ==")
+        .add_header(header::SEC_WEBSOCKET_VERSION, "13")
+        .await;
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 101 || status == 400 || status == 426,
+        "L-8: user2 should NOT be rejected (independent limit), got {}",
+        status
+    );
+
+    drop(guards);
+}

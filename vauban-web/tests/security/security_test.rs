@@ -5892,37 +5892,231 @@ fn test_l6_no_duplicate_constant_time_compare() {
 }
 
 // ==========================================================================
-// L-8: Per-user WebSocket connection limit
+// L-8: Per-user WebSocket connection limit (unified middleware approach)
 // ==========================================================================
 
 #[test]
-fn test_l8_connection_limit_constant_exists() {
+fn test_l8_ws_connection_counter_exists() {
     let source = include_str!("../../src/services/connections.rs");
     let prod = prod_source(source);
     assert!(
-        prod.contains("MAX_CONNECTIONS_PER_USER"),
-        "L-8 regression: MAX_CONNECTIONS_PER_USER constant must be defined in connections.rs"
+        prod.contains("WsConnectionCounter"),
+        "L-8 regression: connections.rs must define WsConnectionCounter for unified per-user WS limiting"
+    );
+    assert!(
+        prod.contains("try_acquire"),
+        "L-8 regression: WsConnectionCounter must have a try_acquire method"
     );
 }
 
 #[test]
-fn test_l8_register_returns_result() {
+fn test_l8_ws_connection_guard_raii() {
+    let source = include_str!("../../src/services/connections.rs");
+    let prod = prod_source(source);
+    assert!(
+        prod.contains("WsConnectionGuard"),
+        "L-8 regression: connections.rs must define WsConnectionGuard (RAII)"
+    );
+    assert!(
+        prod.contains("impl Drop for WsConnectionGuard"),
+        "L-8 regression: WsConnectionGuard must implement Drop to decrement counter"
+    );
+    assert!(
+        prod.contains("fetch_sub"),
+        "L-8 regression: WsConnectionGuard::drop must use fetch_sub to decrement atomic counter"
+    );
+}
+
+#[test]
+fn test_l8_connection_limit_error() {
     let source = include_str!("../../src/services/connections.rs");
     let prod = prod_source(source);
     assert!(
         prod.contains("ConnectionLimitError"),
-        "L-8 regression: register() must return Result with ConnectionLimitError"
+        "L-8 regression: connections.rs must define ConnectionLimitError"
+    );
+    assert!(
+        prod.contains("connection limit reached"),
+        "L-8 regression: ConnectionLimitError message must indicate limit reached"
     );
 }
 
 #[test]
-fn test_l8_websocket_handler_checks_limit() {
+fn test_l8_ws_connection_limit_middleware_exists() {
     let source = include_str!("../../src/handlers/websocket.rs");
     let prod = prod_source(source);
     assert!(
-        prod.contains("connection limit reached")
-            || prod.contains("ConnectionLimitError")
-            || prod.contains("MAX_CONNECTIONS_PER_USER"),
-        "L-8 regression: WebSocket handler must check per-user connection limit"
+        prod.contains("ws_connection_limit"),
+        "L-8 regression: websocket.rs must define ws_connection_limit middleware"
     );
+    assert!(
+        prod.contains("try_acquire"),
+        "L-8 regression: ws_connection_limit middleware must call try_acquire on WsConnectionCounter"
+    );
+    assert!(
+        prod.contains("TOO_MANY_REQUESTS"),
+        "L-8 regression: ws_connection_limit must return 429 when limit is reached"
+    );
+}
+
+#[test]
+fn test_l8_middleware_applied_to_ws_routes() {
+    let source = include_str!("../../src/main.rs");
+    let prod = prod_source(source);
+    assert!(
+        prod.contains("ws_connection_limit"),
+        "L-8 regression: main.rs must apply ws_connection_limit middleware to WS routes"
+    );
+    assert!(
+        prod.contains("ws_limit_layer") || prod.contains("ws_connection_limit"),
+        "L-8 regression: main.rs must create the WS limit layer"
+    );
+}
+
+#[test]
+fn test_l8_ws_counter_in_app_state() {
+    let source = include_str!("../../src/lib.rs");
+    let prod = prod_source(source);
+    assert!(
+        prod.contains("ws_counter"),
+        "L-8 regression: AppState must include ws_counter (WsConnectionCounter)"
+    );
+    assert!(
+        prod.contains("WsConnectionCounter"),
+        "L-8 regression: AppState must import WsConnectionCounter"
+    );
+}
+
+#[test]
+fn test_l8_config_has_websocket_section() {
+    let source = include_str!("../../src/config.rs");
+    let prod = prod_source(source);
+    assert!(
+        prod.contains("WebSocketConfig"),
+        "L-8 regression: config.rs must define WebSocketConfig for TOML configuration"
+    );
+    assert!(
+        prod.contains("max_connections_per_user"),
+        "L-8 regression: WebSocketConfig must have max_connections_per_user field"
+    );
+}
+
+#[test]
+fn test_l8_default_limit_is_30() {
+    let source = include_str!("../../src/config.rs");
+    let prod = prod_source(source);
+    // The Default impl should set max_connections_per_user to 30
+    assert!(
+        prod.contains("max_connections_per_user: 30"),
+        "L-8 regression: default max_connections_per_user must be 30"
+    );
+}
+
+#[test]
+fn test_l8_register_is_simple_tuple() {
+    // After the unified middleware approach, register() should return a simple tuple,
+    // NOT a Result. The connection limit is enforced by the middleware, not by register().
+    let source = include_str!("../../src/services/connections.rs");
+    let prod = prod_source(source);
+    assert!(
+        !prod.contains("pub async fn register")
+            || !prod.contains("-> Result<(Uuid, mpsc::Receiver<String>), ConnectionLimitError>"),
+        "L-8 regression: register() must NOT return Result -- limit is enforced by middleware"
+    );
+}
+
+#[test]
+fn test_l8_all_ws_routes_protected_by_layer() {
+    // Verify that the layer is applied to the entire ws_routes group,
+    // not to individual routes. This ensures future handlers are also protected.
+    let source = include_str!("../../src/main.rs");
+    let prod = prod_source(source);
+    // The layer must be applied at the Router level, not per-route
+    assert!(
+        prod.contains(".layer(ws_limit_layer)"),
+        "L-8 regression: ws_limit_layer must be applied as .layer() on the ws_routes Router"
+    );
+}
+
+#[test]
+fn test_l8_ws_guard_extractor_exists() {
+    // WsGuard must be defined as an Axum extractor wrapping Arc<WsConnectionGuard>
+    let source = include_str!("../../src/handlers/websocket.rs");
+    let prod = prod_source(source);
+    assert!(
+        prod.contains("struct WsGuard"),
+        "L-8 regression: websocket.rs must define WsGuard extractor"
+    );
+    assert!(
+        prod.contains("FromRequestParts"),
+        "L-8 regression: WsGuard must implement FromRequestParts (Axum extractor)"
+    );
+}
+
+#[test]
+fn test_l8_all_ws_handlers_accept_ws_guard() {
+    // CRITICAL: Every WebSocket handler must accept WsGuard as a parameter
+    // and pass it into on_upgrade(). Without this, the RAII guard is dropped
+    // after the HTTP handshake, not when the WebSocket connection closes.
+    let source = include_str!("../../src/handlers/websocket.rs");
+    let prod = prod_source(source);
+
+    let handlers = [
+        "dashboard_ws",
+        "session_ws",
+        "notifications_ws",
+        "active_sessions_ws",
+        "terminal_ws",
+    ];
+
+    for handler in handlers {
+        // Find the handler function and check it has WsGuard parameter
+        let handler_start = prod.find(&format!("fn {handler}("))
+            .unwrap_or_else(|| panic!("L-8 regression: handler {handler} not found in websocket.rs"));
+
+        // Get the function signature (up to the opening brace)
+        let signature_end = prod[handler_start..].find('{')
+            .map(|i| handler_start + i)
+            .unwrap_or(prod.len());
+        let signature = &prod[handler_start..signature_end];
+
+        assert!(
+            signature.contains("WsGuard") || signature.contains("ws_guard"),
+            "L-8 regression: handler {handler} must accept WsGuard parameter to hold the guard \
+             for the entire WebSocket connection lifetime. Signature: {signature}"
+        );
+    }
+}
+
+#[test]
+fn test_l8_all_handle_fns_receive_ws_guard() {
+    // The internal handle_*_socket functions must also receive the guard
+    // (passed from the on_upgrade closure) to keep it alive.
+    let source = include_str!("../../src/handlers/websocket.rs");
+    let prod = prod_source(source);
+
+    let handle_fns = [
+        "handle_dashboard_socket",
+        "handle_session_socket",
+        "handle_notifications_socket",
+        "handle_active_sessions_socket",
+        "handle_terminal_socket",
+    ];
+
+    for func in handle_fns {
+        let fn_start = prod.find(&format!("fn {func}("))
+            .unwrap_or_else(|| panic!("L-8 regression: function {func} not found in websocket.rs"));
+
+        let signature_end = prod[fn_start..].find('{')
+            .map(|i| fn_start + i)
+            .unwrap_or(prod.len());
+        let signature = &prod[fn_start..signature_end];
+
+        assert!(
+            signature.contains("WsGuard") || signature.contains("ws_guard"),
+            "L-8 regression: function {func} must receive WsGuard to hold it for the connection \
+             lifetime. Without it, the guard is dropped after the HTTP upgrade handshake. \
+             Signature: {signature}"
+        );
+    }
 }

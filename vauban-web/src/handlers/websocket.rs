@@ -1,18 +1,30 @@
+/// VAUBAN Web - WebSocket handlers.
+///
+/// Handles WebSocket connections for real-time updates.
+///
+/// L-8: All WebSocket routes are protected by the `ws_connection_limit`
+/// middleware, which enforces a per-user connection limit configured via
+/// `[websocket] max_connections_per_user` in config.toml.
+///
+/// The middleware stores the RAII guard (`WsGuard`) in request extensions.
+/// **Every** handler must accept a `WsGuard` parameter and move it into
+/// the `on_upgrade` closure so the guard lives for the entire WebSocket
+/// connection lifetime (not just the HTTP upgrade handshake).
 use askama::Template;
 use axum::{
     extract::{
-        Path, State,
+        FromRequestParts, Path, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
-    response::IntoResponse,
+    http::StatusCode,
+    middleware::Next,
+    response::{IntoResponse, Response},
 };
 use axum_extra::extract::CookieJar;
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use sha3::{Digest, Sha3_256};
-/// VAUBAN Web - WebSocket handlers.
-///
-/// Handles WebSocket connections for real-time updates.
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::interval;
 use tracing::{debug, error, info, warn};
@@ -22,6 +34,87 @@ use crate::utils::format_duration;
 use crate::AppState;
 use crate::middleware::auth::AuthUser;
 use crate::services::broadcast::WsChannel;
+use crate::services::connections::WsConnectionGuard;
+
+// ============================================================================
+// L-8: WebSocket connection limit middleware + guard extractor
+// ============================================================================
+
+/// RAII guard wrapper extracted by WebSocket handlers (L-8).
+///
+/// Each WebSocket handler **must** accept this as a parameter and move it
+/// into the `on_upgrade` closure. This ensures the guard lives for the
+/// entire duration of the WebSocket connection, not just the HTTP handshake.
+///
+/// When the guard is dropped (connection closed), the per-user counter is
+/// automatically decremented.
+/// The inner `Arc<WsConnectionGuard>` is intentionally never read; it is kept
+/// alive solely for its `Drop` side-effect (decrementing the atomic counter).
+#[derive(Clone, Debug)]
+pub struct WsGuard(#[allow(dead_code)] Arc<WsConnectionGuard>);
+
+impl<S> FromRequestParts<S> for WsGuard
+where
+    S: Send + Sync,
+{
+    type Rejection = StatusCode;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        parts
+            .extensions
+            .get::<WsGuard>()
+            .cloned()
+            .ok_or_else(|| {
+                warn!("WsGuard not found in request extensions -- is ws_connection_limit middleware applied?");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })
+    }
+}
+
+/// Middleware that enforces the per-user WebSocket connection limit (L-8).
+///
+/// Applied as a layer on the `ws_routes` group in main.rs so that **every**
+/// WebSocket handler -- current and future -- is automatically protected.
+///
+/// Stores a `WsGuard` in request extensions. Each handler must extract it
+/// (via the `WsGuard` parameter) and move it into the `on_upgrade` closure
+/// so the guard lives for the duration of the WebSocket connection.
+pub async fn ws_connection_limit(
+    State(state): State<AppState>,
+    mut request: axum::extract::Request,
+    next: Next,
+) -> Response {
+    // Extract the authenticated user from request extensions
+    let user = match request.extensions().get::<AuthUser>() {
+        Some(u) => u.clone(),
+        None => {
+            // Should not happen -- auth middleware runs before WS routes
+            warn!("ws_connection_limit: no AuthUser in request extensions");
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
+    };
+
+    // Try to acquire a connection slot
+    match state.ws_counter.try_acquire(&user.uuid).await {
+        Ok(guard) => {
+            // Wrap in WsGuard (Arc-based, Clone) so it can be inserted into
+            // extensions and later extracted by the handler.
+            request.extensions_mut().insert(WsGuard(Arc::new(guard)));
+            next.run(request).await
+        }
+        Err(e) => {
+            warn!(
+                user = %user.username,
+                "WebSocket connection rejected: {e}"
+            );
+            // Return 429 Too Many Requests with the error message.
+            (StatusCode::TOO_MANY_REQUESTS, format!("{e}")).into_response()
+        }
+    }
+}
 
 /// Verify that a proxy session exists and belongs to the authenticated user.
 ///
@@ -150,13 +243,14 @@ pub async fn dashboard_ws(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
     user: AuthUser,
+    ws_guard: WsGuard,
 ) -> impl IntoResponse {
     info!(user = %user.username, "Dashboard WebSocket connection requested");
-    ws.on_upgrade(move |socket| handle_dashboard_socket(socket, state, user))
+    ws.on_upgrade(move |socket| handle_dashboard_socket(socket, state, user, ws_guard))
 }
 
 /// Handle dashboard WebSocket connection.
-async fn handle_dashboard_socket(socket: WebSocket, state: AppState, user: AuthUser) {
+async fn handle_dashboard_socket(socket: WebSocket, state: AppState, user: AuthUser, _ws_guard: WsGuard) {
     let (mut sender, mut receiver) = socket.split();
 
     info!(user = %user.username, "Dashboard WebSocket connected");
@@ -450,6 +544,7 @@ pub async fn session_ws(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
     user: AuthUser,
+    ws_guard: WsGuard,
 ) -> impl IntoResponse {
     info!(
         user = %user.username,
@@ -457,7 +552,7 @@ pub async fn session_ws(
         "Session WebSocket connection requested"
     );
 
-    ws.on_upgrade(move |socket| handle_session_socket(socket, state, session_id, user))
+    ws.on_upgrade(move |socket| handle_session_socket(socket, state, session_id, user, ws_guard))
 }
 
 /// Handle session WebSocket connection.
@@ -466,6 +561,7 @@ async fn handle_session_socket(
     state: AppState,
     session_id: String,
     user: AuthUser,
+    _ws_guard: WsGuard,
 ) {
     let (mut sender, mut receiver) = socket.split();
 
@@ -551,6 +647,7 @@ pub async fn notifications_ws(
     State(state): State<AppState>,
     jar: CookieJar,
     user: AuthUser,
+    ws_guard: WsGuard,
 ) -> impl IntoResponse {
     info!(user = %user.username, "Notifications WebSocket connection requested");
 
@@ -564,7 +661,9 @@ pub async fn notifications_ws(
         })
         .unwrap_or_default();
 
-    ws.on_upgrade(move |socket| handle_notifications_socket(socket, state, user, token_hash))
+    ws.on_upgrade(move |socket| {
+        handle_notifications_socket(socket, state, user, token_hash, ws_guard)
+    })
 }
 
 /// Handle notifications WebSocket connection.
@@ -575,25 +674,13 @@ async fn handle_notifications_socket(
     state: AppState,
     user: AuthUser,
     token_hash: String,
+    _ws_guard: WsGuard,
 ) {
-    // L-8: Reject if the user has too many concurrent WebSocket connections
-    let (connection_id, mut personalized_rx) = match state
+    // Register for personalized messaging (L-8 limit is enforced by ws_connection_limit middleware)
+    let (connection_id, mut personalized_rx) = state
         .user_connections
         .register(&user.uuid, token_hash)
-        .await
-    {
-        Ok(result) => result,
-        Err(_) => {
-            warn!(
-                user = %user.username,
-                "WebSocket connection rejected: per-user connection limit reached"
-            );
-            // Close the socket gracefully before returning
-            let mut socket = socket;
-            let _ = socket.close().await;
-            return;
-        }
-    };
+        .await;
 
     let (mut sender, mut receiver) = socket.split();
 
@@ -697,13 +784,14 @@ pub async fn active_sessions_ws(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
     user: AuthUser,
+    ws_guard: WsGuard,
 ) -> impl IntoResponse {
     info!(user = %user.username, "Active sessions list WebSocket connection requested");
-    ws.on_upgrade(move |socket| handle_active_sessions_socket(socket, state, user))
+    ws.on_upgrade(move |socket| handle_active_sessions_socket(socket, state, user, ws_guard))
 }
 
 /// Handle active sessions list WebSocket connection.
-async fn handle_active_sessions_socket(socket: WebSocket, state: AppState, user: AuthUser) {
+async fn handle_active_sessions_socket(socket: WebSocket, state: AppState, user: AuthUser, _ws_guard: WsGuard) {
     let (mut sender, mut receiver) = socket.split();
 
     info!(user = %user.username, "Active sessions list WebSocket connected");
@@ -877,6 +965,7 @@ pub async fn terminal_ws(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
     user: AuthUser,
+    ws_guard: WsGuard,
 ) -> impl IntoResponse {
     info!(
         user = %user.username,
@@ -884,7 +973,7 @@ pub async fn terminal_ws(
         "Terminal WebSocket connection requested"
     );
 
-    ws.on_upgrade(move |socket| handle_terminal_socket(socket, state, session_id, user))
+    ws.on_upgrade(move |socket| handle_terminal_socket(socket, state, session_id, user, ws_guard))
 }
 
 /// Handle terminal WebSocket connection for SSH sessions.
@@ -893,6 +982,7 @@ async fn handle_terminal_socket(
     state: AppState,
     session_id: String,
     user: AuthUser,
+    _ws_guard: WsGuard,
 ) {
     let (mut sender, mut receiver) = socket.split();
 

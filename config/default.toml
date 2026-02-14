@@ -123,3 +123,10 @@ format = "text"
 enabled = true
 # API route prefix
 prefix = "/api/v1"
+
+[websocket]
+# Maximum concurrent WebSocket connections per user (L-8).
+# Prevents resource exhaustion from a single user opening too many tabs.
+# Each browser tab opens multiple WS (dashboard, notifications, terminal, etc.)
+# so 30 comfortably supports ~10 simultaneous SSH tabs.
+max_connections_per_user = 30
