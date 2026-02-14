@@ -5366,3 +5366,170 @@ fn test_m2_rate_limiter_in_memory_path_preserved() {
         "M-2 regression: rate_limit.rs must still have the in-memory backend path"
     );
 }
+
+// ==================== M-6: Atomic Redis rate limiting (Lua script) ====================
+
+#[test]
+fn test_m6_no_separate_incr_expire_in_check_redis() {
+    // The old non-atomic pattern used separate INCR then EXPIRE commands.
+    // After M-6, check_redis must NOT contain individual redis::cmd("INCR")
+    // or conn.expire() calls -- only the atomic Lua script.
+    let source = include_str!("../../src/services/rate_limit.rs");
+
+    // Find the check_redis function body
+    let fn_start = source
+        .find("async fn check_redis")
+        .expect("M-6: check_redis function must exist");
+    let fn_body = &source[fn_start..];
+    // Find the end of the function (next "fn " at same indentation level)
+    let fn_end = fn_body[1..]
+        .find("\n    /// ")
+        .or_else(|| fn_body[1..].find("\n    pub fn"))
+        .or_else(|| fn_body[1..].find("\n    fn "))
+        .unwrap_or(800);
+    let fn_body = &fn_body[..fn_end + 1];
+
+    assert!(
+        !fn_body.contains("redis::cmd(\"INCR\")"),
+        "M-6: check_redis must not use separate INCR command (use Lua script instead)"
+    );
+    assert!(
+        !fn_body.contains(".expire("),
+        "M-6: check_redis must not use separate expire() call (use Lua script instead)"
+    );
+}
+
+#[test]
+fn test_m6_uses_lua_script_constant() {
+    // The rate limiter must define and use a RATE_LIMIT_LUA constant.
+    let source = include_str!("../../src/services/rate_limit.rs");
+    assert!(
+        source.contains("RATE_LIMIT_LUA"),
+        "M-6: rate_limit.rs must define RATE_LIMIT_LUA constant"
+    );
+    assert!(
+        source.contains("Script::new(Self::RATE_LIMIT_LUA)"),
+        "M-6: check_redis must use Script::new(Self::RATE_LIMIT_LUA)"
+    );
+}
+
+#[test]
+fn test_m6_lua_script_is_atomic() {
+    // The Lua script must contain INCR, TTL, and EXPIRE in a single script body.
+    // This guarantees atomicity on the Redis server.
+    let source = include_str!("../../src/services/rate_limit.rs");
+
+    // Extract the Lua script content (between r#" and "#)
+    let lua_start = source
+        .find("RATE_LIMIT_LUA")
+        .expect("M-6: RATE_LIMIT_LUA not found");
+    let after = &source[lua_start..];
+    // Find the raw string delimiters
+    let script_start = after
+        .find("r#\"")
+        .expect("M-6: Lua script must be a raw string literal");
+    let script_end = after[script_start + 3..]
+        .find("\"#")
+        .expect("M-6: Lua script raw string must be closed");
+    let lua_body = &after[script_start + 3..script_start + 3 + script_end];
+
+    assert!(
+        lua_body.contains("redis.call('INCR'"),
+        "M-6: Lua script must call INCR"
+    );
+    assert!(
+        lua_body.contains("redis.call('EXPIRE'"),
+        "M-6: Lua script must call EXPIRE"
+    );
+    assert!(
+        lua_body.contains("redis.call('TTL'"),
+        "M-6: Lua script must call TTL"
+    );
+}
+
+#[test]
+fn test_m6_lua_script_recovers_stale_keys() {
+    // The Lua script must handle the case where a key exists without TTL
+    // (ttl == -1), which could happen from the old non-atomic code or a crash.
+    let source = include_str!("../../src/services/rate_limit.rs");
+
+    let lua_start = source.find("RATE_LIMIT_LUA").unwrap();
+    let after = &source[lua_start..];
+    let script_start = after.find("r#\"").unwrap();
+    let script_end = after[script_start + 3..].find("\"#").unwrap();
+    let lua_body = &after[script_start + 3..script_start + 3 + script_end];
+
+    assert!(
+        lua_body.contains("ttl == -1"),
+        "M-6: Lua script must check for ttl == -1 (missing TTL / crash recovery)"
+    );
+}
+
+#[test]
+fn test_m6_check_redis_uses_invoke_async() {
+    // The script must be executed via invoke_async for async compatibility.
+    let source = include_str!("../../src/services/rate_limit.rs");
+    assert!(
+        source.contains("invoke_async"),
+        "M-6: check_redis must use invoke_async for the Lua script"
+    );
+}
+
+// ==================== M-7: No Mutex serialization on Redis cache ====================
+
+/// Return only the production (non-test) portion of cache.rs source.
+fn cache_prod_source() -> &'static str {
+    let full = include_str!("../../src/cache.rs");
+    full.split("#[cfg(test)]").next().unwrap_or(full)
+}
+
+#[test]
+fn test_m7_no_mutex_on_multiplexed_connection() {
+    // MultiplexedConnection handles multiplexing internally and is Clone.
+    // Wrapping it in a Mutex serializes all cache operations unnecessarily.
+    let source = cache_prod_source();
+    assert!(
+        !source.contains("Mutex<redis"),
+        "M-7: CacheConnection::Redis must not wrap MultiplexedConnection in Mutex"
+    );
+}
+
+#[test]
+fn test_m7_no_lock_await_in_cache() {
+    // With the Mutex removed, no .lock().await should remain in production code.
+    let source = cache_prod_source();
+    assert!(
+        !source.contains(".lock().await"),
+        "M-7: cache.rs production code must not call .lock().await"
+    );
+}
+
+#[test]
+fn test_m7_no_tokio_mutex_import() {
+    // The tokio::sync::Mutex import should be gone from production code.
+    let source = cache_prod_source();
+    assert!(
+        !source.contains("tokio::sync::Mutex"),
+        "M-7: cache.rs must not import tokio::sync::Mutex"
+    );
+}
+
+#[test]
+fn test_m7_uses_connection_clone() {
+    // Cache operations must clone the MultiplexedConnection for concurrent access.
+    let source = cache_prod_source();
+    assert!(
+        source.contains("conn.clone()"),
+        "M-7: cache operations must use conn.clone() for concurrent access"
+    );
+}
+
+#[test]
+fn test_m7_redis_variant_stores_connection_directly() {
+    // The Redis variant must store MultiplexedConnection directly, not Arc<Mutex<...>>.
+    let source = cache_prod_source();
+    assert!(
+        source.contains("Redis(redis::aio::MultiplexedConnection)"),
+        "M-7: CacheConnection::Redis must store MultiplexedConnection directly"
+    );
+}
