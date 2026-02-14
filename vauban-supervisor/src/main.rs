@@ -318,7 +318,7 @@ fn run_supervisor() -> Result<()> {
     watchdog_loop(
         &mut children,
         &config,
-        &service_pipes,
+        &mut service_pipes,
         Duration::from_secs(watchdog_config.heartbeat_interval_secs),
         watchdog_config.max_missed_heartbeats,
         watchdog_config.max_respawns_per_hour,
@@ -499,7 +499,7 @@ fn spawn_child(
 fn watchdog_loop(
     children: &mut HashMap<String, ChildState>,
     config: &SupervisorConfig,
-    service_pipes: &HashMap<Service, ServicePipes>,
+    service_pipes: &mut HashMap<Service, ServicePipes>,
     heartbeat_interval: Duration,
     max_missed_heartbeats: u32,
     max_respawns_per_hour: u32,
@@ -992,7 +992,7 @@ fn respawn_service(state: &mut ChildState, config: &SupervisorConfig, topology_p
 fn respawn_linked_group(
     children: &mut HashMap<String, ChildState>,
     config: &SupervisorConfig,
-    service_pipes: &HashMap<Service, ServicePipes>,
+    service_pipes: &mut HashMap<Service, ServicePipes>,
     group: &[&str],
 ) {
     info!("Starting linked group restart for: {:?}", group);
@@ -1163,6 +1163,13 @@ fn respawn_linked_group(
         }
     }
     
+    // M-9: Update service_pipes with the new pipe FDs for respawned services.
+    // Without this, service_pipes retains stale FDs from the killed processes,
+    // causing IPC failures if a service in the group is later restarted individually.
+    for (service, pipes) in group_service_pipes {
+        service_pipes.insert(service, pipes);
+    }
+
     info!("Linked group restart completed for: {:?}", group);
 }
 
@@ -2675,6 +2682,45 @@ mod tests {
         assert!(
             child_source.contains("setpgid"),
             "M-8/M-10: children must call setpgid to create their own process group"
+        );
+    }
+
+    // ==================== M-9 Structural Regression Tests ====================
+
+    #[test]
+    fn test_m9_respawn_linked_group_takes_mutable_service_pipes() {
+        let source = supervisor_prod_source();
+        let fn_start = source.find("fn respawn_linked_group")
+            .expect("respawn_linked_group must exist");
+        let fn_sig = &source[fn_start..fn_start + 300];
+        assert!(
+            fn_sig.contains("&mut HashMap<Service, ServicePipes>"),
+            "M-9: respawn_linked_group must take &mut HashMap<Service, ServicePipes> to update pipes"
+        );
+    }
+
+    #[test]
+    fn test_m9_respawn_linked_group_updates_service_pipes() {
+        let source = supervisor_prod_source();
+        let fn_start = source.find("fn respawn_linked_group")
+            .expect("respawn_linked_group must exist");
+        let fn_body = &source[fn_start..];
+        // Must insert updated pipes back into service_pipes
+        assert!(
+            fn_body.contains("service_pipes.insert("),
+            "M-9: respawn_linked_group must update service_pipes with new pipe FDs"
+        );
+    }
+
+    #[test]
+    fn test_m9_watchdog_loop_takes_mutable_service_pipes() {
+        let source = supervisor_prod_source();
+        let fn_start = source.find("fn watchdog_loop")
+            .expect("watchdog_loop must exist");
+        let fn_sig = &source[fn_start..fn_start + 300];
+        assert!(
+            fn_sig.contains("&mut HashMap<Service, ServicePipes>"),
+            "M-9: watchdog_loop must take &mut HashMap<Service, ServicePipes>"
         );
     }
 }

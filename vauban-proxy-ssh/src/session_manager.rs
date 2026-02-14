@@ -39,17 +39,19 @@ pub struct SessionHandle {
 /// Thread-safe manager for multiple SSH sessions.
 pub struct SessionManager {
     /// Map of session_id -> SessionHandle.
-    sessions: RwLock<HashMap<String, SessionHandle>>,
+    /// Wrapped in Arc so it can be shared with cleanup handles (M-11).
+    sessions: Arc<RwLock<HashMap<String, SessionHandle>>>,
     /// Counter for active sessions (atomic for fast reads).
-    active_count: AtomicU32,
+    /// Wrapped in Arc so it can be shared with cleanup handles (M-11).
+    active_count: Arc<AtomicU32>,
 }
 
 impl SessionManager {
     /// Create a new session manager.
     pub fn new() -> Self {
         Self {
-            sessions: RwLock::new(HashMap::new()),
-            active_count: AtomicU32::new(0),
+            sessions: Arc::new(RwLock::new(HashMap::new())),
+            active_count: Arc::new(AtomicU32::new(0)),
         }
     }
 
@@ -175,7 +177,8 @@ impl SessionManager {
     }
 
     /// Remove a session from the map (internal use).
-    #[allow(dead_code)] // Will be used for session cleanup
+    /// Note: Cleanup from session tasks uses SessionManagerCleanup (M-11).
+    #[allow(dead_code)]
     async fn remove_session_internal(&self, session_id: &str) {
         let mut sessions = self.sessions.write().await;
         if sessions.remove(session_id).is_some() {
@@ -185,10 +188,12 @@ impl SessionManager {
     }
 
     /// Create a lightweight handle for cleanup operations.
+    /// M-11: Shares the real sessions map and active_count so that
+    /// remove_session_internal actually removes from the real HashMap.
     fn clone_for_cleanup(&self) -> SessionManagerCleanup {
         SessionManagerCleanup {
-            sessions: Arc::new(RwLock::new(HashMap::new())), // Not used directly
-            active_count: AtomicU32::new(0),                 // Not used directly
+            sessions: Arc::clone(&self.sessions),
+            active_count: Arc::clone(&self.active_count),
         }
     }
 }
@@ -200,18 +205,22 @@ impl Default for SessionManager {
 }
 
 /// Lightweight handle for cleanup operations (avoids circular Arc).
-/// Will be used when session cleanup is implemented.
-#[allow(dead_code)]
+/// M-11: Shares the real sessions map and active_count via Arc,
+/// so remove_session_internal actually cleans up ended sessions.
 struct SessionManagerCleanup {
     sessions: Arc<RwLock<HashMap<String, SessionHandle>>>,
-    active_count: AtomicU32,
+    active_count: Arc<AtomicU32>,
 }
 
-#[allow(dead_code)]
 impl SessionManagerCleanup {
-    async fn remove_session_internal(&self, _session_id: &str) {
-        // This is a placeholder - actual cleanup happens in the real SessionManager
-        // The session task notifies via the channel when it's done
+    /// Remove a session from the map and decrement the active counter.
+    /// Called by the session task when it ends (SSH channel closed, error, etc.).
+    async fn remove_session_internal(&self, session_id: &str) {
+        let mut sessions = self.sessions.write().await;
+        if sessions.remove(session_id).is_some() {
+            self.active_count.fetch_sub(1, Ordering::SeqCst);
+            info!(session_id = %session_id, "Session removed from manager");
+        }
     }
 }
 
@@ -333,5 +342,127 @@ mod tests {
         let manager = SessionManager::new();
         let result = manager.get_session_info("nonexistent").await;
         assert!(result.is_none());
+    }
+
+    // ==================== M-11 Structural Regression Tests ====================
+
+    /// Helper: Extract production code (before #[cfg(test)]).
+    fn prod_source() -> &'static str {
+        let full = include_str!("session_manager.rs");
+        if let Some(idx) = full.find("#[cfg(test)]") {
+            &full[..idx]
+        } else {
+            full
+        }
+    }
+
+    #[test]
+    fn test_m11_clone_for_cleanup_shares_real_sessions() {
+        let source = prod_source();
+        let fn_start = source.find("fn clone_for_cleanup")
+            .expect("clone_for_cleanup must exist");
+        let fn_body = &source[fn_start..fn_start + 400];
+        // Must use Arc::clone to share the real sessions map
+        assert!(
+            fn_body.contains("Arc::clone(&self.sessions)"),
+            "M-11: clone_for_cleanup must share the real sessions map via Arc::clone"
+        );
+    }
+
+    #[test]
+    fn test_m11_clone_for_cleanup_shares_real_active_count() {
+        let source = prod_source();
+        let fn_start = source.find("fn clone_for_cleanup")
+            .expect("clone_for_cleanup must exist");
+        let fn_body = &source[fn_start..fn_start + 400];
+        assert!(
+            fn_body.contains("Arc::clone(&self.active_count)"),
+            "M-11: clone_for_cleanup must share the real active_count via Arc::clone"
+        );
+    }
+
+    #[test]
+    fn test_m11_cleanup_remove_actually_removes() {
+        let source = prod_source();
+        // Find SessionManagerCleanup::remove_session_internal
+        let cleanup_impl = source.find("impl SessionManagerCleanup")
+            .expect("impl SessionManagerCleanup must exist");
+        let cleanup_source = &source[cleanup_impl..];
+        assert!(
+            cleanup_source.contains("sessions.remove(session_id)"),
+            "M-11: SessionManagerCleanup::remove_session_internal must actually remove from HashMap"
+        );
+    }
+
+    #[test]
+    fn test_m11_cleanup_decrements_active_count() {
+        let source = prod_source();
+        let cleanup_impl = source.find("impl SessionManagerCleanup")
+            .expect("impl SessionManagerCleanup must exist");
+        let cleanup_source = &source[cleanup_impl..];
+        assert!(
+            cleanup_source.contains("fetch_sub(1"),
+            "M-11: SessionManagerCleanup::remove_session_internal must decrement active_count"
+        );
+    }
+
+    #[test]
+    fn test_m11_no_empty_hashmap_in_clone_for_cleanup() {
+        let source = prod_source();
+        let fn_start = source.find("fn clone_for_cleanup")
+            .expect("clone_for_cleanup must exist");
+        let fn_body = &source[fn_start..fn_start + 400];
+        // Must NOT create a new empty HashMap (the old bug)
+        assert!(
+            !fn_body.contains("HashMap::new()"),
+            "M-11: clone_for_cleanup must not create a new empty HashMap"
+        );
+    }
+
+    #[test]
+    fn test_m11_sessions_is_arc_wrapped() {
+        let source = prod_source();
+        assert!(
+            source.contains("sessions: Arc<RwLock<HashMap<String, SessionHandle>>>"),
+            "M-11: SessionManager.sessions must be Arc-wrapped for sharing with cleanup"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_m11_cleanup_handle_actually_removes_session() {
+        // Functional test: verify that SessionManagerCleanup shares the same map
+        let manager = SessionManager::new();
+
+        // Manually insert a fake session
+        {
+            let handle = SessionHandle {
+                tx: mpsc::channel(1).0,
+                user_id: "user1".to_string(),
+                asset_id: "asset1".to_string(),
+                created_at: Instant::now(),
+            };
+            let mut sessions = manager.sessions.write().await;
+            sessions.insert("test-session".to_string(), handle);
+        }
+        manager.active_count.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(manager.active_count(), 1);
+
+        // Create cleanup handle and remove the session
+        let cleanup = manager.clone_for_cleanup();
+        cleanup.remove_session_internal("test-session").await;
+
+        // Verify the session was actually removed from the real map
+        assert_eq!(manager.active_count(), 0);
+        let sessions = manager.sessions.read().await;
+        assert!(sessions.is_empty(), "Session must be removed from the real HashMap");
+    }
+
+    #[tokio::test]
+    async fn test_m11_cleanup_handle_nonexistent_session_is_safe() {
+        let manager = SessionManager::new();
+        let cleanup = manager.clone_for_cleanup();
+        // Removing a nonexistent session should be a no-op (no panic)
+        cleanup.remove_session_internal("nonexistent").await;
+        assert_eq!(manager.active_count(), 0);
     }
 }
