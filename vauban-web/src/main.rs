@@ -26,7 +26,8 @@ use vauban_web::ipc::{SupervisorClient, VaultCryptoClient};
 ///
 /// Returns the supervisor client if IPC is available, None otherwise.
 /// The client spawns a dedicated thread for IPC communication (heartbeat, TCP brokering).
-fn init_supervisor_client() -> Option<Arc<SupervisorClient>> {
+/// The `server_handle` is used for M-8/M-10 graceful shutdown.
+fn init_supervisor_client(server_handle: axum_server::Handle<std::net::SocketAddr>) -> Option<Arc<SupervisorClient>> {
     use std::os::unix::io::RawFd;
 
     // Check if we're running under supervisor (IPC environment variables set)
@@ -53,7 +54,7 @@ fn init_supervisor_client() -> Option<Arc<SupervisorClient>> {
         std::env::remove_var("VAUBAN_IPC_WRITE");
     }
 
-    let client = SupervisorClient::new(ipc_read_fd, ipc_write_fd);
+    let client = SupervisorClient::new(ipc_read_fd, ipc_write_fd, Some(server_handle));
     tracing::info!("Supervisor client initialized (running under supervisor)");
     Some(Arc::new(client))
 }
@@ -158,9 +159,14 @@ fn init_vault_client() -> Option<Arc<VaultCryptoClient>> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // M-8/M-10: Create server handle early for graceful shutdown.
+    // The handle is shared with the supervisor IPC thread so it can trigger
+    // graceful HTTP server shutdown instead of calling process::exit(0).
+    let server_handle = axum_server::Handle::new();
+
     // Initialize supervisor client if running under supervisor
     // This must be done early, before any async runtime setup
-    let supervisor_client = init_supervisor_client();
+    let supervisor_client = init_supervisor_client(server_handle.clone());
 
     // Install the default crypto provider for rustls (aws-lc-rs)
     // This must be done before any TLS operations
@@ -362,7 +368,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "HTTPS server listening (TLS 1.3 only)"
     );
 
+    // M-8/M-10: Pass server_handle so graceful_shutdown() from supervisor IPC
+    // thread will cause this .serve() to return, letting main() exit normally
+    // and all Drop/Zeroize destructors run.
     axum_server::from_tcp_rustls(std_listener, tls_config)?
+        .handle(server_handle)
         .serve(app.into_make_service_with_connect_info::<SocketAddr>())
         .await?;
 
@@ -1147,7 +1157,8 @@ mod tests {
     fn test_init_supervisor_client_without_env_vars() {
         // Without IPC environment variables, should return None
         // (service not running under supervisor)
-        let result = init_supervisor_client();
+        let handle = axum_server::Handle::new();
+        let result = init_supervisor_client(handle);
         assert!(result.is_none());
     }
 

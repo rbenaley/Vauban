@@ -22,8 +22,14 @@ use std::os::unix::io::{AsRawFd, OwnedFd};
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
+
+/// M-8/M-10: Global shutdown flag set by signal handler, checked by watchdog loop.
+/// Using a static AtomicBool because the signal handler runs in a separate thread
+/// and needs to communicate with the watchdog loop without shared references.
+static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 /// Runtime state for a running child service.
 struct ChildState {
@@ -336,9 +342,10 @@ fn setup_signal_handlers() -> Result<()> {
                     // TODO: Implement graceful restart
                 }
                 SIGTERM | SIGINT => {
-                    info!("Shutdown signal received");
-                    // TODO: Implement graceful shutdown
-                    std::process::exit(0);
+                    info!("Shutdown signal received, setting graceful shutdown flag");
+                    // M-8/M-10: Set flag instead of exit(0) so the watchdog loop
+                    // can perform graceful shutdown of all children.
+                    SHUTDOWN_REQUESTED.store(true, Ordering::SeqCst);
                 }
                 SIGCHLD => {
                     // Child process state changed - handled in watchdog loop
@@ -401,6 +408,12 @@ fn spawn_child(
     match unsafe { fork() } {
         Ok(ForkResult::Child) => {
             // Child process
+            
+            // M-8/M-10: Move child to its own process group so that CTRL+C
+            // (SIGINT sent to the foreground process group) only reaches the
+            // supervisor. The supervisor then orchestrates graceful shutdown
+            // via IPC, allowing children's Drop/Zeroize destructors to run.
+            let _ = nix::unistd::setpgid(Pid::from_raw(0), Pid::from_raw(0));
             
             // Change working directory if specified
             if let Some(dir) = workdir
@@ -496,6 +509,13 @@ fn watchdog_loop(
     let mut pending_linked_restarts: Vec<String> = Vec::new();
 
     loop {
+        // M-8/M-10: Check global shutdown flag before processing.
+        if SHUTDOWN_REQUESTED.load(Ordering::SeqCst) {
+            info!("Shutdown flag set, initiating graceful shutdown of all children");
+            graceful_shutdown_children(children);
+            return Ok(());
+        }
+
         // Reap any dead children and collect services needing restart
         reap_children(children, config, service_pipes, max_respawns_per_hour, &mut pending_linked_restarts);
         
@@ -561,6 +581,68 @@ fn watchdog_loop(
 
         // Sleep briefly before next iteration
         std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// M-8/M-10: Send Shutdown to all children and wait for them to exit gracefully.
+fn graceful_shutdown_children(children: &mut HashMap<String, ChildState>) {
+    // Send ControlMessage::Shutdown to each child via IPC
+    for (service_key, state) in children.iter() {
+        let shutdown_msg = Message::Control(ControlMessage::Shutdown);
+        if let Err(e) = state.channel.send(&shutdown_msg) {
+            warn!("{}: Failed to send Shutdown message: {}", service_key, e);
+        } else {
+            debug!("{}: Sent Shutdown message", service_key);
+        }
+    }
+
+    // Wait up to 5 seconds for children to exit, then SIGTERM stragglers
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let mut all_exited = true;
+        for (service_key, state) in children.iter_mut() {
+            if state.pid > 0 {
+                match waitpid(Pid::from_raw(state.pid), Some(WaitPidFlag::WNOHANG)) {
+                    Ok(WaitStatus::Exited(_, code)) => {
+                        info!("{}: Exited with code {}", service_key, code);
+                        state.pid = -1;
+                    }
+                    Ok(WaitStatus::Signaled(_, sig, _)) => {
+                        info!("{}: Killed by signal {:?}", service_key, sig);
+                        state.pid = -1;
+                    }
+                    _ => {
+                        all_exited = false;
+                    }
+                }
+            }
+        }
+
+        if all_exited {
+            info!("All children exited gracefully");
+            return;
+        }
+
+        if Instant::now() >= deadline {
+            // Send SIGTERM to remaining children
+            for (service_key, state) in children.iter() {
+                if state.pid > 0 {
+                    warn!("{}: Still running after timeout, sending SIGTERM", service_key);
+                    let _ = kill(Pid::from_raw(state.pid), Signal::SIGTERM);
+                }
+            }
+            // Give them 1 more second then SIGKILL
+            std::thread::sleep(Duration::from_secs(1));
+            for (service_key, state) in children.iter() {
+                if state.pid > 0 {
+                    error!("{}: Still running, sending SIGKILL", service_key);
+                    let _ = kill(Pid::from_raw(state.pid), Signal::SIGKILL);
+                }
+            }
+            return;
+        }
+
+        std::thread::sleep(Duration::from_millis(50));
     }
 }
 
@@ -2495,5 +2577,104 @@ mod tests {
         assert_eq!(service_to_env_suffix(Service::ProxySsh), "PROXY_SSH");
         assert_eq!(service_to_env_suffix(Service::ProxyRdp), "PROXY_RDP");
         assert_eq!(service_to_env_suffix(Service::Web), "WEB");
+    }
+
+    // ==================== M-8/M-10 Structural Regression Tests ====================
+
+    /// Helper: Extract production code (before #[cfg(test)]).
+    fn supervisor_prod_source() -> &'static str {
+        let full = include_str!("main.rs");
+        // Supervisor has #[cfg(test)] for both a function and mod tests
+        // We want everything before the first #[cfg(test)]
+        if let Some(idx) = full.find("#[cfg(test)]") {
+            &full[..idx]
+        } else {
+            full
+        }
+    }
+
+    #[test]
+    fn test_m8_no_process_exit_0_in_signal_handler() {
+        let source = supervisor_prod_source();
+        // The signal handler must not call exit(0). exit(1) in fork children is OK.
+        assert!(
+            !source.contains("process::exit(0)"),
+            "M-8/M-10: supervisor signal handler must not call process::exit(0)"
+        );
+    }
+
+    #[test]
+    fn test_m8_has_shutdown_requested_atomic() {
+        let source = supervisor_prod_source();
+        assert!(
+            source.contains("SHUTDOWN_REQUESTED"),
+            "M-8/M-10: supervisor must have a SHUTDOWN_REQUESTED static AtomicBool"
+        );
+    }
+
+    #[test]
+    fn test_m8_signal_handler_sets_shutdown_flag() {
+        let source = supervisor_prod_source();
+        let handler_start = source.find("fn setup_signal_handlers").expect("setup_signal_handlers must exist");
+        let handler_source = &source[handler_start..];
+        assert!(
+            handler_source.contains("SHUTDOWN_REQUESTED.store(true"),
+            "M-8/M-10: signal handler must set SHUTDOWN_REQUESTED on SIGTERM/SIGINT"
+        );
+    }
+
+    #[test]
+    fn test_m8_watchdog_loop_checks_shutdown_flag() {
+        let source = supervisor_prod_source();
+        let watchdog_start = source.find("fn watchdog_loop").expect("watchdog_loop must exist");
+        let watchdog_source = &source[watchdog_start..];
+        assert!(
+            watchdog_source.contains("SHUTDOWN_REQUESTED.load"),
+            "M-8/M-10: watchdog_loop must check SHUTDOWN_REQUESTED flag"
+        );
+    }
+
+    #[test]
+    fn test_m8_has_graceful_shutdown_children() {
+        let source = supervisor_prod_source();
+        assert!(
+            source.contains("fn graceful_shutdown_children"),
+            "M-8/M-10: supervisor must have graceful_shutdown_children function"
+        );
+    }
+
+    #[test]
+    fn test_m8_graceful_shutdown_sends_shutdown_message() {
+        let source = supervisor_prod_source();
+        let shutdown_fn = source.find("fn graceful_shutdown_children").expect("graceful_shutdown_children must exist");
+        let shutdown_source = &source[shutdown_fn..];
+        assert!(
+            shutdown_source.contains("ControlMessage::Shutdown"),
+            "M-8/M-10: graceful_shutdown_children must send ControlMessage::Shutdown to all children"
+        );
+    }
+
+    #[test]
+    fn test_m8_fork_children_exit_1_is_preserved() {
+        let source = supervisor_prod_source();
+        // exit(1) in fork children before exec is intentional and must be preserved
+        assert!(
+            source.contains("process::exit(1)"),
+            "M-8/M-10: process::exit(1) in fork children must be preserved (pre-exec error handling)"
+        );
+    }
+
+    #[test]
+    fn test_m8_children_in_own_process_group() {
+        let source = supervisor_prod_source();
+        // Children must be in their own process group so CTRL+C (SIGINT)
+        // only reaches the supervisor, allowing graceful shutdown via IPC.
+        let child_branch = source.find("ForkResult::Child")
+            .expect("ForkResult::Child must exist");
+        let child_source = &source[child_branch..];
+        assert!(
+            child_source.contains("setpgid"),
+            "M-8/M-10: children must call setpgid to create their own process group"
+        );
     }
 }

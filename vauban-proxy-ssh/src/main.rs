@@ -40,6 +40,9 @@ struct ServiceState {
     requests_processed: AtomicU64,
     requests_failed: AtomicU64,
     draining: AtomicBool,
+    /// M-8: Flag set by ControlMessage::Shutdown to break the main loop
+    /// and allow destructors to run (SecretString credentials).
+    shutdown_requested: AtomicBool,
 }
 
 /// Pending TCP connections received from supervisor via FD passing.
@@ -99,6 +102,7 @@ impl Default for ServiceState {
             requests_processed: AtomicU64::new(0),
             requests_failed: AtomicU64::new(0),
             draining: AtomicBool::new(false),
+            shutdown_requested: AtomicBool::new(false),
         }
     }
 }
@@ -267,6 +271,12 @@ async fn main_loop(
     let pending_connections = fd_passing.as_ref().map(|fp| Arc::clone(&fp.pending));
 
     loop {
+        // M-8/M-10: Check shutdown flag before blocking on select.
+        if state.shutdown_requested.load(Ordering::SeqCst) {
+            info!("Shutdown flag set, exiting main loop to run destructors");
+            break;
+        }
+
         tokio::select! {
             // Handle supervisor messages (ping/pong, drain, shutdown, TcpConnectResponse)
             result = supervisor_channel.recv() => {
@@ -357,6 +367,8 @@ async fn main_loop(
             }
         }
     }
+
+    Ok(())
 }
 
 async fn handle_control_message(
@@ -382,8 +394,10 @@ async fn handle_control_message(
             channel.send(&response)?;
         }
         ControlMessage::Shutdown => {
-            info!("Shutdown requested");
-            std::process::exit(0);
+            info!("Shutdown requested, setting graceful shutdown flag");
+            // M-8/M-10: Set flag instead of exit(0) so the main loop breaks
+            // and destructors run (SecretString credentials, session state).
+            state.shutdown_requested.store(true, Ordering::SeqCst);
         }
         _ => {
             debug!(?ctrl, "Ignoring control message");
@@ -721,5 +735,68 @@ mod tests {
         } else {
             panic!("Expected DrainComplete");
         }
+    }
+
+    // ==================== M-8/M-10 Structural Regression Tests ====================
+
+    /// Helper: Extract production code (before #[cfg(test)]).
+    fn prod_source() -> &'static str {
+        let full = include_str!("main.rs");
+        if let Some(idx) = full.find("#[cfg(test)]") {
+            &full[..idx]
+        } else {
+            full
+        }
+    }
+
+    #[test]
+    fn test_m8_no_process_exit_in_production_code() {
+        let source = prod_source();
+        assert!(
+            !source.contains("process::exit"),
+            "M-8/M-10: vauban-proxy-ssh must not call process::exit() in production code"
+        );
+    }
+
+    #[test]
+    fn test_m8_has_shutdown_requested_flag() {
+        let source = prod_source();
+        assert!(
+            source.contains("shutdown_requested"),
+            "M-8/M-10: ServiceState must have a shutdown_requested flag"
+        );
+    }
+
+    #[test]
+    fn test_m8_main_loop_checks_shutdown_flag() {
+        let source = prod_source();
+        // proxy-ssh uses tokio::select! in the main loop
+        let loop_start = source.find("loop {").expect("main loop must exist");
+        let loop_source = &source[loop_start..];
+        assert!(
+            loop_source.contains("shutdown_requested"),
+            "M-8/M-10: main loop must check shutdown_requested flag"
+        );
+    }
+
+    #[test]
+    fn test_m8_handle_control_sets_shutdown_flag() {
+        let source = prod_source();
+        let handle_start = source.find("fn handle_control_message").expect("handle_control_message must exist");
+        let handle_source = &source[handle_start..];
+        assert!(
+            handle_source.contains("shutdown_requested.store(true"),
+            "M-8/M-10: handle_control_message must set shutdown_requested on Shutdown"
+        );
+    }
+
+    #[test]
+    fn test_m8_shutdown_flag_is_atomic_bool() {
+        let source = prod_source();
+        // proxy-ssh uses AtomicBool for thread-safe access from async tasks
+        assert!(
+            source.contains("shutdown_requested: AtomicBool"),
+            "M-8/M-10: shutdown_requested must be AtomicBool for async safety"
+        );
     }
 }

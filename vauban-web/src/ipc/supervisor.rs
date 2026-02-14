@@ -7,6 +7,7 @@
 use shared::ipc::IpcChannel;
 use shared::messages::{ControlMessage, Message, Service, ServiceStats};
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::os::unix::io::RawFd;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -43,6 +44,10 @@ pub struct SupervisorClientInner {
     pub requests_failed: AtomicU64,
     /// Flag to stop the handler thread.
     shutdown: AtomicBool,
+    /// M-8/M-10: Server handle for triggering graceful shutdown.
+    /// When the supervisor requests shutdown or IPC closes, we use this
+    /// to stop the HTTP server instead of calling process::exit(0).
+    server_handle: Option<axum_server::Handle<SocketAddr>>,
 }
 
 /// Async client for communication with the supervisor.
@@ -60,8 +65,11 @@ impl SupervisorClient {
     /// Create a new supervisor client from IPC file descriptors.
     ///
     /// Spawns a dedicated thread for handling IPC communication.
+    /// The optional `server_handle` is used for M-8/M-10 graceful shutdown:
+    /// instead of calling `process::exit(0)`, the IPC thread will trigger
+    /// graceful HTTP server shutdown, allowing all destructors to run.
     #[allow(clippy::panic)] // Thread spawn failure is unrecoverable
-    pub fn new(read_fd: RawFd, write_fd: RawFd) -> Self {
+    pub fn new(read_fd: RawFd, write_fd: RawFd, server_handle: Option<axum_server::Handle<SocketAddr>>) -> Self {
         // Create IPC channel from file descriptors
         // SAFETY: FDs are passed from supervisor and are valid
         let channel = unsafe { IpcChannel::from_raw_fds(read_fd, write_fd) };
@@ -74,6 +82,7 @@ impl SupervisorClient {
             requests_processed: AtomicU64::new(0),
             requests_failed: AtomicU64::new(0),
             shutdown: AtomicBool::new(false),
+            server_handle,
         });
 
         let thread_inner = Arc::clone(&inner);
@@ -207,8 +216,14 @@ fn supervisor_ipc_loop(inner: Arc<SupervisorClientInner>) {
                 }
             }
             Ok(Message::Control(ControlMessage::Shutdown)) => {
-                info!("Shutdown requested by supervisor");
-                std::process::exit(0);
+                info!("Shutdown requested by supervisor, triggering graceful shutdown");
+                // M-8/M-10: Trigger graceful HTTP server shutdown instead of exit(0).
+                // This allows all Drop/Zeroize destructors to run.
+                if let Some(ref handle) = inner.server_handle {
+                    handle.graceful_shutdown(Some(Duration::from_secs(10)));
+                }
+                inner.shutdown.store(true, Ordering::SeqCst);
+                break;
             }
             Ok(Message::Control(ControlMessage::Drain)) => {
                 info!("Drain requested by supervisor");
@@ -246,8 +261,13 @@ fn supervisor_ipc_loop(inner: Arc<SupervisorClientInner>) {
                 // Other messages - ignore
             }
             Err(shared::ipc::IpcError::ConnectionClosed) => {
-                info!("IPC connection closed, supervisor exited");
-                std::process::exit(0);
+                info!("IPC connection closed, supervisor exited, triggering graceful shutdown");
+                // M-8/M-10: Trigger graceful HTTP server shutdown instead of exit(0).
+                if let Some(ref handle) = inner.server_handle {
+                    handle.graceful_shutdown(Some(Duration::from_secs(10)));
+                }
+                inner.shutdown.store(true, Ordering::SeqCst);
+                break;
             }
             Err(e) => {
                 warn!("Supervisor IPC recv error: {}", e);

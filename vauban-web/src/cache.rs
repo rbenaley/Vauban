@@ -5,7 +5,7 @@
 ///
 /// For Capsicum sandbox mode, connections must be established before
 /// entering capability mode. Use `validate_connection()` to verify
-/// the connection is working, and `check_or_exit()` for periodic
+/// the connection is working, and `check_or_shutdown()` for periodic
 /// health checks that exit on failure.
 use redis::AsyncCommands;
 use redis::Client;
@@ -68,23 +68,27 @@ impl CacheConnection {
         }
     }
 
-    /// Check if the cache connection is still alive, exit if not (sandbox mode).
+    /// Check if the cache connection is still alive, trigger shutdown if not (sandbox mode).
     ///
     /// This is designed for Capsicum sandbox mode where the service cannot
     /// recover from a lost cache connection. If the connection check fails,
-    /// the process exits with code 100 to trigger a respawn by the supervisor.
+    /// a graceful shutdown is triggered via the server handle to allow
+    /// all Drop/Zeroize destructors to run (M-8/M-10).
     ///
-    /// For mock cache, this always succeeds without exiting.
-    pub async fn check_or_exit(&self) {
+    /// For mock cache, this always succeeds without triggering shutdown.
+    pub async fn check_or_shutdown(&self, server_handle: Option<&axum_server::Handle<std::net::SocketAddr>>) {
         match self {
             CacheConnection::Redis(conn) => {
                 let mut conn = conn.clone();
                 if let Err(e) = redis::cmd("PING").query_async::<String>(&mut conn).await {
                     tracing::error!(
-                        "Cache connection lost in sandbox mode: {}. Exiting for respawn.",
+                        "Cache connection lost in sandbox mode: {}. Triggering graceful shutdown for respawn.",
                         e
                     );
-                    std::process::exit(EXIT_CODE_CONNECTION_LOST);
+                    // M-8/M-10: Trigger graceful shutdown instead of exit().
+                    if let Some(handle) = server_handle {
+                        handle.graceful_shutdown(Some(std::time::Duration::from_secs(5)));
+                    }
                 }
             }
             CacheConnection::Mock(_) => {
@@ -568,10 +572,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_mock_cache_check_or_exit() {
+    async fn test_mock_cache_check_or_shutdown() {
         let conn = CacheConnection::Mock(Arc::new(MockCache::new()));
-        // This should not exit for mock cache
-        conn.check_or_exit().await;
+        // This should not trigger shutdown for mock cache
+        conn.check_or_shutdown(None).await;
         // If we reach here, the test passed
     }
 

@@ -130,29 +130,40 @@ pub async fn get_connection(pool: &DbPool) -> AppResult<DbConnection> {
     })
 }
 
-/// Get a connection from the pool, or exit if connection is lost (sandbox mode).
+/// Get a connection from the pool, or trigger shutdown if connection is lost (sandbox mode).
 ///
 /// This function is designed for Capsicum sandbox mode where the service
 /// cannot recover from a lost database connection. If the connection cannot
-/// be obtained, the process exits with code 100 to trigger a respawn by
-/// the supervisor.
-pub async fn get_connection_or_exit(pool: &DbPool) -> DbConnection {
+/// be obtained, a graceful shutdown is triggered via the server handle to
+/// allow all Drop/Zeroize destructors to run (M-8/M-10).
+///
+/// Returns `Err` if the connection cannot be obtained and shutdown was triggered.
+pub async fn get_connection_or_shutdown(
+    pool: &DbPool,
+    server_handle: Option<&axum_server::Handle<std::net::SocketAddr>>,
+) -> Result<DbConnection, crate::error::AppError> {
     match pool.get().await {
-        Ok(conn) => conn,
+        Ok(conn) => Ok(conn),
         Err(e) => {
             let error_msg = e.to_string();
             if is_connection_lost(&error_msg) {
                 tracing::error!(
-                    "Database connection lost in sandbox mode: {}. Exiting for respawn.",
+                    "Database connection lost in sandbox mode: {}. Triggering graceful shutdown for respawn.",
                     error_msg
                 );
             } else {
                 tracing::error!(
-                    "Database pool error in sandbox mode: {}. Exiting for respawn.",
+                    "Database pool error in sandbox mode: {}. Triggering graceful shutdown for respawn.",
                     error_msg
                 );
             }
-            std::process::exit(EXIT_CODE_CONNECTION_LOST);
+            // M-8/M-10: Trigger graceful shutdown instead of exit().
+            if let Some(handle) = server_handle {
+                handle.graceful_shutdown(Some(std::time::Duration::from_secs(5)));
+            }
+            Err(crate::error::AppError::Internal(anyhow::anyhow!(
+                "Database connection lost in sandbox mode: {}", error_msg
+            )))
         }
     }
 }

@@ -5533,3 +5533,145 @@ fn test_m7_redis_variant_stores_connection_directly() {
         "M-7: CacheConnection::Redis must store MultiplexedConnection directly"
     );
 }
+
+// ==================== M-8 / M-10 Structural Regression Tests ====================
+// Verify that process::exit() is not called in production code across all services.
+// These tests prevent regressions where destructors (Drop/Zeroize) would be bypassed.
+
+/// Helper: Extract production code from a source file (before #[cfg(test)]).
+fn prod_source(full_source: &str) -> &str {
+    if let Some(idx) = full_source.find("#[cfg(test)]") {
+        &full_source[..idx]
+    } else {
+        full_source
+    }
+}
+
+/// Helper: Check if production code contains a pattern on non-comment lines.
+/// This avoids false positives from doc comments mentioning removed patterns.
+fn prod_code_contains(source: &str, pattern: &str) -> bool {
+    source.lines().any(|line| {
+        let trimmed = line.trim();
+        // Skip comment lines
+        if trimmed.starts_with("//") || trimmed.starts_with("///") || trimmed.starts_with("*") {
+            return false;
+        }
+        trimmed.contains(pattern)
+    })
+}
+
+// --- vauban-web: ipc/supervisor.rs ---
+
+#[test]
+fn test_m8_supervisor_ipc_no_process_exit() {
+    let source = include_str!("../../src/ipc/supervisor.rs");
+    let prod = prod_source(source);
+    assert!(
+        !prod_code_contains(prod, "process::exit"),
+        "M-8/M-10: supervisor.rs must not call process::exit() - use server_handle.graceful_shutdown() instead"
+    );
+}
+
+#[test]
+fn test_m8_supervisor_ipc_has_graceful_shutdown() {
+    let source = include_str!("../../src/ipc/supervisor.rs");
+    let prod = prod_source(source);
+    assert!(
+        prod.contains("graceful_shutdown"),
+        "M-8/M-10: supervisor.rs must call graceful_shutdown() on ControlMessage::Shutdown"
+    );
+}
+
+#[test]
+fn test_m8_supervisor_ipc_has_server_handle() {
+    let source = include_str!("../../src/ipc/supervisor.rs");
+    let prod = prod_source(source);
+    assert!(
+        prod.contains("server_handle"),
+        "M-8/M-10: SupervisorClientInner must have a server_handle field"
+    );
+}
+
+// --- vauban-web: cache.rs ---
+
+#[test]
+fn test_m8_cache_no_process_exit() {
+    let source = cache_prod_source();
+    assert!(
+        !prod_code_contains(source, "process::exit"),
+        "M-8/M-10: cache.rs production code must not call process::exit()"
+    );
+}
+
+#[test]
+fn test_m8_cache_uses_check_or_shutdown() {
+    let source = cache_prod_source();
+    assert!(
+        source.contains("check_or_shutdown"),
+        "M-8/M-10: cache.rs must use check_or_shutdown (not check_or_exit)"
+    );
+}
+
+// --- vauban-web: db.rs ---
+
+#[test]
+fn test_m8_db_no_process_exit() {
+    let source = include_str!("../../src/db.rs");
+    let prod = prod_source(source);
+    assert!(
+        !prod_code_contains(prod, "process::exit"),
+        "M-8/M-10: db.rs production code must not call process::exit()"
+    );
+}
+
+#[test]
+fn test_m8_db_uses_get_connection_or_shutdown() {
+    let source = include_str!("../../src/db.rs");
+    let prod = prod_source(source);
+    assert!(
+        prod.contains("get_connection_or_shutdown"),
+        "M-8/M-10: db.rs must use get_connection_or_shutdown (not get_connection_or_exit)"
+    );
+}
+
+// --- vauban-web: main.rs ---
+
+#[test]
+fn test_m8_web_main_no_process_exit() {
+    let source = include_str!("../../src/main.rs");
+    let prod = prod_source(source);
+    assert!(
+        !prod_code_contains(prod, "process::exit"),
+        "M-8/M-10: main.rs production code must not call process::exit()"
+    );
+}
+
+#[test]
+fn test_m8_web_main_uses_server_handle() {
+    let source = include_str!("../../src/main.rs");
+    let prod = prod_source(source);
+    assert!(
+        prod.contains("server_handle"),
+        "M-8/M-10: main.rs must create and pass a server_handle for graceful shutdown"
+    );
+}
+
+// --- create_superuser.rs ---
+
+#[test]
+fn test_m8_create_superuser_no_process_exit() {
+    let source = include_str!("../../src/bin/create_superuser.rs");
+    assert!(
+        !source.contains("process::exit"),
+        "M-8/M-10: create_superuser.rs must not call process::exit() - use ExitCode instead"
+    );
+}
+
+#[test]
+fn test_m8_create_superuser_uses_exit_code() {
+    let source = include_str!("../../src/bin/create_superuser.rs");
+    assert!(
+        source.contains("ExitCode"),
+        "M-8/M-10: create_superuser.rs must use std::process::ExitCode"
+    );
+}

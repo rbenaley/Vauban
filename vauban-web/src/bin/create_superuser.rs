@@ -17,6 +17,7 @@ use rpassword::read_password;
 use secrecy::ExposeSecret;
 use std::io::{self, Write};
 use uuid::Uuid;
+use std::process::ExitCode;
 use vauban_web::config::Config;
 
 mod schema {
@@ -53,7 +54,7 @@ mod schema {
     }
 }
 
-fn main() {
+fn main() -> ExitCode {
     println!("\n🔐 VAUBAN - Create Superuser");
     println!("============================\n");
 
@@ -82,7 +83,7 @@ fn main() {
             .expect("Failed to read input");
         if confirm.trim().to_lowercase() != "y" {
             println!("\n❌ Operation cancelled.");
-            return;
+            return ExitCode::SUCCESS;
         }
         println!();
     }
@@ -265,9 +266,13 @@ fn main() {
         }
         Err(e) => {
             eprintln!("\n❌ Failed to create superuser: {}", e);
-            std::process::exit(1);
+            // M-8: Return ExitCode instead of exit(1) so destructors run
+            // (zeroize password in memory).
+            return ExitCode::FAILURE;
         }
     }
+
+    ExitCode::SUCCESS
 }
 
 #[derive(diesel::QueryableByName)]
