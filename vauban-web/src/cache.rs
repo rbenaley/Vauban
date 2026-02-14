@@ -109,35 +109,44 @@ impl MockCache {
 }
 
 /// Create a cache client (Redis or mock based on configuration).
+///
+/// # Fail-closed behavior (M-2)
+///
+/// When `cache.enabled = true`, Redis **must** be reachable.  If the client
+/// cannot be created or the connection fails, an error is returned instead of
+/// silently falling back to a no-op mock.  This prevents rate limiting from
+/// being silently disabled in production.
+///
+/// When `cache.enabled = false`, a [`MockCache`] is returned (explicit choice
+/// by the administrator, not a silent fallback).
 pub async fn create_cache_client(config: &Config) -> AppResult<CacheConnection> {
     if !config.cache.enabled {
         warn!("Cache is disabled - using mock cache (no-op)");
         return Ok(CacheConnection::Mock(Arc::new(MockCache::new())));
     }
 
-    // Try to create Redis connection
-    match Client::open(config.cache.url.expose_secret()) {
-        Ok(client) => match client.get_multiplexed_async_connection().await {
-            Ok(manager) => {
-                tracing::info!("Cache enabled - connected to Redis/Valkey");
-                Ok(CacheConnection::Redis(Arc::new(Mutex::new(manager))))
-            }
-            Err(e) => {
-                warn!(
-                    error = %e,
-                    "Failed to connect to Redis/Valkey - falling back to mock cache"
-                );
-                Ok(CacheConnection::Mock(Arc::new(MockCache::new())))
-            }
-        },
-        Err(e) => {
-            warn!(
-                error = %e,
-                "Failed to create Redis client - falling back to mock cache"
-            );
-            Ok(CacheConnection::Mock(Arc::new(MockCache::new())))
-        }
-    }
+    // cache.enabled = true -> Redis MUST be available (fail-closed, M-2).
+    let client = Client::open(config.cache.url.expose_secret()).map_err(|e| {
+        AppError::Config(format!(
+            "Cache is enabled but Redis client creation failed: {}. \
+             Set cache.enabled = false to run without cache.",
+            e
+        ))
+    })?;
+
+    let manager = client
+        .get_multiplexed_async_connection()
+        .await
+        .map_err(|e| {
+            AppError::Config(format!(
+                "Cache is enabled but cannot connect to Redis/Valkey: {}. \
+                 Set cache.enabled = false to run without cache.",
+                e
+            ))
+        })?;
+
+    tracing::info!("Cache enabled - connected to Redis/Valkey");
+    Ok(CacheConnection::Redis(Arc::new(Mutex::new(manager))))
 }
 
 /// Cache operations trait for type safety.
@@ -572,5 +581,91 @@ mod tests {
         let mock_conn = CacheConnection::Mock(Arc::new(MockCache::new()));
         assert!(mock_conn.is_mock());
         assert!(!mock_conn.is_redis());
+    }
+
+    // ==================== M-2: Fail-closed cache creation tests ====================
+
+    /// Helper: build a Config with specific cache settings.
+    fn config_with_cache(url: &str, enabled: bool) -> Config {
+        let base = crate::config::test_fixtures::base_config();
+        let testing = crate::config::test_fixtures::testing_config();
+        let mut config = unwrap_ok!(Config::from_toml_with_overlay(base, testing));
+        config.cache.enabled = enabled;
+        config.cache.url = secrecy::SecretString::from(url.to_string());
+        config
+    }
+
+    #[tokio::test]
+    async fn test_m2_cache_disabled_returns_mock() {
+        // When cache.enabled = false, a MockCache must be returned (no error).
+        // This is the current dev/testing path and must never break.
+        let config = config_with_cache("redis://localhost:6379", false);
+        assert!(!config.cache.enabled);
+
+        let result = create_cache_client(&config).await;
+        let cache = unwrap_ok!(result);
+        assert!(
+            cache.is_mock(),
+            "cache.enabled = false must return MockCache"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_m2_cache_enabled_invalid_url_returns_error() {
+        // When cache.enabled = true but the URL is unreachable, the function
+        // must return an error (fail-closed), NOT a silent MockCache fallback.
+        let config = config_with_cache(
+            "redis://invalid-host-that-does-not-exist:9999",
+            true,
+        );
+        assert!(config.cache.enabled);
+
+        let result = create_cache_client(&config).await;
+        let err = match result {
+            Err(e) => e,
+            Ok(ref c) => panic!(
+                "cache.enabled = true + unreachable Redis must return Err, got Ok({})",
+                if c.is_mock() { "Mock" } else { "Redis" }
+            ),
+        };
+
+        let err_msg = format!("{}", err);
+        assert!(
+            err_msg.contains("Cache is enabled"),
+            "Error message should mention 'Cache is enabled', got: {}",
+            err_msg
+        );
+    }
+
+    #[tokio::test]
+    async fn test_m2_cache_enabled_bad_scheme_returns_error() {
+        // A malformed URL scheme must also fail, not silently fallback.
+        let config = config_with_cache("not-a-valid-redis-url", true);
+
+        let result = create_cache_client(&config).await;
+        let err = match result {
+            Err(e) => e,
+            Ok(_) => panic!("cache.enabled = true + bad URL scheme must return Err"),
+        };
+
+        let err_msg = format!("{}", err);
+        assert!(
+            err_msg.contains("cache.enabled = false"),
+            "Error message should suggest setting cache.enabled = false, got: {}",
+            err_msg
+        );
+    }
+
+    #[tokio::test]
+    async fn test_m2_cache_disabled_with_bad_url_still_returns_mock() {
+        // Even with a garbage URL, cache.enabled = false must return MockCache.
+        // The URL is never contacted.
+        let config = config_with_cache("completely-invalid-garbage", false);
+
+        let cache = unwrap_ok!(create_cache_client(&config).await);
+        assert!(
+            cache.is_mock(),
+            "cache.enabled = false must return MockCache regardless of URL"
+        );
     }
 }

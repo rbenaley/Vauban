@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::error::{AppError, AppResult};
 
@@ -51,29 +51,40 @@ pub struct RateLimitEntry {
 impl RateLimiter {
     /// Create a new rate limiter based on configuration.
     ///
-    /// - If `cache_enabled` is true and `redis_url` is provided, uses Redis.
-    /// - Otherwise, uses in-memory storage.
+    /// # Fail-closed behavior (M-2)
+    ///
+    /// - If `cache_enabled` is true and `redis_url` is provided, the Redis
+    ///   client **must** be created successfully.  On failure an error is
+    ///   returned instead of silently falling back to in-memory.
+    /// - If `cache_enabled` is false, in-memory storage is used (explicit
+    ///   choice by the administrator).
     pub fn new(
         cache_enabled: bool,
         redis_url: Option<&str>,
         limit_per_minute: u32,
     ) -> AppResult<Self> {
-        if cache_enabled && let Some(url) = redis_url {
-            match redis::Client::open(url) {
-                Ok(client) => {
-                    debug!("Rate limiter using Redis backend");
-                    return Ok(Self::Redis {
-                        client,
-                        limit_per_minute,
-                    });
-                }
-                Err(e) => {
-                    warn!(
-                        "Failed to connect to Redis for rate limiting: {}. Falling back to in-memory.",
+        if cache_enabled {
+            if let Some(url) = redis_url {
+                // cache_enabled = true -> Redis MUST work (fail-closed, M-2).
+                let client = redis::Client::open(url).map_err(|e| {
+                    AppError::Config(format!(
+                        "Rate limiter: cache is enabled but Redis client creation failed: {}. \
+                         Set cache.enabled = false to use in-memory rate limiting.",
                         e
-                    );
-                }
+                    ))
+                })?;
+                debug!("Rate limiter using Redis backend");
+                return Ok(Self::Redis {
+                    client,
+                    limit_per_minute,
+                });
             }
+            // cache_enabled = true but no URL provided -> configuration error.
+            return Err(AppError::Config(
+                "Rate limiter: cache is enabled but no Redis URL provided. \
+                 Set cache.url or set cache.enabled = false."
+                    .to_string(),
+            ));
         }
 
         debug!("Rate limiter using in-memory backend");
@@ -434,4 +445,104 @@ mod tests {
             first_reset
         );
     }
+
+    // ==================== M-2: Fail-closed rate limiter tests ====================
+
+    #[test]
+    fn test_m2_cache_disabled_returns_in_memory() {
+        // When cache_enabled = false, the rate limiter must use InMemory.
+        // This is the current dev/testing path and must never break.
+        let limiter = unwrap_ok!(RateLimiter::new(false, None, 10));
+        assert!(
+            matches!(limiter, RateLimiter::InMemory { .. }),
+            "cache_enabled = false must return InMemory rate limiter"
+        );
+    }
+
+    #[test]
+    fn test_m2_cache_disabled_with_url_returns_in_memory() {
+        // Even when a URL is provided, cache_enabled = false -> InMemory.
+        let limiter = unwrap_ok!(RateLimiter::new(
+            false,
+            Some("redis://localhost:6379"),
+            10
+        ));
+        assert!(
+            matches!(limiter, RateLimiter::InMemory { .. }),
+            "cache_enabled = false must return InMemory even with a URL"
+        );
+    }
+
+    #[test]
+    fn test_m2_cache_enabled_valid_url_returns_redis() {
+        // cache_enabled = true + valid URL format -> Redis variant.
+        // Note: Client::open only validates the URL format, it does not
+        // actually connect (that happens in check_redis).
+        let limiter = unwrap_ok!(RateLimiter::new(
+            true,
+            Some("redis://localhost:6379"),
+            10
+        ));
+        assert!(
+            matches!(limiter, RateLimiter::Redis { .. }),
+            "cache_enabled = true + valid URL must return Redis rate limiter"
+        );
+    }
+
+    #[test]
+    fn test_m2_cache_enabled_bad_url_returns_error() {
+        // cache_enabled = true + malformed URL -> error (fail-closed).
+        let result = RateLimiter::new(true, Some("not-a-valid-redis-url"), 10);
+        let err = match result {
+            Err(e) => e,
+            Ok(_) => panic!("cache_enabled = true + bad URL must return Err"),
+        };
+
+        let err_msg = format!("{}", err);
+        assert!(
+            err_msg.contains("cache is enabled"),
+            "Error message should mention 'cache is enabled', got: {}",
+            err_msg
+        );
+        assert!(
+            err_msg.contains("cache.enabled = false"),
+            "Error message should suggest setting cache.enabled = false, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_m2_cache_enabled_no_url_returns_error() {
+        // cache_enabled = true but no URL -> error (fail-closed).
+        let result = RateLimiter::new(true, None, 10);
+        let err = match result {
+            Err(e) => e,
+            Ok(_) => panic!("cache_enabled = true + no URL must return Err"),
+        };
+
+        let err_msg = format!("{}", err);
+        assert!(
+            err_msg.contains("no Redis URL"),
+            "Error message should mention 'no Redis URL', got: {}",
+            err_msg
+        );
+    }
+
+    #[tokio::test]
+    async fn test_m2_in_memory_rate_limiter_still_functional() {
+        // Regression: after M-2 fix, the in-memory backend must still work.
+        let limiter = unwrap_ok!(RateLimiter::new(false, None, 3));
+
+        // Use up the limit
+        for i in 1..=3 {
+            let result = unwrap_ok!(limiter.check("regression_ip").await);
+            assert!(result.allowed, "Request {} should be allowed", i);
+        }
+
+        // Next request should be blocked
+        let result = unwrap_ok!(limiter.check("regression_ip").await);
+        assert!(!result.allowed, "Request 4 should be blocked");
+        assert_eq!(result.remaining, 0);
+    }
+
 }

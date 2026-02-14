@@ -5066,3 +5066,303 @@ fn test_migrate_handles_credential_secrets() {
         "C-2: migrate_secrets must encrypt password, private_key, and passphrase fields"
     );
 }
+
+// =============================================================================
+// M-3: OptionalSecret Zeroize Regression Tests
+// =============================================================================
+
+/// M-3: OptionalSecret must import zeroize.
+#[test]
+fn test_m3_config_imports_zeroize() {
+    let source = include_str!("../../src/config.rs");
+    assert!(
+        source.contains("use zeroize::Zeroize"),
+        "M-3: config.rs must import zeroize::Zeroize"
+    );
+}
+
+/// M-3: OptionalSecret must implement Drop with zeroization.
+#[test]
+fn test_m3_optional_secret_has_zeroize_drop() {
+    let source = include_str!("../../src/config.rs");
+    assert!(
+        source.contains("impl Drop for OptionalSecret"),
+        "M-3: OptionalSecret must implement Drop"
+    );
+    assert!(
+        source.contains("s.zeroize()"),
+        "M-3: OptionalSecret Drop must call zeroize() on the inner String"
+    );
+}
+
+/// M-3: OptionalSecret Debug must still redact secrets (not regressed).
+#[test]
+fn test_m3_optional_secret_debug_redacts() {
+    let source = include_str!("../../src/config.rs");
+    assert!(
+        source.contains("impl std::fmt::Debug for OptionalSecret")
+            && source.contains("[REDACTED]"),
+        "M-3: OptionalSecret Debug must redact values as [REDACTED]"
+    );
+}
+
+// =============================================================================
+// M-5: Post-Quantum Secret Key Zeroize Regression Tests
+// =============================================================================
+
+/// M-5: crypto.rs must define zeroize_pq_secret_key helper.
+#[test]
+fn test_m5_has_zeroize_pq_helper() {
+    let source = include_str!("../../src/crypto.rs");
+    assert!(
+        source.contains("fn zeroize_pq_secret_key"),
+        "M-5: crypto.rs must define zeroize_pq_secret_key helper function"
+    );
+}
+
+/// M-5: HybridKemSecretKey Drop must call zeroize on PQ key.
+#[test]
+fn test_m5_kem_drop_zeroizes_pq_key() {
+    let source = include_str!("../../src/crypto.rs");
+    // Find the Drop impl for HybridKemSecretKey and verify it calls zeroize
+    assert!(
+        source.contains("impl Drop for HybridKemSecretKey"),
+        "M-5: HybridKemSecretKey must implement Drop"
+    );
+    // The Drop impl must not be empty (the old version had an empty body)
+    let drop_start = source
+        .find("impl Drop for HybridKemSecretKey")
+        .expect("M-5: HybridKemSecretKey Drop not found");
+    let drop_end = drop_start + source[drop_start..].find("\n}\n").unwrap_or(600) + 3;
+    let drop_body = &source[drop_start..drop_end];
+    assert!(
+        drop_body.contains("zeroize_pq_secret_key"),
+        "M-5: HybridKemSecretKey Drop must call zeroize_pq_secret_key"
+    );
+}
+
+/// M-5: HybridSigSecretKey Drop must call zeroize on PQ key.
+#[test]
+fn test_m5_sig_drop_zeroizes_pq_key() {
+    let source = include_str!("../../src/crypto.rs");
+    assert!(
+        source.contains("impl Drop for HybridSigSecretKey"),
+        "M-5: HybridSigSecretKey must implement Drop"
+    );
+    let drop_start = source
+        .find("impl Drop for HybridSigSecretKey")
+        .expect("M-5: HybridSigSecretKey Drop not found");
+    let drop_end = drop_start + source[drop_start..].find("\n}\n").unwrap_or(600) + 3;
+    let drop_body = &source[drop_start..drop_end];
+    assert!(
+        drop_body.contains("zeroize_pq_secret_key"),
+        "M-5: HybridSigSecretKey Drop must call zeroize_pq_secret_key"
+    );
+}
+
+/// M-5: PqSecretKeyBytes trait must be implemented for both PQ key types.
+#[test]
+fn test_m5_pq_secret_key_bytes_trait_impls() {
+    let source = include_str!("../../src/crypto.rs");
+    assert!(
+        source.contains("impl PqSecretKeyBytes for mlkem768::SecretKey"),
+        "M-5: PqSecretKeyBytes must be implemented for mlkem768::SecretKey"
+    );
+    assert!(
+        source.contains("impl PqSecretKeyBytes for mldsa65::SecretKey"),
+        "M-5: PqSecretKeyBytes must be implemented for mldsa65::SecretKey"
+    );
+}
+
+/// M-5: The zeroize helper must actually call zeroize() on the raw bytes.
+#[test]
+fn test_m5_zeroize_helper_calls_zeroize() {
+    let source = include_str!("../../src/crypto.rs");
+    let helper_start = source
+        .find("fn zeroize_pq_secret_key")
+        .expect("M-5: zeroize_pq_secret_key not found");
+    let helper_body = &source[helper_start..helper_start + 500];
+    assert!(
+        helper_body.contains("slice.zeroize()"),
+        "M-5: zeroize_pq_secret_key must call slice.zeroize()"
+    );
+}
+
+// ==================== M-4: VAUBAN_SECRET_KEY cleared from environment ====================
+
+#[test]
+fn test_m4_source_removes_env_var_after_reading() {
+    // Structural regression test: load_with_environment must call
+    // remove_var("VAUBAN_SECRET_KEY") immediately after std::env::var()
+    let source = include_str!("../../src/config.rs");
+    assert!(
+        source.contains(r#"remove_var("VAUBAN_SECRET_KEY")"#),
+        "M-4: config.rs must call remove_var(\"VAUBAN_SECRET_KEY\") to clear the env var"
+    );
+}
+
+#[test]
+fn test_m4_remove_var_before_set_override() {
+    // The remove_var call must happen BEFORE the value is used (defense in depth):
+    // if set_override fails, the env var is already cleared.
+    let source = include_str!("../../src/config.rs");
+    let remove_pos = source
+        .find(r#"remove_var("VAUBAN_SECRET_KEY")"#)
+        .expect("M-4: remove_var not found");
+    let set_override_pos = source[remove_pos..]
+        .find("set_override")
+        .expect("M-4: set_override not found after remove_var");
+    assert!(
+        set_override_pos > 0,
+        "M-4: remove_var must appear before set_override in the source"
+    );
+}
+
+#[test]
+fn test_m4_remove_var_inside_env_var_block() {
+    // The remove_var must be inside the `if let Ok(secret) = std::env::var(...)` block,
+    // i.e. it only runs when the env var was actually set.
+    let source = include_str!("../../src/config.rs");
+
+    // Find the env::var("VAUBAN_SECRET_KEY") read
+    let env_read_pos = source
+        .find(r#"std::env::var("VAUBAN_SECRET_KEY")"#)
+        .expect("M-4: env::var(\"VAUBAN_SECRET_KEY\") not found");
+
+    // Find remove_var relative to the env read
+    let after_read = &source[env_read_pos..];
+    let remove_offset = after_read
+        .find(r#"remove_var("VAUBAN_SECRET_KEY")"#)
+        .expect("M-4: remove_var not found after env::var read");
+
+    // The remove_var should be close (within the same if-block, < 700 chars).
+    // The allowance accounts for the SAFETY comment explaining the unsafe block.
+    assert!(
+        remove_offset < 700,
+        "M-4: remove_var should be close to env::var read (found at offset {})",
+        remove_offset
+    );
+}
+
+#[test]
+fn test_m4_toml_secret_key_path_preserved() {
+    // Structural regression test: the TOML-based secret_key loading path must still exist.
+    // This guards against someone accidentally removing TOML support while implementing
+    // the env var clearing.
+    let source = include_str!("../../src/config.rs");
+
+    // The config struct must still have a secret_key field of type SecretString
+    assert!(
+        source.contains("pub secret_key: secrecy::SecretString"),
+        "M-4 regression: Config must still have secret_key: secrecy::SecretString"
+    );
+
+    // The error message mentioning TOML as a valid source must still exist
+    assert!(
+        source.contains("config/{environment}.toml"),
+        "M-4 regression: error message must still mention TOML as a valid source for secret_key"
+    );
+
+    // The validation that secret_key is not empty must still exist
+    assert!(
+        source.contains("config.secret_key.expose_secret().is_empty()"),
+        "M-4 regression: validation that secret_key is not empty must remain"
+    );
+}
+
+// ==================== M-2: Silent cache fallback -> fail-closed ====================
+
+#[test]
+fn test_m2_cache_no_silent_fallback_to_mock() {
+    // The old pattern "falling back to mock cache" must no longer appear in
+    // create_cache_client().  When cache.enabled = true and Redis fails,
+    // an error must be returned, not a silent MockCache.
+    let source = include_str!("../../src/cache.rs");
+    assert!(
+        !source.contains("falling back to mock"),
+        "M-2: cache.rs must not contain 'falling back to mock' (fail-closed when enabled)"
+    );
+}
+
+#[test]
+fn test_m2_cache_disabled_mock_path_preserved() {
+    // Regression: the explicit cache.enabled = false -> MockCache path must remain.
+    let source = include_str!("../../src/cache.rs");
+    assert!(
+        source.contains("Cache is disabled - using mock cache"),
+        "M-2 regression: cache.rs must still have the disabled -> mock path"
+    );
+}
+
+#[test]
+fn test_m2_cache_enabled_uses_error_propagation() {
+    // When cache.enabled = true, errors must propagate via ? (not match/Ok(Mock)).
+    // Look for the fail-closed pattern: map_err + AppError::Config.
+    let source = include_str!("../../src/cache.rs");
+
+    // The function must return AppError::Config on Redis client creation failure
+    assert!(
+        source.contains("Cache is enabled but Redis client creation failed"),
+        "M-2: cache.rs must return Config error on Redis client creation failure"
+    );
+
+    // The function must return AppError::Config on Redis connection failure
+    assert!(
+        source.contains("Cache is enabled but cannot connect to Redis"),
+        "M-2: cache.rs must return Config error on Redis connection failure"
+    );
+}
+
+#[test]
+fn test_m2_cache_error_messages_suggest_disabling() {
+    // Error messages must tell the operator how to recover.
+    let source = include_str!("../../src/cache.rs");
+
+    let error_count = source.matches("Set cache.enabled = false to run without cache").count();
+    assert!(
+        error_count >= 2,
+        "M-2: both cache error paths must suggest 'Set cache.enabled = false' (found {})",
+        error_count
+    );
+}
+
+#[test]
+fn test_m2_rate_limiter_no_silent_fallback() {
+    // The old "Falling back to in-memory" pattern must be gone.
+    let source = include_str!("../../src/services/rate_limit.rs");
+    assert!(
+        !source.contains("Falling back to in-memory"),
+        "M-2: rate_limit.rs must not silently fall back to in-memory when cache is enabled"
+    );
+}
+
+#[test]
+fn test_m2_rate_limiter_fail_closed_on_bad_client() {
+    // When cache_enabled = true, Redis client creation failure must return
+    // an error via AppError::Config, not a warn + fallback.
+    let source = include_str!("../../src/services/rate_limit.rs");
+    assert!(
+        source.contains("cache is enabled but Redis client creation failed"),
+        "M-2: rate_limit.rs must return Config error on Redis client failure"
+    );
+}
+
+#[test]
+fn test_m2_rate_limiter_fail_closed_on_no_url() {
+    // When cache_enabled = true but no URL, must return an error.
+    let source = include_str!("../../src/services/rate_limit.rs");
+    assert!(
+        source.contains("cache is enabled but no Redis URL provided"),
+        "M-2: rate_limit.rs must return error when cache enabled but no URL"
+    );
+}
+
+#[test]
+fn test_m2_rate_limiter_in_memory_path_preserved() {
+    // Regression: the cache_enabled = false -> InMemory path must remain.
+    let source = include_str!("../../src/services/rate_limit.rs");
+    assert!(
+        source.contains("Rate limiter using in-memory backend"),
+        "M-2 regression: rate_limit.rs must still have the in-memory backend path"
+    );
+}

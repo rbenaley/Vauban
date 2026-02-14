@@ -17,11 +17,14 @@ use config::{Config as ConfigBuilder, ConfigError, File};
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use zeroize::Zeroize;
 
 // ==================== Optional Secret Wrapper ====================
 
 /// Wrapper for optional secret values that properly implements Serialize/Deserialize.
 /// This is needed because SecretString (SecretBox<str>) doesn't implement Serialize for Option.
+///
+/// The inner `String` is zeroized on `Drop` to prevent secret leakage in memory.
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(transparent)]
 pub struct OptionalSecret(Option<String>);
@@ -60,8 +63,11 @@ impl OptionalSecret {
     }
 
     /// Convert to a SecretString if present.
-    pub fn into_secret(self) -> Option<secrecy::SecretString> {
-        self.0.map(secrecy::SecretString::from)
+    ///
+    /// Uses `take()` to move the inner value while leaving `None` behind,
+    /// which is compatible with the `Drop` implementation.
+    pub fn into_secret(mut self) -> Option<secrecy::SecretString> {
+        self.0.take().map(secrecy::SecretString::from)
     }
 }
 
@@ -78,6 +84,14 @@ impl std::fmt::Debug for OptionalSecret {
 impl From<Option<String>> for OptionalSecret {
     fn from(value: Option<String>) -> Self {
         Self::new(value)
+    }
+}
+
+impl Drop for OptionalSecret {
+    fn drop(&mut self) {
+        if let Some(ref mut s) = self.0 {
+            s.zeroize();
+        }
     }
 }
 
@@ -525,6 +539,17 @@ impl Config {
 
         // 4. Override secret_key from VAUBAN_SECRET_KEY if set
         if let Ok(secret) = std::env::var("VAUBAN_SECRET_KEY") {
+            // M-4: Clear the environment variable immediately after reading.
+            // The secret is moved into the config builder; keeping it in the
+            // environment would expose it to child processes and to readers
+            // of /proc/PID/environ.
+            //
+            // SAFETY: This is called during single-threaded configuration loading
+            // in main(), before the Tokio runtime is started.  No other thread
+            // is reading the environment concurrently.
+            unsafe {
+                std::env::remove_var("VAUBAN_SECRET_KEY");
+            }
             builder = builder.set_override("secret_key", secret).map_err(|e| {
                 crate::error::AppError::Config(format!("Failed to set secret_key: {}", e))
             })?;
@@ -1102,6 +1127,205 @@ mod tests {
         assert!(
             production_toml.contains("key_path = \"/usr/local/"),
             "Production key_path should use FreeBSD /usr/local/ path"
+        );
+    }
+
+    // ==================== M-3: OptionalSecret Zeroize Tests ====================
+
+    #[test]
+    fn test_optional_secret_zeroize_on_drop() {
+        // Verify that the Zeroize trait correctly zeros a String's buffer.
+        // We test this directly on a String (which is what OptionalSecret::drop calls)
+        // because inspecting freed memory after Drop is UB and unreliable.
+        use zeroize::Zeroize;
+
+        let mut secret = String::from("super_secret_value_12345");
+        let ptr = secret.as_ptr();
+        let len = secret.len();
+
+        // Verify the String has non-zero content before zeroize
+        let bytes_before = unsafe { std::slice::from_raw_parts(ptr, len) };
+        assert!(
+            bytes_before.iter().any(|&b| b != 0),
+            "String should have non-zero content before zeroize"
+        );
+
+        // Call zeroize (this is what our Drop impl calls)
+        secret.zeroize();
+
+        // The String's heap buffer should now be all zeros
+        // (String::zeroize overwrites the buffer, then truncates to len 0,
+        //  but the capacity remains allocated so we can still read via the pointer)
+        let bytes_after = unsafe { std::slice::from_raw_parts(ptr, len) };
+        assert!(
+            bytes_after.iter().all(|&b| b == 0),
+            "String buffer should be zeroized after Zeroize::zeroize()"
+        );
+    }
+
+    #[test]
+    fn test_optional_secret_none_drop_is_safe() {
+        // Dropping a None OptionalSecret should not panic
+        let secret = OptionalSecret::new(None);
+        drop(secret);
+    }
+
+    #[test]
+    fn test_optional_secret_functional_after_zeroize_impl() {
+        // Verify that adding Drop didn't break normal functionality
+        let secret = OptionalSecret::new(Some("test_value".to_string()));
+        assert!(secret.is_some());
+        assert!(!secret.is_none());
+        assert_eq!(secret.as_ref(), Some("test_value"));
+        assert_eq!(secret.to_string(), Some("test_value".to_string()));
+
+        let cloned = secret.clone();
+        assert_eq!(cloned.as_ref(), Some("test_value"));
+
+        let secret_string = secret.as_secret();
+        assert!(secret_string.is_some());
+
+        let into = cloned.into_secret();
+        assert!(into.is_some());
+    }
+
+    #[test]
+    fn test_optional_secret_debug_still_redacts() {
+        let secret = OptionalSecret::new(Some("should_not_appear".to_string()));
+        let debug = format!("{:?}", secret);
+        assert_eq!(debug, "[REDACTED]");
+        assert!(!debug.contains("should_not_appear"));
+
+        let none_secret = OptionalSecret::new(None);
+        let debug_none = format!("{:?}", none_secret);
+        assert_eq!(debug_none, "None");
+    }
+
+    #[test]
+    fn test_optional_secret_source_has_zeroize_drop() {
+        // Structural regression test: verify that the source code contains
+        // a Drop impl for OptionalSecret that calls zeroize()
+        let source = include_str!("config.rs");
+        assert!(
+            source.contains("impl Drop for OptionalSecret"),
+            "OptionalSecret must have a Drop implementation"
+        );
+        assert!(
+            source.contains("s.zeroize()"),
+            "OptionalSecret Drop must call zeroize()"
+        );
+        assert!(
+            source.contains("use zeroize::Zeroize"),
+            "config.rs must import zeroize::Zeroize"
+        );
+    }
+
+    // ==================== M-4: VAUBAN_SECRET_KEY env-var clearing Tests ====================
+
+    #[test]
+    #[serial_test::serial]
+    fn test_m4_env_var_cleared_after_config_load() {
+        // When VAUBAN_SECRET_KEY is set, loading configuration must
+        // (a) use its value as secret_key, then (b) remove it from the environment.
+        let env_secret = "env-secret-for-m4-clearing-test!";
+
+        // Set the env var (single-threaded context, guarded by #[serial])
+        unsafe {
+            std::env::set_var("VAUBAN_SECRET_KEY", env_secret);
+        }
+        assert!(
+            std::env::var("VAUBAN_SECRET_KEY").is_ok(),
+            "pre-condition: VAUBAN_SECRET_KEY should be set"
+        );
+
+        let config = Config::load_with_environment(
+            test_fixtures::config_dir(),
+            Environment::Testing,
+        )
+        .expect("Config loading should succeed with VAUBAN_SECRET_KEY set");
+
+        // (a) The env var value must have been picked up
+        assert_eq!(
+            config.secret_key.expose_secret(),
+            env_secret,
+            "secret_key should come from VAUBAN_SECRET_KEY when set"
+        );
+
+        // (b) The env var must no longer be present
+        assert!(
+            std::env::var("VAUBAN_SECRET_KEY").is_err(),
+            "VAUBAN_SECRET_KEY must be cleared from the environment after loading"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_m4_toml_secret_key_still_works_without_env_var() {
+        // Regression guard: when VAUBAN_SECRET_KEY is NOT set, the secret_key
+        // must still be loaded from TOML files (current production path).
+        //
+        // This is the most important test for M-4: we must not break the
+        // TOML-based secret_key loading that is the primary usage today.
+        unsafe {
+            std::env::remove_var("VAUBAN_SECRET_KEY");
+        }
+        assert!(
+            std::env::var("VAUBAN_SECRET_KEY").is_err(),
+            "pre-condition: VAUBAN_SECRET_KEY should not be set"
+        );
+
+        let config = Config::load_with_environment(
+            test_fixtures::config_dir(),
+            Environment::Testing,
+        )
+        .expect("Config loading should succeed from TOML alone (no env var)");
+
+        // The secret_key from testing.toml must be present
+        assert_eq!(
+            config.secret_key.expose_secret(),
+            "test-secret-key-for-integration-tests!",
+            "secret_key must come from testing.toml when VAUBAN_SECRET_KEY is absent"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_m4_env_var_overrides_toml_secret_key() {
+        // When both TOML and env var provide secret_key, the env var wins.
+        let env_secret = "env-override-takes-priority-ok!!";
+
+        unsafe {
+            std::env::set_var("VAUBAN_SECRET_KEY", env_secret);
+        }
+
+        let config = Config::load_with_environment(
+            test_fixtures::config_dir(),
+            Environment::Testing,
+        )
+        .expect("Config loading should succeed with env var override");
+
+        assert_eq!(
+            config.secret_key.expose_secret(),
+            env_secret,
+            "env var should override TOML secret_key"
+        );
+
+        // Clean-up: env var should already be cleared by the fix,
+        // but verify it as a double-check.
+        assert!(
+            std::env::var("VAUBAN_SECRET_KEY").is_err(),
+            "VAUBAN_SECRET_KEY must be cleared even when overriding TOML"
+        );
+    }
+
+    #[test]
+    fn test_m4_source_has_remove_var() {
+        // Structural regression test: the source code must contain
+        // remove_var("VAUBAN_SECRET_KEY") to ensure the env var is cleared.
+        let source = include_str!("config.rs");
+        assert!(
+            source.contains(r#"remove_var("VAUBAN_SECRET_KEY")"#),
+            "config.rs must call remove_var(\"VAUBAN_SECRET_KEY\") after reading the env var"
         );
     }
 }

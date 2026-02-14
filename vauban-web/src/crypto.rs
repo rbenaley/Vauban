@@ -12,6 +12,48 @@ use thiserror::Error;
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
 use zeroize::Zeroize;
 
+/// Zeroize the raw bytes of a post-quantum secret key type.
+///
+/// The `pqcrypto` crate types (`mlkem768::SecretKey`, `mldsa65::SecretKey`) wrap
+/// a fixed-size `[u8; N]` array but do not implement `Zeroize` or `ZeroizeOnDrop`.
+/// This helper uses `pq_as_bytes()` to locate the key material, then overwrites
+/// it with zeros via `zeroize::Zeroize` on the raw slice.
+///
+/// # Safety
+///
+/// This function casts away `const` from the `&[u8]` returned by `pq_as_bytes()`
+/// because the underlying struct owns the data (it is `[u8; N]` inside the struct)
+/// and we hold `&mut self` in the `Drop` implementation, guaranteeing exclusive
+/// access.  The `pqcrypto` crate simply does not expose `as_bytes_mut()`.
+fn zeroize_pq_secret_key(key: &impl PqSecretKeyBytes) {
+    let bytes = key.pq_as_bytes();
+    // SAFETY: We have exclusive access (&mut self in Drop) and the bytes
+    // belong to the struct being dropped.  No other reference exists.
+    unsafe {
+        let ptr = bytes.as_ptr() as *mut u8;
+        let slice = std::slice::from_raw_parts_mut(ptr, bytes.len());
+        slice.zeroize();
+    }
+}
+
+/// Helper trait to extract `as_bytes()` from either KEM or Sign secret keys
+/// without importing conflicting trait names in the same scope.
+trait PqSecretKeyBytes {
+    fn pq_as_bytes(&self) -> &[u8];
+}
+
+impl PqSecretKeyBytes for mlkem768::SecretKey {
+    fn pq_as_bytes(&self) -> &[u8] {
+        <Self as pqcrypto_traits::kem::SecretKey>::as_bytes(self)
+    }
+}
+
+impl PqSecretKeyBytes for mldsa65::SecretKey {
+    fn pq_as_bytes(&self) -> &[u8] {
+        <Self as pqcrypto_traits::sign::SecretKey>::as_bytes(self)
+    }
+}
+
 #[derive(Error, Debug)]
 pub enum CryptoError {
     #[error("Key derivation failed")]
@@ -44,8 +86,12 @@ pub struct HybridKemSecretKey {
 
 impl Drop for HybridKemSecretKey {
     fn drop(&mut self) {
-        // StaticSecret implements ZeroizeOnDrop in 2.0
-        // mlkem768::SecretKey does not support Zeroize currently
+        // StaticSecret (x25519-dalek) implements ZeroizeOnDrop automatically.
+        //
+        // mlkem768::SecretKey wraps [u8; N] but the pqcrypto crate does not
+        // implement Zeroize.  We zeroize the raw bytes via unsafe to ensure
+        // the post-quantum secret key material does not linger in memory.
+        zeroize_pq_secret_key(&self.post_quantum);
     }
 }
 
@@ -108,7 +154,11 @@ pub struct HybridSigSecretKey {
 
 impl Drop for HybridSigSecretKey {
     fn drop(&mut self) {
-        // SigningKey implements ZeroizeOnDrop
+        // SigningKey (ed25519-dalek) implements ZeroizeOnDrop automatically.
+        //
+        // mldsa65::SecretKey wraps [u8; N] but the pqcrypto crate does not
+        // implement Zeroize.  We zeroize the raw bytes via unsafe.
+        zeroize_pq_secret_key(&self.post_quantum);
     }
 }
 
@@ -219,5 +269,103 @@ mod tests {
 
         let wrong_message = b"Something else";
         assert!(pk.verify(wrong_message, &sig).is_err());
+    }
+
+    // ==================== M-5: PQ Secret Key Zeroization Tests ====================
+
+    #[test]
+    fn test_mlkem768_secret_key_zeroized_by_helper() {
+        use pqcrypto_traits::kem::SecretKey as _;
+
+        let (_pk, pq_sk) = mlkem768::keypair();
+
+        // Verify non-zero content before zeroization
+        assert!(
+            pq_sk.as_bytes().iter().any(|&b| b != 0),
+            "ML-KEM-768 secret key should have non-zero content before zeroize"
+        );
+
+        // Call the zeroize helper directly (this is what Drop calls)
+        zeroize_pq_secret_key(&pq_sk);
+
+        // Read the bytes back through a raw pointer to bypass any compiler caching
+        let bytes = unsafe {
+            std::slice::from_raw_parts(pq_sk.as_bytes().as_ptr(), pq_sk.as_bytes().len())
+        };
+        assert!(
+            bytes.iter().all(|&b| b == 0),
+            "ML-KEM-768 secret key should be all zeros after zeroize_pq_secret_key"
+        );
+    }
+
+    #[test]
+    fn test_mldsa65_secret_key_zeroized_by_helper() {
+        use pqcrypto_traits::sign::SecretKey as _;
+
+        let (_pk, pq_sk) = mldsa65::keypair();
+
+        // Verify non-zero content before zeroization
+        assert!(
+            pq_sk.as_bytes().iter().any(|&b| b != 0),
+            "ML-DSA-65 secret key should have non-zero content before zeroize"
+        );
+
+        // Call the zeroize helper directly
+        zeroize_pq_secret_key(&pq_sk);
+
+        let bytes = unsafe {
+            std::slice::from_raw_parts(pq_sk.as_bytes().as_ptr(), pq_sk.as_bytes().len())
+        };
+        assert!(
+            bytes.iter().all(|&b| b == 0),
+            "ML-DSA-65 secret key should be all zeros after zeroize_pq_secret_key"
+        );
+    }
+
+    #[test]
+    fn test_kem_still_works_after_zeroize_impl() {
+        // Verify keypair generation and functional correctness
+        // are not broken by the new Drop implementation.
+        let (pk, sk) = HybridKemSecretKey::generate();
+        assert_eq!(
+            pk.post_quantum.as_bytes().len(),
+            mlkem768::public_key_bytes()
+        );
+        assert_eq!(
+            sk.post_quantum.as_bytes().len(),
+            mlkem768::secret_key_bytes()
+        );
+        // The key should have non-zero bytes (i.e., it's a real key)
+        assert!(
+            sk.post_quantum.as_bytes().iter().any(|&b| b != 0),
+            "Generated ML-KEM-768 secret key should not be all zeros"
+        );
+    }
+
+    #[test]
+    fn test_sig_still_works_after_zeroize_impl() {
+        let (pk, sk) = HybridSigSecretKey::generate();
+        let message = b"test zeroize doesn't break signing";
+        let sig = sk.sign(message);
+        assert!(pk.verify(message, &sig).is_ok());
+    }
+
+    #[test]
+    fn test_crypto_source_has_zeroize_pq_helper() {
+        // Structural regression test: verify the source code contains
+        // the zeroize_pq_secret_key helper and it's used in Drop impls.
+        let source = include_str!("crypto.rs");
+        assert!(
+            source.contains("fn zeroize_pq_secret_key"),
+            "crypto.rs must define zeroize_pq_secret_key helper"
+        );
+        assert!(
+            source.contains("zeroize_pq_secret_key(&self.post_quantum)"),
+            "Drop impls must call zeroize_pq_secret_key on PQ secret keys"
+        );
+        assert!(
+            source.contains("slice.zeroize()"),
+            "zeroize_pq_secret_key must call zeroize() on the raw slice"
+        );
     }
 }
