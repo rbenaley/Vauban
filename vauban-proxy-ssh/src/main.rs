@@ -1,3 +1,9 @@
+// L-1: Relax strict clippy lints in test code where unwrap/expect/panic are idiomatic
+#![cfg_attr(test, allow(
+    clippy::unwrap_used, clippy::expect_used, clippy::panic,
+    clippy::print_stdout, clippy::print_stderr
+))]
+
 //! Vauban SSH Proxy Service
 //!
 //! Handles:
@@ -139,6 +145,8 @@ fn main() -> ExitCode {
     info!("vauban-proxy-ssh starting (async mode with Tokio)");
 
     // Build and run the Tokio runtime
+    // SAFETY: Tokio runtime creation is a startup invariant - the service cannot run without it
+    #[allow(clippy::expect_used)]
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

@@ -73,7 +73,7 @@ pub async fn session_list(
     if let Some(ref asset) = asset_filter
         && !asset.is_empty()
     {
-        let pattern = format!("%{}%", asset);
+        let pattern = crate::db::like_contains(asset);
         query = query.filter(schema_assets::name.ilike(pattern));
     }
 
@@ -456,7 +456,7 @@ pub async fn recording_list(
     if let Some(ref asset) = asset_filter
         && !asset.is_empty()
     {
-        let pattern = format!("%{}%", asset);
+        let pattern = crate::db::like_contains(asset);
         query = query.filter(schema_assets::name.ilike(pattern));
     }
 

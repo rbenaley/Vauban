@@ -1,3 +1,9 @@
+// L-1: Relax strict clippy lints in test code where unwrap/expect/panic are idiomatic
+#![cfg_attr(test, allow(
+    clippy::unwrap_used, clippy::expect_used, clippy::panic,
+    clippy::print_stdout, clippy::print_stderr
+))]
+
 /// VAUBAN Web - Main application entry point.
 ///
 /// Rust web application using Axum, Diesel, and Askama.
@@ -5,7 +11,7 @@
 use axum::{
     Router,
     http::Method,
-    routing::{get, post, put},
+    routing::{get, post},
 };
 use axum_server::tls_rustls::RustlsConfig;
 use secrecy::ExposeSecret;
@@ -157,6 +163,9 @@ fn init_vault_client() -> Option<Arc<VaultCryptoClient>> {
     }
 }
 
+// Early startup uses eprintln! because tracing may not be initialized yet.
+// These are critical error paths that must be visible even without structured logging.
+#[allow(clippy::print_stderr)]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // M-8/M-10: Create server handle early for graceful shutdown.
@@ -753,20 +762,26 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             // Accounts API
             .route("/api/v1/accounts", get(handlers::api::list_users))
             .route("/api/v1/accounts", post(handlers::api::create_user))
-            .route("/api/v1/accounts/{uuid}", get(handlers::api::get_user))
-            .route("/api/v1/accounts/{uuid}", put(handlers::api::update_user))
+            // L-2: DELETE stub returns 501 Not Implemented (not 200 OK)
             .route(
                 "/api/v1/accounts/{uuid}",
-                axum::routing::delete(|| async { "Not implemented" }),
+                get(handlers::api::get_user)
+                    .put(handlers::api::update_user)
+                    .delete(|| async {
+                        (axum::http::StatusCode::NOT_IMPLEMENTED, "Not implemented")
+                    }),
             )
             // Assets API
             .route("/api/v1/assets", get(handlers::api::list_assets))
             .route("/api/v1/assets", post(handlers::api::create_asset))
-            .route("/api/v1/assets/{uuid}", get(handlers::api::get_asset))
-            .route("/api/v1/assets/{uuid}", put(handlers::api::update_asset))
+            // L-2: DELETE stub returns 501 Not Implemented (not 200 OK)
             .route(
                 "/api/v1/assets/{uuid}",
-                axum::routing::delete(|| async { "Not implemented" }),
+                get(handlers::api::get_asset)
+                    .put(handlers::api::update_asset)
+                    .delete(|| async {
+                        (axum::http::StatusCode::NOT_IMPLEMENTED, "Not implemented")
+                    }),
             )
             // SSH host key API (H-9)
             .route(
@@ -786,10 +801,13 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             // Sessions API
             .route("/api/v1/sessions", get(handlers::api::list_sessions))
             .route("/api/v1/sessions", post(handlers::api::create_session))
-            .route("/api/v1/sessions/{uuid}", get(handlers::api::get_session))
+            // L-2: DELETE stub returns 501 Not Implemented (not 200 OK)
             .route(
                 "/api/v1/sessions/{uuid}",
-                axum::routing::delete(|| async { "Not implemented" }),
+                get(handlers::api::get_session)
+                    .delete(|| async {
+                        (axum::http::StatusCode::NOT_IMPLEMENTED, "Not implemented")
+                    }),
             )
             .route(
                 "/api/v1/sessions/{id}/terminate",

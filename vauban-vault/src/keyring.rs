@@ -71,7 +71,8 @@ fn derive_key(master_key: &[u8; 32], domain: &str, version: u32) -> Key<Aes256Gc
     let hkdf = Hkdf::<Sha3_256>::new(None, master_key);
     let info = format!("vauban-{}-v{}", domain, version);
     let mut derived = [0u8; 32];
-    // HKDF expand to 32 bytes always succeeds (32 <= 255 * HashLen)
+    // SAFETY: HKDF expand to 32 bytes always succeeds (32 <= 255 * HashLen = 8160)
+    #[allow(clippy::expect_used)]
     hkdf.expand(info.as_bytes(), &mut derived)
         .expect("32 bytes is valid for HKDF-SHA3-256");
     let key = *Key::<Aes256Gcm>::from_slice(&derived);

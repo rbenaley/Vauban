@@ -40,10 +40,11 @@ pub async fn list_users(
     let mut query = users.filter(is_deleted.eq(false)).into_boxed();
 
     if let Some(search) = params.search {
+        let pattern = crate::db::like_contains(&search);
         query = query.filter(
             username
-                .ilike(format!("%{}%", search))
-                .or(email.ilike(format!("%{}%", search))),
+                .ilike(pattern.clone())
+                .or(email.ilike(pattern)),
         );
     }
 

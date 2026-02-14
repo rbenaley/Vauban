@@ -576,13 +576,26 @@ async fn handle_notifications_socket(
     user: AuthUser,
     token_hash: String,
 ) {
-    let (mut sender, mut receiver) = socket.split();
-
-    // Register this connection for personalized auth session updates
-    let (connection_id, mut personalized_rx) = state
+    // L-8: Reject if the user has too many concurrent WebSocket connections
+    let (connection_id, mut personalized_rx) = match state
         .user_connections
         .register(&user.uuid, token_hash)
-        .await;
+        .await
+    {
+        Ok(result) => result,
+        Err(_) => {
+            warn!(
+                user = %user.username,
+                "WebSocket connection rejected: per-user connection limit reached"
+            );
+            // Close the socket gracefully before returning
+            let mut socket = socket;
+            let _ = socket.close().await;
+            return;
+        }
+    };
+
+    let (mut sender, mut receiver) = socket.split();
 
     // Subscribe to broadcast channels for other updates
     let mut notifications_rx = state.broadcast.subscribe(&WsChannel::Notifications).await;

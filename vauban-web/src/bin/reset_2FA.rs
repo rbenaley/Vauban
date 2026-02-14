@@ -1,3 +1,9 @@
+// SAFETY: This is an interactive CLI tool where expect()/unwrap() on I/O is acceptable
+// for user prompts - failures should terminate the tool. println!/eprintln! are the
+// correct output mechanism for CLI tools (not tracing).
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+
 /// VAUBAN - Reset user 2FA (MFA) utility.
 ///
 /// Interactive CLI tool to disable two-factor authentication for a user.

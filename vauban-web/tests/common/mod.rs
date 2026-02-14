@@ -254,7 +254,7 @@ async fn serve_static_test(
 
 /// Build the test router with all routes.
 fn build_test_router(state: AppState) -> Router {
-    use axum::routing::{get, post, put};
+    use axum::routing::{get, post};
     use vauban_web::handlers;
     use vauban_web::middleware;
 
@@ -298,13 +298,27 @@ fn build_test_router(state: AppState) -> Router {
         // Accounts routes
         .route("/api/v1/accounts", get(handlers::api::list_users))
         .route("/api/v1/accounts", post(handlers::api::create_user))
-        .route("/api/v1/accounts/{uuid}", get(handlers::api::get_user))
-        .route("/api/v1/accounts/{uuid}", put(handlers::api::update_user))
+        // L-2: DELETE stub returns 501 Not Implemented (not 200 OK)
+        .route(
+            "/api/v1/accounts/{uuid}",
+            get(handlers::api::get_user)
+                .put(handlers::api::update_user)
+                .delete(|| async {
+                    (axum::http::StatusCode::NOT_IMPLEMENTED, "Not implemented")
+                }),
+        )
         // Assets routes
         .route("/api/v1/assets", get(handlers::api::list_assets))
         .route("/api/v1/assets", post(handlers::api::create_asset))
-        .route("/api/v1/assets/{uuid}", get(handlers::api::get_asset))
-        .route("/api/v1/assets/{uuid}", put(handlers::api::update_asset))
+        // L-2: DELETE stub returns 501 Not Implemented (not 200 OK)
+        .route(
+            "/api/v1/assets/{uuid}",
+            get(handlers::api::get_asset)
+                .put(handlers::api::update_asset)
+                .delete(|| async {
+                    (axum::http::StatusCode::NOT_IMPLEMENTED, "Not implemented")
+                }),
+        )
         // Asset Groups API
         .route(
             "/api/v1/assets/groups",
@@ -322,7 +336,14 @@ fn build_test_router(state: AppState) -> Router {
         // Sessions routes
         .route("/api/v1/sessions", get(handlers::api::list_sessions))
         .route("/api/v1/sessions", post(handlers::api::create_session))
-        .route("/api/v1/sessions/{uuid}", get(handlers::api::get_session))
+        // L-2: DELETE stub returns 501 Not Implemented (not 200 OK)
+        .route(
+            "/api/v1/sessions/{uuid}",
+            get(handlers::api::get_session)
+                .delete(|| async {
+                    (axum::http::StatusCode::NOT_IMPLEMENTED, "Not implemented")
+                }),
+        )
         // Web pages (HTML) - for testing raw SQL queries
         .route("/sessions", get(handlers::web::session_list))
         .route("/sessions/recordings", get(handlers::web::recording_list))

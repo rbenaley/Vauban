@@ -7,6 +7,9 @@ rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 # Shared IPC and sandboxing utilities
 shared.workspace = true

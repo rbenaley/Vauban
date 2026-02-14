@@ -1,7 +1,8 @@
 // SAFETY: This is a development-only seed script where expect() is acceptable
-// for database operations - failures should terminate the script.
-#![allow(clippy::expect_used)]
-#![allow(clippy::unwrap_used)]
+// for database operations - failures should terminate the script. println!/eprintln!
+// are the correct output mechanism for CLI tools (not tracing).
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 
 //! VAUBAN - Seed Data Generator
 //!

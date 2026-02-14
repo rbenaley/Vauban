@@ -19,6 +19,26 @@ pub struct UserConnection {
     pub sender: mpsc::Sender<String>,
 }
 
+/// Maximum number of WebSocket connections per user (L-8).
+///
+/// Prevents a single user from exhausting server resources by opening
+/// too many concurrent WebSocket connections. A normal user will have
+/// at most a few browser tabs open simultaneously.
+pub const MAX_CONNECTIONS_PER_USER: usize = 10;
+
+/// Error returned when a user exceeds the WebSocket connection limit.
+#[derive(Debug)]
+pub struct ConnectionLimitError;
+
+impl std::fmt::Display for ConnectionLimitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "WebSocket connection limit reached ({MAX_CONNECTIONS_PER_USER} per user)"
+        )
+    }
+}
+
 /// Registry for user WebSocket connections.
 /// Allows sending personalized messages to each connection.
 #[derive(Clone, Default)]
@@ -36,12 +56,28 @@ impl UserConnectionRegistry {
     }
 
     /// Register a new connection for a user.
-    /// Returns a receiver that the WebSocket handler should listen to.
+    ///
+    /// Returns `Ok((connection_id, receiver))` on success, or `Err(ConnectionLimitError)`
+    /// if the user has reached `MAX_CONNECTIONS_PER_USER` (L-8).
     pub async fn register(
         &self,
         user_uuid: &str,
         token_hash: String,
-    ) -> (Uuid, mpsc::Receiver<String>) {
+    ) -> Result<(Uuid, mpsc::Receiver<String>), ConnectionLimitError> {
+        let mut connections = self.connections.write().await;
+        let user_conns = connections.entry(user_uuid.to_string()).or_default();
+
+        // L-8: Enforce per-user WebSocket connection limit
+        if user_conns.len() >= MAX_CONNECTIONS_PER_USER {
+            warn!(
+                user_uuid = %user_uuid,
+                current = user_conns.len(),
+                limit = MAX_CONNECTIONS_PER_USER,
+                "WebSocket connection limit reached, rejecting new connection"
+            );
+            return Err(ConnectionLimitError);
+        }
+
         let (sender, receiver) = mpsc::channel(100);
         let connection_id = Uuid::new_v4();
 
@@ -51,11 +87,7 @@ impl UserConnectionRegistry {
             sender,
         };
 
-        let mut connections = self.connections.write().await;
-        connections
-            .entry(user_uuid.to_string())
-            .or_default()
-            .push(connection);
+        user_conns.push(connection);
 
         debug!(
             user_uuid = %user_uuid,
@@ -63,7 +95,7 @@ impl UserConnectionRegistry {
             "Registered new WebSocket connection"
         );
 
-        (connection_id, receiver)
+        Ok((connection_id, receiver))
     }
 
     /// Unregister a connection when it closes.
@@ -147,7 +179,7 @@ mod tests {
     #[tokio::test]
     async fn test_register_connection() {
         let registry = UserConnectionRegistry::new();
-        let (conn_id, _receiver) = registry.register("user-123", "hash-abc".to_string()).await;
+        let (conn_id, _receiver) = registry.register("user-123", "hash-abc".to_string()).await.unwrap();
 
         assert!(!conn_id.is_nil());
         assert_eq!(registry.connection_count("user-123").await, 1);
@@ -157,9 +189,9 @@ mod tests {
     async fn test_register_multiple_connections() {
         let registry = UserConnectionRegistry::new();
 
-        let (_id1, _rx1) = registry.register("user-123", "hash-a".to_string()).await;
-        let (_id2, _rx2) = registry.register("user-123", "hash-b".to_string()).await;
-        let (_id3, _rx3) = registry.register("user-456", "hash-c".to_string()).await;
+        let (_id1, _rx1) = registry.register("user-123", "hash-a".to_string()).await.unwrap();
+        let (_id2, _rx2) = registry.register("user-123", "hash-b".to_string()).await.unwrap();
+        let (_id3, _rx3) = registry.register("user-456", "hash-c".to_string()).await.unwrap();
 
         assert_eq!(registry.connection_count("user-123").await, 2);
         assert_eq!(registry.connection_count("user-456").await, 1);
@@ -170,7 +202,7 @@ mod tests {
     async fn test_unregister_connection() {
         let registry = UserConnectionRegistry::new();
 
-        let (conn_id, _rx) = registry.register("user-123", "hash-abc".to_string()).await;
+        let (conn_id, _rx) = registry.register("user-123", "hash-abc".to_string()).await.unwrap();
         assert_eq!(registry.connection_count("user-123").await, 1);
 
         registry.unregister("user-123", conn_id).await;
@@ -181,8 +213,8 @@ mod tests {
     async fn test_get_user_connections() {
         let registry = UserConnectionRegistry::new();
 
-        let (_id1, _rx1) = registry.register("user-123", "hash-a".to_string()).await;
-        let (_id2, _rx2) = registry.register("user-123", "hash-b".to_string()).await;
+        let (_id1, _rx1) = registry.register("user-123", "hash-a".to_string()).await.unwrap();
+        let (_id2, _rx2) = registry.register("user-123", "hash-b".to_string()).await.unwrap();
 
         let connections = registry.get_user_connections("user-123").await;
         assert_eq!(connections.len(), 2);
@@ -196,8 +228,8 @@ mod tests {
     async fn test_send_personalized() {
         let registry = UserConnectionRegistry::new();
 
-        let (_id1, mut rx1) = registry.register("user-123", "hash-a".to_string()).await;
-        let (_id2, mut rx2) = registry.register("user-123", "hash-b".to_string()).await;
+        let (_id1, mut rx1) = registry.register("user-123", "hash-a".to_string()).await.unwrap();
+        let (_id2, mut rx2) = registry.register("user-123", "hash-b".to_string()).await.unwrap();
 
         // Send personalized messages
         registry
@@ -234,7 +266,7 @@ mod tests {
     #[tokio::test]
     async fn test_registry_clone() {
         let registry = UserConnectionRegistry::new();
-        let (_id, _rx) = registry.register("user-1", "hash-1".to_string()).await;
+        let (_id, _rx) = registry.register("user-1", "hash-1".to_string()).await.unwrap();
 
         let cloned = registry.clone();
         // Both should see the same connections (shared state)
@@ -252,7 +284,7 @@ mod tests {
     #[tokio::test]
     async fn test_unregister_wrong_connection_id() {
         let registry = UserConnectionRegistry::new();
-        let (_id, _rx) = registry.register("user-1", "hash-1".to_string()).await;
+        let (_id, _rx) = registry.register("user-1", "hash-1".to_string()).await.unwrap();
 
         // Try to unregister with wrong ID
         registry.unregister("user-1", Uuid::new_v4()).await;
@@ -275,9 +307,9 @@ mod tests {
     async fn test_connection_ids_are_unique() {
         let registry = UserConnectionRegistry::new();
 
-        let (id1, _rx1) = registry.register("user-1", "hash-1".to_string()).await;
-        let (id2, _rx2) = registry.register("user-1", "hash-2".to_string()).await;
-        let (id3, _rx3) = registry.register("user-2", "hash-3".to_string()).await;
+        let (id1, _rx1) = registry.register("user-1", "hash-1".to_string()).await.unwrap();
+        let (id2, _rx2) = registry.register("user-1", "hash-2".to_string()).await.unwrap();
+        let (id3, _rx3) = registry.register("user-2", "hash-3".to_string()).await.unwrap();
 
         assert_ne!(id1, id2);
         assert_ne!(id2, id3);
@@ -288,7 +320,7 @@ mod tests {
     async fn test_unregister_last_connection_removes_user() {
         let registry = UserConnectionRegistry::new();
 
-        let (id, _rx) = registry.register("user-1", "hash-1".to_string()).await;
+        let (id, _rx) = registry.register("user-1", "hash-1".to_string()).await.unwrap();
         assert_eq!(registry.connection_count("user-1").await, 1);
 
         registry.unregister("user-1", id).await;
@@ -305,8 +337,8 @@ mod tests {
     async fn test_multiple_users_isolation() {
         let registry = UserConnectionRegistry::new();
 
-        let (_id1, _rx1) = registry.register("user-a", "hash-a".to_string()).await;
-        let (_id2, _rx2) = registry.register("user-b", "hash-b".to_string()).await;
+        let (_id1, _rx1) = registry.register("user-a", "hash-a".to_string()).await.unwrap();
+        let (_id2, _rx2) = registry.register("user-b", "hash-b".to_string()).await.unwrap();
 
         // Each user should have their own connections
         let conns_a = registry.get_user_connections("user-a").await;
@@ -322,8 +354,8 @@ mod tests {
     async fn test_send_personalized_different_messages() {
         let registry = UserConnectionRegistry::new();
 
-        let (_id1, mut rx1) = registry.register("user-1", "token-AAA".to_string()).await;
-        let (_id2, mut rx2) = registry.register("user-1", "token-BBB".to_string()).await;
+        let (_id1, mut rx1) = registry.register("user-1", "token-AAA".to_string()).await.unwrap();
+        let (_id2, mut rx2) = registry.register("user-1", "token-BBB".to_string()).await.unwrap();
 
         registry
             .send_personalized("user-1", |hash| {
@@ -345,7 +377,7 @@ mod tests {
     #[tokio::test]
     async fn test_receiver_channel_capacity() {
         let registry = UserConnectionRegistry::new();
-        let (_id, mut rx) = registry.register("user-1", "hash".to_string()).await;
+        let (_id, mut rx) = registry.register("user-1", "hash".to_string()).await.unwrap();
 
         // Send multiple messages
         for i in 0..10 {
@@ -365,9 +397,9 @@ mod tests {
     async fn test_partial_unregister() {
         let registry = UserConnectionRegistry::new();
 
-        let (id1, _rx1) = registry.register("user-1", "hash-1".to_string()).await;
-        let (_id2, _rx2) = registry.register("user-1", "hash-2".to_string()).await;
-        let (_id3, _rx3) = registry.register("user-1", "hash-3".to_string()).await;
+        let (id1, _rx1) = registry.register("user-1", "hash-1".to_string()).await.unwrap();
+        let (_id2, _rx2) = registry.register("user-1", "hash-2".to_string()).await.unwrap();
+        let (_id3, _rx3) = registry.register("user-1", "hash-3".to_string()).await.unwrap();
 
         assert_eq!(registry.connection_count("user-1").await, 3);
 
@@ -387,7 +419,7 @@ mod tests {
     #[tokio::test]
     async fn test_empty_token_hash() {
         let registry = UserConnectionRegistry::new();
-        let (_id, mut rx) = registry.register("user-1", "".to_string()).await;
+        let (_id, mut rx) = registry.register("user-1", "".to_string()).await.unwrap();
 
         registry
             .send_personalized("user-1", |hash| {
@@ -404,7 +436,7 @@ mod tests {
         let registry = UserConnectionRegistry::new();
         let user_uuid = "用户-123";
 
-        let (_id, _rx) = registry.register(user_uuid, "hash".to_string()).await;
+        let (_id, _rx) = registry.register(user_uuid, "hash".to_string()).await.unwrap();
 
         assert_eq!(registry.connection_count(user_uuid).await, 1);
     }
@@ -414,7 +446,7 @@ mod tests {
         let registry = UserConnectionRegistry::new();
         let long_hash = "a".repeat(1000);
 
-        let (_id, _rx) = registry.register("user-1", long_hash.clone()).await;
+        let (_id, _rx) = registry.register("user-1", long_hash.clone()).await.unwrap();
 
         let conns = registry.get_user_connections("user-1").await;
         assert_eq!(conns[0].1.len(), 1000);
@@ -425,27 +457,32 @@ mod tests {
         let registry = UserConnectionRegistry::new();
         let registry_clone = registry.clone();
 
+        // Each thread registers for a different user to avoid L-8 limit conflicts
         let handle1 = tokio::spawn(async move {
-            for i in 0..10 {
-                let (_id, _rx) = registry_clone
-                    .register("user-1", format!("hash-{}", i))
-                    .await;
+            for i in 0..5 {
+                let _ = registry_clone
+                    .register("user-a", format!("hash-{}", i))
+                    .await
+                    .unwrap();
             }
         });
 
         let registry_clone2 = registry.clone();
         let handle2 = tokio::spawn(async move {
-            for i in 10..20 {
-                let (_id, _rx) = registry_clone2
-                    .register("user-1", format!("hash-{}", i))
-                    .await;
+            for i in 0..5 {
+                let _ = registry_clone2
+                    .register("user-b", format!("hash-{}", i))
+                    .await
+                    .unwrap();
             }
         });
 
         unwrap_ok!(handle1.await);
         unwrap_ok!(handle2.await);
 
-        assert_eq!(registry.connection_count("user-1").await, 20);
+        assert_eq!(registry.connection_count("user-a").await, 5);
+        assert_eq!(registry.connection_count("user-b").await, 5);
+        assert_eq!(registry.total_connections().await, 10);
     }
 
     // ==================== UserConnection Tests ====================
@@ -486,7 +523,7 @@ mod tests {
     async fn test_send_personalized_receiver_dropped() {
         let registry = UserConnectionRegistry::new();
 
-        let (_id, rx) = registry.register("user-1", "hash-1".to_string()).await;
+        let (_id, rx) = registry.register("user-1", "hash-1".to_string()).await.unwrap();
 
         // Drop the receiver before sending
         drop(rx);
@@ -501,8 +538,8 @@ mod tests {
     async fn test_send_personalized_some_receivers_dropped() {
         let registry = UserConnectionRegistry::new();
 
-        let (_id1, rx1) = registry.register("user-1", "hash-1".to_string()).await;
-        let (_id2, mut rx2) = registry.register("user-1", "hash-2".to_string()).await;
+        let (_id1, rx1) = registry.register("user-1", "hash-1".to_string()).await.unwrap();
+        let (_id2, mut rx2) = registry.register("user-1", "hash-2".to_string()).await.unwrap();
 
         // Drop only one receiver
         drop(rx1);
@@ -522,10 +559,10 @@ mod tests {
     async fn test_total_connections_multiple_users() {
         let registry = UserConnectionRegistry::new();
 
-        let (_id1, _rx1) = registry.register("user-a", "h1".to_string()).await;
-        let (_id2, _rx2) = registry.register("user-a", "h2".to_string()).await;
-        let (_id3, _rx3) = registry.register("user-b", "h3".to_string()).await;
-        let (_id4, _rx4) = registry.register("user-c", "h4".to_string()).await;
+        let (_id1, _rx1) = registry.register("user-a", "h1".to_string()).await.unwrap();
+        let (_id2, _rx2) = registry.register("user-a", "h2".to_string()).await.unwrap();
+        let (_id3, _rx3) = registry.register("user-b", "h3".to_string()).await.unwrap();
+        let (_id4, _rx4) = registry.register("user-c", "h4".to_string()).await.unwrap();
 
         assert_eq!(registry.total_connections().await, 4);
     }
@@ -534,8 +571,8 @@ mod tests {
     async fn test_total_connections_after_unregister() {
         let registry = UserConnectionRegistry::new();
 
-        let (id1, _rx1) = registry.register("user-a", "h1".to_string()).await;
-        let (_id2, _rx2) = registry.register("user-b", "h2".to_string()).await;
+        let (id1, _rx1) = registry.register("user-a", "h1".to_string()).await.unwrap();
+        let (_id2, _rx2) = registry.register("user-b", "h2".to_string()).await.unwrap();
 
         assert_eq!(registry.total_connections().await, 2);
 
@@ -550,8 +587,8 @@ mod tests {
     async fn test_connection_count_after_all_unregistered() {
         let registry = UserConnectionRegistry::new();
 
-        let (id1, _rx1) = registry.register("user-1", "h1".to_string()).await;
-        let (id2, _rx2) = registry.register("user-1", "h2".to_string()).await;
+        let (id1, _rx1) = registry.register("user-1", "h1".to_string()).await.unwrap();
+        let (id2, _rx2) = registry.register("user-1", "h2".to_string()).await.unwrap();
 
         registry.unregister("user-1", id1).await;
         registry.unregister("user-1", id2).await;
@@ -566,7 +603,7 @@ mod tests {
     async fn test_get_user_connections_empty_user() {
         let registry = UserConnectionRegistry::new();
 
-        let (_id, _rx) = registry.register("", "hash".to_string()).await;
+        let (_id, _rx) = registry.register("", "hash".to_string()).await.unwrap();
 
         let conns = registry.get_user_connections("").await;
         assert_eq!(conns.len(), 1);
@@ -576,9 +613,9 @@ mod tests {
     async fn test_get_user_connections_preserves_order() {
         let registry = UserConnectionRegistry::new();
 
-        let (id1, _rx1) = registry.register("user-1", "first".to_string()).await;
-        let (id2, _rx2) = registry.register("user-1", "second".to_string()).await;
-        let (id3, _rx3) = registry.register("user-1", "third".to_string()).await;
+        let (id1, _rx1) = registry.register("user-1", "first".to_string()).await.unwrap();
+        let (id2, _rx2) = registry.register("user-1", "second".to_string()).await.unwrap();
+        let (id3, _rx3) = registry.register("user-1", "third".to_string()).await.unwrap();
 
         let conns = registry.get_user_connections("user-1").await;
 
@@ -594,7 +631,7 @@ mod tests {
     async fn test_connection_sender_works() {
         let registry = UserConnectionRegistry::new();
 
-        let (_id, _rx) = registry.register("user-1", "hash".to_string()).await;
+        let (_id, _rx) = registry.register("user-1", "hash".to_string()).await.unwrap();
 
         let conns = registry.get_user_connections("user-1").await;
         let (_, _, sender) = &conns[0];
@@ -607,7 +644,7 @@ mod tests {
     async fn test_connection_sender_closed() {
         let registry = UserConnectionRegistry::new();
 
-        let (_id, rx) = registry.register("user-1", "hash".to_string()).await;
+        let (_id, rx) = registry.register("user-1", "hash".to_string()).await.unwrap();
 
         let conns = registry.get_user_connections("user-1").await;
         let (_, _, sender) = &conns[0];
@@ -625,7 +662,7 @@ mod tests {
     async fn test_connection_id_not_nil() {
         let registry = UserConnectionRegistry::new();
 
-        let (id, _rx) = registry.register("user-1", "hash".to_string()).await;
+        let (id, _rx) = registry.register("user-1", "hash".to_string()).await.unwrap();
 
         assert!(!id.is_nil());
     }
@@ -634,7 +671,7 @@ mod tests {
     async fn test_connection_id_version() {
         let registry = UserConnectionRegistry::new();
 
-        let (id, _rx) = registry.register("user-1", "hash".to_string()).await;
+        let (id, _rx) = registry.register("user-1", "hash".to_string()).await.unwrap();
 
         // Should be v4 (random) UUID
         assert_eq!(id.get_version_num(), 4);
@@ -643,17 +680,115 @@ mod tests {
     // ==================== Stress Tests ====================
 
     #[tokio::test]
-    async fn test_many_connections_same_user() {
+    async fn test_many_connections_same_user_up_to_limit() {
         let registry = UserConnectionRegistry::new();
 
         let mut receivers = Vec::new();
-        for i in 0..100 {
-            let (_id, rx) = registry.register("user-1", format!("hash-{}", i)).await;
+        for i in 0..MAX_CONNECTIONS_PER_USER {
+            let (_id, rx) = registry
+                .register("user-1", format!("hash-{}", i))
+                .await
+                .unwrap();
             receivers.push(rx);
         }
 
-        assert_eq!(registry.connection_count("user-1").await, 100);
-        assert_eq!(registry.total_connections().await, 100);
+        assert_eq!(
+            registry.connection_count("user-1").await,
+            MAX_CONNECTIONS_PER_USER
+        );
+        assert_eq!(
+            registry.total_connections().await,
+            MAX_CONNECTIONS_PER_USER
+        );
+    }
+
+    // ==================== L-8: Connection Limit Tests ====================
+
+    #[tokio::test]
+    async fn test_l8_connection_limit_reached() {
+        let registry = UserConnectionRegistry::new();
+
+        // Fill up to the limit
+        let mut receivers = Vec::new();
+        for i in 0..MAX_CONNECTIONS_PER_USER {
+            let (_id, rx) = registry
+                .register("user-1", format!("hash-{}", i))
+                .await
+                .unwrap();
+            receivers.push(rx);
+        }
+
+        // Next registration should fail
+        let result = registry
+            .register("user-1", "hash-overflow".to_string())
+            .await;
+        assert!(
+            result.is_err(),
+            "L-8: Should reject connection beyond limit"
+        );
+        assert_eq!(
+            registry.connection_count("user-1").await,
+            MAX_CONNECTIONS_PER_USER
+        );
+    }
+
+    #[tokio::test]
+    async fn test_l8_limit_per_user_not_global() {
+        let registry = UserConnectionRegistry::new();
+
+        // Fill user-1 to the limit
+        let mut receivers = Vec::new();
+        for i in 0..MAX_CONNECTIONS_PER_USER {
+            let (_id, rx) = registry
+                .register("user-1", format!("hash-{}", i))
+                .await
+                .unwrap();
+            receivers.push(rx);
+        }
+
+        // user-2 should still be able to register
+        let result = registry
+            .register("user-2", "hash-other".to_string())
+            .await;
+        assert!(
+            result.is_ok(),
+            "L-8: Limit is per-user, not global"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_l8_limit_recovers_after_unregister() {
+        let registry = UserConnectionRegistry::new();
+
+        // Fill up to the limit
+        let mut ids = Vec::new();
+        let mut receivers = Vec::new();
+        for i in 0..MAX_CONNECTIONS_PER_USER {
+            let (id, rx) = registry
+                .register("user-1", format!("hash-{}", i))
+                .await
+                .unwrap();
+            ids.push(id);
+            receivers.push(rx);
+        }
+
+        // Should be rejected
+        assert!(registry
+            .register("user-1", "overflow".to_string())
+            .await
+            .is_err());
+
+        // Unregister one
+        registry.unregister("user-1", ids[0]).await;
+
+        // Should succeed now
+        let result = registry
+            .register("user-1", "new-conn".to_string())
+            .await;
+        assert!(
+            result.is_ok(),
+            "L-8: Should allow new connection after unregister"
+        );
     }
 
     #[tokio::test]
@@ -664,7 +799,8 @@ mod tests {
         for i in 0..50 {
             let (_id, rx) = registry
                 .register(&format!("user-{}", i), "hash".to_string())
-                .await;
+                .await
+                .unwrap();
             receivers.push(rx);
         }
 

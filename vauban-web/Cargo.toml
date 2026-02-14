@@ -25,6 +25,7 @@ tower-http = { version = "0.6", features = ["cors", "timeout", "trace", "compres
 # Database
 diesel = { version = "2.3", features = ["postgres", "uuid", "chrono", "serde_json", "network-address"] }
 diesel-async = { version = "0.7", features = ["postgres", "deadpool"] }
+deadpool = { version = "0.12", features = ["managed"] }
 
 # Templates
 askama = { version = "0.15", features = ["serde_json"] }
@@ -120,6 +121,9 @@ serial_test = "3"
 once_cell = "1.19"
 insta = { version = "1.40", features = ["yaml"] }
 tokio-tungstenite = "0.28"
+
+[lints]
+workspace = true
 
 [[bin]]
 name = "seed_data"

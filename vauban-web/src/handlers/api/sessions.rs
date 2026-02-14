@@ -18,10 +18,8 @@ use crate::middleware::auth::AuthUser;
 use crate::models::session::{CreateSessionRequest, NewProxySession, ProxySession};
 use crate::schema::proxy_sessions::dsl::*;
 
-/// Check if request is from HTMX (has HX-Request header)
-fn is_htmx_request(headers: &HeaderMap) -> bool {
-    headers.get("HX-Request").is_some()
-}
+// L-6: is_htmx_request deduplicated - use crate::error::is_htmx_request
+use crate::error::is_htmx_request;
 
 /// Query parameters for list sessions.
 #[derive(Debug, Deserialize)]

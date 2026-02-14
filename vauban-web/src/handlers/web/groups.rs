@@ -32,7 +32,7 @@ pub async fn group_list(
         String,
         chrono::DateTime<chrono::Utc>,
     )> = if let Some(ref s) = search_filter {
-        let pattern = format!("%{}%", s);
+        let pattern = crate::db::like_contains(s);
         vauban_groups
             .filter(name.ilike(&pattern).or(description.ilike(&pattern)))
             .order(name.asc())
@@ -794,7 +794,7 @@ pub async fn group_member_search(
             .await
             .map_err(AppError::Database)?
     } else {
-        let pattern = format!("%{}%", search_term);
+        let pattern = crate::db::like_contains(&search_term);
         u::users
             .filter(u::is_deleted.eq(false))
             .filter(u::is_active.eq(true))

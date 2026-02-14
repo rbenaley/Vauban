@@ -33,7 +33,7 @@ pub async fn user_list(
     if let Some(ref search) = search_filter
         && !search.is_empty()
     {
-        let pattern = format!("%{}%", search);
+        let pattern = crate::db::like_contains(search);
         query = query.filter(
             users::username
                 .ilike(pattern.clone())

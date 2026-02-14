@@ -47,43 +47,72 @@ pub async fn asset_group_list(
     // Filter out empty strings - form sends empty string when search is cleared
     let search_filter = params.get("search").filter(|s| !s.is_empty()).cloned();
 
-    // NOTE: Raw SQL required - subquery in SELECT (asset_count) not supported by Diesel DSL
-    let groups_data: Vec<AssetGroupQueryResult> = if let Some(ref s) = search_filter {
-        let search_pattern = format!("%{}%", s);
-        diesel::sql_query(
-            "SELECT g.uuid, g.name, g.slug, g.description, g.color, g.icon, g.created_at,
-                    (SELECT COUNT(*) FROM assets a WHERE a.group_id = g.id AND a.is_deleted = false) as asset_count
-             FROM asset_groups g
-             WHERE g.is_deleted = false AND (g.name ILIKE $1 OR g.slug ILIKE $1)
-             ORDER BY g.name ASC"
+    // L-5: Replaced raw SQL with Diesel DSL (left_join + group_by) for type safety
+    // and proper LIKE wildcard escaping via like_contains().
+    use crate::db::like_contains;
+    use crate::schema::asset_groups;
+    use diesel::dsl::count;
+
+    let mut query = asset_groups::table
+        .left_join(
+            schema_assets::table.on(
+                schema_assets::group_id
+                    .eq(asset_groups::id.nullable())
+                    .and(schema_assets::is_deleted.eq(false)),
+            ),
         )
-        .bind::<Text, _>(&search_pattern)
-        .load(&mut conn).await
-        .map_err(AppError::Database)?
-    } else {
-        diesel::sql_query(
-            "SELECT g.uuid, g.name, g.slug, g.description, g.color, g.icon, g.created_at,
-                    (SELECT COUNT(*) FROM assets a WHERE a.group_id = g.id AND a.is_deleted = false) as asset_count
-             FROM asset_groups g
-             WHERE g.is_deleted = false
-             ORDER BY g.name ASC"
-        )
-        .load(&mut conn).await
-        .map_err(AppError::Database)?
-    };
+        .filter(asset_groups::is_deleted.eq(false))
+        .group_by((
+            asset_groups::id,
+            asset_groups::uuid,
+            asset_groups::name,
+            asset_groups::slug,
+            asset_groups::description,
+            asset_groups::color,
+            asset_groups::icon,
+            asset_groups::created_at,
+        ))
+        .select((
+            asset_groups::uuid,
+            asset_groups::name,
+            asset_groups::slug,
+            asset_groups::description,
+            asset_groups::color,
+            asset_groups::icon,
+            asset_groups::created_at,
+            count(schema_assets::id.nullable()),
+        ))
+        .order(asset_groups::name.asc())
+        .into_boxed();
+
+    if let Some(ref s) = search_filter {
+        let pattern = like_contains(s);
+        query = query.filter(
+            asset_groups::name
+                .ilike(pattern.clone())
+                .or(asset_groups::slug.ilike(pattern)),
+        );
+    }
+
+    let groups_data: Vec<AssetGroupRow> =
+        query.load(&mut conn).await.map_err(AppError::Database)?;
 
     let groups: Vec<crate::templates::assets::group_list::AssetGroupItem> = groups_data
         .into_iter()
-        .map(|g| crate::templates::assets::group_list::AssetGroupItem {
-            uuid: g.uuid.to_string(),
-            name: g.name,
-            slug: g.slug,
-            description: g.description,
-            color: g.color,
-            icon: g.icon,
-            asset_count: g.asset_count,
-            created_at: g.created_at.format("%b %d, %Y").to_string(),
-        })
+        .map(
+            |(uuid, name, slug, description, color, icon, created_at, asset_count)| {
+                crate::templates::assets::group_list::AssetGroupItem {
+                    uuid: uuid.to_string(),
+                    name,
+                    slug,
+                    description,
+                    color,
+                    icon,
+                    asset_count,
+                    created_at: created_at.format("%b %d, %Y").to_string(),
+                }
+            },
+        )
         .collect();
 
     let template = AssetGroupListTemplate {
@@ -104,26 +133,17 @@ pub async fn asset_group_list(
     Ok(Html(html))
 }
 
-/// Helper struct for asset group query results.
-#[derive(diesel::QueryableByName)]
-struct AssetGroupQueryResult {
-    #[diesel(sql_type = diesel::sql_types::Uuid)]
-    uuid: ::uuid::Uuid,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    name: String,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    slug: String,
-    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
-    description: Option<String>,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    color: String,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    icon: String,
-    #[diesel(sql_type = diesel::sql_types::Timestamptz)]
-    created_at: chrono::DateTime<chrono::Utc>,
-    #[diesel(sql_type = diesel::sql_types::Int8)]
-    asset_count: i64,
-}
+/// Query result type for asset group list (L-5: Diesel DSL replaces raw SQL).
+type AssetGroupRow = (
+    ::uuid::Uuid,
+    String,
+    String,
+    Option<String>,
+    String,
+    String,
+    chrono::DateTime<chrono::Utc>,
+    i64,
+);
 
 /// Asset group detail page.
 pub async fn asset_group_detail(

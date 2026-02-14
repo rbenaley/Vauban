@@ -466,3 +466,24 @@ async fn test_update_user_malformed_uuid_returns_validation_error() {
 
     test_db::cleanup(&mut conn).await;
 }
+
+/// L-2: DELETE /api/v1/accounts/{uuid} must return 501 Not Implemented (not 200 OK).
+#[tokio::test]
+#[serial]
+async fn test_delete_account_returns_501_not_implemented() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("admin_del_acct");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+
+    let response = app
+        .server
+        .delete(&format!("/api/v1/accounts/{}", Uuid::new_v4()))
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .await;
+
+    assert_status(&response, 501);
+
+    test_db::cleanup(&mut conn).await;
+}

@@ -1,3 +1,9 @@
+// L-1: Relax strict clippy lints in test code where unwrap/expect/panic are idiomatic
+#![cfg_attr(test, allow(
+    clippy::unwrap_used, clippy::expect_used, clippy::panic,
+    clippy::print_stdout, clippy::print_stderr
+))]
+
 //! Vauban Supervisor - Process manager with privilege separation.
 //!
 //! This is the main entry point for the Vauban bastion. It:
@@ -370,6 +376,9 @@ fn create_pipe_topology() -> Result<HashMap<(Service, Service), (IpcChannel, Ipc
     Ok(pipes)
 }
 
+// Post-fork child process: tracing is NOT available, eprintln! is the only output mechanism.
+// process::exit(1) is required because execv() failed and the child cannot continue.
+#[allow(clippy::print_stderr)]
 fn spawn_child(
     binary_path: &str,
     uid: Option<u32>,
@@ -668,9 +677,9 @@ fn reap_children(
                     }
                 }
                 
-                if let Some(service_key) = found_service {
-                    // Check if this service should be respawned
-                    let state = children.get_mut(&service_key).unwrap();
+                if let Some(service_key) = found_service
+                    && let Some(state) = children.get_mut(&service_key)
+                {
                     if should_respawn(state, max_respawns_per_hour) {
                         // Check if this service is in a linked group
                         if get_linked_services(&service_key).is_some() {
@@ -703,9 +712,9 @@ fn reap_children(
                     }
                 }
                 
-                if let Some(service_key) = found_service {
-                    // Check if this service should be respawned
-                    let state = children.get_mut(&service_key).unwrap();
+                if let Some(service_key) = found_service
+                    && let Some(state) = children.get_mut(&service_key)
+                {
                     if should_respawn(state, max_respawns_per_hour) {
                         // Check if this service is in a linked group
                         if get_linked_services(&service_key).is_some() {
@@ -1456,14 +1465,15 @@ fn drain_and_restart(state: &mut ChildState, config: &SupervisorConfig, topology
     }
     
     state.is_draining = true;
-    state.drain_started = Some(Instant::now());
+    let drain_start = Instant::now();
+    state.drain_started = Some(drain_start);
     info!("{}: drain initiated", state.service_key);
     
     // 2. Wait for DrainComplete or timeout
     let drain_timeout = Duration::from_secs(config.supervisor.watchdog.drain_timeout_secs);
     let fds = [state.channel.read_fd()];
     
-    while state.drain_started.unwrap().elapsed() < drain_timeout {
+    while drain_start.elapsed() < drain_timeout {
         // Poll for DrainComplete message (500ms timeout per poll)
         match poll_readable(&fds, 500) {
             Ok(ready) if !ready.is_empty() => {
@@ -1498,7 +1508,7 @@ fn drain_and_restart(state: &mut ChildState, config: &SupervisorConfig, topology
         }
     }
     
-    if state.drain_started.unwrap().elapsed() >= drain_timeout {
+    if drain_start.elapsed() >= drain_timeout {
         warn!("{}: drain timeout after {:?}, forcing restart", 
               state.service_key, drain_timeout);
     }

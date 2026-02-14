@@ -2,13 +2,11 @@
 //!
 //! This file makes modules available for integration tests.
 
-// Clippy lints to enforce proper error handling
-// Note: Using warn instead of deny to allow #[allow] annotations to work
-// with code that requires expect (e.g., regex compilation in static initializers)
-#![warn(clippy::unwrap_used)]
-#![warn(clippy::expect_used)]
-#![warn(clippy::panic)]
-#![warn(clippy::todo)]
+// L-1: Relax strict clippy lints in test code where unwrap/expect/panic are idiomatic
+#![cfg_attr(test, allow(
+    clippy::unwrap_used, clippy::expect_used, clippy::panic,
+    clippy::print_stdout, clippy::print_stderr
+))]
 
 // Test utilities - macros for replacing unwrap/expect in tests
 #[macro_use]

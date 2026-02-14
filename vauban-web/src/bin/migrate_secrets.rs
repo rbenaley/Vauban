@@ -1,3 +1,9 @@
+// SAFETY: This is a CLI migration tool where expect()/unwrap() on database operations
+// is acceptable - failures should terminate the tool. println!/eprintln! are the
+// correct output mechanism for CLI tools (not tracing).
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+
 /// VAUBAN - Batch secret migration utility.
 ///
 /// Encrypts plaintext secrets in the database using vauban-vault's keyring.

@@ -133,9 +133,17 @@ pub fn combine_shared_secrets(classical: &[u8], pq: &[u8]) -> CryptoResult<[u8; 
     Ok(output)
 }
 
-/// Constant-time comparison to prevent timing attacks.
+/// Constant-time comparison to prevent timing attacks (bytes).
 pub fn constant_time_compare(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && bool::from(a.ct_eq(b))
+}
+
+/// Constant-time string comparison to prevent timing attacks.
+///
+/// L-6: Canonical implementation used by CSRF, flash cookie, and API key validation.
+/// Delegates to the byte-level `constant_time_compare` for consistent behavior.
+pub fn constant_time_compare_str(a: &str, b: &str) -> bool {
+    constant_time_compare(a.as_bytes(), b.as_bytes())
 }
 
 // ==================== Hybrid Signature (Ed25519 + ML-DSA-65) ====================

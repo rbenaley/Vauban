@@ -310,7 +310,7 @@ pub async fn asset_list(
     if let Some(ref search) = search_filter
         && !search.is_empty()
     {
-        let pattern = format!("%{}%", search);
+        let pattern = crate::db::like_contains(search);
         query = query.filter(
             schema_assets::name
                 .ilike(pattern.clone())
@@ -411,7 +411,7 @@ pub async fn asset_search(
         .get()
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
-    let pattern = format!("%{}%", query);
+    let pattern = crate::db::like_contains(query);
 
     let rows: Vec<(uuid::Uuid, String, String, String, String)> = a::assets
         .filter(a::is_deleted.eq(false))

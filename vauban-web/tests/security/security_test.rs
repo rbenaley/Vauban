@@ -5675,3 +5675,254 @@ fn test_m8_create_superuser_uses_exit_code() {
         "M-8/M-10: create_superuser.rs must use std::process::ExitCode"
     );
 }
+
+// ==================== L-2 Structural Regression Tests ====================
+// Verify that stub DELETE handlers return 501 Not Implemented, not 200 OK.
+
+#[test]
+fn test_l2_delete_stubs_return_501() {
+    let source = include_str!("../../src/main.rs");
+    // Ensure no bare "Not implemented" string response remains (which returns 200 OK)
+    let has_bare_stub = source.lines().any(|line| {
+        let trimmed = line.trim();
+        // Match the old pattern: `delete(|| async { "Not implemented" })`
+        trimmed.contains("\"Not implemented\"")
+            && !trimmed.contains("StatusCode::NOT_IMPLEMENTED")
+            && !trimmed.starts_with("//")
+    });
+    assert!(
+        !has_bare_stub,
+        "L-2: All DELETE stubs must return StatusCode::NOT_IMPLEMENTED, not bare 200 OK"
+    );
+}
+
+#[test]
+fn test_l2_delete_stubs_use_not_implemented_status() {
+    let source = include_str!("../../src/main.rs");
+    let prod = prod_source(source);
+    // Every "Not implemented" in production code must be paired with NOT_IMPLEMENTED status
+    let not_impl_count = prod.matches("\"Not implemented\"").count();
+    let status_501_count = prod.matches("StatusCode::NOT_IMPLEMENTED").count();
+    assert!(
+        status_501_count >= not_impl_count,
+        "L-2: Found {} 'Not implemented' strings but only {} StatusCode::NOT_IMPLEMENTED. \
+         All stubs must return 501.",
+        not_impl_count, status_501_count
+    );
+}
+
+// ==========================================================================
+// L-4: Bearer token extraction must be case-insensitive (RFC 7235)
+// ==========================================================================
+
+// ==========================================================================
+// L-3: Pool error detection must use structural matching, not string parsing
+// ==========================================================================
+
+#[test]
+fn test_l3_no_string_based_connection_lost_detection() {
+    // L-3: Ensure db.rs does not use fragile string-based error detection
+    let source = include_str!("../../src/db.rs");
+    let prod = prod_source(source);
+    // The old is_connection_lost() pattern matched on error message substrings
+    assert!(
+        !prod.contains("is_connection_lost"),
+        "L-3 regression: db.rs must use structural PoolError matching, \
+         not the fragile string-based is_connection_lost() function."
+    );
+}
+
+#[test]
+fn test_l3_uses_classify_pool_error() {
+    let source = include_str!("../../src/db.rs");
+    let prod = prod_source(source);
+    assert!(
+        prod.contains("classify_pool_error"),
+        "L-3 regression: db.rs must use classify_pool_error() for structured error handling."
+    );
+}
+
+// ==========================================================================
+// L-4: Bearer token extraction must be case-insensitive (RFC 7235)
+// ==========================================================================
+
+#[test]
+fn test_l4_no_case_sensitive_bearer_prefix() {
+    // L-4: Ensure extract_token does not use case-sensitive strip_prefix("Bearer ")
+    let source = include_str!("../../src/middleware/auth.rs");
+    let prod = prod_source(source);
+    assert!(
+        !prod.contains(r#"strip_prefix("Bearer "#),
+        "L-4 regression: Bearer prefix must be compared case-insensitively (RFC 7235). \
+         Use eq_ignore_ascii_case instead of strip_prefix."
+    );
+}
+
+#[test]
+fn test_l4_bearer_uses_case_insensitive_comparison() {
+    let source = include_str!("../../src/middleware/auth.rs");
+    let prod = prod_source(source);
+    assert!(
+        prod.contains("eq_ignore_ascii_case")
+            || prod.contains("to_ascii_lowercase")
+            || prod.contains("to_lowercase"),
+        "L-4 regression: Bearer scheme extraction must use case-insensitive comparison (RFC 7235)."
+    );
+}
+
+// ==========================================================================
+// L-5: LIKE wildcard characters must be escaped in search inputs
+// ==========================================================================
+
+#[test]
+fn test_l5_no_raw_like_pattern_in_handlers() {
+    // L-5: Ensure no handler builds ILIKE patterns with unescaped format!("%{}%", ...)
+    let files = [
+        ("web/users", include_str!("../../src/handlers/web/users.rs")),
+        (
+            "web/sessions",
+            include_str!("../../src/handlers/web/sessions.rs"),
+        ),
+        (
+            "web/assets",
+            include_str!("../../src/handlers/web/assets.rs"),
+        ),
+        (
+            "web/groups",
+            include_str!("../../src/handlers/web/groups.rs"),
+        ),
+        (
+            "web/asset_groups",
+            include_str!("../../src/handlers/web/asset_groups.rs"),
+        ),
+        (
+            "api/accounts",
+            include_str!("../../src/handlers/api/accounts.rs"),
+        ),
+    ];
+
+    for (name, source) in &files {
+        let prod = prod_source(source);
+        // Check that no format!("%{}%", ...) pattern is used for LIKE queries
+        assert!(
+            !prod.contains(r#"format!("%{}%""#),
+            "L-5 regression in {}: LIKE patterns must use like_contains() to escape wildcards. \
+             Found raw format!(\"%{{}}%\") pattern.",
+            name
+        );
+    }
+}
+
+#[test]
+fn test_l5_like_contains_used_in_handlers() {
+    let files = [
+        ("web/users", include_str!("../../src/handlers/web/users.rs")),
+        (
+            "web/assets",
+            include_str!("../../src/handlers/web/assets.rs"),
+        ),
+        (
+            "api/accounts",
+            include_str!("../../src/handlers/api/accounts.rs"),
+        ),
+    ];
+
+    for (name, source) in &files {
+        let prod = prod_source(source);
+        assert!(
+            prod.contains("like_contains"),
+            "L-5 regression in {}: search handlers must use like_contains() for ILIKE patterns.",
+            name
+        );
+    }
+}
+
+// ==========================================================================
+// L-6: No duplicated utility functions
+// ==========================================================================
+
+#[test]
+fn test_l6_no_duplicate_is_htmx_request() {
+    // L-6: is_htmx_request must only be defined once (in error.rs)
+    let files = [
+        (
+            "handlers/auth",
+            include_str!("../../src/handlers/auth.rs"),
+        ),
+        (
+            "handlers/api/sessions",
+            include_str!("../../src/handlers/api/sessions.rs"),
+        ),
+    ];
+
+    for (name, source) in &files {
+        let prod = prod_source(source);
+        assert!(
+            !prod.contains("fn is_htmx_request("),
+            "L-6 regression in {}: is_htmx_request must not be redefined locally. \
+             Use crate::error::is_htmx_request instead.",
+            name
+        );
+    }
+}
+
+#[test]
+fn test_l6_no_duplicate_constant_time_compare() {
+    // L-6: constant_time_compare must only be defined in crypto.rs
+    let files = [
+        (
+            "middleware/csrf",
+            include_str!("../../src/middleware/csrf.rs"),
+        ),
+        (
+            "middleware/flash",
+            include_str!("../../src/middleware/flash.rs"),
+        ),
+    ];
+
+    for (name, source) in &files {
+        let prod = prod_source(source);
+        assert!(
+            !prod.contains("fn constant_time_compare("),
+            "L-6 regression in {}: constant_time_compare must not be redefined locally. \
+             Use crate::crypto::constant_time_compare_str instead.",
+            name
+        );
+    }
+}
+
+// ==========================================================================
+// L-8: Per-user WebSocket connection limit
+// ==========================================================================
+
+#[test]
+fn test_l8_connection_limit_constant_exists() {
+    let source = include_str!("../../src/services/connections.rs");
+    let prod = prod_source(source);
+    assert!(
+        prod.contains("MAX_CONNECTIONS_PER_USER"),
+        "L-8 regression: MAX_CONNECTIONS_PER_USER constant must be defined in connections.rs"
+    );
+}
+
+#[test]
+fn test_l8_register_returns_result() {
+    let source = include_str!("../../src/services/connections.rs");
+    let prod = prod_source(source);
+    assert!(
+        prod.contains("ConnectionLimitError"),
+        "L-8 regression: register() must return Result with ConnectionLimitError"
+    );
+}
+
+#[test]
+fn test_l8_websocket_handler_checks_limit() {
+    let source = include_str!("../../src/handlers/websocket.rs");
+    let prod = prod_source(source);
+    assert!(
+        prod.contains("connection limit reached")
+            || prod.contains("ConnectionLimitError")
+            || prod.contains("MAX_CONNECTIONS_PER_USER"),
+        "L-8 regression: WebSocket handler must check per-user connection limit"
+    );
+}

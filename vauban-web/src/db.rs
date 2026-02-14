@@ -121,6 +121,27 @@ async fn force_create_all_connections(pool: &DbPool, count: usize) -> AppResult<
     Ok(())
 }
 
+/// Escape LIKE/ILIKE wildcard characters in a search pattern.
+///
+/// L-5: PostgreSQL LIKE treats `%` and `_` as wildcards. If user input is passed
+/// directly into a LIKE pattern, these characters allow unintended pattern matching.
+/// This function escapes them so they are treated as literals.
+///
+/// The backslash `\` is also escaped since it is the default LIKE escape character.
+pub fn escape_like_pattern(input: &str) -> String {
+    input
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+/// Build a LIKE/ILIKE "contains" pattern from user input.
+///
+/// Returns `%<escaped_input>%` suitable for use with `.ilike()` or `ILIKE $1`.
+pub fn like_contains(input: &str) -> String {
+    format!("%{}%", escape_like_pattern(input))
+}
+
 /// Get a connection from the pool.
 ///
 /// Returns an error that can be handled by the caller.
@@ -137,6 +158,9 @@ pub async fn get_connection(pool: &DbPool) -> AppResult<DbConnection> {
 /// be obtained, a graceful shutdown is triggered via the server handle to
 /// allow all Drop/Zeroize destructors to run (M-8/M-10).
 ///
+/// L-3: Uses structured pattern matching on `PoolError` variants instead of
+/// fragile string-based error detection.
+///
 /// Returns `Err` if the connection cannot be obtained and shutdown was triggered.
 pub async fn get_connection_or_shutdown(
     pool: &DbPool,
@@ -145,43 +169,65 @@ pub async fn get_connection_or_shutdown(
     match pool.get().await {
         Ok(conn) => Ok(conn),
         Err(e) => {
-            let error_msg = e.to_string();
-            if is_connection_lost(&error_msg) {
-                tracing::error!(
-                    "Database connection lost in sandbox mode: {}. Triggering graceful shutdown for respawn.",
-                    error_msg
-                );
-            } else {
-                tracing::error!(
-                    "Database pool error in sandbox mode: {}. Triggering graceful shutdown for respawn.",
-                    error_msg
-                );
-            }
+            // L-3: Classify errors structurally instead of string matching.
+            let (category, detail) = classify_pool_error(&e);
+            tracing::error!(
+                "Database {} in sandbox mode: {}. Triggering graceful shutdown for respawn.",
+                category,
+                detail
+            );
             // M-8/M-10: Trigger graceful shutdown instead of exit().
             if let Some(handle) = server_handle {
                 handle.graceful_shutdown(Some(std::time::Duration::from_secs(5)));
             }
             Err(crate::error::AppError::Internal(anyhow::anyhow!(
-                "Database connection lost in sandbox mode: {}", error_msg
+                "Database {} in sandbox mode: {}", category, detail
             )))
         }
     }
 }
 
-/// Check if an error message indicates a lost connection.
+/// Classify a pool error into a human-readable category and detail message.
 ///
-/// This is used to provide more specific logging when a connection is lost
-/// versus other pool errors.
-fn is_connection_lost(error_msg: &str) -> bool {
-    let msg = error_msg.to_lowercase();
-    msg.contains("connection")
-        || msg.contains("closed")
-        || msg.contains("refused")
-        || msg.contains("timeout")
-        || msg.contains("timed out")
-        || msg.contains("reset")
-        || msg.contains("broken pipe")
-        || msg.contains("network")
+/// L-3: This replaces the former string-based error detection function which relied
+/// on fragile substring matching. By pattern-matching on the structured `PoolError`
+/// variants from deadpool/diesel-async, we get reliable classification that
+/// won't break when upstream libraries change their error messages.
+fn classify_pool_error(
+    error: &diesel_async::pooled_connection::deadpool::PoolError,
+) -> (&'static str, String) {
+    use deadpool::managed::{PoolError, TimeoutType};
+    use diesel_async::pooled_connection::PoolError as DieselPoolError;
+
+    match error {
+        PoolError::Backend(DieselPoolError::ConnectionError(e)) => {
+            ("connection lost", format!("backend connection error: {e}"))
+        }
+        PoolError::Backend(DieselPoolError::QueryError(e)) => {
+            ("connection lost", format!("backend query/ping error: {e}"))
+        }
+        PoolError::Timeout(TimeoutType::Wait) => (
+            "pool exhausted",
+            "timed out waiting for an available connection".to_string(),
+        ),
+        PoolError::Timeout(TimeoutType::Create) => (
+            "connection timeout",
+            "timed out creating a new connection".to_string(),
+        ),
+        PoolError::Timeout(TimeoutType::Recycle) => (
+            "connection timeout",
+            "timed out recycling a connection".to_string(),
+        ),
+        PoolError::Closed => ("pool closed", "connection pool has been closed".to_string()),
+        PoolError::NoRuntimeSpecified => (
+            "configuration error",
+            "no async runtime specified for pool".to_string(),
+        ),
+        PoolError::PostCreateHook(hook_err) => (
+            "connection hook failed",
+            format!("post-create hook error: {hook_err}"),
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -209,53 +255,143 @@ mod tests {
         assert_eq!(EXIT_CODE_CONNECTION_LOST, 100);
     }
 
-    #[test]
-    fn test_is_connection_lost_connection_refused() {
-        assert!(is_connection_lost("Connection refused"));
-        assert!(is_connection_lost("connection refused by server"));
+    // ==================== L-3: Structural Pool Error Classification ====================
+
+    use deadpool::managed::{PoolError, TimeoutType};
+    use diesel_async::pooled_connection::PoolError as DieselPoolError;
+
+    /// Helper to build a PoolError::Backend(ConnectionError(...)) for testing.
+    fn make_connection_error(
+        msg: &str,
+    ) -> diesel_async::pooled_connection::deadpool::PoolError {
+        PoolError::Backend(DieselPoolError::ConnectionError(
+            diesel::result::ConnectionError::BadConnection(msg.to_string()),
+        ))
+    }
+
+    /// Helper to build a PoolError::Backend(QueryError(...)) for testing.
+    fn make_query_error() -> diesel_async::pooled_connection::deadpool::PoolError {
+        PoolError::Backend(DieselPoolError::QueryError(
+            diesel::result::Error::DatabaseError(
+                diesel::result::DatabaseErrorKind::Unknown,
+                Box::new("connection reset by peer".to_string()),
+            ),
+        ))
     }
 
     #[test]
-    fn test_is_connection_lost_closed() {
-        assert!(is_connection_lost("Connection closed"));
-        assert!(is_connection_lost("connection closed by peer"));
+    fn test_classify_backend_connection_error() {
+        let err = make_connection_error("Connection refused");
+        let (category, detail) = classify_pool_error(&err);
+        assert_eq!(category, "connection lost");
+        assert!(
+            detail.contains("backend connection error"),
+            "detail: {}",
+            detail
+        );
     }
 
     #[test]
-    fn test_is_connection_lost_timeout() {
-        assert!(is_connection_lost("Connection timeout"));
-        assert!(is_connection_lost("operation timed out"));
+    fn test_classify_backend_query_error() {
+        let err = make_query_error();
+        let (category, detail) = classify_pool_error(&err);
+        assert_eq!(category, "connection lost");
+        assert!(
+            detail.contains("backend query/ping error"),
+            "detail: {}",
+            detail
+        );
     }
 
     #[test]
-    fn test_is_connection_lost_reset() {
-        assert!(is_connection_lost("Connection reset by peer"));
-        assert!(is_connection_lost("ECONNRESET"));
+    fn test_classify_timeout_wait() {
+        let err: diesel_async::pooled_connection::deadpool::PoolError =
+            PoolError::Timeout(TimeoutType::Wait);
+        let (category, detail) = classify_pool_error(&err);
+        assert_eq!(category, "pool exhausted");
+        assert!(detail.contains("waiting"), "detail: {}", detail);
     }
 
     #[test]
-    fn test_is_connection_lost_broken_pipe() {
-        assert!(is_connection_lost("Broken pipe"));
-        assert!(is_connection_lost("broken pipe error"));
+    fn test_classify_timeout_create() {
+        let err: diesel_async::pooled_connection::deadpool::PoolError =
+            PoolError::Timeout(TimeoutType::Create);
+        let (category, detail) = classify_pool_error(&err);
+        assert_eq!(category, "connection timeout");
+        assert!(detail.contains("creating"), "detail: {}", detail);
     }
 
     #[test]
-    fn test_is_connection_lost_network() {
-        assert!(is_connection_lost("Network unreachable"));
-        assert!(is_connection_lost("network is down"));
+    fn test_classify_timeout_recycle() {
+        let err: diesel_async::pooled_connection::deadpool::PoolError =
+            PoolError::Timeout(TimeoutType::Recycle);
+        let (category, detail) = classify_pool_error(&err);
+        assert_eq!(category, "connection timeout");
+        assert!(detail.contains("recycling"), "detail: {}", detail);
     }
 
     #[test]
-    fn test_is_connection_lost_false_for_other_errors() {
-        assert!(!is_connection_lost("duplicate key violation"));
-        assert!(!is_connection_lost("syntax error"));
-        assert!(!is_connection_lost("permission denied"));
+    fn test_classify_pool_closed() {
+        let err: diesel_async::pooled_connection::deadpool::PoolError = PoolError::Closed;
+        let (category, _detail) = classify_pool_error(&err);
+        assert_eq!(category, "pool closed");
     }
 
     #[test]
-    fn test_is_connection_lost_case_insensitive() {
-        assert!(is_connection_lost("CONNECTION REFUSED"));
-        assert!(is_connection_lost("Timeout occurred"));
-        assert!(is_connection_lost("NETWORK ERROR"));
+    fn test_classify_no_runtime() {
+        let err: diesel_async::pooled_connection::deadpool::PoolError =
+            PoolError::NoRuntimeSpecified;
+        let (category, _detail) = classify_pool_error(&err);
+        assert_eq!(category, "configuration error");
+    }
+
+    // ==================== L-5: LIKE Pattern Escaping Tests ====================
+
+    #[test]
+    fn test_escape_like_pattern_no_special_chars() {
+        assert_eq!(escape_like_pattern("hello"), "hello");
+    }
+
+    #[test]
+    fn test_escape_like_pattern_percent() {
+        assert_eq!(escape_like_pattern("100%"), "100\\%");
+        assert_eq!(escape_like_pattern("%admin%"), "\\%admin\\%");
+    }
+
+    #[test]
+    fn test_escape_like_pattern_underscore() {
+        assert_eq!(escape_like_pattern("user_name"), "user\\_name");
+        assert_eq!(escape_like_pattern("_secret"), "\\_secret");
+    }
+
+    #[test]
+    fn test_escape_like_pattern_backslash() {
+        assert_eq!(escape_like_pattern("path\\file"), "path\\\\file");
+    }
+
+    #[test]
+    fn test_escape_like_pattern_all_special() {
+        assert_eq!(escape_like_pattern("%_\\"), "\\%\\_\\\\");
+    }
+
+    #[test]
+    fn test_escape_like_pattern_empty() {
+        assert_eq!(escape_like_pattern(""), "");
+    }
+
+    #[test]
+    fn test_like_contains_normal() {
+        assert_eq!(like_contains("admin"), "%admin%");
+    }
+
+    #[test]
+    fn test_like_contains_with_wildcards() {
+        assert_eq!(like_contains("100%"), "%100\\%%");
+        assert_eq!(like_contains("user_1"), "%user\\_1%");
+    }
+
+    #[test]
+    fn test_like_contains_empty() {
+        assert_eq!(like_contains(""), "%%");
     }
 }

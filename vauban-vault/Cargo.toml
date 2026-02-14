@@ -7,6 +7,9 @@ rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[lints]
+workspace = true
+
 [lib]
 name = "vauban_vault"
 path = "src/lib.rs"

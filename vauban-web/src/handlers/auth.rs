@@ -53,10 +53,8 @@ fn is_encrypted(value: &str) -> bool {
     value[1..colon_pos].chars().all(|c| c.is_ascii_digit())
 }
 
-/// Check if request is from HTMX (has HX-Request header)
-fn is_htmx_request(headers: &HeaderMap) -> bool {
-    headers.get("HX-Request").is_some()
-}
+// L-6: is_htmx_request deduplicated - use crate::error::is_htmx_request
+use crate::error::is_htmx_request;
 
 /// Login request.
 ///

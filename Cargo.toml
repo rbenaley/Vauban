@@ -61,6 +61,17 @@ totp-rs = { version = "5", features = ["gen_secret", "otpauth"] }
 qrcode = "0.14"
 image = { version = "0.25", default-features = false, features = ["png"] }
 
+# L-1: Centralized clippy security lints (deny instead of warn)
+[workspace.lints.clippy]
+unwrap_used    = "deny"
+expect_used    = "deny"
+panic          = "deny"
+todo           = "deny"
+dbg_macro      = "deny"
+unimplemented  = "deny"
+print_stdout   = "deny"
+print_stderr   = "deny"
+
 [profile.release]
 opt-level = 3
 lto = true

@@ -192,13 +192,17 @@ async fn update_last_activity(state: &AppState, token_hash: &str) {
 }
 
 /// Extract token from Authorization header or cookie.
+///
+/// Per RFC 7235 s2.1 and RFC 6750 s2.1, the "Bearer" authentication scheme
+/// must be compared case-insensitively (L-4).
 fn extract_token(jar: &CookieJar, request: &Request) -> Result<Option<String>, AppError> {
-    // Try Authorization header first
+    // Try Authorization header first (case-insensitive "Bearer " prefix per RFC 7235)
     if let Some(auth_header) = request.headers().get("Authorization")
         && let Ok(auth_str) = auth_header.to_str()
-        && let Some(token) = auth_str.strip_prefix("Bearer ")
+        && auth_str.len() >= 7
+        && auth_str[..7].eq_ignore_ascii_case("bearer ")
     {
-        return Ok(Some(token.to_string()));
+        return Ok(Some(auth_str[7..].to_string()));
     }
 
     // Try cookie
@@ -388,19 +392,25 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_token_bearer_case_sensitive() {
-        // "bearer" lowercase should not match
-        let request = unwrap_ok!(
-            HttpRequest::builder()
-                .header("Authorization", "bearer lowercase-token")
-                .body(axum::body::Body::empty())
-        );
+    fn test_extract_token_bearer_case_insensitive() {
+        // L-4: RFC 7235 requires case-insensitive scheme comparison
+        for prefix in &["Bearer ", "bearer ", "BEARER ", "bEaReR "] {
+            let request = unwrap_ok!(
+                HttpRequest::builder()
+                    .header("Authorization", format!("{}my-token", prefix))
+                    .body(axum::body::Body::empty())
+            );
 
-        let jar = CookieJar::new();
-        let result = unwrap_ok!(extract_token(&jar, &request));
+            let jar = CookieJar::new();
+            let result = unwrap_ok!(extract_token(&jar, &request));
 
-        // Should not extract because it's "bearer" not "Bearer"
-        assert!(result.is_none());
+            assert_eq!(
+                result,
+                Some("my-token".to_string()),
+                "Bearer prefix '{}' should be accepted (RFC 7235)",
+                prefix.trim()
+            );
+        }
     }
 
     #[test]
