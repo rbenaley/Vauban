@@ -3954,7 +3954,7 @@ async fn test_ssh_host_key_fetch_messages_exist() {
 #[tokio::test]
 #[serial]
 async fn test_connect_ssh_passes_host_key() {
-    let web_source = include_str!("../../src/handlers/web.rs");
+    let web_source = include_str!("../../src/handlers/web/ssh.rs");
 
     // connect_ssh must extract ssh_host_key from connection_config
     assert!(
@@ -3994,7 +3994,7 @@ async fn test_proxy_handles_fetch_host_key_message() {
 #[tokio::test]
 #[serial]
 async fn test_fetch_host_key_rejects_non_ssh_assets() {
-    let web_source = include_str!("../../src/handlers/web.rs");
+    let web_source = include_str!("../../src/handlers/web/ssh.rs");
 
     // The handler must check asset type
     assert!(
@@ -4007,7 +4007,7 @@ async fn test_fetch_host_key_rejects_non_ssh_assets() {
 #[tokio::test]
 #[serial]
 async fn test_host_key_stored_in_connection_config() {
-    let web_source = include_str!("../../src/handlers/web.rs");
+    let web_source = include_str!("../../src/handlers/web/ssh.rs");
 
     // The handler must store ssh_host_key and ssh_host_key_fingerprint
     assert!(
@@ -4048,7 +4048,7 @@ async fn test_ipc_client_handles_host_key_result() {
 #[tokio::test]
 #[serial]
 async fn test_fetch_host_key_detects_key_change() {
-    let web_source = include_str!("../../src/handlers/web.rs");
+    let web_source = include_str!("../../src/handlers/web/ssh.rs");
 
     // Handler must compare old key with new key
     assert!(
@@ -4095,7 +4095,7 @@ async fn test_api_fetch_host_key_detects_key_change() {
 #[tokio::test]
 #[serial]
 async fn test_connect_ssh_marks_mismatch_on_failure() {
-    let web_source = include_str!("../../src/handlers/web.rs");
+    let web_source = include_str!("../../src/handlers/web/ssh.rs");
 
     assert!(
         web_source.contains("ssh_host_key_mismatch"),
@@ -4219,7 +4219,7 @@ async fn test_mismatch_fragment_has_security_warnings() {
 #[tokio::test]
 #[serial]
 async fn test_fetch_handler_clears_mismatch_flag() {
-    let web_source = include_str!("../../src/handlers/web.rs");
+    let web_source = include_str!("../../src/handlers/web/ssh.rs");
 
     assert!(
         web_source.contains(r#"m.remove("ssh_host_key_mismatch")"#),
@@ -4279,7 +4279,7 @@ async fn test_api_get_ssh_host_key_route_registered() {
 #[tokio::test]
 #[serial]
 async fn test_connect_ssh_detects_mismatch_in_both_error_branches() {
-    let web_source = include_str!("../../src/handlers/web.rs");
+    let web_source = include_str!("../../src/handlers/web/ssh.rs");
 
     // Count occurrences of is_host_key_mismatch - should appear at least
     // twice (once in each error branch of the proxy call).
@@ -4309,7 +4309,7 @@ async fn test_api_mod_exports_host_key_status() {
 #[tokio::test]
 #[serial]
 async fn test_verify_ssh_host_key_handler_exists() {
-    let web_source = include_str!("../../src/handlers/web.rs");
+    let web_source = include_str!("../../src/handlers/web/ssh.rs");
 
     assert!(
         web_source.contains("verify_ssh_host_key"),
@@ -4418,7 +4418,7 @@ async fn test_fetch_host_key_requests_supervisor_tcp_connect() {
 #[tokio::test]
 #[serial]
 async fn test_verify_handler_passes_supervisor() {
-    let web_source = include_str!("../../src/handlers/web.rs");
+    let web_source = include_str!("../../src/handlers/web/ssh.rs");
 
     // The verify handler must extract the supervisor and pass it
     assert!(
@@ -4436,7 +4436,7 @@ async fn test_verify_handler_passes_supervisor() {
 #[tokio::test]
 #[serial]
 async fn test_fetch_web_handler_passes_supervisor() {
-    let web_source = include_str!("../../src/handlers/web.rs");
+    let web_source = include_str!("../../src/handlers/web/ssh.rs");
 
     // The fetch handler must pass supervisor_ref to fetch_host_key
     // Count occurrences - we need at least 2 (one in fetch_ssh_host_key,
@@ -4692,7 +4692,7 @@ fn test_h10_proxy_converts_sensitive_to_secret() {
 /// H-10: connect_ssh handler must wrap credentials in SecretString.
 #[test]
 fn test_h10_connect_ssh_wraps_credentials() {
-    let source = include_str!("../../src/handlers/web.rs");
+    let source = include_str!("../../src/handlers/web/ssh.rs");
 
     // Must use SecretString::from() or secrecy::SecretString for credentials
     assert!(
@@ -4863,7 +4863,7 @@ fn test_vault_messages_use_sensitive_string() {
 /// C-2: connect_ssh handler must decrypt encrypted credentials via vault.
 #[test]
 fn test_c2_connect_ssh_decrypts_via_vault() {
-    let source = include_str!("../../src/handlers/web.rs");
+    let source = include_str!("../../src/handlers/web/ssh.rs");
     assert!(
         source.contains("vault.decrypt(\"credentials\""),
         "C-2: connect_ssh must call vault.decrypt for encrypted credentials"
@@ -4877,7 +4877,7 @@ fn test_c2_connect_ssh_decrypts_via_vault() {
 /// C-2: Asset creation must encrypt credentials via vault.
 #[test]
 fn test_c2_asset_creation_encrypts_via_vault() {
-    let source = include_str!("../../src/handlers/web.rs");
+    let source = include_str!("../../src/handlers/web/assets.rs");
     assert!(
         source.contains("encrypt_connection_config"),
         "C-2: asset creation/edit must call encrypt_connection_config for credential encryption"
@@ -4911,7 +4911,7 @@ fn test_m1_vault_client_in_appstate() {
 /// M-1 / C-2: is_encrypted helper must check version prefix format.
 #[test]
 fn test_is_encrypted_helper_exists() {
-    let source = include_str!("../../src/handlers/web.rs");
+    let source = include_str!("../../src/handlers/web/mod.rs");
     assert!(
         source.contains("fn is_encrypted("),
         "C-2: is_encrypted() helper must exist for backward compatibility"
