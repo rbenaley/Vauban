@@ -1,5 +1,6 @@
 /// User management page handlers.
 use super::*;
+use crate::models::user::AuthSource;
 
 pub async fn user_list(
     State(state): State<AppState>,
@@ -58,7 +59,7 @@ pub async fn user_list(
         String,
         Option<String>,
         Option<String>,
-        String,
+        AuthSource,
         bool,
         bool,
         bool,
@@ -110,7 +111,7 @@ pub async fn user_list(
                     username,
                     email,
                     full_name,
-                    auth_source,
+                    auth_source: auth_source.to_string(),
                     mfa_enabled,
                     is_active,
                     is_staff,
@@ -183,7 +184,7 @@ pub async fn user_detail(
         Option<String>,
         Option<String>,
         Option<String>,
-        String,
+        AuthSource,
         bool,
         bool,
         bool,
@@ -263,7 +264,7 @@ pub async fn user_detail(
         is_staff,
         is_superuser,
         mfa_enabled,
-        auth_source,
+        auth_source: auth_source.to_string(),
         last_login: last_login.map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
         created_at: created_at.format("%b %d, %Y").to_string(),
     };
@@ -485,7 +486,7 @@ pub async fn create_user_web(
             users::is_active.eq(is_active),
             users::is_staff.eq(is_staff),
             users::is_superuser.eq(wants_superuser),
-            users::auth_source.eq("local"),
+            users::auth_source.eq(AuthSource::Local),
             users::preferences.eq(serde_json::json!({})),
         ))
         .execute(&mut conn)
@@ -1008,7 +1009,7 @@ pub async fn profile(
         is_superuser: db_user.is_superuser,
         mfa_enabled: db_user.mfa_enabled,
         mfa_enforced: db_user.mfa_enforced,
-        auth_source: db_user.auth_source.clone(),
+        auth_source: db_user.auth_source.to_string(),
         last_login: db_user
             .last_login
             .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string()),

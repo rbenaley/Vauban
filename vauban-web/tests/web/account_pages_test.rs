@@ -16,6 +16,7 @@ use axum::http::header::COOKIE;
 use diesel::{ExpressionMethods, QueryDsl};
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use uuid::Uuid;
+use vauban_web::models::user::AuthSource;
 
 /// Helper to get user UUID from user_id.
 async fn get_user_uuid(conn: &mut AsyncPgConnection, user_id: i32) -> Uuid {
@@ -121,7 +122,7 @@ async fn test_profile_page_displays_user_info() {
                 users::is_active.eq(true),
                 users::is_staff.eq(true),
                 users::is_superuser.eq(false),
-                users::auth_source.eq("local"),
+                users::auth_source.eq(AuthSource::Local),
                 users::preferences.eq(serde_json::json!({})),
             ))
             .execute(&mut conn)
@@ -177,7 +178,7 @@ async fn test_profile_page_shows_mfa_status() {
             users::is_staff.eq(false),
             users::is_superuser.eq(false),
             users::mfa_enabled.eq(true),
-            users::auth_source.eq("local"),
+            users::auth_source.eq(AuthSource::Local),
             users::preferences.eq(serde_json::json!({})),
         ))
         .execute(&mut conn)
@@ -270,7 +271,7 @@ async fn test_profile_page_shows_superuser_badge() {
             users::is_active.eq(true),
             users::is_staff.eq(true),
             users::is_superuser.eq(true),
-            users::auth_source.eq("local"),
+            users::auth_source.eq(AuthSource::Local),
             users::preferences.eq(serde_json::json!({})),
         ))
         .execute(&mut conn)
@@ -324,7 +325,7 @@ async fn test_profile_page_shows_auth_source() {
             users::is_active.eq(true),
             users::is_staff.eq(false),
             users::is_superuser.eq(false),
-            users::auth_source.eq("ldap"),
+            users::auth_source.eq(AuthSource::Ldap),
             users::preferences.eq(serde_json::json!({})),
         ))
         .execute(&mut conn)
@@ -1088,7 +1089,7 @@ async fn test_session_created_on_login() {
             users::is_active.eq(true),
             users::is_staff.eq(false),
             users::is_superuser.eq(false),
-            users::auth_source.eq("local"),
+            users::auth_source.eq(AuthSource::Local),
             users::preferences.eq(serde_json::json!({})),
         ))
         .execute(&mut conn)
@@ -1420,7 +1421,7 @@ async fn test_login_broadcasts_new_session() {
             users::is_active.eq(true),
             users::is_staff.eq(false),
             users::is_superuser.eq(false),
-            users::auth_source.eq("local"),
+            users::auth_source.eq(AuthSource::Local),
             users::preferences.eq(serde_json::json!({})),
         ))
         .execute(&mut conn)

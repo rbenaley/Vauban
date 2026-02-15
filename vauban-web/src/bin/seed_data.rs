@@ -30,6 +30,9 @@ use rand::rngs::OsRng;
 use secrecy::ExposeSecret;
 use uuid::Uuid;
 use vauban_web::config::Config;
+use vauban_web::models::asset::AssetType;
+use vauban_web::models::session::SessionType;
+use vauban_web::models::user::AuthSource;
 
 // Import schema
 mod schema {
@@ -52,7 +55,7 @@ struct NewUser {
     pub is_active: bool,
     pub is_staff: bool,
     pub is_superuser: bool,
-    pub auth_source: String,
+    pub auth_source: AuthSource,
     pub preferences: serde_json::Value,
 }
 
@@ -65,7 +68,7 @@ struct NewAsset {
     pub hostname: String,
     pub ip_address: Option<IpNetwork>,
     pub port: i32,
-    pub asset_type: String,
+    pub asset_type: AssetType,
     pub status: String,
     pub os_type: Option<String>,
     pub os_version: Option<String>,
@@ -86,7 +89,7 @@ struct NewProxySession {
     pub asset_id: i32,
     pub credential_id: String,
     pub credential_username: String,
-    pub session_type: String,
+    pub session_type: SessionType,
     pub status: String,
     pub client_ip: IpNetwork,
     pub connected_at: Option<DateTime<Utc>>,
@@ -339,7 +342,7 @@ async fn create_users(conn: &mut AsyncPgConnection, config: &Config) -> Vec<i32>
             is_active: true,
             is_staff: staff,
             is_superuser: superuser,
-            auth_source: "local".to_string(),
+            auth_source: AuthSource::Local,
             preferences: serde_json::json!({}),
         };
 
@@ -481,7 +484,7 @@ async fn create_assets(conn: &mut AsyncPgConnection, admin_id: i32) -> Vec<i32> 
             hostname: format!("{}.vauban.local", name_val),
             ip_address: Some(ip_str.parse().expect("Invalid IP")),
             port: 22,
-            asset_type: "ssh".to_string(),
+            asset_type: AssetType::Ssh,
             status: status_val.to_string(),
             os_type: Some("linux".to_string()),
             os_version: Some(os_val.to_string()),
@@ -532,7 +535,7 @@ async fn create_assets(conn: &mut AsyncPgConnection, admin_id: i32) -> Vec<i32> 
             hostname: format!("{}.vauban.local", name_val),
             ip_address: Some(ip_str.parse().expect("Invalid IP")),
             port: 3389,
-            asset_type: "rdp".to_string(),
+            asset_type: AssetType::Rdp,
             status: status_val.to_string(),
             os_type: Some("windows".to_string()),
             os_version: Some(os_val.to_string()),
@@ -578,7 +581,7 @@ async fn create_assets(conn: &mut AsyncPgConnection, admin_id: i32) -> Vec<i32> 
             hostname: format!("{}.vauban.local", name_val),
             ip_address: Some(ip_str.parse().expect("Invalid IP")),
             port: 5900,
-            asset_type: "vnc".to_string(),
+            asset_type: AssetType::Vnc,
             status: status_val.to_string(),
             os_type: Some("linux".to_string()),
             os_version: Some(os_val.to_string()),
@@ -688,7 +691,7 @@ async fn create_sessions(
             asset_id: aid,
             credential_id: credential_id_val,
             credential_username: credential_username_val.to_string(),
-            session_type: session_type_val.to_string(),
+            session_type: SessionType::parse(session_type_val),
             status: status_val.to_string(),
             client_ip: client_ip_str.parse().expect("Invalid client IP"),
             connected_at: Some(connected_at_val),
@@ -780,7 +783,7 @@ async fn create_approval_requests(
             asset_id: aid,
             credential_id: credential_id_val,
             credential_username: credential_username_val.to_string(),
-            session_type: session_type_val.to_string(),
+            session_type: SessionType::parse(session_type_val),
             status: "pending".to_string(),
             client_ip: client_ip_str.parse().expect("Invalid client IP"),
             connected_at: None,

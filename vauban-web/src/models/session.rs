@@ -13,8 +13,13 @@ use crate::schema::proxy_sessions;
 // Diesel's network-address feature provides FromSql for IpAddr with Inet
 // We use deserialize_as to convert automatically
 
-/// Session type (protocol).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Session type (protocol) (L-7: Diesel enum instead of String).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize,
+    diesel::expression::AsExpression, diesel::deserialize::FromSqlRow,
+)]
+#[serde(rename_all = "lowercase")]
+#[diesel(sql_type = diesel::sql_types::Varchar)]
 pub enum SessionType {
     Ssh,
     Rdp,
@@ -36,6 +41,48 @@ impl SessionType {
             "vnc" => Self::Vnc,
             _ => Self::Ssh,
         }
+    }
+
+    /// Try to parse a string into a SessionType, returning None for unknown values.
+    /// Use this for user-supplied filter parameters where an invalid value should
+    /// match nothing rather than silently default to SSH.
+    pub fn try_parse(s: &str) -> Option<Self> {
+        match s {
+            "ssh" => Some(Self::Ssh),
+            "rdp" => Some(Self::Rdp),
+            "vnc" => Some(Self::Vnc),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for SessionType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl diesel::serialize::ToSql<diesel::sql_types::Varchar, diesel::pg::Pg> for SessionType {
+    fn to_sql<'b>(
+        &'b self,
+        out: &mut diesel::serialize::Output<'b, '_, diesel::pg::Pg>,
+    ) -> diesel::serialize::Result {
+        <str as diesel::serialize::ToSql<diesel::sql_types::Varchar, diesel::pg::Pg>>::to_sql(
+            self.as_str(),
+            out,
+        )
+    }
+}
+
+impl diesel::deserialize::FromSql<diesel::sql_types::Varchar, diesel::pg::Pg> for SessionType {
+    fn from_sql(
+        bytes: <diesel::pg::Pg as diesel::backend::Backend>::RawValue<'_>,
+    ) -> diesel::deserialize::Result<Self> {
+        let s = <String as diesel::deserialize::FromSql<
+            diesel::sql_types::Varchar,
+            diesel::pg::Pg,
+        >>::from_sql(bytes)?;
+        Ok(Self::parse(&s))
     }
 }
 
@@ -87,7 +134,7 @@ pub struct ProxySession {
     pub asset_id: i32,
     pub credential_id: String,
     pub credential_username: String,
-    pub session_type: String,
+    pub session_type: SessionType,
     pub status: String,
     #[serde(skip_serializing)]
     pub client_ip: IpNetwork,
@@ -115,7 +162,7 @@ pub struct NewProxySession {
     pub asset_id: i32,
     pub credential_id: String,
     pub credential_username: String,
-    pub session_type: String,
+    pub session_type: SessionType,
     pub status: String,
     pub client_ip: IpNetwork,
     pub client_user_agent: Option<String>,
@@ -126,11 +173,6 @@ pub struct NewProxySession {
 }
 
 impl ProxySession {
-    /// Get session type enum.
-    pub fn session_type_enum(&self) -> SessionType {
-        SessionType::parse(&self.session_type)
-    }
-
     /// Get status enum.
     pub fn status_enum(&self) -> SessionStatus {
         SessionStatus::parse(&self.status)
@@ -157,7 +199,7 @@ impl ProxySession {
 pub struct CreateSessionRequest {
     pub asset_id: Uuid,
     pub credential_id: String,
-    pub session_type: String,
+    pub session_type: SessionType,
     pub justification: Option<String>,
 }
 
@@ -175,7 +217,7 @@ mod tests {
             asset_id: 1,
             credential_id: "cred-123".to_string(),
             credential_username: "admin".to_string(),
-            session_type: "ssh".to_string(),
+            session_type: SessionType::Ssh,
             status: "active".to_string(),
             client_ip: unwrap_ok!("192.168.1.10/32".parse()),
             client_user_agent: Some("Mozilla/5.0".to_string()),
@@ -309,9 +351,9 @@ mod tests {
     // ==================== ProxySession Method Tests ====================
 
     #[test]
-    fn test_session_type_enum() {
+    fn test_session_type_field_is_enum() {
         let session = create_test_session();
-        assert_eq!(session.session_type_enum(), SessionType::Ssh);
+        assert_eq!(session.session_type, SessionType::Ssh);
     }
 
     #[test]
@@ -402,14 +444,21 @@ mod tests {
     fn test_session_type_serialize() {
         let session_type = SessionType::Ssh;
         let json = unwrap_ok!(serde_json::to_string(&session_type));
-        assert!(json.contains("Ssh"));
+        assert!(json.contains("ssh"));
     }
 
     #[test]
     fn test_session_type_deserialize() {
-        let json = r#""Rdp""#;
+        let json = r#""rdp""#;
         let session_type: SessionType = unwrap_ok!(serde_json::from_str(json));
         assert_eq!(session_type, SessionType::Rdp);
+    }
+
+    #[test]
+    fn test_session_type_display() {
+        assert_eq!(SessionType::Ssh.to_string(), "ssh");
+        assert_eq!(SessionType::Rdp.to_string(), "rdp");
+        assert_eq!(SessionType::Vnc.to_string(), "vnc");
     }
 
     // ==================== SessionStatus Additional Tests ====================
@@ -469,17 +518,17 @@ mod tests {
     }
 
     #[test]
-    fn test_session_type_enum_rdp() {
+    fn test_session_type_field_rdp() {
         let mut session = create_test_session();
-        session.session_type = "rdp".to_string();
-        assert_eq!(session.session_type_enum(), SessionType::Rdp);
+        session.session_type = SessionType::Rdp;
+        assert_eq!(session.session_type, SessionType::Rdp);
     }
 
     #[test]
-    fn test_session_type_enum_vnc() {
+    fn test_session_type_field_vnc() {
         let mut session = create_test_session();
-        session.session_type = "vnc".to_string();
-        assert_eq!(session.session_type_enum(), SessionType::Vnc);
+        session.session_type = SessionType::Vnc;
+        assert_eq!(session.session_type, SessionType::Vnc);
     }
 
     #[test]
@@ -510,7 +559,7 @@ mod tests {
             asset_id: 1,
             credential_id: "cred-1".to_string(),
             credential_username: "admin".to_string(),
-            session_type: "ssh".to_string(),
+            session_type: SessionType::Ssh,
             status: "pending".to_string(),
             client_ip: unwrap_ok!("10.0.0.1".parse()),
             client_user_agent: Some("Mozilla/5.0".to_string()),
@@ -532,7 +581,7 @@ mod tests {
             asset_id: 3,
             credential_id: "cred-2".to_string(),
             credential_username: "root".to_string(),
-            session_type: "rdp".to_string(),
+            session_type: SessionType::Rdp,
             status: "connecting".to_string(),
             client_ip: unwrap_ok!("192.168.1.1".parse()),
             client_user_agent: None,
@@ -553,7 +602,7 @@ mod tests {
         let request = CreateSessionRequest {
             asset_id: Uuid::new_v4(),
             credential_id: "cred-debug".to_string(),
-            session_type: "ssh".to_string(),
+            session_type: SessionType::Ssh,
             justification: Some("Debug session".to_string()),
         };
 
@@ -566,7 +615,7 @@ mod tests {
         let request = CreateSessionRequest {
             asset_id: Uuid::new_v4(),
             credential_id: "cred-clone".to_string(),
-            session_type: "vnc".to_string(),
+            session_type: SessionType::Vnc,
             justification: None,
         };
 
@@ -581,7 +630,7 @@ mod tests {
         let request = CreateSessionRequest {
             asset_id: Uuid::new_v4(),
             credential_id: "cred-valid".to_string(),
-            session_type: "ssh".to_string(),
+            session_type: SessionType::Ssh,
             justification: Some("Valid request".to_string()),
         };
 

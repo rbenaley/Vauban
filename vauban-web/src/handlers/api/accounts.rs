@@ -13,7 +13,7 @@ use serde::Deserialize;
 use crate::AppState;
 use crate::error::{AppError, AppResult};
 use crate::middleware::auth::AuthUser;
-use crate::models::user::{CreateUserRequest, NewUser, UpdateUserRequest, User, UserDto};
+use crate::models::user::{AuthSource, CreateUserRequest, NewUser, UpdateUserRequest, User, UserDto};
 use crate::schema::users::dsl::*;
 
 /// Query parameters for list users.
@@ -139,7 +139,7 @@ pub async fn create_user(
         mfa_enforced: false,
         mfa_secret: None,
         preferences: serde_json::json!({}),
-        auth_source: "local".to_string(),
+        auth_source: AuthSource::Local,
         external_id: None,
     };
 

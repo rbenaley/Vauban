@@ -1,5 +1,6 @@
 /// Dashboard page handlers.
 use super::*;
+use crate::models::session::SessionType;
 
 /// Dashboard home page - requires authentication.
 pub async fn dashboard_home(
@@ -130,7 +131,7 @@ pub async fn dashboard_widget_active_sessions(
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
     // Load active sessions with asset info
-    let active_sessions: Vec<(i32, String, String, String, chrono::DateTime<chrono::Utc>)> =
+    let active_sessions: Vec<(i32, String, String, SessionType, chrono::DateTime<chrono::Utc>)> =
         proxy_sessions::table
             .inner_join(schema_assets::table)
             .filter(proxy_sessions::status.eq("active"))
@@ -157,7 +158,7 @@ pub async fn dashboard_widget_active_sessions(
                     id,
                     asset_name,
                     asset_hostname,
-                    session_type,
+                    session_type: session_type.to_string(),
                     duration: Some(format_duration(duration_secs)),
                 }
             },

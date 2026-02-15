@@ -63,8 +63,13 @@ where
     }
 }
 
-/// Asset type (protocol).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Asset type (protocol) (L-7: Diesel enum instead of String).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize,
+    diesel::expression::AsExpression, diesel::deserialize::FromSqlRow,
+)]
+#[serde(rename_all = "lowercase")]
+#[diesel(sql_type = diesel::sql_types::Varchar)]
 pub enum AssetType {
     Ssh,
     Rdp,
@@ -88,12 +93,52 @@ impl AssetType {
         }
     }
 
+    /// Try to parse a string into an AssetType, returning None for unknown values.
+    pub fn try_parse(s: &str) -> Option<Self> {
+        match s {
+            "ssh" => Some(Self::Ssh),
+            "rdp" => Some(Self::Rdp),
+            "vnc" => Some(Self::Vnc),
+            _ => None,
+        }
+    }
+
     pub fn default_port(&self) -> i32 {
         match self {
             Self::Ssh => 22,
             Self::Rdp => 3389,
             Self::Vnc => 5900,
         }
+    }
+}
+
+impl std::fmt::Display for AssetType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl diesel::serialize::ToSql<diesel::sql_types::Varchar, diesel::pg::Pg> for AssetType {
+    fn to_sql<'b>(
+        &'b self,
+        out: &mut diesel::serialize::Output<'b, '_, diesel::pg::Pg>,
+    ) -> diesel::serialize::Result {
+        <str as diesel::serialize::ToSql<diesel::sql_types::Varchar, diesel::pg::Pg>>::to_sql(
+            self.as_str(),
+            out,
+        )
+    }
+}
+
+impl diesel::deserialize::FromSql<diesel::sql_types::Varchar, diesel::pg::Pg> for AssetType {
+    fn from_sql(
+        bytes: <diesel::pg::Pg as diesel::backend::Backend>::RawValue<'_>,
+    ) -> diesel::deserialize::Result<Self> {
+        let s = <String as diesel::deserialize::FromSql<
+            diesel::sql_types::Varchar,
+            diesel::pg::Pg,
+        >>::from_sql(bytes)?;
+        Ok(Self::parse(&s))
     }
 }
 
@@ -139,7 +184,7 @@ pub struct Asset {
     #[serde(skip_serializing)]
     pub ip_address: Option<IpNetwork>,
     pub port: i32,
-    pub asset_type: String,
+    pub asset_type: AssetType,
     pub status: String,
     pub group_id: Option<i32>,
     pub description: Option<String>,
@@ -168,7 +213,7 @@ pub struct NewAsset {
     pub hostname: String,
     pub ip_address: Option<IpNetwork>,
     pub port: i32,
-    pub asset_type: String,
+    pub asset_type: AssetType,
     pub status: String,
     pub group_id: Option<i32>,
     pub description: Option<String>,
@@ -204,11 +249,6 @@ pub struct AssetGroup {
 }
 
 impl Asset {
-    /// Get asset type enum.
-    pub fn asset_type_enum(&self) -> AssetType {
-        AssetType::parse(&self.asset_type)
-    }
-
     /// Get status enum.
     pub fn status_enum(&self) -> AssetStatus {
         AssetStatus::parse(&self.status)
@@ -230,7 +270,7 @@ pub struct CreateAssetRequest {
     pub ip_address: Option<String>,
     #[validate(range(min = 1, max = 65535))]
     pub port: Option<i32>,
-    pub asset_type: String,
+    pub asset_type: AssetType,
     pub group_id: Option<i32>,
     pub description: Option<String>,
     pub require_mfa: Option<bool>,
@@ -272,7 +312,7 @@ mod tests {
             hostname: "test.example.com".to_string(),
             ip_address: Some(unwrap_ok!("192.168.1.100/32".parse())),
             port: 22,
-            asset_type: "ssh".to_string(),
+            asset_type: AssetType::Ssh,
             status: "online".to_string(),
             group_id: None,
             description: Some("A test server".to_string()),
@@ -398,9 +438,9 @@ mod tests {
     // ==================== Asset Method Tests ====================
 
     #[test]
-    fn test_asset_type_enum() {
+    fn test_asset_type_field_is_enum() {
         let asset = create_test_asset();
-        assert_eq!(asset.asset_type_enum(), AssetType::Ssh);
+        assert_eq!(asset.asset_type, AssetType::Ssh);
     }
 
     #[test]
@@ -434,7 +474,7 @@ mod tests {
             hostname: "server.example.com".to_string(),
             ip_address: Some("192.168.1.1".to_string()),
             port: Some(22),
-            asset_type: "ssh".to_string(),
+            asset_type: AssetType::Ssh,
             group_id: None,
             description: None,
             require_mfa: None,
@@ -453,7 +493,7 @@ mod tests {
             hostname: "server.example.com".to_string(),
             ip_address: None,
             port: None,
-            asset_type: "ssh".to_string(),
+            asset_type: AssetType::Ssh,
             group_id: None,
             description: None,
             require_mfa: None,
@@ -472,7 +512,7 @@ mod tests {
             hostname: "server.example.com".to_string(),
             ip_address: None,
             port: Some(70000), // Invalid port (max 65535)
-            asset_type: "ssh".to_string(),
+            asset_type: AssetType::Ssh,
             group_id: None,
             description: None,
             require_mfa: None,
@@ -491,7 +531,7 @@ mod tests {
             hostname: "server.example.com".to_string(),
             ip_address: None,
             port: Some(0), // Invalid port (min 1)
-            asset_type: "ssh".to_string(),
+            asset_type: AssetType::Ssh,
             group_id: None,
             description: None,
             require_mfa: None,
@@ -528,14 +568,21 @@ mod tests {
     fn test_asset_type_serialize() {
         let asset_type = AssetType::Ssh;
         let json = unwrap_ok!(serde_json::to_string(&asset_type));
-        assert!(json.contains("Ssh"));
+        assert!(json.contains("ssh"));
     }
 
     #[test]
     fn test_asset_type_deserialize() {
-        let json = r#""Rdp""#;
+        let json = r#""rdp""#;
         let asset_type: AssetType = unwrap_ok!(serde_json::from_str(json));
         assert_eq!(asset_type, AssetType::Rdp);
+    }
+
+    #[test]
+    fn test_asset_type_display() {
+        assert_eq!(AssetType::Ssh.to_string(), "ssh");
+        assert_eq!(AssetType::Rdp.to_string(), "rdp");
+        assert_eq!(AssetType::Vnc.to_string(), "vnc");
     }
 
     // ==================== AssetStatus Additional Tests ====================
@@ -596,17 +643,17 @@ mod tests {
     }
 
     #[test]
-    fn test_asset_type_enum_rdp() {
+    fn test_asset_type_field_rdp() {
         let mut asset = create_test_asset();
-        asset.asset_type = "rdp".to_string();
-        assert_eq!(asset.asset_type_enum(), AssetType::Rdp);
+        asset.asset_type = AssetType::Rdp;
+        assert_eq!(asset.asset_type, AssetType::Rdp);
     }
 
     #[test]
-    fn test_asset_type_enum_vnc() {
+    fn test_asset_type_field_vnc() {
         let mut asset = create_test_asset();
-        asset.asset_type = "vnc".to_string();
-        assert_eq!(asset.asset_type_enum(), AssetType::Vnc);
+        asset.asset_type = AssetType::Vnc;
+        assert_eq!(asset.asset_type, AssetType::Vnc);
     }
 
     #[test]
@@ -633,7 +680,7 @@ mod tests {
             hostname: "new.example.com".to_string(),
             ip_address: None,
             port: 22,
-            asset_type: "ssh".to_string(),
+            asset_type: AssetType::Ssh,
             status: "unknown".to_string(),
             group_id: None,
             description: None,
@@ -659,7 +706,7 @@ mod tests {
             hostname: "clone.example.com".to_string(),
             ip_address: Some(unwrap_ok!("10.0.0.1".parse())),
             port: 3389,
-            asset_type: "rdp".to_string(),
+            asset_type: AssetType::Rdp,
             status: "online".to_string(),
             group_id: Some(1),
             description: Some("A cloned asset".to_string()),
@@ -757,7 +804,7 @@ mod tests {
             hostname: "debug.example.com".to_string(),
             ip_address: None,
             port: None,
-            asset_type: "ssh".to_string(),
+            asset_type: AssetType::Ssh,
             group_id: None,
             description: None,
             require_mfa: None,
@@ -775,7 +822,7 @@ mod tests {
             hostname: "clone.example.com".to_string(),
             ip_address: Some("192.168.1.1".to_string()),
             port: Some(22),
-            asset_type: "ssh".to_string(),
+            asset_type: AssetType::Ssh,
             group_id: Some(1),
             description: Some("Cloned".to_string()),
             require_mfa: Some(true),
@@ -795,7 +842,7 @@ mod tests {
             hostname: "server.example.com".to_string(),
             ip_address: None,
             port: None,
-            asset_type: "ssh".to_string(),
+            asset_type: AssetType::Ssh,
             group_id: None,
             description: None,
             require_mfa: None,
@@ -814,7 +861,7 @@ mod tests {
             hostname: "a".repeat(256), // Too long
             ip_address: None,
             port: None,
-            asset_type: "ssh".to_string(),
+            asset_type: AssetType::Ssh,
             group_id: None,
             description: None,
             require_mfa: None,

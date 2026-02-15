@@ -14,6 +14,8 @@ use axum::http::header::COOKIE;
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl, TextExpressionMethods};
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use uuid::Uuid;
+use vauban_web::models::asset::AssetType;
+use vauban_web::models::user::AuthSource;
 
 /// Helper to get user UUID from user_id.
 async fn get_user_uuid(conn: &mut AsyncPgConnection, user_id: i32) -> Uuid {
@@ -3991,7 +3993,7 @@ async fn test_user_create_staff_cannot_create_superuser() {
                 users::is_active.eq(true),
                 users::is_staff.eq(true),
                 users::is_superuser.eq(false),
-                users::auth_source.eq("local"),
+                users::auth_source.eq(AuthSource::Local),
                 users::preferences.eq(serde_json::json!({})),
             ))
             .returning(users::id)
@@ -4148,7 +4150,7 @@ async fn test_user_update_staff_cannot_edit_superuser() {
                 users::is_active.eq(true),
                 users::is_staff.eq(true),
                 users::is_superuser.eq(false),
-                users::auth_source.eq("local"),
+                users::auth_source.eq(AuthSource::Local),
                 users::preferences.eq(serde_json::json!({})),
             ))
             .returning(users::id)
@@ -4349,7 +4351,7 @@ async fn test_user_delete_staff_cannot_delete_superuser() {
                 users::is_active.eq(true),
                 users::is_staff.eq(true),
                 users::is_superuser.eq(false),
-                users::auth_source.eq("local"),
+                users::auth_source.eq(AuthSource::Local),
                 users::preferences.eq(serde_json::json!({})),
             ))
             .returning(users::id)
@@ -6206,7 +6208,7 @@ async fn test_asset_create_reactivates_soft_deleted() {
             assets::name.eq("Old Deleted Asset"),
             assets::hostname.eq(&asset_hostname),
             assets::port.eq(22),
-            assets::asset_type.eq("ssh"),
+            assets::asset_type.eq(AssetType::Ssh),
             assets::status.eq("offline"),
             assets::is_deleted.eq(true),
             assets::deleted_at.eq(chrono::Utc::now()),
@@ -6315,7 +6317,7 @@ async fn test_asset_create_fails_for_active_duplicate() {
             assets::name.eq("Active Asset"),
             assets::hostname.eq(&asset_hostname),
             assets::port.eq(22),
-            assets::asset_type.eq("ssh"),
+            assets::asset_type.eq(AssetType::Ssh),
             assets::status.eq("online"),
             assets::is_deleted.eq(false),
         ))

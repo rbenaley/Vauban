@@ -19,6 +19,7 @@ use vauban_web::{
     cache::CacheConnection,
     config::{Config, Environment},
     db::DbPool,
+    models::user::AuthSource,
     services::auth::AuthService,
     services::broadcast::BroadcastService,
     services::rate_limit::RateLimiter,
@@ -180,7 +181,7 @@ impl TestApp {
                             users::is_active.eq(true),
                             users::is_staff.eq(is_staff),
                             users::is_superuser.eq(is_superuser),
-                            users::auth_source.eq("local"),
+                            users::auth_source.eq(AuthSource::Local),
                             users::preferences.eq(serde_json::json!({})),
                         ))
                         .returning(users::id)

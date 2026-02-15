@@ -1,5 +1,6 @@
 /// Session and approval page handlers.
 use super::*;
+use crate::models::session::SessionType;
 
 /// Session list page.
 pub async fn session_list(
@@ -67,7 +68,12 @@ pub async fn session_list(
     if let Some(ref session_type) = type_filter
         && !session_type.is_empty()
     {
-        query = query.filter(proxy_sessions::session_type.eq(session_type));
+        if let Some(parsed) = SessionType::try_parse(session_type) {
+            query = query.filter(proxy_sessions::session_type.eq(parsed));
+        } else {
+            // Invalid session type filter: return no results
+            query = query.filter(proxy_sessions::id.eq(-1));
+        }
     }
 
     if let Some(ref asset) = asset_filter
@@ -83,7 +89,7 @@ pub async fn session_list(
         uuid::Uuid,
         String,
         String,
-        String,
+        SessionType,
         String,
         String,
         Option<chrono::DateTime<chrono::Utc>>,
@@ -138,7 +144,7 @@ pub async fn session_list(
                     uuid: uuid.to_string(),
                     asset_name,
                     asset_hostname,
-                    session_type,
+                    session_type: session_type.to_string(),
                     status,
                     credential_username,
                     connected_at: connected_at.map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
@@ -450,7 +456,12 @@ pub async fn recording_list(
     if let Some(ref session_type) = format_filter
         && !session_type.is_empty()
     {
-        query = query.filter(proxy_sessions::session_type.eq(session_type));
+        if let Some(parsed) = SessionType::try_parse(session_type) {
+            query = query.filter(proxy_sessions::session_type.eq(parsed));
+        } else {
+            // Invalid format filter: return no results
+            query = query.filter(proxy_sessions::id.eq(-1));
+        }
     }
 
     if let Some(ref asset) = asset_filter
@@ -464,7 +475,7 @@ pub async fn recording_list(
     let db_recordings: Vec<(
         i32,
         String,
-        String,
+        SessionType,
         String,
         Option<chrono::DateTime<chrono::Utc>>,
         Option<chrono::DateTime<chrono::Utc>>,
@@ -506,7 +517,7 @@ pub async fn recording_list(
                     id,
                     session_id: id,
                     asset_name,
-                    session_type,
+                    session_type: session_type.to_string(),
                     credential_username,
                     connected_at: connected_at.map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
                     duration_seconds,

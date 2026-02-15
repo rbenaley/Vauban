@@ -26,6 +26,8 @@ use crate::error::{AppError, AppResult};
 use crate::middleware::flash::{IncomingFlash, flash_redirect};
 use crate::models::auth_session::{AuthSession, NewAuthSession};
 use crate::models::user::User;
+#[cfg(test)]
+use crate::models::user::AuthSource;
 use crate::schema::{auth_sessions, users::dsl::*};
 use crate::services::auth::AuthService;
 use crate::templates::accounts::{MfaSetupTemplate, MfaVerifyTemplate};
@@ -1225,7 +1227,7 @@ mod tests {
             preferences: serde_json::json!({}),
             last_login: None,
             last_login_ip: None,
-            auth_source: "local".to_string(),
+            auth_source: AuthSource::Local,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         };
@@ -1263,7 +1265,7 @@ mod tests {
             preferences: serde_json::json!({}),
             last_login: None,
             last_login_ip: None,
-            auth_source: "local".to_string(),
+            auth_source: AuthSource::Local,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         };
@@ -1642,7 +1644,7 @@ mod tests {
             preferences: serde_json::json!({}),
             last_login: None,
             last_login_ip: None,
-            auth_source: "local".to_string(),
+            auth_source: AuthSource::Local,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         };

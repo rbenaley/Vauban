@@ -1,5 +1,6 @@
 /// Asset management page handlers.
 use super::*;
+use crate::models::asset::AssetType;
 
 /// Asset create form page.
 pub async fn asset_create_form(
@@ -185,13 +186,14 @@ pub async fn create_asset_web(
     let sanitized_description = sanitize_opt(
         form.description.as_ref().filter(|s| !s.is_empty()).cloned(),
     );
+    let parsed_asset_type = AssetType::parse(&form.asset_type);
 
     if let Some((deleted_id, deleted_uuid)) = existing_deleted {
         // Reactivate the soft-deleted asset with new data
         let result = diesel::update(a::assets.filter(a::id.eq(deleted_id)))
             .set((
                 a::name.eq(&sanitized_name),
-                a::asset_type.eq(&form.asset_type),
+                a::asset_type.eq(parsed_asset_type),
                 a::status.eq(&form.status),
                 a::description.eq(&sanitized_description),
                 a::require_mfa.eq(form.require_mfa),
@@ -252,7 +254,7 @@ pub async fn create_asset_web(
             a::hostname.eq(form.hostname.trim()),
             a::ip_address.eq(ip_address),
             a::port.eq(form.port),
-            a::asset_type.eq(&form.asset_type),
+            a::asset_type.eq(parsed_asset_type),
             a::status.eq(&form.status),
             a::description.eq(&sanitized_description),
             a::connection_config.eq(connection_config),
@@ -321,7 +323,12 @@ pub async fn asset_list(
     if let Some(ref asset_type) = type_filter
         && !asset_type.is_empty()
     {
-        query = query.filter(schema_assets::asset_type.eq(asset_type));
+        if let Some(parsed) = AssetType::try_parse(asset_type) {
+            query = query.filter(schema_assets::asset_type.eq(parsed));
+        } else {
+            // Invalid asset type filter: return no results
+            query = query.filter(schema_assets::id.eq(-1));
+        }
     }
 
     if let Some(ref status) = status_filter
@@ -330,7 +337,7 @@ pub async fn asset_list(
         query = query.filter(schema_assets::status.eq(status));
     }
 
-    let db_assets: Vec<(i32, ::uuid::Uuid, String, String, i32, String, String)> = query
+    let db_assets: Vec<(i32, ::uuid::Uuid, String, String, i32, AssetType, String)> = query
         .select((
             schema_assets::id,
             schema_assets::uuid,
@@ -354,7 +361,7 @@ pub async fn asset_list(
                 name,
                 hostname,
                 port,
-                asset_type,
+                asset_type: asset_type.to_string(),
                 status,
                 group_name: None,
             },
@@ -413,7 +420,7 @@ pub async fn asset_search(
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
     let pattern = crate::db::like_contains(query);
 
-    let rows: Vec<(uuid::Uuid, String, String, String, String)> = a::assets
+    let rows: Vec<(uuid::Uuid, String, String, AssetType, String)> = a::assets
         .filter(a::is_deleted.eq(false))
         .filter(a::name.ilike(&pattern).or(a::hostname.ilike(&pattern)))
         .select((a::uuid, a::name, a::hostname, a::asset_type, a::status))
@@ -441,10 +448,7 @@ pub async fn asset_search(
         let hostname = askama::filters::escape(&hostname, askama::filters::Html)
             .unwrap()
             .to_string();
-        #[allow(clippy::unwrap_used)]
-        let asset_type = askama::filters::escape(&asset_type, askama::filters::Html)
-            .unwrap()
-            .to_string();
+        let asset_type = asset_type.to_string();
         #[allow(clippy::unwrap_used)]
         let status = askama::filters::escape(&status, askama::filters::Html)
             .unwrap()
@@ -512,7 +516,7 @@ pub async fn asset_detail(
         String,
         Option<ipnetwork::IpNetwork>,
         i32,
-        String,
+        AssetType,
         String,
         Option<i32>,
         Option<String>,
@@ -614,7 +618,7 @@ pub async fn asset_detail(
         hostname: asset_hostname,
         ip_address: asset_ip.map(|ip| ip.to_string()),
         port: asset_port,
-        asset_type: asset_type_val,
+        asset_type: asset_type_val.to_string(),
         status: asset_status,
         group_name,
         group_uuid,
@@ -711,7 +715,7 @@ pub async fn asset_edit(
         String,
         Option<ipnetwork::IpNetwork>,
         i32,
-        String,
+        AssetType,
         String,
         Option<String>,
         serde_json::Value,
@@ -796,7 +800,7 @@ pub async fn asset_edit(
         hostname: asset_hostname,
         ip_address: asset_ip.map(|ip| ip.ip().to_string()),
         port: asset_port,
-        asset_type: asset_type_val,
+        asset_type: asset_type_val.to_string(),
         status: asset_status,
         description: asset_description,
         require_mfa: asset_require_mfa,

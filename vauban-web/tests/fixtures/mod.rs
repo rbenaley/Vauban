@@ -7,9 +7,10 @@ use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use sha3::{Digest, Sha3_256};
 use uuid::Uuid;
 
-use vauban_web::models::asset::{Asset, NewAsset};
+use vauban_web::models::asset::{Asset, AssetType, NewAsset};
 use vauban_web::models::auth_session::NewAuthSession;
-use vauban_web::models::user::{NewUser, User};
+use vauban_web::models::session::SessionType;
+use vauban_web::models::user::{AuthSource, NewUser, User};
 use vauban_web::schema::{assets, auth_sessions, users};
 use vauban_web::services::auth::AuthService;
 
@@ -74,7 +75,7 @@ pub async fn create_test_user(
         mfa_enforced: false,
         mfa_secret: None,
         preferences: serde_json::json!({}),
-        auth_source: "local".to_string(),
+        auth_source: AuthSource::Local,
         external_id: None,
     };
 
@@ -129,7 +130,7 @@ pub async fn create_admin_user(
         mfa_enforced: false,
         mfa_secret: None,
         preferences: serde_json::json!({}),
-        auth_source: "local".to_string(),
+        auth_source: AuthSource::Local,
         external_id: None,
     };
 
@@ -185,7 +186,7 @@ pub async fn create_mfa_user(
         mfa_enforced: false,
         mfa_secret: Some(mfa_secret),
         preferences: serde_json::json!({}),
-        auth_source: "local".to_string(),
+        auth_source: AuthSource::Local,
         external_id: None,
     };
 
@@ -231,7 +232,7 @@ pub async fn create_test_ssh_asset(conn: &mut AsyncPgConnection, name: &str) -> 
         hostname: format!("{}.test.vauban.io", name.replace("test-", "")),
         ip_address: Some(ip),
         port: 22,
-        asset_type: "ssh".to_string(),
+        asset_type: AssetType::Ssh,
         status: "online".to_string(),
         group_id: None,
         description: Some("Test SSH asset".to_string()),
@@ -266,7 +267,7 @@ pub async fn create_test_rdp_asset(conn: &mut AsyncPgConnection, name: &str) -> 
         hostname: format!("{}.test.vauban.io", name.replace("test-", "")),
         ip_address: Some(ip),
         port: 3389,
-        asset_type: "rdp".to_string(),
+        asset_type: AssetType::Rdp,
         status: "online".to_string(),
         group_id: None,
         description: Some("Test RDP asset".to_string()),
@@ -349,7 +350,7 @@ pub async fn create_simple_user(conn: &mut AsyncPgConnection, username: &str) ->
         mfa_enforced: false,
         mfa_secret: None,
         preferences: serde_json::json!({}),
-        auth_source: "local".to_string(),
+        auth_source: AuthSource::Local,
         external_id: None,
     };
 
@@ -386,7 +387,7 @@ pub async fn create_simple_admin_user(conn: &mut AsyncPgConnection, username: &s
         mfa_enforced: false,
         mfa_secret: None,
         preferences: serde_json::json!({}),
-        auth_source: "local".to_string(),
+        auth_source: AuthSource::Local,
         external_id: None,
     };
 
@@ -417,7 +418,7 @@ pub async fn create_simple_ssh_asset(
         hostname: unique_hostname,
         ip_address: None,
         port: 22,
-        asset_type: "ssh".to_string(),
+        asset_type: AssetType::Ssh,
         status: "online".to_string(),
         group_id: None,
         description: None,
@@ -479,7 +480,7 @@ pub async fn create_test_session(
                 proxy_sessions::asset_id.eq(asset_id),
                 proxy_sessions::credential_id.eq("cred-123"),
                 proxy_sessions::credential_username.eq("testuser"),
-                proxy_sessions::session_type.eq(session_type),
+                proxy_sessions::session_type.eq(SessionType::parse(session_type)),
                 proxy_sessions::status.eq(status),
                 proxy_sessions::client_ip.eq(ip),
                 proxy_sessions::connected_at.eq(connected_at),
@@ -522,7 +523,7 @@ pub async fn create_test_session_with_uuid(
                 proxy_sessions::asset_id.eq(asset_id),
                 proxy_sessions::credential_id.eq("cred-123"),
                 proxy_sessions::credential_username.eq("testuser"),
-                proxy_sessions::session_type.eq(session_type),
+                proxy_sessions::session_type.eq(SessionType::parse(session_type)),
                 proxy_sessions::status.eq(status),
                 proxy_sessions::client_ip.eq(ip),
                 proxy_sessions::connected_at.eq(connected_at),
@@ -574,7 +575,7 @@ pub async fn create_recorded_session_with_type(
                 proxy_sessions::asset_id.eq(asset_id),
                 proxy_sessions::credential_id.eq("cred-123"),
                 proxy_sessions::credential_username.eq("testuser"),
-                proxy_sessions::session_type.eq(session_type),
+                proxy_sessions::session_type.eq(SessionType::parse(session_type)),
                 proxy_sessions::status.eq("completed"),
                 proxy_sessions::client_ip.eq(ip),
                 proxy_sessions::connected_at.eq(Utc::now() - Duration::hours(1)),
@@ -610,7 +611,7 @@ pub async fn create_approval_request(
                 proxy_sessions::asset_id.eq(asset_id),
                 proxy_sessions::credential_id.eq("cred-123"),
                 proxy_sessions::credential_username.eq("testuser"),
-                proxy_sessions::session_type.eq("ssh"),
+                proxy_sessions::session_type.eq(SessionType::Ssh),
                 proxy_sessions::status.eq("pending"),
                 proxy_sessions::client_ip.eq(ip),
                 proxy_sessions::is_recorded.eq(true),
@@ -739,7 +740,7 @@ pub async fn create_test_asset_in_group(
         hostname: unique_hostname,
         ip_address: None,
         port: 22,
-        asset_type: "ssh".to_string(),
+        asset_type: AssetType::Ssh,
         status: "online".to_string(),
         group_id: Some(group_id),
         description: None,

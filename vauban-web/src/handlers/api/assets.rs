@@ -15,7 +15,7 @@ use serde::Deserialize;
 use crate::AppState;
 use crate::error::{AppError, AppResult};
 use crate::middleware::auth::AuthUser;
-use crate::models::asset::{Asset, CreateAssetRequest, NewAsset, UpdateAssetRequest};
+use crate::models::asset::{Asset, AssetType, CreateAssetRequest, NewAsset, UpdateAssetRequest};
 use crate::schema::assets::dsl::*;
 
 /// Query parameters for list assets.
@@ -40,8 +40,13 @@ pub async fn list_assets(
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
     let mut query = assets.filter(is_deleted.eq(false)).into_boxed();
 
-    if let Some(asset_type_val) = params.asset_type {
-        query = query.filter(asset_type.eq(asset_type_val));
+    if let Some(ref asset_type_val) = params.asset_type {
+        if let Some(parsed) = AssetType::try_parse(asset_type_val) {
+            query = query.filter(asset_type.eq(parsed));
+        } else {
+            // Invalid asset type filter: return no results
+            query = query.filter(crate::schema::assets::id.eq(-1));
+        }
     }
 
     if let Some(group_id_val) = params.group_id {
@@ -102,8 +107,7 @@ pub async fn create_asset(
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
-    let asset_type_enum = crate::models::asset::AssetType::parse(&request.asset_type);
-    let default_port = request.port.unwrap_or(asset_type_enum.default_port());
+    let default_port = request.port.unwrap_or(request.asset_type.default_port());
 
     // Validate and convert IP address format if provided
     let ip_addr_network = if let Some(ref ip_str) = request.ip_address {
@@ -437,7 +441,7 @@ pub async fn list_group_assets(
             hostname: asset.hostname,
             ip_address: asset.ip_address.map(|ip| ip.ip().to_string()),
             port: asset.port,
-            asset_type: asset.asset_type,
+            asset_type: asset.asset_type.to_string(),
             status: asset.status,
             description: asset.description,
             require_mfa: asset.require_mfa,
@@ -494,7 +498,7 @@ pub async fn fetch_ssh_host_key_api(
             _ => AppError::Database(e),
         })?;
 
-    if asset.asset_type.to_lowercase() != "ssh" {
+    if asset.asset_type != AssetType::Ssh {
         return Err(AppError::Validation(
             "Host key fetch is only available for SSH assets".to_string(),
         ));
@@ -605,7 +609,7 @@ pub async fn get_ssh_host_key_status(
             _ => AppError::Database(e),
         })?;
 
-    if asset.asset_type.to_lowercase() != "ssh" {
+    if asset.asset_type != AssetType::Ssh {
         return Err(AppError::Validation(
             "Host key status is only available for SSH assets".to_string(),
         ));

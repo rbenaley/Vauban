@@ -61,8 +61,13 @@ pub fn validate_password_complexity(password: &str) -> Result<(), validator::Val
     Ok(())
 }
 
-/// User authentication source.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// User authentication source (L-7: Diesel enum instead of String).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize,
+    diesel::expression::AsExpression, diesel::deserialize::FromSqlRow,
+)]
+#[serde(rename_all = "lowercase")]
+#[diesel(sql_type = diesel::sql_types::Varchar)]
 pub enum AuthSource {
     Local,
     Ldap,
@@ -87,6 +92,36 @@ impl AuthSource {
             "saml" => Self::Saml,
             _ => Self::Local,
         }
+    }
+}
+
+impl std::fmt::Display for AuthSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl diesel::serialize::ToSql<diesel::sql_types::Varchar, diesel::pg::Pg> for AuthSource {
+    fn to_sql<'b>(
+        &'b self,
+        out: &mut diesel::serialize::Output<'b, '_, diesel::pg::Pg>,
+    ) -> diesel::serialize::Result {
+        <str as diesel::serialize::ToSql<diesel::sql_types::Varchar, diesel::pg::Pg>>::to_sql(
+            self.as_str(),
+            out,
+        )
+    }
+}
+
+impl diesel::deserialize::FromSql<diesel::sql_types::Varchar, diesel::pg::Pg> for AuthSource {
+    fn from_sql(
+        bytes: <diesel::pg::Pg as diesel::backend::Backend>::RawValue<'_>,
+    ) -> diesel::deserialize::Result<Self> {
+        let s = <String as diesel::deserialize::FromSql<
+            diesel::sql_types::Varchar,
+            diesel::pg::Pg,
+        >>::from_sql(bytes)?;
+        Ok(Self::parse(&s))
     }
 }
 
@@ -118,7 +153,7 @@ pub struct User {
     pub last_login_ip: Option<IpNetwork>,
     pub failed_login_attempts: i32,
     pub locked_until: Option<DateTime<Utc>>,
-    pub auth_source: String,
+    pub auth_source: AuthSource,
     pub external_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -145,7 +180,7 @@ pub struct NewUser {
     pub mfa_enforced: bool,
     pub mfa_secret: Option<String>,
     pub preferences: serde_json::Value,
-    pub auth_source: String,
+    pub auth_source: AuthSource,
     pub external_id: Option<String>,
 }
 
@@ -180,7 +215,7 @@ pub struct UserDto {
     pub preferences: serde_json::Value,
     pub last_login: Option<DateTime<Utc>>,
     pub last_login_ip: Option<String>,
-    pub auth_source: String,
+    pub auth_source: AuthSource,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -204,7 +239,7 @@ impl User {
             preferences: self.preferences.clone(),
             last_login: self.last_login,
             last_login_ip: self.last_login_ip.map(|ip| ip.to_string()),
-            auth_source: self.auth_source.clone(),
+            auth_source: self.auth_source,
             created_at: self.created_at,
             updated_at: self.updated_at,
         }
@@ -228,10 +263,6 @@ impl User {
         }
     }
 
-    /// Get authentication source enum.
-    pub fn auth_source_enum(&self) -> AuthSource {
-        AuthSource::parse(&self.auth_source)
-    }
 }
 
 /// User creation request.
@@ -303,7 +334,7 @@ mod tests {
             last_login_ip: None,
             failed_login_attempts: 0,
             locked_until: None,
-            auth_source: "local".to_string(),
+            auth_source: AuthSource::Local,
             external_id: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -452,19 +483,27 @@ mod tests {
         assert!(!user.is_locked());
     }
 
-    // ==================== User::auth_source_enum Tests ====================
+    // ==================== User::auth_source (Diesel enum) Tests ====================
 
     #[test]
-    fn test_auth_source_enum_local() {
+    fn test_auth_source_field_is_enum() {
         let user = create_test_user();
-        assert_eq!(user.auth_source_enum(), AuthSource::Local);
+        assert_eq!(user.auth_source, AuthSource::Local);
     }
 
     #[test]
-    fn test_auth_source_enum_ldap() {
+    fn test_auth_source_field_set_ldap() {
         let mut user = create_test_user();
-        user.auth_source = "ldap".to_string();
-        assert_eq!(user.auth_source_enum(), AuthSource::Ldap);
+        user.auth_source = AuthSource::Ldap;
+        assert_eq!(user.auth_source, AuthSource::Ldap);
+    }
+
+    #[test]
+    fn test_auth_source_display() {
+        assert_eq!(AuthSource::Local.to_string(), "local");
+        assert_eq!(AuthSource::Ldap.to_string(), "ldap");
+        assert_eq!(AuthSource::Oidc.to_string(), "oidc");
+        assert_eq!(AuthSource::Saml.to_string(), "saml");
     }
 
     // ==================== Validation Tests ====================
@@ -568,12 +607,12 @@ mod tests {
     fn test_auth_source_serialize() {
         let source = AuthSource::Saml;
         let json = unwrap_ok!(serde_json::to_string(&source));
-        assert!(json.contains("Saml"));
+        assert!(json.contains("saml"));
     }
 
     #[test]
     fn test_auth_source_deserialize() {
-        let json = r#""Local""#;
+        let json = r#""local""#;
         let source: AuthSource = unwrap_ok!(serde_json::from_str(json));
         assert_eq!(source, AuthSource::Local);
     }
@@ -665,7 +704,7 @@ mod tests {
             mfa_enforced: false,
             mfa_secret: None,
             preferences: serde_json::json!({}),
-            auth_source: "local".to_string(),
+            auth_source: AuthSource::Local,
             external_id: None,
         };
 
@@ -691,7 +730,7 @@ mod tests {
             mfa_enforced: false,
             mfa_secret: None,
             preferences: serde_json::json!({}),
-            auth_source: "local".to_string(),
+            auth_source: AuthSource::Local,
             external_id: None,
         };
 

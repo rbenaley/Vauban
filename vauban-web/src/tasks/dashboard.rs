@@ -251,7 +251,7 @@ async fn fetch_active_sessions(db_pool: &DbPool) -> Result<Vec<ActiveSessionItem
                 id: s.id,
                 asset_name: format!("Asset {}", s.asset_id),
                 asset_hostname: s.client_ip.to_string(),
-                session_type: s.session_type,
+                session_type: s.session_type.to_string(),
                 duration: Some(format_duration(duration_secs)),
             }
         })
@@ -285,7 +285,7 @@ async fn fetch_active_sessions_full(
                 username: format!("User {}", s.user_id),
                 asset_name: format!("Asset {}", s.asset_id),
                 asset_hostname: s.client_ip.to_string(),
-                session_type: s.session_type.clone(),
+                session_type: s.session_type.to_string(),
                 client_ip: s.client_ip.to_string(),
                 connected_at: s.created_at.format("%Y-%m-%d %H:%M").to_string(),
                 duration: duration_str,

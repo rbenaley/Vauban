@@ -144,7 +144,7 @@ pub async fn connect_ssh(
         }
     };
 
-    use crate::models::asset::Asset;
+    use crate::models::asset::{Asset, AssetType};
     use crate::schema::assets::dsl;
 
     let asset: Asset = match dsl::assets
@@ -183,7 +183,7 @@ pub async fn connect_ssh(
     };
 
     // Verify asset type is SSH
-    if asset.asset_type.to_lowercase() != "ssh" {
+    if asset.asset_type != AssetType::Ssh {
         let msg = format!("Asset type '{}' is not SSH", asset.asset_type);
         if is_htmx {
             return htmx_error_response(&msg);
@@ -378,7 +378,7 @@ pub async fn connect_ssh(
     // This allows the ws_session_guard middleware to verify that the
     // WebSocket client owns the session before allowing the upgrade.
     {
-        use crate::models::session::NewProxySession;
+        use crate::models::session::{NewProxySession, SessionType};
         // SAFETY: "0.0.0.0/0" is a valid CIDR; if parse() somehow fails,
     // fall back to the equivalent IpNetwork constructed from Ipv4Addr.
     let client_ip: ipnetwork::IpNetwork = "0.0.0.0/0".parse().unwrap_or_else(
@@ -390,7 +390,7 @@ pub async fn connect_ssh(
             asset_id: asset.id,
             credential_id: "local".to_string(),
             credential_username: username.clone(),
-            session_type: "ssh".to_string(),
+            session_type: SessionType::Ssh,
             status: "connecting".to_string(),
             client_ip,
             client_user_agent: headers
@@ -669,7 +669,7 @@ pub async fn fetch_ssh_host_key(
         }
     };
 
-    use crate::models::asset::Asset;
+    use crate::models::asset::{Asset, AssetType};
     use crate::schema::assets::dsl;
 
     let asset: Asset = match dsl::assets
@@ -688,7 +688,7 @@ pub async fn fetch_ssh_host_key(
     };
 
     // Verify asset type is SSH
-    if asset.asset_type.to_lowercase() != "ssh" {
+    if asset.asset_type != AssetType::Ssh {
         return htmx_error_response("Host key fetch is only available for SSH assets");
     }
 
@@ -826,7 +826,7 @@ pub async fn verify_ssh_host_key(
         }
     };
 
-    use crate::models::asset::Asset;
+    use crate::models::asset::{Asset, AssetType};
     use crate::schema::assets::dsl;
 
     let asset: Asset = match dsl::assets
@@ -839,7 +839,7 @@ pub async fn verify_ssh_host_key(
     };
 
     // Only SSH assets
-    if asset.asset_type.to_lowercase() != "ssh" {
+    if asset.asset_type != AssetType::Ssh {
         return htmx_error_response("Not an SSH asset");
     }
 
