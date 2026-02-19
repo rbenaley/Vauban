@@ -61,6 +61,12 @@ secrecy = { version = "0.10", features = ["serde"] }
 tokio = { version = "1", features = ["test-util"] }
 nix = { version = "0.31", features = ["process", "signal", "poll", "fs", "user", "socket", "uio", "term"] }
 
+# AVX2 support: upstream openh264-sys2 build.rs does not pass -DHAVE_AVX2
+# to NASM or the C++ compiler, unlike Cisco's official meson.build.
+# This local patch adds HAVE_AVX2 for x86/x86_64 targets.
+[patch.crates-io]
+openh264-sys2 = { path = "patches/openh264-sys2" }
+
 [profile.release]
 opt-level = 3
 lto = true
