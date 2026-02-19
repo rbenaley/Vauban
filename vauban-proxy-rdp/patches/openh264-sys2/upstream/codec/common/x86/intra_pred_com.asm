@@ -125,7 +125,7 @@ WELS_EXTERN WelsI16x16LumaPredV_avx2
     LOAD_3_PARA
     SIGN_EXTENSION r2, r2d
     sub     r1, r2
-    vpbroadcasti128 ymm0, [r1]
+    vbroadcasti128 ymm0, [r1]
     vmovdqu [r0],      ymm0
     vmovdqu [r0+32],   ymm0
     vmovdqu [r0+64],   ymm0
