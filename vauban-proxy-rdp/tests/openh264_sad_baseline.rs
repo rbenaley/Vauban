@@ -1,10 +1,9 @@
 //! Baseline test for OpenH264 encoder correctness.
 //!
 //! Validates that the encoder produces valid H.264 output with various
-//! frame patterns that exercise SAD (Sum of Absolute Differences) functions
-//! during inter-frame prediction / motion estimation.
+//! frame patterns that exercise SAD, SATD, and intra prediction functions.
 //!
-//! Run BEFORE and AFTER AVX2 SAD modifications to ensure no regression.
+//! Run BEFORE and AFTER AVX2 modifications to ensure no regression.
 
 use openh264::encoder::Encoder;
 use openh264::formats::YUVBuffer;
@@ -105,6 +104,138 @@ fn test_encoder_with_motion_pattern() {
         assert!(
             !bitstream.to_vec().is_empty(),
             "Frame {frame_idx} must produce output"
+        );
+    }
+}
+
+fn make_yuv(width: usize, height: usize, y_data: Vec<u8>) -> YUVBuffer {
+    let y_size = width * height;
+    let uv_size = (width / 2) * (height / 2);
+    let mut buf = y_data;
+    buf.resize(y_size + 2 * uv_size, 128);
+    YUVBuffer::from_vec(buf, width, height)
+}
+
+#[test]
+fn test_intra_pred_uniform_dc() {
+    let width = 320;
+    let height = 240;
+    let mut encoder = Encoder::new().unwrap();
+
+    for val in [16u8, 128, 235] {
+        let y_data = vec![val; width * height];
+        let yuv = make_yuv(width, height, y_data);
+        let bs = encoder.encode(&yuv).unwrap();
+        assert!(!bs.to_vec().is_empty(), "DC frame val={val} must encode");
+    }
+}
+
+#[test]
+fn test_intra_pred_vertical_stripes() {
+    let width = 320;
+    let height = 240;
+    let mut encoder = Encoder::new().unwrap();
+
+    let mut y_data = vec![0u8; width * height];
+    for row in 0..height {
+        for col in 0..width {
+            y_data[row * width + col] = if col % 16 < 8 { 200 } else { 40 };
+        }
+    }
+    let yuv = make_yuv(width, height, y_data);
+    let bs = encoder.encode(&yuv).unwrap();
+    assert!(
+        bs.to_vec().len() > 50,
+        "Vertical stripe frame must produce substantial output"
+    );
+}
+
+#[test]
+fn test_intra_pred_horizontal_stripes() {
+    let width = 320;
+    let height = 240;
+    let mut encoder = Encoder::new().unwrap();
+
+    let mut y_data = vec![0u8; width * height];
+    for row in 0..height {
+        for col in 0..width {
+            y_data[row * width + col] = if row % 16 < 8 { 200 } else { 40 };
+        }
+    }
+    let yuv = make_yuv(width, height, y_data);
+    let bs = encoder.encode(&yuv).unwrap();
+    assert!(
+        bs.to_vec().len() > 50,
+        "Horizontal stripe frame must produce substantial output"
+    );
+}
+
+#[test]
+fn test_intra_pred_diagonal_gradient() {
+    let width = 320;
+    let height = 240;
+    let mut encoder = Encoder::new().unwrap();
+
+    let mut y_data = vec![0u8; width * height];
+    for row in 0..height {
+        for col in 0..width {
+            y_data[row * width + col] =
+                ((col as u32 * 255 / width as u32 + row as u32 * 255 / height as u32) / 2) as u8;
+        }
+    }
+    let yuv = make_yuv(width, height, y_data);
+    let bs = encoder.encode(&yuv).unwrap();
+    assert!(
+        bs.to_vec().len() > 50,
+        "Diagonal gradient frame must produce substantial output"
+    );
+}
+
+#[test]
+fn test_intra_pred_forced_keyframes() {
+    let width = 160;
+    let height = 128;
+    let mut encoder = Encoder::new().unwrap();
+
+    for i in 0u8..6 {
+        let mut y_data = vec![0u8; width * height];
+        for row in 0..height {
+            for col in 0..width {
+                y_data[row * width + col] = ((col + i as usize * 37) % 256) as u8;
+            }
+        }
+        let yuv = make_yuv(width, height, y_data);
+        let bs = encoder.encode(&yuv).unwrap();
+        assert!(!bs.to_vec().is_empty(), "Keyframe {i} must produce output");
+    }
+}
+
+#[test]
+fn test_intra_pred_screen_content_pattern() {
+    let width = 320;
+    let height = 240;
+    let mut encoder = Encoder::new().unwrap();
+
+    let mut y_data = vec![235u8; width * height];
+    for row in 20..40 {
+        for col in 30..290 {
+            y_data[row * width + col] = 16;
+        }
+    }
+    for row in 60..200 {
+        for col in 30..290 {
+            if (col / 8 + row / 16) % 2 == 0 {
+                y_data[row * width + col] = 16;
+            }
+        }
+    }
+
+    for frame in 0..3 {
+        let yuv = make_yuv(width, height, y_data.clone());
+        let bs = encoder.encode(&yuv).unwrap();
+        assert!(
+            !bs.to_vec().is_empty(),
+            "Screen content frame {frame} must produce output"
         );
     }
 }
