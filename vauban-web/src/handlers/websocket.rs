@@ -1155,6 +1155,188 @@ pub struct TerminalResize {
     pub rows: u16,
 }
 
+// ============================================================================
+// RDP WebSocket handler
+// ============================================================================
+
+/// RDP input commands received from the frontend.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum RdpCommand {
+    MouseMove { x: u16, y: u16 },
+    MouseButton { button: u8, pressed: bool, x: u16, y: u16 },
+    MouseWheel { delta_x: i16, delta_y: i16 },
+    Key { code: String, key: String, pressed: bool, shift: bool, ctrl: bool, alt: bool, meta: bool },
+}
+
+/// Handle RDP WebSocket upgrade.
+///
+/// GET /ws/rdp/{session_id}
+pub async fn rdp_ws(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+    user: AuthUser,
+    ws_guard: WsGuard,
+) -> impl IntoResponse {
+    info!(
+        user = %user.username,
+        session_id = %session_id,
+        "RDP WebSocket connection requested"
+    );
+
+    ws.on_upgrade(move |socket| handle_rdp_socket(socket, state, session_id, user, ws_guard))
+}
+
+/// Handle RDP WebSocket connection.
+async fn handle_rdp_socket(
+    socket: WebSocket,
+    state: AppState,
+    session_id: String,
+    user: AuthUser,
+    _ws_guard: WsGuard,
+) {
+    use shared::messages::RdpInputEvent;
+
+    let (mut sender, mut receiver) = socket.split();
+
+    info!(
+        user = %user.username,
+        session_id = %session_id,
+        "RDP WebSocket connected"
+    );
+
+    let proxy_client = match &state.rdp_proxy {
+        Some(client) => client.clone(),
+        None => {
+            error!(session_id = %session_id, "RDP proxy client not available");
+            let _ = sender
+                .send(Message::Text(
+                    r#"{"error":"RDP proxy not available"}"#.to_string().into(),
+                ))
+                .await;
+            return;
+        }
+    };
+
+    let mut display_rx = proxy_client.subscribe_session(&session_id).await;
+    let mut ping_interval = interval(Duration::from_secs(PING_INTERVAL_SECS));
+    let mut should_close = false;
+
+    loop {
+        tokio::select! {
+            msg = receiver.next() => {
+                match msg {
+                    Some(Ok(Message::Text(text))) => {
+                        if let Ok(cmd) = serde_json::from_str::<RdpCommand>(&text) {
+                            let input = match cmd {
+                                RdpCommand::MouseMove { x, y } => {
+                                    RdpInputEvent::MouseMove { x, y }
+                                }
+                                RdpCommand::MouseButton { button, pressed, x, y } => {
+                                    RdpInputEvent::MouseButton { button, pressed, x, y }
+                                }
+                                RdpCommand::MouseWheel { delta_x, delta_y } => {
+                                    RdpInputEvent::MouseWheel { delta_x, delta_y }
+                                }
+                                RdpCommand::Key { code, key, pressed, shift, ctrl, alt, meta } => {
+                                    RdpInputEvent::Keyboard {
+                                        code,
+                                        key,
+                                        pressed,
+                                        shift,
+                                        ctrl,
+                                        alt,
+                                        meta,
+                                    }
+                                }
+                            };
+                            let pc = proxy_client.clone();
+                            let sid = session_id.clone();
+                            if let Err(e) = tokio::task::spawn_blocking(move || {
+                                pc.send_input(&sid, input)
+                            }).await.unwrap_or_else(|e| Err(crate::error::AppError::Ipc(e.to_string()))) {
+                                error!(session_id = %session_id, error = %e, "Failed to send RDP input");
+                                should_close = true;
+                            }
+                        }
+                    }
+                    Some(Ok(Message::Ping(_))) | Some(Ok(Message::Pong(_))) => {}
+                    Some(Ok(Message::Close(_))) => {
+                        info!(session_id = %session_id, "RDP client requested close");
+                        let pc = proxy_client.clone();
+                        let sid = session_id.clone();
+                        if let Err(e) = tokio::task::spawn_blocking(move || {
+                            pc.close_session(&sid)
+                        }).await.unwrap_or_else(|e| Err(crate::error::AppError::Ipc(e.to_string()))) {
+                            warn!(session_id = %session_id, error = %e, "Failed to close RDP session");
+                        }
+                        should_close = true;
+                    }
+                    Some(Err(e)) => {
+                        error!(session_id = %session_id, error = %e, "RDP WebSocket error");
+                        should_close = true;
+                    }
+                    None => {
+                        info!(session_id = %session_id, "RDP WebSocket stream ended");
+                        should_close = true;
+                    }
+                    _ => {}
+                }
+            }
+
+            // Display updates from RDP proxy -> send to client as binary
+            result = display_rx.recv() => {
+                match result {
+                    Some(update) => {
+                        // Pack header: x(u16 LE) + y(u16 LE) + w(u16 LE) + h(u16 LE) + PNG data
+                        let mut buf = Vec::with_capacity(8 + update.png_data.len());
+                        buf.extend_from_slice(&update.x.to_le_bytes());
+                        buf.extend_from_slice(&update.y.to_le_bytes());
+                        buf.extend_from_slice(&update.width.to_le_bytes());
+                        buf.extend_from_slice(&update.height.to_le_bytes());
+                        buf.extend_from_slice(&update.png_data);
+                        debug!(
+                            session_id = %session_id,
+                            x = update.x, y = update.y,
+                            w = update.width, h = update.height,
+                            ws_bytes = buf.len(),
+                            "Sending RDP display update via WebSocket"
+                        );
+                        if sender.send(Message::Binary(buf.into())).await.is_err() {
+                            warn!(session_id = %session_id, "Failed to send RDP display to WebSocket");
+                            should_close = true;
+                        }
+                    }
+                    None => {
+                        warn!(session_id = %session_id, "RDP display channel closed");
+                        should_close = true;
+                    }
+                }
+            }
+
+            _ = ping_interval.tick() => {
+                if sender.send(Message::Ping(vec![].into())).await.is_err() {
+                    warn!(session_id = %session_id, "Failed to send ping");
+                    should_close = true;
+                }
+            }
+        }
+
+        if should_close {
+            break;
+        }
+    }
+
+    proxy_client.unsubscribe_session(&session_id).await;
+
+    info!(
+        user = %user.username,
+        session_id = %session_id,
+        "RDP WebSocket disconnected"
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1377,5 +1559,243 @@ mod tests {
         let mut ticker = interval(Duration::from_secs(1));
         // First tick is immediate
         ticker.tick().await;
+    }
+
+    // ==================== RdpCommand Deserialization Tests ====================
+
+    #[test]
+    fn test_rdp_command_mouse_move() {
+        let json = r#"{"type": "mouse_move", "x": 100, "y": 200}"#;
+        let cmd: RdpCommand = serde_json::from_str(json).unwrap();
+        if let RdpCommand::MouseMove { x, y } = cmd {
+            assert_eq!(x, 100);
+            assert_eq!(y, 200);
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_rdp_command_mouse_button_pressed() {
+        let json = r#"{"type": "mouse_button", "button": 0, "pressed": true, "x": 50, "y": 60}"#;
+        let cmd: RdpCommand = serde_json::from_str(json).unwrap();
+        if let RdpCommand::MouseButton { button, pressed, x, y } = cmd {
+            assert_eq!(button, 0);
+            assert!(pressed);
+            assert_eq!(x, 50);
+            assert_eq!(y, 60);
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_rdp_command_mouse_button_released() {
+        let json = r#"{"type": "mouse_button", "button": 2, "pressed": false, "x": 300, "y": 400}"#;
+        let cmd: RdpCommand = serde_json::from_str(json).unwrap();
+        if let RdpCommand::MouseButton { button, pressed, .. } = cmd {
+            assert_eq!(button, 2);
+            assert!(!pressed);
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_rdp_command_mouse_wheel() {
+        let json = r#"{"type": "mouse_wheel", "delta_x": 0, "delta_y": -120}"#;
+        let cmd: RdpCommand = serde_json::from_str(json).unwrap();
+        if let RdpCommand::MouseWheel { delta_x, delta_y } = cmd {
+            assert_eq!(delta_x, 0);
+            assert_eq!(delta_y, -120);
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_rdp_command_key_pressed() {
+        let json = r#"{"type": "key", "code": "KeyA", "key": "a", "pressed": true, "shift": false, "ctrl": false, "alt": false, "meta": false}"#;
+        let cmd: RdpCommand = serde_json::from_str(json).unwrap();
+        if let RdpCommand::Key { code, key, pressed, shift, ctrl, alt, meta } = cmd {
+            assert_eq!(code, "KeyA");
+            assert_eq!(key, "a");
+            assert!(pressed);
+            assert!(!shift);
+            assert!(!ctrl);
+            assert!(!alt);
+            assert!(!meta);
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_rdp_command_key_with_modifiers() {
+        let json = r#"{"type": "key", "code": "KeyC", "key": "c", "pressed": true, "shift": false, "ctrl": true, "alt": false, "meta": false}"#;
+        let cmd: RdpCommand = serde_json::from_str(json).unwrap();
+        if let RdpCommand::Key { ctrl, .. } = cmd {
+            assert!(ctrl);
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_rdp_command_key_released() {
+        let json = r#"{"type": "key", "code": "Space", "key": " ", "pressed": false, "shift": false, "ctrl": false, "alt": false, "meta": false}"#;
+        let cmd: RdpCommand = serde_json::from_str(json).unwrap();
+        if let RdpCommand::Key { pressed, .. } = cmd {
+            assert!(!pressed);
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_rdp_command_invalid_type() {
+        let json = r#"{"type": "invalid_command"}"#;
+        let result = serde_json::from_str::<RdpCommand>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_rdp_command_missing_fields() {
+        let json = r#"{"type": "mouse_move"}"#;
+        let result = serde_json::from_str::<RdpCommand>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_rdp_command_mouse_wheel_positive() {
+        let json = r#"{"type": "mouse_wheel", "delta_x": 100, "delta_y": 50}"#;
+        let cmd: RdpCommand = serde_json::from_str(json).unwrap();
+        if let RdpCommand::MouseWheel { delta_x, delta_y } = cmd {
+            assert_eq!(delta_x, 100);
+            assert_eq!(delta_y, 50);
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_rdp_command_mouse_move_origin() {
+        let json = r#"{"type": "mouse_move", "x": 0, "y": 0}"#;
+        let cmd: RdpCommand = serde_json::from_str(json).unwrap();
+        if let RdpCommand::MouseMove { x, y } = cmd {
+            assert_eq!(x, 0);
+            assert_eq!(y, 0);
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_rdp_command_mouse_move_max_coords() {
+        let json = r#"{"type": "mouse_move", "x": 65535, "y": 65535}"#;
+        let cmd: RdpCommand = serde_json::from_str(json).unwrap();
+        if let RdpCommand::MouseMove { x, y } = cmd {
+            assert_eq!(x, u16::MAX);
+            assert_eq!(y, u16::MAX);
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_rdp_command_key_all_modifiers() {
+        let json = r#"{"type": "key", "code": "KeyA", "key": "A", "pressed": true, "shift": true, "ctrl": true, "alt": true, "meta": true}"#;
+        let cmd: RdpCommand = serde_json::from_str(json).unwrap();
+        if let RdpCommand::Key { shift, ctrl, alt, meta, .. } = cmd {
+            assert!(shift);
+            assert!(ctrl);
+            assert!(alt);
+            assert!(meta);
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    // ==================== RDP Display Update Binary Packing Tests ====================
+
+    #[test]
+    fn test_rdp_display_update_binary_header_format() {
+        let x: u16 = 100;
+        let y: u16 = 200;
+        let w: u16 = 640;
+        let h: u16 = 480;
+        let png_data = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+
+        let mut buf = Vec::with_capacity(8 + png_data.len());
+        buf.extend_from_slice(&x.to_le_bytes());
+        buf.extend_from_slice(&y.to_le_bytes());
+        buf.extend_from_slice(&w.to_le_bytes());
+        buf.extend_from_slice(&h.to_le_bytes());
+        buf.extend_from_slice(&png_data);
+
+        assert_eq!(buf.len(), 16); // 8 header + 8 PNG magic
+        // Verify header can be decoded correctly (matching JS DataView logic)
+        let dv_x = u16::from_le_bytes([buf[0], buf[1]]);
+        let dv_y = u16::from_le_bytes([buf[2], buf[3]]);
+        let dv_w = u16::from_le_bytes([buf[4], buf[5]]);
+        let dv_h = u16::from_le_bytes([buf[6], buf[7]]);
+        assert_eq!(dv_x, 100);
+        assert_eq!(dv_y, 200);
+        assert_eq!(dv_w, 640);
+        assert_eq!(dv_h, 480);
+        assert_eq!(&buf[8..], &png_data);
+    }
+
+    #[test]
+    fn test_rdp_display_update_origin_packing() {
+        let x: u16 = 0;
+        let y: u16 = 0;
+        let w: u16 = 1280;
+        let h: u16 = 720;
+
+        let mut buf = Vec::with_capacity(8);
+        buf.extend_from_slice(&x.to_le_bytes());
+        buf.extend_from_slice(&y.to_le_bytes());
+        buf.extend_from_slice(&w.to_le_bytes());
+        buf.extend_from_slice(&h.to_le_bytes());
+
+        assert_eq!(buf[0..2], [0, 0]); // x=0
+        assert_eq!(buf[2..4], [0, 0]); // y=0
+        assert_eq!(u16::from_le_bytes([buf[4], buf[5]]), 1280);
+        assert_eq!(u16::from_le_bytes([buf[6], buf[7]]), 720);
+    }
+
+    #[test]
+    fn test_rdp_display_update_max_coords() {
+        let x: u16 = u16::MAX;
+        let y: u16 = u16::MAX;
+        let w: u16 = 1;
+        let h: u16 = 1;
+
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&x.to_le_bytes());
+        buf.extend_from_slice(&y.to_le_bytes());
+        buf.extend_from_slice(&w.to_le_bytes());
+        buf.extend_from_slice(&h.to_le_bytes());
+
+        assert_eq!(u16::from_le_bytes([buf[0], buf[1]]), u16::MAX);
+        assert_eq!(u16::from_le_bytes([buf[2], buf[3]]), u16::MAX);
+    }
+
+    #[test]
+    fn test_rdp_command_roundtrip_all_types() {
+        let commands = vec![
+            r#"{"type":"mouse_move","x":500,"y":300}"#,
+            r#"{"type":"mouse_button","button":0,"pressed":true,"x":100,"y":200}"#,
+            r#"{"type":"mouse_button","button":2,"pressed":false,"x":100,"y":200}"#,
+            r#"{"type":"mouse_wheel","delta_x":0,"delta_y":-120}"#,
+            r#"{"type":"key","code":"KeyA","key":"a","pressed":true,"shift":false,"ctrl":false,"alt":false,"meta":false}"#,
+            r#"{"type":"key","code":"Enter","key":"Enter","pressed":false,"shift":false,"ctrl":false,"alt":false,"meta":false}"#,
+        ];
+
+        for json in &commands {
+            let result: Result<RdpCommand, _> = serde_json::from_str(json);
+            assert!(result.is_ok(), "Failed to parse: {}", json);
+        }
     }
 }

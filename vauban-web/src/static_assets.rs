@@ -30,6 +30,19 @@ pub struct StaticAsset {
     pub content_type: &'static str,
 }
 
+impl StaticAsset {
+    /// Stable ETag derived from content length and a FNV-1a hash of the bytes.
+    /// Changes whenever the binary is recompiled with different file contents.
+    pub fn etag(&self) -> String {
+        let mut hash: u64 = 0xcbf29ce484222325;
+        for &b in self.content {
+            hash ^= b as u64;
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        format!("\"v{:016x}\"", hash)
+    }
+}
+
 /// Exhaustive list of static assets compiled into the binary.
 ///
 /// **Security**: only files listed here can be served.  An attacker who
@@ -120,6 +133,28 @@ mod tests {
     fn test_lookup_missing() {
         assert!(lookup("nonexistent.js").is_none());
         assert!(lookup("../../../etc/passwd").is_none());
+    }
+
+    #[test]
+    fn test_etag_is_deterministic() {
+        let a = lookup("js/tailwind-config.js").unwrap();
+        let e1 = a.etag();
+        let e2 = a.etag();
+        assert_eq!(e1, e2, "Same content must produce same ETag");
+    }
+
+    #[test]
+    fn test_etag_is_quoted() {
+        let a = lookup("css/vauban.css").unwrap();
+        let etag = a.etag();
+        assert!(etag.starts_with('"') && etag.ends_with('"'), "ETag must be quoted: {}", etag);
+    }
+
+    #[test]
+    fn test_different_assets_have_different_etags() {
+        let js = lookup("js/tailwind-config.js").unwrap();
+        let css = lookup("css/vauban.css").unwrap();
+        assert_ne!(js.etag(), css.etag(), "Different files must have different ETags");
     }
 
     #[test]

@@ -72,7 +72,7 @@ use vauban_web::{
     db::create_pool_sandboxed,
     error::AppError,
     handlers, middleware,
-    ipc::ProxySshClient,
+    ipc::{ProxySshClient, ProxyRdpClient},
     services::auth::AuthService,
     services::broadcast::BroadcastService,
     services::rate_limit::RateLimiter,
@@ -116,6 +116,47 @@ fn init_ssh_proxy_client() -> Option<Arc<ProxySshClient>> {
         }
         Err(e) => {
             tracing::warn!("Failed to initialize SSH proxy client: {}", e);
+            None
+        }
+    }
+}
+
+/// Initialize RDP proxy client if IPC environment variables are set.
+///
+/// Returns Some(Arc<ProxyRdpClient>) if VAUBAN_PROXY_RDP_IPC_READ and VAUBAN_PROXY_RDP_IPC_WRITE
+/// environment variables are set (running under supervisor), None otherwise.
+fn init_rdp_proxy_client() -> Option<Arc<ProxyRdpClient>> {
+    use std::os::unix::io::RawFd;
+
+    let read_fd: RawFd = match std::env::var("VAUBAN_PROXY_RDP_IPC_READ") {
+        Ok(val) => match val.parse() {
+            Ok(fd) => fd,
+            Err(_) => return None,
+        },
+        Err(_) => return None,
+    };
+
+    let write_fd: RawFd = match std::env::var("VAUBAN_PROXY_RDP_IPC_WRITE") {
+        Ok(val) => match val.parse() {
+            Ok(fd) => fd,
+            Err(_) => return None,
+        },
+        Err(_) => return None,
+    };
+
+    // SAFETY: We are early in startup, before spawning async tasks
+    unsafe {
+        std::env::remove_var("VAUBAN_PROXY_RDP_IPC_READ");
+        std::env::remove_var("VAUBAN_PROXY_RDP_IPC_WRITE");
+    }
+
+    match ProxyRdpClient::new(read_fd, write_fd) {
+        Ok(client) => {
+            tracing::info!("RDP proxy client initialized (running under supervisor)");
+            Some(client)
+        }
+        Err(e) => {
+            tracing::warn!("Failed to initialize RDP proxy client: {}", e);
             None
         }
     }
@@ -339,6 +380,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("SSH proxy IPC processing task started");
     }
 
+    // Create RDP proxy client if running under supervisor
+    let rdp_proxy = init_rdp_proxy_client();
+
+    // Spawn RDP proxy IPC processing task if client is available
+    if let Some(ref client) = rdp_proxy {
+        let client_clone = Arc::clone(client);
+        tokio::spawn(async move {
+            if let Err(e) = client_clone.process_incoming().await {
+                tracing::error!(error = %e, "RDP proxy IPC processing task failed");
+            }
+        });
+        tracing::info!("RDP proxy IPC processing task started");
+    }
+
     // Create vault crypto client if running under supervisor (M-1, C-2)
     let vault_client = init_vault_client();
 
@@ -364,6 +419,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ws_counter,
         rate_limiter,
         ssh_proxy,
+        rdp_proxy,
         supervisor: supervisor_client,
         vault_client,
     };
@@ -573,7 +629,11 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
         )
         .route(
             "/ws/terminal/{session_id}",
-            get(handlers::websocket::terminal_ws).layer(session_guard),
+            get(handlers::websocket::terminal_ws).layer(session_guard.clone()),
+        )
+        .route(
+            "/ws/rdp/{session_id}",
+            get(handlers::websocket::rdp_ws).layer(session_guard),
         )
         // L-8: Apply per-user connection limit to ALL WebSocket routes
         .layer(ws_limit_layer);
@@ -761,6 +821,15 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
         .route(
             "/sessions/terminal/{session_id}",
             get(handlers::web::terminal_page),
+        )
+        // RDP connection endpoints
+        .route(
+            "/assets/{uuid}/connect-rdp",
+            post(handlers::web::connect_rdp),
+        )
+        .route(
+            "/sessions/rdp/{session_id}",
+            get(handlers::web::rdp_page),
         );
 
     // ==========================================================================
@@ -951,12 +1020,11 @@ async fn health_check(
 /// - Rejects paths containing `..` or null bytes as an extra precaution.
 async fn serve_static(
     axum::extract::Path(path): axum::extract::Path<String>,
+    headers: axum::http::HeaderMap,
 ) -> Result<axum::response::Response, axum::http::StatusCode> {
     use axum::body::Body;
     use axum::http::{Response, header};
 
-    // Extra defence-in-depth: reject traversal even though the lookup is a
-    // simple string match against the compiled registry.
     if path.contains("..") || path.contains('\0') {
         return Err(axum::http::StatusCode::FORBIDDEN);
     }
@@ -964,11 +1032,23 @@ async fn serve_static(
     let asset = vauban_web::static_assets::lookup(&path)
         .ok_or(axum::http::StatusCode::NOT_FOUND)?;
 
+    let etag = asset.etag();
+
+    if let Some(inm) = headers.get(header::IF_NONE_MATCH)
+        && inm.as_bytes() == etag.as_bytes()
+    {
+        return Response::builder()
+            .status(axum::http::StatusCode::NOT_MODIFIED)
+            .header(header::ETAG, &etag)
+            .body(Body::empty())
+            .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
     Response::builder()
         .status(axum::http::StatusCode::OK)
         .header(header::CONTENT_TYPE, asset.content_type)
-        // Cache static assets for 1 hour (browser), allow CDN caching
-        .header(header::CACHE_CONTROL, "public, max-age=3600")
+        .header(header::CACHE_CONTROL, "public, max-age=300, must-revalidate")
+        .header(header::ETAG, &etag)
         .body(Body::from(asset.content))
         .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)
 }
@@ -1043,7 +1123,8 @@ mod tests {
     #[tokio::test]
     async fn test_serve_static_rejects_traversal() {
         let path = axum::extract::Path("../../../etc/passwd".to_string());
-        let result = serve_static(path).await;
+        let headers = axum::http::HeaderMap::new();
+        let result = serve_static(path, headers).await;
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), axum::http::StatusCode::FORBIDDEN);
     }
@@ -1051,7 +1132,8 @@ mod tests {
     #[tokio::test]
     async fn test_serve_static_rejects_null_byte() {
         let path = axum::extract::Path("js/app\0.js".to_string());
-        let result = serve_static(path).await;
+        let headers = axum::http::HeaderMap::new();
+        let result = serve_static(path, headers).await;
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), axum::http::StatusCode::FORBIDDEN);
     }
@@ -1059,7 +1141,8 @@ mod tests {
     #[tokio::test]
     async fn test_serve_static_returns_not_found_for_unknown() {
         let path = axum::extract::Path("nonexistent.js".to_string());
-        let result = serve_static(path).await;
+        let headers = axum::http::HeaderMap::new();
+        let result = serve_static(path, headers).await;
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), axum::http::StatusCode::NOT_FOUND);
     }
@@ -1067,7 +1150,8 @@ mod tests {
     #[tokio::test]
     async fn test_serve_static_serves_compiled_js() {
         let path = axum::extract::Path("js/tailwind-config.js".to_string());
-        let result = serve_static(path).await;
+        let headers = axum::http::HeaderMap::new();
+        let result = serve_static(path, headers).await;
         assert!(result.is_ok(), "Must serve compiled-in JS file");
         let response = result.unwrap();
         assert_eq!(response.status(), axum::http::StatusCode::OK);
@@ -1075,12 +1159,14 @@ mod tests {
             response.headers().get("content-type").unwrap(),
             "application/javascript; charset=utf-8"
         );
+        assert!(response.headers().get("etag").is_some(), "Must include ETag");
     }
 
     #[tokio::test]
     async fn test_serve_static_serves_compiled_css() {
         let path = axum::extract::Path("css/vauban.css".to_string());
-        let result = serve_static(path).await;
+        let headers = axum::http::HeaderMap::new();
+        let result = serve_static(path, headers).await;
         assert!(result.is_ok(), "Must serve compiled-in CSS file");
         let response = result.unwrap();
         assert_eq!(response.status(), axum::http::StatusCode::OK);
@@ -1088,6 +1174,23 @@ mod tests {
             response.headers().get("content-type").unwrap(),
             "text/css; charset=utf-8"
         );
+        assert!(response.headers().get("etag").is_some(), "Must include ETag");
+    }
+
+    #[tokio::test]
+    async fn test_serve_static_304_with_matching_etag() {
+        use axum::http::header;
+
+        let path = axum::extract::Path("js/tailwind-config.js".to_string());
+        let headers = axum::http::HeaderMap::new();
+        let first = serve_static(path, headers).await.unwrap();
+        let etag = first.headers().get("etag").unwrap().clone();
+
+        let path2 = axum::extract::Path("js/tailwind-config.js".to_string());
+        let mut headers2 = axum::http::HeaderMap::new();
+        headers2.insert(header::IF_NONE_MATCH, etag);
+        let second = serve_static(path2, headers2).await.unwrap();
+        assert_eq!(second.status(), axum::http::StatusCode::NOT_MODIFIED);
     }
 
     // ==================== SocketAddr Tests ====================

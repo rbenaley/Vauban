@@ -198,6 +198,212 @@ document.addEventListener('alpine:init', function () {
             }
         };
     });
+
+    // RDP Viewer component (canvas-based remote desktop)
+    Alpine.data('rdpViewer', function (sessionId) {
+        return {
+            sessionId: sessionId,
+            connected: false,
+            error: null,
+            ws: null,
+            ctx: null,
+            desktopWidth: 1280,
+            desktopHeight: 720,
+            _lastMouseSend: 0,
+            _pendingMouseMove: null,
+            _mouseThrottleMs: 33,
+
+            init: function () {
+                var self = this;
+                this.$nextTick(function () { self.connectWs(); });
+            },
+
+            destroy: function () {
+                if (this._pendingMouseMove) clearTimeout(this._pendingMouseMove);
+                if (this.ws) this.ws.close(1000, 'Component destroyed');
+            },
+
+            connectWs: function () {
+                var self = this;
+                var protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                var wsUrl = protocol + '//' + window.location.host + '/ws/rdp/' + this.sessionId;
+
+                this.ws = new WebSocket(wsUrl);
+                this.ws.binaryType = 'arraybuffer';
+
+                this.ws.onopen = function () {
+                    self.connected = true;
+                    self.error = null;
+                    self.ctx = self.$refs.canvas.getContext('2d');
+                    self.$refs.canvas.focus();
+                };
+
+                this._msgCount = 0;
+                this._binaryCount = 0;
+                this.ws.onmessage = function (event) {
+                    self._msgCount++;
+                    if (typeof event.data === 'string') {
+                        console.log('[RDP] text msg #' + self._msgCount + ':', event.data.substring(0, 200));
+                        try {
+                            var msg = JSON.parse(event.data);
+                            if (msg.type === 'desktop_size') {
+                                self.desktopWidth = msg.width;
+                                self.desktopHeight = msg.height;
+                            } else if (msg.error) {
+                                self.error = msg.error;
+                            }
+                        } catch (e) { /* ignore */ }
+                        return;
+                    }
+                    self._binaryCount++;
+                    // Binary: header (8 bytes: x u16 LE, y u16 LE, w u16 LE, h u16 LE) + PNG data
+                    var buf = new Uint8Array(event.data);
+                    if (buf.length < 8) {
+                        console.warn('[RDP] binary too short:', buf.length);
+                        return;
+                    }
+                    var dv = new DataView(event.data);
+                    var x = dv.getUint16(0, true);
+                    var y = dv.getUint16(2, true);
+                    var w = dv.getUint16(4, true);
+                    var h = dv.getUint16(6, true);
+                    var pngSize = buf.length - 8;
+
+                    if (self._binaryCount <= 30 || self._binaryCount % 50 === 0) {
+                        console.log('[RDP] binary #' + self._binaryCount +
+                            ' x=' + x + ' y=' + y + ' w=' + w + ' h=' + h +
+                            ' png=' + pngSize + 'B canvas=' + (self.ctx ? 'ok' : 'null'));
+                    }
+
+                    var blob = new Blob([buf.slice(8)], { type: 'image/png' });
+                    var img = new Image();
+                    var blobUrl = URL.createObjectURL(blob);
+                    img.onload = function () {
+                        if (self.ctx) {
+                            self.ctx.drawImage(img, x, y);
+                            if (self._binaryCount <= 5) {
+                                console.log('[RDP] drawn #' + self._binaryCount +
+                                    ' at (' + x + ',' + y + ') img=' + img.naturalWidth + 'x' + img.naturalHeight);
+                            }
+                        } else {
+                            console.warn('[RDP] ctx is null, cannot draw');
+                        }
+                        URL.revokeObjectURL(blobUrl);
+                    };
+                    img.onerror = function (e) {
+                        console.error('[RDP] PNG decode FAILED #' + self._binaryCount +
+                            ' size=' + pngSize + 'B header bytes:', buf[8], buf[9], buf[10], buf[11]);
+                        URL.revokeObjectURL(blobUrl);
+                    };
+                    img.src = blobUrl;
+                };
+
+                this.ws.onclose = function () {
+                    self.connected = false;
+                };
+
+                this.ws.onerror = function () {
+                    self.error = 'Connection error';
+                    self.connected = false;
+                };
+            },
+
+            sendInput: function (input) {
+                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                    this.ws.send(JSON.stringify(input));
+                }
+            },
+
+            onMouseMove: function (e) {
+                var self = this;
+                var now = Date.now();
+                var rect = this.$refs.canvas.getBoundingClientRect();
+                var scaleX = this.desktopWidth / rect.width;
+                var scaleY = this.desktopHeight / rect.height;
+                var payload = {
+                    type: 'mouse_move',
+                    x: Math.round((e.clientX - rect.left) * scaleX),
+                    y: Math.round((e.clientY - rect.top) * scaleY)
+                };
+                if (this._pendingMouseMove) clearTimeout(this._pendingMouseMove);
+                if (now - this._lastMouseSend >= this._mouseThrottleMs) {
+                    this._lastMouseSend = now;
+                    this.sendInput(payload);
+                } else {
+                    this._pendingMouseMove = setTimeout(function () {
+                        self._lastMouseSend = Date.now();
+                        self._pendingMouseMove = null;
+                        self.sendInput(payload);
+                    }, this._mouseThrottleMs - (now - this._lastMouseSend));
+                }
+            },
+
+            onMouseDown: function (e) {
+                var rect = this.$refs.canvas.getBoundingClientRect();
+                var scaleX = this.desktopWidth / rect.width;
+                var scaleY = this.desktopHeight / rect.height;
+                this.sendInput({
+                    type: 'mouse_button',
+                    button: e.button,
+                    pressed: true,
+                    x: Math.round((e.clientX - rect.left) * scaleX),
+                    y: Math.round((e.clientY - rect.top) * scaleY)
+                });
+            },
+
+            onMouseUp: function (e) {
+                var rect = this.$refs.canvas.getBoundingClientRect();
+                var scaleX = this.desktopWidth / rect.width;
+                var scaleY = this.desktopHeight / rect.height;
+                this.sendInput({
+                    type: 'mouse_button',
+                    button: e.button,
+                    pressed: false,
+                    x: Math.round((e.clientX - rect.left) * scaleX),
+                    y: Math.round((e.clientY - rect.top) * scaleY)
+                });
+            },
+
+            onWheel: function (e) {
+                this.sendInput({
+                    type: 'mouse_wheel',
+                    delta_x: Math.round(e.deltaX),
+                    delta_y: Math.round(e.deltaY)
+                });
+            },
+
+            onKeyDown: function (e) {
+                this.sendInput({
+                    type: 'key',
+                    code: e.code,
+                    key: e.key,
+                    pressed: true,
+                    shift: e.shiftKey,
+                    ctrl: e.ctrlKey,
+                    alt: e.altKey,
+                    meta: e.metaKey
+                });
+            },
+
+            onKeyUp: function (e) {
+                this.sendInput({
+                    type: 'key',
+                    code: e.code,
+                    key: e.key,
+                    pressed: false,
+                    shift: e.shiftKey,
+                    ctrl: e.ctrlKey,
+                    alt: e.altKey,
+                    meta: e.metaKey
+                });
+            },
+
+            disconnect: function () {
+                if (this.ws) this.ws.close(1000, 'User disconnected');
+                window.location.href = '/assets';
+            }
+        };
+    });
 });
 
 // ── HTMX event handlers ──────────────────────────────────────────────────────

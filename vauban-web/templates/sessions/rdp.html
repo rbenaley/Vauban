@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+
+{% block title %}{{ title }} - {{ vauban.brand_name }}{% endblock %}
+
+{% block content %}
+<div class="flex flex-col h-screen bg-gray-900" x-data="rdpViewer('{{ session_id }}')">
+    <!-- Toolbar -->
+    <div class="flex items-center justify-between px-4 py-2 bg-gray-800 border-b border-gray-700 text-sm">
+        <div class="flex items-center space-x-3">
+            <a href="/assets" class="text-gray-500 hover:text-gray-200">
+                <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/>
+                </svg>
+            </a>
+            <span class="text-gray-400">RDP Session</span>
+            <span class="font-mono text-xs text-gray-500" x-text="sessionId.substring(0, 8)"></span>
+        </div>
+        <div class="flex items-center space-x-4">
+            <div class="flex items-center space-x-2">
+                <div class="w-2 h-2 rounded-full"
+                     :class="connected ? 'bg-green-500' : 'bg-red-500'"></div>
+                <span class="text-gray-400 text-xs" x-text="connected ? 'Connected' : 'Disconnected'"></span>
+            </div>
+            <span class="text-gray-500 text-xs" x-show="desktopWidth > 0"
+                  x-text="desktopWidth + 'x' + desktopHeight"></span>
+            <button @click="disconnect()"
+                    class="px-3 py-1 text-xs bg-red-600 hover:bg-red-700 text-white rounded transition-colors">
+                Disconnect
+            </button>
+        </div>
+    </div>
+
+    <!-- Canvas container -->
+    <div class="flex-1 overflow-hidden flex items-center justify-center bg-black relative"
+         @contextmenu.prevent>
+        <canvas x-ref="canvas"
+                style="cursor: default; max-width: 100%; max-height: 100%;"
+                :width="desktopWidth"
+                :height="desktopHeight"
+                @mousemove="onMouseMove($event)"
+                @mousedown="onMouseDown($event)"
+                @mouseup="onMouseUp($event)"
+                @wheel.prevent="onWheel($event)"
+                @keydown.prevent="onKeyDown($event)"
+                @keyup.prevent="onKeyUp($event)"
+                tabindex="0"></canvas>
+
+        <!-- Loading overlay -->
+        <div x-show="!connected" x-transition class="absolute inset-0 flex items-center justify-center bg-black bg-opacity-75">
+            <div class="text-center">
+                <div class="inline-block animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-blue-500 mb-4"></div>
+                <p class="text-gray-400">Connecting to RDP session...</p>
+                <p class="text-red-400 text-sm mt-2" x-show="error" x-text="error"></p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

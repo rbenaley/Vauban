@@ -30,6 +30,7 @@ pub mod utils;
 use cache::CacheConnection;
 use config::Config;
 use db::DbPool;
+use ipc::ProxyRdpClient;
 use ipc::ProxySshClient;
 use ipc::VaultCryptoClient;
 use services::auth::AuthService;
@@ -58,6 +59,9 @@ pub struct AppState {
     /// SSH proxy client for IPC with vauban-proxy-ssh.
     /// None if proxy is not available (development mode without supervisor).
     pub ssh_proxy: Option<Arc<ProxySshClient>>,
+    /// RDP proxy client for IPC with vauban-proxy-rdp.
+    /// None if proxy is not available (development mode without supervisor).
+    pub rdp_proxy: Option<Arc<ProxyRdpClient>>,
     /// Supervisor client for IPC with vauban-supervisor.
     /// Used for TCP connection brokering (Capsicum sandbox support).
     /// None if not running under supervisor (development mode).

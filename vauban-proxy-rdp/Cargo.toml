@@ -1,20 +1,65 @@
 [package]
 name = "vauban-proxy-rdp"
 description = "Vauban - RDP proxy service (IronRDP)"
-version.workspace = true
-edition.workspace = true
-rust-version.workspace = true
-authors.workspace = true
-license.workspace = true
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+authors = ["Richard Ben Aleya"]
+license = "BSD-2-Clause"
 
-[lints]
-workspace = true
+# This crate is excluded from the main workspace due to irreconcilable
+# pre-release dependency conflicts between IronRDP (picky/sspi crypto stack)
+# and russh (RustCrypto stack). It has its own Cargo.lock.
+
+[lints.clippy]
+unwrap_used    = "deny"
+expect_used    = "deny"
+panic          = "deny"
+todo           = "deny"
+dbg_macro      = "deny"
+unimplemented  = "deny"
+print_stdout   = "deny"
+print_stderr   = "deny"
 
 [dependencies]
-shared.workspace = true
-libc.workspace = true
-tracing.workspace = true
-tracing-subscriber.workspace = true
-thiserror.workspace = true
-anyhow.workspace = true
-serde.workspace = true
+# Shared IPC and sandboxing utilities
+shared = { path = "../shared" }
+
+# Core dependencies
+libc = "0.2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2.0"
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "macros", "time"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+
+# RDP client (async, pure Rust)
+ironrdp = { version = "0.14", features = ["connector", "session", "graphics", "input"] }
+ironrdp-tokio = "0.8"
+ironrdp-tls = { version = "0.2", features = ["rustls"] }
+
+# TLS for RDP connection upgrade
+tokio-rustls = "0.26"
+x509-cert = { version = "0.2", default-features = false, features = ["std"] }
+
+
+# Image encoding for bitmap streaming to browser
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+# Secret management (H-10: credential zeroization)
+secrecy = { version = "0.10", features = ["serde"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
+nix = { version = "0.31", features = ["process", "signal", "poll", "fs", "user", "socket", "uio", "term"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+debug = false
+strip = true

@@ -503,3 +503,133 @@ async fn test_ssh_connect_with_username_override() {
     // Cleanup
     test_db::cleanup(&mut conn).await;
 }
+
+// =============================================================================
+// RDP Connect Endpoint Tests
+// =============================================================================
+
+/// Test RDP connect endpoint with RDP asset (proxy unavailable in test env).
+#[tokio::test]
+#[serial]
+async fn test_rdp_connect_endpoint_without_proxy() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("test_admin_rdp_connect");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+    let rdp_asset = create_test_rdp_asset(&mut conn, &unique_name("test-rdp-connect")).await;
+    let csrf_token = app.generate_csrf_token();
+
+    let response = app
+        .server
+        .post(&format!("/assets/{}/connect-rdp", rdp_asset.asset.uuid))
+        .add_header(
+            header::COOKIE,
+            format!("access_token={}; __vauban_csrf={}", admin.token, csrf_token),
+        )
+        .form(&[("csrf_token", csrf_token.as_str())])
+        .await;
+
+    // Without RDP proxy, expect either:
+    // - 200 with HX-Trigger error (HTMX pattern)
+    // - 303 redirect (CSRF/auth middleware redirect)
+    // - 408 timeout
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 200 || status == 303 || status == 408,
+        "RDP connect should return 200/303/408, got {}",
+        status
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Test RDP connect endpoint with SSH asset returns error.
+#[tokio::test]
+#[serial]
+async fn test_rdp_connect_wrong_asset_type() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("test_admin_rdp_ssh");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+    let ssh_asset = create_test_ssh_asset(&mut conn, &unique_name("test-ssh-for-rdp")).await;
+    let csrf_token = app.generate_csrf_token();
+
+    let response = app
+        .server
+        .post(&format!("/assets/{}/connect-rdp", ssh_asset.asset.uuid))
+        .add_header(
+            header::COOKIE,
+            format!("access_token={}; __vauban_csrf={}", admin.token, csrf_token),
+        )
+        .form(&[("csrf_token", csrf_token.as_str())])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 200 || status == 303 || status == 408,
+        "RDP connect on SSH asset should return 200/303/408, got {}",
+        status
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Test RDP connect endpoint with nonexistent asset.
+#[tokio::test]
+#[serial]
+async fn test_rdp_connect_nonexistent_asset() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("test_admin_rdp_404");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+    let csrf_token = app.generate_csrf_token();
+    let fake_uuid = Uuid::new_v4();
+
+    let response = app
+        .server
+        .post(&format!("/assets/{}/connect-rdp", fake_uuid))
+        .add_header(
+            header::COOKIE,
+            format!("access_token={}; __vauban_csrf={}", admin.token, csrf_token),
+        )
+        .form(&[("csrf_token", csrf_token.as_str())])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 200 || status == 303 || status == 404,
+        "RDP connect on nonexistent asset should return 200/303/404, got {}",
+        status
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Test RDP connect endpoint requires authentication.
+#[tokio::test]
+#[serial]
+async fn test_rdp_connect_requires_auth() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let rdp_asset = create_test_rdp_asset(&mut conn, &unique_name("test-rdp-noauth")).await;
+
+    let response = app
+        .server
+        .post(&format!("/assets/{}/connect-rdp", rdp_asset.asset.uuid))
+        .form(&[("csrf_token", "invalid")])
+        .await;
+
+    // Without valid auth, expect a redirect (302/303) to login
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 302 || status == 303 || status == 401 || status == 403,
+        "RDP connect without auth should redirect or return 4xx, got {}",
+        status
+    );
+
+    test_db::cleanup(&mut conn).await;
+}

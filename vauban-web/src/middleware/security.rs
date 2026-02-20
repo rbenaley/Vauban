@@ -64,7 +64,8 @@ pub async fn security_headers_middleware(request: Request<Body>, next: Next) -> 
     //                        'unsafe-eval' kept for Alpine.js (see doc-comment)
     // - style-src:           Allow styles from self + CDN; 'unsafe-inline' only
     //                        for dynamic style="" attributes (see doc-comment)
-    // - img-src 'self' data: Allow images from same origin and data: URIs
+    // - img-src:              Allow images from same origin, data: and blob: URIs
+    //                        (blob: needed for RDP display updates rendered via canvas)
     // - font-src 'self':     Allow fonts from same origin only
     // - connect-src:         Allow XHR/fetch to self and WebSocket connections
     // - base-uri 'self':     Prevent <base> tag hijacking
@@ -79,7 +80,7 @@ pub async fn security_headers_middleware(request: Request<Body>, next: Next) -> 
             "default-src 'self'; \
              script-src 'self' 'unsafe-eval' https://cdn.tailwindcss.com https://unpkg.com https://cdn.jsdelivr.net; \
              style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; \
-             img-src 'self' data:; \
+             img-src 'self' data: blob:; \
              font-src 'self'; \
              connect-src 'self' wss:; \
              base-uri 'self'; \
@@ -240,5 +241,71 @@ mod tests {
 
         assert!(hsts.contains("max-age="));
         assert!(hsts.contains("includeSubDomains"));
+    }
+
+    #[tokio::test]
+    async fn test_csp_img_src_allows_blob_urls() {
+        let app = Router::new()
+            .route("/", get(test_handler))
+            .layer(axum::middleware::from_fn(security_headers_middleware));
+
+        let response = unwrap_ok!(
+            app.oneshot(unwrap_ok!(Request::builder().uri("/").body(Body::empty())))
+                .await
+        );
+
+        let csp = unwrap_ok!(
+            unwrap_ok!(
+                response
+                    .headers()
+                    .get("content-security-policy")
+                    .ok_or("missing header")
+            )
+            .to_str()
+        );
+
+        let img_src = csp
+            .split(';')
+            .find(|d| d.trim().starts_with("img-src"))
+            .expect("CSP must contain img-src directive");
+
+        assert!(
+            img_src.contains("blob:"),
+            "img-src MUST include blob: for RDP display updates rendered via canvas, got: {}",
+            img_src
+        );
+    }
+
+    #[tokio::test]
+    async fn test_csp_connect_src_allows_wss() {
+        let app = Router::new()
+            .route("/", get(test_handler))
+            .layer(axum::middleware::from_fn(security_headers_middleware));
+
+        let response = unwrap_ok!(
+            app.oneshot(unwrap_ok!(Request::builder().uri("/").body(Body::empty())))
+                .await
+        );
+
+        let csp = unwrap_ok!(
+            unwrap_ok!(
+                response
+                    .headers()
+                    .get("content-security-policy")
+                    .ok_or("missing header")
+            )
+            .to_str()
+        );
+
+        let connect_src = csp
+            .split(';')
+            .find(|d| d.trim().starts_with("connect-src"))
+            .expect("CSP must contain connect-src directive");
+
+        assert!(
+            connect_src.contains("wss:"),
+            "connect-src MUST include wss: for RDP/SSH WebSocket connections, got: {}",
+            connect_src
+        );
     }
 }

@@ -56,7 +56,7 @@
         </div>
         <div class="mt-4 flex md:ml-4 md:mt-0 space-x-3" x-data="csrf">
             <button type="button"
-                    hx-post="/assets/{{ asset.uuid }}/connect"
+                    hx-post="/assets/{{ asset.uuid }}/{%- if asset.asset_type == "rdp" -%}connect-rdp{%- else -%}connect{%- endif -%}"
                     hx-vals="js:{csrf_token: document.cookie.match(/(?:^|;\s*)__vauban_csrf=([^;]*)/)?.[1] || ''}"
                     hx-swap="none"
                     hx-indicator="#connect-indicator-{{ asset.uuid }}"

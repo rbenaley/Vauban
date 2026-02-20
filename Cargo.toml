@@ -7,10 +7,14 @@ members = [
     "vauban-auth",
     "vauban-rbac",
     "vauban-proxy-ssh",
-    "vauban-proxy-rdp",
     "vauban-vault",
     "vauban-audit",
 ]
+# vauban-proxy-rdp is excluded due to irreconcilable pre-release version
+# conflicts in the RustCrypto ecosystem between ironrdp/picky/sspi (sha1
+# =0.11.0-rc.2, digest =0.11.0-rc.5, crypto-common =0.2.0-rc.8) and
+# russh/ssh-key (sha1 ^0.11.0-rc.3). Use `just build` to compile everything.
+exclude = ["vauban-proxy-rdp"]
 
 # Default package for `cargo run` from workspace root
 # vauban-supervisor is the main entry point that orchestrates all services
@@ -47,6 +51,7 @@ tokio-util = { version = "0.7", features = ["codec"] }
 # Note: russh 0.57+ includes keys module directly (no separate russh-keys crate)
 russh = "0.57"
 async-trait = "0.1"
+
 
 # Secret management and memory zeroization (H-10)
 secrecy = { version = "0.10", features = ["serde"] }

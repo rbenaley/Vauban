@@ -442,6 +442,45 @@ pub async fn create_simple_ssh_asset(
     asset.id
 }
 
+/// Create a simple RDP asset for testing (returns asset ID).
+pub async fn create_simple_rdp_asset(
+    conn: &mut AsyncPgConnection,
+    name: &str,
+    created_by: i32,
+) -> i32 {
+    let asset_uuid = Uuid::new_v4();
+    let unique_hostname = format!("{}-{}.test.local", name, &asset_uuid.to_string()[..8]);
+
+    let new_asset = NewAsset {
+        uuid: asset_uuid,
+        name: name.to_string(),
+        hostname: unique_hostname,
+        ip_address: None,
+        port: 3389,
+        asset_type: AssetType::Rdp,
+        status: "online".to_string(),
+        group_id: None,
+        description: None,
+        os_type: Some("Windows".to_string()),
+        os_version: None,
+        connection_config: serde_json::json!({}),
+        default_credential_id: None,
+        require_mfa: false,
+        require_justification: false,
+        max_session_duration: 3600,
+        created_by_id: Some(created_by),
+    };
+
+    let asset: Asset = unwrap_ok!(
+        diesel::insert_into(assets::table)
+            .values(&new_asset)
+            .get_result(conn)
+            .await
+    );
+
+    asset.id
+}
+
 /// Get the UUID of an asset by its ID.
 pub async fn get_asset_uuid(conn: &mut AsyncPgConnection, asset_id: i32) -> Uuid {
     unwrap_ok!(

@@ -106,6 +106,7 @@ impl TestApp {
             ws_counter: ws_counter.clone(),
             rate_limiter,
             ssh_proxy: None,      // No SSH proxy in tests
+            rdp_proxy: None,      // No RDP proxy in tests
             supervisor: None,     // No supervisor in tests
             vault_client: None,   // No vault in tests (dev mode fallback)
         };

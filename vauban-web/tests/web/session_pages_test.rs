@@ -8,8 +8,8 @@
 /// - Session permissions
 use crate::common::{TestApp, assertions::assert_status, unwrap_ok};
 use crate::fixtures::{
-    create_recorded_session, create_simple_admin_user, create_simple_ssh_asset, create_simple_user,
-    create_test_session, unique_name,
+    create_recorded_session, create_simple_admin_user, create_simple_rdp_asset,
+    create_simple_ssh_asset, create_simple_user, create_test_session, unique_name,
 };
 use axum::http::header::COOKIE;
 use diesel::{ExpressionMethods, QueryDsl};
@@ -825,6 +825,110 @@ async fn test_admin_can_view_any_session() {
     let response = app
         .server
         .get(&format!("/sessions/{}", session_id))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+}
+
+// =============================================================================
+// RDP Session Tests
+// =============================================================================
+
+/// Test that an RDP session detail page loads and shows RDP type.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_rdp_session_detail_page() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let test_id = Uuid::new_v4().to_string()[..8].to_string();
+
+    let owner_name = format!("rdp_owner_{}", test_id);
+    let owner_id = create_simple_user(&mut conn, &owner_name).await;
+    let asset_name = format!("rdp-detail-asset-{}", test_id);
+    let asset_id = create_simple_rdp_asset(&mut conn, &asset_name, owner_id).await;
+    let session_id = create_test_session(&mut conn, owner_id, asset_id, "rdp", "completed").await;
+
+    let owner_uuid = get_user_uuid(&mut conn, owner_id).await;
+    let token = app
+        .generate_test_token(&owner_uuid.to_string(), &owner_name, false, true)
+        .await;
+
+    let response = app
+        .server
+        .get(&format!("/sessions/{}", session_id))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+
+    let body = response.text();
+    assert!(
+        body.contains("RDP") || body.contains("rdp"),
+        "Session detail page should indicate RDP session type"
+    );
+}
+
+/// Test that an active RDP session shows up in the active sessions list.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_rdp_session_in_active_list() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let test_id = Uuid::new_v4().to_string()[..8].to_string();
+
+    let admin_name = format!("rdp_admin_list_{}", test_id);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let asset_name = format!("rdp-list-asset-{}", test_id);
+    let asset_id = create_simple_rdp_asset(&mut conn, &asset_name, admin_id).await;
+    let _session_id = create_test_session(&mut conn, admin_id, asset_id, "rdp", "active").await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/sessions/active")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+}
+
+/// Test session filtering: RDP sessions show when type=rdp filter is applied.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_session_filter_by_rdp_type() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let test_id = Uuid::new_v4().to_string()[..8].to_string();
+
+    let admin_name = format!("filter_admin_{}", test_id);
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    // Create both SSH and RDP sessions
+    let ssh_asset_name = format!("ssh-filter-{}", test_id);
+    let ssh_asset_id = create_simple_ssh_asset(&mut conn, &ssh_asset_name, admin_id).await;
+    let _ssh_session = create_test_session(&mut conn, admin_id, ssh_asset_id, "ssh", "completed").await;
+
+    let rdp_asset_name = format!("rdp-filter-{}", test_id);
+    let rdp_asset_id = create_simple_rdp_asset(&mut conn, &rdp_asset_name, admin_id).await;
+    let _rdp_session = create_test_session(&mut conn, admin_id, rdp_asset_id, "rdp", "completed").await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/sessions?type=rdp")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
