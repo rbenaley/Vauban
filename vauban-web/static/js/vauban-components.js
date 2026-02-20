@@ -215,10 +215,30 @@ document.addEventListener('alpine:init', function () {
 
             init: function () {
                 var self = this;
+                this._fullscreenHandler = function () {
+                    self.$nextTick(function () {
+                        if (document.fullscreenElement) {
+                            // Request server-side resize to match screen;
+                            // canvas dimensions update when the server confirms
+                            // via a desktop_size message.
+                            var w = screen.width;
+                            var h = screen.height;
+                            // RDP spec: width must be even, min 200
+                            w = Math.max(200, w - (w % 2));
+                            h = Math.max(200, h);
+                            self.sendInput({ type: 'resize', width: w, height: h });
+                        } else {
+                            self.sendInput({ type: 'resize', width: 1280, height: 720 });
+                        }
+                        self.$refs.canvas.focus();
+                    });
+                };
+                document.addEventListener('fullscreenchange', this._fullscreenHandler);
                 this.$nextTick(function () { self.connectWs(); });
             },
 
             destroy: function () {
+                if (this._fullscreenHandler) document.removeEventListener('fullscreenchange', this._fullscreenHandler);
                 if (this._pendingMouseMove) clearTimeout(this._pendingMouseMove);
                 if (this.ws) this.ws.close(1000, 'Component destroyed');
             },
@@ -246,9 +266,10 @@ document.addEventListener('alpine:init', function () {
                         console.log('[RDP] text msg #' + self._msgCount + ':', event.data.substring(0, 200));
                         try {
                             var msg = JSON.parse(event.data);
-                            if (msg.type === 'desktop_size') {
+                            if (msg.type === 'desktop_size' || msg.type === 'desktop_resize') {
                                 self.desktopWidth = msg.width;
                                 self.desktopHeight = msg.height;
+                                console.log('[RDP] desktop ' + msg.type + ': ' + msg.width + 'x' + msg.height);
                             } else if (msg.error) {
                                 self.error = msg.error;
                             }
@@ -396,6 +417,17 @@ document.addEventListener('alpine:init', function () {
                     alt: e.altKey,
                     meta: e.metaKey
                 });
+            },
+
+            toggleFullscreen: function () {
+                var self = this;
+                if (document.fullscreenElement) {
+                    document.exitFullscreen();
+                } else {
+                    this.$refs.container.requestFullscreen().then(function () {
+                        self.$nextTick(function () { self.$refs.canvas.focus(); });
+                    });
+                }
             },
 
             disconnect: function () {

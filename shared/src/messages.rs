@@ -523,6 +523,14 @@ pub enum Message {
         height: u16,
     },
 
+    /// Desktop size changed notification (ProxyRdp -> Web).
+    /// Sent after a successful resize (DeactivateAll/Reactivation).
+    RdpDesktopResize {
+        session_id: String,
+        width: u16,
+        height: u16,
+    },
+
     /// Request to close an RDP session.
     RdpSessionClose {
         session_id: String,

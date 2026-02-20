@@ -60,14 +60,22 @@ pub struct RdpSessionOpened {
     pub error: Option<String>,
 }
 
-/// Display update received from RDP session (PNG-encoded region).
+/// Event from an RDP session forwarded to the WebSocket handler.
 #[derive(Debug)]
-pub struct RdpDisplayUpdate {
-    pub x: u16,
-    pub y: u16,
-    pub width: u16,
-    pub height: u16,
-    pub png_data: Vec<u8>,
+pub enum RdpSessionEvent {
+    /// Display region update (PNG-encoded bitmap).
+    DisplayUpdate {
+        x: u16,
+        y: u16,
+        width: u16,
+        height: u16,
+        png_data: Vec<u8>,
+    },
+    /// Desktop size changed (after reactivation/resize).
+    DesktopResize {
+        width: u16,
+        height: u16,
+    },
 }
 
 /// Async client for communicating with vauban-proxy-rdp.
@@ -76,10 +84,10 @@ pub struct ProxyRdpClient {
     read_async_fd: AsyncFd<RawFd>,
     next_request_id: AtomicU64,
     pending_requests: Mutex<HashMap<u64, oneshot::Sender<RdpSessionOpened>>>,
-    /// Per-session display update senders: session_id -> Sender.
-    session_display_senders: Mutex<HashMap<String, mpsc::Sender<RdpDisplayUpdate>>>,
+    /// Per-session event senders: session_id -> Sender.
+    session_display_senders: Mutex<HashMap<String, mpsc::Sender<RdpSessionEvent>>>,
     /// Pre-created receivers waiting to be claimed by WebSocket.
-    session_display_receivers: Mutex<HashMap<String, mpsc::Receiver<RdpDisplayUpdate>>>,
+    session_display_receivers: Mutex<HashMap<String, mpsc::Receiver<RdpSessionEvent>>>,
 }
 
 impl ProxyRdpClient {
@@ -98,8 +106,8 @@ impl ProxyRdpClient {
         }))
     }
 
-    /// Subscribe to display updates for an RDP session.
-    pub async fn subscribe_session(&self, session_id: &str) -> mpsc::Receiver<RdpDisplayUpdate> {
+    /// Subscribe to session events (display updates, resize notifications).
+    pub async fn subscribe_session(&self, session_id: &str) -> mpsc::Receiver<RdpSessionEvent> {
         let existing_rx = self
             .session_display_receivers
             .lock()
@@ -307,20 +315,39 @@ impl ProxyRdpClient {
                 );
                 let senders = self.session_display_senders.lock().await;
                 if let Some(tx) = senders.get(&session_id) {
-                    let update = RdpDisplayUpdate {
+                    let event = RdpSessionEvent::DisplayUpdate {
                         x,
                         y,
                         width,
                         height,
                         png_data,
                     };
-                    if tx.send(update).await.is_err() {
+                    if tx.send(event).await.is_err() {
                         warn!(session_id = %session_id, "Failed to forward RDP display update, WebSocket dropped");
                     } else {
                         debug!(session_id = %session_id, "RDP display update forwarded to WebSocket channel");
                     }
                 } else {
                     warn!(session_id = %session_id, "RDP display update but no WebSocket subscribed");
+                }
+            }
+
+            Message::RdpDesktopResize {
+                session_id,
+                width,
+                height,
+            } => {
+                debug!(
+                    session_id = %session_id,
+                    width, height,
+                    "IPC received RdpDesktopResize"
+                );
+                let senders = self.session_display_senders.lock().await;
+                if let Some(tx) = senders.get(&session_id) {
+                    let event = RdpSessionEvent::DesktopResize { width, height };
+                    if tx.send(event).await.is_err() {
+                        warn!(session_id = %session_id, "Failed to forward desktop resize, WebSocket dropped");
+                    }
                 }
             }
 
@@ -525,60 +552,44 @@ mod tests {
         }
     }
 
-    // ==================== RdpDisplayUpdate Tests ====================
+    // ==================== RdpSessionEvent Tests ====================
 
     #[test]
-    fn test_rdp_display_update_construction() {
-        let update = RdpDisplayUpdate {
+    fn test_rdp_session_event_display_update() {
+        let event = RdpSessionEvent::DisplayUpdate {
             x: 100,
             y: 200,
             width: 640,
             height: 480,
             png_data: vec![0x89, 0x50, 0x4E, 0x47],
         };
-        assert_eq!(update.x, 100);
-        assert_eq!(update.y, 200);
-        assert_eq!(update.width, 640);
-        assert_eq!(update.height, 480);
-        assert_eq!(update.png_data.len(), 4);
+        if let RdpSessionEvent::DisplayUpdate { x, y, width, height, png_data } = &event {
+            assert_eq!(*x, 100);
+            assert_eq!(*y, 200);
+            assert_eq!(*width, 640);
+            assert_eq!(*height, 480);
+            assert_eq!(png_data.len(), 4);
+        } else {
+            panic!("Expected DisplayUpdate");
+        }
+        let debug_str = format!("{:?}", event);
+        assert!(debug_str.contains("DisplayUpdate"));
     }
 
     #[test]
-    fn test_rdp_display_update_debug() {
-        let update = RdpDisplayUpdate {
-            x: 0,
-            y: 0,
+    fn test_rdp_session_event_desktop_resize() {
+        let event = RdpSessionEvent::DesktopResize {
             width: 1920,
             height: 1080,
-            png_data: vec![1, 2, 3],
         };
-        let debug_str = format!("{:?}", update);
-        assert!(debug_str.contains("RdpDisplayUpdate"));
-    }
-
-    #[test]
-    fn test_rdp_display_update_origin() {
-        let update = RdpDisplayUpdate {
-            x: 0,
-            y: 0,
-            width: 100,
-            height: 100,
-            png_data: vec![],
-        };
-        assert_eq!(update.x, 0);
-        assert_eq!(update.y, 0);
-    }
-
-    #[test]
-    fn test_rdp_display_update_empty_png() {
-        let update = RdpDisplayUpdate {
-            x: 0,
-            y: 0,
-            width: 0,
-            height: 0,
-            png_data: vec![],
-        };
-        assert!(update.png_data.is_empty());
+        if let RdpSessionEvent::DesktopResize { width, height } = &event {
+            assert_eq!(*width, 1920);
+            assert_eq!(*height, 1080);
+        } else {
+            panic!("Expected DesktopResize");
+        }
+        let debug_str = format!("{:?}", event);
+        assert!(debug_str.contains("DesktopResize"));
     }
 
     // ==================== set_nonblocking Tests ====================
@@ -636,39 +647,57 @@ mod tests {
         assert_eq!(id2, 0);
     }
 
-    // ==================== Display Update Channel Tests ====================
+    // ==================== Session Event Channel Tests ====================
 
     #[tokio::test]
-    async fn test_display_update_channel_send_receive() {
-        let (tx, mut rx) = mpsc::channel::<RdpDisplayUpdate>(16);
-        let update = RdpDisplayUpdate {
+    async fn test_session_event_channel_send_receive() {
+        let (tx, mut rx) = mpsc::channel::<RdpSessionEvent>(16);
+        let event = RdpSessionEvent::DisplayUpdate {
             x: 100,
             y: 200,
             width: 640,
             height: 480,
             png_data: vec![0x89, b'P', b'N', b'G'],
         };
-        tx.send(update).await.unwrap();
+        tx.send(event).await.unwrap();
         let received = rx.recv().await.unwrap();
-        assert_eq!(received.x, 100);
-        assert_eq!(received.y, 200);
-        assert_eq!(received.width, 640);
-        assert_eq!(received.height, 480);
-        assert_eq!(received.png_data, vec![0x89, b'P', b'N', b'G']);
+        if let RdpSessionEvent::DisplayUpdate { x, y, width, height, png_data } = received {
+            assert_eq!(x, 100);
+            assert_eq!(y, 200);
+            assert_eq!(width, 640);
+            assert_eq!(height, 480);
+            assert_eq!(png_data, vec![0x89, b'P', b'N', b'G']);
+        } else {
+            panic!("Expected DisplayUpdate");
+        }
     }
 
     #[tokio::test]
-    async fn test_display_update_channel_closed_sender() {
-        let (tx, mut rx) = mpsc::channel::<RdpDisplayUpdate>(16);
+    async fn test_session_event_channel_desktop_resize() {
+        let (tx, mut rx) = mpsc::channel::<RdpSessionEvent>(16);
+        let event = RdpSessionEvent::DesktopResize { width: 1920, height: 1080 };
+        tx.send(event).await.unwrap();
+        let received = rx.recv().await.unwrap();
+        if let RdpSessionEvent::DesktopResize { width, height } = received {
+            assert_eq!(width, 1920);
+            assert_eq!(height, 1080);
+        } else {
+            panic!("Expected DesktopResize");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_session_event_channel_closed_sender() {
+        let (tx, mut rx) = mpsc::channel::<RdpSessionEvent>(16);
         drop(tx);
         assert!(rx.recv().await.is_none(), "closed sender yields None");
     }
 
     #[tokio::test]
-    async fn test_display_update_multiple_frames() {
-        let (tx, mut rx) = mpsc::channel::<RdpDisplayUpdate>(16);
+    async fn test_session_event_multiple_frames() {
+        let (tx, mut rx) = mpsc::channel::<RdpSessionEvent>(16);
         for i in 0u16..5 {
-            tx.send(RdpDisplayUpdate {
+            tx.send(RdpSessionEvent::DisplayUpdate {
                 x: i * 10,
                 y: i * 20,
                 width: 128,
@@ -679,37 +708,28 @@ mod tests {
             .unwrap();
         }
         for i in 0u16..5 {
-            let update = rx.recv().await.unwrap();
-            assert_eq!(update.x, i * 10);
-            assert_eq!(update.y, i * 20);
+            let received = rx.recv().await.unwrap();
+            if let RdpSessionEvent::DisplayUpdate { x, y, .. } = received {
+                assert_eq!(x, i * 10);
+                assert_eq!(y, i * 20);
+            } else {
+                panic!("Expected DisplayUpdate");
+            }
         }
     }
 
     #[test]
-    fn test_display_update_large_png_data() {
-        let update = RdpDisplayUpdate {
+    fn test_session_event_large_png_data() {
+        let event = RdpSessionEvent::DisplayUpdate {
             x: 0,
             y: 0,
             width: 1280,
             height: 720,
             png_data: vec![0xAB; 200_000],
         };
-        assert_eq!(update.png_data.len(), 200_000);
-    }
-
-    #[test]
-    fn test_rdp_display_update_debug_new() {
-        let update = RdpDisplayUpdate {
-            x: 10,
-            y: 20,
-            width: 100,
-            height: 50,
-            png_data: vec![1, 2, 3],
-        };
-        let debug = format!("{:?}", update);
-        assert!(debug.contains("RdpDisplayUpdate"));
-        assert!(debug.contains("10"));
-        assert!(debug.contains("20"));
+        if let RdpSessionEvent::DisplayUpdate { png_data, .. } = &event {
+            assert_eq!(png_data.len(), 200_000);
+        }
     }
 
     // ==================== Session Opened Response Edge Cases ====================

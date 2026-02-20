@@ -39,7 +39,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync"
 tokio-util = { version = "0.7", features = ["codec"] }
 
 # RDP client (async, pure Rust)
-ironrdp = { version = "0.14", features = ["connector", "session", "graphics", "input"] }
+ironrdp = { version = "0.14", features = ["connector", "session", "graphics", "input", "dvc", "displaycontrol"] }
 ironrdp-tokio = "0.8"
 ironrdp-tls = { version = "0.2", features = ["rustls"] }
 

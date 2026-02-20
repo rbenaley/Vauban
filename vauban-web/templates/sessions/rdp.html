@@ -2,10 +2,33 @@
 
 {% block title %}{{ title }} - {{ vauban.brand_name }}{% endblock %}
 
+{% block extra_css %}
+<style>
+    .rdp-container:fullscreen {
+        width: 100vw !important;
+        height: 100vh !important;
+    }
+    .rdp-container:fullscreen .rdp-toolbar {
+        display: none;
+    }
+    .rdp-container:fullscreen .rdp-canvas-wrap {
+        width: 100vw;
+        height: 100vh;
+    }
+    .rdp-container:fullscreen canvas {
+        width: 100vw !important;
+        height: 100vh !important;
+        max-width: none !important;
+        max-height: none !important;
+        object-fit: contain;
+    }
+</style>
+{% endblock %}
+
 {% block content %}
-<div class="flex flex-col h-screen bg-gray-900" x-data="rdpViewer('{{ session_id }}')">
-    <!-- Toolbar -->
-    <div class="flex items-center justify-between px-4 py-2 bg-gray-800 border-b border-gray-700 text-sm">
+<div class="rdp-container flex flex-col h-screen bg-gray-900" x-data="rdpViewer('{{ session_id }}')" x-ref="container">
+    <!-- Toolbar (hidden in fullscreen) -->
+    <div class="rdp-toolbar flex items-center justify-between px-4 py-2 bg-gray-800 border-b border-gray-700 text-sm">
         <div class="flex items-center space-x-3">
             <a href="/assets" class="text-gray-500 hover:text-gray-200">
                 <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -23,6 +46,10 @@
             </div>
             <span class="text-gray-500 text-xs" x-show="desktopWidth > 0"
                   x-text="desktopWidth + 'x' + desktopHeight"></span>
+            <button @click="toggleFullscreen()"
+                    class="px-3 py-1 text-xs bg-gray-600 hover:bg-gray-700 text-white rounded transition-colors">
+                Fullscreen
+            </button>
             <button @click="disconnect()"
                     class="px-3 py-1 text-xs bg-red-600 hover:bg-red-700 text-white rounded transition-colors">
                 Disconnect
@@ -31,7 +58,7 @@
     </div>
 
     <!-- Canvas container -->
-    <div class="flex-1 overflow-hidden flex items-center justify-center bg-black relative"
+    <div class="rdp-canvas-wrap flex-1 overflow-hidden flex items-center justify-center bg-black relative"
          @contextmenu.prevent>
         <canvas x-ref="canvas"
                 style="cursor: default; max-width: 100%; max-height: 100%;"

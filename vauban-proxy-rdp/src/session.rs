@@ -16,6 +16,8 @@ use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{fast_path, ActiveStage, ActiveStageOutput};
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::input::{self as rdp_input, Database as InputDatabase};
+use ironrdp::dvc::DrdynvcClient;
+use ironrdp::displaycontrol::client::DisplayControlClient;
 use ironrdp::core::WriteBuf;
 use ironrdp_tokio::single_sequence_step;
 use ironrdp_tokio::{FramedWrite as _, NetworkClient};
@@ -133,7 +135,13 @@ impl RdpSession {
 
         debug!(session_id = %config.session_id, "TCP connection established");
 
-        let mut connector = ClientConnector::new(connector_config, client_addr);
+        let drdynvc = DrdynvcClient::new()
+            .with_dynamic_channel(DisplayControlClient::new(|caps| {
+                debug!("Display Control capabilities: {:?}", caps);
+                Ok(Vec::new())
+            }));
+        let mut connector = ClientConnector::new(connector_config, client_addr)
+            .with_static_channel(drdynvc);
 
         // Wrap in IronRDP framing
         let mut framed = ironrdp_tokio::TokioFramed::new(stream);
@@ -453,6 +461,18 @@ async fn active_session_loop(
                                         .build(),
                                     );
                                     active_stage.set_enable_server_pointer(enable_server_pointer);
+
+                                    let _ = web_tx.send(Message::RdpDesktopResize {
+                                        session_id: session_id.clone(),
+                                        width: desktop_size.width,
+                                        height: desktop_size.height,
+                                    }).await;
+                                    info!(
+                                        session_id = %session_id,
+                                        width = desktop_size.width,
+                                        height = desktop_size.height,
+                                        "Desktop resized after reactivation"
+                                    );
                                     break;
                                 }
                             }
@@ -483,8 +503,29 @@ async fn active_session_loop(
                             }
                         }
                     }
-                    Some(SessionCommand::Resize { .. }) => {
-                        debug!(session_id = %session_id, "Resize requested (not yet implemented)");
+                    Some(SessionCommand::Resize { width, height }) => {
+                        // Enforce RDP spec constraints: width >= 200, height >= 200, width must be even
+                        let w = width.max(200) & !1; // round down to even
+                        let h = height.max(200);
+                        info!(session_id = %session_id, width = w, height = h, "Resize requested");
+
+                        match active_stage.encode_resize(u32::from(w), u32::from(h), None, None) {
+                            Some(Ok(frame)) => {
+                                if !frame.is_empty() {
+                                    framed.write_all(&frame)
+                                        .await
+                                        .map_err(|e| SessionError::SessionFailed(format!("Resize write error: {e}")))?;
+                                }
+                                image = DecodedImage::new(PixelFormat::RgbA32, w, h);
+                                debug!(session_id = %session_id, w, h, "Resize sent via Display Control channel");
+                            }
+                            Some(Err(e)) => {
+                                warn!(session_id = %session_id, error = %e, "Failed to encode resize");
+                            }
+                            None => {
+                                debug!(session_id = %session_id, "Display Control channel not available for resize");
+                            }
+                        }
                     }
                     Some(SessionCommand::Close) => {
                         info!(session_id = %session_id, "Close requested");

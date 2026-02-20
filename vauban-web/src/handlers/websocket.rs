@@ -1167,6 +1167,7 @@ enum RdpCommand {
     MouseButton { button: u8, pressed: bool, x: u16, y: u16 },
     MouseWheel { delta_x: i16, delta_y: i16 },
     Key { code: String, key: String, pressed: bool, shift: bool, ctrl: bool, alt: bool, meta: bool },
+    Resize { width: u16, height: u16 },
 }
 
 /// Handle RDP WebSocket upgrade.
@@ -1229,35 +1230,44 @@ async fn handle_rdp_socket(
                 match msg {
                     Some(Ok(Message::Text(text))) => {
                         if let Ok(cmd) = serde_json::from_str::<RdpCommand>(&text) {
-                            let input = match cmd {
-                                RdpCommand::MouseMove { x, y } => {
-                                    RdpInputEvent::MouseMove { x, y }
-                                }
-                                RdpCommand::MouseButton { button, pressed, x, y } => {
-                                    RdpInputEvent::MouseButton { button, pressed, x, y }
-                                }
-                                RdpCommand::MouseWheel { delta_x, delta_y } => {
-                                    RdpInputEvent::MouseWheel { delta_x, delta_y }
-                                }
-                                RdpCommand::Key { code, key, pressed, shift, ctrl, alt, meta } => {
-                                    RdpInputEvent::Keyboard {
-                                        code,
-                                        key,
-                                        pressed,
-                                        shift,
-                                        ctrl,
-                                        alt,
-                                        meta,
+                            match cmd {
+                                RdpCommand::Resize { width, height } => {
+                                    debug!(session_id = %session_id, width, height, "RDP resize requested");
+                                    let pc = proxy_client.clone();
+                                    let sid = session_id.clone();
+                                    if let Err(e) = tokio::task::spawn_blocking(move || {
+                                        pc.resize(&sid, width, height)
+                                    }).await.unwrap_or_else(|e| Err(crate::error::AppError::Ipc(e.to_string()))) {
+                                        warn!(session_id = %session_id, error = %e, "Failed to send RDP resize");
                                     }
                                 }
-                            };
-                            let pc = proxy_client.clone();
-                            let sid = session_id.clone();
-                            if let Err(e) = tokio::task::spawn_blocking(move || {
-                                pc.send_input(&sid, input)
-                            }).await.unwrap_or_else(|e| Err(crate::error::AppError::Ipc(e.to_string()))) {
-                                error!(session_id = %session_id, error = %e, "Failed to send RDP input");
-                                should_close = true;
+                                _ => {
+                                    let input = match cmd {
+                                        RdpCommand::MouseMove { x, y } => {
+                                            RdpInputEvent::MouseMove { x, y }
+                                        }
+                                        RdpCommand::MouseButton { button, pressed, x, y } => {
+                                            RdpInputEvent::MouseButton { button, pressed, x, y }
+                                        }
+                                        RdpCommand::MouseWheel { delta_x, delta_y } => {
+                                            RdpInputEvent::MouseWheel { delta_x, delta_y }
+                                        }
+                                        RdpCommand::Key { code, key, pressed, shift, ctrl, alt, meta } => {
+                                            RdpInputEvent::Keyboard {
+                                                code, key, pressed, shift, ctrl, alt, meta,
+                                            }
+                                        }
+                                        RdpCommand::Resize { .. } => unreachable!(),
+                                    };
+                                    let pc = proxy_client.clone();
+                                    let sid = session_id.clone();
+                                    if let Err(e) = tokio::task::spawn_blocking(move || {
+                                        pc.send_input(&sid, input)
+                                    }).await.unwrap_or_else(|e| Err(crate::error::AppError::Ipc(e.to_string()))) {
+                                        error!(session_id = %session_id, error = %e, "Failed to send RDP input");
+                                        should_close = true;
+                                    }
+                                }
                             }
                         }
                     }
@@ -1285,26 +1295,32 @@ async fn handle_rdp_socket(
                 }
             }
 
-            // Display updates from RDP proxy -> send to client as binary
+            // Events from RDP proxy -> send to client
             result = display_rx.recv() => {
                 match result {
-                    Some(update) => {
-                        // Pack header: x(u16 LE) + y(u16 LE) + w(u16 LE) + h(u16 LE) + PNG data
-                        let mut buf = Vec::with_capacity(8 + update.png_data.len());
-                        buf.extend_from_slice(&update.x.to_le_bytes());
-                        buf.extend_from_slice(&update.y.to_le_bytes());
-                        buf.extend_from_slice(&update.width.to_le_bytes());
-                        buf.extend_from_slice(&update.height.to_le_bytes());
-                        buf.extend_from_slice(&update.png_data);
+                    Some(crate::ipc::proxy_rdp::RdpSessionEvent::DisplayUpdate { x, y, width, height, png_data }) => {
+                        let mut buf = Vec::with_capacity(8 + png_data.len());
+                        buf.extend_from_slice(&x.to_le_bytes());
+                        buf.extend_from_slice(&y.to_le_bytes());
+                        buf.extend_from_slice(&width.to_le_bytes());
+                        buf.extend_from_slice(&height.to_le_bytes());
+                        buf.extend_from_slice(&png_data);
                         debug!(
                             session_id = %session_id,
-                            x = update.x, y = update.y,
-                            w = update.width, h = update.height,
+                            x, y, w = width, h = height,
                             ws_bytes = buf.len(),
                             "Sending RDP display update via WebSocket"
                         );
                         if sender.send(Message::Binary(buf.into())).await.is_err() {
                             warn!(session_id = %session_id, "Failed to send RDP display to WebSocket");
+                            should_close = true;
+                        }
+                    }
+                    Some(crate::ipc::proxy_rdp::RdpSessionEvent::DesktopResize { width, height }) => {
+                        let json = format!(r#"{{"type":"desktop_resize","width":{},"height":{}}}"#, width, height);
+                        debug!(session_id = %session_id, width, height, "Sending desktop resize to WebSocket");
+                        if sender.send(Message::Text(json.into())).await.is_err() {
+                            warn!(session_id = %session_id, "Failed to send desktop resize to WebSocket");
                             should_close = true;
                         }
                     }
@@ -1791,11 +1807,36 @@ mod tests {
             r#"{"type":"mouse_wheel","delta_x":0,"delta_y":-120}"#,
             r#"{"type":"key","code":"KeyA","key":"a","pressed":true,"shift":false,"ctrl":false,"alt":false,"meta":false}"#,
             r#"{"type":"key","code":"Enter","key":"Enter","pressed":false,"shift":false,"ctrl":false,"alt":false,"meta":false}"#,
+            r#"{"type":"resize","width":1920,"height":1080}"#,
         ];
 
         for json in &commands {
             let result: Result<RdpCommand, _> = serde_json::from_str(json);
             assert!(result.is_ok(), "Failed to parse: {}", json);
+        }
+    }
+
+    #[test]
+    fn test_rdp_command_resize() {
+        let json = r#"{"type": "resize", "width": 1920, "height": 1080}"#;
+        let cmd: RdpCommand = serde_json::from_str(json).unwrap();
+        if let RdpCommand::Resize { width, height } = cmd {
+            assert_eq!(width, 1920);
+            assert_eq!(height, 1080);
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_rdp_command_resize_default_resolution() {
+        let json = r#"{"type": "resize", "width": 1280, "height": 720}"#;
+        let cmd: RdpCommand = serde_json::from_str(json).unwrap();
+        if let RdpCommand::Resize { width, height } = cmd {
+            assert_eq!(width, 1280);
+            assert_eq!(height, 720);
+        } else {
+            panic!("Wrong variant");
         }
     }
 }
