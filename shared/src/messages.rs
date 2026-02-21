@@ -560,7 +560,7 @@ pub enum Message {
         session_id: String,
     },
 
-    // ========== TCP Connection Brokering (Web -> Supervisor -> ProxySsh) ==========
+    // ========== TCP Connection Brokering (Web -> Supervisor -> Proxy) ==========
     /// Request supervisor to establish a TCP connection on behalf of the sandboxed proxy.
     ///
     /// The supervisor performs DNS resolution and TCP connect, then passes the
@@ -575,7 +575,7 @@ pub enum Message {
         host: String,
         /// Target port.
         port: u16,
-        /// Target service that will receive the FD (e.g., Service::ProxySsh).
+        /// Target service that will receive the FD (e.g., Service::ProxySsh, Service::ProxyRdp).
         target_service: Service,
     },
 

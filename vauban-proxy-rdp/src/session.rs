@@ -24,6 +24,7 @@ use ironrdp_tokio::single_sequence_step;
 use ironrdp_tokio::{FramedWrite as _, NetworkClient};
 use secrecy::{ExposeSecret, SecretString};
 use shared::messages::{Message, RdpInputEvent};
+use std::os::unix::io::{FromRawFd, IntoRawFd, OwnedFd};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -50,6 +51,10 @@ pub struct SessionConfig {
     pub domain: Option<String>,
     pub desktop_width: u16,
     pub desktop_height: u16,
+    /// Pre-established TCP connection from supervisor (for sandboxed operation).
+    /// When running in Capsicum sandbox, the proxy cannot open network connections.
+    /// The supervisor establishes the TCP connection and passes the FD via SCM_RIGHTS.
+    pub preconnected_fd: Option<OwnedFd>,
 }
 
 /// Active RDP session handle (the actual connection runs in a spawned task).
@@ -107,37 +112,52 @@ impl RdpSession {
             config.desktop_height,
         );
 
-        // Resolve target address (with timeout)
-        let addr_str = format!("{}:{}", config.host, config.port);
-        let server_addr = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            tokio::net::lookup_host(&addr_str),
-        )
-        .await
-        .map_err(|_| SessionError::ConnectionFailed("DNS resolution timed out".to_string()))?
-        .map_err(|e| SessionError::ConnectionFailed(format!("DNS resolution failed: {e}")))?
-        .next()
-        .ok_or_else(|| SessionError::ConnectionFailed("No addresses resolved".to_string()))?;
+        // Connect to the RDP server - use pre-established FD if provided (sandboxed mode)
+        // or open a new connection (non-sandboxed mode, e.g., development on macOS)
+        let stream = if let Some(fd) = config.preconnected_fd {
+            debug!(session_id = %config.session_id, "Using pre-established connection from supervisor");
 
-        // TCP connect (with timeout)
-        let stream = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            TcpStream::connect(server_addr),
-        )
-        .await
-        .map_err(|_| {
-            SessionError::ConnectionFailed(format!(
-                "TCP connect to {}:{} timed out after 10s",
-                config.host, config.port
-            ))
-        })?
-        .map_err(|e| SessionError::ConnectionFailed(format!("TCP connect failed: {e}")))?;
+            // SAFETY: The FD comes from the supervisor via SCM_RIGHTS and is a valid TCP socket
+            let std_stream = unsafe { std::net::TcpStream::from_raw_fd(fd.into_raw_fd()) };
+            std_stream.set_nonblocking(true)
+                .map_err(|e| SessionError::ConnectionFailed(format!("Failed to set non-blocking: {e}")))?;
+            TcpStream::from_std(std_stream)
+                .map_err(|e| SessionError::ConnectionFailed(format!("Failed to create tokio stream: {e}")))?
+        } else {
+            // Non-sandboxed mode: resolve DNS and open connection directly (development/macOS)
+            let addr_str = format!("{}:{}", config.host, config.port);
+            let server_addr = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                tokio::net::lookup_host(&addr_str),
+            )
+            .await
+            .map_err(|_| SessionError::ConnectionFailed("DNS resolution timed out".to_string()))?
+            .map_err(|e| SessionError::ConnectionFailed(format!("DNS resolution failed: {e}")))?
+            .next()
+            .ok_or_else(|| SessionError::ConnectionFailed("No addresses resolved".to_string()))?;
 
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                TcpStream::connect(server_addr),
+            )
+            .await
+            .map_err(|_| {
+                SessionError::ConnectionFailed(format!(
+                    "TCP connect to {}:{} timed out after 10s",
+                    config.host, config.port
+                ))
+            })?
+            .map_err(|e| SessionError::ConnectionFailed(format!("TCP connect failed: {e}")))?
+        };
+
+        let server_addr = stream
+            .peer_addr()
+            .map_err(|e| SessionError::ConnectionFailed(format!("peer addr: {e}")))?;
         let client_addr = stream
             .local_addr()
             .map_err(|e| SessionError::ConnectionFailed(format!("local addr: {e}")))?;
 
-        trace!(session_id = %config.session_id, "TCP connection established");
+        trace!(session_id = %config.session_id, %server_addr, "TCP connection established");
 
         let drdynvc = DrdynvcClient::new()
             .with_dynamic_channel(DisplayControlClient::new(|caps| {
@@ -1542,6 +1562,7 @@ mod tests {
             domain: Some("CORP".to_string()),
             desktop_width: 1920,
             desktop_height: 1080,
+            preconnected_fd: None,
         };
 
         assert_eq!(config.session_id, "test-session");
@@ -1549,6 +1570,7 @@ mod tests {
         assert_eq!(config.desktop_width, 1920);
         assert_eq!(config.desktop_height, 1080);
         assert_eq!(config.domain.as_deref(), Some("CORP"));
+        assert!(config.preconnected_fd.is_none());
     }
 
     #[test]
@@ -1564,10 +1586,69 @@ mod tests {
             domain: None,
             desktop_width: 1280,
             desktop_height: 720,
+            preconnected_fd: None,
         };
 
         assert!(config.password.is_none());
         assert!(config.domain.is_none());
+    }
+
+    #[test]
+    fn test_session_config_with_preconnected_fd() {
+        use std::os::unix::io::AsRawFd;
+
+        let (sock_a, _sock_b) = std::os::unix::net::UnixStream::pair().unwrap();
+        let _raw = sock_a.as_raw_fd();
+        let fd: OwnedFd = sock_a.into();
+
+        let config = SessionConfig {
+            session_id: "preconn".to_string(),
+            user_id: "u".to_string(),
+            asset_id: "a".to_string(),
+            host: "rdp-server".to_string(),
+            port: 3389,
+            username: "admin".to_string(),
+            password: None,
+            domain: None,
+            desktop_width: 1920,
+            desktop_height: 1080,
+            preconnected_fd: Some(fd),
+        };
+
+        assert!(config.preconnected_fd.is_some());
+    }
+
+    #[test]
+    fn test_connect_uses_preconnected_fd_when_available() {
+        let source = include_str!("session.rs");
+        assert!(
+            source.contains("if let Some(fd) = config.preconnected_fd"),
+            "connect() must check for preconnected_fd"
+        );
+        assert!(
+            source.contains("from_raw_fd(fd.into_raw_fd())"),
+            "connect() must convert OwnedFd to std TcpStream via from_raw_fd"
+        );
+        assert!(
+            source.contains("Using pre-established connection from supervisor"),
+            "connect() must log when using pre-established connection"
+        );
+    }
+
+    #[test]
+    fn test_connect_falls_back_to_direct_connect() {
+        let source = include_str!("session.rs");
+        let preconn_check = source.find("if let Some(fd) = config.preconnected_fd")
+            .expect("preconnected_fd check must exist");
+        let after_check = &source[preconn_check..];
+        assert!(
+            after_check.contains("tokio::net::lookup_host"),
+            "Fallback path must perform DNS resolution"
+        );
+        assert!(
+            after_check.contains("TcpStream::connect(server_addr)"),
+            "Fallback path must use TcpStream::connect"
+        );
     }
 
     #[test]

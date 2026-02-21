@@ -206,6 +206,46 @@ pub async fn connect_rdp(
         }
     }
 
+    // If supervisor is available (sandboxed mode), request TCP connection brokering.
+    // The supervisor performs DNS resolution and TCP connect, then passes the FD
+    // to the RDP proxy via SCM_RIGHTS. This enables Capsicum sandboxed operation.
+    if let Some(ref supervisor) = state.supervisor {
+        tracing::debug!(
+            session_id = %session_id,
+            host = %hostname,
+            port = rdp_port,
+            "Requesting TCP connection from supervisor for RDP (sandboxed mode)"
+        );
+
+        match supervisor
+            .request_tcp_connect(
+                &session_id,
+                &hostname,
+                rdp_port,
+                shared::messages::Service::ProxyRdp,
+            )
+            .await
+        {
+            Ok(result) if result.success => {
+                tracing::debug!(
+                    session_id = %session_id,
+                    "TCP connection established by supervisor for RDP"
+                );
+            }
+            Ok(result) => {
+                let msg = result
+                    .error
+                    .unwrap_or_else(|| "Failed to establish TCP connection".to_string());
+                tracing::error!(session_id = %session_id, error = %msg, "RDP TCP connect failed");
+                return htmx_error_response(&msg);
+            }
+            Err(e) => {
+                tracing::error!(session_id = %session_id, error = %e, "RDP TCP connect request failed");
+                return htmx_error_response(&e);
+            }
+        }
+    }
+
     let request = crate::ipc::RdpSessionOpenRequest {
         session_id: session_id.clone(),
         user_id: auth_user.uuid.clone(),
@@ -395,5 +435,77 @@ mod tests {
         assert!(trigger.contains("showToast"));
         assert!(trigger.contains("test error"));
         assert!(trigger.contains("error"));
+    }
+
+    // ==================== TCP Connection Brokering (5.6.3) Tests ====================
+
+    #[test]
+    fn test_connect_rdp_requests_tcp_brokering_via_supervisor() {
+        let source = include_str!("rdp.rs");
+        let handler_start = source
+            .find("pub async fn connect_rdp")
+            .expect("connect_rdp handler must exist");
+        let handler_body = &source[handler_start..];
+        let handler_end = handler_body
+            .find("pub struct RdpViewerTemplate")
+            .unwrap_or(handler_body.len());
+        let handler_body = &handler_body[..handler_end];
+
+        assert!(
+            handler_body.contains("request_tcp_connect"),
+            "connect_rdp must request TCP connection brokering from supervisor"
+        );
+        assert!(
+            handler_body.contains("Service::ProxyRdp"),
+            "connect_rdp must target Service::ProxyRdp for FD brokering"
+        );
+    }
+
+    #[test]
+    fn test_tcp_brokering_happens_before_session_open() {
+        let source = include_str!("rdp.rs");
+        let brokering_pos = source
+            .find("request_tcp_connect")
+            .expect("request_tcp_connect must be called");
+        let session_open_pos = source
+            .find("proxy_client.open_session")
+            .expect("open_session must be called");
+
+        assert!(
+            brokering_pos < session_open_pos,
+            "TCP connection brokering must happen BEFORE requesting the RDP session open"
+        );
+    }
+
+    #[test]
+    fn test_tcp_brokering_handles_failure() {
+        let source = include_str!("rdp.rs");
+        let handler_start = source
+            .find("pub async fn connect_rdp")
+            .expect("connect_rdp handler must exist");
+        let handler_body = &source[handler_start..];
+        let brokering_start = handler_body
+            .find("request_tcp_connect")
+            .expect("request_tcp_connect must be present");
+        let brokering_section = &handler_body[brokering_start..brokering_start + 800];
+
+        assert!(
+            brokering_section.contains("htmx_error_response"),
+            "TCP brokering failure must return an error response to the user"
+        );
+    }
+
+    #[test]
+    fn test_tcp_brokering_is_conditional_on_supervisor() {
+        let source = include_str!("rdp.rs");
+        let handler_start = source
+            .find("pub async fn connect_rdp")
+            .expect("connect_rdp handler must exist");
+        let handler_body = &source[handler_start..];
+
+        assert!(
+            handler_body.contains("if let Some(ref supervisor) = state.supervisor"),
+            "TCP brokering must be conditional on supervisor availability (non-sandboxed = no supervisor)"
+        );
     }
 }

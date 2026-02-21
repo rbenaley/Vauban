@@ -248,7 +248,7 @@ async fn main_loop(
     info!("Main event loop started");
 
     let (response_tx, mut response_rx) = mpsc::unbounded_channel::<Message>();
-    let _pending_connections = fd_passing.as_ref().map(|fp| Arc::clone(&fp.pending));
+    let pending_connections = fd_passing.as_ref().map(|fp| Arc::clone(&fp.pending));
 
     loop {
         if state.shutdown_requested.load(Ordering::SeqCst) {
@@ -306,6 +306,7 @@ async fn main_loop(
                             Arc::clone(&sessions),
                             web_tx.clone(),
                             msg,
+                            pending_connections.clone(),
                         ).await {
                             warn!(error = %e, "Error handling web message");
                             state.increment_failed();
@@ -379,6 +380,7 @@ async fn handle_web_message(
     sessions: Arc<SessionManager>,
     web_tx: mpsc::Sender<Message>,
     msg: Message,
+    pending_connections: Option<PendingConnections>,
 ) -> Result<()> {
     match msg {
         Message::RdpSessionOpen {
@@ -414,6 +416,16 @@ async fn handle_web_message(
                 return Ok(());
             }
 
+            let preconnected_fd = if let Some(ref pending) = pending_connections {
+                pending.lock().await.remove(&session_id)
+            } else {
+                None
+            };
+
+            if preconnected_fd.is_some() {
+                debug!(session_id = %session_id, "Using pre-established TCP connection from supervisor");
+            }
+
             let config = SessionConfig {
                 session_id: session_id.clone(),
                 user_id,
@@ -425,6 +437,7 @@ async fn handle_web_message(
                 domain,
                 desktop_width,
                 desktop_height,
+                preconnected_fd,
             };
 
             let sessions_clone = Arc::clone(&sessions);
@@ -667,6 +680,82 @@ mod tests {
         assert!(
             source.contains("shutdown_requested: AtomicBool"),
             "M-8/M-10: shutdown_requested must be AtomicBool for async safety"
+        );
+    }
+
+    // ==================== TCP Connection Brokering (5.6.3) Tests ====================
+
+    #[test]
+    fn test_handle_web_message_accepts_pending_connections() {
+        let source = prod_source();
+        let sig = source
+            .find("fn handle_web_message")
+            .expect("handle_web_message must exist");
+        let sig_body = &source[sig..sig + 400];
+        assert!(
+            sig_body.contains("pending_connections: Option<PendingConnections>"),
+            "handle_web_message must accept pending_connections parameter for FD brokering"
+        );
+    }
+
+    #[test]
+    fn test_pending_connections_passed_to_handler() {
+        let source = prod_source();
+        let call_site = source
+            .find("handle_web_message(")
+            .expect("handle_web_message call must exist");
+        let call_body = &source[call_site..call_site + 400];
+        assert!(
+            call_body.contains("pending_connections.clone()"),
+            "main_loop must pass pending_connections to handle_web_message"
+        );
+    }
+
+    #[test]
+    fn test_rdp_session_open_extracts_preconnected_fd() {
+        let source = prod_source();
+        let handler = source
+            .find("Message::RdpSessionOpen")
+            .expect("RdpSessionOpen handler must exist");
+        let handler_body = &source[handler..];
+        let handler_end = handler_body
+            .find("Message::RdpInput")
+            .unwrap_or(handler_body.len());
+        let handler_body = &handler_body[..handler_end];
+
+        assert!(
+            handler_body.contains("pending.lock().await.remove(&session_id)"),
+            "RdpSessionOpen handler must extract preconnected FD from pending_connections"
+        );
+        assert!(
+            handler_body.contains("preconnected_fd"),
+            "RdpSessionOpen handler must pass preconnected_fd to SessionConfig"
+        );
+    }
+
+    #[test]
+    fn test_tcp_connect_response_stores_fd() {
+        let source = prod_source();
+        let response_handler = source
+            .find("TcpConnectResponse")
+            .expect("TcpConnectResponse handler must exist");
+        let handler_body = &source[response_handler..response_handler + 600];
+        assert!(
+            handler_body.contains("fp.pending.lock().await.insert(session_id, fd)"),
+            "TcpConnectResponse handler must store received FD in pending_connections"
+        );
+    }
+
+    #[test]
+    fn test_pending_connections_is_active() {
+        let source = prod_source();
+        assert!(
+            !source.contains("let _pending_connections"),
+            "pending_connections must not be prefixed with underscore (must be actively used)"
+        );
+        assert!(
+            source.contains("let pending_connections = fd_passing"),
+            "pending_connections must be actively used in main_loop"
         );
     }
 }
