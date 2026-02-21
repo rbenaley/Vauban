@@ -23,6 +23,32 @@ pub struct SupervisorConfig {
     pub supervisor: SupervisorSettings,
     pub defaults: DefaultCredentials,
     pub services: HashMap<String, ServiceConfig>,
+    /// RDP proxy configuration (injected as env vars at spawn).
+    #[serde(default)]
+    pub rdp: RdpProxyConfig,
+}
+
+/// RDP proxy configuration.
+///
+/// These values are injected as environment variables into `vauban-proxy-rdp`
+/// at spawn time, so the proxy never needs to read the TOML file itself.
+#[derive(Debug, Deserialize)]
+pub struct RdpProxyConfig {
+    /// H.264 encoder bitrate in bits per second (default: 5 Mbps).
+    #[serde(default = "default_video_bitrate_bps")]
+    pub video_bitrate_bps: u32,
+}
+
+fn default_video_bitrate_bps() -> u32 {
+    5_000_000
+}
+
+impl Default for RdpProxyConfig {
+    fn default() -> Self {
+        Self {
+            video_bitrate_bps: default_video_bitrate_bps(),
+        }
+    }
 }
 
 /// Supervisor settings.
@@ -282,6 +308,21 @@ impl SupervisorConfig {
         // In development mode, don't change working directory
         // All services run from workspace root where config paths are relative to
         None
+    }
+
+    /// Build service-specific environment variables to inject at spawn time.
+    ///
+    /// Returns key-value pairs that `spawn_child` will set in the child process.
+    /// The child is responsible for reading and immediately removing them.
+    pub fn service_env_vars(&self, service_key: &str) -> Vec<(String, String)> {
+        let mut vars = Vec::new();
+        if service_key == "proxy_rdp" {
+            vars.push((
+                "VAUBAN_RDP_VIDEO_BITRATE_BPS".to_string(),
+                self.rdp.video_bitrate_bps.to_string(),
+            ));
+        }
+        vars
     }
 
     /// Get ordered list of services for startup.
@@ -583,5 +624,42 @@ mod tests {
     fn test_load_nonexistent_file() {
         let result = SupervisorConfig::load("/nonexistent/path/config.toml");
         assert!(result.is_err());
+    }
+
+    // ==================== RDP Config Tests ====================
+
+    #[test]
+    fn test_rdp_config_default() {
+        let rdp = RdpProxyConfig::default();
+        assert_eq!(rdp.video_bitrate_bps, 5_000_000);
+    }
+
+    #[test]
+    fn test_rdp_config_loaded_from_toml() {
+        let config = test_config();
+        assert_eq!(config.rdp.video_bitrate_bps, 5_000_000);
+    }
+
+    // ==================== Service Env Vars Tests ====================
+
+    #[test]
+    fn test_service_env_vars_proxy_rdp() {
+        let config = test_config();
+        let vars = config.service_env_vars("proxy_rdp");
+        assert_eq!(vars.len(), 1);
+        assert_eq!(vars[0].0, "VAUBAN_RDP_VIDEO_BITRATE_BPS");
+        assert_eq!(vars[0].1, "5000000");
+    }
+
+    #[test]
+    fn test_service_env_vars_other_services_empty() {
+        let config = test_config();
+        for key in ["audit", "vault", "rbac", "auth", "proxy_ssh", "web"] {
+            let vars = config.service_env_vars(key);
+            assert!(
+                vars.is_empty(),
+                "service_env_vars for {} should be empty, got {:?}", key, vars
+            );
+        }
     }
 }

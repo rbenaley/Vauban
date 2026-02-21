@@ -29,13 +29,19 @@ pub struct SessionHandle {
 pub struct SessionManager {
     sessions: Arc<RwLock<HashMap<String, SessionHandle>>>,
     active_count: Arc<AtomicU32>,
+    video_bitrate_bps: u32,
 }
 
 impl SessionManager {
     pub fn new() -> Self {
+        Self::with_bitrate(5_000_000)
+    }
+
+    pub fn with_bitrate(video_bitrate_bps: u32) -> Self {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             active_count: Arc::new(AtomicU32::new(0)),
+            video_bitrate_bps,
         }
     }
 
@@ -138,6 +144,32 @@ impl SessionManager {
         }
     }
 
+    /// Enable or disable H.264 video mode for a session.
+    ///
+    /// The bitrate is taken from the value injected by the supervisor at startup,
+    /// not from the IPC message, to prevent a compromised vauban-web from
+    /// overriding the configured encoder bitrate.
+    pub async fn set_video_mode(
+        &self,
+        session_id: &str,
+        enabled: bool,
+    ) -> SessionResult<()> {
+        let sessions = self.sessions.read().await;
+        if let Some(handle) = sessions.get(session_id) {
+            handle
+                .tx
+                .send(SessionCommand::SetVideoMode {
+                    enabled,
+                    bitrate_bps: self.video_bitrate_bps,
+                })
+                .await
+                .map_err(|_| SessionError::SessionClosed)?;
+            Ok(())
+        } else {
+            Err(SessionError::SessionNotFound(session_id.to_string()))
+        }
+    }
+
     /// Close a session.
     pub async fn close_session(&self, session_id: &str) -> SessionResult<()> {
         let sessions = self.sessions.read().await;
@@ -176,6 +208,13 @@ impl Default for SessionManager {
     }
 }
 
+#[cfg(test)]
+impl SessionManager {
+    pub fn video_bitrate_bps(&self) -> u32 {
+        self.video_bitrate_bps
+    }
+}
+
 struct SessionManagerCleanup {
     sessions: Arc<RwLock<HashMap<String, SessionHandle>>>,
     active_count: Arc<AtomicU32>,
@@ -189,5 +228,48 @@ impl SessionManagerCleanup {
             self.active_count.fetch_sub(1, Ordering::SeqCst);
             info!(session_id = %session_id, "Session removed from manager (cleanup)");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_session_manager_default_bitrate() {
+        let mgr = SessionManager::new();
+        assert_eq!(mgr.video_bitrate_bps(), 5_000_000);
+    }
+
+    #[test]
+    fn test_session_manager_custom_bitrate() {
+        let mgr = SessionManager::with_bitrate(20_000_000);
+        assert_eq!(mgr.video_bitrate_bps(), 20_000_000);
+    }
+
+    #[test]
+    fn test_session_manager_bitrate_used_in_set_video_mode() {
+        let source = include_str!("session_manager.rs");
+        let set_fn_start = source
+            .find("pub async fn set_video_mode")
+            .expect("set_video_mode must exist");
+        let fn_body = &source[set_fn_start..];
+        let fn_end = fn_body.find("\n    /// ").or_else(|| fn_body.find("\n    pub fn ")).unwrap_or(fn_body.len());
+        let fn_body = &fn_body[..fn_end];
+
+        assert!(
+            fn_body.contains("self.video_bitrate_bps"),
+            "set_video_mode must use the stored bitrate from supervisor, not an IPC parameter"
+        );
+        assert!(
+            !fn_body.contains("bitrate_bps: u32"),
+            "set_video_mode must NOT accept bitrate as parameter (security: prevents IPC override)"
+        );
+    }
+
+    #[test]
+    fn test_session_manager_active_count() {
+        let mgr = SessionManager::new();
+        assert_eq!(mgr.active_count(), 0);
     }
 }

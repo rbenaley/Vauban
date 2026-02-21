@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{RwLock, broadcast};
-use tracing::debug;
+use tracing::{debug, trace};
 
 /// Default channel capacity for broadcast channels.
 const DEFAULT_CHANNEL_CAPACITY: usize = 100;
@@ -193,13 +193,13 @@ impl BroadcastService {
                 }
                 Err(_) => {
                     // No receivers - this is not an error, just no one listening
-                    debug!(channel = %channel_name, "No receivers for broadcast");
+                    trace!(channel = %channel_name, "No receivers for broadcast");
                     Ok(0)
                 }
             }
         } else {
             // Channel doesn't exist yet (no subscribers) - this is normal, not a warning
-            debug!(channel = %channel_name, "Channel does not exist");
+            trace!(channel = %channel_name, "Channel does not exist");
             Err(())
         }
     }

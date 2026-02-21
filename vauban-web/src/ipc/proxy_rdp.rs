@@ -15,7 +15,7 @@ use std::sync::Arc;
 use tokio::io::unix::AsyncFd;
 use tokio::io::Interest;
 use tokio::sync::{mpsc, oneshot, Mutex};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 /// Request to open an RDP session.
 #[derive(Clone)]
@@ -75,6 +75,14 @@ pub enum RdpSessionEvent {
     DesktopResize {
         width: u16,
         height: u16,
+    },
+    /// H.264 encoded video frame.
+    VideoFrame {
+        timestamp_us: u64,
+        is_keyframe: bool,
+        width: u16,
+        height: u16,
+        data: Vec<u8>,
     },
 }
 
@@ -223,6 +231,17 @@ impl ProxyRdpClient {
             .map_err(|e| AppError::Ipc(format!("IPC send failed: {}", e)))
     }
 
+    /// Enable or disable H.264 video mode for a session.
+    pub fn set_video_mode(&self, session_id: &str, enabled: bool) -> AppResult<()> {
+        let msg = Message::RdpSetVideoMode {
+            session_id: session_id.to_string(),
+            enabled,
+        };
+        self.channel
+            .send(&msg)
+            .map_err(|e| AppError::Ipc(format!("IPC send failed: {}", e)))
+    }
+
     /// Close an RDP session.
     pub fn close_session(&self, session_id: &str) -> AppResult<()> {
         let msg = Message::RdpSessionClose {
@@ -307,7 +326,7 @@ impl ProxyRdpClient {
                 height,
                 png_data,
             } => {
-                debug!(
+                trace!(
                     session_id = %session_id,
                     x, y, width, height,
                     png_bytes = png_data.len(),
@@ -325,7 +344,7 @@ impl ProxyRdpClient {
                     if tx.send(event).await.is_err() {
                         warn!(session_id = %session_id, "Failed to forward RDP display update, WebSocket dropped");
                     } else {
-                        debug!(session_id = %session_id, "RDP display update forwarded to WebSocket channel");
+                        trace!(session_id = %session_id, "RDP display update forwarded to WebSocket channel");
                     }
                 } else {
                     warn!(session_id = %session_id, "RDP display update but no WebSocket subscribed");
@@ -337,7 +356,7 @@ impl ProxyRdpClient {
                 width,
                 height,
             } => {
-                debug!(
+                trace!(
                     session_id = %session_id,
                     width, height,
                     "IPC received RdpDesktopResize"
@@ -347,6 +366,36 @@ impl ProxyRdpClient {
                     let event = RdpSessionEvent::DesktopResize { width, height };
                     if tx.send(event).await.is_err() {
                         warn!(session_id = %session_id, "Failed to forward desktop resize, WebSocket dropped");
+                    }
+                }
+            }
+
+            Message::RdpVideoFrame {
+                session_id,
+                timestamp_us,
+                is_keyframe,
+                width,
+                height,
+                data,
+            } => {
+                trace!(
+                    session_id = %session_id,
+                    timestamp_us, is_keyframe,
+                    width, height,
+                    bytes = data.len(),
+                    "IPC received RdpVideoFrame"
+                );
+                let senders = self.session_display_senders.lock().await;
+                if let Some(tx) = senders.get(&session_id) {
+                    let event = RdpSessionEvent::VideoFrame {
+                        timestamp_us,
+                        is_keyframe,
+                        width,
+                        height,
+                        data,
+                    };
+                    if tx.send(event).await.is_err() {
+                        warn!(session_id = %session_id, "Failed to forward video frame, WebSocket dropped");
                     }
                 }
             }
@@ -684,6 +733,89 @@ mod tests {
         } else {
             panic!("Expected DesktopResize");
         }
+    }
+
+    #[tokio::test]
+    async fn test_session_event_channel_video_frame() {
+        let (tx, mut rx) = mpsc::channel::<RdpSessionEvent>(16);
+        let h264_data = vec![0x00, 0x00, 0x00, 0x01, 0x67, 0x42];
+        let event = RdpSessionEvent::VideoFrame {
+            timestamp_us: 16666,
+            is_keyframe: true,
+            width: 1920,
+            height: 1080,
+            data: h264_data.clone(),
+        };
+        tx.send(event).await.unwrap();
+        let received = rx.recv().await.unwrap();
+        if let RdpSessionEvent::VideoFrame {
+            timestamp_us,
+            is_keyframe,
+            width,
+            height,
+            data,
+        } = received
+        {
+            assert_eq!(timestamp_us, 16666);
+            assert!(is_keyframe);
+            assert_eq!(width, 1920);
+            assert_eq!(height, 1080);
+            assert_eq!(data, h264_data);
+        } else {
+            panic!("Expected VideoFrame");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_session_event_channel_video_frame_delta() {
+        let (tx, mut rx) = mpsc::channel::<RdpSessionEvent>(16);
+        let event = RdpSessionEvent::VideoFrame {
+            timestamp_us: 33333,
+            is_keyframe: false,
+            width: 1280,
+            height: 720,
+            data: vec![0x00, 0x00, 0x01, 0x41],
+        };
+        tx.send(event).await.unwrap();
+        let received = rx.recv().await.unwrap();
+        if let RdpSessionEvent::VideoFrame { is_keyframe, .. } = received {
+            assert!(!is_keyframe);
+        } else {
+            panic!("Expected VideoFrame");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_session_event_channel_mixed_events() {
+        let (tx, mut rx) = mpsc::channel::<RdpSessionEvent>(16);
+        tx.send(RdpSessionEvent::DisplayUpdate {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 100,
+            png_data: vec![0x89],
+        })
+        .await
+        .unwrap();
+        tx.send(RdpSessionEvent::VideoFrame {
+            timestamp_us: 1000,
+            is_keyframe: true,
+            width: 1920,
+            height: 1080,
+            data: vec![0, 0, 0, 1],
+        })
+        .await
+        .unwrap();
+        tx.send(RdpSessionEvent::DesktopResize {
+            width: 2560,
+            height: 1440,
+        })
+        .await
+        .unwrap();
+
+        assert!(matches!(rx.recv().await.unwrap(), RdpSessionEvent::DisplayUpdate { .. }));
+        assert!(matches!(rx.recv().await.unwrap(), RdpSessionEvent::VideoFrame { .. }));
+        assert!(matches!(rx.recv().await.unwrap(), RdpSessionEvent::DesktopResize { .. }));
     }
 
     #[tokio::test]

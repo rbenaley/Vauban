@@ -286,7 +286,8 @@ fn run_supervisor() -> Result<()> {
         // Get FD passing socket for proxy services
         let fd_passing_child_fd = service.and_then(|s| fd_passing_sockets.get(&s).map(|fps| fps.child_socket_fd));
         
-        match spawn_child(&binary_path, uid, gid, workdir.as_deref(), child_channel, topology_pipes, fd_passing_child_fd) {
+        let svc_env = config.service_env_vars(service_key);
+        match spawn_child(&binary_path, uid, gid, workdir.as_deref(), child_channel, topology_pipes, fd_passing_child_fd, &svc_env) {
             Ok(pid) => {
                 info!("Started {} with pid {}", service_config.name, pid);
                 
@@ -378,7 +379,7 @@ fn create_pipe_topology() -> Result<HashMap<(Service, Service), (IpcChannel, Ipc
 
 // Post-fork child process: tracing is NOT available, eprintln! is the only output mechanism.
 // process::exit(1) is required because execv() failed and the child cannot continue.
-#[allow(clippy::print_stderr)]
+#[allow(clippy::print_stderr, clippy::too_many_arguments)]
 fn spawn_child(
     binary_path: &str,
     uid: Option<u32>,
@@ -387,6 +388,7 @@ fn spawn_child(
     channel: IpcChannel,
     topology_pipes: Option<&ServicePipes>,
     fd_passing_socket: Option<i32>,
+    service_env_vars: &[(String, String)],
 ) -> Result<i32> {
     // Get raw FDs before fork (we'll pass them via env vars)
     let read_fd = channel.read_fd();
@@ -476,6 +478,11 @@ fn spawn_child(
                 // Set FD passing socket for proxy services (used to receive TCP connections)
                 if let Some(fd) = fd_passing_socket {
                     std::env::set_var("VAUBAN_FD_PASSING_SOCKET", fd.to_string());
+                }
+
+                // Set service-specific environment variables (e.g. bitrate for proxy_rdp)
+                for (name, value) in service_env_vars {
+                    std::env::set_var(name, value);
                 }
             }
             
@@ -973,7 +980,8 @@ fn respawn_service(state: &mut ChildState, config: &SupervisorConfig, topology_p
         (None, None)
     };
 
-    match spawn_child(&binary_path, uid, gid, workdir.as_deref(), child_channel, topology_pipes, fd_passing_child_fd) {
+    let svc_env = config.service_env_vars(&state.service_key);
+    match spawn_child(&binary_path, uid, gid, workdir.as_deref(), child_channel, topology_pipes, fd_passing_child_fd, &svc_env) {
         Ok(pid) => {
             info!("Respawned {} with pid {}", state.service_key, pid);
             state.pid = pid;
@@ -1151,7 +1159,8 @@ fn respawn_linked_group(
                 (None, None)
             };
 
-            match spawn_child(&binary_path, uid, gid, workdir.as_deref(), child_channel, topology, fd_passing_child_fd) {
+            let svc_env = config.service_env_vars(service_key);
+            match spawn_child(&binary_path, uid, gid, workdir.as_deref(), child_channel, topology, fd_passing_child_fd, &svc_env) {
                 Ok(pid) => {
                     info!("Respawned {} (linked group) with pid {}", service_key, pid);
                     state.pid = pid;
@@ -2732,5 +2741,55 @@ mod tests {
             fn_sig.contains("&mut HashMap<Service, ServicePipes>"),
             "M-9: watchdog_loop must take &mut HashMap<Service, ServicePipes>"
         );
+    }
+
+    // ==================== Bitrate Env Var Injection Tests ====================
+
+    #[test]
+    fn test_spawn_child_accepts_service_env_vars() {
+        let source = supervisor_prod_source();
+        let spawn_start = source.find("fn spawn_child(")
+            .expect("spawn_child must exist");
+        let fn_sig = &source[spawn_start..spawn_start + 500];
+        assert!(
+            fn_sig.contains("service_env_vars"),
+            "spawn_child must accept service_env_vars parameter"
+        );
+    }
+
+    #[test]
+    fn test_spawn_child_sets_service_env_vars_in_child() {
+        let source = supervisor_prod_source();
+        let spawn_start = source.find("fn spawn_child(")
+            .expect("spawn_child must exist");
+        let fn_body = &source[spawn_start..];
+        let fn_end = fn_body.find("\nfn ").unwrap_or(fn_body.len());
+        let fn_body = &fn_body[..fn_end];
+
+        assert!(
+            fn_body.contains("for (name, value) in service_env_vars"),
+            "spawn_child must iterate over service_env_vars and set them in child process"
+        );
+    }
+
+    #[test]
+    fn test_all_spawn_call_sites_pass_service_env_vars() {
+        let source = supervisor_prod_source();
+        // Count invocations of spawn_child (calls start with `spawn_child(&`)
+        let call_sites: Vec<_> = source.match_indices("spawn_child(&").collect();
+        assert!(
+            call_sites.len() >= 3,
+            "Expected at least 3 spawn_child invocations (initial, respawn, linked), found {}",
+            call_sites.len()
+        );
+
+        for (pos, _) in &call_sites {
+            let call_context = &source[*pos..(*pos + 300).min(source.len())];
+            assert!(
+                call_context.contains("&svc_env"),
+                "All spawn_child call sites must pass &svc_env: {:?}",
+                &call_context[..80.min(call_context.len())]
+            );
+        }
     }
 }

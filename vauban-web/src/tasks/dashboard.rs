@@ -8,7 +8,7 @@ use diesel_async::RunQueryDsl;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::interval;
-use tracing::{debug, error, info};
+use tracing::{error, info, trace};
 
 use crate::utils::format_duration;
 
@@ -78,7 +78,7 @@ async fn stats_updater(broadcast: Arc<BroadcastService>, db_pool: Arc<DbPool>) {
                             .await
                             .is_err()
                         {
-                            debug!("No subscribers for stats channel");
+                            trace!("No subscribers for stats channel");
                         }
                     }
                     Err(e) => error!(error = %e, "Failed to render stats widget"),
@@ -108,7 +108,7 @@ async fn sessions_updater(broadcast: Arc<BroadcastService>, db_pool: Arc<DbPool>
                             .await
                             .is_err()
                         {
-                            debug!("No subscribers for sessions channel");
+                            trace!("No subscribers for sessions channel");
                         }
                     }
                     Err(e) => error!(error = %e, "Failed to render sessions widget"),
@@ -131,7 +131,7 @@ async fn sessions_updater(broadcast: Arc<BroadcastService>, db_pool: Arc<DbPool>
                         .await
                         .is_err()
                     {
-                        debug!("No subscribers for sessions list stats channel");
+                        trace!("No subscribers for sessions list stats channel");
                     }
                 }
 
@@ -144,7 +144,7 @@ async fn sessions_updater(broadcast: Arc<BroadcastService>, db_pool: Arc<DbPool>
                         .await
                         .is_err()
                     {
-                        debug!("No subscribers for sessions list content channel");
+                        trace!("No subscribers for sessions list content channel");
                     }
                 }
             }
@@ -171,7 +171,7 @@ async fn activity_updater(broadcast: Arc<BroadcastService>, db_pool: Arc<DbPool>
                             .await
                             .is_err()
                         {
-                            debug!("No subscribers for activity channel");
+                            trace!("No subscribers for activity channel");
                         }
                     }
                     Err(e) => error!(error = %e, "Failed to render activity widget"),

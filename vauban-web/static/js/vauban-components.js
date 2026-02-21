@@ -207,6 +207,8 @@ document.addEventListener('alpine:init', function () {
             error: null,
             ws: null,
             ctx: null,
+            decoder: null,
+            videoMode: false,
             desktopWidth: 1280,
             desktopHeight: 720,
             _lastMouseSend: 0,
@@ -218,12 +220,8 @@ document.addEventListener('alpine:init', function () {
                 this._fullscreenHandler = function () {
                     self.$nextTick(function () {
                         if (document.fullscreenElement) {
-                            // Request server-side resize to match screen;
-                            // canvas dimensions update when the server confirms
-                            // via a desktop_size message.
                             var w = screen.width;
                             var h = screen.height;
-                            // RDP spec: width must be even, min 200
                             w = Math.max(200, w - (w % 2));
                             h = Math.max(200, h);
                             self.sendInput({ type: 'resize', width: w, height: h });
@@ -240,7 +238,37 @@ document.addEventListener('alpine:init', function () {
             destroy: function () {
                 if (this._fullscreenHandler) document.removeEventListener('fullscreenchange', this._fullscreenHandler);
                 if (this._pendingMouseMove) clearTimeout(this._pendingMouseMove);
+                if (this.decoder) { try { this.decoder.close(); } catch (e) { /* ignore */ } }
                 if (this.ws) this.ws.close(1000, 'Component destroyed');
+            },
+
+            _initVideoDecoder: function () {
+                var self = this;
+                if (typeof VideoDecoder === 'undefined') {
+                    console.log('[RDP] WebCodecs not available, using PNG fallback');
+                    return;
+                }
+                try {
+                    this.decoder = new VideoDecoder({
+                        output: function (frame) {
+                            if (self.ctx) {
+                                self.ctx.drawImage(frame, 0, 0, self.desktopWidth, self.desktopHeight);
+                            }
+                            frame.close();
+                        },
+                        error: function (e) {
+                            console.error('[RDP] VideoDecoder error:', e);
+                        }
+                    });
+                    this.decoder.configure({
+                        codec: 'avc1.42001f',
+                        optimizeForLatency: true
+                    });
+                    console.log('[RDP] WebCodecs VideoDecoder initialized');
+                } catch (e) {
+                    console.warn('[RDP] Failed to init VideoDecoder:', e);
+                    this.decoder = null;
+                }
             },
 
             connectWs: function () {
@@ -256,10 +284,17 @@ document.addEventListener('alpine:init', function () {
                     self.error = null;
                     self.ctx = self.$refs.canvas.getContext('2d');
                     self.$refs.canvas.focus();
+
+                    self._initVideoDecoder();
+                    if (self.decoder) {
+                        self.sendInput({ type: 'capabilities', video_codecs: ['avc1.42001f'] });
+                        console.log('[RDP] Sent H.264 capabilities');
+                    }
                 };
 
                 this._msgCount = 0;
                 this._binaryCount = 0;
+                this._videoFrameCount = 0;
                 this.ws.onmessage = function (event) {
                     self._msgCount++;
                     if (typeof event.data === 'string') {
@@ -270,6 +305,9 @@ document.addEventListener('alpine:init', function () {
                                 self.desktopWidth = msg.width;
                                 self.desktopHeight = msg.height;
                                 console.log('[RDP] desktop ' + msg.type + ': ' + msg.width + 'x' + msg.height);
+                            } else if (msg.type === 'mode' && msg.video) {
+                                self.videoMode = true;
+                                console.log('[RDP] Server confirmed H.264 video mode');
                             } else if (msg.error) {
                                 self.error = msg.error;
                             }
@@ -277,46 +315,18 @@ document.addEventListener('alpine:init', function () {
                         return;
                     }
                     self._binaryCount++;
-                    // Binary: header (8 bytes: x u16 LE, y u16 LE, w u16 LE, h u16 LE) + PNG data
                     var buf = new Uint8Array(event.data);
                     if (buf.length < 8) {
                         console.warn('[RDP] binary too short:', buf.length);
                         return;
                     }
-                    var dv = new DataView(event.data);
-                    var x = dv.getUint16(0, true);
-                    var y = dv.getUint16(2, true);
-                    var w = dv.getUint16(4, true);
-                    var h = dv.getUint16(6, true);
-                    var pngSize = buf.length - 8;
 
-                    if (self._binaryCount <= 30 || self._binaryCount % 50 === 0) {
-                        console.log('[RDP] binary #' + self._binaryCount +
-                            ' x=' + x + ' y=' + y + ' w=' + w + ' h=' + h +
-                            ' png=' + pngSize + 'B canvas=' + (self.ctx ? 'ok' : 'null'));
+                    // Discriminate: byte 0 == 0x01 => H.264 video frame, otherwise PNG region
+                    if (buf[0] === 0x01 && self.decoder && self.videoMode) {
+                        self._handleVideoFrame(event.data, buf);
+                    } else {
+                        self._handlePngRegion(event.data, buf);
                     }
-
-                    var blob = new Blob([buf.slice(8)], { type: 'image/png' });
-                    var img = new Image();
-                    var blobUrl = URL.createObjectURL(blob);
-                    img.onload = function () {
-                        if (self.ctx) {
-                            self.ctx.drawImage(img, x, y);
-                            if (self._binaryCount <= 5) {
-                                console.log('[RDP] drawn #' + self._binaryCount +
-                                    ' at (' + x + ',' + y + ') img=' + img.naturalWidth + 'x' + img.naturalHeight);
-                            }
-                        } else {
-                            console.warn('[RDP] ctx is null, cannot draw');
-                        }
-                        URL.revokeObjectURL(blobUrl);
-                    };
-                    img.onerror = function (e) {
-                        console.error('[RDP] PNG decode FAILED #' + self._binaryCount +
-                            ' size=' + pngSize + 'B header bytes:', buf[8], buf[9], buf[10], buf[11]);
-                        URL.revokeObjectURL(blobUrl);
-                    };
-                    img.src = blobUrl;
                 };
 
                 this.ws.onclose = function () {
@@ -327,6 +337,81 @@ document.addEventListener('alpine:init', function () {
                     self.error = 'Connection error';
                     self.connected = false;
                 };
+            },
+
+            _handleVideoFrame: function (arrayBuf, buf) {
+                // Header (10 bytes): type(1) + flags(1) + timestamp_ms(4 LE) + width(2 LE) + height(2 LE)
+                if (buf.length < 10) return;
+                var dv = new DataView(arrayBuf);
+                var flags = buf[1];
+                var isKeyframe = (flags & 0x01) !== 0;
+                var timestampMs = dv.getUint32(2, true);
+                var width = dv.getUint16(6, true);
+                var height = dv.getUint16(8, true);
+                var nalData = buf.slice(10);
+
+                if (width !== this.desktopWidth || height !== this.desktopHeight) {
+                    this.desktopWidth = width;
+                    this.desktopHeight = height;
+                    if (this.decoder) {
+                        this.decoder.configure({
+                            codec: 'avc1.42001f',
+                            codedWidth: width,
+                            codedHeight: height,
+                            optimizeForLatency: true
+                        });
+                    }
+                }
+
+                this._videoFrameCount++;
+                if (this._videoFrameCount <= 10 || this._videoFrameCount % 60 === 0) {
+                    console.log('[RDP] H.264 frame #' + this._videoFrameCount +
+                        ' key=' + isKeyframe + ' ' + width + 'x' + height +
+                        ' ' + nalData.length + 'B ts=' + timestampMs + 'ms');
+                }
+
+                try {
+                    var chunk = new EncodedVideoChunk({
+                        type: isKeyframe ? 'key' : 'delta',
+                        timestamp: timestampMs * 1000,
+                        data: nalData
+                    });
+                    this.decoder.decode(chunk);
+                } catch (e) {
+                    console.error('[RDP] decode error:', e);
+                }
+            },
+
+            _handlePngRegion: function (arrayBuf, buf) {
+                var dv = new DataView(arrayBuf);
+                var x = dv.getUint16(0, true);
+                var y = dv.getUint16(2, true);
+                var w = dv.getUint16(4, true);
+                var h = dv.getUint16(6, true);
+                var pngSize = buf.length - 8;
+
+                if (this._binaryCount <= 30 || this._binaryCount % 50 === 0) {
+                    console.log('[RDP] PNG #' + this._binaryCount +
+                        ' x=' + x + ' y=' + y + ' w=' + w + ' h=' + h +
+                        ' png=' + pngSize + 'B');
+                }
+
+                var self = this;
+                var blob = new Blob([buf.slice(8)], { type: 'image/png' });
+                var img = new Image();
+                var blobUrl = URL.createObjectURL(blob);
+                img.onload = function () {
+                    if (self.ctx) {
+                        self.ctx.drawImage(img, x, y);
+                    }
+                    URL.revokeObjectURL(blobUrl);
+                };
+                img.onerror = function () {
+                    console.error('[RDP] PNG decode FAILED #' + self._binaryCount +
+                        ' size=' + pngSize + 'B');
+                    URL.revokeObjectURL(blobUrl);
+                };
+                img.src = blobUrl;
             },
 
             sendInput: function (input) {

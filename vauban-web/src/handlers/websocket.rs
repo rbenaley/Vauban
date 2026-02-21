@@ -27,7 +27,7 @@ use sha3::{Digest, Sha3_256};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::interval;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::utils::format_duration;
 
@@ -1168,6 +1168,7 @@ enum RdpCommand {
     MouseWheel { delta_x: i16, delta_y: i16 },
     Key { code: String, key: String, pressed: bool, shift: bool, ctrl: bool, alt: bool, meta: bool },
     Resize { width: u16, height: u16 },
+    Capabilities { video_codecs: Vec<String> },
 }
 
 /// Handle RDP WebSocket upgrade.
@@ -1223,6 +1224,7 @@ async fn handle_rdp_socket(
     let mut display_rx = proxy_client.subscribe_session(&session_id).await;
     let mut ping_interval = interval(Duration::from_secs(PING_INTERVAL_SECS));
     let mut should_close = false;
+    let mut _video_mode = false;
 
     loop {
         tokio::select! {
@@ -1231,6 +1233,23 @@ async fn handle_rdp_socket(
                     Some(Ok(Message::Text(text))) => {
                         if let Ok(cmd) = serde_json::from_str::<RdpCommand>(&text) {
                             match cmd {
+                                RdpCommand::Capabilities { video_codecs } => {
+                                    let supports_h264 = video_codecs.iter().any(|c| c.starts_with("avc1"));
+                                    debug!(session_id = %session_id, ?video_codecs, supports_h264, "RDP capabilities received");
+                                    if supports_h264 {
+                                        _video_mode = true;
+                                        let pc = proxy_client.clone();
+                                        let sid = session_id.clone();
+                                        if let Err(e) = tokio::task::spawn_blocking(move || {
+                                            pc.set_video_mode(&sid, true)
+                                        }).await.unwrap_or_else(|e| Err(crate::error::AppError::Ipc(e.to_string()))) {
+                                            warn!(session_id = %session_id, error = %e, "Failed to enable video mode");
+                                            _video_mode = false;
+                                        }
+                                        let confirm = r#"{"type":"mode","video":true}"#;
+                                        let _ = sender.send(Message::Text(confirm.to_string().into())).await;
+                                    }
+                                }
                                 RdpCommand::Resize { width, height } => {
                                     debug!(session_id = %session_id, width, height, "RDP resize requested");
                                     let pc = proxy_client.clone();
@@ -1257,7 +1276,7 @@ async fn handle_rdp_socket(
                                                 code, key, pressed, shift, ctrl, alt, meta,
                                             }
                                         }
-                                        RdpCommand::Resize { .. } => unreachable!(),
+                                        RdpCommand::Resize { .. } | RdpCommand::Capabilities { .. } => unreachable!(),
                                     };
                                     let pc = proxy_client.clone();
                                     let sid = session_id.clone();
@@ -1305,7 +1324,7 @@ async fn handle_rdp_socket(
                         buf.extend_from_slice(&width.to_le_bytes());
                         buf.extend_from_slice(&height.to_le_bytes());
                         buf.extend_from_slice(&png_data);
-                        debug!(
+                        trace!(
                             session_id = %session_id,
                             x, y, w = width, h = height,
                             ws_bytes = buf.len(),
@@ -1318,9 +1337,30 @@ async fn handle_rdp_socket(
                     }
                     Some(crate::ipc::proxy_rdp::RdpSessionEvent::DesktopResize { width, height }) => {
                         let json = format!(r#"{{"type":"desktop_resize","width":{},"height":{}}}"#, width, height);
-                        debug!(session_id = %session_id, width, height, "Sending desktop resize to WebSocket");
+                        trace!(session_id = %session_id, width, height, "Sending desktop resize to WebSocket");
                         if sender.send(Message::Text(json.into())).await.is_err() {
                             warn!(session_id = %session_id, "Failed to send desktop resize to WebSocket");
+                            should_close = true;
+                        }
+                    }
+                    Some(crate::ipc::proxy_rdp::RdpSessionEvent::VideoFrame { timestamp_us, is_keyframe, width, height, data }) => {
+                        // Binary header (10 bytes): type(1) + flags(1) + timestamp_ms(4 LE) + width(2 LE) + height(2 LE) + H.264 NAL data
+                        let timestamp_ms = (timestamp_us / 1000) as u32;
+                        let mut buf = Vec::with_capacity(10 + data.len());
+                        buf.push(0x01); // video frame marker
+                        buf.push(if is_keyframe { 0x01 } else { 0x00 });
+                        buf.extend_from_slice(&timestamp_ms.to_le_bytes());
+                        buf.extend_from_slice(&width.to_le_bytes());
+                        buf.extend_from_slice(&height.to_le_bytes());
+                        buf.extend_from_slice(&data);
+                        trace!(
+                            session_id = %session_id,
+                            is_keyframe, width, height,
+                            ws_bytes = buf.len(),
+                            "Sending H.264 video frame via WebSocket"
+                        );
+                        if sender.send(Message::Binary(buf.into())).await.is_err() {
+                            warn!(session_id = %session_id, "Failed to send video frame to WebSocket");
                             should_close = true;
                         }
                     }
@@ -1838,5 +1878,116 @@ mod tests {
         } else {
             panic!("Wrong variant");
         }
+    }
+
+    #[test]
+    fn test_rdp_command_capabilities_h264() {
+        let json = r#"{"type":"capabilities","video_codecs":["avc1.42001f"]}"#;
+        let cmd: RdpCommand = serde_json::from_str(json).unwrap();
+        if let RdpCommand::Capabilities { video_codecs } = cmd {
+            assert_eq!(video_codecs.len(), 1);
+            assert!(video_codecs[0].starts_with("avc1"));
+        } else {
+            panic!("Expected Capabilities");
+        }
+    }
+
+    #[test]
+    fn test_rdp_command_capabilities_empty() {
+        let json = r#"{"type":"capabilities","video_codecs":[]}"#;
+        let cmd: RdpCommand = serde_json::from_str(json).unwrap();
+        if let RdpCommand::Capabilities { video_codecs } = cmd {
+            assert!(video_codecs.is_empty());
+            assert!(!video_codecs.iter().any(|c| c.starts_with("avc1")));
+        } else {
+            panic!("Expected Capabilities");
+        }
+    }
+
+    #[test]
+    fn test_rdp_command_capabilities_multiple_codecs() {
+        let json = r#"{"type":"capabilities","video_codecs":["avc1.42001f","hev1.1.6.L93.B0"]}"#;
+        let cmd: RdpCommand = serde_json::from_str(json).unwrap();
+        if let RdpCommand::Capabilities { video_codecs } = cmd {
+            assert_eq!(video_codecs.len(), 2);
+            assert!(video_codecs.iter().any(|c| c.starts_with("avc1")));
+        } else {
+            panic!("Expected Capabilities");
+        }
+    }
+
+    #[test]
+    fn test_rdp_command_roundtrip_includes_capabilities() {
+        let commands = vec![
+            r#"{"type":"mouse_move","x":500,"y":300}"#,
+            r#"{"type":"mouse_button","button":0,"pressed":true,"x":100,"y":200}"#,
+            r#"{"type":"mouse_wheel","delta_x":0,"delta_y":-120}"#,
+            r#"{"type":"key","code":"KeyA","key":"a","pressed":true,"shift":false,"ctrl":false,"alt":false,"meta":false}"#,
+            r#"{"type":"resize","width":1920,"height":1080}"#,
+            r#"{"type":"capabilities","video_codecs":["avc1.42001f"]}"#,
+        ];
+        for json in &commands {
+            let result: Result<RdpCommand, _> = serde_json::from_str(json);
+            assert!(result.is_ok(), "Failed to parse: {}", json);
+        }
+    }
+
+    #[test]
+    fn test_video_frame_binary_header_packing() {
+        let timestamp_us: u64 = 16666;
+        let is_keyframe = true;
+        let width: u16 = 1920;
+        let height: u16 = 1080;
+        let nal_data = vec![0x00, 0x00, 0x00, 0x01, 0x67];
+
+        let timestamp_ms = (timestamp_us / 1000) as u32;
+        let mut buf = Vec::with_capacity(10 + nal_data.len());
+        buf.push(0x01);
+        buf.push(if is_keyframe { 0x01 } else { 0x00 });
+        buf.extend_from_slice(&timestamp_ms.to_le_bytes());
+        buf.extend_from_slice(&width.to_le_bytes());
+        buf.extend_from_slice(&height.to_le_bytes());
+        buf.extend_from_slice(&nal_data);
+
+        assert_eq!(buf[0], 0x01);
+        assert_eq!(buf[1], 0x01);
+        assert_eq!(u32::from_le_bytes([buf[2], buf[3], buf[4], buf[5]]), 16);
+        assert_eq!(u16::from_le_bytes([buf[6], buf[7]]), 1920);
+        assert_eq!(u16::from_le_bytes([buf[8], buf[9]]), 1080);
+        assert_eq!(&buf[10..], &nal_data);
+    }
+
+    #[test]
+    fn test_video_frame_binary_header_delta() {
+        let mut buf = Vec::with_capacity(10);
+        buf.push(0x01);
+        buf.push(0x00); // P-frame
+        buf.extend_from_slice(&33u32.to_le_bytes());
+        buf.extend_from_slice(&1280u16.to_le_bytes());
+        buf.extend_from_slice(&720u16.to_le_bytes());
+
+        assert_eq!(buf[0], 0x01);
+        assert_eq!(buf[1], 0x00);
+        assert_eq!(u16::from_le_bytes([buf[6], buf[7]]), 1280);
+        assert_eq!(u16::from_le_bytes([buf[8], buf[9]]), 720);
+    }
+
+    #[test]
+    fn test_video_frame_discriminated_from_png() {
+        // PNG region header: first 2 bytes are x position as u16 LE
+        // Video frame header: first byte is 0x01 marker
+        // They overlap when x=0x0001 (1 pixel offset), but the second byte
+        // of a PNG header is 0x00 (high byte of x) while video has flags.
+        // The discrimination relies on byte 0 == 0x01 + video_mode flag.
+        let video_buf: [u8; 10] = [0x01, 0x01, 0, 0, 0, 0, 0x80, 0x07, 0x38, 0x04];
+        assert_eq!(video_buf[0], 0x01);
+        let is_video = video_buf[0] == 0x01;
+        assert!(is_video);
+
+        // PNG region at x=256, y=128 -> first bytes: 0x00, 0x01, 0x80, 0x00
+        let png_x: u16 = 256;
+        let png_buf = png_x.to_le_bytes();
+        assert_eq!(png_buf[0], 0x00); // low byte
+        assert_ne!(png_buf[0], 0x01);
     }
 }

@@ -7,9 +7,9 @@ use std::io;
 use std::os::unix::io::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use thiserror::Error;
 
-/// Maximum message size (64 KB). Sized for RDP bitmap updates (typically
-/// 15-40 KB per full-screen PNG region) while limiting DoS impact on IPC.
-pub const MAX_MESSAGE_SIZE: usize = 64 * 1024;
+/// Maximum message size (128 KB). Sized for H.264 I-frames which can reach
+/// 60-80 KB at high resolutions while limiting DoS impact on IPC.
+pub const MAX_MESSAGE_SIZE: usize = 128 * 1024;
 
 /// IPC error types.
 #[derive(Debug, Error)]
@@ -549,7 +549,7 @@ mod tests {
         let err = IpcError::MessageTooLarge { size: 20000 };
         let msg = format!("{}", err);
         assert!(msg.contains("20000"));
-        assert!(msg.contains("65536")); // MAX_MESSAGE_SIZE
+        assert!(msg.contains("131072")); // MAX_MESSAGE_SIZE
     }
 
     #[test]
@@ -647,7 +647,7 @@ mod tests {
 
     #[test]
     fn test_max_message_size_constant() {
-        assert_eq!(MAX_MESSAGE_SIZE, 64 * 1024);
+        assert_eq!(MAX_MESSAGE_SIZE, 128 * 1024);
     }
 
     #[test]

@@ -5,12 +5,13 @@
 //! Display updates are encoded as PNG regions and sent via IPC.
 
 use crate::error::{SessionError, SessionResult};
+use crate::video_encoder::VideoEncoder;
 use image::codecs::png::PngEncoder;
 use image::{ExtendedColorType, ImageEncoder};
 use ironrdp::connector::{self, connection_activation::ConnectionActivationState, ClientConnector, ConnectionResult, Credentials, DesktopSize};
 use ironrdp::pdu::gcc::KeyboardType;
 use ironrdp::pdu::geometry::Rectangle as _;
-use ironrdp::pdu::rdp::capability_sets::MajorPlatformType;
+use ironrdp::pdu::rdp::capability_sets::{self, MajorPlatformType};
 use ironrdp::pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{fast_path, ActiveStage, ActiveStageOutput};
@@ -23,16 +24,18 @@ use ironrdp_tokio::single_sequence_step;
 use ironrdp_tokio::{FramedWrite as _, NetworkClient};
 use secrecy::{ExposeSecret, SecretString};
 use shared::messages::{Message, RdpInputEvent};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
+use tokio::time::interval;
 use tokio_rustls::rustls;
 use tokio_rustls::rustls::client::danger::{
     HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
 };
 use tokio_rustls::rustls::pki_types;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 /// Configuration for creating a new RDP session.
 #[derive(Debug)]
@@ -69,6 +72,7 @@ pub struct RdpSession {
 pub enum SessionCommand {
     Input(RdpInputEvent),
     Resize { width: u16, height: u16 },
+    SetVideoMode { enabled: bool, bitrate_bps: u32 },
     Close,
 }
 
@@ -133,11 +137,11 @@ impl RdpSession {
             .local_addr()
             .map_err(|e| SessionError::ConnectionFailed(format!("local addr: {e}")))?;
 
-        debug!(session_id = %config.session_id, "TCP connection established");
+        trace!(session_id = %config.session_id, "TCP connection established");
 
         let drdynvc = DrdynvcClient::new()
             .with_dynamic_channel(DisplayControlClient::new(|caps| {
-                debug!("Display Control capabilities: {:?}", caps);
+                trace!("Display Control capabilities: {:?}", caps);
                 Ok(Vec::new())
             }));
         let mut connector = ClientConnector::new(connector_config, client_addr)
@@ -153,7 +157,7 @@ impl RdpSession {
                 SessionError::ConnectionFailed(format!("RDP handshake begin failed: {e}"))
             })?;
 
-        debug!(session_id = %config.session_id, "TLS upgrade starting");
+        trace!(session_id = %config.session_id, "TLS upgrade starting");
 
         // Perform TLS upgrade
         let server_name: pki_types::ServerName<'static> = config
@@ -174,7 +178,7 @@ impl RdpSession {
         .map_err(|_| SessionError::TlsUpgradeFailed("TLS handshake timed out after 10s".to_string()))?
         .map_err(|e| SessionError::TlsUpgradeFailed(e.to_string()))?;
 
-        debug!(session_id = %config.session_id, "TLS upgrade complete");
+        trace!(session_id = %config.session_id, "TLS upgrade complete");
 
         // Extract server public key for CredSSP
         let (_, client_connection) = tls_stream.get_ref();
@@ -234,6 +238,7 @@ impl RdpSession {
                 tls_framed,
                 web_tx,
                 cmd_rx,
+                None, // audit_tx: future recording support
             )
             .await
             {
@@ -264,7 +269,12 @@ fn build_connector_config(
         ime_file_name: String::new(),
         dig_product_id: String::new(),
         desktop_size: DesktopSize { width, height },
-        bitmap: None,
+        bitmap: Some(connector::BitmapConfig {
+            lossy_compression: true,
+            color_depth: 32,
+            codecs: capability_sets::client_codecs_capabilities(&[])
+                .unwrap_or_else(|_| capability_sets::BitmapCodecs(Vec::new())),
+        }),
         client_build: 0,
         client_name: "Vauban".to_owned(),
         client_dir: "C:\\Windows\\System32\\mstscax.dll".to_owned(),
@@ -303,6 +313,92 @@ fn build_connector_config(
     }
 }
 
+/// Round a dimension up to the nearest even number (H.264 YUV 4:2:0 requirement).
+fn align_even(v: u16) -> u16 {
+    (v + 1) & !1
+}
+
+/// Commands sent to the background encoder thread.
+enum EncoderCommand {
+    /// Encode a framebuffer snapshot (RGBA data, width, height).
+    Encode(Vec<u8>, u16, u16),
+    /// Reconfigure encoder for new dimensions.
+    Reconfigure(u16, u16),
+    /// Force next frame to be a keyframe.
+    ForceKeyframe,
+}
+
+/// Spawns a background thread that encodes H.264 frames without blocking async I/O.
+fn spawn_encoder_thread(
+    width: u16,
+    height: u16,
+    bitrate_bps: u32,
+    mut cmd_rx: mpsc::Receiver<EncoderCommand>,
+    result_tx: mpsc::Sender<(crate::video_encoder::VideoFrame, u64)>,
+    session_id: String,
+) {
+    std::thread::spawn(move || {
+        let width = align_even(width);
+        let height = align_even(height);
+        let encoder_result = if bitrate_bps > 0 {
+            VideoEncoder::new(width, height, bitrate_bps)
+        } else {
+            VideoEncoder::with_defaults(width, height)
+        };
+        let mut encoder = match encoder_result {
+            Ok(enc) => enc,
+            Err(e) => {
+                error!(session_id = %session_id, error = %e, "Encoder thread: failed to create encoder");
+                return;
+            }
+        };
+        info!(session_id = %session_id, "H.264 encoder thread started");
+
+        while let Some(cmd) = cmd_rx.blocking_recv() {
+            match cmd {
+                EncoderCommand::Encode(mut rgba_data, w, h) => {
+                    let aw = align_even(w);
+                    let ah = align_even(h);
+                    if aw != encoder.dimensions().0 || ah != encoder.dimensions().1 {
+                        if let Err(e) = encoder.reconfigure(aw, ah) {
+                            warn!(session_id = %session_id, error = %e, "Encoder thread: reconfigure failed");
+                            continue;
+                        }
+                    }
+                    let expected = usize::from(aw) * usize::from(ah) * 4;
+                    if rgba_data.len() < expected {
+                        rgba_data.resize(expected, 0);
+                    }
+                    let encode_start = Instant::now();
+                    match encoder.encode_frame(&rgba_data) {
+                        Ok(frame) => {
+                            let elapsed_us = encode_start.elapsed().as_micros() as u64;
+                            if result_tx.blocking_send((frame, elapsed_us)).is_err() {
+                                debug!(session_id = %session_id, "Encoder thread: result channel closed");
+                                return;
+                            }
+                        }
+                        Err(e) => {
+                            warn!(session_id = %session_id, error = %e, "Encoder thread: encode failed");
+                        }
+                    }
+                }
+                EncoderCommand::Reconfigure(w, h) => {
+                    let w = align_even(w);
+                    let h = align_even(h);
+                    if let Err(e) = encoder.reconfigure(w, h) {
+                        warn!(session_id = %session_id, error = %e, "Encoder thread: reconfigure failed");
+                    }
+                }
+                EncoderCommand::ForceKeyframe => {
+                    encoder.force_keyframe();
+                }
+            }
+        }
+        info!(session_id = %session_id, "H.264 encoder thread exited");
+    });
+}
+
 /// Main processing loop for an active RDP session.
 async fn active_session_loop(
     session_id: String,
@@ -310,19 +406,34 @@ async fn active_session_loop(
     mut framed: ironrdp_tokio::TokioFramed<tokio_rustls::client::TlsStream<TcpStream>>,
     web_tx: mpsc::Sender<Message>,
     mut cmd_rx: mpsc::Receiver<SessionCommand>,
+    #[allow(unused_variables)] audit_tx: Option<mpsc::Sender<Message>>,
 ) -> SessionResult<()> {
-    let mut image = DecodedImage::new(
-        PixelFormat::RgbA32,
-        connection_result.desktop_size.width,
-        connection_result.desktop_size.height,
-    );
+    let desktop_w = connection_result.desktop_size.width;
+    let desktop_h = connection_result.desktop_size.height;
+    let mut image = DecodedImage::new(PixelFormat::RgbA32, desktop_w, desktop_h);
     let mut active_stage = ActiveStage::new(connection_result);
     let mut input_db = InputDatabase::new();
     let mut graphics_update_count: u64 = 0;
     let mut _response_frame_count: u64 = 0;
     let mut pdu_count: u64 = 0;
 
-    debug!(session_id = %session_id, "Active session loop started");
+    let mut video_mode = false;
+    let framebuffer_dirty = Arc::new(AtomicBool::new(false));
+    let mut encode_interval = interval(std::time::Duration::from_millis(16)); // 60 FPS max
+
+    // Channel for receiving encoded H.264 frames from the encoder thread
+    let (encoded_tx, mut encoded_rx) = mpsc::channel::<(crate::video_encoder::VideoFrame, u64)>(4);
+    // Channel for sending framebuffer snapshots to the encoder thread
+    let mut encoder_snapshot_tx: Option<mpsc::Sender<EncoderCommand>> = None;
+
+    // Performance metrics: log every 5 seconds
+    let mut perf_interval = interval(std::time::Duration::from_secs(5));
+    let mut perf_gfx_updates: u64 = 0;
+    let mut perf_encoded_frames: u64 = 0;
+    let mut perf_dirty_skips: u64 = 0;
+    let mut perf_encode_time_us: u64 = 0;
+
+    trace!(session_id = %session_id, "Active session loop started");
 
     loop {
         tokio::select! {
@@ -334,7 +445,7 @@ async fn active_session_loop(
 
                 pdu_count += 1;
                 if pdu_count <= 20 || pdu_count.is_multiple_of(100) {
-                    debug!(
+                    trace!(
                         session_id = %session_id,
                         pdu_count,
                         action = ?action,
@@ -349,7 +460,7 @@ async fn active_session_loop(
                 for output in &outputs {
                     match output {
                         ActiveStageOutput::GraphicsUpdate(region) => {
-                            debug!(
+                            trace!(
                                 session_id = %session_id,
                                 x = region.left, y = region.top,
                                 w = region.width(), h = region.height(),
@@ -364,14 +475,14 @@ async fn active_session_loop(
                             info!(session_id = %session_id, ?reason, "Terminate received");
                         }
                         ActiveStageOutput::ResponseFrame(frame) => {
-                            debug!(
+                            trace!(
                                 session_id = %session_id,
                                 frame_len = frame.len(),
                                 "ResponseFrame to send"
                             );
                         }
                         other => {
-                            debug!(session_id = %session_id, output = ?std::mem::discriminant(other), "Other output");
+                            trace!(session_id = %session_id, output = ?std::mem::discriminant(other), "Other output");
                         }
                     }
                 }
@@ -386,36 +497,42 @@ async fn active_session_loop(
                         }
                         ActiveStageOutput::GraphicsUpdate(region) => {
                             graphics_update_count += 1;
-                            let x = region.left;
-                            let y = region.top;
-                            let w = region.width();
-                            let h = region.height();
 
-                            match encode_region_as_png(&image, x, y, w, h) {
-                                Ok(png_data) => {
-                                    if graphics_update_count <= 20 || graphics_update_count.is_multiple_of(50) {
-                                        info!(
-                                            session_id = %session_id,
-                                            graphics_update_count,
-                                            x, y, w, h,
-                                            png_bytes = png_data.len(),
-                                            "Sending display update"
-                                        );
+                            if video_mode {
+                                framebuffer_dirty.store(true, Ordering::Relaxed);
+                                perf_gfx_updates += 1;
+                            } else {
+                                let x = region.left;
+                                let y = region.top;
+                                let w = region.width();
+                                let h = region.height();
+
+                                match encode_region_as_png(&image, x, y, w, h) {
+                                    Ok(png_data) => {
+                                        if graphics_update_count <= 20 || graphics_update_count.is_multiple_of(50) {
+                                            trace!(
+                                                session_id = %session_id,
+                                                graphics_update_count,
+                                                x, y, w, h,
+                                                png_bytes = png_data.len(),
+                                                "Sending display update (PNG)"
+                                            );
+                                        }
+                                        let msg = Message::RdpDisplayUpdate {
+                                            session_id: session_id.clone(),
+                                            x, y,
+                                            width: w,
+                                            height: h,
+                                            png_data,
+                                        };
+                                        if web_tx.send(msg).await.is_err() {
+                                            warn!(session_id = %session_id, "Web channel closed");
+                                            return Ok(());
+                                        }
                                     }
-                                    let msg = Message::RdpDisplayUpdate {
-                                        session_id: session_id.clone(),
-                                        x, y,
-                                        width: w,
-                                        height: h,
-                                        png_data,
-                                    };
-                                    if web_tx.send(msg).await.is_err() {
-                                        warn!(session_id = %session_id, "Web channel closed");
-                                        return Ok(());
+                                    Err(e) => {
+                                        warn!(session_id = %session_id, error = %e, x, y, w, h, "PNG encoding failed, skipping update");
                                     }
-                                }
-                                Err(e) => {
-                                    warn!(session_id = %session_id, error = %e, x, y, w, h, "PNG encoding failed, skipping update");
                                 }
                             }
                         }
@@ -462,6 +579,15 @@ async fn active_session_loop(
                                     );
                                     active_stage.set_enable_server_pointer(enable_server_pointer);
 
+                                    if let Some(ref tx) = encoder_snapshot_tx {
+                                        let _ = tx.try_send(EncoderCommand::Reconfigure(
+                                            desktop_size.width,
+                                            desktop_size.height,
+                                        ));
+                                        let _ = tx.try_send(EncoderCommand::ForceKeyframe);
+                                        framebuffer_dirty.store(true, Ordering::Relaxed);
+                                    }
+
                                     let _ = web_tx.send(Message::RdpDesktopResize {
                                         session_id: session_id.clone(),
                                         width: desktop_size.width,
@@ -504,8 +630,7 @@ async fn active_session_loop(
                         }
                     }
                     Some(SessionCommand::Resize { width, height }) => {
-                        // Enforce RDP spec constraints: width >= 200, height >= 200, width must be even
-                        let w = width.max(200) & !1; // round down to even
+                        let w = width.max(200) & !1;
                         let h = height.max(200);
                         info!(session_id = %session_id, width = w, height = h, "Resize requested");
 
@@ -516,7 +641,6 @@ async fn active_session_loop(
                                         .await
                                         .map_err(|e| SessionError::SessionFailed(format!("Resize write error: {e}")))?;
                                 }
-                                image = DecodedImage::new(PixelFormat::RgbA32, w, h);
                                 debug!(session_id = %session_id, w, h, "Resize sent via Display Control channel");
                             }
                             Some(Err(e)) => {
@@ -527,6 +651,24 @@ async fn active_session_loop(
                             }
                         }
                     }
+                    Some(SessionCommand::SetVideoMode { enabled, bitrate_bps }) => {
+                        info!(session_id = %session_id, enabled, bitrate_bps, "Video mode toggled");
+                        video_mode = enabled;
+                        if enabled && encoder_snapshot_tx.is_none() {
+                            let (snap_tx, snap_rx) = mpsc::channel::<EncoderCommand>(2);
+                            spawn_encoder_thread(
+                                image.width(),
+                                image.height(),
+                                bitrate_bps,
+                                snap_rx,
+                                encoded_tx.clone(),
+                                session_id.clone(),
+                            );
+                            encoder_snapshot_tx = Some(snap_tx);
+                            framebuffer_dirty.store(true, Ordering::Relaxed);
+                            info!(session_id = %session_id, "H.264 encoder thread spawned");
+                        }
+                    }
                     Some(SessionCommand::Close) => {
                         info!(session_id = %session_id, "Close requested");
                         return Ok(());
@@ -535,6 +677,67 @@ async fn active_session_loop(
                         debug!(session_id = %session_id, "Command channel closed");
                         return Ok(());
                     }
+                }
+            }
+
+            // Performance metrics reporting (every 5 seconds)
+            _ = perf_interval.tick(), if video_mode => {
+                if perf_gfx_updates > 0 || perf_encoded_frames > 0 {
+                    let avg_encode_ms = if perf_encoded_frames > 0 {
+                        perf_encode_time_us / perf_encoded_frames / 1000
+                    } else {
+                        0
+                    };
+                    info!(
+                        session_id = %session_id,
+                        gfx_updates_5s = perf_gfx_updates,
+                        encoded_frames_5s = perf_encoded_frames,
+                        dirty_skips_5s = perf_dirty_skips,
+                        avg_encode_ms,
+                        gfx_fps = perf_gfx_updates / 5,
+                        encode_fps = perf_encoded_frames / 5,
+                        "H.264 perf metrics"
+                    );
+                }
+                perf_gfx_updates = 0;
+                perf_encoded_frames = 0;
+                perf_dirty_skips = 0;
+                perf_encode_time_us = 0;
+            }
+
+            // H.264 encoding tick: snapshot framebuffer and send to encoder thread
+            _ = encode_interval.tick(), if video_mode => {
+                if !framebuffer_dirty.swap(false, Ordering::Relaxed) {
+                    perf_dirty_skips += 1;
+                    continue;
+                }
+                if let Some(ref tx) = encoder_snapshot_tx {
+                    let snapshot = image.data().to_vec();
+                    let w = image.width();
+                    let h = image.height();
+                    if tx.try_send(EncoderCommand::Encode(snapshot, w, h)).is_err() {
+                        trace!(session_id = %session_id, "Encoder busy, skipping frame");
+                        perf_dirty_skips += 1;
+                        framebuffer_dirty.store(true, Ordering::Relaxed);
+                    }
+                }
+            }
+
+            // Receive encoded H.264 frames from encoder thread
+            Some((frame, encode_elapsed_us)) = encoded_rx.recv() => {
+                perf_encoded_frames += 1;
+                perf_encode_time_us += encode_elapsed_us;
+                let msg = Message::RdpVideoFrame {
+                    session_id: session_id.clone(),
+                    timestamp_us: frame.timestamp_us,
+                    is_keyframe: frame.is_keyframe,
+                    width: frame.width,
+                    height: frame.height,
+                    data: frame.data,
+                };
+                if web_tx.send(msg).await.is_err() {
+                    warn!(session_id = %session_id, "Web channel closed");
+                    return Ok(());
                 }
             }
         }
@@ -1374,6 +1577,139 @@ mod tests {
         let _close = SessionCommand::Close;
     }
 
+    // ==================== align_even Tests ====================
+
+    #[test]
+    fn test_align_even_already_even() {
+        assert_eq!(align_even(0), 0);
+        assert_eq!(align_even(2), 2);
+        assert_eq!(align_even(720), 720);
+        assert_eq!(align_even(1080), 1080);
+        assert_eq!(align_even(1280), 1280);
+        assert_eq!(align_even(1728), 1728);
+        assert_eq!(align_even(1920), 1920);
+    }
+
+    #[test]
+    fn test_align_even_odd_rounds_up() {
+        assert_eq!(align_even(1), 2);
+        assert_eq!(align_even(3), 4);
+        assert_eq!(align_even(719), 720);
+        assert_eq!(align_even(1079), 1080);
+        assert_eq!(align_even(1117), 1118);
+    }
+
+    #[test]
+    fn test_align_even_preserves_h264_requirement() {
+        for v in 1..=2000u16 {
+            let aligned = align_even(v);
+            assert_eq!(aligned % 2, 0, "align_even({v}) = {aligned} is not even");
+            assert!(aligned >= v, "align_even({v}) = {aligned} is smaller than input");
+            assert!(aligned - v <= 1, "align_even({v}) = {aligned} overshot by more than 1");
+        }
+    }
+
+    // ==================== H.264 encoder thread odd-dimension handling ====================
+
+    #[test]
+    fn test_encoder_thread_handles_odd_dimensions() {
+        let cmd_rx = tokio::sync::mpsc::channel::<EncoderCommand>(8);
+        let mut result_tx = tokio::sync::mpsc::channel::<(crate::video_encoder::VideoFrame, u64)>(8);
+
+        spawn_encoder_thread(1280, 720, 0, cmd_rx.1, result_tx.0, "test-odd".to_string());
+
+        let odd_w: u16 = 1727;
+        let odd_h: u16 = 1117;
+        let buf = vec![0u8; usize::from(odd_w) * usize::from(odd_h) * 4];
+        cmd_rx.0.blocking_send(EncoderCommand::Encode(buf, odd_w, odd_h)).unwrap();
+
+        let (frame, _elapsed) = result_tx.1.blocking_recv().unwrap();
+        assert_eq!(frame.width, align_even(odd_w));
+        assert_eq!(frame.height, align_even(odd_h));
+        assert!(!frame.data.is_empty(), "H.264 frame data should not be empty");
+        assert!(frame.is_keyframe, "First frame should be a keyframe");
+    }
+
+    #[test]
+    fn test_encoder_thread_reconfigure_odd_dimensions() {
+        let cmd_rx = tokio::sync::mpsc::channel::<EncoderCommand>(8);
+        let mut result_tx = tokio::sync::mpsc::channel::<(crate::video_encoder::VideoFrame, u64)>(8);
+
+        spawn_encoder_thread(1280, 720, 0, cmd_rx.1, result_tx.0, "test-reconf-odd".to_string());
+
+        cmd_rx.0.blocking_send(EncoderCommand::Reconfigure(1727, 1117)).unwrap();
+        cmd_rx.0.blocking_send(EncoderCommand::ForceKeyframe).unwrap();
+
+        let buf = vec![0u8; usize::from(1728u16) * usize::from(1118u16) * 4];
+        cmd_rx.0.blocking_send(EncoderCommand::Encode(buf, 1728, 1118)).unwrap();
+
+        let (frame, _elapsed) = result_tx.1.blocking_recv().unwrap();
+        assert_eq!(frame.width, 1728);
+        assert_eq!(frame.height, 1118);
+        assert!(frame.is_keyframe);
+    }
+
+    #[test]
+    fn test_encoder_thread_exact_fullscreen_scenario() {
+        let cmd_rx = tokio::sync::mpsc::channel::<EncoderCommand>(8);
+        let mut result_tx = tokio::sync::mpsc::channel::<(crate::video_encoder::VideoFrame, u64)>(8);
+
+        spawn_encoder_thread(1280, 720, 0, cmd_rx.1, result_tx.0, "test-fullscreen".to_string());
+
+        let buf_720p = vec![128u8; 1280 * 720 * 4];
+        cmd_rx.0.blocking_send(EncoderCommand::Encode(buf_720p, 1280, 720)).unwrap();
+        let (frame1, _) = result_tx.1.blocking_recv().unwrap();
+        assert_eq!(frame1.width, 1280);
+        assert_eq!(frame1.height, 720);
+
+        let buf_odd = vec![64u8; 1728 * 1117 * 4];
+        cmd_rx.0.blocking_send(EncoderCommand::Encode(buf_odd, 1728, 1117)).unwrap();
+        let (frame2, _) = result_tx.1.blocking_recv().unwrap();
+        assert_eq!(frame2.width, 1728);
+        assert_eq!(frame2.height, 1118);
+        assert!(!frame2.data.is_empty());
+
+        let buf_back = vec![200u8; 1280 * 720 * 4];
+        cmd_rx.0.blocking_send(EncoderCommand::Encode(buf_back, 1280, 720)).unwrap();
+        let (frame3, _) = result_tx.1.blocking_recv().unwrap();
+        assert_eq!(frame3.width, 1280);
+        assert_eq!(frame3.height, 720);
+    }
+
+    #[test]
+    fn test_encoder_thread_custom_bitrate() {
+        let cmd_rx = tokio::sync::mpsc::channel::<EncoderCommand>(8);
+        let mut result_tx = tokio::sync::mpsc::channel::<(crate::video_encoder::VideoFrame, u64)>(8);
+
+        spawn_encoder_thread(1280, 720, 20_000_000, cmd_rx.1, result_tx.0, "test-bitrate".to_string());
+
+        let buf = vec![0u8; 1280 * 720 * 4];
+        cmd_rx.0.blocking_send(EncoderCommand::Encode(buf, 1280, 720)).unwrap();
+        let (frame, _) = result_tx.1.blocking_recv().unwrap();
+        assert!(frame.is_keyframe);
+        assert!(!frame.data.is_empty());
+    }
+
+    #[test]
+    fn test_encoder_thread_zero_bitrate_uses_default() {
+        let cmd_rx = tokio::sync::mpsc::channel::<EncoderCommand>(8);
+        let mut result_tx = tokio::sync::mpsc::channel::<(crate::video_encoder::VideoFrame, u64)>(8);
+
+        spawn_encoder_thread(1280, 720, 0, cmd_rx.1, result_tx.0, "test-default-bitrate".to_string());
+
+        let buf = vec![0u8; 1280 * 720 * 4];
+        cmd_rx.0.blocking_send(EncoderCommand::Encode(buf, 1280, 720)).unwrap();
+        let (frame, _) = result_tx.1.blocking_recv().unwrap();
+        assert!(frame.is_keyframe);
+        assert!(!frame.data.is_empty());
+    }
+
+    #[test]
+    fn test_session_command_set_video_mode_has_bitrate() {
+        let _cmd = SessionCommand::SetVideoMode { enabled: true, bitrate_bps: 10_000_000 };
+        let _cmd_default = SessionCommand::SetVideoMode { enabled: false, bitrate_bps: 0 };
+    }
+
     // ==================== Structural Regression Tests ====================
 
     #[test]
@@ -1394,6 +1730,74 @@ mod tests {
         assert!(
             source.contains("set_fastpath_processor"),
             "DeactivateAll handler must update fastpath processor"
+        );
+    }
+
+    #[test]
+    fn test_resize_handler_does_not_recreate_framebuffer() {
+        let source = include_str!("session.rs");
+        let resize_handler_start = source
+            .find("Some(SessionCommand::Resize { width, height })")
+            .expect("Resize handler must exist");
+        let handler_body = &source[resize_handler_start..];
+        let handler_end = handler_body
+            .find("Some(SessionCommand::SetVideoMode")
+            .or_else(|| handler_body.find("Some(SessionCommand::Close)"))
+            .unwrap_or(handler_body.len());
+        let handler_body = &handler_body[..handler_end];
+
+        assert!(
+            !handler_body.contains("DecodedImage::new"),
+            "Resize handler must NOT recreate DecodedImage (race condition: server still \
+             sends updates at old resolution until DeactivateAll completes)"
+        );
+        assert!(
+            !handler_body.contains("EncoderCommand::Reconfigure"),
+            "Resize handler must NOT reconfigure encoder (done in DeactivateAll handler)"
+        );
+    }
+
+    #[test]
+    fn test_deactivate_all_reconfigures_encoder() {
+        let source = include_str!("session.rs");
+        let deactivate_start = source
+            .find("DeactivateAll(mut connection_activation)")
+            .expect("DeactivateAll handler must exist");
+        let handler_body = &source[deactivate_start..];
+        let handler_end = handler_body.find("_ => {}").unwrap_or(handler_body.len());
+        let handler_body = &handler_body[..handler_end];
+
+        assert!(
+            handler_body.contains("DecodedImage::new"),
+            "DeactivateAll handler must recreate DecodedImage with new resolution"
+        );
+        assert!(
+            handler_body.contains("EncoderCommand::Reconfigure"),
+            "DeactivateAll handler must reconfigure H.264 encoder for new resolution"
+        );
+        assert!(
+            handler_body.contains("EncoderCommand::ForceKeyframe"),
+            "DeactivateAll handler must force a keyframe after resize"
+        );
+    }
+
+    #[test]
+    fn test_align_even_used_in_encoder_thread() {
+        let source = include_str!("session.rs");
+        let thread_start = source
+            .find("fn spawn_encoder_thread")
+            .expect("spawn_encoder_thread must exist");
+        let fn_body = &source[thread_start..];
+        let fn_end = fn_body.find("\n/// ").or_else(|| fn_body.find("\nfn ")).unwrap_or(fn_body.len());
+        let fn_body = &fn_body[..fn_end];
+
+        assert!(
+            fn_body.contains("align_even"),
+            "spawn_encoder_thread must use align_even to ensure H.264 YUV 4:2:0 compatibility"
+        );
+        assert!(
+            fn_body.contains(".resize(expected,"),
+            "spawn_encoder_thread must pad RGBA buffer when dimensions are aligned up"
         );
     }
 

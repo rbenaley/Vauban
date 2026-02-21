@@ -531,6 +531,30 @@ pub enum Message {
         height: u16,
     },
 
+    /// H.264 encoded video frame (ProxyRdp -> Web).
+    /// Can also be forwarded to vauban-audit for session recording.
+    RdpVideoFrame {
+        session_id: String,
+        /// Monotonic timestamp in microseconds from session start.
+        timestamp_us: u64,
+        /// true = I-frame (keyframe), false = P-frame (delta).
+        is_keyframe: bool,
+        /// Frame dimensions (can change after resize).
+        width: u16,
+        height: u16,
+        /// H.264 NAL unit(s) for this frame.
+        data: Vec<u8>,
+    },
+
+    /// Enable or disable H.264 video mode for a session (Web -> ProxyRdp).
+    ///
+    /// The encoder bitrate is configured at the proxy level via the supervisor
+    /// (VAUBAN_RDP_VIDEO_BITRATE_BPS), not through this message.
+    RdpSetVideoMode {
+        session_id: String,
+        enabled: bool,
+    },
+
     /// Request to close an RDP session.
     RdpSessionClose {
         session_id: String,
@@ -1920,6 +1944,66 @@ mod tests {
     }
 
     #[test]
+    fn test_message_rdp_video_frame() {
+        let h264_data = vec![0x00, 0x00, 0x00, 0x01, 0x67, 0x42]; // NAL start code + SPS
+        let msg = Message::RdpVideoFrame {
+            session_id: "rdp-vid-123".to_string(),
+            timestamp_us: 16666,
+            is_keyframe: true,
+            width: 1920,
+            height: 1080,
+            data: h264_data.clone(),
+        };
+
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::RdpVideoFrame {
+            session_id,
+            timestamp_us,
+            is_keyframe,
+            width,
+            height,
+            data,
+        } = deserialized
+        {
+            assert_eq!(session_id, "rdp-vid-123");
+            assert_eq!(timestamp_us, 16666);
+            assert!(is_keyframe);
+            assert_eq!(width, 1920);
+            assert_eq!(height, 1080);
+            assert_eq!(data, h264_data);
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_message_rdp_video_frame_delta() {
+        let msg = Message::RdpVideoFrame {
+            session_id: "s1".to_string(),
+            timestamp_us: 33333,
+            is_keyframe: false,
+            width: 1280,
+            height: 720,
+            data: vec![0x00, 0x00, 0x01, 0x41],
+        };
+
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::RdpVideoFrame {
+            is_keyframe,
+            timestamp_us,
+            ..
+        } = deserialized
+        {
+            assert!(!is_keyframe);
+            assert_eq!(timestamp_us, 33333);
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
     fn test_message_rdp_input_mouse_move() {
         let msg = Message::RdpInput {
             session_id: "rdp-sess".to_string(),
@@ -2087,6 +2171,47 @@ mod tests {
     }
 
     #[test]
+    fn test_message_rdp_set_video_mode() {
+        let msg = Message::RdpSetVideoMode {
+            session_id: "rdp-sess-456".to_string(),
+            enabled: true,
+        };
+
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::RdpSetVideoMode {
+            session_id,
+            enabled,
+        } = deserialized
+        {
+            assert_eq!(session_id, "rdp-sess-456");
+            assert!(enabled);
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_message_rdp_set_video_mode_disabled() {
+        let msg = Message::RdpSetVideoMode {
+            session_id: "rdp-sess-789".to_string(),
+            enabled: false,
+        };
+
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::RdpSetVideoMode {
+            enabled,
+            ..
+        } = deserialized
+        {
+            assert!(!enabled);
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
     fn test_message_rdp_session_close() {
         let msg = Message::RdpSessionClose {
             session_id: "rdp-sess-123".to_string(),
@@ -2141,6 +2266,14 @@ mod tests {
                 session_id: "s1".to_string(),
                 width: 1920,
                 height: 1080,
+            },
+            Message::RdpVideoFrame {
+                session_id: "s1".to_string(),
+                timestamp_us: 16666,
+                is_keyframe: true,
+                width: 1920,
+                height: 1080,
+                data: vec![0, 0, 0, 1],
             },
             Message::RdpSessionClose {
                 session_id: "s1".to_string(),

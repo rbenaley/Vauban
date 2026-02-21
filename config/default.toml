@@ -130,3 +130,14 @@ prefix = "/api/v1"
 # Each browser tab opens multiple WS (dashboard, notifications, terminal, etc.)
 # so 30 comfortably supports ~10 simultaneous SSH tabs.
 max_connections_per_user = 30
+
+# ==============================================================================
+# RDP CONFIGURATION
+# ==============================================================================
+
+[rdp]
+# H.264 video encoder bitrate in bits per second.
+# Higher values improve text clarity and image quality but use more bandwidth.
+# Default: 5 Mbps (suitable for LAN / low-latency environments).
+# Recommended range: 2_000_000 (low quality) to 30_000_000 (high quality).
+video_bitrate_bps = 5_000_000

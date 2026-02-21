@@ -18,6 +18,7 @@ mod error;
 mod ipc;
 mod session;
 mod session_manager;
+mod video_encoder;
 
 use anyhow::{Context, Result};
 use ipc::AsyncIpcChannel;
@@ -33,7 +34,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{mpsc, Mutex};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 struct ServiceState {
     start_time: Instant,
@@ -115,7 +116,21 @@ fn main() -> ExitCode {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive(tracing::Level::DEBUG.into()),
+                .add_directive(tracing::Level::DEBUG.into())
+                .add_directive("ironrdp_session=warn".parse().unwrap())
+                .add_directive("ironrdp_connector=warn".parse().unwrap())
+                .add_directive("ironrdp_pdu=warn".parse().unwrap())
+                .add_directive("ironrdp_tls=warn".parse().unwrap())
+                .add_directive("ironrdp_tokio=warn".parse().unwrap())
+                .add_directive("ironrdp_graphics=warn".parse().unwrap())
+                .add_directive("ironrdp_svc=warn".parse().unwrap())
+                .add_directive("ironrdp_dvc=warn".parse().unwrap())
+                .add_directive("ironrdp_displaycontrol=warn".parse().unwrap())
+                .add_directive("ironrdp_async=warn".parse().unwrap())
+                .add_directive("sspi=warn".parse().unwrap())
+                .add_directive("sspi::dns=off".parse().unwrap())
+                .add_directive("picky=warn".parse().unwrap())
+                .add_directive("rustls=warn".parse().unwrap()),
         )
         .init();
 
@@ -163,6 +178,11 @@ async fn run_service() -> Result<()> {
         .ok()
         .and_then(|s| s.parse().ok());
 
+    let video_bitrate_bps: u32 = std::env::var("VAUBAN_RDP_VIDEO_BITRATE_BPS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(5_000_000);
+
     // SAFETY: Single thread at this point, no concurrent env access.
     unsafe {
         std::env::remove_var("VAUBAN_IPC_READ");
@@ -170,7 +190,10 @@ async fn run_service() -> Result<()> {
         std::env::remove_var("VAUBAN_WEB_IPC_READ");
         std::env::remove_var("VAUBAN_WEB_IPC_WRITE");
         std::env::remove_var("VAUBAN_FD_PASSING_SOCKET");
+        std::env::remove_var("VAUBAN_RDP_VIDEO_BITRATE_BPS");
     }
+
+    info!(video_bitrate_bps, "H.264 encoder bitrate configured");
 
     let supervisor_channel =
         unsafe { IpcChannel::from_raw_fds(supervisor_read_fd, supervisor_write_fd) };
@@ -206,7 +229,7 @@ async fn run_service() -> Result<()> {
     info!("Entered Capsicum sandbox, starting main loop");
 
     let state = Arc::new(ServiceState::default());
-    let sessions = Arc::new(SessionManager::new());
+    let sessions = Arc::new(SessionManager::with_bitrate(video_bitrate_bps));
 
     let (web_tx, web_rx) = mpsc::channel::<Message>(256);
 
@@ -326,7 +349,7 @@ async fn handle_control_message(
             let stats = state.stats(sessions.active_count());
             let pong = Message::Control(ControlMessage::Pong { seq, stats });
             channel.send(&pong)?;
-            debug!(seq = seq, "Responded to ping");
+            trace!(seq = seq, "Responded to ping");
         }
         ControlMessage::Drain => {
             let active = sessions.active_count();
@@ -451,6 +474,17 @@ async fn handle_web_message(
         } => {
             if let Err(e) = sessions.resize(&session_id, width, height).await {
                 warn!(session_id = %session_id, error = %e, "Failed to resize session");
+            }
+        }
+
+        Message::RdpSetVideoMode {
+            session_id,
+            enabled,
+            ..
+        } => {
+            debug!(session_id = %session_id, enabled, "RDP video mode request");
+            if let Err(e) = sessions.set_video_mode(&session_id, enabled).await {
+                warn!(session_id = %session_id, error = %e, "Failed to set video mode");
             }
         }
 
@@ -589,6 +623,41 @@ mod tests {
         assert!(
             handle_source.contains("shutdown_requested.store(true"),
             "M-8/M-10: handle_control_message must set shutdown_requested on Shutdown"
+        );
+    }
+
+    // ==================== Bitrate Security Tests ====================
+
+    #[test]
+    fn test_bitrate_env_var_read_and_destroyed() {
+        let source = prod_source();
+        assert!(
+            source.contains("VAUBAN_RDP_VIDEO_BITRATE_BPS"),
+            "Must read VAUBAN_RDP_VIDEO_BITRATE_BPS environment variable"
+        );
+        assert!(
+            source.contains(r#"remove_var("VAUBAN_RDP_VIDEO_BITRATE_BPS")"#),
+            "Must destroy VAUBAN_RDP_VIDEO_BITRATE_BPS after reading (pentest hygiene)"
+        );
+    }
+
+    #[test]
+    fn test_bitrate_not_received_from_ipc() {
+        let source = prod_source();
+        let handler_start = source.find("Message::RdpSetVideoMode").expect("RdpSetVideoMode handler must exist");
+        let handler_body = &source[handler_start..handler_start + 300];
+        assert!(
+            !handler_body.contains("bitrate_bps,") || handler_body.contains(".."),
+            "RdpSetVideoMode handler must ignore bitrate_bps from IPC (use supervisor-injected value)"
+        );
+    }
+
+    #[test]
+    fn test_session_manager_created_with_bitrate() {
+        let source = prod_source();
+        assert!(
+            source.contains("SessionManager::with_bitrate(video_bitrate_bps)"),
+            "SessionManager must be created with the bitrate read from env var"
         );
     }
 
