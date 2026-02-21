@@ -116,7 +116,7 @@ fn main() -> ExitCode {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive(tracing::Level::DEBUG.into())
+                .add_directive(tracing::Level::INFO.into())
                 .add_directive("ironrdp_session=warn".parse().unwrap())
                 .add_directive("ironrdp_connector=warn".parse().unwrap())
                 .add_directive("ironrdp_pdu=warn".parse().unwrap())
