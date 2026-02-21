@@ -491,7 +491,7 @@ The supervisor acts as a **connection broker** for sandboxed proxies:
 
 This approach maintains the OpenSSH-style privilege separation model: sandboxed processes handle protocol logic while privileged operations (network access) remain in the supervisor.
 
-#### 5.6.3 Architecture Diagram
+#### 5.6.3 Architecture Diagram (SSH)
 
 ```mermaid
 flowchart TB
@@ -503,35 +503,50 @@ flowchart TB
         W["HTTPS Server<br/>WebSocket Handler"]
     end
 
-    subgraph ssh_proxy [vauban-proxy-ssh - Sandboxed]
-        PS["SSH Protocol<br/>Session Management"]
+    subgraph proxy [vauban-proxy-ssh - Sandboxed]
+        P["SSH Protocol<br/>Session Management"]
     end
 
-    subgraph rdp_proxy [vauban-proxy-rdp - Sandboxed]
-        PR["RDP Protocol<br/>H.264 Encoding"]
+    subgraph target [Target Host]
+        T["SSH Server"]
     end
 
-    subgraph ssh_target [SSH Target]
-        TS["SSH Server"]
-    end
-
-    subgraph rdp_target [RDP Target]
-        TR["RDP Server"]
-    end
-
-    W -->|"1. TcpConnectRequest<br/>(target_service=ProxySsh)"| S
-    S -->|"2. DNS + TCP connect"| TS
-    S -->|"3. Send FD via SCM_RIGHTS"| PS
+    W -->|"1. TcpConnectRequest"| S
+    S -->|"2. DNS + TCP connect"| T
+    S -->|"3. Send FD via SCM_RIGHTS"| P
     S -->|"4. TcpConnectResponse"| W
-    W -->|"5. SshSessionOpen"| PS
-    PS <-->|"6. SSH Protocol"| TS
+    W -->|"5. SshSessionOpen"| P
+    P <-->|"6. SSH Protocol"| T
+```
 
-    W -->|"1. TcpConnectRequest<br/>(target_service=ProxyRdp)"| S
-    S -->|"2. DNS + TCP connect"| TR
-    S -->|"3. Send FD via SCM_RIGHTS"| PR
+#### 5.6.3b Architecture Diagram (RDP)
+
+The same brokering pattern applies to RDP sessions. The only differences are the `target_service` field (`ProxyRdp`) and the session open message (`RdpSessionOpen`).
+
+```mermaid
+flowchart TB
+    subgraph supervisor [vauban-supervisor - NOT sandboxed]
+        S["Process Manager<br/>DNS Resolution<br/>TCP Connection Broker"]
+    end
+
+    subgraph web [vauban-web - Sandboxed]
+        W["HTTPS Server<br/>WebSocket Handler"]
+    end
+
+    subgraph proxy [vauban-proxy-rdp - Sandboxed]
+        P["RDP Protocol<br/>H.264 Encoding"]
+    end
+
+    subgraph target [Target Host]
+        T["RDP Server"]
+    end
+
+    W -->|"1. TcpConnectRequest"| S
+    S -->|"2. DNS + TCP connect"| T
+    S -->|"3. Send FD via SCM_RIGHTS"| P
     S -->|"4. TcpConnectResponse"| W
-    W -->|"5. RdpSessionOpen"| PR
-    PR <-->|"6. RDP Protocol"| TR
+    W -->|"5. RdpSessionOpen"| P
+    P <-->|"6. RDP Protocol"| T
 ```
 
 #### 5.6.4 File Descriptor Passing with SCM_RIGHTS
