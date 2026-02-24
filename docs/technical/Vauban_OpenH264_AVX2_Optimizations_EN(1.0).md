@@ -393,7 +393,7 @@ objdump -d target/release/vauban-proxy-rdp | grep -c vpsadbw
 
 | Parameter | Value |
 |-----------|-------|
-| OS | FreeBSD 14 (amd64) |
+| OS | FreeBSD 15.0-RELEASE-p2 (amd64) |
 | CPU | Intel Xeon E-2246G (Coffee Lake, 6C/12T, 3.6 GHz base, 4.8 GHz turbo) |
 | Workload | Active RDP session, 1280x720, desktop motion with video playback |
 | Encoder config | H.264 Baseline, 5 Mbps, ScreenContentRealTime, 60 FPS target |
