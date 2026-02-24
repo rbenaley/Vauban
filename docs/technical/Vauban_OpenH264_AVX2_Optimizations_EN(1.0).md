@@ -249,8 +249,8 @@ vmovdqu         [r0+32], ymm0  ; store rows 2-3
 **AVX2 approach**: Uses `vpbroadcastb xmm0, [mem]` to broadcast a single byte to all 16 positions of an `xmm` register in one instruction. The upstream SSE2 version requires a `movzx` + `imul` + `movd` + `pshufd` sequence to achieve the same broadcast. The loop is fully unrolled with `%rep 16`.
 
 ```nasm
-vpbroadcastb xmm0, [r1]                 ; broadcast left pixel to all 16 bytes
-vmovdqa [r0 + h_row * 16], xmm0         ; store one row
+vpbroadcastb  xmm0, [r1]               ; broadcast left pixel to all 16 bytes
+vmovdqa       [r0 + h_row * 16], xmm0  ; store one row
 ```
 
 ### 5.3 DC Prediction (16x16 Luma)
