@@ -236,9 +236,9 @@ The final `AVX2_SadFour_Reduce` macro reduces all four 256-bit accumulators to f
 **AVX2 approach** (our patch): Uses `vbroadcasti128` to replicate the 16-byte top row into both lanes of a 256-bit `ymm0` register. Each `vmovdqu` store writes 32 bytes (two rows at once), reducing the store count from 16 to 8.
 
 ```nasm
-vbroadcasti128 ymm0, [r1]       ; duplicate 16 bytes into both 128-bit lanes
-vmovdqu [r0],      ymm0         ; store rows 0-1
-vmovdqu [r0+32],   ymm0         ; store rows 2-3
+vbroadcasti128  ymm0, [r1]     ; duplicate 16 bytes into both 128-bit lanes
+vmovdqu         [r0], ymm0     ; store rows 0-1
+vmovdqu         [r0+32], ymm0  ; store rows 2-3
 ; ... 6 more stores ...
 ```
 
@@ -260,12 +260,12 @@ vmovdqa [r0 + h_row * 16], xmm0         ; store one row
 **AVX2 approach**: The top-row sum is computed using `vpsadbw` (which sums absolute differences against zero, effectively summing the byte values). The left-column sum uses scalar `movzx` loads (since the left pixels are stride-separated in memory and cannot be loaded contiguously). After computing the average, `vpbroadcastb ymm0, xmm0` broadcasts the single DC value to all 32 bytes of a `ymm` register, enabling 8 stores of 32 bytes (two rows each) to fill the entire block.
 
 ```nasm
-vpsadbw     xmm0, xmm0, xmm1   ; sum top row bytes
+vpsadbw       xmm0, xmm0, xmm1  ; sum top row bytes
 ; ... scalar left-column accumulation ...
-vpsrld      xmm0, xmm0, 5      ; divide by 32 (average)
-vpbroadcastb ymm0, xmm0        ; broadcast to all 32 bytes
-vmovdqu     [r0],     ymm0     ; store rows 0-1
-vmovdqu     [r0+32],  ymm0     ; store rows 2-3
+vpsrld        xmm0, xmm0, 5     ; divide by 32 (average)
+vpbroadcastb  ymm0, xmm0        ; broadcast to all 32 bytes
+vmovdqu       [r0], ymm0        ; store rows 0-1
+vmovdqu       [r0+32], ymm0     ; store rows 2-3
 ; ... 6 more stores ...
 ```
 
@@ -277,17 +277,17 @@ vmovdqu     [r0+32],  ymm0     ; store rows 2-3
 
 ```nasm
 ; Build 256-bit multiplier: [-7,-6,-5,-4,-3,-2,-1,0 | 1,2,3,4,5,6,7,8]
-vmovdqa     xmm5, [sse2_plane_inc_minus]
-vinserti128 ymm5, ymm5, [sse2_plane_inc], 1
+vmovdqa      xmm5, [sse2_plane_inc_minus]
+vinserti128  ymm5, ymm5, [sse2_plane_inc], 1
 
 .loop_plane_avx2:
-    vpmullw     ymm2, ymm1, ymm5       ; b * [-7..8] (16 multiplications)
-    vpaddw      ymm2, ymm2, ymm0       ; + s (row offset)
-    vpsraw      ymm2, ymm2, 5          ; >> 5 (arithmetic shift)
-    vpackuswb   ymm2, ymm2, ymm2       ; pack 16-bit words to 8-bit bytes with saturation
-    vpermq      ymm2, ymm2, 0x08       ; gather result bytes from both lanes
-    vmovdqu     [r0], xmm2             ; store 16 predicted pixels
-    vpaddw      ymm0, ymm0, ymm4       ; s += c (advance to next row)
+    vpmullw    ymm2, ymm1, ymm5  ; b * [-7..8] (16 multiplications)
+    vpaddw     ymm2, ymm2, ymm0  ; + s (row offset)
+    vpsraw     ymm2, ymm2, 5     ; >> 5 (arithmetic shift)
+    vpackuswb  ymm2, ymm2, ymm2  ; pack 16-bit words to 8-bit bytes with saturation
+    vpermq     ymm2, ymm2, 0x08  ; gather result bytes from both lanes
+    vmovdqu    [r0], xmm2        ; store 16 predicted pixels
+    vpaddw     ymm0, ymm0, ymm4  ; s += c (advance to next row)
 ```
 
 The SSE2 version processes only 8 pixels per iteration (using `xmm` registers) and requires two passes per row. The AVX2 version processes all 16 pixels of a row in a single pass by placing the negative multipliers `[-7..-1, 0]` in the lower lane and positive multipliers `[1..8]` in the upper lane of `ymm5`.
@@ -299,9 +299,9 @@ The SSE2 version processes only 8 pixels per iteration (using `xmm` registers) a
 **AVX2 approach**: Uses `vpbroadcastq ymm0, [r1]` to replicate the 8-byte top row to all four 64-bit slots of a `ymm` register. Two 32-byte stores fill the entire 64-byte block.
 
 ```nasm
-vpbroadcastq ymm0, [r1]     ; replicate 8 bytes to 32 bytes
-vmovdqu [r0],    ymm0        ; store rows 0-3
-vmovdqu [r0+32], ymm0        ; store rows 4-7
+vpbroadcastq  ymm0, [r1]     ; replicate 8 bytes to 32 bytes
+vmovdqu       [r0], ymm0     ; store rows 0-3
+vmovdqu       [r0+32], ymm0  ; store rows 4-7
 ```
 
 ### 5.6 File Locations
