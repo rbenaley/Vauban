@@ -72,7 +72,7 @@ Vauban's security is built on defense in depth:
 
 1. **Process isolation**: Each service runs under a dedicated UID with no shared memory
 2. **Capsicum confinement**: After initialization, processes cannot open files, create sockets, or access the filesystem
-3. **Credential isolation**: Plaintext secrets never leave `vauban-vault`; other services only see ciphertext
+3. **Credential isolation**: Encryption keys are confined to `vauban-vault`; secrets are encrypted at rest in PostgreSQL and only decrypted transiently for session establishment, wrapped in zeroize-on-drop memory
 4. **Network brokering**: Sandboxed proxies cannot establish TCP connections directly; the supervisor brokers all outbound connections via `SCM_RIGHTS` file descriptor passing
 5. **Memory safety**: Rust's ownership model prevents buffer overflows, use-after-free, and data races
 6. **Secret hygiene**: Environment variables destroyed after reading, `SensitiveString` zeroized on drop
