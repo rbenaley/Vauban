@@ -1881,6 +1881,18 @@ mod tests {
     }
 
     #[test]
+    fn test_rdp_command_resize_odd_dimensions_accepted() {
+        let json = r#"{"type": "resize", "width": 1921, "height": 1079}"#;
+        let cmd: RdpCommand = serde_json::from_str(json).unwrap();
+        if let RdpCommand::Resize { width, height } = cmd {
+            assert_eq!(width, 1921);
+            assert_eq!(height, 1079);
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
     fn test_rdp_command_capabilities_h264() {
         let json = r#"{"type":"capabilities","video_codecs":["avc1.42001f"]}"#;
         let cmd: RdpCommand = serde_json::from_str(json).unwrap();

@@ -223,11 +223,12 @@ document.addEventListener('alpine:init', function () {
                             var w = screen.width;
                             var h = screen.height;
                             w = Math.max(200, w - (w % 2));
-                            h = Math.max(200, h);
+                            h = Math.max(200, h - (h % 2));
                             self.sendInput({ type: 'resize', width: w, height: h });
                         } else {
                             self.sendInput({ type: 'resize', width: 1280, height: 720 });
                         }
+                        self._updateCanvasLayout();
                         self.$refs.canvas.focus();
                     });
                 };
@@ -304,6 +305,7 @@ document.addEventListener('alpine:init', function () {
                             if (msg.type === 'desktop_size' || msg.type === 'desktop_resize') {
                                 self.desktopWidth = msg.width;
                                 self.desktopHeight = msg.height;
+                                self._updateCanvasLayout();
                                 console.log('[RDP] desktop ' + msg.type + ': ' + msg.width + 'x' + msg.height);
                             } else if (msg.type === 'mode' && msg.video) {
                                 self.videoMode = true;
@@ -353,6 +355,7 @@ document.addEventListener('alpine:init', function () {
                 if (width !== this.desktopWidth || height !== this.desktopHeight) {
                     this.desktopWidth = width;
                     this.desktopHeight = height;
+                    this._updateCanvasLayout();
                     if (this.decoder) {
                         this.decoder.configure({
                             codec: 'avc1.42001f',
@@ -412,6 +415,25 @@ document.addEventListener('alpine:init', function () {
                     URL.revokeObjectURL(blobUrl);
                 };
                 img.src = blobUrl;
+            },
+
+            _updateCanvasLayout: function () {
+                var canvas = this.$refs.canvas;
+                if (!canvas) return;
+                if (document.fullscreenElement) {
+                    var vw = window.innerWidth;
+                    var vh = window.innerHeight;
+                    var dw = this.desktopWidth;
+                    var dh = this.desktopHeight;
+                    if (dw > 0 && dh > 0) {
+                        var scale = Math.min(vw / dw, vh / dh);
+                        canvas.style.width = Math.floor(dw * scale) + 'px';
+                        canvas.style.height = Math.floor(dh * scale) + 'px';
+                    }
+                } else {
+                    canvas.style.width = '';
+                    canvas.style.height = '';
+                }
             },
 
             sendInput: function (input) {

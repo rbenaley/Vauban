@@ -599,10 +599,13 @@ async fn active_session_loop(
                                     );
                                     active_stage.set_enable_server_pointer(enable_server_pointer);
 
+                                    let aligned_w = align_even(desktop_size.width);
+                                    let aligned_h = align_even(desktop_size.height);
+
                                     if let Some(ref tx) = encoder_snapshot_tx {
                                         let _ = tx.try_send(EncoderCommand::Reconfigure(
-                                            desktop_size.width,
-                                            desktop_size.height,
+                                            aligned_w,
+                                            aligned_h,
                                         ));
                                         let _ = tx.try_send(EncoderCommand::ForceKeyframe);
                                         framebuffer_dirty.store(true, Ordering::Relaxed);
@@ -610,8 +613,8 @@ async fn active_session_loop(
 
                                     let _ = web_tx.send(Message::RdpDesktopResize {
                                         session_id: session_id.clone(),
-                                        width: desktop_size.width,
-                                        height: desktop_size.height,
+                                        width: aligned_w,
+                                        height: aligned_h,
                                     }).await;
                                     info!(
                                         session_id = %session_id,
@@ -651,7 +654,7 @@ async fn active_session_loop(
                     }
                     Some(SessionCommand::Resize { width, height }) => {
                         let w = width.max(200) & !1;
-                        let h = height.max(200);
+                        let h = height.max(200) & !1;
                         info!(session_id = %session_id, width = w, height = h, "Resize requested");
 
                         match active_stage.encode_resize(u32::from(w), u32::from(h), None, None) {
@@ -1690,6 +1693,30 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_resize_dimensions_round_down_to_even() {
+        let odd_widths: [(u16, u16); 4] = [(1921, 1920), (1367, 1366), (2561, 2560), (3841, 3840)];
+        for (odd, expected) in odd_widths {
+            let result = odd & !1;
+            assert_eq!(
+                result, expected,
+                "Width {odd} & !1 should be {expected}, got {result}"
+            );
+        }
+        let odd_heights: [(u16, u16); 4] = [(1079, 1078), (1201, 1200), (901, 900), (1441, 1440)];
+        for (odd, expected) in odd_heights {
+            let result = odd & !1;
+            assert_eq!(
+                result, expected,
+                "Height {odd} & !1 should be {expected}, got {result}"
+            );
+        }
+        let even_values: [u16; 5] = [1920, 1080, 1280, 720, 2560];
+        for v in even_values {
+            assert_eq!(v & !1, v, "Even value {v} should be unchanged by & !1");
+        }
+    }
+
     // ==================== H.264 encoder thread odd-dimension handling ====================
 
     #[test]
@@ -1835,6 +1862,60 @@ mod tests {
         assert!(
             !handler_body.contains("EncoderCommand::Reconfigure"),
             "Resize handler must NOT reconfigure encoder (done in DeactivateAll handler)"
+        );
+    }
+
+    #[test]
+    fn test_resize_handler_forces_both_dimensions_even() {
+        let source = include_str!("session.rs");
+        let resize_handler_start = source
+            .find("Some(SessionCommand::Resize { width, height })")
+            .expect("Resize handler must exist");
+        let handler_body = &source[resize_handler_start..];
+        let handler_end = handler_body
+            .find("Some(SessionCommand::SetVideoMode")
+            .or_else(|| handler_body.find("Some(SessionCommand::Close)"))
+            .unwrap_or(handler_body.len());
+        let handler_body = &handler_body[..handler_end];
+
+        let w_line = handler_body.lines()
+            .find(|l| l.contains("let w ="))
+            .expect("Resize handler must assign w");
+        assert!(
+            w_line.contains("& !1"),
+            "Resize width must be forced even (& !1), found: {w_line}"
+        );
+
+        let h_line = handler_body.lines()
+            .find(|l| l.contains("let h ="))
+            .expect("Resize handler must assign h");
+        assert!(
+            h_line.contains("& !1"),
+            "Resize height must be forced even (& !1) for H.264 YUV 4:2:0 compatibility, found: {h_line}"
+        );
+    }
+
+    #[test]
+    fn test_deactivate_all_sends_aligned_dimensions_to_web() {
+        let source = include_str!("session.rs");
+        let deactivate_start = source
+            .find("DeactivateAll(mut connection_activation)")
+            .expect("DeactivateAll handler must exist");
+        let handler_body = &source[deactivate_start..];
+        let handler_end = handler_body.find("_ => {}").unwrap_or(handler_body.len());
+        let handler_body = &handler_body[..handler_end];
+
+        assert!(
+            handler_body.contains("align_even(desktop_size.width)"),
+            "DeactivateAll must align width before sending to web (prevents mismatch with encoder)"
+        );
+        assert!(
+            handler_body.contains("align_even(desktop_size.height)"),
+            "DeactivateAll must align height before sending to web (prevents mismatch with encoder)"
+        );
+        assert!(
+            handler_body.contains("RdpDesktopResize"),
+            "DeactivateAll must send RdpDesktopResize notification"
         );
     }
 
