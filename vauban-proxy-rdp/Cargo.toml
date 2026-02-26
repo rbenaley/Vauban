@@ -63,9 +63,9 @@ nix = { version = "0.31", features = ["process", "signal", "poll", "fs", "user",
 
 # AVX2 support: upstream openh264-sys2 build.rs does not pass -DHAVE_AVX2
 # to NASM or the C++ compiler, unlike Cisco's official meson.build.
-# This local patch adds HAVE_AVX2 for x86/x86_64 targets.
+# Use our fork with AVX2 optimizations for SAD and Intra Prediction.
 [patch.crates-io]
-openh264-sys2 = { path = "patches/openh264-sys2" }
+openh264-sys2 = { git = "https://github.com/rbenaley/openh264-rs-avx2", subdirectory = "openh264-sys2" }
 
 [profile.release]
 opt-level = 3
