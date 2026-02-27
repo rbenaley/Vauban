@@ -170,6 +170,7 @@ async fn acme_workflow(
     );
 
     // Step 3: Handle authorizations
+    let mut challenged_domains: Vec<String> = Vec::new();
     let mut authorizations = order.authorizations();
     while let Some(result) = authorizations.next().await {
         let mut authz = result.map_err(|e| format!("Failed to get authorization: {}", e))?;
@@ -217,6 +218,7 @@ async fn acme_workflow(
             .send(&install_msg)
             .map_err(|e| format!("Failed to send AcmeChallengeInstall: {}", e))?;
 
+        challenged_domains.push(domain.clone());
         info!(domain = %domain, "Challenge certificate installed, notifying CA");
 
         // Step 3d: Tell the CA the challenge is ready
@@ -224,19 +226,21 @@ async fn acme_workflow(
             .set_ready()
             .await
             .map_err(|e| format!("Failed to set challenge ready for {}: {}", domain, e))?;
+    }
 
-        // Step 3e: Remove challenge certificate (no longer needed after set_ready)
+    // Step 4: Wait for order to become ready (CA validates challenges here)
+    let status = order
+        .poll_ready(&RetryPolicy::default())
+        .await
+        .map_err(|e| format!("Order polling failed: {}", e))?;
+
+    // Step 4b: Remove challenge certificates now that validation is complete
+    for domain in &challenged_domains {
         let _ = web_channel.send(&Message::AcmeChallengeRemove {
             request_id,
             domain: domain.clone(),
         });
     }
-
-    // Step 4: Wait for order to become ready
-    let status = order
-        .poll_ready(&RetryPolicy::default())
-        .await
-        .map_err(|e| format!("Order polling failed: {}", e))?;
 
     if status != OrderStatus::Ready {
         return Err(format!("Unexpected order status after polling: {:?}", status).into());
