@@ -219,9 +219,9 @@ The final `AVX2_SadFour_Reduce` macro reduces all four 256-bit accumulators to f
 
 | File | Content |
 |------|---------|
-| `patches/openh264-sys2/upstream/codec/common/x86/satd_sad.asm` | 386 lines of AVX2 assembly (8 functions + 5 macros) |
-| `patches/openh264-sys2/upstream/codec/common/inc/sad_common.h` | 12 lines (C declarations for 8 functions) |
-| `patches/openh264-sys2/upstream/codec/encoder/core/src/sample.cpp` | 11 lines (function pointer registration under `WELS_CPU_AVX2` flag) |
+| `https://github.com/rbenaley/openh264-optimized/tree/avx2-intra-prediction/codec/common/x86/satd_sad.asm` | 386 lines of AVX2 assembly (8 functions + 5 macros) |
+| `https://github.com/rbenaley/openh264-optimized/tree/avx2-intra-prediction/codec/common/inc/sad_common.h` | 12 lines (C declarations for 8 functions) |
+| `https://github.com/rbenaley/openh264-optimized/tree/avx2-intra-prediction/codec/encoder/core/src/sample.cpp` | 11 lines (function pointer registration under `WELS_CPU_AVX2` flag) |
 
 ---
 
@@ -308,11 +308,11 @@ vmovdqu       [r0+32], ymm0  ; store rows 4-7
 
 | File | Content |
 |------|---------|
-| `patches/openh264-sys2/upstream/codec/common/x86/intra_pred_com.asm` | 44 lines (V and H luma prediction) |
-| `patches/openh264-sys2/upstream/codec/encoder/core/x86/intra_pred.asm` | 217 lines (DC, Plane luma prediction; Chroma V) |
-| `patches/openh264-sys2/upstream/codec/common/inc/intra_pred_common.h` | 4 lines (C declarations for V, H) |
-| `patches/openh264-sys2/upstream/codec/encoder/core/inc/get_intra_predictor.h` | 6 lines (C declarations for DC, Plane, Chroma V) |
-| `patches/openh264-sys2/upstream/codec/encoder/core/src/get_intra_predictor.cpp` | 9 lines (function pointer registration) |
+| `https://github.com/rbenaley/openh264-optimized/blob/avx2-intra-prediction/codec/common/x86/intra_pred_com.asm` | 44 lines (V and H luma prediction) |
+| `https://github.com/rbenaley/openh264-optimized/blob/avx2-intra-prediction/codec/encoder/core/x86/intra_pred.asm` | 217 lines (DC, Plane luma prediction; Chroma V) |
+| `https://github.com/rbenaley/openh264-optimized/blob/avx2-intra-prediction/codec/common/inc/intra_pred_common.h` | 4 lines (C declarations for V, H) |
+| `https://github.com/rbenaley/openh264-optimized/blob/avx2-intra-prediction/codec/encoder/core/inc/get_intra_predictor.h` | 6 lines (C declarations for DC, Plane, Chroma V) |
+| `https://github.com/rbenaley/openh264-optimized/blob/avx2-intra-prediction/codec/encoder/core/src/get_intra_predictor.cpp` | 9 lines (function pointer registration) |
 
 ---
 
@@ -445,7 +445,7 @@ The most impactful functions (SAD, 16x16 intra prediction, SATD, DCT, quantizati
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Patch location | Local `patches/openh264-sys2/` directory | Maintains upstream compatibility; patch is version-controlled alongside Vauban |
+| Source location | [rbenaley/openh264-optimized](https://github.com/rbenaley/openh264-optimized) fork | Maintains upstream compatibility; AVX2 additions are version-controlled in a dedicated fork |
 | Assembly syntax | NASM (Intel syntax) | Consistent with upstream OpenH264 convention |
 | Loop strategy | Full unrolling via `%rep` | Eliminates branch overhead; acceptable code size for <= 16 iterations |
 | 8-wide block strategy | Use `xmm` registers with VEX encoding | AVX2's 256-bit `ymm` registers offer no benefit for 8-byte loads; VEX prefix avoids SSE-AVX transition penalties |
