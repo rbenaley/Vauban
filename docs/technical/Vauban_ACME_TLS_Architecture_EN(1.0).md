@@ -75,20 +75,6 @@ This document covers the ACME TLS certificate management subsystem spanning thre
 
 ```mermaid
 flowchart TB
-    subgraph web_sandbox ["vauban-web (uid 907) - Sandboxed"]
-        direction TB
-        AcmeResolver["AcmeResolver<br/>(ResolvesServerCert)"]
-        CertExpiry["CertExpiry<br/>(AtomicI64 + AtomicBool)"]
-        Scheduler["renewal_scheduler()<br/>(tokio task)"]
-        IpcHandler["supervisor_ipc_loop()"]
-        TLS["rustls TLS 1.3<br/>ALPN: h2, http/1.1, acme-tls/1"]
-
-        TLS --> AcmeResolver
-        Scheduler --> CertExpiry
-        IpcHandler --> AcmeResolver
-        IpcHandler --> CertExpiry
-    end
-
     subgraph supervisor ["vauban-supervisor (uid 0 -> unprivileged)"]
         direction TB
         AcmeWorker["acme::handle_acme_renew()<br/>(tokio single-thread)"]
@@ -106,17 +92,8 @@ flowchart TB
         ACME_VAL["TLS-ALPN-01 Validator"]
     end
 
-    subgraph client ["Browser / Client"]
-        HTTPS["HTTPS Connection"]
-    end
-
-    Scheduler -->|"AcmeRenewRequest"| AcmeWorker
-    AcmeWorker -->|"AcmeChallengeInstall"| IpcHandler
-    AcmeWorker -->|"AcmeChallengeRemove"| IpcHandler
-    AcmeWorker -->|"AcmeCertActivate"| IpcHandler
     AcmeWorker <-->|"ACME Protocol<br/>(HTTPS)"| ACME_DIR
-    ACME_VAL -->|"TLS-ALPN-01<br/>port 443"| TLS
-    client -->|"HTTPS<br/>port 443"| TLS
+    ACME_VAL -->|"TLS-ALPN-01<br/>port 443"| AcmeWorker
     AcmeWorker -->|"cert.pem + key.pem"| DiskWriter
 ```
 
@@ -778,11 +755,11 @@ This avoids hardcoded DER blobs and ensures tests reflect real certificate struc
 **Context:** Vauban only binds port 443. Opening port 80 for HTTP-01 would expand the attack surface and require a separate HTTP listener.
 
 **Consequences:**
-- (+) No port 80, reduced attack surface
-- (+) Single port for all traffic
-- (+) Works behind firewalls that block port 80
-- (-) Requires custom `ResolvesServerCert` implementation
-- (-) Some CAs may not support TLS-ALPN-01 (rare)
+- ✅ No port 80, reduced attack surface
+- ✅ Single port for all traffic
+- ✅ Works behind firewalls that block port 80
+- ⚠️ Requires custom `ResolvesServerCert` implementation
+- ⚠️ Some CAs may not support TLS-ALPN-01 (rare)
 
 ### 12.2 Supervisor Executes ACME Protocol
 
@@ -791,11 +768,11 @@ This avoids hardcoded DER blobs and ensures tests reflect real certificate struc
 **Context:** After `cap_enter()`, `vauban-web` cannot make outbound network connections or write files. The ACME protocol requires both.
 
 **Consequences:**
-- (+) Clean separation: web serves TLS, supervisor manages certificates
-- (+) Compatible with Capsicum sandbox model
-- (+) Supervisor already has network access for other tasks
-- (-) Adds 5 IPC messages to the protocol
-- (-) Challenge certificates must cross the IPC boundary
+- ✅ Clean separation: web serves TLS, supervisor manages certificates
+- ✅ Compatible with Capsicum sandbox model
+- ✅ Supervisor already has network access for other tasks
+- ⚠️ Adds 5 IPC messages to the protocol
+- ⚠️ Challenge certificates must cross the IPC boundary
 
 ### 12.3 In-Memory Certificate Rotation
 
@@ -804,11 +781,11 @@ This avoids hardcoded DER blobs and ensures tests reflect real certificate struc
 **Context:** Restarting `vauban-web` would drop all active connections (WebSocket sessions, SSH sessions, RDP sessions).
 
 **Consequences:**
-- (+) Zero downtime during certificate renewal
-- (+) Active sessions continue uninterrupted
-- (+) New connections immediately use the new certificate
-- (-) Requires dynamic `ResolvesServerCert` implementation
-- (-) Requires `Arc<CertifiedKey>` reference counting
+- ✅ Zero downtime during certificate renewal
+- ✅ Active sessions continue uninterrupted
+- ✅ New connections immediately use the new certificate
+- ⚠️ Requires dynamic `ResolvesServerCert` implementation
+- ⚠️ Requires `Arc<CertifiedKey>` reference counting
 
 ### 12.4 Precise Sleep over Polling
 
@@ -817,10 +794,10 @@ This avoids hardcoded DER blobs and ensures tests reflect real certificate struc
 **Context:** A 90-day certificate with 24-hour renewal threshold means the scheduler has nothing to do for ~89 days.
 
 **Consequences:**
-- (+) Zero CPU usage between renewals
-- (+) Renewal happens at the exact right moment
-- (+) `Notify` allows immediate recalculation when a new cert arrives
-- (-) Requires `tokio::select!` for concurrent sleep + notify
+- ✅ Zero CPU usage between renewals
+- ✅ Renewal happens at the exact right moment
+- ✅ `Notify` allows immediate recalculation when a new cert arrives
+- ⚠️ Requires `tokio::select!` for concurrent sleep + notify
 
 ### 12.5 Custom ASN.1 Parser over x509-parser
 
@@ -829,11 +806,11 @@ This avoids hardcoded DER blobs and ensures tests reflect real certificate struc
 **Context:** Full X.509 parsing crates (`x509-parser`, `webpki`) add significant dependency weight. Vauban only needs two pieces of information from the certificate DER.
 
 **Consequences:**
-- (+) Minimal dependency footprint
-- (+) No transitive dependencies
-- (+) Fully covered by 26 unit tests
-- (-) Cannot parse arbitrary X.509 extensions
-- (-) Custom code requires careful testing (handled by test suite)
+- ✅ Minimal dependency footprint
+- ✅ No transitive dependencies
+- ✅ Fully covered by 26 unit tests
+- ⚠️ Cannot parse arbitrary X.509 extensions
+- ⚠️ Custom code requires careful testing (handled by test suite)
 
 ### 12.6 Self-Signed Detection for Automatic Bootstrap
 
@@ -842,10 +819,10 @@ This avoids hardcoded DER blobs and ensures tests reflect real certificate struc
 **Context:** A common deployment scenario is: generate self-signed cert, start server, wait for ACME to replace it. Without detection, the scheduler would wait ~364 days (self-signed cert validity) before renewing.
 
 **Consequences:**
-- (+) Automatic bootstrap from self-signed to ACME certificate
-- (+) No manual intervention required after first deploy
-- (+) Handles "certificate file missing" case gracefully (fallback to self-signed state)
-- (-) Requires issuer/subject comparison in DER (handled by ASN.1 parser)
+- ✅ Automatic bootstrap from self-signed to ACME certificate
+- ✅ No manual intervention required after first deploy
+- ✅ Handles "certificate file missing" case gracefully (fallback to self-signed state)
+- ⚠️ Requires issuer/subject comparison in DER (handled by ASN.1 parser)
 
 ### 12.7 No Hardcoded Directory URLs
 
@@ -854,7 +831,7 @@ This avoids hardcoded DER blobs and ensures tests reflect real certificate struc
 **Context:** Hardcoded URLs would make it impossible to use alternative CAs without code changes.
 
 **Consequences:**
-- (+) Support any RFC 8555-compliant CA
-- (+) Easy to switch between staging and production
-- (+) No code change needed for new providers
-- (-) Requires TOML configuration per provider
+- ✅ Support any RFC 8555-compliant CA
+- ✅ Easy to switch between staging and production
+- ✅ No code change needed for new providers
+- ⚠️ Requires TOML configuration per provider
