@@ -53,6 +53,9 @@ pub struct SupervisorClientInner {
     /// When set, the IPC loop processes AcmeChallengeInstall/Remove
     /// and AcmeCertActivate messages to update certificates in-memory.
     acme_resolver: OnceLock<Arc<crate::acme::resolver::AcmeResolver>>,
+    /// ACME certificate expiry tracker, updated when AcmeCertActivate arrives.
+    /// Extracted before cap_enter() and decremented between monitoring ticks.
+    cert_expiry: OnceLock<Arc<crate::tasks::CertExpiry>>,
 }
 
 /// Async client for communication with the supervisor.
@@ -94,6 +97,7 @@ impl SupervisorClient {
             shutdown: AtomicBool::new(false),
             server_handle,
             acme_resolver: OnceLock::new(),
+            cert_expiry: OnceLock::new(),
         });
 
         let thread_inner = Arc::clone(&inner);
@@ -190,6 +194,13 @@ impl SupervisorClient {
             warn!("ACME resolver already set, ignoring duplicate");
         } else {
             info!("ACME resolver registered with supervisor IPC handler");
+        }
+    }
+
+    /// Register the certificate expiry tracker for updates on AcmeCertActivate.
+    pub fn set_cert_expiry(&self, expiry: Arc<crate::tasks::CertExpiry>) {
+        if self.inner.cert_expiry.set(expiry).is_err() {
+            warn!("Certificate expiry tracker already set, ignoring duplicate");
         }
     }
 }
@@ -329,6 +340,18 @@ fn supervisor_ipc_loop(inner: Arc<SupervisorClientInner>) {
                     ) {
                         Ok(certified_key) => {
                             resolver.activate_production_cert(Arc::new(certified_key));
+                            // Update in-memory expiry tracker from the new certificate
+                            if let Some(expiry) = inner.cert_expiry.get() {
+                                use rustls_pki_types::pem::PemObject;
+                                use rustls_pki_types::CertificateDer;
+                                let certs: Vec<CertificateDer<'static>> =
+                                    CertificateDer::pem_slice_iter(cert_pem.as_bytes())
+                                        .filter_map(|c| c.ok())
+                                        .collect();
+                                if let Some(cert_der) = certs.first() {
+                                    expiry.update_from_der(cert_der.as_ref());
+                                }
+                            }
                             info!("New ACME production certificate activated (zero-downtime)");
                         }
                         Err(e) => {

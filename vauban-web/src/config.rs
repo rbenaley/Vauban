@@ -331,12 +331,9 @@ pub struct AcmeConfig {
     /// Domain names to obtain certificates for.
     #[serde(default)]
     pub domains: Vec<String>,
-    /// Renew the certificate this many days before expiration.
-    #[serde(default = "AcmeConfig::default_renew_before_days")]
-    pub renew_before_days: u32,
-    /// How often (in hours) to check certificate expiry at runtime.
-    #[serde(default = "AcmeConfig::default_check_interval_hours")]
-    pub check_interval_hours: u64,
+    /// Renew the certificate this many hours before expiration.
+    #[serde(default = "AcmeConfig::default_renew_before_hours")]
+    pub renew_before_hours: u32,
     /// Path to persist the ACME account private key.
     #[serde(default)]
     pub account_key_path: String,
@@ -360,12 +357,8 @@ pub struct AcmeConfig {
 }
 
 impl AcmeConfig {
-    fn default_renew_before_days() -> u32 {
-        30
-    }
-
-    fn default_check_interval_hours() -> u64 {
-        12
+    fn default_renew_before_hours() -> u32 {
+        24
     }
 
     /// Resolve the ACME directory URL based on staging flag and config.
@@ -414,8 +407,7 @@ impl std::fmt::Debug for AcmeConfig {
             .field("provider", &self.provider)
             .field("email", &self.email)
             .field("domains", &self.domains)
-            .field("renew_before_days", &self.renew_before_days)
-            .field("check_interval_hours", &self.check_interval_hours)
+            .field("renew_before_hours", &self.renew_before_hours)
             .field("account_key_path", &self.account_key_path)
             .field("staging", &self.staging)
             .field("eab_kid", &self.eab_kid)
@@ -634,11 +626,11 @@ impl Config {
         }
 
         // Resolve ACME account key path
-        if let Some(ref mut acme) = self.server.tls.acme {
-            if !acme.account_key_path.is_empty() {
-                acme.account_key_path =
-                    Self::resolve_path(&workspace_root, &acme.account_key_path);
-            }
+        if let Some(ref mut acme) = self.server.tls.acme
+            && !acme.account_key_path.is_empty()
+        {
+            acme.account_key_path =
+                Self::resolve_path(&workspace_root, &acme.account_key_path);
         }
     }
 

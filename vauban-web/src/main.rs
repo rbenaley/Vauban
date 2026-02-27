@@ -295,10 +295,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Register ACME resolver with supervisor IPC handler (if both are available).
     // This allows the supervisor to send ACME challenge/cert messages to the resolver.
-    if let Some(ref resolver) = acme_resolver {
-        if let Some(ref sup) = supervisor_client {
-            sup.set_acme_resolver(Arc::clone(resolver));
+    if let Some(ref resolver) = acme_resolver
+        && let Some(ref sup) = supervisor_client
+    {
+        sup.set_acme_resolver(Arc::clone(resolver));
+    }
+
+    // Extract certificate metadata BEFORE cap_enter() (file I/O forbidden after).
+    // This determines when renewal is needed and whether the cert is self-signed.
+    let cert_expiry = if config.server.tls.acme.as_ref().is_some_and(|a| a.enabled) {
+        match tasks::extract_cert_info(&config.server.tls.cert_path) {
+            Ok(info) => {
+                let self_signed = info.self_signed;
+                let expiry = Arc::new(tasks::CertExpiry::new(info));
+                tracing::info!(
+                    days_remaining = expiry.days_remaining(),
+                    self_signed = self_signed,
+                    cert_path = %config.server.tls.cert_path,
+                    "Certificate metadata extracted before sandbox"
+                );
+                Some(expiry)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Failed to extract certificate metadata, renewal will be requested immediately"
+                );
+                let info = tasks::CertInfo {
+                    not_after_epoch: 0,
+                    self_signed: true,
+                };
+                Some(Arc::new(tasks::CertExpiry::new(info)))
+            }
         }
+    } else {
+        None
+    };
+
+    // Register cert expiry tracker with supervisor so AcmeCertActivate updates it.
+    if let Some(ref expiry) = cert_expiry
+        && let Some(ref sup) = supervisor_client
+    {
+        sup.set_cert_expiry(Arc::clone(expiry));
     }
 
     // 3. Create database pool with all connections pre-established (sandbox mode)
@@ -445,19 +483,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     start_cleanup_tasks(db_pool).await;
 
     // Start ACME certificate monitoring task (if enabled)
-    if let Some(ref acme_config) = config.server.tls.acme {
-        if acme_config.enabled {
-            if let Some(ref resolver) = acme_resolver {
-                tasks::start_acme_monitoring(
-                    acme_config.clone(),
-                    config.server.tls.cert_path.clone(),
-                    config.server.tls.key_path.clone(),
-                    supervisor_client.clone(),
-                    Arc::clone(resolver),
-                )
-                .await;
-            }
-        }
+    if let Some(ref acme_config) = config.server.tls.acme
+        && acme_config.enabled
+        && let (Some(resolver), Some(expiry)) = (&acme_resolver, &cert_expiry)
+    {
+        tasks::start_acme_monitoring(
+            acme_config.clone(),
+            config.server.tls.cert_path.clone(),
+            config.server.tls.key_path.clone(),
+            supervisor_client.clone(),
+            Arc::clone(resolver),
+            Arc::clone(expiry),
+        )
+        .await;
     }
 
     // Build application router

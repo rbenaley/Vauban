@@ -1453,15 +1453,17 @@ fn process_service_messages(children: &HashMap<String, ChildState>) {
                             service_key
                         );
                         acme::handle_acme_renew(
-                            request_id,
-                            directory_url,
-                            domains,
-                            email,
-                            account_key_path,
-                            cert_path,
-                            key_path,
-                            eab_kid,
-                            eab_hmac_key,
+                            acme::AcmeRenewParams {
+                                request_id,
+                                directory_url,
+                                domains,
+                                email,
+                                account_key_path,
+                                cert_path,
+                                key_path,
+                                eab_kid,
+                                eab_hmac_key,
+                            },
                             &state.channel,
                         );
                     }

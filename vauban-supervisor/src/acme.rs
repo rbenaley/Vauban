@@ -34,23 +34,36 @@ use tracing::{debug, error, info, warn};
 /// RFC 8737, Section 3
 const ACME_IDENTIFIER_OID: &[u64] = &[1, 3, 6, 1, 5, 5, 7, 1, 31];
 
+/// Parameters for an ACME renewal request.
+pub struct AcmeRenewParams {
+    pub request_id: u64,
+    pub directory_url: String,
+    pub domains: Vec<String>,
+    pub email: String,
+    pub account_key_path: String,
+    pub cert_path: String,
+    pub key_path: String,
+    pub eab_kid: Option<String>,
+    pub eab_hmac_key: Option<SensitiveString>,
+}
+
 /// Run the ACME renewal workflow in a dedicated tokio runtime.
 ///
 /// This function is called from the synchronous supervisor main loop.
 /// It creates a single-threaded tokio runtime, runs the async ACME
 /// workflow, and blocks until completion.
-pub fn handle_acme_renew(
-    request_id: u64,
-    directory_url: String,
-    domains: Vec<String>,
-    email: String,
-    account_key_path: String,
-    cert_path: String,
-    key_path: String,
-    eab_kid: Option<String>,
-    eab_hmac_key: Option<SensitiveString>,
-    web_channel: &IpcChannel,
-) {
+pub fn handle_acme_renew(params: AcmeRenewParams, web_channel: &IpcChannel) {
+    let AcmeRenewParams {
+        request_id,
+        directory_url,
+        domains,
+        email,
+        account_key_path,
+        cert_path,
+        key_path,
+        eab_kid,
+        eab_hmac_key,
+    } = params;
     info!(
         request_id = request_id,
         domains = ?domains,
@@ -114,6 +127,7 @@ pub fn handle_acme_renew(
 /// Core async ACME workflow.
 ///
 /// Returns (cert_pem, key_pem) on success.
+#[allow(clippy::too_many_arguments)]
 async fn acme_workflow(
     request_id: u64,
     directory_url: &str,

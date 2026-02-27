@@ -186,44 +186,254 @@ pub fn certified_key_from_pem(
 mod tests {
     use super::*;
 
+    /// Generate a CertifiedKey from a fresh self-signed certificate.
+    fn make_certified_key(cn: &str) -> Arc<CertifiedKey> {
+        use rcgen::{CertificateParams, DnType, KeyPair};
+        use rustls::crypto::aws_lc_rs::sign::any_supported_type;
+        use rustls_pki_types::{CertificateDer, PrivateKeyDer};
+
+        let key_pair = KeyPair::generate().unwrap();
+        let mut params = CertificateParams::new(vec![cn.to_string()]).unwrap();
+        params.distinguished_name.push(DnType::CommonName, cn);
+        let cert = params.self_signed(&key_pair).unwrap();
+
+        let cert_der = CertificateDer::from(cert.der().to_vec());
+        let key_der = PrivateKeyDer::try_from(key_pair.serialize_der()).unwrap();
+        let signing_key = any_supported_type(&key_der).unwrap();
+
+        Arc::new(CertifiedKey::new(vec![cert_der], signing_key))
+    }
+
+    // ==================== Protocol constant ====================
+
     #[test]
     fn test_acme_alpn_protocol_value() {
         assert_eq!(ACME_TLS_ALPN_PROTOCOL, b"acme-tls/1");
     }
 
+    // ==================== Resolver construction ====================
+
     #[test]
     fn test_resolver_without_cert() {
         let resolver = AcmeResolver::without_cert();
         assert!(!resolver.has_active_challenges());
-    }
-
-    #[test]
-    fn test_resolver_challenge_lifecycle() {
-        let resolver = AcmeResolver::without_cert();
-
-        assert!(!resolver.has_active_challenges());
-
-        let state = resolver.state.read().unwrap_or_else(|e| e.into_inner());
-        assert!(state.challenge_certs.is_empty());
-        drop(state);
-
-        // We can't easily create a CertifiedKey without real crypto material,
-        // but we can test the state management logic via install/remove.
-        assert!(!resolver.has_active_challenges());
-    }
-
-    #[test]
-    fn test_resolver_state_default() {
-        let resolver = AcmeResolver::without_cert();
-        let state = resolver.state.read().unwrap_or_else(|e| e.into_inner());
+        let state = resolver.state.read().unwrap();
         assert!(state.production_cert.is_none());
-        assert!(state.challenge_certs.is_empty());
     }
 
     #[test]
-    fn test_remove_nonexistent_challenge() {
+    fn test_resolver_with_production_cert() {
+        let cert = make_certified_key("prod.example.com");
+        let resolver = AcmeResolver::new(cert);
+        assert!(!resolver.has_active_challenges());
+        let state = resolver.state.read().unwrap();
+        assert!(state.production_cert.is_some());
+    }
+
+    // ==================== Challenge lifecycle ====================
+
+    #[test]
+    fn test_challenge_install_and_has_active() {
+        let resolver = AcmeResolver::without_cert();
+        assert!(!resolver.has_active_challenges());
+
+        let challenge_cert = make_certified_key("challenge.example.com");
+        resolver.install_challenge("example.com", challenge_cert);
+
+        assert!(resolver.has_active_challenges());
+    }
+
+    #[test]
+    fn test_challenge_install_multiple_domains() {
+        let resolver = AcmeResolver::without_cert();
+
+        resolver.install_challenge("a.com", make_certified_key("a.com"));
+        resolver.install_challenge("b.com", make_certified_key("b.com"));
+        resolver.install_challenge("c.com", make_certified_key("c.com"));
+
+        assert!(resolver.has_active_challenges());
+        let state = resolver.state.read().unwrap();
+        assert_eq!(state.challenge_certs.len(), 3);
+    }
+
+    #[test]
+    fn test_challenge_remove() {
+        let resolver = AcmeResolver::without_cert();
+        resolver.install_challenge("example.com", make_certified_key("example.com"));
+        assert!(resolver.has_active_challenges());
+
+        resolver.remove_challenge("example.com");
+        assert!(!resolver.has_active_challenges());
+    }
+
+    #[test]
+    fn test_challenge_remove_nonexistent_is_noop() {
         let resolver = AcmeResolver::without_cert();
         resolver.remove_challenge("nonexistent.com");
         assert!(!resolver.has_active_challenges());
+    }
+
+    #[test]
+    fn test_challenge_replace_same_domain() {
+        let resolver = AcmeResolver::without_cert();
+
+        let cert1 = make_certified_key("example.com");
+        let cert2 = make_certified_key("example.com");
+        let cert2_ptr = Arc::as_ptr(&cert2);
+
+        resolver.install_challenge("example.com", cert1);
+        resolver.install_challenge("example.com", cert2);
+
+        let state = resolver.state.read().unwrap();
+        assert_eq!(state.challenge_certs.len(), 1);
+        assert!(std::ptr::eq(
+            Arc::as_ptr(state.challenge_certs.get("example.com").unwrap()),
+            cert2_ptr
+        ));
+    }
+
+    #[test]
+    fn test_challenge_remove_partial() {
+        let resolver = AcmeResolver::without_cert();
+        resolver.install_challenge("a.com", make_certified_key("a.com"));
+        resolver.install_challenge("b.com", make_certified_key("b.com"));
+
+        resolver.remove_challenge("a.com");
+        assert!(resolver.has_active_challenges());
+
+        let state = resolver.state.read().unwrap();
+        assert_eq!(state.challenge_certs.len(), 1);
+        assert!(state.challenge_certs.contains_key("b.com"));
+    }
+
+    // ==================== Production cert rotation ====================
+
+    #[test]
+    fn test_activate_production_cert() {
+        let resolver = AcmeResolver::without_cert();
+        let state = resolver.state.read().unwrap();
+        assert!(state.production_cert.is_none());
+        drop(state);
+
+        let new_cert = make_certified_key("production.example.com");
+        let new_cert_ptr = Arc::as_ptr(&new_cert);
+        resolver.activate_production_cert(new_cert);
+
+        let state = resolver.state.read().unwrap();
+        assert!(state.production_cert.is_some());
+        assert!(std::ptr::eq(
+            Arc::as_ptr(state.production_cert.as_ref().unwrap()),
+            new_cert_ptr
+        ));
+    }
+
+    #[test]
+    fn test_activate_production_cert_replaces_existing() {
+        let initial = make_certified_key("old.example.com");
+        let resolver = AcmeResolver::new(initial);
+
+        let renewed = make_certified_key("new.example.com");
+        let renewed_ptr = Arc::as_ptr(&renewed);
+        resolver.activate_production_cert(renewed);
+
+        let state = resolver.state.read().unwrap();
+        assert!(std::ptr::eq(
+            Arc::as_ptr(state.production_cert.as_ref().unwrap()),
+            renewed_ptr
+        ));
+    }
+
+    #[test]
+    fn test_activate_production_cert_does_not_affect_challenges() {
+        let resolver = AcmeResolver::without_cert();
+        resolver.install_challenge("example.com", make_certified_key("challenge"));
+        resolver.activate_production_cert(make_certified_key("production"));
+
+        assert!(resolver.has_active_challenges());
+        let state = resolver.state.read().unwrap();
+        assert!(state.production_cert.is_some());
+        assert_eq!(state.challenge_certs.len(), 1);
+    }
+
+    // ==================== Debug trait ====================
+
+    #[test]
+    fn test_debug_format() {
+        let resolver = AcmeResolver::new(make_certified_key("debug.test"));
+        resolver.install_challenge("a.com", make_certified_key("a.com"));
+        resolver.install_challenge("b.com", make_certified_key("b.com"));
+
+        let debug = format!("{:?}", resolver);
+        assert!(debug.contains("has_production_cert: true"));
+        assert!(debug.contains("active_challenges: 2"));
+    }
+
+    #[test]
+    fn test_debug_format_empty() {
+        let resolver = AcmeResolver::without_cert();
+        let debug = format!("{:?}", resolver);
+        assert!(debug.contains("has_production_cert: false"));
+        assert!(debug.contains("active_challenges: 0"));
+    }
+
+    // ==================== certified_key_from_pem ====================
+
+    #[test]
+    fn test_certified_key_from_pem_valid() {
+        use rcgen::{CertificateParams, DnType, KeyPair};
+
+        let key_pair = KeyPair::generate().unwrap();
+        let mut params = CertificateParams::new(vec!["test.com".to_string()]).unwrap();
+        params.distinguished_name.push(DnType::CommonName, "test.com");
+        let cert = params.self_signed(&key_pair).unwrap();
+
+        let cert_pem = cert.pem();
+        let key_pem = key_pair.serialize_pem();
+
+        let result = certified_key_from_pem(&cert_pem, &key_pem);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_certified_key_from_pem_empty_cert() {
+        let result = certified_key_from_pem("", "-----BEGIN PRIVATE KEY-----\nfoo\n-----END PRIVATE KEY-----");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_certified_key_from_pem_garbage() {
+        let result = certified_key_from_pem("not pem", "also not pem");
+        assert!(result.is_err());
+    }
+
+    // ==================== certified_key_from_der ====================
+
+    #[test]
+    fn test_certified_key_from_der_valid() {
+        use rcgen::{CertificateParams, DnType, KeyPair};
+
+        let key_pair = KeyPair::generate().unwrap();
+        let mut params = CertificateParams::new(vec!["der-test.com".to_string()]).unwrap();
+        params.distinguished_name.push(DnType::CommonName, "der-test.com");
+        let cert = params.self_signed(&key_pair).unwrap();
+
+        let cert_der = cert.der().as_ref();
+        let key_der = key_pair.serialize_der();
+
+        let result = certified_key_from_der(cert_der, &key_der);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_certified_key_from_der_invalid_key() {
+        use rcgen::{CertificateParams, DnType, KeyPair};
+
+        let key_pair = KeyPair::generate().unwrap();
+        let mut params = CertificateParams::new(vec!["test.com".to_string()]).unwrap();
+        params.distinguished_name.push(DnType::CommonName, "test.com");
+        let cert = params.self_signed(&key_pair).unwrap();
+
+        let result = certified_key_from_der(cert.der().as_ref(), &[0xFF, 0xFF, 0xFF]);
+        assert!(result.is_err());
     }
 }

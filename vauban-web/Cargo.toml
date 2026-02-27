@@ -121,6 +121,7 @@ serial_test = "3"
 once_cell = "1.19"
 insta = { version = "1.40", features = ["yaml"] }
 tokio-tungstenite = "0.28"
+rcgen = { version = "0.14.7", default-features = false, features = ["aws_lc_rs", "pem"] }
 
 [lints]
 workspace = true
