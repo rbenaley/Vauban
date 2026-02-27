@@ -14,6 +14,7 @@ use axum::{
     routing::{get, post},
 };
 use axum_server::tls_rustls::RustlsConfig;
+use rustls::server::ResolvesServerCert;
 use secrecy::ExposeSecret;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -76,7 +77,7 @@ use vauban_web::{
     services::auth::AuthService,
     services::broadcast::BroadcastService,
     services::rate_limit::RateLimiter,
-    tasks::{start_cleanup_tasks, start_dashboard_tasks},
+    tasks::{self, start_cleanup_tasks, start_dashboard_tasks},
 };
 
 /// Initialize SSH proxy client if IPC environment variables are set.
@@ -281,11 +282,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!(address = %addr, "Socket bound for HTTPS");
 
     // 2. Load TLS configuration (opens certificate files)
-    let tls_config = load_tls_config(&config).await.map_err(|e| {
+    //    When ACME is enabled, returns a dynamic resolver for zero-downtime
+    //    certificate rotation and TLS-ALPN-01 challenge support.
+    let (tls_config, acme_resolver) = load_tls_config(&config).await.map_err(|e| {
         eprintln!("Failed to load TLS configuration: {}", e);
         e
     })?;
-    tracing::debug!("TLS configuration loaded");
+    tracing::debug!(
+        acme_resolver = acme_resolver.is_some(),
+        "TLS configuration loaded"
+    );
+
+    // Register ACME resolver with supervisor IPC handler (if both are available).
+    // This allows the supervisor to send ACME challenge/cert messages to the resolver.
+    if let Some(ref resolver) = acme_resolver {
+        if let Some(ref sup) = supervisor_client {
+            sup.set_acme_resolver(Arc::clone(resolver));
+        }
+    }
 
     // 3. Create database pool with all connections pre-established (sandbox mode)
     // Uses fixed-size pool where all connections are validated at startup
@@ -420,7 +434,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         rate_limiter,
         ssh_proxy,
         rdp_proxy,
-        supervisor: supervisor_client,
+        supervisor: supervisor_client.clone(),
         vault_client,
     };
 
@@ -429,6 +443,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start cleanup tasks for expired sessions and API keys
     start_cleanup_tasks(db_pool).await;
+
+    // Start ACME certificate monitoring task (if enabled)
+    if let Some(ref acme_config) = config.server.tls.acme {
+        if acme_config.enabled {
+            if let Some(ref resolver) = acme_resolver {
+                tasks::start_acme_monitoring(
+                    acme_config.clone(),
+                    config.server.tls.cert_path.clone(),
+                    config.server.tls.key_path.clone(),
+                    supervisor_client.clone(),
+                    Arc::clone(resolver),
+                )
+                .await;
+            }
+        }
+    }
 
     // Build application router
     let app = create_app(app_state).await?;
@@ -485,12 +515,27 @@ fn enter_sandbox(_listener: &std::net::TcpListener) -> Result<(), Box<dyn std::e
 
 /// Load TLS configuration from certificate files.
 /// Configures rustls for TLS 1.3 only (no TLS 1.2 or lower).
-async fn load_tls_config(config: &Config) -> Result<RustlsConfig, Box<dyn std::error::Error>> {
+///
+/// When ACME is enabled, returns an `AcmeResolver` that supports dynamic
+/// certificate rotation and TLS-ALPN-01 challenges. The resolver is wrapped
+/// in an `Arc` so it can be shared with the IPC handler for certificate updates.
+///
+/// When ACME is disabled, uses a static certificate configuration.
+async fn load_tls_config(
+    config: &Config,
+) -> Result<
+    (
+        RustlsConfig,
+        Option<Arc<vauban_web::acme::resolver::AcmeResolver>>,
+    ),
+    Box<dyn std::error::Error>,
+> {
     use rustls::ServerConfig;
     use rustls_pki_types::pem::PemObject;
     use rustls_pki_types::{CertificateDer, PrivateKeyDer};
     use std::fs::File;
     use std::io::BufReader;
+    use vauban_web::acme::resolver::AcmeResolver;
 
     let cert_path = &config.server.tls.cert_path;
     let key_path = &config.server.tls.key_path;
@@ -539,20 +584,57 @@ async fn load_tls_config(config: &Config) -> Result<RustlsConfig, Box<dyn std::e
     let private_key = PrivateKeyDer::from_pem_reader(&mut key_reader)
         .map_err(|e| format!("No valid private key found in key file: {}", e))?;
 
-    // Build rustls config with TLS 1.3 ONLY
-    // Explicitly restrict to TLS 1.3 protocol version (no TLS 1.2 or lower)
-    let server_config = ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
-        .with_no_client_auth()
-        .with_single_cert(full_chain, private_key)?;
+    let acme_enabled = config
+        .server
+        .tls
+        .acme
+        .as_ref()
+        .is_some_and(|a| a.enabled);
 
-    tracing::debug!(
-        "TLS configured: TLS 1.3 only, {} cipher suites available",
-        server_config.crypto_provider().cipher_suites.len()
-    );
+    if acme_enabled {
+        // ACME mode: use dynamic resolver for zero-downtime cert rotation
+        // and TLS-ALPN-01 challenge support.
+        let signing_key = rustls::crypto::aws_lc_rs::sign::any_supported_type(&private_key)
+            .map_err(|e| format!("Unsupported key type: {}", e))?;
+        let certified_key =
+            Arc::new(rustls::sign::CertifiedKey::new(full_chain, signing_key));
 
-    Ok(RustlsConfig::from_config(std::sync::Arc::new(
-        server_config,
-    )))
+        let resolver = Arc::new(AcmeResolver::new(certified_key));
+
+        let mut server_config =
+            ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+                .with_no_client_auth()
+                .with_cert_resolver(Arc::clone(&resolver) as Arc<dyn ResolvesServerCert>);
+
+        // Advertise both h2 and acme-tls/1 ALPN protocols
+        server_config.alpn_protocols =
+            vec![b"h2".to_vec(), b"http/1.1".to_vec(), b"acme-tls/1".to_vec()];
+
+        tracing::info!(
+            "TLS configured with ACME dynamic resolver (TLS 1.3 only, TLS-ALPN-01 enabled)"
+        );
+
+        Ok((
+            RustlsConfig::from_config(Arc::new(server_config)),
+            Some(resolver),
+        ))
+    } else {
+        // Static mode: standard certificate, no ACME support.
+        let server_config =
+            ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+                .with_no_client_auth()
+                .with_single_cert(full_chain, private_key)?;
+
+        tracing::debug!(
+            "TLS configured: TLS 1.3 only, {} cipher suites available",
+            server_config.crypto_provider().cipher_suites.len()
+        );
+
+        Ok((
+            RustlsConfig::from_config(Arc::new(server_config)),
+            None,
+        ))
+    }
 }
 
 /// Create Axum application.

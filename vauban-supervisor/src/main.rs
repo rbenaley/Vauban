@@ -14,6 +14,7 @@
 //! - Handles graceful restart on SIGHUP
 //! - Respawns crashed children
 
+mod acme;
 mod config;
 
 use anyhow::{Context, Result};
@@ -1432,6 +1433,36 @@ fn process_service_messages(children: &HashMap<String, ChildState>) {
                             target_service,
                             &state.channel,
                             children,
+                        );
+                    }
+                    Ok(Message::AcmeRenewRequest {
+                        request_id,
+                        directory_url,
+                        domains,
+                        email,
+                        account_key_path,
+                        cert_path,
+                        key_path,
+                        eab_kid,
+                        eab_hmac_key,
+                    }) => {
+                        info!(
+                            request_id = request_id,
+                            domains = ?domains,
+                            "Received ACME renewal request from {}",
+                            service_key
+                        );
+                        acme::handle_acme_renew(
+                            request_id,
+                            directory_url,
+                            domains,
+                            email,
+                            account_key_path,
+                            cert_path,
+                            key_path,
+                            eab_kid,
+                            eab_hmac_key,
+                            &state.channel,
                         );
                     }
                     Ok(Message::Control(ControlMessage::Pong { .. })) => {

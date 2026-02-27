@@ -36,3 +36,7 @@ enabled = false
 [server.tls]
 cert_path = "vauban-web/certs/dev-server.crt"
 key_path = "vauban-web/certs/dev-server.key"
+
+# ACME disabled in development (self-signed certs used)
+[server.tls.acme]
+enabled = false

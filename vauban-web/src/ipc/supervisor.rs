@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::os::unix::io::RawFd;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 use tracing::{debug, info, warn};
@@ -33,7 +33,7 @@ pub struct TcpConnectResult {
 /// Shared state between the supervisor communication thread and async tasks.
 pub struct SupervisorClientInner {
     /// IPC channel to supervisor.
-    channel: IpcChannel,
+    pub channel: IpcChannel,
     /// Next request ID for TCP connect requests.
     next_request_id: AtomicU64,
     /// Pending TCP connect requests.
@@ -48,6 +48,11 @@ pub struct SupervisorClientInner {
     /// When the supervisor requests shutdown or IPC closes, we use this
     /// to stop the HTTP server instead of calling process::exit(0).
     server_handle: Option<axum_server::Handle<SocketAddr>>,
+    /// ACME dynamic TLS resolver for certificate updates via IPC.
+    /// Set after TLS config loading via `set_acme_resolver()`.
+    /// When set, the IPC loop processes AcmeChallengeInstall/Remove
+    /// and AcmeCertActivate messages to update certificates in-memory.
+    acme_resolver: OnceLock<Arc<crate::acme::resolver::AcmeResolver>>,
 }
 
 /// Async client for communication with the supervisor.
@@ -68,8 +73,13 @@ impl SupervisorClient {
     /// The optional `server_handle` is used for M-8/M-10 graceful shutdown:
     /// instead of calling `process::exit(0)`, the IPC thread will trigger
     /// graceful HTTP server shutdown, allowing all destructors to run.
+    ///
     #[allow(clippy::panic)] // Thread spawn failure is unrecoverable
-    pub fn new(read_fd: RawFd, write_fd: RawFd, server_handle: Option<axum_server::Handle<SocketAddr>>) -> Self {
+    pub fn new(
+        read_fd: RawFd,
+        write_fd: RawFd,
+        server_handle: Option<axum_server::Handle<SocketAddr>>,
+    ) -> Self {
         // Create IPC channel from file descriptors
         // SAFETY: FDs are passed from supervisor and are valid
         let channel = unsafe { IpcChannel::from_raw_fds(read_fd, write_fd) };
@@ -83,6 +93,7 @@ impl SupervisorClient {
             requests_failed: AtomicU64::new(0),
             shutdown: AtomicBool::new(false),
             server_handle,
+            acme_resolver: OnceLock::new(),
         });
 
         let thread_inner = Arc::clone(&inner);
@@ -168,6 +179,18 @@ impl SupervisorClient {
     /// Get a reference to the shared inner state (for statistics).
     pub fn inner(&self) -> &Arc<SupervisorClientInner> {
         &self.inner
+    }
+
+    /// Set the ACME resolver for dynamic certificate management.
+    ///
+    /// Must be called after TLS configuration is loaded (Phase 1) and before
+    /// ACME monitoring tasks start (Phase 3). Can only be called once.
+    pub fn set_acme_resolver(&self, resolver: Arc<crate::acme::resolver::AcmeResolver>) {
+        if self.inner.acme_resolver.set(resolver).is_err() {
+            warn!("ACME resolver already set, ignoring duplicate");
+        } else {
+            info!("ACME resolver registered with supervisor IPC handler");
+        }
     }
 }
 
@@ -255,6 +278,80 @@ fn supervisor_ipc_loop(inner: Arc<SupervisorClientInner>) {
                     let _ = pending.response_tx.send(result);
                 } else {
                     warn!(request_id = request_id, "No pending request for TCP connect response");
+                }
+            }
+            Ok(Message::AcmeChallengeInstall {
+                request_id: _,
+                domain,
+                challenge_cert_der,
+                challenge_key_der,
+            }) => {
+                if let Some(resolver) = inner.acme_resolver.get() {
+                    match crate::acme::resolver::certified_key_from_der(
+                        &challenge_cert_der,
+                        &challenge_key_der,
+                    ) {
+                        Ok(certified_key) => {
+                            resolver.install_challenge(&domain, Arc::new(certified_key));
+                            info!(domain = %domain, "ACME challenge certificate installed");
+                        }
+                        Err(e) => {
+                            warn!(
+                                domain = %domain,
+                                error = %e,
+                                "Failed to parse ACME challenge certificate"
+                            );
+                        }
+                    }
+                } else {
+                    warn!("Received AcmeChallengeInstall but no ACME resolver configured");
+                }
+            }
+            Ok(Message::AcmeChallengeRemove {
+                request_id: _,
+                domain,
+            }) => {
+                if let Some(resolver) = inner.acme_resolver.get() {
+                    resolver.remove_challenge(&domain);
+                } else {
+                    warn!("Received AcmeChallengeRemove but no ACME resolver configured");
+                }
+            }
+            Ok(Message::AcmeCertActivate {
+                request_id: _,
+                cert_pem,
+                key_pem,
+            }) => {
+                if let Some(resolver) = inner.acme_resolver.get() {
+                    match crate::acme::resolver::certified_key_from_pem(
+                        &cert_pem,
+                        key_pem.as_str(),
+                    ) {
+                        Ok(certified_key) => {
+                            resolver.activate_production_cert(Arc::new(certified_key));
+                            info!("New ACME production certificate activated (zero-downtime)");
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "Failed to parse new ACME production certificate");
+                        }
+                    }
+                } else {
+                    warn!("Received AcmeCertActivate but no ACME resolver configured");
+                }
+            }
+            Ok(Message::AcmeRenewResponse {
+                request_id: _,
+                success,
+                error,
+                ..
+            }) => {
+                if success {
+                    info!("ACME renewal completed successfully");
+                } else {
+                    warn!(
+                        error = ?error,
+                        "ACME renewal failed"
+                    );
                 }
             }
             Ok(_) => {

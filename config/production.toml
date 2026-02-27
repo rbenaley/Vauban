@@ -87,17 +87,34 @@ workdir = "/var/vauban/web"
 
 [server]
 host = "0.0.0.0"
-port = 8443
+port = 443
 
-# Production TLS certificates (FreeBSD paths)
-# For Let's Encrypt:
-#   cert_path = "/usr/local/etc/letsencrypt/live/example.com/fullchain.pem"
-#   key_path = "/usr/local/etc/letsencrypt/live/example.com/privkey.pem"
-# For Enterprise PKI, also set ca_chain_path for intermediate certs
+# Production TLS certificates (managed by ACME when enabled)
 [server.tls]
 cert_path = "/usr/local/etc/vauban/certs/server.crt"
 key_path = "/usr/local/etc/vauban/certs/server.key"
 # ca_chain_path = "/usr/local/etc/vauban/certs/ca-chain.crt"
+
+# ACME automatic certificate renewal via Let's Encrypt
+# Certificates are automatically obtained and renewed using TLS-ALPN-01.
+# No HTTP port 80 required. The challenge runs on port 443.
+[server.tls.acme]
+enabled = true
+provider = "letsencrypt"
+email = "admin@example.com"                             # CHANGE ME
+domains = ["vauban.example.com"]                        # CHANGE ME
+renew_before_days = 30
+check_interval_hours = 12
+account_key_path = "/usr/local/etc/vauban/acme/account.pem"
+directory_url = "https://acme-v02.api.letsencrypt.org/directory"
+staging_directory_url = "https://acme-staging-v02.api.letsencrypt.org/directory"
+# staging = false
+
+# For ZeroSSL instead of Let's Encrypt, uncomment and change directory_url:
+# provider = "zerossl"
+# directory_url = "https://acme.zerossl.com/v2/DV90"
+# eab_kid = "your_kid_here"
+# eab_hmac_key = "your_hmac_key_here"
 
 [database]
 max_connections = 20

@@ -40,6 +40,10 @@ enabled = false
 cert_path = "vauban-web/certs/dev-server.crt"
 key_path = "vauban-web/certs/dev-server.key"
 
+# ACME disabled in tests
+[server.tls.acme]
+enabled = false
+
 # Lightweight Argon2 parameters for faster tests
 [security.argon2]
 memory_size_kb = 1024

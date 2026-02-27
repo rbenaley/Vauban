@@ -19,6 +19,7 @@ tracing-subscriber.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 serde.workspace = true
+serde_json = "1.0"
 
 # Configuration
 config.workspace = true
@@ -26,3 +27,13 @@ toml = "0.9"
 
 # Signal handling
 signal-hook = "0.4"
+
+# ACME certificate management (TLS-ALPN-01)
+instant-acme = { version = "0.8", default-features = false, features = ["aws-lc-rs", "hyper-rustls"] }
+rcgen = { version = "0.13", default-features = false, features = ["aws_lc_rs"] }
+rustls = "0.23"
+tokio = { version = "1", features = ["rt", "time", "net", "io-util", "macros"] }
+sha2 = "0.10"
+
+[dev-dependencies]
+tempfile = "3"

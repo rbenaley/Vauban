@@ -289,6 +289,141 @@ pub struct TlsConfig {
     /// Optional: Path to CA chain file for intermediate certificates.
     #[serde(default)]
     pub ca_chain_path: Option<String>,
+    /// Optional ACME configuration for automatic certificate management.
+    #[serde(default)]
+    pub acme: Option<AcmeConfig>,
+}
+
+/// ACME provider for automatic certificate management.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AcmeProvider {
+    #[default]
+    Letsencrypt,
+    Zerossl,
+    Custom,
+}
+
+impl AcmeProvider {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Letsencrypt => "letsencrypt",
+            Self::Zerossl => "zerossl",
+            Self::Custom => "custom",
+        }
+    }
+}
+
+/// ACME automatic certificate management configuration.
+///
+/// Uses TLS-ALPN-01 (RFC 8737) challenge on port 443.
+/// No HTTP port 80 required.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct AcmeConfig {
+    /// Whether ACME is enabled.
+    pub enabled: bool,
+    /// ACME provider: "letsencrypt", "zerossl", or "custom".
+    #[serde(default)]
+    pub provider: AcmeProvider,
+    /// Contact email for the ACME account.
+    #[serde(default)]
+    pub email: String,
+    /// Domain names to obtain certificates for.
+    #[serde(default)]
+    pub domains: Vec<String>,
+    /// Renew the certificate this many days before expiration.
+    #[serde(default = "AcmeConfig::default_renew_before_days")]
+    pub renew_before_days: u32,
+    /// How often (in hours) to check certificate expiry at runtime.
+    #[serde(default = "AcmeConfig::default_check_interval_hours")]
+    pub check_interval_hours: u64,
+    /// Path to persist the ACME account private key.
+    #[serde(default)]
+    pub account_key_path: String,
+    /// Use the ACME staging environment (for testing).
+    #[serde(default)]
+    pub staging: bool,
+    /// ZeroSSL External Account Binding key ID.
+    #[serde(default)]
+    pub eab_kid: OptionalSecret,
+    /// ZeroSSL External Account Binding HMAC key.
+    #[serde(default)]
+    pub eab_hmac_key: OptionalSecret,
+    /// ACME directory URL for the provider.
+    /// Set in TOML per provider (e.g. Let's Encrypt, ZeroSSL).
+    #[serde(default)]
+    pub directory_url: String,
+    /// ACME staging directory URL (used when `staging = true`).
+    /// If empty and `staging = true`, falls back to `directory_url`.
+    #[serde(default)]
+    pub staging_directory_url: String,
+}
+
+impl AcmeConfig {
+    fn default_renew_before_days() -> u32 {
+        30
+    }
+
+    fn default_check_interval_hours() -> u64 {
+        12
+    }
+
+    /// Resolve the ACME directory URL based on staging flag and config.
+    pub fn resolve_directory_url(&self) -> Result<String, String> {
+        if self.staging && !self.staging_directory_url.is_empty() {
+            return Ok(self.staging_directory_url.clone());
+        }
+        if self.directory_url.is_empty() {
+            return Err("ACME directory_url must be set in configuration".to_string());
+        }
+        Ok(self.directory_url.clone())
+    }
+
+    /// Validate the ACME configuration.
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.enabled {
+            return Ok(());
+        }
+
+        if self.email.is_empty() {
+            return Err("ACME email is required when ACME is enabled".to_string());
+        }
+        if self.domains.is_empty() {
+            return Err("ACME domains list cannot be empty when ACME is enabled".to_string());
+        }
+        if self.account_key_path.is_empty() {
+            return Err("ACME account_key_path is required when ACME is enabled".to_string());
+        }
+
+        self.resolve_directory_url()?;
+
+        if self.provider == AcmeProvider::Zerossl
+            && (self.eab_kid.is_none() || self.eab_hmac_key.is_none())
+        {
+            return Err("ZeroSSL requires eab_kid and eab_hmac_key".to_string());
+        }
+
+        Ok(())
+    }
+}
+
+impl std::fmt::Debug for AcmeConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AcmeConfig")
+            .field("enabled", &self.enabled)
+            .field("provider", &self.provider)
+            .field("email", &self.email)
+            .field("domains", &self.domains)
+            .field("renew_before_days", &self.renew_before_days)
+            .field("check_interval_hours", &self.check_interval_hours)
+            .field("account_key_path", &self.account_key_path)
+            .field("staging", &self.staging)
+            .field("eab_kid", &self.eab_kid)
+            .field("eab_hmac_key", &self.eab_hmac_key)
+            .field("directory_url", &self.directory_url)
+            .field("staging_directory_url", &self.staging_directory_url)
+            .finish()
+    }
 }
 
 /// JWT configuration.
@@ -496,6 +631,14 @@ impl Config {
         self.server.tls.key_path = Self::resolve_path(&workspace_root, &self.server.tls.key_path);
         if let Some(ref ca_path) = self.server.tls.ca_chain_path {
             self.server.tls.ca_chain_path = Some(Self::resolve_path(&workspace_root, ca_path));
+        }
+
+        // Resolve ACME account key path
+        if let Some(ref mut acme) = self.server.tls.acme {
+            if !acme.account_key_path.is_empty() {
+                acme.account_key_path =
+                    Self::resolve_path(&workspace_root, &acme.account_key_path);
+            }
         }
     }
 

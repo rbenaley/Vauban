@@ -81,6 +81,23 @@ cert_path = "vauban-web/certs/server.crt"
 key_path = "vauban-web/certs/server.key"
 # ca_chain_path = "vauban-web/certs/ca-chain.crt"  # Optional, for intermediate certificates
 
+# ACME automatic certificate management (Let's Encrypt / ZeroSSL)
+# Uses TLS-ALPN-01 challenge on port 443 (no HTTP port 80 needed).
+# Disabled by default - enable in production.toml for automatic renewal.
+[server.tls.acme]
+enabled = false
+provider = "letsencrypt"            # "letsencrypt" | "zerossl" | "custom"
+email = ""
+domains = []
+renew_before_days = 30              # Renew N days before expiration
+check_interval_hours = 12           # Expiry check frequency at runtime
+account_key_path = "acme/account.pem"
+staging = false                     # Use staging environment (testing)
+directory_url = "https://acme-v02.api.letsencrypt.org/directory"
+staging_directory_url = "https://acme-staging-v02.api.letsencrypt.org/directory"
+# eab_kid = ""                      # ZeroSSL only: External Account Binding
+# eab_hmac_key = ""                 # ZeroSSL only: EAB HMAC key
+
 [database]
 url = "postgresql://vauban:vauban@localhost/vauban"
 max_connections = 10

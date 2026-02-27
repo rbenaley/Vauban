@@ -12,6 +12,7 @@
 #[macro_use]
 pub mod test_utils;
 
+pub mod acme;
 pub mod cache;
 pub mod config;
 pub mod crypto;

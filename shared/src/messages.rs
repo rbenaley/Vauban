@@ -560,6 +560,72 @@ pub enum Message {
         session_id: String,
     },
 
+    // ========== ACME Certificate Management (Web <-> Supervisor) ==========
+
+    /// Request the supervisor to perform ACME certificate renewal.
+    /// The supervisor handles the ACME protocol (instant-acme) and coordinates
+    /// TLS-ALPN-01 challenges via AcmeChallengeInstall/Remove messages.
+    AcmeRenewRequest {
+        request_id: u64,
+        /// ACME directory URL (e.g. Let's Encrypt, ZeroSSL).
+        directory_url: String,
+        /// Domain names to obtain certificates for.
+        domains: Vec<String>,
+        /// Contact email for the ACME account.
+        email: String,
+        /// Path to the persisted ACME account key.
+        account_key_path: String,
+        /// Path to write the certificate PEM.
+        cert_path: String,
+        /// Path to write the private key PEM.
+        key_path: String,
+        /// ZeroSSL EAB key ID (if applicable).
+        eab_kid: Option<String>,
+        /// ZeroSSL EAB HMAC key (if applicable).
+        eab_hmac_key: Option<SensitiveString>,
+    },
+
+    /// Response from supervisor after ACME renewal attempt.
+    AcmeRenewResponse {
+        request_id: u64,
+        success: bool,
+        /// Error message if renewal failed.
+        error: Option<String>,
+        /// PEM-encoded certificate chain (for in-memory activation).
+        cert_pem: Option<String>,
+        /// PEM-encoded private key (for in-memory activation).
+        key_pem: Option<SensitiveString>,
+    },
+
+    /// Supervisor instructs web to install a TLS-ALPN-01 challenge certificate.
+    /// The web resolver must serve this cert when ALPN is "acme-tls/1" and SNI matches.
+    AcmeChallengeInstall {
+        request_id: u64,
+        /// Domain being validated.
+        domain: String,
+        /// DER-encoded challenge certificate (self-signed, with acmeIdentifier extension).
+        challenge_cert_der: Vec<u8>,
+        /// DER-encoded private key for the challenge certificate.
+        challenge_key_der: Vec<u8>,
+    },
+
+    /// Supervisor instructs web to remove a TLS-ALPN-01 challenge certificate.
+    AcmeChallengeRemove {
+        request_id: u64,
+        /// Domain whose challenge cert should be removed.
+        domain: String,
+    },
+
+    /// Supervisor instructs web to activate a new production certificate in memory.
+    /// This allows zero-downtime certificate rotation without restarting the server.
+    AcmeCertActivate {
+        request_id: u64,
+        /// PEM-encoded certificate chain.
+        cert_pem: String,
+        /// PEM-encoded private key.
+        key_pem: SensitiveString,
+    },
+
     // ========== TCP Connection Brokering (Web -> Supervisor -> Proxy) ==========
     /// Request supervisor to establish a TCP connection on behalf of the sandboxed proxy.
     ///
@@ -622,6 +688,11 @@ impl Message {
             | Message::SshHostKeyResult { request_id, .. }
             | Message::RdpSessionOpen { request_id, .. }
             | Message::RdpSessionOpened { request_id, .. }
+            | Message::AcmeRenewRequest { request_id, .. }
+            | Message::AcmeRenewResponse { request_id, .. }
+            | Message::AcmeChallengeInstall { request_id, .. }
+            | Message::AcmeChallengeRemove { request_id, .. }
+            | Message::AcmeCertActivate { request_id, .. }
             | Message::TcpConnectRequest { request_id, .. }
             | Message::TcpConnectResponse { request_id, .. } => Some(*request_id),
             _ => None,
@@ -2348,6 +2419,240 @@ mod tests {
             "H-10: RDP Message Debug must NOT contain password"
         );
         assert!(debug.contains("REDACTED"), "H-10: RDP password must show [REDACTED]");
+    }
+
+    // ==================== ACME Message Tests ====================
+
+    #[test]
+    fn test_message_acme_renew_request() {
+        let msg = Message::AcmeRenewRequest {
+            request_id: 2000,
+            directory_url: "https://acme-v02.api.letsencrypt.org/directory".to_string(),
+            domains: vec!["example.com".to_string(), "www.example.com".to_string()],
+            email: "admin@example.com".to_string(),
+            account_key_path: "/etc/vauban/acme/account.pem".to_string(),
+            cert_path: "/etc/vauban/certs/server.crt".to_string(),
+            key_path: "/etc/vauban/certs/server.key".to_string(),
+            eab_kid: None,
+            eab_hmac_key: None,
+        };
+        assert_eq!(msg.request_id(), Some(2000));
+
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::AcmeRenewRequest {
+            request_id,
+            domains,
+            email,
+            ..
+        } = deserialized
+        {
+            assert_eq!(request_id, 2000);
+            assert_eq!(domains.len(), 2);
+            assert_eq!(email, "admin@example.com");
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_message_acme_renew_response_success() {
+        let msg = Message::AcmeRenewResponse {
+            request_id: 2000,
+            success: true,
+            error: None,
+            cert_pem: Some("-----BEGIN CERTIFICATE-----\nMIIB...\n-----END CERTIFICATE-----".to_string()),
+            key_pem: Some(SensitiveString::new("-----BEGIN PRIVATE KEY-----\nMIIE...\n-----END PRIVATE KEY-----".to_string())),
+        };
+        assert_eq!(msg.request_id(), Some(2000));
+
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::AcmeRenewResponse {
+            success, cert_pem, key_pem, ..
+        } = deserialized
+        {
+            assert!(success);
+            assert!(cert_pem.is_some());
+            assert!(key_pem.is_some());
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_message_acme_renew_response_failure() {
+        let msg = Message::AcmeRenewResponse {
+            request_id: 2001,
+            success: false,
+            error: Some("Challenge failed: DNS unreachable".to_string()),
+            cert_pem: None,
+            key_pem: None,
+        };
+        assert_eq!(msg.request_id(), Some(2001));
+    }
+
+    #[test]
+    fn test_message_acme_renew_response_debug_redacts_key() {
+        let msg = Message::AcmeRenewResponse {
+            request_id: 2002,
+            success: true,
+            error: None,
+            cert_pem: Some("cert-data".to_string()),
+            key_pem: Some(SensitiveString::new("super-secret-key".to_string())),
+        };
+        let debug = format!("{:?}", msg);
+        assert!(
+            !debug.contains("super-secret-key"),
+            "AcmeRenewResponse Debug must NOT contain private key"
+        );
+        assert!(debug.contains("REDACTED"));
+    }
+
+    #[test]
+    fn test_message_acme_challenge_install() {
+        let msg = Message::AcmeChallengeInstall {
+            request_id: 2010,
+            domain: "example.com".to_string(),
+            challenge_cert_der: vec![0x30, 0x82, 0x01],
+            challenge_key_der: vec![0x30, 0x82, 0x02],
+        };
+        assert_eq!(msg.request_id(), Some(2010));
+
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::AcmeChallengeInstall {
+            domain,
+            challenge_cert_der,
+            ..
+        } = deserialized
+        {
+            assert_eq!(domain, "example.com");
+            assert_eq!(challenge_cert_der, vec![0x30, 0x82, 0x01]);
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_message_acme_challenge_remove() {
+        let msg = Message::AcmeChallengeRemove {
+            request_id: 2011,
+            domain: "example.com".to_string(),
+        };
+        assert_eq!(msg.request_id(), Some(2011));
+
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::AcmeChallengeRemove { domain, .. } = deserialized {
+            assert_eq!(domain, "example.com");
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_message_acme_cert_activate() {
+        let msg = Message::AcmeCertActivate {
+            request_id: 2020,
+            cert_pem: "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----".to_string(),
+            key_pem: SensitiveString::new("-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----".to_string()),
+        };
+        assert_eq!(msg.request_id(), Some(2020));
+
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::AcmeCertActivate {
+            cert_pem, key_pem, ..
+        } = deserialized
+        {
+            assert!(cert_pem.contains("CERTIFICATE"));
+            assert!(key_pem.as_str().contains("PRIVATE KEY"));
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_message_acme_cert_activate_debug_redacts_key() {
+        let msg = Message::AcmeCertActivate {
+            request_id: 2021,
+            cert_pem: "cert".to_string(),
+            key_pem: SensitiveString::new("private-key-material".to_string()),
+        };
+        let debug = format!("{:?}", msg);
+        assert!(
+            !debug.contains("private-key-material"),
+            "AcmeCertActivate Debug must NOT contain private key"
+        );
+        assert!(debug.contains("REDACTED"));
+    }
+
+    #[test]
+    fn test_message_acme_renew_request_with_eab() {
+        let msg = Message::AcmeRenewRequest {
+            request_id: 2030,
+            directory_url: "https://acme.zerossl.com/v2/DV90".to_string(),
+            domains: vec!["zerossl.example.com".to_string()],
+            email: "admin@example.com".to_string(),
+            account_key_path: "/etc/vauban/acme/account.pem".to_string(),
+            cert_path: "/etc/vauban/certs/server.crt".to_string(),
+            key_path: "/etc/vauban/certs/server.key".to_string(),
+            eab_kid: Some("kid_12345".to_string()),
+            eab_hmac_key: Some(SensitiveString::new("hmac_secret_key".to_string())),
+        };
+        assert_eq!(msg.request_id(), Some(2030));
+
+        let debug = format!("{:?}", msg);
+        assert!(
+            !debug.contains("hmac_secret_key"),
+            "ACME EAB HMAC key must be redacted in debug"
+        );
+    }
+
+    #[test]
+    fn test_acme_messages_serialization_roundtrip() {
+        let messages: Vec<Message> = vec![
+            Message::AcmeRenewRequest {
+                request_id: 1,
+                directory_url: "https://acme.test".to_string(),
+                domains: vec!["test.com".to_string()],
+                email: "test@test.com".to_string(),
+                account_key_path: "/tmp/account.pem".to_string(),
+                cert_path: "/tmp/cert.pem".to_string(),
+                key_path: "/tmp/key.pem".to_string(),
+                eab_kid: None,
+                eab_hmac_key: None,
+            },
+            Message::AcmeRenewResponse {
+                request_id: 1,
+                success: true,
+                error: None,
+                cert_pem: Some("cert".to_string()),
+                key_pem: Some(SensitiveString::new("key".to_string())),
+            },
+            Message::AcmeChallengeInstall {
+                request_id: 2,
+                domain: "test.com".to_string(),
+                challenge_cert_der: vec![1, 2, 3],
+                challenge_key_der: vec![4, 5, 6],
+            },
+            Message::AcmeChallengeRemove {
+                request_id: 3,
+                domain: "test.com".to_string(),
+            },
+            Message::AcmeCertActivate {
+                request_id: 4,
+                cert_pem: "cert".to_string(),
+                key_pem: SensitiveString::new("key".to_string()),
+            },
+        ];
+
+        for msg in messages {
+            let serialized = serialize(&msg);
+            let deserialized: Message = deserialize(&serialized);
+            assert!(deserialized.request_id().is_some());
+        }
     }
 
     // ==================== SensitiveString Tests (H-10) ====================
