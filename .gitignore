@@ -32,3 +32,6 @@ Thumbs.db
 # TLS certificates (private keys must never be committed)
 **/certs/*
 
+# Session recordings (local development data)
+recordings/
+

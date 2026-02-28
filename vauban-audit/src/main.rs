@@ -8,18 +8,23 @@
 //!
 //! Handles:
 //! - WORM (Write Once Read Many) audit storage
-//! - Session recording storage
+//! - Session recording storage (fMP4 for RDP)
 //! - Real-time alerts
 //! - Audit log queries
 
+mod fmp4_writer;
+mod recording_manager;
+
 use anyhow::{Context, Result};
+use recording_manager::RecordingManager;
 use shared::capsicum;
 use shared::ipc::{poll_readable, IpcChannel};
 use shared::messages::{ControlMessage, Message, ServiceStats};
 use std::os::unix::io::RawFd;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Instant;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Service runtime state.
 struct ServiceState {
@@ -76,29 +81,100 @@ fn run_service() -> Result<()> {
         .parse()
         .context("Invalid VAUBAN_IPC_WRITE")?;
 
+    let recording_enabled: bool = std::env::var("VAUBAN_RECORDING_ENABLED")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(false);
+
+    let recording_storage_path: PathBuf = std::env::var("VAUBAN_RECORDING_STORAGE_PATH")
+        .unwrap_or_else(|_| "recordings".to_string())
+        .into();
+
+    let proxy_rdp_fds: Option<(RawFd, RawFd)> = if recording_enabled {
+        let r: Option<RawFd> = std::env::var("VAUBAN_PROXY_RDP_IPC_READ")
+            .ok()
+            .and_then(|s| s.parse().ok());
+        let w: Option<RawFd> = std::env::var("VAUBAN_PROXY_RDP_IPC_WRITE")
+            .ok()
+            .and_then(|s| s.parse().ok());
+        match (r, w) {
+            (Some(r), Some(w)) => {
+                info!("Proxy-RDP IPC channel available for recording");
+                Some((r, w))
+            }
+            _ => {
+                warn!("Recording enabled but VAUBAN_PROXY_RDP_IPC_READ/WRITE not set");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // SAFETY: We are the only thread at this point, no concurrent access.
     unsafe {
         std::env::remove_var("VAUBAN_IPC_READ");
         std::env::remove_var("VAUBAN_IPC_WRITE");
+        std::env::remove_var("VAUBAN_RECORDING_ENABLED");
+        std::env::remove_var("VAUBAN_RECORDING_STORAGE_PATH");
+        std::env::remove_var("VAUBAN_PROXY_RDP_IPC_READ");
+        std::env::remove_var("VAUBAN_PROXY_RDP_IPC_WRITE");
     }
 
     let channel = unsafe { IpcChannel::from_raw_fds(ipc_read_fd, ipc_write_fd) };
 
-    // TODO: Open audit log files, S3 connection before entering sandbox
+    let proxy_rdp_channel = proxy_rdp_fds.map(|(r, w)| unsafe { IpcChannel::from_raw_fds(r, w) });
+
+    // Create recording storage directory before entering sandbox
+    if recording_enabled {
+        if let Err(e) = std::fs::create_dir_all(&recording_storage_path) {
+            warn!(
+                path = %recording_storage_path.display(),
+                error = %e,
+                "Failed to create recording storage directory"
+            );
+        } else {
+            info!(path = %recording_storage_path.display(), "Recording storage directory ready");
+        }
+    }
+
     info!("Resources opened, preparing to enter sandbox");
 
-    let ipc_fds = [ipc_read_fd, ipc_write_fd];
+    let mut ipc_fds = vec![ipc_read_fd, ipc_write_fd];
+    if let Some((r, w)) = proxy_rdp_fds {
+        ipc_fds.push(r);
+        ipc_fds.push(w);
+    }
+
+    // In production (FreeBSD), we would open the storage directory FD before
+    // cap_enter() and use openat() for file creation within the sandbox.
+    // For development on non-FreeBSD platforms, the sandbox is a no-op.
     capsicum::setup_service_sandbox(&ipc_fds, None)
         .context("Failed to setup sandbox")?;
 
-    info!("Entered Capsicum sandbox, starting main loop");
+    info!(recording_enabled, "Entered Capsicum sandbox, starting main loop");
 
     let mut state = ServiceState::default();
-    main_loop(&channel, &mut state)
+
+    let mut recording_mgr = if recording_enabled {
+        Some(RecordingManager::new(recording_storage_path))
+    } else {
+        None
+    };
+
+    main_loop(&channel, proxy_rdp_channel.as_ref(), &mut state, &mut recording_mgr)
 }
 
-fn main_loop(channel: &IpcChannel, state: &mut ServiceState) -> Result<()> {
-    let fds = [channel.read_fd()];
+fn main_loop(
+    channel: &IpcChannel,
+    proxy_rdp_channel: Option<&IpcChannel>,
+    state: &mut ServiceState,
+    recording_mgr: &mut Option<RecordingManager>,
+) -> Result<()> {
+    let mut poll_fds: Vec<RawFd> = vec![channel.read_fd()];
+    if let Some(rdp_ch) = proxy_rdp_channel {
+        poll_fds.push(rdp_ch.read_fd());
+    }
 
     loop {
         // M-8/M-10: Check shutdown flag before blocking on poll.
@@ -107,32 +183,62 @@ fn main_loop(channel: &IpcChannel, state: &mut ServiceState) -> Result<()> {
             return Ok(());
         }
 
-        let ready = poll_readable(&fds, 1000)?;
+        let ready = poll_readable(&poll_fds, 1000)?;
 
         if ready.is_empty() {
             continue;
         }
 
-        match channel.recv() {
-            Ok(msg) => {
-                if let Err(e) = handle_message(channel, state, msg) {
-                    warn!("Error handling message: {}", e);
+        // Index 0 is always the supervisor channel
+        if ready.contains(&0) {
+            match channel.recv() {
+                Ok(msg) => {
+                    if let Err(e) = handle_message(channel, state, recording_mgr, msg) {
+                        warn!("Error handling message: {}", e);
+                        state.requests_failed += 1;
+                    }
+                }
+                Err(shared::ipc::IpcError::ConnectionClosed) => {
+                    info!("IPC connection closed, exiting");
+                    return Ok(());
+                }
+                Err(e) => {
+                    error!("IPC receive error: {}", e);
                     state.requests_failed += 1;
                 }
             }
-            Err(shared::ipc::IpcError::ConnectionClosed) => {
-                info!("IPC connection closed, exiting");
-                return Ok(());
-            }
-            Err(e) => {
-                error!("IPC receive error: {}", e);
-                state.requests_failed += 1;
+        }
+
+        // Index 1 (if present) is the proxy-rdp channel
+        if proxy_rdp_channel.is_some() && ready.contains(&1) {
+            let rdp_ch = proxy_rdp_channel.as_ref();
+            // SAFETY: we just checked is_some() above
+            #[allow(clippy::unwrap_used)]
+            let rdp_ch = rdp_ch.unwrap();
+            match rdp_ch.recv() {
+                Ok(msg) => {
+                    if let Err(e) = handle_recording_message(state, recording_mgr, msg) {
+                        warn!("Error handling recording message: {}", e);
+                        state.requests_failed += 1;
+                    }
+                }
+                Err(shared::ipc::IpcError::ConnectionClosed) => {
+                    info!("Proxy-RDP IPC connection closed");
+                }
+                Err(e) => {
+                    debug!(error = %e, "Proxy-RDP IPC receive error");
+                }
             }
         }
     }
 }
 
-fn handle_message(channel: &IpcChannel, state: &mut ServiceState, msg: Message) -> Result<()> {
+fn handle_message(
+    channel: &IpcChannel,
+    state: &mut ServiceState,
+    recording_mgr: &mut Option<RecordingManager>,
+    msg: Message,
+) -> Result<()> {
     match msg {
         Message::Control(ctrl) => handle_control(channel, state, ctrl),
 
@@ -173,11 +279,60 @@ fn handle_message(channel: &IpcChannel, state: &mut ServiceState, msg: Message) 
             Ok(())
         }
 
+        // Recording messages can also arrive on the supervisor channel
+        Message::RdpRecordingStart { session_id, width, height } => {
+            handle_recording_message(state, recording_mgr, Message::RdpRecordingStart { session_id, width, height })
+        }
+        Message::RdpVideoFrame { .. } => {
+            handle_recording_message(state, recording_mgr, msg)
+        }
+        Message::RdpRecordingEnd { .. } => {
+            handle_recording_message(state, recording_mgr, msg)
+        }
+
         _ => {
             warn!("Unexpected message type");
             Ok(())
         }
     }
+}
+
+fn handle_recording_message(
+    state: &mut ServiceState,
+    recording_mgr: &mut Option<RecordingManager>,
+    msg: Message,
+) -> Result<()> {
+    let Some(mgr) = recording_mgr.as_mut() else {
+        debug!("Recording not enabled, ignoring recording message");
+        return Ok(());
+    };
+
+    match msg {
+        Message::RdpRecordingStart { session_id, width, height } => {
+            mgr.start_session(&session_id, width, height);
+            state.requests_processed += 1;
+        }
+        Message::RdpVideoFrame {
+            session_id,
+            timestamp_us,
+            is_keyframe,
+            width,
+            height,
+            data,
+        } => {
+            mgr.handle_frame(&session_id, timestamp_us, is_keyframe, width, height, &data);
+            state.requests_processed += 1;
+        }
+        Message::RdpRecordingEnd { session_id } => {
+            mgr.end_session(&session_id);
+            state.requests_processed += 1;
+        }
+        _ => {
+            debug!("Non-recording message on recording handler");
+        }
+    }
+
+    Ok(())
 }
 
 fn handle_control(channel: &IpcChannel, state: &mut ServiceState, ctrl: ControlMessage) -> Result<()> {
@@ -252,6 +407,7 @@ mod tests {
     fn test_handle_message_audit_event() {
         let (client, service) = IpcChannel::pair().unwrap();
         let mut state = ServiceState::default();
+        let mut recording_mgr = None;
 
         let event = Message::AuditEvent {
             timestamp: 1706140800,
@@ -261,7 +417,7 @@ mod tests {
             source_ip: Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))),
             details: "SSH session started".to_string(),
         };
-        handle_message(&service, &mut state, event).unwrap();
+        handle_message(&service, &mut state, &mut recording_mgr, event).unwrap();
 
         assert_eq!(state.requests_processed, 1);
 
@@ -277,13 +433,14 @@ mod tests {
     fn test_handle_message_session_recording() {
         let (_client, service) = IpcChannel::pair().unwrap();
         let mut state = ServiceState::default();
+        let mut recording_mgr = None;
 
         let chunk = Message::SessionRecordingChunk {
             session_id: "sess123".to_string(),
             sequence: 1,
             data: vec![0; 1024],
         };
-        handle_message(&service, &mut state, chunk).unwrap();
+        handle_message(&service, &mut state, &mut recording_mgr, chunk).unwrap();
 
         assert_eq!(state.requests_processed, 1);
     }
@@ -292,9 +449,10 @@ mod tests {
     fn test_handle_message_control() {
         let (supervisor, service) = IpcChannel::pair().unwrap();
         let mut state = ServiceState::default();
+        let mut recording_mgr = None;
 
         let msg = Message::Control(ControlMessage::Ping { seq: 11 });
-        handle_message(&service, &mut state, msg).unwrap();
+        handle_message(&service, &mut state, &mut recording_mgr, msg).unwrap();
 
         let response: Message = supervisor.recv().unwrap();
         assert!(matches!(response, Message::Control(ControlMessage::Pong { seq: 11, .. })));
@@ -304,6 +462,7 @@ mod tests {
     fn test_multiple_audit_events() {
         let (client, service) = IpcChannel::pair().unwrap();
         let mut state = ServiceState::default();
+        let mut recording_mgr = None;
 
         for i in 0..5 {
             let event = Message::AuditEvent {
@@ -314,7 +473,7 @@ mod tests {
                 source_ip: None,
                 details: "Login".to_string(),
             };
-            handle_message(&service, &mut state, event).unwrap();
+            handle_message(&service, &mut state, &mut recording_mgr, event).unwrap();
         }
 
         assert_eq!(state.requests_processed, 5);
@@ -327,6 +486,35 @@ mod tests {
                 panic!("Expected AuditAck");
             }
         }
+    }
+
+    #[test]
+    fn test_handle_recording_message_without_manager() {
+        let mut state = ServiceState::default();
+        let mut recording_mgr = None;
+
+        let msg = Message::RdpRecordingStart {
+            session_id: "test".to_string(),
+            width: 1920,
+            height: 1080,
+        };
+        handle_recording_message(&mut state, &mut recording_mgr, msg).unwrap();
+        assert_eq!(state.requests_processed, 0);
+    }
+
+    #[test]
+    fn test_handle_recording_message_with_manager() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = ServiceState::default();
+        let mut recording_mgr = Some(RecordingManager::new(dir.path().to_path_buf()));
+
+        let msg = Message::RdpRecordingStart {
+            session_id: "rec-test".to_string(),
+            width: 1920,
+            height: 1080,
+        };
+        handle_recording_message(&mut state, &mut recording_mgr, msg).unwrap();
+        assert_eq!(state.requests_processed, 1);
     }
 
     // ==================== M-8/M-10 Structural Regression Tests ====================

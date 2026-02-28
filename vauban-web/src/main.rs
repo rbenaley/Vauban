@@ -953,6 +953,10 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             "/sessions/recordings/{id}/play",
             get(handlers::web::recording_play),
         )
+        .route(
+            "/recordings/{session_uuid}",
+            get(handlers::web::serve_recording),
+        )
         .route("/sessions/{id}", get(handlers::web::session_detail))
         .route("/sessions/approvals", get(handlers::web::approval_list))
         .route(

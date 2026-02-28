@@ -18,3 +18,7 @@ tracing-subscriber.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 serde.workspace = true
+blake3.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

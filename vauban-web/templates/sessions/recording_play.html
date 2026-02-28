@@ -130,14 +130,25 @@
             {% else %}
             <!-- RDP/VNC Video Replay -->
             <div id="videoPlayer" class="bg-black flex items-center justify-center" style="min-height: 480px;">
+                {% if recording.recording_path.is_some() %}
+                <video id="recordingVideo"
+                       class="w-full h-auto max-h-[720px]"
+                       preload="metadata"
+                       controls
+                       playsinline>
+                    <source src="/recordings/{{ recording.session_uuid }}.mp4" type="video/mp4">
+                    Your browser does not support HTML5 video.
+                </video>
+                {% else %}
                 <div class="text-center">
                     <svg class="mx-auto h-16 w-16 text-gray-600 mb-4" viewBox="0 0 20 20" fill="currentColor">
                         <path d="M1 4.75C1 3.784 1.784 3 2.75 3h14.5c.966 0 1.75.784 1.75 1.75v10.5A1.75 1.75 0 0117.25 17H2.75A1.75 1.75 0 011 15.25V4.75zm15 12.75c.69 0 1.25-.56 1.25-1.25V4.75c0-.69-.56-1.25-1.25-1.25H2.75c-.69 0-1.25.56-1.25 1.25v10.5c0 .69.56 1.25 1.25 1.25H16.25z"/>
                         <path d="M8 7.5a.75.75 0 00-1.2.6v3.8a.75.75 0 001.2.6l2.85-1.9a.75.75 0 000-1.2L8 7.5z"/>
                     </svg>
-                    <p class="text-gray-400 text-lg">{{ recording.session_type|upper }} Video Recording</p>
-                    <p class="text-gray-500 mt-2">Click Play to start playback</p>
+                    <p class="text-gray-400 text-lg">Recording not available</p>
+                    <p class="text-gray-500 mt-2">The recording file for this session was not found.</p>
                 </div>
+                {% endif %}
             </div>
             {% endif %}
         </div>
@@ -212,10 +223,71 @@
     </div>
 </div>
 
-{# TODO: Implement recording playback using WebSocket streaming.
-   The player controls (play/pause, restart, speed, fullscreen) will need:
-   - WebSocket connection to /ws/recording/{id} for streaming frames
-   - asciinema-player for SSH terminal recordings
-   - Video.js or similar for RDP/VNC screen recordings
-   Controls are currently non-functional placeholders. #}
+{% if recording.is_graphical() && recording.recording_path.is_some() %}
+<script>
+(function() {
+    const video = document.getElementById('recordingVideo');
+    if (!video) return;
+
+    const playPauseBtn = document.getElementById('playPauseBtn');
+    const restartBtn = document.getElementById('restartBtn');
+    const speedSelect = document.getElementById('speedSelect');
+    const fullscreenBtn = document.getElementById('fullscreenBtn');
+    const progressBar = document.getElementById('progressBar');
+    const currentTimeEl = document.getElementById('currentTime');
+    const totalTimeEl = document.getElementById('totalTime');
+
+    function formatTime(seconds) {
+        const h = Math.floor(seconds / 3600);
+        const m = Math.floor((seconds % 3600) / 60);
+        const s = Math.floor(seconds % 60);
+        return String(h).padStart(2, '0') + ':' +
+               String(m).padStart(2, '0') + ':' +
+               String(s).padStart(2, '0');
+    }
+
+    const playIcon = '<svg class="h-6 w-6" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd"/></svg>';
+    const pauseIcon = '<svg class="h-6 w-6" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8 7.5a.5.5 0 00-.5.5v4a.5.5 0 001 0V8a.5.5 0 00-.5-.5zm4 0a.5.5 0 00-.5.5v4a.5.5 0 001 0V8a.5.5 0 00-.5-.5z" clip-rule="evenodd"/></svg>';
+
+    playPauseBtn.addEventListener('click', function() {
+        if (video.paused) { video.play(); } else { video.pause(); }
+    });
+
+    video.addEventListener('play', function() { playPauseBtn.innerHTML = pauseIcon; });
+    video.addEventListener('pause', function() { playPauseBtn.innerHTML = playIcon; });
+
+    restartBtn.addEventListener('click', function() {
+        video.currentTime = 0;
+        video.play();
+    });
+
+    speedSelect.addEventListener('change', function() {
+        video.playbackRate = parseFloat(this.value);
+    });
+
+    fullscreenBtn.addEventListener('click', function() {
+        const container = document.getElementById('playerContainer');
+        if (document.fullscreenElement) {
+            document.exitFullscreen();
+        } else {
+            (container.requestFullscreen || container.webkitRequestFullscreen).call(container);
+        }
+    });
+
+    video.addEventListener('loadedmetadata', function() {
+        progressBar.max = Math.floor(video.duration);
+        totalTimeEl.textContent = formatTime(video.duration);
+    });
+
+    video.addEventListener('timeupdate', function() {
+        progressBar.value = Math.floor(video.currentTime);
+        currentTimeEl.textContent = formatTime(video.currentTime);
+    });
+
+    progressBar.addEventListener('input', function() {
+        video.currentTime = parseInt(this.value, 10);
+    });
+})();
+</script>
+{% endif %}
 {% endblock %}

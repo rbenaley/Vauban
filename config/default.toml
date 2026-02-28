@@ -159,3 +159,18 @@ max_connections_per_user = 30
 # Default: 5 Mbps (suitable for LAN / low-latency environments).
 # Recommended range: 2_000_000 (low quality) to 30_000_000 (high quality).
 video_bitrate_bps = 5_000_000
+
+# ==============================================================================
+# SESSION RECORDING
+# ==============================================================================
+
+[recording]
+# Master switch for session recording.
+enabled = true
+# Directory where fMP4 recordings and BLAKE3 integrity files are stored.
+# In development, relative to workspace root. In production, absolute path.
+storage_path = "recordings"
+
+[recording.rdp]
+# Enable recording of RDP sessions (H.264 in fragmented MP4).
+enabled = true

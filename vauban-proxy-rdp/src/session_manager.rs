@@ -50,6 +50,7 @@ impl SessionManager {
         &self,
         config: SessionConfig,
         web_tx: mpsc::Sender<Message>,
+        audit_tx: Option<mpsc::Sender<Message>>,
     ) -> SessionResult<(String, u16, u16)> {
         let session_id = config.session_id.clone();
 
@@ -67,7 +68,7 @@ impl SessionManager {
 
         let (cmd_tx, cmd_rx) = mpsc::channel(64);
 
-        let rdp_session = RdpSession::connect(config, web_tx, cmd_rx).await?;
+        let rdp_session = RdpSession::connect(config, web_tx, cmd_rx, audit_tx).await?;
 
         let desktop_width = rdp_session.desktop_width;
         let desktop_height = rdp_session.desktop_height;

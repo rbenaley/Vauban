@@ -26,6 +26,9 @@ pub struct SupervisorConfig {
     /// RDP proxy configuration (injected as env vars at spawn).
     #[serde(default)]
     pub rdp: RdpProxyConfig,
+    /// Session recording configuration.
+    #[serde(default)]
+    pub recording: RecordingConfig,
 }
 
 /// RDP proxy configuration.
@@ -47,6 +50,50 @@ impl Default for RdpProxyConfig {
     fn default() -> Self {
         Self {
             video_bitrate_bps: default_video_bitrate_bps(),
+        }
+    }
+}
+
+/// Session recording configuration.
+#[derive(Debug, Deserialize)]
+pub struct RecordingConfig {
+    #[serde(default = "default_recording_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_recording_storage_path")]
+    pub storage_path: String,
+    #[serde(default)]
+    pub rdp: RdpRecordingConfig,
+}
+
+fn default_recording_enabled() -> bool {
+    true
+}
+
+fn default_recording_storage_path() -> String {
+    "recordings".to_string()
+}
+
+impl Default for RecordingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_recording_enabled(),
+            storage_path: default_recording_storage_path(),
+            rdp: RdpRecordingConfig::default(),
+        }
+    }
+}
+
+/// RDP-specific recording configuration.
+#[derive(Debug, Deserialize)]
+pub struct RdpRecordingConfig {
+    #[serde(default = "default_recording_enabled")]
+    pub enabled: bool,
+}
+
+impl Default for RdpRecordingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_recording_enabled(),
         }
     }
 }
@@ -316,11 +363,30 @@ impl SupervisorConfig {
     /// The child is responsible for reading and immediately removing them.
     pub fn service_env_vars(&self, service_key: &str) -> Vec<(String, String)> {
         let mut vars = Vec::new();
-        if service_key == "proxy_rdp" {
-            vars.push((
-                "VAUBAN_RDP_VIDEO_BITRATE_BPS".to_string(),
-                self.rdp.video_bitrate_bps.to_string(),
-            ));
+        let recording_enabled =
+            self.recording.enabled && self.recording.rdp.enabled;
+        match service_key {
+            "proxy_rdp" => {
+                vars.push((
+                    "VAUBAN_RDP_VIDEO_BITRATE_BPS".to_string(),
+                    self.rdp.video_bitrate_bps.to_string(),
+                ));
+                vars.push((
+                    "VAUBAN_RECORDING_ENABLED".to_string(),
+                    recording_enabled.to_string(),
+                ));
+            }
+            "audit" => {
+                vars.push((
+                    "VAUBAN_RECORDING_ENABLED".to_string(),
+                    recording_enabled.to_string(),
+                ));
+                vars.push((
+                    "VAUBAN_RECORDING_STORAGE_PATH".to_string(),
+                    self.recording.storage_path.clone(),
+                ));
+            }
+            _ => {}
         }
         vars
     }
@@ -646,20 +712,41 @@ mod tests {
     fn test_service_env_vars_proxy_rdp() {
         let config = test_config();
         let vars = config.service_env_vars("proxy_rdp");
-        assert_eq!(vars.len(), 1);
+        assert_eq!(vars.len(), 2);
         assert_eq!(vars[0].0, "VAUBAN_RDP_VIDEO_BITRATE_BPS");
         assert_eq!(vars[0].1, "5000000");
+        assert_eq!(vars[1].0, "VAUBAN_RECORDING_ENABLED");
+        assert_eq!(vars[1].1, "true");
+    }
+
+    #[test]
+    fn test_service_env_vars_audit() {
+        let config = test_config();
+        let vars = config.service_env_vars("audit");
+        assert_eq!(vars.len(), 2);
+        assert_eq!(vars[0].0, "VAUBAN_RECORDING_ENABLED");
+        assert_eq!(vars[0].1, "true");
+        assert_eq!(vars[1].0, "VAUBAN_RECORDING_STORAGE_PATH");
+        assert_eq!(vars[1].1, "recordings");
     }
 
     #[test]
     fn test_service_env_vars_other_services_empty() {
         let config = test_config();
-        for key in ["audit", "vault", "rbac", "auth", "proxy_ssh", "web"] {
+        for key in ["vault", "rbac", "auth", "proxy_ssh", "web"] {
             let vars = config.service_env_vars(key);
             assert!(
                 vars.is_empty(),
                 "service_env_vars for {} should be empty, got {:?}", key, vars
             );
         }
+    }
+
+    #[test]
+    fn test_recording_config_defaults() {
+        let config = test_config();
+        assert!(config.recording.enabled);
+        assert!(config.recording.rdp.enabled);
+        assert_eq!(config.recording.storage_path, "recordings");
     }
 }

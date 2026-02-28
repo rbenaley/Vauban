@@ -560,6 +560,20 @@ pub enum Message {
         session_id: String,
     },
 
+    // ========== RDP Recording (ProxyRdp -> Audit) ==========
+
+    /// Signal vauban-audit to start recording a new RDP session.
+    RdpRecordingStart {
+        session_id: String,
+        width: u16,
+        height: u16,
+    },
+
+    /// Signal vauban-audit to finalize the fMP4 recording file.
+    RdpRecordingEnd {
+        session_id: String,
+    },
+
     // ========== ACME Certificate Management (Web <-> Supervisor) ==========
 
     /// Request the supervisor to perform ACME certificate renewal.
@@ -2419,6 +2433,49 @@ mod tests {
             "H-10: RDP Message Debug must NOT contain password"
         );
         assert!(debug.contains("REDACTED"), "H-10: RDP password must show [REDACTED]");
+    }
+
+    // ==================== RDP Recording Message Tests ====================
+
+    #[test]
+    fn test_message_rdp_recording_start() {
+        let msg = Message::RdpRecordingStart {
+            session_id: "rdp-rec-123".to_string(),
+            width: 1920,
+            height: 1080,
+        };
+        assert!(msg.request_id().is_none());
+
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::RdpRecordingStart {
+            session_id,
+            width,
+            height,
+        } = deserialized
+        {
+            assert_eq!(session_id, "rdp-rec-123");
+            assert_eq!(width, 1920);
+            assert_eq!(height, 1080);
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_message_rdp_recording_end() {
+        let msg = Message::RdpRecordingEnd {
+            session_id: "rdp-rec-123".to_string(),
+        };
+        assert!(msg.request_id().is_none());
+
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::RdpRecordingEnd { session_id } = deserialized {
+            assert_eq!(session_id, "rdp-rec-123");
+        } else {
+            panic!("Wrong variant");
+        }
     }
 
     // ==================== ACME Message Tests ====================

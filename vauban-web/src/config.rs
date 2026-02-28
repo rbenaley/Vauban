@@ -233,6 +233,9 @@ pub struct Config {
     /// WebSocket configuration.
     #[serde(default)]
     pub websocket: WebSocketConfig,
+    /// Session recording configuration.
+    #[serde(default)]
+    pub recording: RecordingConfig,
 }
 
 debug_redacted_struct!(
@@ -506,6 +509,32 @@ impl Default for WebSocketConfig {
     fn default() -> Self {
         Self {
             max_connections_per_user: 30,
+        }
+    }
+}
+
+/// Session recording configuration.
+#[derive(Clone, Deserialize)]
+pub struct RecordingConfig {
+    #[serde(default = "default_recording_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_recording_storage_path")]
+    pub storage_path: String,
+}
+
+fn default_recording_enabled() -> bool {
+    true
+}
+
+fn default_recording_storage_path() -> String {
+    "recordings".to_string()
+}
+
+impl Default for RecordingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_recording_enabled(),
+            storage_path: default_recording_storage_path(),
         }
     }
 }

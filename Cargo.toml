@@ -57,6 +57,9 @@ async-trait = "0.1"
 secrecy = { version = "0.10", features = ["serde"] }
 zeroize = { version = "1.8", features = ["derive"] }
 
+# Integrity hashing
+blake3 = "1.5"
+
 # Cryptography for vauban-vault (M-1, C-2)
 aes-gcm = "0.10"
 hkdf = "0.12"

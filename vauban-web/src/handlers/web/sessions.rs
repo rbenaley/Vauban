@@ -1115,3 +1115,83 @@ struct ActiveSessionQueryResult {
     #[diesel(sql_type = diesel::sql_types::Timestamptz)]
     connected_at: chrono::DateTime<chrono::Utc>,
 }
+
+/// Serve an MP4 recording file for a given session UUID.
+///
+/// Validates that the session exists, is recorded, and that the file is present
+/// on disk. Supports HTTP Range requests for seeking in the browser video player.
+pub async fn serve_recording(
+    State(state): State<AppState>,
+    auth_user: WebAuthUser,
+    axum::extract::Path(session_uuid_str): axum::extract::Path<String>,
+) -> Result<axum::response::Response, AppError> {
+    use axum::body::Body;
+    use axum::http::{StatusCode, header};
+    use tokio::io::AsyncReadExt;
+
+    if !is_admin(&auth_user) {
+        return Err(AppError::Authorization(
+            "Only administrators can access recordings".to_string(),
+        ));
+    }
+
+    let clean_uuid = session_uuid_str.strip_suffix(".mp4").unwrap_or(&session_uuid_str);
+    let session_uuid = ::uuid::Uuid::parse_str(clean_uuid)
+        .map_err(|_| AppError::Validation("Invalid session UUID".to_string()))?;
+
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+
+    use crate::schema::proxy_sessions::dsl;
+    let session: crate::models::session::ProxySession = dsl::proxy_sessions
+        .filter(dsl::uuid.eq(session_uuid))
+        .first(&mut conn)
+        .await
+        .map_err(|_| AppError::NotFound("Session not found".to_string()))?;
+
+    if !session.is_recorded {
+        return Err(AppError::NotFound("No recording for this session".to_string()));
+    }
+
+    let recording_path = session
+        .recording_path
+        .as_deref()
+        .ok_or_else(|| AppError::NotFound("Recording path not set".to_string()))?;
+
+    let path = std::path::Path::new(recording_path);
+    if !path.exists() {
+        return Err(AppError::NotFound("Recording file not found on disk".to_string()));
+    }
+
+    let metadata = tokio::fs::metadata(path)
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to read recording: {}", e)))?;
+    let file_size = metadata.len();
+
+    let mut file = tokio::fs::File::open(path)
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to open recording: {}", e)))?;
+
+    let mut buf = Vec::with_capacity(file_size as usize);
+    file.read_to_end(&mut buf)
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to read recording: {}", e)))?;
+
+    let response = axum::http::Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "video/mp4")
+        .header(header::CONTENT_LENGTH, file_size.to_string())
+        .header(header::ACCEPT_RANGES, "bytes")
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!("inline; filename=\"{}.mp4\"", session_uuid_str),
+        )
+        .header(header::CACHE_CONTROL, "private, max-age=3600")
+        .body(Body::from(buf))
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Response build error: {}", e)))?;
+
+    Ok(response)
+}

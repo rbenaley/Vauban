@@ -185,6 +185,29 @@ async fn run_service() -> Result<()> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(5_000_000);
 
+    let recording_enabled: bool = std::env::var("VAUBAN_RECORDING_ENABLED")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(false);
+
+    let audit_fds: Option<(RawFd, RawFd)> = if recording_enabled {
+        let r: Option<RawFd> = std::env::var("VAUBAN_AUDIT_IPC_READ")
+            .ok()
+            .and_then(|s| s.parse().ok());
+        let w: Option<RawFd> = std::env::var("VAUBAN_AUDIT_IPC_WRITE")
+            .ok()
+            .and_then(|s| s.parse().ok());
+        match (r, w) {
+            (Some(r), Some(w)) => Some((r, w)),
+            _ => {
+                warn!("Recording enabled but VAUBAN_AUDIT_IPC_READ/WRITE not set");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // SAFETY: Single thread at this point, no concurrent env access.
     unsafe {
         std::env::remove_var("VAUBAN_IPC_READ");
@@ -193,9 +216,12 @@ async fn run_service() -> Result<()> {
         std::env::remove_var("VAUBAN_WEB_IPC_WRITE");
         std::env::remove_var("VAUBAN_FD_PASSING_SOCKET");
         std::env::remove_var("VAUBAN_RDP_VIDEO_BITRATE_BPS");
+        std::env::remove_var("VAUBAN_RECORDING_ENABLED");
+        std::env::remove_var("VAUBAN_AUDIT_IPC_READ");
+        std::env::remove_var("VAUBAN_AUDIT_IPC_WRITE");
     }
 
-    info!(video_bitrate_bps, "H.264 encoder bitrate configured");
+    info!(video_bitrate_bps, recording_enabled, "H.264 encoder bitrate configured");
 
     let supervisor_channel =
         unsafe { IpcChannel::from_raw_fds(supervisor_read_fd, supervisor_write_fd) };
@@ -216,9 +242,19 @@ async fn run_service() -> Result<()> {
     let web_async =
         AsyncIpcChannel::new(web_channel).context("Failed to create async web channel")?;
 
+    let audit_channel = audit_fds.map(|(r, w)| {
+        let ch = unsafe { IpcChannel::from_raw_fds(r, w) };
+        info!("Audit IPC channel opened for session recording");
+        ch
+    });
+
     info!("Resources opened, preparing to enter sandbox");
 
-    let ipc_fds = vec![supervisor_read_fd, supervisor_write_fd, web_read_fd, web_write_fd];
+    let mut ipc_fds = vec![supervisor_read_fd, supervisor_write_fd, web_read_fd, web_write_fd];
+    if let Some((r, w)) = audit_fds {
+        ipc_fds.push(r);
+        ipc_fds.push(w);
+    }
     let fd_receiver_fds: Option<Vec<RawFd>> = fd_passing_socket.map(|fd| vec![fd]);
 
     capsicum::setup_service_sandbox_extended(
@@ -235,9 +271,24 @@ async fn run_service() -> Result<()> {
 
     let (web_tx, web_rx) = mpsc::channel::<Message>(256);
 
-    main_loop(supervisor_async, web_async, state, sessions, web_tx, web_rx, fd_passing).await
+    let audit_tx: Option<mpsc::Sender<Message>> = audit_channel.map(|ch| {
+        let (tx, mut rx) = mpsc::channel::<Message>(512);
+        tokio::spawn(async move {
+            while let Some(msg) = rx.recv().await {
+                if let Err(e) = ch.send(&msg) {
+                    warn!(error = %e, "Failed to send recording frame to audit");
+                    break;
+                }
+            }
+            debug!("Audit IPC writer task exiting");
+        });
+        tx
+    });
+
+    main_loop(supervisor_async, web_async, state, sessions, web_tx, web_rx, fd_passing, audit_tx).await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn main_loop(
     supervisor_channel: AsyncIpcChannel,
     web_channel: AsyncIpcChannel,
@@ -246,6 +297,7 @@ async fn main_loop(
     web_tx: mpsc::Sender<Message>,
     mut web_rx: mpsc::Receiver<Message>,
     fd_passing: Option<Arc<FdPassingState>>,
+    audit_tx: Option<mpsc::Sender<Message>>,
 ) -> Result<()> {
     info!("Main event loop started");
 
@@ -309,6 +361,7 @@ async fn main_loop(
                             web_tx.clone(),
                             msg,
                             pending_connections.clone(),
+                            audit_tx.clone(),
                         ).await {
                             warn!(error = %e, "Error handling web message");
                             state.increment_failed();
@@ -383,6 +436,7 @@ async fn handle_web_message(
     web_tx: mpsc::Sender<Message>,
     msg: Message,
     pending_connections: Option<PendingConnections>,
+    audit_tx: Option<mpsc::Sender<Message>>,
 ) -> Result<()> {
     match msg {
         Message::RdpSessionOpen {
@@ -447,7 +501,7 @@ async fn handle_web_message(
             let response_tx_clone = response_tx.clone();
 
             tokio::spawn(async move {
-                match sessions_clone.create_session(config, web_tx).await {
+                match sessions_clone.create_session(config, web_tx, audit_tx).await {
                     Ok((_sid, w, h)) => {
                         state_clone.increment_processed();
                         let response = Message::RdpSessionOpened {
@@ -693,7 +747,7 @@ mod tests {
         let sig = source
             .find("fn handle_web_message")
             .expect("handle_web_message must exist");
-        let sig_body = &source[sig..sig + 400];
+        let sig_body = &source[sig..sig + 500];
         assert!(
             sig_body.contains("pending_connections: Option<PendingConnections>"),
             "handle_web_message must accept pending_connections parameter for FD brokering"

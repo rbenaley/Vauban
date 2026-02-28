@@ -1386,6 +1386,49 @@ async fn handle_rdp_socket(
 
     proxy_client.unsubscribe_session(&session_id).await;
 
+    // Update session recording metadata in the database
+    if state.config.recording.enabled {
+        use diesel::prelude::*;
+        use diesel_async::RunQueryDsl;
+
+        let now = chrono::Utc::now();
+        let recording_path = format!(
+            "{}/{}/{:02}/{}.mp4",
+            state.config.recording.storage_path,
+            now.format("%Y"),
+            now.format("%m"),
+            session_id
+        );
+        if let Ok(mut conn) = state.db_pool.get().await {
+            use crate::schema::proxy_sessions::dsl;
+            if let Ok(session_uuid) = ::uuid::Uuid::parse_str(&session_id) {
+                let update_result = diesel::update(
+                    dsl::proxy_sessions.filter(dsl::uuid.eq(session_uuid)),
+                )
+                .set((
+                    dsl::is_recorded.eq(true),
+                    dsl::recording_path.eq(&recording_path),
+                    dsl::status.eq("disconnected"),
+                    dsl::disconnected_at.eq(chrono::Utc::now()),
+                ))
+                .execute(&mut conn)
+                .await;
+
+                match update_result {
+                    Ok(count) if count > 0 => {
+                        debug!(session_id = %session_id, "Session recording metadata saved");
+                    }
+                    Ok(_) => {
+                        warn!(session_id = %session_id, "Session not found in database for recording update");
+                    }
+                    Err(e) => {
+                        warn!(session_id = %session_id, error = %e, "Failed to update session recording metadata");
+                    }
+                }
+            }
+        }
+    }
+
     info!(
         user = %user.username,
         session_id = %session_id,

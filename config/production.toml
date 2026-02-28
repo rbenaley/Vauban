@@ -127,6 +127,9 @@ default_ttl_secs = 7200
 level = "info"
 format = "text"
 
+[recording]
+storage_path = "/var/vauban/recordings"
+
 [security]
 password_min_length = 14
 max_failed_login_attempts = 3

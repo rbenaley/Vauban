@@ -87,6 +87,7 @@ impl RdpSession {
         config: SessionConfig,
         web_tx: mpsc::Sender<Message>,
         cmd_rx: mpsc::Receiver<SessionCommand>,
+        audit_tx: Option<mpsc::Sender<Message>>,
     ) -> SessionResult<Self> {
         info!(
             session_id = %config.session_id,
@@ -258,7 +259,7 @@ impl RdpSession {
                 tls_framed,
                 web_tx,
                 cmd_rx,
-                None, // audit_tx: future recording support
+                audit_tx,
             )
             .await
             {
@@ -426,7 +427,7 @@ async fn active_session_loop(
     mut framed: ironrdp_tokio::TokioFramed<tokio_rustls::client::TlsStream<TcpStream>>,
     web_tx: mpsc::Sender<Message>,
     mut cmd_rx: mpsc::Receiver<SessionCommand>,
-    #[allow(unused_variables)] audit_tx: Option<mpsc::Sender<Message>>,
+    audit_tx: Option<mpsc::Sender<Message>>,
 ) -> SessionResult<()> {
     let desktop_w = connection_result.desktop_size.width;
     let desktop_h = connection_result.desktop_size.height;
@@ -455,6 +456,16 @@ async fn active_session_loop(
 
     trace!(session_id = %session_id, "Active session loop started");
 
+    if let Some(ref tx) = audit_tx {
+        let _ = tx.send(Message::RdpRecordingStart {
+            session_id: session_id.clone(),
+            width: align_even(desktop_w),
+            height: align_even(desktop_h),
+        }).await;
+        debug!(session_id = %session_id, "Sent RdpRecordingStart to audit");
+    }
+
+    let recording_result: SessionResult<()> = async {
     loop {
         tokio::select! {
             // Read and process PDU from RDP server
@@ -750,6 +761,19 @@ async fn active_session_loop(
             Some((frame, encode_elapsed_us)) = encoded_rx.recv() => {
                 perf_encoded_frames += 1;
                 perf_encode_time_us += encode_elapsed_us;
+
+                if let Some(ref tx) = audit_tx {
+                    let audit_msg = Message::RdpVideoFrame {
+                        session_id: session_id.clone(),
+                        timestamp_us: frame.timestamp_us,
+                        is_keyframe: frame.is_keyframe,
+                        width: frame.width,
+                        height: frame.height,
+                        data: frame.data.clone(),
+                    };
+                    let _ = tx.try_send(audit_msg);
+                }
+
                 let msg = Message::RdpVideoFrame {
                     session_id: session_id.clone(),
                     timestamp_us: frame.timestamp_us,
@@ -765,6 +789,16 @@ async fn active_session_loop(
             }
         }
     }
+    }.await;
+
+    if let Some(ref tx) = audit_tx {
+        let _ = tx.send(Message::RdpRecordingEnd {
+            session_id: session_id.clone(),
+        }).await;
+        debug!(session_id = %session_id, "Sent RdpRecordingEnd to audit");
+    }
+
+    recording_result
 }
 
 fn translate_input_event(event: RdpInputEvent) -> Vec<rdp_input::Operation> {
