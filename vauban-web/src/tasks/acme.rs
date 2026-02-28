@@ -435,7 +435,7 @@ async fn request_renewal(
 
     info!(
         domains = ?acme_config.domains,
-        provider = acme_config.provider.as_str(),
+        directory = %acme_config.directory_url,
         "Requesting certificate renewal from supervisor"
     );
 

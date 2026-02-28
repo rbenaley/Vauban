@@ -100,7 +100,6 @@ key_path = "/usr/local/etc/vauban/certs/server.key"
 # No HTTP port 80 required. The challenge runs on port 443.
 [server.tls.acme]
 enabled = true
-provider = "letsencrypt"
 email = "admin@example.com"                             # CHANGE ME
 domains = ["vauban.example.com"]                        # CHANGE ME
 renew_before_hours = 24
@@ -109,9 +108,9 @@ directory_url = "https://acme-v02.api.letsencrypt.org/directory"
 staging_directory_url = "https://acme-staging-v02.api.letsencrypt.org/directory"
 # staging = false
 
-# For ZeroSSL instead of Let's Encrypt, uncomment and change directory_url:
-# provider = "zerossl"
+# For ZeroSSL instead of Let's Encrypt, change directory_url and set EAB:
 # directory_url = "https://acme.zerossl.com/v2/DV90"
+# staging_directory_url = ""        # ZeroSSL has no staging environment
 # eab_kid = "your_kid_here"
 # eab_hmac_key = "your_hmac_key_here"
 

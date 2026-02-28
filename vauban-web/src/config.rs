@@ -294,37 +294,15 @@ pub struct TlsConfig {
     pub acme: Option<AcmeConfig>,
 }
 
-/// ACME provider for automatic certificate management.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum AcmeProvider {
-    #[default]
-    Letsencrypt,
-    Zerossl,
-    Custom,
-}
-
-impl AcmeProvider {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Letsencrypt => "letsencrypt",
-            Self::Zerossl => "zerossl",
-            Self::Custom => "custom",
-        }
-    }
-}
-
 /// ACME automatic certificate management configuration.
 ///
 /// Uses TLS-ALPN-01 (RFC 8737) challenge on port 443.
-/// No HTTP port 80 required.
+/// No HTTP port 80 required. Works with any RFC 8555-compliant CA
+/// (Let's Encrypt, ZeroSSL, etc.) -- the CA is selected via `directory_url`.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct AcmeConfig {
     /// Whether ACME is enabled.
     pub enabled: bool,
-    /// ACME provider: "letsencrypt", "zerossl", or "custom".
-    #[serde(default)]
-    pub provider: AcmeProvider,
     /// Contact email for the ACME account.
     #[serde(default)]
     pub email: String,
@@ -340,14 +318,13 @@ pub struct AcmeConfig {
     /// Use the ACME staging environment (for testing).
     #[serde(default)]
     pub staging: bool,
-    /// ZeroSSL External Account Binding key ID.
+    /// External Account Binding key ID (required by some CAs, e.g. ZeroSSL).
     #[serde(default)]
     pub eab_kid: OptionalSecret,
-    /// ZeroSSL External Account Binding HMAC key.
+    /// External Account Binding HMAC key (required by some CAs, e.g. ZeroSSL).
     #[serde(default)]
     pub eab_hmac_key: OptionalSecret,
-    /// ACME directory URL for the provider.
-    /// Set in TOML per provider (e.g. Let's Encrypt, ZeroSSL).
+    /// ACME directory URL (determines which CA is used).
     #[serde(default)]
     pub directory_url: String,
     /// ACME staging directory URL (used when `staging = true`).
@@ -390,10 +367,10 @@ impl AcmeConfig {
 
         self.resolve_directory_url()?;
 
-        if self.provider == AcmeProvider::Zerossl
-            && (self.eab_kid.is_none() || self.eab_hmac_key.is_none())
-        {
-            return Err("ZeroSSL requires eab_kid and eab_hmac_key".to_string());
+        if self.eab_kid.is_some() != self.eab_hmac_key.is_some() {
+            return Err(
+                "eab_kid and eab_hmac_key must both be set or both be absent".to_string(),
+            );
         }
 
         Ok(())
@@ -404,7 +381,6 @@ impl std::fmt::Debug for AcmeConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AcmeConfig")
             .field("enabled", &self.enabled)
-            .field("provider", &self.provider)
             .field("email", &self.email)
             .field("domains", &self.domains)
             .field("renew_before_hours", &self.renew_before_hours)

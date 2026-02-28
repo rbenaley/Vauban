@@ -110,7 +110,7 @@ vauban-web/
 │   │   └── acme.rs           # CertExpiry, scheduler, ASN.1 parser
 │   ├── ipc/
 │   │   └── supervisor.rs     # ACME IPC message handlers
-│   ├── config.rs             # AcmeConfig, AcmeProvider
+│   ├── config.rs             # AcmeConfig
 │   └── main.rs               # TLS setup, ACME bootstrap
 
 vauban-supervisor/
@@ -614,7 +614,6 @@ This ensures that even if no certificate file exists at startup, ACME renewal is
 ```toml
 [server.tls.acme]
 enabled = false                           # Master switch
-provider = "letsencrypt"                  # "letsencrypt" | "zerossl" | "custom"
 email = ""                                # Contact email for CA notifications
 domains = []                              # Domains to obtain certificates for
 renew_before_hours = 24                   # Renew N hours before expiration
@@ -622,10 +621,11 @@ account_key_path = "acme/account.pem"     # ACME account credentials (JSON)
 staging = false                           # Use staging CA (for testing)
 directory_url = "https://acme-v02.api.letsencrypt.org/directory"
 staging_directory_url = "https://acme-staging-v02.api.letsencrypt.org/directory"
-
-# ZeroSSL requires External Account Binding:
-# eab_kid = "your_kid_here"
-# eab_hmac_key = "your_hmac_key_here"
+# ZeroSSL ACME URLs (requires EAB credentials from dashboard):
+# directory_url = "https://acme.zerossl.com/v2/DV90"
+# staging_directory_url = ""              # ZeroSSL has no staging environment
+# eab_kid = "your_kid_here"              # External Account Binding
+# eab_hmac_key = "your_hmac_key_here"    # EAB HMAC key
 ```
 
 ### 9.2 Environment Defaults
@@ -646,7 +646,7 @@ staging_directory_url = "https://acme-staging-v02.api.letsencrypt.org/directory"
 | `email` is non-empty | "ACME email is required" |
 | `domains` is non-empty | "ACME domains list cannot be empty" |
 | `account_key_path` is non-empty | "ACME account_key_path is required" |
-| ZeroSSL requires both `eab_kid` and `eab_hmac_key` | "ZeroSSL requires eab_kid and eab_hmac_key" |
+| `eab_kid` and `eab_hmac_key` must both be set or both absent | "eab_kid and eab_hmac_key must both be set or both be absent" |
 
 ### 9.4 No Hardcoded URLs
 

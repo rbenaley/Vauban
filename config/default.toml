@@ -86,7 +86,6 @@ key_path = "vauban-web/certs/server.key"
 # Disabled by default - enable in production.toml for automatic renewal.
 [server.tls.acme]
 enabled = false
-provider = "letsencrypt"            # "letsencrypt" | "zerossl" | "custom"
 email = ""
 domains = []
 renew_before_hours = 24             # Renew N hours before expiration
@@ -94,8 +93,11 @@ account_key_path = "acme/account.pem"
 staging = false                     # Use staging environment (testing)
 directory_url = "https://acme-v02.api.letsencrypt.org/directory"
 staging_directory_url = "https://acme-staging-v02.api.letsencrypt.org/directory"
-# eab_kid = ""                      # ZeroSSL only: External Account Binding
-# eab_hmac_key = ""                 # ZeroSSL only: EAB HMAC key
+# ZeroSSL ACME URLs (requires EAB credentials from dashboard):
+# directory_url = "https://acme.zerossl.com/v2/DV90"
+# staging_directory_url = ""        # ZeroSSL has no staging environment
+# eab_kid = ""                      # External Account Binding (e.g. ZeroSSL)
+# eab_hmac_key = ""                 # EAB HMAC key
 
 [database]
 url = "postgresql://vauban:vauban@localhost/vauban"
