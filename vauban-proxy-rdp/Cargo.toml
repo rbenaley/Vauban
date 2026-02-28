@@ -65,7 +65,7 @@ nix = { version = "0.31", features = ["process", "signal", "poll", "fs", "user",
 # to NASM or the C++ compiler, unlike Cisco's official meson.build.
 # Use our fork with AVX2 optimizations for SAD and Intra Prediction.
 [patch.crates-io]
-openh264-sys2 = { git = "https://github.com/rbenaley/openh264-rs-avx2", subdirectory = "openh264-sys2" }
+openh264-sys2 = { git = "https://github.com/rbenaley/openh264-rs-avx2" }
 
 [profile.release]
 opt-level = 3

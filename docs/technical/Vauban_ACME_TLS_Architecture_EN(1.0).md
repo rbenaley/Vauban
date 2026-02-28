@@ -131,6 +131,7 @@ shared/
 |-------|---------|
 | `rustls` | TLS 1.3 server, `ResolvesServerCert` trait |
 | `rustls-pki-types` | Certificate/key DER/PEM parsing |
+| `rcgen` 0.14 | Self-signed bootstrap certificate generation when files are missing |
 | `chrono` | Timestamp calculation for renewal scheduling |
 | `tokio` | Async scheduler, `Notify` for wakeup |
 
@@ -139,7 +140,7 @@ shared/
 | Crate | Purpose |
 |-------|---------|
 | `instant-acme` 0.8 | ACME RFC 8555 client (account, orders, challenges) |
-| `rcgen` 0.13 | Self-signed challenge certificate generation (acmeIdentifier extension) |
+| `rcgen` 0.14 | Self-signed challenge certificate generation (acmeIdentifier extension) |
 | `sha2` | SHA-256 digest of key authorization for TLS-ALPN-01 |
 | `serde_json` | ACME account credential persistence |
 | `tokio` | Async runtime for ACME HTTP calls (single-threaded, per-renewal) |
@@ -375,7 +376,39 @@ if issuer_bytes == subject_bytes => self-signed
 
 This handles the common deployment scenario: the administrator generates a self-signed certificate with `generate-dev-certs.sh`, starts `vauban-web`, and ACME immediately replaces it with a real certificate.
 
-### 5.5 Why a Custom ASN.1 Parser
+### 5.5 Automatic Certificate File Generation
+
+When ACME is enabled and the `cert_path` or `key_path` files do not exist on disk, `vauban-web` automatically generates a self-signed bootstrap certificate using `rcgen` **before** entering the Capsicum sandbox. The flow is:
+
+1. `load_tls_config()` detects that `cert_path` or `key_path` is missing
+2. If ACME is enabled, calls `generate_self_signed_cert()` with the configured `acme.domains`
+3. The function generates an ECDSA P-256 key pair and a self-signed certificate via `rcgen`
+4. Writes both files atomically (write to `.tmp` + rename) with `0600` permissions
+5. Returns the `CertifiedKey` for immediate use by the `AcmeResolver`
+
+```
+load_tls_config()
+    │
+    ├── cert_path exists? ──── yes ──> load from disk (normal path)
+    │
+    └── no
+         │
+         ├── ACME enabled? ──── no ──> error: "TLS certificate not found"
+         │
+         └── yes
+              │
+              └── generate_self_signed_cert(domains, cert_path, key_path)
+                   │
+                   ├── rcgen::KeyPair::generate()
+                   ├── CertificateParams::new(domains).self_signed(&key)
+                   ├── atomic_write_pem(cert_path, cert_pem)  // 0600 perms
+                   ├── atomic_write_pem(key_path, key_pem)    // 0600 perms
+                   └── return CertifiedKey
+```
+
+This eliminates the need for any manual certificate generation step. A fresh deployment only requires a valid TOML configuration with ACME enabled. The self-signed certificate serves as a temporary bootstrap: the scheduler detects it (issuer == subject) and triggers immediate ACME renewal.
+
+### 5.6 Why a Custom ASN.1 Parser
 
 The certificate metadata extraction requires only two pieces of information from a DER-encoded X.509 certificate: the `notAfter` timestamp and whether `issuer == subject`. A full X.509 parser (`x509-parser`, `webpki`) would add significant dependency weight for minimal gain.
 
@@ -560,7 +593,7 @@ flowchart TD
     subgraph phase1 ["Phase 1: Before cap_enter()"]
         direction TB
         Bind["Bind TCP/443 socket"]
-        LoadTLS["Load TLS cert/key files<br/>Create AcmeResolver"]
+        LoadTLS["Load TLS cert/key files<br/>or generate self-signed bootstrap<br/>Create AcmeResolver"]
         ExtractMeta["extract_cert_info()<br/>Parse notAfter + self-signed"]
         Register["Register resolver + expiry<br/>with supervisor IPC handler"]
         DB["Open database connections"]
@@ -664,7 +697,7 @@ ACME directory URLs are **not hardcoded** in application code. They are configur
 | No reverse proxy | Certificate management built into application |
 | No external tools | No `certbot`, no `acme.sh`, no cron scripts |
 | No filesystem access after sandbox | Certificate metadata pre-loaded |
-| Minimal dependencies | `instant-acme` + `rcgen` in supervisor only |
+| Minimal dependencies | `instant-acme` + `rcgen` (supervisor), `rcgen` (web bootstrap) |
 
 ### 10.2 Secret Lifecycle
 
@@ -729,6 +762,7 @@ Challenge certificates are **never served to regular users**:
 | `CertExpiry` | 7 tests | State management, atomic updates, `Notify` wakeup, self-signed flag |
 | `extract_cert_info` | 4 tests | Valid PEM, nonexistent file, empty file, garbage content |
 | `AcmeResolver` | 19 tests | Challenge lifecycle, production cert rotation, ALPN selection, Debug format |
+| `generate_self_signed_cert` | 5 tests | File creation, parent dir creation, empty domains, reloadability, Unix permissions |
 | `certified_key_from_pem/der` | 5 tests | Valid certs, empty input, garbage input |
 | Supervisor `acme.rs` | 5 tests | OID constant, challenge cert generation, atomic writes, parent dir creation |
 | IPC messages | 10 tests | Serialization roundtrip, Debug redaction for private keys |
@@ -737,7 +771,7 @@ Challenge certificates are **never served to regular users**:
 
 ### 11.2 Test Certificate Generation
 
-Tests use `rcgen` (dev-dependency) to generate real X.509 certificates:
+Tests use `rcgen` to generate real X.509 certificates:
 
 - **Self-signed certificates**: `CertificateParams::self_signed()` for testing self-signed detection
 - **CA-signed certificates**: `CertificateParams::signed_by()` with a test CA for testing issuer != subject
@@ -816,13 +850,15 @@ This avoids hardcoded DER blobs and ensures tests reflect real certificate struc
 
 **Decision:** If the initial certificate is self-signed, trigger ACME renewal immediately.
 
-**Context:** A common deployment scenario is: generate self-signed cert, start server, wait for ACME to replace it. Without detection, the scheduler would wait ~364 days (self-signed cert validity) before renewing.
+**Context:** A common deployment scenario is: install `vauban-web`, configure ACME in TOML, start server. Without detection, the system would need pre-existing certificates.
 
 **Consequences:**
 - ✅ Automatic bootstrap from self-signed to ACME certificate
 - ✅ No manual intervention required after first deploy
-- ✅ Handles "certificate file missing" case gracefully (fallback to self-signed state)
+- ✅ When certificate files are missing and ACME is enabled, `rcgen` auto-generates a self-signed bootstrap certificate written to `cert_path`/`key_path` with `0600` permissions
+- ✅ The scheduler detects the self-signed certificate (issuer == subject) and triggers immediate ACME renewal
 - ⚠️ Requires issuer/subject comparison in DER (handled by ASN.1 parser)
+- ⚠️ Must run before `cap_enter()` for file I/O access
 
 ### 12.7 No Hardcoded Directory URLs
 

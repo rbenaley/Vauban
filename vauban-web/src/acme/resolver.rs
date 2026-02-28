@@ -182,6 +182,85 @@ pub fn certified_key_from_pem(
     Ok(CertifiedKey::new(cert_chain, signing_key))
 }
 
+/// Generate a self-signed certificate for the given domains and write it
+/// to `cert_path` and `key_path`.
+///
+/// Used when ACME is enabled but no certificate files exist yet.
+/// The scheduler will detect this as self-signed and trigger immediate
+/// ACME renewal to replace it with a real certificate.
+///
+/// **Must be called before `cap_enter()`** since it performs file I/O.
+pub fn generate_self_signed_cert(
+    domains: &[String],
+    cert_path: &str,
+    key_path: &str,
+) -> Result<CertifiedKey, Box<dyn std::error::Error>> {
+    use rcgen::{CertificateParams, KeyPair};
+
+    if domains.is_empty() {
+        return Err("Cannot generate certificate: no domains configured".into());
+    }
+
+    let key_pair = KeyPair::generate()
+        .map_err(|e| format!("Failed to generate key pair: {}", e))?;
+    let params = CertificateParams::new(domains.to_vec())
+        .map_err(|e| format!("Failed to create certificate params: {}", e))?;
+    let cert = params
+        .self_signed(&key_pair)
+        .map_err(|e| format!("Failed to self-sign certificate: {}", e))?;
+
+    let cert_pem = cert.pem();
+    let key_pem = key_pair.serialize_pem();
+
+    // Write to disk atomically (temp + rename) with restrictive permissions
+    atomic_write_pem(cert_path, &cert_pem)?;
+    atomic_write_pem(key_path, &key_pem)?;
+
+    info!(
+        cert_path = %cert_path,
+        key_path = %key_path,
+        domains = ?domains,
+        "Generated self-signed bootstrap certificate"
+    );
+
+    certified_key_from_pem(&cert_pem, &key_pem)
+}
+
+/// Write data to a file atomically using write-to-temp + rename.
+fn atomic_write_pem(path: &str, data: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Write;
+    use std::path::Path;
+
+    let path = Path::new(path);
+    if let Some(parent) = path.parent()
+        && !parent.exists()
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create directory {}: {}", parent.display(), e))?;
+    }
+
+    let temp_path = path.with_extension("tmp");
+    let mut file = std::fs::File::create(&temp_path)
+        .map_err(|e| format!("Failed to create temp file: {}", e))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("Failed to set file permissions: {}", e))?;
+    }
+
+    file.write_all(data.as_bytes())
+        .map_err(|e| format!("Failed to write data: {}", e))?;
+    file.sync_all()
+        .map_err(|e| format!("Failed to sync file: {}", e))?;
+
+    std::fs::rename(&temp_path, path)
+        .map_err(|e| format!("Failed to atomically rename: {}", e))?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -435,5 +514,105 @@ mod tests {
 
         let result = certified_key_from_der(cert.der().as_ref(), &[0xFF, 0xFF, 0xFF]);
         assert!(result.is_err());
+    }
+
+    // ==================== generate_self_signed_cert ====================
+
+    #[test]
+    fn test_generate_self_signed_cert_creates_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert_path = dir.path().join("server.crt");
+        let key_path = dir.path().join("server.key");
+
+        let result = generate_self_signed_cert(
+            &["example.com".to_string(), "www.example.com".to_string()],
+            cert_path.to_str().unwrap(),
+            key_path.to_str().unwrap(),
+        );
+
+        assert!(result.is_ok());
+        assert!(cert_path.exists());
+        assert!(key_path.exists());
+
+        let cert_pem = std::fs::read_to_string(&cert_path).unwrap();
+        let key_pem = std::fs::read_to_string(&key_path).unwrap();
+        assert!(cert_pem.contains("BEGIN CERTIFICATE"));
+        assert!(key_pem.contains("BEGIN PRIVATE KEY"));
+    }
+
+    #[test]
+    fn test_generate_self_signed_cert_creates_parent_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert_path = dir.path().join("sub/dir/server.crt");
+        let key_path = dir.path().join("sub/dir/server.key");
+
+        let result = generate_self_signed_cert(
+            &["nested.example.com".to_string()],
+            cert_path.to_str().unwrap(),
+            key_path.to_str().unwrap(),
+        );
+
+        assert!(result.is_ok());
+        assert!(cert_path.exists());
+        assert!(key_path.exists());
+    }
+
+    #[test]
+    fn test_generate_self_signed_cert_empty_domains() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert_path = dir.path().join("server.crt");
+        let key_path = dir.path().join("server.key");
+
+        let result = generate_self_signed_cert(
+            &[],
+            cert_path.to_str().unwrap(),
+            key_path.to_str().unwrap(),
+        );
+
+        assert!(result.is_err());
+        assert!(!cert_path.exists());
+    }
+
+    #[test]
+    fn test_generate_self_signed_cert_is_loadable() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert_path = dir.path().join("server.crt");
+        let key_path = dir.path().join("server.key");
+
+        let certified_key = generate_self_signed_cert(
+            &["loadable.example.com".to_string()],
+            cert_path.to_str().unwrap(),
+            key_path.to_str().unwrap(),
+        )
+        .unwrap();
+
+        assert!(!certified_key.cert.is_empty());
+
+        let cert_pem = std::fs::read_to_string(&cert_path).unwrap();
+        let key_pem = std::fs::read_to_string(&key_path).unwrap();
+        let reloaded = certified_key_from_pem(&cert_pem, &key_pem);
+        assert!(reloaded.is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_generate_self_signed_cert_file_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cert_path = dir.path().join("server.crt");
+        let key_path = dir.path().join("server.key");
+
+        generate_self_signed_cert(
+            &["perms.example.com".to_string()],
+            cert_path.to_str().unwrap(),
+            key_path.to_str().unwrap(),
+        )
+        .unwrap();
+
+        let cert_mode = std::fs::metadata(&cert_path).unwrap().permissions().mode() & 0o777;
+        let key_mode = std::fs::metadata(&key_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(cert_mode, 0o600);
+        assert_eq!(key_mode, 0o600);
     }
 }

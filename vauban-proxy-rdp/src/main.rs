@@ -113,25 +113,27 @@ impl ServiceState {
 }
 
 fn main() -> ExitCode {
+    // SAFETY: All directive strings are compile-time constants; parse() cannot fail.
+    #[allow(clippy::unwrap_used)]
+    let env_filter = tracing_subscriber::EnvFilter::from_default_env()
+        .add_directive(tracing::Level::INFO.into())
+        .add_directive("ironrdp_session=warn".parse().unwrap())
+        .add_directive("ironrdp_connector=warn".parse().unwrap())
+        .add_directive("ironrdp_pdu=warn".parse().unwrap())
+        .add_directive("ironrdp_tls=warn".parse().unwrap())
+        .add_directive("ironrdp_tokio=warn".parse().unwrap())
+        .add_directive("ironrdp_graphics=warn".parse().unwrap())
+        .add_directive("ironrdp_svc=warn".parse().unwrap())
+        .add_directive("ironrdp_dvc=warn".parse().unwrap())
+        .add_directive("ironrdp_displaycontrol=warn".parse().unwrap())
+        .add_directive("ironrdp_async=warn".parse().unwrap())
+        .add_directive("sspi=warn".parse().unwrap())
+        .add_directive("sspi::dns=off".parse().unwrap())
+        .add_directive("picky=warn".parse().unwrap())
+        .add_directive("rustls=warn".parse().unwrap());
+
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive(tracing::Level::INFO.into())
-                .add_directive("ironrdp_session=warn".parse().unwrap())
-                .add_directive("ironrdp_connector=warn".parse().unwrap())
-                .add_directive("ironrdp_pdu=warn".parse().unwrap())
-                .add_directive("ironrdp_tls=warn".parse().unwrap())
-                .add_directive("ironrdp_tokio=warn".parse().unwrap())
-                .add_directive("ironrdp_graphics=warn".parse().unwrap())
-                .add_directive("ironrdp_svc=warn".parse().unwrap())
-                .add_directive("ironrdp_dvc=warn".parse().unwrap())
-                .add_directive("ironrdp_displaycontrol=warn".parse().unwrap())
-                .add_directive("ironrdp_async=warn".parse().unwrap())
-                .add_directive("sspi=warn".parse().unwrap())
-                .add_directive("sspi::dns=off".parse().unwrap())
-                .add_directive("picky=warn".parse().unwrap())
-                .add_directive("rustls=warn".parse().unwrap()),
-        )
+        .with_env_filter(env_filter)
         .init();
 
     info!("vauban-proxy-rdp starting (async mode with Tokio + IronRDP)");

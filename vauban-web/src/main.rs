@@ -578,15 +578,58 @@ async fn load_tls_config(
     let cert_path = &config.server.tls.cert_path;
     let key_path = &config.server.tls.key_path;
 
-    // Validate that certificate files exist
-    if !std::path::Path::new(cert_path).exists() {
-        return Err(format!(
-            "TLS certificate not found: {}. Run scripts/generate-dev-certs.sh for development.",
-            cert_path
-        )
-        .into());
-    }
-    if !std::path::Path::new(key_path).exists() {
+    let acme_enabled = config
+        .server
+        .tls
+        .acme
+        .as_ref()
+        .is_some_and(|a| a.enabled);
+
+    let cert_exists = std::path::Path::new(cert_path).exists();
+    let key_exists = std::path::Path::new(key_path).exists();
+
+    if !cert_exists || !key_exists {
+        if let Some(acme_config) = config.server.tls.acme.as_ref()
+            && acme_config.enabled
+        {
+            tracing::warn!(
+                cert_path = %cert_path,
+                key_path = %key_path,
+                "Certificate files not found, generating self-signed bootstrap certificate for ACME"
+            );
+            let resolver = Arc::new(AcmeResolver::new(Arc::new(
+                vauban_web::acme::resolver::generate_self_signed_cert(
+                    &acme_config.domains,
+                    cert_path,
+                    key_path,
+                )?,
+            )));
+
+            let mut server_config =
+                ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+                    .with_no_client_auth()
+                    .with_cert_resolver(Arc::clone(&resolver) as Arc<dyn ResolvesServerCert>);
+
+            server_config.alpn_protocols =
+                vec![b"h2".to_vec(), b"http/1.1".to_vec(), b"acme-tls/1".to_vec()];
+
+            tracing::info!(
+                "TLS configured with self-signed bootstrap certificate (ACME will replace it)"
+            );
+
+            return Ok((
+                RustlsConfig::from_config(Arc::new(server_config)),
+                Some(resolver),
+            ));
+        }
+
+        if !cert_exists {
+            return Err(format!(
+                "TLS certificate not found: {}. Run scripts/generate-dev-certs.sh for development.",
+                cert_path
+            )
+            .into());
+        }
         return Err(format!("TLS private key not found: {}", key_path).into());
     }
 
@@ -621,13 +664,6 @@ async fn load_tls_config(
     let mut key_reader = BufReader::new(key_file);
     let private_key = PrivateKeyDer::from_pem_reader(&mut key_reader)
         .map_err(|e| format!("No valid private key found in key file: {}", e))?;
-
-    let acme_enabled = config
-        .server
-        .tls
-        .acme
-        .as_ref()
-        .is_some_and(|a| a.enabled);
 
     if acme_enabled {
         // ACME mode: use dynamic resolver for zero-downtime cert rotation

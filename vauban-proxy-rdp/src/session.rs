@@ -379,11 +379,11 @@ fn spawn_encoder_thread(
                 EncoderCommand::Encode(mut rgba_data, w, h) => {
                     let aw = align_even(w);
                     let ah = align_even(h);
-                    if aw != encoder.dimensions().0 || ah != encoder.dimensions().1 {
-                        if let Err(e) = encoder.reconfigure(aw, ah) {
-                            warn!(session_id = %session_id, error = %e, "Encoder thread: reconfigure failed");
-                            continue;
-                        }
+                    if (aw != encoder.dimensions().0 || ah != encoder.dimensions().1)
+                        && let Err(e) = encoder.reconfigure(aw, ah)
+                    {
+                        warn!(session_id = %session_id, error = %e, "Encoder thread: reconfigure failed");
+                        continue;
                     }
                     let expected = usize::from(aw) * usize::from(ah) * 4;
                     if rgba_data.len() < expected {
