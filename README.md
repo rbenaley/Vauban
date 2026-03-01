@@ -66,6 +66,7 @@ Detailed technical architecture documents are available in [`docs/technical/`](d
 | [RDP Session Architecture](docs/technical/Vauban_RDP_Architecture_EN(1.0).md) | H.264 encoding, WebCodecs decoding, dynamic resolution, input pipeline |
 | [OpenH264 AVX2 Optimizations](docs/technical/Vauban_OpenH264_AVX2_Optimizations_EN(1.0).md) | Custom AVX2 assembly for SAD and intra prediction (~50% CPU reduction) |
 | [ACME TLS Certificate Architecture](docs/technical/Vauban_ACME_TLS_Architecture_EN(1.0).md) | Automatic certificate renewal, TLS-ALPN-01, zero-downtime rotation |
+| [RDP Recording Architecture](docs/technical/Vauban_Recording_Architecture_EN(1.0).md) | Fragmented MP4 recording, BLAKE3 integrity, HTTP Range streaming, playback |
 
 ## Security Model
 
