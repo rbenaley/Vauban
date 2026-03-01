@@ -1120,14 +1120,20 @@ struct ActiveSessionQueryResult {
 ///
 /// The file is obtained from the supervisor via SCM_RIGHTS (read-only FD),
 /// so vauban-web never needs filesystem access to the recordings directory.
+///
+/// Supports HTTP Range requests for seeking in the browser video player.
+/// Memory usage is constant (~64 KB) regardless of file size thanks to
+/// chunked streaming via `ReaderStream`.
 pub async fn serve_recording(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    headers: axum::http::HeaderMap,
     axum::extract::Path(session_uuid_str): axum::extract::Path<String>,
 ) -> Result<axum::response::Response, AppError> {
     use axum::body::Body;
     use axum::http::{StatusCode, header};
-    use tokio::io::AsyncReadExt;
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+    use tokio_util::io::ReaderStream;
 
     if !is_admin(&auth_user) {
         return Err(AppError::Authorization(
@@ -1194,23 +1200,169 @@ pub async fn serve_recording(
     let file_size = metadata.len();
 
     let mut tokio_file = tokio::fs::File::from_std(std_file);
-    let mut buf = Vec::with_capacity(file_size as usize);
-    tokio_file.read_to_end(&mut buf)
-        .await
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to read recording: {}", e)))?;
 
-    let response = axum::http::Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "video/mp4")
-        .header(header::CONTENT_LENGTH, file_size.to_string())
-        .header(header::ACCEPT_RANGES, "bytes")
-        .header(
+    let range = headers
+        .get(header::RANGE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| parse_range_header(s, file_size));
+
+    let common_headers = [
+        (header::CONTENT_TYPE, "video/mp4".to_string()),
+        (header::ACCEPT_RANGES, "bytes".to_string()),
+        (
             header::CONTENT_DISPOSITION,
-            format!("inline; filename=\"{}.mp4\"", session_uuid_str),
-        )
-        .header(header::CACHE_CONTROL, "private, max-age=3600")
-        .body(Body::from(buf))
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("Response build error: {}", e)))?;
+            format!("inline; filename=\"{}.mp4\"", clean_uuid),
+        ),
+        (header::CACHE_CONTROL, "private, max-age=3600".to_string()),
+    ];
 
-    Ok(response)
+    const CHUNK_SIZE: usize = 64 * 1024;
+
+    if let Some((start, end)) = range {
+        let length = end - start + 1;
+
+        tokio_file
+            .seek(std::io::SeekFrom::Start(start))
+            .await
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("Seek failed: {}", e)))?;
+
+        let limited = tokio_file.take(length);
+        let stream = ReaderStream::with_capacity(limited, CHUNK_SIZE);
+
+        let mut builder = axum::http::Response::builder()
+            .status(StatusCode::PARTIAL_CONTENT)
+            .header(header::CONTENT_LENGTH, length.to_string())
+            .header(
+                header::CONTENT_RANGE,
+                format!("bytes {}-{}/{}", start, end, file_size),
+            );
+
+        for (k, v) in &common_headers {
+            builder = builder.header(k, v.as_str());
+        }
+
+        builder
+            .body(Body::from_stream(stream))
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("Response build error: {}", e)))
+    } else {
+        let stream = ReaderStream::with_capacity(tokio_file, CHUNK_SIZE);
+
+        let mut builder = axum::http::Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_LENGTH, file_size.to_string());
+
+        for (k, v) in &common_headers {
+            builder = builder.header(k, v.as_str());
+        }
+
+        builder
+            .body(Body::from_stream(stream))
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("Response build error: {}", e)))
+    }
+}
+
+/// Parse an HTTP Range header value (e.g. "bytes=1234-5678" or "bytes=1234-").
+/// Returns the inclusive byte range `(start, end)` clamped to `file_size`.
+fn parse_range_header(header: &str, file_size: u64) -> Option<(u64, u64)> {
+    let range_spec = header.strip_prefix("bytes=")?;
+    let (start_str, end_str) = range_spec.split_once('-')?;
+
+    let start: u64 = start_str.parse().ok()?;
+    if start >= file_size {
+        return None;
+    }
+
+    let end: u64 = if end_str.is_empty() {
+        file_size - 1
+    } else {
+        end_str.parse::<u64>().ok()?.min(file_size - 1)
+    };
+
+    if end < start {
+        return None;
+    }
+
+    Some((start, end))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_range_header;
+
+    const FILE_SIZE: u64 = 10_000_000;
+
+    #[test]
+    fn test_range_open_ended() {
+        assert_eq!(
+            parse_range_header("bytes=0-", FILE_SIZE),
+            Some((0, FILE_SIZE - 1))
+        );
+        assert_eq!(
+            parse_range_header("bytes=5000000-", FILE_SIZE),
+            Some((5_000_000, FILE_SIZE - 1))
+        );
+    }
+
+    #[test]
+    fn test_range_closed() {
+        assert_eq!(
+            parse_range_header("bytes=0-999", FILE_SIZE),
+            Some((0, 999))
+        );
+        assert_eq!(
+            parse_range_header("bytes=100-200", FILE_SIZE),
+            Some((100, 200))
+        );
+    }
+
+    #[test]
+    fn test_range_clamped_to_file_size() {
+        assert_eq!(
+            parse_range_header("bytes=0-99999999", FILE_SIZE),
+            Some((0, FILE_SIZE - 1))
+        );
+    }
+
+    #[test]
+    fn test_range_start_at_last_byte() {
+        assert_eq!(
+            parse_range_header("bytes=9999999-", FILE_SIZE),
+            Some((FILE_SIZE - 1, FILE_SIZE - 1))
+        );
+    }
+
+    #[test]
+    fn test_range_start_beyond_file_size() {
+        assert_eq!(parse_range_header("bytes=10000000-", FILE_SIZE), None);
+        assert_eq!(parse_range_header("bytes=99999999-", FILE_SIZE), None);
+    }
+
+    #[test]
+    fn test_range_end_before_start() {
+        assert_eq!(parse_range_header("bytes=500-100", FILE_SIZE), None);
+    }
+
+    #[test]
+    fn test_range_invalid_prefix() {
+        assert_eq!(parse_range_header("chars=0-100", FILE_SIZE), None);
+        assert_eq!(parse_range_header("0-100", FILE_SIZE), None);
+    }
+
+    #[test]
+    fn test_range_non_numeric() {
+        assert_eq!(parse_range_header("bytes=abc-def", FILE_SIZE), None);
+        assert_eq!(parse_range_header("bytes=-100", FILE_SIZE), None);
+    }
+
+    #[test]
+    fn test_range_empty_file() {
+        assert_eq!(parse_range_header("bytes=0-", 0), None);
+    }
+
+    #[test]
+    fn test_range_single_byte_file() {
+        assert_eq!(parse_range_header("bytes=0-", 1), Some((0, 0)));
+        assert_eq!(parse_range_header("bytes=0-0", 1), Some((0, 0)));
+        assert_eq!(parse_range_header("bytes=1-", 1), None);
+    }
 }

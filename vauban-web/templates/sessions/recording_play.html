@@ -70,106 +70,45 @@
 
     <!-- Player Container -->
     <div class="bg-gray-900 rounded-lg overflow-hidden shadow-xl">
-        <!-- Player Controls Header -->
-        <div class="bg-gray-800 px-4 py-3 flex items-center justify-between">
-            <div class="flex items-center space-x-4">
-                <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium {{ recording.type_class() }}">
-                    {{ recording.session_type|upper }}
-                </span>
-                <span class="text-sm text-gray-300">
-                    {% if recording.duration.is_some() %}
-                    Duration: {{ recording.duration.as_ref().unwrap() }}
-                    {% else %}
-                    Duration: N/A
-                    {% endif %}
-                </span>
-            </div>
-            <div class="flex items-center space-x-2">
-                <button id="playPauseBtn" class="p-2 text-white hover:bg-gray-700 rounded-md" title="Play/Pause">
-                    <svg class="h-6 w-6" viewBox="0 0 20 20" fill="currentColor">
-                        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd"/>
-                    </svg>
-                </button>
-                <button id="restartBtn" class="p-2 text-white hover:bg-gray-700 rounded-md" title="Restart">
-                    <svg class="h-6 w-6" viewBox="0 0 20 20" fill="currentColor">
-                        <path fill-rule="evenodd" d="M15.312 11.424a5.5 5.5 0 01-9.201 2.466l-.312-.311h2.433a.75.75 0 000-1.5H3.989a.75.75 0 00-.75.75v4.242a.75.75 0 001.5 0v-2.43l.31.31a7 7 0 0011.712-3.138.75.75 0 00-1.449-.39zm-6.312-5.849A5.502 5.502 0 0118.313 8.5l.312.311h-2.433a.75.75 0 000 1.5h4.243a.75.75 0 00.75-.75V5.319a.75.75 0 00-1.5 0v2.43l-.31-.31A7 7 0 007.663 10.587a.75.75 0 101.449.389z" clip-rule="evenodd"/>
-                    </svg>
-                </button>
-                <select id="speedSelect" class="bg-gray-700 text-white text-sm rounded-md border-0 py-1.5 px-3 focus:ring-2 focus:ring-vauban-500">
-                    <option value="0.5">0.5x</option>
-                    <option value="1" selected>1x</option>
-                    <option value="2">2x</option>
-                    <option value="4">4x</option>
-                    <option value="8">8x</option>
-                </select>
-                <button id="fullscreenBtn" class="p-2 text-white hover:bg-gray-700 rounded-md" title="Fullscreen">
-                    <svg class="h-6 w-6" viewBox="0 0 20 20" fill="currentColor">
-                        <path d="M3.75 3.75a.75.75 0 00-.75.75v2.5a.75.75 0 001.5 0V5.81l2.97 2.97a.75.75 0 101.06-1.06L5.81 5h1.19a.75.75 0 000-1.5h-2.5a.75.75 0 00-.75.75zM16.25 3.75a.75.75 0 01.75.75v2.5a.75.75 0 01-1.5 0V5.81l-2.97 2.97a.75.75 0 11-1.06-1.06L14.19 5h-1.19a.75.75 0 010-1.5h2.5a.75.75 0 01.75.75zM3.75 16.25a.75.75 0 01.75-.75h2.5a.75.75 0 010 1.5H5.81l2.97 2.97a.75.75 0 11-1.06 1.06L5 18.31v1.19a.75.75 0 01-1.5 0v-2.5a.75.75 0 01.75-.75zM16.25 16.25a.75.75 0 00-.75-.75h-2.5a.75.75 0 000 1.5h1.19l-2.97 2.97a.75.75 0 101.06 1.06L15 18.31v1.19a.75.75 0 001.5 0v-2.5a.75.75 0 00-.75-.75z"/>
-                    </svg>
-                </button>
-            </div>
-        </div>
-
-        <!-- Terminal/Video Display -->
-        <div id="playerContainer" class="relative" style="min-height: 480px;">
-            {% if recording.is_ssh() %}
-            <!-- SSH Terminal Replay -->
-            <div id="terminalPlayer" class="bg-black p-4 font-mono text-sm text-green-400" style="min-height: 480px;">
-                <div class="flex items-center justify-center h-full">
-                    <div class="text-center">
-                        <svg class="mx-auto h-16 w-16 text-gray-600 mb-4" viewBox="0 0 20 20" fill="currentColor">
-                            <path fill-rule="evenodd" d="M3.25 3A2.25 2.25 0 001 5.25v9.5A2.25 2.25 0 003.25 17h13.5A2.25 2.25 0 0019 14.75v-9.5A2.25 2.25 0 0016.75 3H3.25zM2.5 5.25a.75.75 0 01.75-.75h13.5a.75.75 0 01.75.75v9.5a.75.75 0 01-.75.75H3.25a.75.75 0 01-.75-.75v-9.5z" clip-rule="evenodd"/>
-                            <path d="M6.22 7.22a.75.75 0 011.06 0L9.5 9.44l2.22-2.22a.75.75 0 111.06 1.06l-2.22 2.22 2.22 2.22a.75.75 0 11-1.06 1.06L9.5 11.56l-2.22 2.22a.75.75 0 01-1.06-1.06l2.22-2.22-2.22-2.22a.75.75 0 010-1.06z"/>
-                        </svg>
-                        <p class="text-gray-400 text-lg">SSH Terminal Recording</p>
-                        <p class="text-gray-500 mt-2">Click Play to start playback</p>
-                        <p class="text-gray-600 text-sm mt-4">{{ recording.commands_count }} commands recorded</p>
-                    </div>
-                </div>
-            </div>
-            {% else %}
-            <!-- RDP/VNC Video Replay -->
-            <div id="videoPlayer" class="bg-black flex items-center justify-center" style="min-height: 480px;">
-                {% if recording.recording_path.is_some() %}
-                <video id="recordingVideo"
-                       class="w-full h-auto max-h-[720px]"
-                       preload="metadata"
-                       controls
-                       playsinline>
-                    <source src="/recordings/{{ recording.session_uuid }}.mp4" type="video/mp4">
-                    Your browser does not support HTML5 video.
-                </video>
-                {% else %}
+        {% if recording.is_ssh() %}
+        <!-- SSH Terminal Replay -->
+        <div id="terminalPlayer" class="bg-black p-4 font-mono text-sm text-green-400" style="min-height: 480px;">
+            <div class="flex items-center justify-center h-full">
                 <div class="text-center">
                     <svg class="mx-auto h-16 w-16 text-gray-600 mb-4" viewBox="0 0 20 20" fill="currentColor">
-                        <path d="M1 4.75C1 3.784 1.784 3 2.75 3h14.5c.966 0 1.75.784 1.75 1.75v10.5A1.75 1.75 0 0117.25 17H2.75A1.75 1.75 0 011 15.25V4.75zm15 12.75c.69 0 1.25-.56 1.25-1.25V4.75c0-.69-.56-1.25-1.25-1.25H2.75c-.69 0-1.25.56-1.25 1.25v10.5c0 .69.56 1.25 1.25 1.25H16.25z"/>
-                        <path d="M8 7.5a.75.75 0 00-1.2.6v3.8a.75.75 0 001.2.6l2.85-1.9a.75.75 0 000-1.2L8 7.5z"/>
+                        <path fill-rule="evenodd" d="M3.25 3A2.25 2.25 0 001 5.25v9.5A2.25 2.25 0 003.25 17h13.5A2.25 2.25 0 0019 14.75v-9.5A2.25 2.25 0 0016.75 3H3.25zM2.5 5.25a.75.75 0 01.75-.75h13.5a.75.75 0 01.75.75v9.5a.75.75 0 01-.75.75H3.25a.75.75 0 01-.75-.75v-9.5z" clip-rule="evenodd"/>
+                        <path d="M6.22 7.22a.75.75 0 011.06 0L9.5 9.44l2.22-2.22a.75.75 0 111.06 1.06l-2.22 2.22 2.22 2.22a.75.75 0 11-1.06 1.06L9.5 11.56l-2.22 2.22a.75.75 0 01-1.06-1.06l2.22-2.22-2.22-2.22a.75.75 0 010-1.06z"/>
                     </svg>
-                    <p class="text-gray-400 text-lg">Recording not available</p>
-                    <p class="text-gray-500 mt-2">The recording file for this session was not found.</p>
+                    <p class="text-gray-400 text-lg">SSH Terminal Recording</p>
+                    <p class="text-gray-500 mt-2">Click Play to start playback</p>
+                    <p class="text-gray-600 text-sm mt-4">{{ recording.commands_count }} commands recorded</p>
                 </div>
-                {% endif %}
-            </div>
-            {% endif %}
-        </div>
-
-        <!-- Progress Bar -->
-        <div class="bg-gray-800 px-4 py-3">
-            <div class="flex items-center space-x-4">
-                <span id="currentTime" class="text-sm text-gray-400 w-16">00:00:00</span>
-                <div class="flex-1">
-                    <input type="range" id="progressBar" min="0" max="100" value="0"
-                           class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-vauban-500">
-                </div>
-                <span id="totalTime" class="text-sm text-gray-400 w-16">
-                    {% if recording.duration.is_some() %}
-                    {{ recording.duration.as_ref().unwrap() }}
-                    {% else %}
-                    --:--:--
-                    {% endif %}
-                </span>
             </div>
         </div>
+        {% else %}
+        <!-- RDP/VNC Video Replay -->
+        {% if recording.recording_path.is_some() %}
+        <video id="recordingVideo"
+               class="w-full"
+               preload="metadata"
+               controls
+               playsinline>
+            <source src="/recordings/{{ recording.session_uuid }}.mp4" type="video/mp4">
+            Your browser does not support HTML5 video.
+        </video>
+        {% else %}
+        <div class="bg-black flex items-center justify-center" style="min-height: 480px;">
+            <div class="text-center">
+                <svg class="mx-auto h-16 w-16 text-gray-600 mb-4" viewBox="0 0 20 20" fill="currentColor">
+                    <path d="M1 4.75C1 3.784 1.784 3 2.75 3h14.5c.966 0 1.75.784 1.75 1.75v10.5A1.75 1.75 0 0117.25 17H2.75A1.75 1.75 0 011 15.25V4.75zm15 12.75c.69 0 1.25-.56 1.25-1.25V4.75c0-.69-.56-1.25-1.25-1.25H2.75c-.69 0-1.25.56-1.25 1.25v10.5c0 .69.56 1.25 1.25 1.25H16.25z"/>
+                    <path d="M8 7.5a.75.75 0 00-1.2.6v3.8a.75.75 0 001.2.6l2.85-1.9a.75.75 0 000-1.2L8 7.5z"/>
+                </svg>
+                <p class="text-gray-400 text-lg">Recording not available</p>
+                <p class="text-gray-500 mt-2">The recording file for this session was not found.</p>
+            </div>
+        </div>
+        {% endif %}
+        {% endif %}
     </div>
 
     <!-- Session Info -->
@@ -223,7 +162,4 @@
     </div>
 </div>
 
-{% if recording.is_graphical() && recording.recording_path.is_some() %}
-<script src="/static/js/recording_player.js"></script>
-{% endif %}
 {% endblock %}
