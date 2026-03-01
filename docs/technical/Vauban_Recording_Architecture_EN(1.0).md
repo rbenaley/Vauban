@@ -1,4 +1,4 @@
-# Vauban RDP Recording Architecture
+# Vauban Session Recording Architecture
 
 **Version:** 1.0  
 **Date:** 1 March 2026  
