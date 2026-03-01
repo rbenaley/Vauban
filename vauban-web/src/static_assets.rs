@@ -59,6 +59,11 @@ pub static STATIC_FILES: &[StaticAsset] = &[
         content: include_bytes!("../static/js/vauban-components.js"),
         content_type: "application/javascript; charset=utf-8",
     },
+    StaticAsset {
+        path: "js/recording_player.js",
+        content: include_bytes!("../static/js/recording_player.js"),
+        content_type: "application/javascript; charset=utf-8",
+    },
     // ── CSS ───────────────────────────────────────────────────────────────
     StaticAsset {
         path: "css/vauban.css",

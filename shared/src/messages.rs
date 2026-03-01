@@ -574,20 +574,24 @@ pub enum Message {
         session_id: String,
     },
 
-    // ========== Recording File Requests (Audit -> Supervisor) ==========
+    // ========== Recording File Requests (Service -> Supervisor) ==========
 
-    /// Request the supervisor to create a recording file and send its FD
-    /// via SCM_RIGHTS. This avoids giving the sandboxed audit service
-    /// direct directory access.
+    /// Request the supervisor to open/create a recording file and send its FD
+    /// via SCM_RIGHTS. Used by audit (create, write) and web (open, read-only).
     RecordingFileRequest {
+        request_id: u64,
         session_id: String,
         /// Path relative to the recording storage root (e.g. "2026/02/session.mp4").
         relative_path: String,
+        /// When true, opens an existing file read-only (web playback).
+        /// When false, creates a new file for writing (audit recording).
+        read_only: bool,
     },
 
     /// Response to a RecordingFileRequest. On success, the file descriptor
     /// has already been sent via SCM_RIGHTS on the fd_passing socket.
     RecordingFileResponse {
+        request_id: u64,
         session_id: String,
         success: bool,
         error: Option<String>,
@@ -2502,14 +2506,18 @@ mod tests {
     #[test]
     fn test_message_recording_file_request() {
         let msg = Message::RecordingFileRequest {
+            request_id: 42,
             session_id: "rec-123".to_string(),
             relative_path: "2026/02/rec-123.mp4".to_string(),
+            read_only: false,
         };
         let serialized = serialize(&msg);
         let deserialized: Message = deserialize(&serialized);
-        if let Message::RecordingFileRequest { session_id, relative_path } = deserialized {
+        if let Message::RecordingFileRequest { request_id, session_id, relative_path, read_only } = deserialized {
+            assert_eq!(request_id, 42);
             assert_eq!(session_id, "rec-123");
             assert_eq!(relative_path, "2026/02/rec-123.mp4");
+            assert!(!read_only);
         } else {
             panic!("Wrong variant");
         }
@@ -2518,13 +2526,15 @@ mod tests {
     #[test]
     fn test_message_recording_file_response() {
         let msg = Message::RecordingFileResponse {
+            request_id: 42,
             session_id: "rec-123".to_string(),
             success: true,
             error: None,
         };
         let serialized = serialize(&msg);
         let deserialized: Message = deserialize(&serialized);
-        if let Message::RecordingFileResponse { session_id, success, error } = deserialized {
+        if let Message::RecordingFileResponse { request_id, session_id, success, error } = deserialized {
+            assert_eq!(request_id, 42);
             assert_eq!(session_id, "rec-123");
             assert!(success);
             assert!(error.is_none());

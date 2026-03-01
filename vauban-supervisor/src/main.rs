@@ -227,7 +227,7 @@ fn run_supervisor() -> Result<()> {
     // recording file FDs (so it never needs direct filesystem access).
     let mut fd_passing_sockets: HashMap<Service, FdPassingSockets> = HashMap::new();
     
-    for proxy_service in [Service::ProxySsh, Service::ProxyRdp, Service::Audit] {
+    for proxy_service in [Service::ProxySsh, Service::ProxyRdp, Service::Audit, Service::Web] {
         match socketpair_for_fd_passing() {
             Ok((supervisor_socket, child_socket)) => {
                 let child_fd = child_socket.as_raw_fd();
@@ -1381,53 +1381,73 @@ fn handle_tcp_connect_request(
     drop(tcp_stream);
 }
 
-/// Handle a RecordingFileRequest from vauban-audit.
+/// Handle a RecordingFileRequest from a sandboxed service.
 ///
-/// Creates the recording file on behalf of the sandboxed audit service,
-/// then sends the file descriptor via SCM_RIGHTS. This follows the principle
-/// of least privilege: audit never gets directory access.
+/// When `read_only` is false (audit): creates the file and parent directories,
+/// sends the writable FD via SCM_RIGHTS.
+/// When `read_only` is true (web): opens an existing file for reading,
+/// sends the read-only FD via SCM_RIGHTS.
 fn handle_recording_file_request(
+    request_id: u64,
     session_id: &str,
     relative_path: &str,
+    read_only: bool,
     storage_base: &str,
-    audit_state: &ChildState,
+    requester_state: &ChildState,
 ) {
     use std::os::unix::io::AsRawFd;
 
     let full_path = std::path::Path::new(storage_base).join(relative_path);
 
-    if let Some(parent) = full_path.parent()
-        && let Err(e) = std::fs::create_dir_all(parent)
-    {
-        error!(session_id, error = %e, "Failed to create recording directory");
-        let _ = audit_state.channel.send(&Message::RecordingFileResponse {
-            session_id: session_id.to_string(),
-            success: false,
-            error: Some(format!("mkdir: {e}")),
-        });
-        return;
-    }
-
-    // Create the file
-    let file = match std::fs::File::create(&full_path) {
-        Ok(f) => f,
-        Err(e) => {
-            error!(session_id, path = %full_path.display(), error = %e, "Failed to create recording file");
-            let _ = audit_state.channel.send(&Message::RecordingFileResponse {
+    let file = if read_only {
+        match std::fs::File::open(&full_path) {
+            Ok(f) => f,
+            Err(e) => {
+                error!(session_id, path = %full_path.display(), error = %e, "Failed to open recording file");
+                let _ = requester_state.channel.send(&Message::RecordingFileResponse {
+                    request_id,
+                    session_id: session_id.to_string(),
+                    success: false,
+                    error: Some(format!("open: {e}")),
+                });
+                return;
+            }
+        }
+    } else {
+        if let Some(parent) = full_path.parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            error!(session_id, error = %e, "Failed to create recording directory");
+            let _ = requester_state.channel.send(&Message::RecordingFileResponse {
+                request_id,
                 session_id: session_id.to_string(),
                 success: false,
-                error: Some(format!("create: {e}")),
+                error: Some(format!("mkdir: {e}")),
             });
             return;
         }
+
+        match std::fs::File::create(&full_path) {
+            Ok(f) => f,
+            Err(e) => {
+                error!(session_id, path = %full_path.display(), error = %e, "Failed to create recording file");
+                let _ = requester_state.channel.send(&Message::RecordingFileResponse {
+                    request_id,
+                    session_id: session_id.to_string(),
+                    success: false,
+                    error: Some(format!("create: {e}")),
+                });
+                return;
+            }
+        }
     };
 
-    // Send the fd via SCM_RIGHTS
-    let fd_socket = match &audit_state.fd_passing_socket {
+    let fd_socket = match &requester_state.fd_passing_socket {
         Some(sock) => sock.as_raw_fd(),
         None => {
-            error!(session_id, "No FD passing socket for audit service");
-            let _ = audit_state.channel.send(&Message::RecordingFileResponse {
+            error!(session_id, "No FD passing socket for requesting service");
+            let _ = requester_state.channel.send(&Message::RecordingFileResponse {
+                request_id,
                 session_id: session_id.to_string(),
                 success: false,
                 error: Some("no fd_passing socket".to_string()),
@@ -1438,7 +1458,8 @@ fn handle_recording_file_request(
 
     if let Err(e) = send_fd(fd_socket, file.as_raw_fd()) {
         error!(session_id, error = %e, "Failed to send recording file fd via SCM_RIGHTS");
-        let _ = audit_state.channel.send(&Message::RecordingFileResponse {
+        let _ = requester_state.channel.send(&Message::RecordingFileResponse {
+            request_id,
             session_id: session_id.to_string(),
             success: false,
             error: Some(format!("send_fd: {e}")),
@@ -1446,15 +1467,13 @@ fn handle_recording_file_request(
         return;
     }
 
-    // Send success response AFTER the fd (so audit can recv_fd before processing the response)
-    debug!(session_id, path = %full_path.display(), "Recording file fd sent to audit");
-    let _ = audit_state.channel.send(&Message::RecordingFileResponse {
+    debug!(session_id, path = %full_path.display(), read_only, "Recording file fd sent");
+    let _ = requester_state.channel.send(&Message::RecordingFileResponse {
+        request_id,
         session_id: session_id.to_string(),
         success: true,
         error: None,
     });
-
-    // File is dropped here; audit's copy of the fd remains valid
 }
 
 /// Poll all service channels and process incoming messages.
@@ -1544,18 +1563,24 @@ fn process_service_messages(children: &HashMap<String, ChildState>, recording_st
                         );
                     }
                     Ok(Message::RecordingFileRequest {
+                        request_id,
                         session_id,
                         relative_path,
+                        read_only,
                     }) => {
                         debug!(
+                            request_id,
                             session_id = %session_id,
                             path = %relative_path,
+                            read_only,
                             "Received RecordingFileRequest from {}",
                             service_key
                         );
                         handle_recording_file_request(
+                            request_id,
                             &session_id,
                             &relative_path,
+                            read_only,
                             recording_storage_path,
                             state,
                         );

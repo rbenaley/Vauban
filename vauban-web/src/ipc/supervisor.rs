@@ -4,11 +4,11 @@
 //! sandboxed services (Capsicum). The supervisor performs DNS resolution
 //! and TCP connect, then passes the FD to the target service via SCM_RIGHTS.
 
-use shared::ipc::IpcChannel;
+use shared::ipc::{recv_fd, IpcChannel};
 use shared::messages::{ControlMessage, Message, Service, ServiceStats};
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::os::unix::io::RawFd;
+use std::os::unix::io::{FromRawFd, IntoRawFd, RawFd};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -30,14 +30,32 @@ pub struct TcpConnectResult {
     pub error: Option<String>,
 }
 
+/// Pending recording file request waiting for response from supervisor.
+struct PendingRecordingFile {
+    response_tx: oneshot::Sender<RecordingFileResult>,
+}
+
+/// Result of a recording file request.
+#[derive(Debug)]
+pub struct RecordingFileResult {
+    pub success: bool,
+    pub error: Option<String>,
+    /// The opened file (present only on success).
+    pub file: Option<std::fs::File>,
+}
+
 /// Shared state between the supervisor communication thread and async tasks.
 pub struct SupervisorClientInner {
     /// IPC channel to supervisor.
     pub channel: IpcChannel,
-    /// Next request ID for TCP connect requests.
+    /// FD passing socket for SCM_RIGHTS (recording files, etc.).
+    fd_passing_socket: Option<RawFd>,
+    /// Next request ID for TCP connect and recording file requests.
     next_request_id: AtomicU64,
     /// Pending TCP connect requests.
     pending_tcp_connects: Mutex<HashMap<u64, PendingTcpConnect>>,
+    /// Pending recording file requests.
+    pending_recording_files: Mutex<HashMap<u64, PendingRecordingFile>>,
     /// Service statistics for heartbeat responses.
     pub start_time: Instant,
     pub requests_processed: AtomicU64,
@@ -81,6 +99,7 @@ impl SupervisorClient {
     pub fn new(
         read_fd: RawFd,
         write_fd: RawFd,
+        fd_passing_socket: Option<RawFd>,
         server_handle: Option<axum_server::Handle<SocketAddr>>,
     ) -> Self {
         // Create IPC channel from file descriptors
@@ -89,8 +108,10 @@ impl SupervisorClient {
 
         let inner = Arc::new(SupervisorClientInner {
             channel,
+            fd_passing_socket,
             next_request_id: AtomicU64::new(1),
             pending_tcp_connects: Mutex::new(HashMap::new()),
+            pending_recording_files: Mutex::new(HashMap::new()),
             start_time: Instant::now(),
             requests_processed: AtomicU64::new(0),
             requests_failed: AtomicU64::new(0),
@@ -176,6 +197,55 @@ impl SupervisorClient {
                     .unwrap_or_else(|e| e.into_inner())
                     .remove(&request_id);
                 Err("TCP connect request timeout".to_string())
+            }
+        }
+    }
+
+    /// Request the supervisor to open a recording file (read-only) and pass
+    /// the FD via SCM_RIGHTS. Returns the opened file on success.
+    pub async fn request_recording_file(
+        &self,
+        session_id: &str,
+        relative_path: &str,
+    ) -> Result<RecordingFileResult, String> {
+        let request_id = self.inner.next_request_id.fetch_add(1, Ordering::SeqCst);
+
+        debug!(
+            request_id,
+            session_id = %session_id,
+            path = %relative_path,
+            "Requesting recording file from supervisor (read-only)"
+        );
+
+        let (tx, rx) = oneshot::channel();
+        {
+            let mut pending = self.inner.pending_recording_files.lock()
+                .unwrap_or_else(|e| e.into_inner());
+            pending.insert(request_id, PendingRecordingFile { response_tx: tx });
+        }
+
+        let msg = Message::RecordingFileRequest {
+            request_id,
+            session_id: session_id.to_string(),
+            relative_path: relative_path.to_string(),
+            read_only: true,
+        };
+
+        if let Err(e) = self.inner.channel.send(&msg) {
+            self.inner.pending_recording_files.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&request_id);
+            return Err(format!("Failed to send RecordingFileRequest: {}", e));
+        }
+
+        match tokio::time::timeout(Duration::from_secs(10), rx).await {
+            Ok(Ok(result)) => Ok(result),
+            Ok(Err(_)) => Err("Response channel dropped".to_string()),
+            Err(_) => {
+                self.inner.pending_recording_files.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&request_id);
+                Err("Recording file request timeout".to_string())
             }
         }
     }
@@ -280,7 +350,6 @@ fn supervisor_ipc_loop(inner: Arc<SupervisorClientInner>) {
                     "TCP connect response from supervisor"
                 );
 
-                // Route response to waiting task
                 let pending = inner.pending_tcp_connects.lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .remove(&request_id);
@@ -289,6 +358,57 @@ fn supervisor_ipc_loop(inner: Arc<SupervisorClientInner>) {
                     let _ = pending.response_tx.send(result);
                 } else {
                     warn!(request_id = request_id, "No pending request for TCP connect response");
+                }
+            }
+            Ok(Message::RecordingFileResponse {
+                request_id,
+                session_id,
+                success,
+                error,
+            }) => {
+                debug!(
+                    request_id,
+                    session_id = %session_id,
+                    success,
+                    "Recording file response from supervisor"
+                );
+
+                let file = if success {
+                    if let Some(fd_socket) = inner.fd_passing_socket {
+                        match recv_fd(fd_socket) {
+                            Ok(owned_fd) => {
+                                // SAFETY: fd received via SCM_RIGHTS from supervisor
+                                Some(unsafe { std::fs::File::from_raw_fd(owned_fd.into_raw_fd()) })
+                            }
+                            Err(e) => {
+                                warn!(request_id, error = %e, "Failed to recv_fd for recording file");
+                                None
+                            }
+                        }
+                    } else {
+                        warn!(request_id, "No fd_passing socket configured");
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                let pending = inner.pending_recording_files.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&request_id);
+                if let Some(pending) = pending {
+                    let result = RecordingFileResult {
+                        success: success && file.is_some(),
+                        error: if file.is_none() && success {
+                            Some("recv_fd failed".to_string())
+                        } else {
+                            error
+                        },
+                        file,
+                    };
+                    let _ = pending.response_tx.send(result);
+                } else {
+                    warn!(request_id, "No pending request for recording file response");
                 }
             }
             Ok(Message::AcmeChallengeInstall {

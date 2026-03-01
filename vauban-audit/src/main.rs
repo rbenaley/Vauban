@@ -377,14 +377,16 @@ fn request_file_from_supervisor(
         .ok_or_else(|| anyhow::anyhow!("no fd_passing socket available"))?;
 
     channel.send(&Message::RecordingFileRequest {
+        request_id: 0,
         session_id: session_id.to_string(),
         relative_path: relative_path.to_string(),
+        read_only: false,
     })?;
 
     // Blocking wait for response. Handle Pings while waiting.
     loop {
         match channel.recv() {
-            Ok(Message::RecordingFileResponse { session_id: sid, success, error }) => {
+            Ok(Message::RecordingFileResponse { request_id: _, session_id: sid, success, error }) => {
                 if sid != session_id {
                     warn!(expected = session_id, got = %sid, "Mismatched RecordingFileResponse session_id");
                     continue;
@@ -606,7 +608,7 @@ mod tests {
         let dir_path = dir.path().to_path_buf();
         let handle = std::thread::spawn(move || {
             let msg = supervisor_channel.recv().unwrap();
-            if let Message::RecordingFileRequest { session_id, relative_path } = msg {
+            if let Message::RecordingFileRequest { request_id, session_id, relative_path, .. } = msg {
                 let full_path = dir_path.join(&relative_path);
                 if let Some(parent) = full_path.parent() {
                     std::fs::create_dir_all(parent).unwrap();
@@ -614,6 +616,7 @@ mod tests {
                 let file = std::fs::File::create(&full_path).unwrap();
                 send_fd(supervisor_fd_sock.as_raw_fd(), file.as_raw_fd()).unwrap();
                 supervisor_channel.send(&Message::RecordingFileResponse {
+                    request_id,
                     session_id,
                     success: true,
                     error: None,

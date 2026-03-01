@@ -54,15 +54,24 @@ fn init_supervisor_client(server_handle: axum_server::Handle<std::net::SocketAdd
         Err(_) => return None,
     };
 
+    // FD passing socket for SCM_RIGHTS (recording file serving, etc.)
+    let fd_passing_socket: Option<RawFd> = std::env::var("VAUBAN_FD_PASSING_SOCKET")
+        .ok()
+        .and_then(|val| val.parse().ok());
+
     // Clear environment variables immediately for security
     // SAFETY: We are early in startup, before spawning async tasks
     unsafe {
         std::env::remove_var("VAUBAN_IPC_READ");
         std::env::remove_var("VAUBAN_IPC_WRITE");
+        std::env::remove_var("VAUBAN_FD_PASSING_SOCKET");
     }
 
-    let client = SupervisorClient::new(ipc_read_fd, ipc_write_fd, Some(server_handle));
-    tracing::info!("Supervisor client initialized (running under supervisor)");
+    let client = SupervisorClient::new(ipc_read_fd, ipc_write_fd, fd_passing_socket, Some(server_handle));
+    tracing::info!(
+        fd_passing = fd_passing_socket.is_some(),
+        "Supervisor client initialized (running under supervisor)"
+    );
     Some(Arc::new(client))
 }
 

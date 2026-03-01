@@ -1118,8 +1118,8 @@ struct ActiveSessionQueryResult {
 
 /// Serve an MP4 recording file for a given session UUID.
 ///
-/// Validates that the session exists, is recorded, and that the file is present
-/// on disk. Supports HTTP Range requests for seeking in the browser video player.
+/// The file is obtained from the supervisor via SCM_RIGHTS (read-only FD),
+/// so vauban-web never needs filesystem access to the recordings directory.
 pub async fn serve_recording(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
@@ -1161,22 +1161,41 @@ pub async fn serve_recording(
         .as_deref()
         .ok_or_else(|| AppError::NotFound("Recording path not set".to_string()))?;
 
-    let path = std::path::Path::new(recording_path);
-    if !path.exists() {
-        return Err(AppError::NotFound("Recording file not found on disk".to_string()));
+    let storage_base = &state.config.recording.storage_path;
+    let relative_path = recording_path
+        .strip_prefix(storage_base)
+        .unwrap_or(recording_path)
+        .trim_start_matches('/');
+
+    let supervisor = state.supervisor.as_ref().ok_or_else(|| {
+        AppError::Internal(anyhow::anyhow!(
+            "Recording playback requires supervisor (SCM_RIGHTS)"
+        ))
+    })?;
+
+    let result = supervisor
+        .request_recording_file(&session.uuid.to_string(), relative_path)
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Supervisor request failed: {}", e)))?;
+
+    if !result.success {
+        return Err(AppError::NotFound(format!(
+            "Recording file not available: {}",
+            result.error.unwrap_or_default()
+        )));
     }
 
-    let metadata = tokio::fs::metadata(path)
-        .await
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to read recording: {}", e)))?;
+    let std_file = result.file.ok_or_else(|| {
+        AppError::Internal(anyhow::anyhow!("Supervisor returned success but no file descriptor"))
+    })?;
+
+    let metadata = std_file.metadata()
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to read file metadata: {}", e)))?;
     let file_size = metadata.len();
 
-    let mut file = tokio::fs::File::open(path)
-        .await
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to open recording: {}", e)))?;
-
+    let mut tokio_file = tokio::fs::File::from_std(std_file);
     let mut buf = Vec::with_capacity(file_size as usize);
-    file.read_to_end(&mut buf)
+    tokio_file.read_to_end(&mut buf)
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to read recording: {}", e)))?;
 
