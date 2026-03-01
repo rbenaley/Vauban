@@ -295,7 +295,7 @@ async fn handle_dashboard_socket(socket: WebSocket, state: AppState, user: AuthU
                         should_close = true;
                     }
                     Some(Err(e)) => {
-                        error!(user = %user.username, error = %e, "WebSocket error");
+                        warn!(user = %user.username, error = %e, "WebSocket error");
                         should_close = true;
                     }
                     None => {
@@ -598,7 +598,7 @@ async fn handle_session_socket(
                     break;
                 }
                 Err(e) => {
-                    error!(
+                    warn!(
                         user = %user_clone.username,
                         session_id = %session_id_clone,
                         error = %e,
@@ -712,7 +712,7 @@ async fn handle_notifications_socket(
                         should_close = true;
                     }
                     Some(Err(e)) => {
-                        error!(user = %user.username, error = %e, "WebSocket error");
+                        warn!(user = %user.username, error = %e, "WebSocket error");
                         should_close = true;
                     }
                     None => {
@@ -835,7 +835,7 @@ async fn handle_active_sessions_socket(socket: WebSocket, state: AppState, user:
                         should_close = true;
                     }
                     Some(Err(e)) => {
-                        error!(user = %user.username, error = %e, "WebSocket error");
+                        warn!(user = %user.username, error = %e, "WebSocket error");
                         should_close = true;
                     }
                     None => {
@@ -1096,7 +1096,7 @@ async fn handle_terminal_socket(
                         should_close = true;
                     }
                     Some(Err(e)) => {
-                        error!(session_id = %session_id, error = %e, "WebSocket error");
+                        warn!(session_id = %session_id, error = %e, "WebSocket error");
                         should_close = true;
                     }
                     None => {
@@ -1303,7 +1303,7 @@ async fn handle_rdp_socket(
                         should_close = true;
                     }
                     Some(Err(e)) => {
-                        error!(session_id = %session_id, error = %e, "RDP WebSocket error");
+                        warn!(session_id = %session_id, error = %e, "RDP WebSocket error");
                         should_close = true;
                     }
                     None => {
