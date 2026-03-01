@@ -222,12 +222,12 @@ fn run_supervisor() -> Result<()> {
             .push((*from, to_channel.read_fd(), to_channel.write_fd()));
     }
 
-    // Create FD passing socket pairs for proxy services.
-    // These are used by the supervisor to send pre-established TCP connection FDs
-    // to sandboxed proxies that cannot open network connections themselves.
+    // Create FD passing socket pairs for services that need file descriptors
+    // from the supervisor. Proxies receive TCP connection FDs; audit receives
+    // recording file FDs (so it never needs direct filesystem access).
     let mut fd_passing_sockets: HashMap<Service, FdPassingSockets> = HashMap::new();
     
-    for proxy_service in [Service::ProxySsh, Service::ProxyRdp] {
+    for proxy_service in [Service::ProxySsh, Service::ProxyRdp, Service::Audit] {
         match socketpair_for_fd_passing() {
             Ok((supervisor_socket, child_socket)) => {
                 let child_fd = child_socket.as_raw_fd();
@@ -544,8 +544,8 @@ fn watchdog_loop(
             }
         }
 
-        // Process incoming messages from services (TcpConnectRequest, etc.)
-        process_service_messages(children);
+        // Process incoming messages from services (TcpConnectRequest, RecordingFileRequest, etc.)
+        process_service_messages(children, &config.recording.storage_path);
 
         // Send heartbeats periodically
         if last_heartbeat.elapsed() >= heartbeat_interval {
@@ -964,12 +964,12 @@ fn respawn_service(state: &mut ChildState, config: &SupervisorConfig, topology_p
         }
     };
 
-    // Create new FD passing socketpair for proxy services
-    let (fd_passing_socket, fd_passing_child_fd) = if state.service_key == "proxy_ssh" || state.service_key == "proxy_rdp" {
+    let needs_fd_passing = matches!(state.service_key.as_str(), "proxy_ssh" | "proxy_rdp" | "audit");
+    let (fd_passing_socket, fd_passing_child_fd) = if needs_fd_passing {
         match socketpair_for_fd_passing() {
             Ok((supervisor_socket, child_socket)) => {
                 let child_fd = child_socket.as_raw_fd();
-                std::mem::forget(child_socket); // Prevent close until after fork
+                std::mem::forget(child_socket);
                 (Some(supervisor_socket), Some(child_fd))
             }
             Err(e) => {
@@ -1143,8 +1143,8 @@ fn respawn_linked_group(
                 }
             };
 
-            // Create new FD passing socketpair for proxy services
-            let (fd_passing_socket, fd_passing_child_fd) = if service_key == "proxy_ssh" || service_key == "proxy_rdp" {
+            let needs_fd_passing = matches!(service_key, "proxy_ssh" | "proxy_rdp" | "audit");
+            let (fd_passing_socket, fd_passing_child_fd) = if needs_fd_passing {
                 match socketpair_for_fd_passing() {
                     Ok((supervisor_socket, child_socket)) => {
                         let child_fd = child_socket.as_raw_fd();
@@ -1381,11 +1381,87 @@ fn handle_tcp_connect_request(
     drop(tcp_stream);
 }
 
+/// Handle a RecordingFileRequest from vauban-audit.
+///
+/// Creates the recording file on behalf of the sandboxed audit service,
+/// then sends the file descriptor via SCM_RIGHTS. This follows the principle
+/// of least privilege: audit never gets directory access.
+fn handle_recording_file_request(
+    session_id: &str,
+    relative_path: &str,
+    storage_base: &str,
+    audit_state: &ChildState,
+) {
+    use std::os::unix::io::AsRawFd;
+
+    let full_path = std::path::Path::new(storage_base).join(relative_path);
+
+    if let Some(parent) = full_path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        error!(session_id, error = %e, "Failed to create recording directory");
+        let _ = audit_state.channel.send(&Message::RecordingFileResponse {
+            session_id: session_id.to_string(),
+            success: false,
+            error: Some(format!("mkdir: {e}")),
+        });
+        return;
+    }
+
+    // Create the file
+    let file = match std::fs::File::create(&full_path) {
+        Ok(f) => f,
+        Err(e) => {
+            error!(session_id, path = %full_path.display(), error = %e, "Failed to create recording file");
+            let _ = audit_state.channel.send(&Message::RecordingFileResponse {
+                session_id: session_id.to_string(),
+                success: false,
+                error: Some(format!("create: {e}")),
+            });
+            return;
+        }
+    };
+
+    // Send the fd via SCM_RIGHTS
+    let fd_socket = match &audit_state.fd_passing_socket {
+        Some(sock) => sock.as_raw_fd(),
+        None => {
+            error!(session_id, "No FD passing socket for audit service");
+            let _ = audit_state.channel.send(&Message::RecordingFileResponse {
+                session_id: session_id.to_string(),
+                success: false,
+                error: Some("no fd_passing socket".to_string()),
+            });
+            return;
+        }
+    };
+
+    if let Err(e) = send_fd(fd_socket, file.as_raw_fd()) {
+        error!(session_id, error = %e, "Failed to send recording file fd via SCM_RIGHTS");
+        let _ = audit_state.channel.send(&Message::RecordingFileResponse {
+            session_id: session_id.to_string(),
+            success: false,
+            error: Some(format!("send_fd: {e}")),
+        });
+        return;
+    }
+
+    // Send success response AFTER the fd (so audit can recv_fd before processing the response)
+    debug!(session_id, path = %full_path.display(), "Recording file fd sent to audit");
+    let _ = audit_state.channel.send(&Message::RecordingFileResponse {
+        session_id: session_id.to_string(),
+        success: true,
+        error: None,
+    });
+
+    // File is dropped here; audit's copy of the fd remains valid
+}
+
 /// Poll all service channels and process incoming messages.
 ///
-/// This handles TcpConnectRequest messages from vauban-web that need
-/// the supervisor to establish TCP connections on behalf of sandboxed proxies.
-fn process_service_messages(children: &HashMap<String, ChildState>) {
+/// Handles TcpConnectRequest (proxies), RecordingFileRequest (audit),
+/// and ACME renewal requests (web).
+fn process_service_messages(children: &HashMap<String, ChildState>, recording_storage_path: &str) {
     // Collect all read FDs from services
     let service_fds: Vec<(String, i32)> = children
         .iter()
@@ -1467,11 +1543,27 @@ fn process_service_messages(children: &HashMap<String, ChildState>) {
                             &state.channel,
                         );
                     }
+                    Ok(Message::RecordingFileRequest {
+                        session_id,
+                        relative_path,
+                    }) => {
+                        debug!(
+                            session_id = %session_id,
+                            path = %relative_path,
+                            "Received RecordingFileRequest from {}",
+                            service_key
+                        );
+                        handle_recording_file_request(
+                            &session_id,
+                            &relative_path,
+                            recording_storage_path,
+                            state,
+                        );
+                    }
                     Ok(Message::Control(ControlMessage::Pong { .. })) => {
                         // Pong messages are handled by send_heartbeat, skip here
                     }
                     Ok(msg) => {
-                        // Other message types - log and ignore
                         debug!("Received unexpected message from {}: {:?}", service_key, msg);
                     }
                     Err(shared::ipc::IpcError::Io(ref e))

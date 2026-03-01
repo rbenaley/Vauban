@@ -574,6 +574,25 @@ pub enum Message {
         session_id: String,
     },
 
+    // ========== Recording File Requests (Audit -> Supervisor) ==========
+
+    /// Request the supervisor to create a recording file and send its FD
+    /// via SCM_RIGHTS. This avoids giving the sandboxed audit service
+    /// direct directory access.
+    RecordingFileRequest {
+        session_id: String,
+        /// Path relative to the recording storage root (e.g. "2026/02/session.mp4").
+        relative_path: String,
+    },
+
+    /// Response to a RecordingFileRequest. On success, the file descriptor
+    /// has already been sent via SCM_RIGHTS on the fd_passing socket.
+    RecordingFileResponse {
+        session_id: String,
+        success: bool,
+        error: Option<String>,
+    },
+
     // ========== ACME Certificate Management (Web <-> Supervisor) ==========
 
     /// Request the supervisor to perform ACME certificate renewal.
@@ -2473,6 +2492,42 @@ mod tests {
         let deserialized: Message = deserialize(&serialized);
         if let Message::RdpRecordingEnd { session_id } = deserialized {
             assert_eq!(session_id, "rdp-rec-123");
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    // ==================== Recording File Request Tests ====================
+
+    #[test]
+    fn test_message_recording_file_request() {
+        let msg = Message::RecordingFileRequest {
+            session_id: "rec-123".to_string(),
+            relative_path: "2026/02/rec-123.mp4".to_string(),
+        };
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::RecordingFileRequest { session_id, relative_path } = deserialized {
+            assert_eq!(session_id, "rec-123");
+            assert_eq!(relative_path, "2026/02/rec-123.mp4");
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_message_recording_file_response() {
+        let msg = Message::RecordingFileResponse {
+            session_id: "rec-123".to_string(),
+            success: true,
+            error: None,
+        };
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::RecordingFileResponse { session_id, success, error } = deserialized {
+            assert_eq!(session_id, "rec-123");
+            assert!(success);
+            assert!(error.is_none());
         } else {
             panic!("Wrong variant");
         }

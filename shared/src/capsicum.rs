@@ -44,6 +44,12 @@ pub struct CapRights {
     pub getsockname: bool,
     pub getsockopt: bool,
     pub setsockopt: bool,
+    pub lookup: bool,
+    pub create: bool,
+    pub mkdirat: bool,
+    pub fstatat: bool,
+    pub unlinkat: bool,
+    pub ftruncate: bool,
 }
 
 impl CapRights {
@@ -144,6 +150,25 @@ impl CapRights {
             ..Default::default()
         }
     }
+
+    /// Create rights for a pre-opened storage directory.
+    ///
+    /// Allows creating files and subdirectories via `openat()`/`mkdirat()`
+    /// within Capsicum capability mode.
+    pub fn directory() -> Self {
+        Self {
+            lookup: true,    // Path component resolution for openat/mkdirat
+            read: true,      // Read directory entries (for openat with O_DIRECTORY)
+            write: true,     // Write to created files
+            create: true,    // Create new files via openat(O_CREAT)
+            mkdirat: true,   // Create subdirectories
+            fstat: true,     // Status checks
+            fstatat: true,   // Status checks on relative paths
+            ftruncate: true, // Truncate files (openat with O_TRUNC)
+            seek: true,      // Seek within created files
+            ..Default::default()
+        }
+    }
 }
 
 /// Enter capability mode (point of no return).
@@ -228,6 +253,24 @@ pub fn limit_fd_rights(fd: RawFd, rights: &CapRights) -> Result<()> {
     }
     if rights.setsockopt {
         file_rights.allow(Right::Setsockopt);
+    }
+    if rights.lookup {
+        file_rights.allow(Right::Lookup);
+    }
+    if rights.create {
+        file_rights.allow(Right::Create);
+    }
+    if rights.mkdirat {
+        file_rights.allow(Right::Mkdirat);
+    }
+    if rights.fstatat {
+        file_rights.allow(Right::Fstatat);
+    }
+    if rights.unlinkat {
+        file_rights.allow(Right::Unlinkat);
+    }
+    if rights.ftruncate {
+        file_rights.allow(Right::Ftruncate);
     }
 
     // SAFETY: The caller guarantees the fd is valid
@@ -420,6 +463,23 @@ mod tests {
         assert!(!rights.read);
         assert!(!rights.write);
         assert!(!rights.connect);
+    }
+
+    #[test]
+    fn test_cap_rights_directory() {
+        let rights = CapRights::directory();
+        assert!(rights.lookup);
+        assert!(rights.read);
+        assert!(rights.write);
+        assert!(rights.create);
+        assert!(rights.mkdirat);
+        assert!(rights.fstat);
+        assert!(rights.fstatat);
+        assert!(rights.ftruncate);
+        assert!(rights.seek);
+        assert!(!rights.connect);
+        assert!(!rights.accept);
+        assert!(!rights.unlinkat);
     }
 
     #[test]

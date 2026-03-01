@@ -18,10 +18,9 @@ mod recording_manager;
 use anyhow::{Context, Result};
 use recording_manager::RecordingManager;
 use shared::capsicum;
-use shared::ipc::{poll_readable, IpcChannel};
+use shared::ipc::{poll_readable, recv_fd, IpcChannel};
 use shared::messages::{ControlMessage, Message, ServiceStats};
-use std::os::unix::io::RawFd;
-use std::path::PathBuf;
+use std::os::unix::io::{FromRawFd, IntoRawFd, RawFd};
 use std::process::ExitCode;
 use std::time::Instant;
 use tracing::{debug, error, info, warn};
@@ -86,9 +85,9 @@ fn run_service() -> Result<()> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(false);
 
-    let recording_storage_path: PathBuf = std::env::var("VAUBAN_RECORDING_STORAGE_PATH")
-        .unwrap_or_else(|_| "recordings".to_string())
-        .into();
+    let fd_passing_socket: Option<RawFd> = std::env::var("VAUBAN_FD_PASSING_SOCKET")
+        .ok()
+        .and_then(|s| s.parse().ok());
 
     let proxy_rdp_fds: Option<(RawFd, RawFd)> = if recording_enabled {
         let r: Option<RawFd> = std::env::var("VAUBAN_PROXY_RDP_IPC_READ")
@@ -116,7 +115,7 @@ fn run_service() -> Result<()> {
         std::env::remove_var("VAUBAN_IPC_READ");
         std::env::remove_var("VAUBAN_IPC_WRITE");
         std::env::remove_var("VAUBAN_RECORDING_ENABLED");
-        std::env::remove_var("VAUBAN_RECORDING_STORAGE_PATH");
+        std::env::remove_var("VAUBAN_FD_PASSING_SOCKET");
         std::env::remove_var("VAUBAN_PROXY_RDP_IPC_READ");
         std::env::remove_var("VAUBAN_PROXY_RDP_IPC_WRITE");
     }
@@ -125,19 +124,6 @@ fn run_service() -> Result<()> {
 
     let proxy_rdp_channel = proxy_rdp_fds.map(|(r, w)| unsafe { IpcChannel::from_raw_fds(r, w) });
 
-    // Create recording storage directory before entering sandbox
-    if recording_enabled {
-        if let Err(e) = std::fs::create_dir_all(&recording_storage_path) {
-            warn!(
-                path = %recording_storage_path.display(),
-                error = %e,
-                "Failed to create recording storage directory"
-            );
-        } else {
-            info!(path = %recording_storage_path.display(), "Recording storage directory ready");
-        }
-    }
-
     info!("Resources opened, preparing to enter sandbox");
 
     let mut ipc_fds = vec![ipc_read_fd, ipc_write_fd];
@@ -145,24 +131,38 @@ fn run_service() -> Result<()> {
         ipc_fds.push(r);
         ipc_fds.push(w);
     }
+    // The fd_passing socket needs fd_receiver_socket rights for SCM_RIGHTS
+    if let Some(fd) = fd_passing_socket {
+        ipc_fds.push(fd);
+    }
 
-    // In production (FreeBSD), we would open the storage directory FD before
-    // cap_enter() and use openat() for file creation within the sandbox.
-    // For development on non-FreeBSD platforms, the sandbox is a no-op.
     capsicum::setup_service_sandbox(&ipc_fds, None)
         .context("Failed to setup sandbox")?;
 
-    info!(recording_enabled, "Entered Capsicum sandbox, starting main loop");
+    if recording_enabled {
+        info!(
+            fd_passing = fd_passing_socket.is_some(),
+            "Entered Capsicum sandbox with recording enabled"
+        );
+    } else {
+        info!("Entered Capsicum sandbox, starting main loop");
+    }
 
     let mut state = ServiceState::default();
 
     let mut recording_mgr = if recording_enabled {
-        Some(RecordingManager::new(recording_storage_path))
+        Some(RecordingManager::new())
     } else {
         None
     };
 
-    main_loop(&channel, proxy_rdp_channel.as_ref(), &mut state, &mut recording_mgr)
+    main_loop(
+        &channel,
+        proxy_rdp_channel.as_ref(),
+        &mut state,
+        &mut recording_mgr,
+        fd_passing_socket,
+    )
 }
 
 fn main_loop(
@@ -170,6 +170,7 @@ fn main_loop(
     proxy_rdp_channel: Option<&IpcChannel>,
     state: &mut ServiceState,
     recording_mgr: &mut Option<RecordingManager>,
+    fd_passing_socket: Option<RawFd>,
 ) -> Result<()> {
     let mut poll_fds: Vec<RawFd> = vec![channel.read_fd()];
     if let Some(rdp_ch) = proxy_rdp_channel {
@@ -193,7 +194,7 @@ fn main_loop(
         if ready.contains(&0) {
             match channel.recv() {
                 Ok(msg) => {
-                    if let Err(e) = handle_message(channel, state, recording_mgr, msg) {
+                    if let Err(e) = handle_message(channel, state, recording_mgr, fd_passing_socket, msg) {
                         warn!("Error handling message: {}", e);
                         state.requests_failed += 1;
                     }
@@ -217,7 +218,7 @@ fn main_loop(
             let rdp_ch = rdp_ch.unwrap();
             match rdp_ch.recv() {
                 Ok(msg) => {
-                    if let Err(e) = handle_recording_message(state, recording_mgr, msg) {
+                    if let Err(e) = handle_recording_message(state, recording_mgr, channel, fd_passing_socket, msg) {
                         warn!("Error handling recording message: {}", e);
                         state.requests_failed += 1;
                     }
@@ -237,6 +238,7 @@ fn handle_message(
     channel: &IpcChannel,
     state: &mut ServiceState,
     recording_mgr: &mut Option<RecordingManager>,
+    fd_passing_socket: Option<RawFd>,
     msg: Message,
 ) -> Result<()> {
     match msg {
@@ -280,14 +282,10 @@ fn handle_message(
         }
 
         // Recording messages can also arrive on the supervisor channel
-        Message::RdpRecordingStart { session_id, width, height } => {
-            handle_recording_message(state, recording_mgr, Message::RdpRecordingStart { session_id, width, height })
-        }
-        Message::RdpVideoFrame { .. } => {
-            handle_recording_message(state, recording_mgr, msg)
-        }
-        Message::RdpRecordingEnd { .. } => {
-            handle_recording_message(state, recording_mgr, msg)
+        Message::RdpRecordingStart { .. }
+        | Message::RdpVideoFrame { .. }
+        | Message::RdpRecordingEnd { .. } => {
+            handle_recording_message(state, recording_mgr, channel, fd_passing_socket, msg)
         }
 
         _ => {
@@ -300,6 +298,8 @@ fn handle_message(
 fn handle_recording_message(
     state: &mut ServiceState,
     recording_mgr: &mut Option<RecordingManager>,
+    supervisor_channel: &IpcChannel,
+    fd_passing_socket: Option<RawFd>,
     msg: Message,
 ) -> Result<()> {
     let Some(mgr) = recording_mgr.as_mut() else {
@@ -308,8 +308,16 @@ fn handle_recording_message(
     };
 
     match msg {
-        Message::RdpRecordingStart { session_id, width, height } => {
-            mgr.start_session(&session_id, width, height);
+        Message::RdpRecordingStart { session_id, width: _, height: _ } => {
+            let relative_path = RecordingManager::compute_relative_path(&session_id);
+            match request_file_from_supervisor(supervisor_channel, fd_passing_socket, &session_id, &relative_path) {
+                Ok(file) => {
+                    mgr.start_session(&session_id, file, relative_path);
+                }
+                Err(e) => {
+                    error!(session_id, error = %e, "Failed to obtain recording file from supervisor");
+                }
+            }
             state.requests_processed += 1;
         }
         Message::RdpVideoFrame {
@@ -324,7 +332,27 @@ fn handle_recording_message(
             state.requests_processed += 1;
         }
         Message::RdpRecordingEnd { session_id } => {
-            mgr.end_session(&session_id);
+            if let Some(result) = mgr.end_session(&session_id) {
+                match request_file_from_supervisor(
+                    supervisor_channel,
+                    fd_passing_socket,
+                    &session_id,
+                    &result.blake3_relative_path,
+                ) {
+                    Ok(blake3_file) => {
+                        if let Err(e) = recording_manager::write_blake3_sidecar(
+                            blake3_file,
+                            &result.hash_hex,
+                            &result.mp4_filename,
+                        ) {
+                            error!(session_id, error = %e, "Failed to write BLAKE3 sidecar");
+                        }
+                    }
+                    Err(e) => {
+                        error!(session_id, error = %e, "Failed to obtain BLAKE3 sidecar file from supervisor");
+                    }
+                }
+            }
             state.requests_processed += 1;
         }
         _ => {
@@ -333,6 +361,63 @@ fn handle_recording_message(
     }
 
     Ok(())
+}
+
+/// Request a file from the supervisor via IPC + SCM_RIGHTS.
+///
+/// Sends a `RecordingFileRequest`, waits for the `RecordingFileResponse`,
+/// and receives the file descriptor on the fd_passing socket.
+fn request_file_from_supervisor(
+    channel: &IpcChannel,
+    fd_passing_socket: Option<RawFd>,
+    session_id: &str,
+    relative_path: &str,
+) -> Result<std::fs::File> {
+    let fd_socket = fd_passing_socket
+        .ok_or_else(|| anyhow::anyhow!("no fd_passing socket available"))?;
+
+    channel.send(&Message::RecordingFileRequest {
+        session_id: session_id.to_string(),
+        relative_path: relative_path.to_string(),
+    })?;
+
+    // Blocking wait for response. Handle Pings while waiting.
+    loop {
+        match channel.recv() {
+            Ok(Message::RecordingFileResponse { session_id: sid, success, error }) => {
+                if sid != session_id {
+                    warn!(expected = session_id, got = %sid, "Mismatched RecordingFileResponse session_id");
+                    continue;
+                }
+                if !success {
+                    return Err(anyhow::anyhow!(
+                        "supervisor refused file creation: {}",
+                        error.unwrap_or_default()
+                    ));
+                }
+                let owned_fd = recv_fd(fd_socket)
+                    .map_err(|e| anyhow::anyhow!("recv_fd failed: {e}"))?;
+                let file = unsafe { std::fs::File::from_raw_fd(owned_fd.into_raw_fd()) };
+                return Ok(file);
+            }
+            Ok(Message::Control(ControlMessage::Ping { seq })) => {
+                let stats = ServiceStats {
+                    uptime_secs: 0,
+                    requests_processed: 0,
+                    requests_failed: 0,
+                    active_connections: 0,
+                    pending_requests: 0,
+                };
+                let _ = channel.send(&Message::Control(ControlMessage::Pong { seq, stats }));
+            }
+            Ok(other) => {
+                debug!(msg = ?other, "Unexpected message while waiting for RecordingFileResponse");
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!("IPC error waiting for RecordingFileResponse: {e}"));
+            }
+        }
+    }
 }
 
 fn handle_control(channel: &IpcChannel, state: &mut ServiceState, ctrl: ControlMessage) -> Result<()> {
@@ -417,7 +502,7 @@ mod tests {
             source_ip: Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))),
             details: "SSH session started".to_string(),
         };
-        handle_message(&service, &mut state, &mut recording_mgr, event).unwrap();
+        handle_message(&service, &mut state, &mut recording_mgr, None, event).unwrap();
 
         assert_eq!(state.requests_processed, 1);
 
@@ -440,7 +525,7 @@ mod tests {
             sequence: 1,
             data: vec![0; 1024],
         };
-        handle_message(&service, &mut state, &mut recording_mgr, chunk).unwrap();
+        handle_message(&service, &mut state, &mut recording_mgr, None, chunk).unwrap();
 
         assert_eq!(state.requests_processed, 1);
     }
@@ -452,7 +537,7 @@ mod tests {
         let mut recording_mgr = None;
 
         let msg = Message::Control(ControlMessage::Ping { seq: 11 });
-        handle_message(&service, &mut state, &mut recording_mgr, msg).unwrap();
+        handle_message(&service, &mut state, &mut recording_mgr, None, msg).unwrap();
 
         let response: Message = supervisor.recv().unwrap();
         assert!(matches!(response, Message::Control(ControlMessage::Pong { seq: 11, .. })));
@@ -473,7 +558,7 @@ mod tests {
                 source_ip: None,
                 details: "Login".to_string(),
             };
-            handle_message(&service, &mut state, &mut recording_mgr, event).unwrap();
+            handle_message(&service, &mut state, &mut recording_mgr, None, event).unwrap();
         }
 
         assert_eq!(state.requests_processed, 5);
@@ -490,6 +575,7 @@ mod tests {
 
     #[test]
     fn test_handle_recording_message_without_manager() {
+        let (_sup, service) = IpcChannel::pair().unwrap();
         let mut state = ServiceState::default();
         let mut recording_mgr = None;
 
@@ -498,23 +584,60 @@ mod tests {
             width: 1920,
             height: 1080,
         };
-        handle_recording_message(&mut state, &mut recording_mgr, msg).unwrap();
+        handle_recording_message(&mut state, &mut recording_mgr, &service, None, msg).unwrap();
         assert_eq!(state.requests_processed, 0);
     }
 
     #[test]
-    fn test_handle_recording_message_with_manager() {
+    fn test_handle_recording_message_with_manager_via_fd_passing() {
+        use shared::ipc::{send_fd, socketpair_for_fd_passing};
+        use std::os::unix::io::AsRawFd;
+
         let dir = tempfile::tempdir().unwrap();
+        let (supervisor_channel, audit_channel) = IpcChannel::pair().unwrap();
+        let (supervisor_fd_sock, audit_fd_sock) = socketpair_for_fd_passing().unwrap();
+
+        let audit_fd_sock_raw = audit_fd_sock.as_raw_fd();
+
         let mut state = ServiceState::default();
-        let mut recording_mgr = Some(RecordingManager::new(dir.path().to_path_buf()));
+        let mut recording_mgr = Some(RecordingManager::new());
+
+        // Simulate supervisor in a background thread
+        let dir_path = dir.path().to_path_buf();
+        let handle = std::thread::spawn(move || {
+            let msg = supervisor_channel.recv().unwrap();
+            if let Message::RecordingFileRequest { session_id, relative_path } = msg {
+                let full_path = dir_path.join(&relative_path);
+                if let Some(parent) = full_path.parent() {
+                    std::fs::create_dir_all(parent).unwrap();
+                }
+                let file = std::fs::File::create(&full_path).unwrap();
+                send_fd(supervisor_fd_sock.as_raw_fd(), file.as_raw_fd()).unwrap();
+                supervisor_channel.send(&Message::RecordingFileResponse {
+                    session_id,
+                    success: true,
+                    error: None,
+                }).unwrap();
+            } else {
+                panic!("Expected RecordingFileRequest");
+            }
+        });
 
         let msg = Message::RdpRecordingStart {
             session_id: "rec-test".to_string(),
             width: 1920,
             height: 1080,
         };
-        handle_recording_message(&mut state, &mut recording_mgr, msg).unwrap();
+        handle_recording_message(
+            &mut state,
+            &mut recording_mgr,
+            &audit_channel,
+            Some(audit_fd_sock_raw),
+            msg,
+        ).unwrap();
         assert_eq!(state.requests_processed, 1);
+
+        handle.join().unwrap();
     }
 
     // ==================== M-8/M-10 Structural Regression Tests ====================

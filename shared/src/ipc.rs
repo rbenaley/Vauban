@@ -259,8 +259,7 @@ fn read_exact_fd(fd: RawFd, buf: &mut [u8]) -> Result<()> {
 /// The parent socket is used by the supervisor to send FDs, the child socket
 /// is passed to the target service to receive FDs.
 ///
-/// Unlike pipes, Unix sockets support ancillary data (SCM_RIGHTS) for FD passing.
-#[cfg(target_os = "freebsd")]
+/// Works on all Unix platforms (FreeBSD, Linux, macOS).
 pub fn socketpair_for_fd_passing() -> Result<(OwnedFd, OwnedFd)> {
     use nix::fcntl::{fcntl, FcntlArg, FdFlag};
     use nix::sys::socket::{socketpair, AddressFamily, SockFlag, SockType};
@@ -269,28 +268,6 @@ pub fn socketpair_for_fd_passing() -> Result<(OwnedFd, OwnedFd)> {
         socketpair(AddressFamily::Unix, SockType::Stream, None, SockFlag::empty())
             .map_err(|e| IpcError::Io(e.into()))?;
 
-    // Set close-on-exec flag for both sockets
-    fcntl(&sock1, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC)).map_err(|e| IpcError::Io(e.into()))?;
-    fcntl(&sock2, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC)).map_err(|e| IpcError::Io(e.into()))?;
-
-    Ok((sock1, sock2))
-}
-
-/// Create a Unix socket pair for FD passing (non-FreeBSD stub for development).
-///
-/// On non-FreeBSD platforms, this creates a socket pair but FD passing won't work.
-#[cfg(not(target_os = "freebsd"))]
-pub fn socketpair_for_fd_passing() -> Result<(OwnedFd, OwnedFd)> {
-    use nix::fcntl::{fcntl, FcntlArg, FdFlag};
-    use nix::sys::socket::{socketpair, AddressFamily, SockFlag, SockType};
-
-    tracing::debug!("socketpair_for_fd_passing: SCM_RIGHTS FD passing not available, proxy will connect directly");
-
-    let (sock1, sock2) =
-        socketpair(AddressFamily::Unix, SockType::Stream, None, SockFlag::empty())
-            .map_err(|e| IpcError::Io(e.into()))?;
-
-    // Set close-on-exec flag for both sockets
     fcntl(&sock1, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC)).map_err(|e| IpcError::Io(e.into()))?;
     fcntl(&sock2, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC)).map_err(|e| IpcError::Io(e.into()))?;
 
@@ -299,15 +276,12 @@ pub fn socketpair_for_fd_passing() -> Result<(OwnedFd, OwnedFd)> {
 
 /// Send a file descriptor over a Unix socket using SCM_RIGHTS.
 ///
-/// This is used to pass sockets between processes (e.g., for connection handoff).
-#[cfg(target_os = "freebsd")]
+/// SCM_RIGHTS is POSIX and works on FreeBSD, Linux, and macOS.
+/// Used to pass pre-opened file descriptors to sandboxed child processes.
 pub fn send_fd(socket_fd: RawFd, fd_to_send: RawFd) -> Result<()> {
     use nix::sys::socket::{sendmsg, ControlMessage, MsgFlags};
 
-    // Data to send (at least 1 byte required for SCM_RIGHTS)
     let iov = [io::IoSlice::new(b"F")];
-
-    // Control message with the file descriptor (nix uses RawFd on FreeBSD)
     let fds = [fd_to_send];
     let cmsg = [ControlMessage::ScmRights(&fds)];
 
@@ -318,15 +292,13 @@ pub fn send_fd(socket_fd: RawFd, fd_to_send: RawFd) -> Result<()> {
 }
 
 /// Receive a file descriptor over a Unix socket using SCM_RIGHTS.
-#[cfg(target_os = "freebsd")]
+///
+/// Blocks until a file descriptor is available on the socket.
 pub fn recv_fd(socket_fd: RawFd) -> Result<OwnedFd> {
     use nix::sys::socket::{recvmsg, ControlMessageOwned, MsgFlags};
 
-    // Buffer for data (at least 1 byte)
     let mut buf = [0u8; 1];
     let mut iov = [io::IoSliceMut::new(&mut buf)];
-
-    // Buffer for control messages
     let mut cmsg_buf = nix::cmsg_space!([RawFd; 1]);
 
     let msg = recvmsg::<()>(socket_fd, &mut iov, Some(&mut cmsg_buf), MsgFlags::empty())
@@ -336,38 +308,18 @@ pub fn recv_fd(socket_fd: RawFd) -> Result<OwnedFd> {
         return Err(IpcError::ConnectionClosed);
     }
 
-    // Extract the file descriptor from control messages
-    // Note: cmsgs() may return Result on some platforms, we handle both cases
     let cmsgs_iter = msg.cmsgs().map_err(|e| IpcError::Io(e.into()))?;
+
     for cmsg in cmsgs_iter {
-        if let ControlMessageOwned::ScmRights(fds) = cmsg {
-            if let Some(&fd) = fds.first() {
-                // SAFETY: The fd was just received via SCM_RIGHTS and is valid.
-                return Ok(unsafe { OwnedFd::from_raw_fd(fd) });
-            }
+        if let ControlMessageOwned::ScmRights(fds) = cmsg
+            && let Some(&fd) = fds.first()
+        {
+            // SAFETY: The fd was just received via SCM_RIGHTS and is valid.
+            return Ok(unsafe { OwnedFd::from_raw_fd(fd) });
         }
     }
 
     Err(IpcError::InvalidHeader)
-}
-
-/// Stub implementations for non-FreeBSD platforms (development).
-/// On platforms without Capsicum, FD passing is a no-op: the proxy
-/// falls back to connecting directly to the target host.
-#[cfg(not(target_os = "freebsd"))]
-pub fn send_fd(_socket_fd: RawFd, _fd_to_send: RawFd) -> Result<()> {
-    tracing::debug!("send_fd: skipped (no SCM_RIGHTS on this platform, proxy will connect directly)");
-    Ok(())
-}
-
-#[cfg(not(target_os = "freebsd"))]
-pub fn recv_fd(_socket_fd: RawFd) -> Result<OwnedFd> {
-    // Return a specific error that callers can handle gracefully.
-    // This is NOT a failure: the proxy will fall back to a direct connection.
-    Err(IpcError::Io(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "FD passing not available (non-FreeBSD platform), using direct connection",
-    )))
 }
 
 /// Wait for readability on multiple file descriptors using poll(2).
