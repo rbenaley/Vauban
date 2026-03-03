@@ -99,9 +99,17 @@ for _u in ${_svc_users}; do
     set_acl "$_u" "r" "${CONF}"
 done
 
-if ! grep -q '^secret_key' "${CONF}" 2>/dev/null; then
+SECRET_KEY=$(grep -m1 '^secret_key' "${CONF}" 2>/dev/null | sed 's/.*= *"//;s/"$//')
+if [ -z "${SECRET_KEY}" ] || [ "${SECRET_KEY}" = "CHANGE-ME-IN-PRODUCTION-32-CHARS!" ]; then
     SECRET_KEY=$(openssl rand -base64 32)
-    sed -i '' "s|^# secret_key must be set.*|secret_key = \"${SECRET_KEY}\"|" "${CONF}"
+    sed -i '' '/^# secret_key is injected/d; /^# For manual setup, replace/d' "${CONF}"
+    if grep -q '^secret_key' "${CONF}" 2>/dev/null; then
+        sed -i '' "s|^secret_key = .*|secret_key = \"${SECRET_KEY}\"|" "${CONF}"
+    else
+        sed -i '' "1,/^bin_path/{/^bin_path/a\\
+secret_key = \"${SECRET_KEY}\"
+;}" "${CONF}"
+    fi
     echo "  Generated secret_key in ${CONF}"
 fi
 
@@ -149,7 +157,10 @@ else
             fi
         done
 
-        if ! grep -q '^url' "${CONF}" 2>/dev/null; then
+        sed -i '' '/^# url is injected/d; /^# For manual setup: url/d' "${CONF}"
+        if grep -q '^url' "${CONF}" 2>/dev/null; then
+            sed -i '' "s|^url = .*|url = \"postgresql://vauban:${DB_PASSWORD}@localhost/vauban\"|" "${CONF}"
+        else
             sed -i '' '/^\[database\]/a\
 url = "postgresql://vauban:'"${DB_PASSWORD}"'@localhost/vauban"
 ' "${CONF}"
