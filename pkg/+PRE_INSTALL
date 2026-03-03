@@ -25,7 +25,6 @@ create_user_if_missing() {
 
 echo "==> Creating Vauban service accounts..."
 
-create_group_if_missing vbsupervsr 900
 create_group_if_missing vbauditsvc 901
 create_group_if_missing vbvaultsvc 902
 create_group_if_missing vbpolicyba 903
@@ -34,7 +33,6 @@ create_group_if_missing vbproxyssh 905
 create_group_if_missing vbproxyrdp 906
 create_group_if_missing vbwebfront 907
 
-create_user_if_missing vbsupervsr 900 900
 create_user_if_missing vbauditsvc 901 901
 create_user_if_missing vbvaultsvc 902 902
 create_user_if_missing vbpolicyba 903 903

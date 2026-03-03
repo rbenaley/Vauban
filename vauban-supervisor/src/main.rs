@@ -322,18 +322,8 @@ fn run_supervisor() -> Result<()> {
 
     info!("All services started, entering watchdog loop");
 
-    if let Some(g) = config.supervisor_gid() {
-        setgid(Gid::from_raw(g))
-            .with_context(|| format!("Failed to drop supervisor privileges: setgid({})", g))?;
-    }
-    if let Some(u) = config.supervisor_uid() {
-        setuid(Uid::from_raw(u))
-            .with_context(|| format!("Failed to drop supervisor privileges: setuid({})", u))?;
-        info!("Supervisor dropped privileges to uid={}, gid={}", u, config.supervisor.gid.unwrap_or(0));
-    }
-
     // Main watchdog loop
-    let watchdog_config = &config.supervisor.watchdog;
+    let watchdog_config = &config.supervisor;
     watchdog_loop(
         &mut children,
         &config,
@@ -1640,7 +1630,7 @@ fn drain_and_restart(state: &mut ChildState, config: &SupervisorConfig, topology
     info!("{}: drain initiated", state.service_key);
     
     // 2. Wait for DrainComplete or timeout
-    let drain_timeout = Duration::from_secs(config.supervisor.watchdog.drain_timeout_secs);
+    let drain_timeout = Duration::from_secs(config.supervisor.drain_timeout_secs);
     let fds = [state.channel.read_fd()];
     
     while drain_start.elapsed() < drain_timeout {
@@ -1708,7 +1698,7 @@ const BACKEND_SERVICES: &[&str] = &["auth", "rbac", "vault", "audit"];
 fn graceful_shutdown_all(children: &mut HashMap<String, ChildState>, config: &SupervisorConfig) {
     use shared::ipc::poll_readable;
     
-    let drain_timeout = Duration::from_secs(config.supervisor.watchdog.drain_timeout_secs);
+    let drain_timeout = Duration::from_secs(config.supervisor.drain_timeout_secs);
     
     // Phase 1: Drain all frontend services simultaneously (parallel)
     info!("Phase 1: Draining frontend services (web, proxy_rdp, proxy_ssh)");
@@ -2390,7 +2380,7 @@ mod tests {
     #[test]
     fn test_heartbeat_multiple_missed_triggers_restart() {
         let config = test_config();
-        let max_missed = config.supervisor.watchdog.max_missed_heartbeats;
+        let max_missed = config.supervisor.max_missed_heartbeats;
         
         // Create state with max_missed - 1 already missed
         let (channel, _) = IpcChannel::pair().unwrap();
@@ -2508,15 +2498,15 @@ mod tests {
         
         // Verify reasonable defaults
         assert!(
-            config.supervisor.watchdog.heartbeat_interval_secs >= 1,
+            config.supervisor.heartbeat_interval_secs >= 1,
             "Heartbeat interval should be at least 1 second"
         );
         assert!(
-            config.supervisor.watchdog.heartbeat_interval_secs <= 60,
+            config.supervisor.heartbeat_interval_secs <= 60,
             "Heartbeat interval should not exceed 60 seconds"
         );
         assert!(
-            config.supervisor.watchdog.max_missed_heartbeats >= 2,
+            config.supervisor.max_missed_heartbeats >= 2,
             "Should allow at least 2 missed heartbeats before restart"
         );
     }
@@ -2529,7 +2519,7 @@ mod tests {
         
         // Verify drain timeout is configured (default 30s per Section 9.2)
         assert_eq!(
-            config.supervisor.watchdog.drain_timeout_secs, 30,
+            config.supervisor.drain_timeout_secs, 30,
             "Drain timeout should be 30 seconds by default"
         );
     }

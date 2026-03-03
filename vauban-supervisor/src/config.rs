@@ -102,23 +102,22 @@ pub struct LoggingConfig {
     pub level: String,
 }
 
-/// Supervisor privilege separation and watchdog settings.
+/// Supervisor settings (privilege separation + watchdog).
 #[derive(Debug, Deserialize)]
 pub struct SupervisorSettings {
     /// Enable privilege separation (default: true).
-    /// When true, the supervisor setuid/setgid for each child and drops
-    /// its own privileges to uid/gid after spawning all services.
+    /// When true, the supervisor setuid/setgid for each spawned child.
     /// When false (dev/testing), all processes run as the current user.
+    /// The supervisor itself stays root to allow respawning children.
     #[serde(default = "default_privsep")]
     pub privsep: bool,
-    /// UID the supervisor drops to after spawning children (production).
-    #[serde(default)]
-    pub uid: Option<u32>,
-    /// GID the supervisor drops to after spawning children (production).
-    #[serde(default)]
-    pub gid: Option<u32>,
-    /// Watchdog configuration
-    pub watchdog: WatchdogConfig,
+    pub heartbeat_interval_secs: u64,
+    #[allow(dead_code)]
+    pub heartbeat_timeout_secs: u64,
+    pub max_missed_heartbeats: u32,
+    pub max_respawns_per_hour: u32,
+    #[serde(default = "default_drain_timeout")]
+    pub drain_timeout_secs: u64,
 }
 
 fn default_privsep() -> bool {
@@ -153,19 +152,6 @@ impl Environment {
     pub fn is_production(&self) -> bool {
         matches!(self, Environment::Production)
     }
-}
-
-/// Watchdog configuration.
-#[derive(Debug, Deserialize)]
-pub struct WatchdogConfig {
-    pub heartbeat_interval_secs: u64,
-    #[allow(dead_code)] // Will be used when heartbeat timeout is implemented
-    pub heartbeat_timeout_secs: u64,
-    pub max_missed_heartbeats: u32,
-    pub max_respawns_per_hour: u32,
-    /// Maximum time to wait for drain completion (default: 30s per Section 9.2)
-    #[serde(default = "default_drain_timeout")]
-    pub drain_timeout_secs: u64,
 }
 
 fn default_drain_timeout() -> u64 {
@@ -335,22 +321,6 @@ impl SupervisorConfig {
         service.gid
     }
 
-    /// Get the UID the supervisor should drop to after spawning children.
-    pub fn supervisor_uid(&self) -> Option<u32> {
-        if !self.supervisor.privsep {
-            return None;
-        }
-        self.supervisor.uid
-    }
-
-    /// Get the GID the supervisor should drop to after spawning children.
-    pub fn supervisor_gid(&self) -> Option<u32> {
-        if !self.supervisor.privsep {
-            return None;
-        }
-        self.supervisor.gid
-    }
-
     /// Get full path to a service binary.
     ///
     /// Returns an absolute path to ensure it works after chdir.
@@ -483,11 +453,11 @@ mod tests {
     #[test]
     fn test_development_watchdog_config() {
         let config = test_config();
-        assert_eq!(config.supervisor.watchdog.heartbeat_interval_secs, 5);
-        assert_eq!(config.supervisor.watchdog.heartbeat_timeout_secs, 2);
-        assert_eq!(config.supervisor.watchdog.max_missed_heartbeats, 3);
-        assert_eq!(config.supervisor.watchdog.max_respawns_per_hour, 10);
-        assert_eq!(config.supervisor.watchdog.drain_timeout_secs, 30);
+        assert_eq!(config.supervisor.heartbeat_interval_secs, 5);
+        assert_eq!(config.supervisor.heartbeat_timeout_secs, 2);
+        assert_eq!(config.supervisor.max_missed_heartbeats, 3);
+        assert_eq!(config.supervisor.max_respawns_per_hour, 10);
+        assert_eq!(config.supervisor.drain_timeout_secs, 30);
     }
 
     #[test]

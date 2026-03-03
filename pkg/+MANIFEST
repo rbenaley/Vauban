@@ -1,7 +1,7 @@
 name = "vauban";
 version = "0.2.0";
 origin = "security/vauban";
-comment = "Security bastion platform with SSH/RDP proxying, RBAC, and audit";
+comment = "Security bastion platform with SSH/RDP session recording, RBAC, and audit";
 maintainer = "none@freebsd.org";
 www = "https://github.com/rbenaley/Vauban";
 prefix = "/usr/local";
@@ -16,6 +16,9 @@ VAUBAN is a security bastion (PAM) platform providing:
  - Role-based access control (RBAC)
  - Multi-factor authentication (TOTP)
  - Centralized audit logging
+ - Hardened secrets vault with fine-grained access control
+ - ACME certificate auto-renewal (Let's Encrypt / ZeroSSL)
+ - Defense in depth with privsep and capsicum(4) sandboxing
  - Post-quantum cryptography support
 EOD;
 

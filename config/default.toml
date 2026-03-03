@@ -18,9 +18,6 @@ bin_path = "./target/debug"
 
 [supervisor]
 privsep = false
-
-# Watchdog configuration
-[supervisor.watchdog]
 heartbeat_interval_secs = 5
 heartbeat_timeout_secs = 2
 max_missed_heartbeats = 3

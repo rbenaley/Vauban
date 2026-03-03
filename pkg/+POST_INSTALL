@@ -64,7 +64,7 @@ chmod 700 "${PREFIX}/etc/vauban/certs"
 
 detect_acl_type "${PREFIX}/etc/vauban"
 
-_svc_users="vbsupervsr vbauditsvc vbvaultsvc vbpolicyba vbauthenti vbproxyssh vbproxyrdp vbwebfront"
+_svc_users="vbauditsvc vbvaultsvc vbpolicyba vbauthenti vbproxyssh vbproxyrdp vbwebfront"
 for _u in ${_svc_users}; do
     set_acl         "$_u" "rx" "${PREFIX}/etc/vauban"
     set_default_acl "$_u" "r"  "${PREFIX}/etc/vauban"
@@ -76,7 +76,7 @@ set_default_acl "vbwebfront" "r"  "${PREFIX}/etc/vauban/certs"
 echo "==> Setting ACLs on recordings directory..."
 
 detect_acl_type /var/vauban/recordings
-for _u in vbsupervsr vbauditsvc vbwebfront; do
+for _u in vbauditsvc vbwebfront; do
     set_acl         "$_u" "rx" /var/vauban/recordings
     set_default_acl "$_u" "r"  /var/vauban/recordings
 done
@@ -189,7 +189,6 @@ echo "  Next steps:"
 echo "    1. Edit ${CONF}:"
 echo "       - Set 'email' and 'domains' in [server.tls.acme]"
 echo "         so ACME can issue TLS certificates automatically"
-echo "       - Adjust 'trusted_proxies' in [security] if needed"
 echo "    2. sysrc vauban_enable=YES"
 echo "    3. service vauban start"
 echo "    4. create_superuser"
