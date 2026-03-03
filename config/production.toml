@@ -26,18 +26,13 @@ uid = 0
 gid = 0
 
 # Service configurations with dedicated UID/GID for each service.
-#
-# On FreeBSD, create these users/groups:
-#   pw groupadd -n vauban_audit -g 901
-#   pw useradd -n vauban_audit -u 901 -g 901 -d /nonexistent -s /usr/sbin/nologin
-#   (repeat for each service)
+# Accounts are created automatically by the vauban package (+PRE_INSTALL).
 
 [services.audit]
 name = "vauban-audit"
 binary = "vauban-audit"
 uid = 901
 gid = 901
-workdir = "/var/vauban/audit"
 
 [services.vault]
 name = "vauban-vault"
@@ -51,35 +46,30 @@ name = "vauban-rbac"
 binary = "vauban-rbac"
 uid = 903
 gid = 903
-workdir = "/var/vauban/rbac"
 
 [services.auth]
 name = "vauban-auth"
 binary = "vauban-auth"
 uid = 904
 gid = 904
-workdir = "/var/vauban/auth"
 
 [services.proxy_ssh]
 name = "vauban-proxy-ssh"
 binary = "vauban-proxy-ssh"
 uid = 905
 gid = 905
-workdir = "/var/vauban/proxy-ssh"
 
 [services.proxy_rdp]
 name = "vauban-proxy-rdp"
 binary = "vauban-proxy-rdp"
 uid = 906
 gid = 906
-workdir = "/var/vauban/proxy-rdp"
 
 [services.web]
 name = "vauban-web"
 binary = "vauban-web"
 uid = 907
 gid = 907
-workdir = "/var/vauban/web"
 
 # ==============================================================================
 # WEB OVERRIDES (vauban-web)
