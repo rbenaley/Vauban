@@ -3,9 +3,9 @@
 
 echo "==> Removing Vauban service accounts..."
 
-for _svc in audit vault rbac auth proxy-ssh proxy-rdp web; do
-    pw userdel  "vauban-${_svc}" 2>/dev/null && echo "  Removed user vauban-${_svc}"
-    pw groupdel "vauban-${_svc}" 2>/dev/null && echo "  Removed group vauban-${_svc}"
+for _u in vbauditsvc vbvaultsvc vbpolicyba vbauthenti vbproxyssh vbproxyrdp vbwebfront; do
+    pw userdel  "$_u" 2>/dev/null && echo "  Removed user $_u"
+    pw groupdel "$_u" 2>/dev/null && echo "  Removed group $_u"
 done
 
 echo ""

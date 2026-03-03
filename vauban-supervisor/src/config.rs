@@ -61,8 +61,13 @@ pub struct RecordingConfig {
     pub enabled: bool,
     #[serde(default = "default_recording_storage_path")]
     pub storage_path: String,
-    #[serde(default)]
-    pub rdp: RdpRecordingConfig,
+    /// Enable recording of RDP sessions.
+    #[serde(default = "default_recording_enabled")]
+    pub rdp: bool,
+    /// Enable recording of SSH sessions.
+    #[allow(dead_code)]
+    #[serde(default = "default_recording_enabled")]
+    pub ssh: bool,
 }
 
 fn default_recording_enabled() -> bool {
@@ -78,22 +83,8 @@ impl Default for RecordingConfig {
         Self {
             enabled: default_recording_enabled(),
             storage_path: default_recording_storage_path(),
-            rdp: RdpRecordingConfig::default(),
-        }
-    }
-}
-
-/// RDP-specific recording configuration.
-#[derive(Debug, Deserialize)]
-pub struct RdpRecordingConfig {
-    #[serde(default = "default_recording_enabled")]
-    pub enabled: bool,
-}
-
-impl Default for RdpRecordingConfig {
-    fn default() -> Self {
-        Self {
-            enabled: default_recording_enabled(),
+            rdp: default_recording_enabled(),
+            ssh: default_recording_enabled(),
         }
     }
 }
@@ -371,23 +362,22 @@ impl SupervisorConfig {
     /// The child is responsible for reading and immediately removing them.
     pub fn service_env_vars(&self, service_key: &str) -> Vec<(String, String)> {
         let mut vars = Vec::new();
-        let recording_enabled =
-            self.recording.enabled && self.recording.rdp.enabled;
         match service_key {
             "proxy_rdp" => {
                 vars.push((
                     "VAUBAN_RDP_VIDEO_BITRATE_BPS".to_string(),
                     self.rdp.video_bitrate_bps.to_string(),
                 ));
+                let rdp_recording = self.recording.enabled && self.recording.rdp;
                 vars.push((
                     "VAUBAN_RECORDING_ENABLED".to_string(),
-                    recording_enabled.to_string(),
+                    rdp_recording.to_string(),
                 ));
             }
             "audit" => {
                 vars.push((
                     "VAUBAN_RECORDING_ENABLED".to_string(),
-                    recording_enabled.to_string(),
+                    self.recording.enabled.to_string(),
                 ));
                 vars.push((
                     "VAUBAN_RECORDING_STORAGE_PATH".to_string(),
@@ -750,7 +740,8 @@ mod tests {
     fn test_recording_config_defaults() {
         let config = test_config();
         assert!(config.recording.enabled);
-        assert!(config.recording.rdp.enabled);
+        assert!(config.recording.rdp);
+        assert!(config.recording.ssh);
         assert_eq!(config.recording.storage_path, "recordings");
     }
 }

@@ -170,7 +170,6 @@ enabled = true
 # Directory where fMP4 recordings and BLAKE3 integrity files are stored.
 # In development, relative to workspace root. In production, absolute path.
 storage_path = "recordings"
-
-[recording.rdp]
-# Enable recording of RDP sessions (H.264 in fragmented MP4).
-enabled = true
+# Per-protocol recording flags.
+rdp = true
+ssh = true

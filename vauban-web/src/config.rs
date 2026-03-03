@@ -520,6 +520,10 @@ pub struct RecordingConfig {
     pub enabled: bool,
     #[serde(default = "default_recording_storage_path")]
     pub storage_path: String,
+    #[serde(default = "default_recording_enabled")]
+    pub rdp: bool,
+    #[serde(default = "default_recording_enabled")]
+    pub ssh: bool,
 }
 
 fn default_recording_enabled() -> bool {
@@ -535,6 +539,8 @@ impl Default for RecordingConfig {
         Self {
             enabled: default_recording_enabled(),
             storage_path: default_recording_storage_path(),
+            rdp: default_recording_enabled(),
+            ssh: default_recording_enabled(),
         }
     }
 }

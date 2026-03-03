@@ -44,7 +44,7 @@ echo "==> Creating runtime directories..."
 mkdir -p /var/vauban/vault
 mkdir -p /var/vauban/recordings
 
-chown root:vauban-vault /var/vauban/vault
+chown root:vbvaultsvc /var/vauban/vault
 chmod 750 /var/vauban/vault
 
 chown root:wheel /var/vauban/recordings
@@ -52,7 +52,7 @@ chmod 750 /var/vauban/recordings
 
 # =========================================================================== #
 # 2. Permissions -- /usr/local/etc/vauban  (all services)                    #
-#                   /usr/local/etc/vauban/certs  (vauban-web only)           #
+#                   /usr/local/etc/vauban/certs  (vbwebfront only)           #
 #                   /var/vauban/recordings  (audit + web)                    #
 # =========================================================================== #
 echo "==> Setting ACLs on configuration directories..."
@@ -64,19 +64,19 @@ chmod 700 "${PREFIX}/etc/vauban/certs"
 
 detect_acl_type "${PREFIX}/etc/vauban"
 
-_svc_users="vauban-audit vauban-vault vauban-rbac vauban-auth vauban-proxy-ssh vauban-proxy-rdp vauban-web"
+_svc_users="vbauditsvc vbvaultsvc vbpolicyba vbauthenti vbproxyssh vbproxyrdp vbwebfront"
 for _u in ${_svc_users}; do
     set_acl         "$_u" "rx" "${PREFIX}/etc/vauban"
     set_default_acl "$_u" "r"  "${PREFIX}/etc/vauban"
 done
 
-set_acl         "vauban-web" "rx" "${PREFIX}/etc/vauban/certs"
-set_default_acl "vauban-web" "r"  "${PREFIX}/etc/vauban/certs"
+set_acl         "vbwebfront" "rx" "${PREFIX}/etc/vauban/certs"
+set_default_acl "vbwebfront" "r"  "${PREFIX}/etc/vauban/certs"
 
 echo "==> Setting ACLs on recordings directory..."
 
 detect_acl_type /var/vauban/recordings
-for _u in vauban-audit vauban-web; do
+for _u in vbauditsvc vbwebfront; do
     set_acl         "$_u" "rx" /var/vauban/recordings
     set_default_acl "$_u" "r"  /var/vauban/recordings
 done
@@ -110,12 +110,12 @@ fi
 # =========================================================================== #
 echo "==> Setting up vault..."
 
-chown root:vauban-vault /var/vauban/vault
+chown root:vbvaultsvc /var/vauban/vault
 chmod 750 /var/vauban/vault
 
 if [ ! -f /var/vauban/vault/master.key ]; then
     dd if=/dev/random of=/var/vauban/vault/master.key bs=32 count=1 2>/dev/null
-    chown root:vauban-vault /var/vauban/vault/master.key
+    chown root:vbvaultsvc /var/vauban/vault/master.key
     chmod 440 /var/vauban/vault/master.key
     echo "  Generated new vault master key: /var/vauban/vault/master.key"
     echo "  IMPORTANT: back up this key. Loss means encrypted data is unrecoverable."
@@ -175,12 +175,12 @@ echo "================================================================"
 echo "  Vauban %%VERSION%% installed."
 echo ""
 echo "  Next steps:"
-echo "    1. Edit ${CONF}"
-echo "       (ACME domain/email, trusted_proxies, ...)"
-echo "    2. Place TLS certificates in ${PREFIX}/etc/vauban/certs/"
-echo "       (or enable ACME in vauban.conf)"
-echo "    3. sysrc vauban_enable=YES"
-echo "    4. service vauban start"
-echo "    5. create_superuser"
+echo "    1. Edit ${CONF}:"
+echo "       - Set 'email' and 'domains' in [server.tls.acme]"
+echo "         so ACME can issue TLS certificates automatically"
+echo "       - Adjust 'trusted_proxies' in [security] if needed"
+echo "    2. sysrc vauban_enable=YES"
+echo "    3. service vauban start"
+echo "    4. create_superuser"
 echo "================================================================"
 echo ""

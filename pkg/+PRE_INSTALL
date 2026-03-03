@@ -25,18 +25,18 @@ create_user_if_missing() {
 
 echo "==> Creating Vauban service accounts..."
 
-create_group_if_missing vauban-audit     901
-create_group_if_missing vauban-vault     902
-create_group_if_missing vauban-rbac      903
-create_group_if_missing vauban-auth      904
-create_group_if_missing vauban-proxy-ssh 905
-create_group_if_missing vauban-proxy-rdp 906
-create_group_if_missing vauban-web       907
+create_group_if_missing vbauditsvc 901
+create_group_if_missing vbvaultsvc 902
+create_group_if_missing vbpolicyba 903
+create_group_if_missing vbauthenti 904
+create_group_if_missing vbproxyssh 905
+create_group_if_missing vbproxyrdp 906
+create_group_if_missing vbwebfront 907
 
-create_user_if_missing vauban-audit     901 901
-create_user_if_missing vauban-vault     902 902
-create_user_if_missing vauban-rbac      903 903
-create_user_if_missing vauban-auth      904 904
-create_user_if_missing vauban-proxy-ssh 905 905
-create_user_if_missing vauban-proxy-rdp 906 906
-create_user_if_missing vauban-web       907 907
+create_user_if_missing vbauditsvc 901 901
+create_user_if_missing vbvaultsvc 902 902
+create_user_if_missing vbpolicyba 903 903
+create_user_if_missing vbauthenti 904 904
+create_user_if_missing vbproxyssh 905 905
+create_user_if_missing vbproxyrdp 906 906
+create_user_if_missing vbwebfront 907 907
