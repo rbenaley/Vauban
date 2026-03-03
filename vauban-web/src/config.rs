@@ -182,9 +182,9 @@ macro_rules! debug_redacted_optional {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Environment {
-    #[default]
     Development,
     Testing,
+    #[default]
     Production,
 }
 
@@ -194,7 +194,7 @@ impl Environment {
             "development" | "dev" => Self::Development,
             "testing" | "test" => Self::Testing,
             "production" | "prod" => Self::Production,
-            _ => Self::Development,
+            _ => Self::Production,
         }
     }
 
@@ -547,11 +547,10 @@ impl Config {
     /// 2. Workspace root config/ directory (development)
     /// 3. /usr/local/etc/vauban/ (production on FreeBSD)
     ///
-    /// Then loads configuration files in the following order:
-    /// 1. config/default.toml
-    /// 2. config/{environment}.toml (development, testing, production)
-    /// 3. config/local.toml (optional, for local overrides)
-    /// 4. VAUBAN_SECRET_KEY environment variable (for secrets only)
+    /// Then loads configuration:
+    /// - Production (default): vauban.conf only
+    /// - Development: default.toml + development.toml + local.toml
+    /// - Testing: default.toml + testing.toml
     pub fn load() -> Result<Self, crate::error::AppError> {
         let config_path = Self::find_config_dir()?;
         Self::load_from_path(config_path)
@@ -657,10 +656,9 @@ impl Config {
     pub fn load_from_path<P: AsRef<Path>>(config_path: P) -> Result<Self, crate::error::AppError> {
         let config_path = config_path.as_ref();
 
-        // Determine environment from VAUBAN_ENVIRONMENT or default.toml
         let environment = std::env::var("VAUBAN_ENVIRONMENT")
             .map(|e| Environment::parse(&e))
-            .unwrap_or(Environment::Development);
+            .unwrap_or(Environment::Production);
 
         Self::load_with_environment(config_path, environment)
     }
@@ -674,28 +672,27 @@ impl Config {
 
         let mut builder = ConfigBuilder::builder();
 
-        // 1. Load default.toml (required)
-        let default_path = config_path.join("default.toml");
-        if !default_path.exists() {
-            return Err(crate::error::AppError::Config(format!(
-                "Configuration file not found: {}",
-                default_path.display()
-            )));
-        }
-        builder = builder.add_source(File::from(default_path));
+        if environment.is_production() {
+            // Production: single self-contained config file
+            let conf_path = config_path.join("vauban.conf");
+            builder = builder.add_source(File::from(conf_path));
+        } else {
+            // Development / Testing: layered config files
+            let default_path = config_path.join("default.toml");
+            if default_path.exists() {
+                builder = builder.add_source(File::from(default_path));
+            }
 
-        // 2. Load {environment}.toml
-        let env_path = config_path.join(format!("{}.toml", environment.as_str()));
-        if env_path.exists() {
-            builder = builder.add_source(File::from(env_path));
-        }
+            let env_path = config_path.join(format!("{}.toml", environment.as_str()));
+            if env_path.exists() {
+                builder = builder.add_source(File::from(env_path));
+            }
 
-        // 3. Load local.toml (optional, not versioned)
-        // Skip local.toml in testing environment to avoid overriding test database URL
-        if environment != Environment::Testing {
-            let local_path = config_path.join("local.toml");
-            if local_path.exists() {
-                builder = builder.add_source(File::from(local_path));
+            if environment != Environment::Testing {
+                let local_path = config_path.join("local.toml");
+                if local_path.exists() {
+                    builder = builder.add_source(File::from(local_path));
+                }
             }
         }
 
@@ -839,9 +836,8 @@ mod tests {
 
     #[test]
     fn test_environment_parse_unknown() {
-        // Unknown values default to Development
-        assert_eq!(Environment::parse("unknown"), Environment::Development);
-        assert_eq!(Environment::parse(""), Environment::Development);
+        assert_eq!(Environment::parse("unknown"), Environment::Production);
+        assert_eq!(Environment::parse(""), Environment::Production);
     }
 
     #[test]
@@ -1032,7 +1028,7 @@ mod tests {
     #[test]
     fn test_environment_default() {
         let env = Environment::default();
-        assert_eq!(env, Environment::Development);
+        assert_eq!(env, Environment::Production);
     }
 
     #[test]
@@ -1276,10 +1272,7 @@ mod tests {
 
     #[test]
     fn test_production_tls_paths_are_absolute() {
-        // Production paths should be absolute (FreeBSD standard paths)
-        // We read the TOML directly because production.toml doesn't have secret_key
-        // (it's set via environment variable in production)
-        let production_toml = include_str!("../../config/production.toml");
+        let production_toml = include_str!("../../config/vauban.conf");
 
         // Verify production config uses absolute FreeBSD paths
         assert!(

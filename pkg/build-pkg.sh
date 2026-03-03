@@ -52,8 +52,7 @@ for _svc in vauban-audit vauban-auth vauban-proxy-rdp vauban-proxy-ssh \
     install -m 755 "${RELEASE_DIR}/${_svc}" "${STAGING}/usr/local/libexec/vauban/"
 done
 
-install -m 644 "${PROJECT_ROOT}/config/default.toml"    "${STAGING}/usr/local/etc/vauban/default.toml.sample"
-install -m 644 "${PROJECT_ROOT}/config/production.toml" "${STAGING}/usr/local/etc/vauban/production.toml.sample"
+install -m 644 "${PROJECT_ROOT}/config/vauban.conf" "${STAGING}/usr/local/etc/vauban/vauban.conf.sample"
 
 cp -R "${PROJECT_ROOT}/vauban-web/migrations/"* "${STAGING}/usr/local/share/vauban/migrations/"
 

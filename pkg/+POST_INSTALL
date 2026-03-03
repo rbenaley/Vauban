@@ -60,7 +60,7 @@ echo "==> Setting ACLs on configuration directories..."
 chown root:wheel "${PREFIX}/etc/vauban"
 chmod 750 "${PREFIX}/etc/vauban"
 chown root:wheel "${PREFIX}/etc/vauban/certs"
-chmod 750 "${PREFIX}/etc/vauban/certs"
+chmod 700 "${PREFIX}/etc/vauban/certs"
 
 detect_acl_type "${PREFIX}/etc/vauban"
 
@@ -84,18 +84,25 @@ done
 # =========================================================================== #
 # 4. Production configuration                                               #
 # =========================================================================== #
-CONF="${PREFIX}/etc/vauban/production.toml"
+CONF="${PREFIX}/etc/vauban/vauban.conf"
 
 if [ ! -f "${CONF}" ]; then
     echo "==> Generating production configuration..."
     cp "${CONF}.sample" "${CONF}"
-    chmod 640 "${CONF}"
+fi
 
+chown root:wheel "${CONF}"
+chmod 600 "${CONF}"
+
+detect_acl_type "${CONF}"
+for _u in ${_svc_users}; do
+    set_acl "$_u" "r" "${CONF}"
+done
+
+if ! grep -q '^secret_key' "${CONF}" 2>/dev/null; then
     SECRET_KEY=$(openssl rand -base64 32)
     sed -i '' "s|^# secret_key must be set.*|secret_key = \"${SECRET_KEY}\"|" "${CONF}"
     echo "  Generated secret_key in ${CONF}"
-else
-    echo "==> Production configuration already exists -- skipping."
 fi
 
 # =========================================================================== #
@@ -142,9 +149,11 @@ else
             fi
         done
 
-        sed -i '' '/^\[database\]/a\
+        if ! grep -q '^url' "${CONF}" 2>/dev/null; then
+            sed -i '' '/^\[database\]/a\
 url = "postgresql://vauban:'"${DB_PASSWORD}"'@localhost/vauban"
 ' "${CONF}"
+        fi
 
         echo "  Database created and configured in ${CONF}"
     else
@@ -169,7 +178,7 @@ echo "  Next steps:"
 echo "    1. Edit ${CONF}"
 echo "       (ACME domain/email, trusted_proxies, ...)"
 echo "    2. Place TLS certificates in ${PREFIX}/etc/vauban/certs/"
-echo "       (or enable ACME in production.toml)"
+echo "       (or enable ACME in vauban.conf)"
 echo "    3. sysrc vauban_enable=YES"
 echo "    4. service vauban start"
 echo "    5. create_superuser"

@@ -23,7 +23,7 @@ stop_postcmd="${name}_poststop"
 
 vauban_prestart()
 {
-    export VAUBAN_ENVIRONMENT=production
+    return 0
 }
 
 vauban_poststop()

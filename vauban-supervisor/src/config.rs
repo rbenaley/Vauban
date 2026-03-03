@@ -195,9 +195,9 @@ impl SupervisorConfig {
     /// 2. Workspace root config/ directory (based on CARGO_MANIFEST_DIR)
     /// 3. /usr/local/etc/vauban/ (production on FreeBSD)
     ///
-    /// Loads configuration files in order:
-    /// 1. config/default.toml (required)
-    /// 2. config/{environment}.toml (development, testing, production)
+    /// Loads configuration:
+    /// - Production (default): vauban.conf only
+    /// - Development: default.toml + development.toml
     pub fn load_auto() -> Result<Self> {
         let config_dir = Self::find_config_dir()?;
         Self::load_from_dir(&config_dir)
@@ -248,41 +248,49 @@ impl SupervisorConfig {
 
     /// Load configuration from a directory containing TOML files.
     ///
-    /// Loads default.toml first, then overlays environment-specific config.
+    /// - Production (default): loads only `vauban.conf`
+    /// - Development: loads `default.toml` + `development.toml`
     pub fn load_from_dir(config_dir: &Path) -> Result<Self> {
-        // Determine environment from VAUBAN_ENVIRONMENT or default to development
         let environment = std::env::var("VAUBAN_ENVIRONMENT")
             .map(|e| match e.to_lowercase().as_str() {
-                "production" | "prod" => Environment::Production,
-                _ => Environment::Development,
+                "development" | "dev" => Environment::Development,
+                _ => Environment::Production,
             })
-            .unwrap_or(Environment::Development);
+            .unwrap_or(Environment::Production);
 
-        // Load default.toml (required)
-        let default_path = config_dir.join("default.toml");
-        if !default_path.exists() {
-            anyhow::bail!("Configuration file not found: {}", default_path.display());
-        }
-        let default_contents = std::fs::read_to_string(&default_path)
-            .with_context(|| format!("Failed to read config file: {}", default_path.display()))?;
+        Self::load_from_dir_with_env(config_dir, environment)
+    }
 
-        // Load environment-specific config
-        let env_name = match environment {
-            Environment::Development => "development",
-            Environment::Production => "production",
-        };
-        let env_path = config_dir.join(format!("{}.toml", env_name));
-        let env_contents = if env_path.exists() {
-            std::fs::read_to_string(&env_path)
-                .with_context(|| format!("Failed to read config file: {}", env_path.display()))?
+    /// Load configuration from a directory with an explicit environment.
+    pub fn load_from_dir_with_env(config_dir: &Path, environment: Environment) -> Result<Self> {
+        let mut builder = config::Config::builder();
+
+        if environment.is_production() {
+            let conf_path = config_dir.join("vauban.conf");
+            let contents = std::fs::read_to_string(&conf_path)
+                .with_context(|| format!("Failed to read config file: {}", conf_path.display()))?;
+            builder = builder.add_source(config::File::from_str(&contents, config::FileFormat::Toml));
         } else {
-            String::new()
-        };
+            let default_path = config_dir.join("default.toml");
+            if default_path.exists() {
+                let contents = std::fs::read_to_string(&default_path)
+                    .with_context(|| format!("Failed to read config file: {}", default_path.display()))?;
+                builder = builder.add_source(config::File::from_str(&contents, config::FileFormat::Toml));
+            }
 
-        // Merge configurations using the config crate
-        let settings = config::Config::builder()
-            .add_source(config::File::from_str(&default_contents, config::FileFormat::Toml))
-            .add_source(config::File::from_str(&env_contents, config::FileFormat::Toml))
+            let env_name = match environment {
+                Environment::Development => "development",
+                Environment::Production => "production",
+            };
+            let env_path = config_dir.join(format!("{}.toml", env_name));
+            if env_path.exists() {
+                let contents = std::fs::read_to_string(&env_path)
+                    .with_context(|| format!("Failed to read config file: {}", env_path.display()))?;
+                builder = builder.add_source(config::File::from_str(&contents, config::FileFormat::Toml));
+            }
+        }
+
+        let settings = builder
             .build()
             .with_context(|| "Failed to build configuration")?;
 
@@ -422,13 +430,10 @@ mod tests {
             .join("config")
     }
 
-    /// Load configuration from the real config files for tests.
-    ///
-    /// This ensures tests validate the actual configuration files,
-    /// not a hardcoded fallback that could become out of sync.
+    /// Load development configuration from the real config files for tests.
     fn test_config() -> SupervisorConfig {
         let config_dir = test_config_dir();
-        SupervisorConfig::load_from_dir(&config_dir)
+        SupervisorConfig::load_from_dir_with_env(&config_dir, Environment::Development)
             .expect("Failed to load config from config/ directory. Ensure config/default.toml exists.")
     }
 
@@ -678,9 +683,8 @@ mod tests {
 
     #[test]
     fn test_load_from_config_dir() {
-        // Load from the centralized config directory
         let config_dir = test_config_dir();
-        let config = SupervisorConfig::load_from_dir(&config_dir);
+        let config = SupervisorConfig::load_from_dir_with_env(&config_dir, Environment::Development);
         assert!(config.is_ok(), "Failed to load config: {:?}", config.err());
         let config = config.unwrap();
         assert!(config.supervisor.environment.is_development());
