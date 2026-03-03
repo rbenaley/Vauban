@@ -877,6 +877,9 @@ Layer 5: Memory zeroization
 
 Layer 6: Privilege separation
   └── Each layer runs as a different Unix user
+
+Layer 7: Block network access for UID 902
+  └── Packet Firewall: block return on $WAN inet all user 902
 ```
 
 ### 8.4 Comparison with Alternative Approaches
