@@ -131,14 +131,14 @@ else
     if [ "$DB_EXISTS" != "1" ]; then
         DB_PASSWORD=$(openssl rand -base64 24 | tr -d '/+=' | head -c 32)
 
-        su -m postgres -c "createdb vauban"
-        su -m postgres -c "psql -c \"CREATE USER vauban WITH PASSWORD '${DB_PASSWORD}';\""
-        su -m postgres -c "psql -c \"GRANT ALL PRIVILEGES ON DATABASE vauban TO vauban;\""
-        su -m postgres -c "psql -d vauban -c \"GRANT ALL ON SCHEMA public TO vauban; ALTER SCHEMA public OWNER TO vauban;\""
+        su -m postgres -c "createdb vauban" >/dev/null
+        su -m postgres -c "psql -q -c \"CREATE USER vauban WITH PASSWORD '${DB_PASSWORD}';\""
+        su -m postgres -c "psql -q -c \"GRANT ALL PRIVILEGES ON DATABASE vauban TO vauban;\""
+        su -m postgres -c "psql -q -d vauban -c \"GRANT ALL ON SCHEMA public TO vauban; ALTER SCHEMA public OWNER TO vauban;\""
 
         for _mig in $(ls -d "${MIGRATION_DIR}"/*/ 2>/dev/null | sort); do
             if [ -f "${_mig}/up.sql" ]; then
-                su -m postgres -c "psql -d vauban -f '${_mig}/up.sql'" 2>/dev/null
+                su -m postgres -c "psql -q -d vauban -f '${_mig}/up.sql'" 2>/dev/null
             fi
         done
 
@@ -151,7 +151,7 @@ url = "postgresql://vauban:'"${DB_PASSWORD}"'@localhost/vauban"
         echo "  Database 'vauban' already exists -- applying migrations..."
         for _mig in $(ls -d "${MIGRATION_DIR}"/*/ 2>/dev/null | sort); do
             if [ -f "${_mig}/up.sql" ]; then
-                su -m postgres -c "psql -d vauban -f '${_mig}/up.sql'" 2>/dev/null || true
+                su -m postgres -c "psql -q -d vauban -f '${_mig}/up.sql'" 2>/dev/null || true
             fi
         done
         echo "  Migrations applied (existing objects skipped)."
