@@ -122,6 +122,23 @@ pub fn extract_cert_info(cert_path: &str) -> Result<CertInfo, String> {
     parse_x509_cert_info(cert_der.as_ref())
 }
 
+/// Extract certificate metadata from PEM data in memory (no filesystem access).
+/// Used when the supervisor provides cert data via IPC.
+pub fn extract_cert_info_from_pem(cert_pem: &str) -> Result<CertInfo, String> {
+    use rustls_pki_types::pem::PemObject;
+    use rustls_pki_types::CertificateDer;
+
+    let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(cert_pem.as_bytes())
+        .filter_map(|c| c.ok())
+        .collect();
+
+    let cert_der = certs
+        .first()
+        .ok_or_else(|| "No certificate found in PEM data".to_string())?;
+
+    parse_x509_cert_info(cert_der.as_ref())
+}
+
 /// Start the ACME certificate renewal scheduler.
 ///
 /// `cert_expiry` must be computed before `cap_enter()` via `extract_cert_info()`.
@@ -842,6 +859,36 @@ mod tests {
         let mut tmpfile = tempfile::NamedTempFile::new().unwrap();
         tmpfile.write_all(b"not a PEM certificate at all").unwrap();
         let result = extract_cert_info(tmpfile.path().to_str().unwrap());
+        assert!(result.is_err());
+    }
+
+    // ==================== extract_cert_info_from_pem Tests ====================
+
+    #[test]
+    fn test_extract_cert_info_from_pem_self_signed() {
+        use rcgen::{CertificateParams, DnType, KeyPair};
+
+        let key_pair = KeyPair::generate().unwrap();
+        let mut params = CertificateParams::new(vec!["localhost".to_string()]).unwrap();
+        params.distinguished_name.push(DnType::CommonName, "self-signed-test");
+        let cert = params.self_signed(&key_pair).unwrap();
+        let cert_pem = cert.pem();
+
+        let info = extract_cert_info_from_pem(&cert_pem).unwrap();
+        assert!(info.self_signed, "Should detect self-signed");
+        assert!(info.not_after_epoch > 0, "Should have valid expiry");
+    }
+
+    #[test]
+    fn test_extract_cert_info_from_pem_empty() {
+        let result = extract_cert_info_from_pem("");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("No certificate found"));
+    }
+
+    #[test]
+    fn test_extract_cert_info_from_pem_garbage() {
+        let result = extract_cert_info_from_pem("not a PEM certificate");
         assert!(result.is_err());
     }
 }

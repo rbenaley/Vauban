@@ -75,16 +75,22 @@ This document covers the ACME TLS certificate management subsystem spanning thre
 
 ```mermaid
 flowchart TB
-    subgraph supervisor ["vauban-supervisor (uid 0 -> unprivileged)"]
+    subgraph supervisor ["vauban-supervisor (uid 0)"]
         direction TB
+        CertProv["TLS Cert Provisioning<br/>(ensure_tls_certs)"]
         AcmeWorker["acme::handle_acme_renew()<br/>(tokio single-thread)"]
         AccountMgr["Account Management<br/>(instant-acme)"]
         ChallengGen["Challenge Cert Generator<br/>(rcgen)"]
         DiskWriter["atomic_write_pem()<br/>(temp + rename)"]
 
+        CertProv --> DiskWriter
         AcmeWorker --> AccountMgr
         AcmeWorker --> ChallengGen
         AcmeWorker --> DiskWriter
+    end
+
+    subgraph web ["vauban-web (vbwebfront)"]
+        TLSConfig["load_tls_config()<br/>(PEM in memory)"]
     end
 
     subgraph ca ["ACME CA (Let's Encrypt / ZeroSSL)"]
@@ -92,10 +98,13 @@ flowchart TB
         ACME_VAL["TLS-ALPN-01 Validator"]
     end
 
+    CertProv -->|"TlsCertProvision<br/>(IPC)"| TLSConfig
     AcmeWorker <-->|"ACME Protocol<br/>(HTTPS)"| ACME_DIR
     ACME_VAL -->|"TLS-ALPN-01<br/>port 443"| AcmeWorker
     AcmeWorker -->|"cert.pem + key.pem"| DiskWriter
 ```
+
+**Key architectural property:** `vauban-web` (running as unprivileged user `vbwebfront`) never accesses certificate files on disk. The supervisor reads/generates certs as root and sends PEM data via IPC (`TlsCertProvision` message). This eliminates all ACLs on the certs directory.
 
 ### 2.2 Module Structure
 
@@ -376,37 +385,39 @@ if issuer_bytes == subject_bytes => self-signed
 
 This handles the common deployment scenario: the administrator generates a self-signed certificate with `generate-dev-certs.sh`, starts `vauban-web`, and ACME immediately replaces it with a real certificate.
 
-### 5.5 Automatic Certificate File Generation
+### 5.5 Automatic Bootstrap Certificate Generation
 
-When ACME is enabled and the `cert_path` or `key_path` files do not exist on disk, `vauban-web` automatically generates a self-signed bootstrap certificate using `rcgen` **before** entering the Capsicum sandbox. The flow is:
+In **production** (under supervisor), `vauban-supervisor` (running as root) generates the bootstrap certificate:
 
-1. `load_tls_config()` detects that `cert_path` or `key_path` is missing
-2. If ACME is enabled, calls `generate_self_signed_cert()` with the configured `acme.domains`
-3. The function generates an ECDSA P-256 key pair and a self-signed certificate via `rcgen`
-4. Writes both files atomically (write to `.tmp` + rename) with `0600` permissions
-5. Returns the `CertifiedKey` for immediate use by the `AcmeResolver`
+1. `ensure_tls_certs()` checks if `cert_path`/`key_path` files exist
+2. If missing, calls `generate_self_signed_cert()` which creates an ECDSA P-256 key pair via `rcgen`
+3. Writes both files atomically to disk with `0600` permissions (root-only)
+4. Reads back the PEM data and sends it to `vauban-web` via `TlsCertProvision` IPC message
+5. `vauban-web` receives the PEM data in memory and builds its TLS config without filesystem access
 
 ```
-load_tls_config()
-    │
-    ├── cert_path exists? ──── yes ──> load from disk (normal path)
-    │
-    └── no
-         │
-         ├── ACME enabled? ──── no ──> error: "TLS certificate not found"
-         │
-         └── yes
-              │
-              └── generate_self_signed_cert(domains, cert_path, key_path)
-                   │
-                   ├── rcgen::KeyPair::generate()
-                   ├── CertificateParams::new(domains).self_signed(&key)
-                   ├── atomic_write_pem(cert_path, cert_pem)  // 0600 perms
-                   ├── atomic_write_pem(key_path, key_pem)    // 0600 perms
-                   └── return CertifiedKey
+vauban-supervisor (root):
+    ensure_tls_certs(cert_path, key_path)
+        │
+        ├── cert_path exists? ──── yes ──> read PEM from disk
+        │
+        └── no
+             │
+             └── generate_self_signed_cert(cert_path, key_path)
+                  ├── rcgen::KeyPair::generate_for(ECDSA_P256)
+                  ├── CertificateParams::new(["localhost"]).self_signed(&key)
+                  ├── atomic_write_pem(cert_path, cert_pem)   // 0600 root-only
+                  └── atomic_write_pem(key_path, key_pem)     // 0600 root-only
+        │
+        └── send TlsCertProvision(cert_pem, key_pem) to vauban-web
+
+vauban-web (vbwebfront):
+    recv TlsCertProvision ──> load_tls_config(pem_data) ──> serve HTTPS
 ```
 
-This eliminates the need for any manual certificate generation step. A fresh deployment only requires a valid TOML configuration with ACME enabled. The self-signed certificate serves as a temporary bootstrap: the scheduler detects it (issuer == subject) and triggers immediate ACME renewal.
+In **development** (without supervisor), `vauban-web` retains the ability to read certificate files directly from disk and generate self-signed certs via `generate_self_signed_cert()` in `acme/resolver.rs`.
+
+This eliminates the need for ACLs on `/usr/local/etc/vauban/certs`: the directory is `chmod 700 root:wheel`, inaccessible to all service users.
 
 ### 5.6 Why a Custom ASN.1 Parser
 
@@ -521,10 +532,11 @@ If the process crashes between steps 1-4, the original `cert.pem` is unchanged. 
 
 ### 7.1 Message Definitions
 
-Five IPC messages coordinate the ACME workflow between `vauban-web` and `vauban-supervisor`:
+Six IPC messages coordinate TLS certificate management between `vauban-web` and `vauban-supervisor`:
 
 | Message | Direction | Purpose |
 |---------|-----------|---------|
+| `TlsCertProvision` | Supervisor -> Web | Provide cert/key PEM data at startup (bootstrap) |
 | `AcmeRenewRequest` | Web -> Supervisor | Request certificate renewal |
 | `AcmeRenewResponse` | Supervisor -> Web | Report renewal result |
 | `AcmeChallengeInstall` | Supervisor -> Web | Install challenge cert in resolver |
@@ -592,9 +604,10 @@ This creates a fundamental constraint for ACME: certificate metadata must be rea
 flowchart TD
     subgraph phase1 ["Phase 1: Before cap_enter()"]
         direction TB
-        Bind["Bind TCP/443 socket"]
-        LoadTLS["Load TLS cert/key files<br/>or generate self-signed bootstrap<br/>Create AcmeResolver"]
-        ExtractMeta["extract_cert_info()<br/>Parse notAfter + self-signed"]
+        RecvFD["Receive TCP/443 socket via SCM_RIGHTS<br/>(or bind directly in dev)"]
+        RecvCert["Receive TlsCertProvision via IPC<br/>(or read cert files in dev)"]
+        LoadTLS["load_tls_config(pem_data)<br/>Build TLS config from PEM in memory"]
+        ExtractMeta["extract_cert_info_from_pem()<br/>Parse notAfter + self-signed"]
         Register["Register resolver + expiry<br/>with supervisor IPC handler"]
         DB["Open database connections"]
         Cache["Open cache connections"]
@@ -610,8 +623,10 @@ flowchart TD
         Serve["Serve HTTPS requests"]
     end
 
-    Bind --> LoadTLS --> ExtractMeta --> Register --> DB --> Cache --> Sandbox --> Scheduler --> Serve
+    RecvFD --> RecvCert --> LoadTLS --> ExtractMeta --> Register --> DB --> Cache --> Sandbox --> Scheduler --> Serve
 ```
+
+Under supervisor, `vauban-web` never opens any certificate files. All cert/key data arrives via `TlsCertProvision` IPC message, parsed directly from PEM bytes in memory.
 
 ### 8.3 What Happens Inside the Sandbox
 
@@ -871,3 +886,25 @@ This avoids hardcoded DER blobs and ensures tests reflect real certificate struc
 - ✅ Easy to switch between staging and production
 - ✅ No code change needed for new providers
 - ⚠️ Requires TOML configuration per provider
+
+### 12.8 Supervisor-Provided TLS Certificates
+
+**Decision:** The supervisor (root) reads or generates TLS certificates and provides them to `vauban-web` via a `TlsCertProvision` IPC message containing PEM data. `vauban-web` never accesses certificate files on disk in production.
+
+**Context:** The previous architecture required `vauban-web` (running as user `vbwebfront`) to read certificate files from `/usr/local/etc/vauban/certs/`. This required:
+- ACLs (`setfacl`) on the certs directory for `vbwebfront`
+- ACLs on individual cert/key files
+- Bootstrap certificate generation in `+POST_INSTALL` (run as root during pkg install)
+- Complex ACL logic to support both POSIX.1e (UFS) and NFSv4 (ZFS) filesystems
+
+These ACLs were fragile: `sed -i` operations on other config files could destroy them (FreeBSD creates a new file), and the dual UFS/ZFS ACL code was a recurring source of deployment issues.
+
+**Consequences:**
+- ✅ Eliminates all ACLs on `/usr/local/etc/vauban/certs/` (directory is `0700 root:wheel`)
+- ✅ Eliminates bootstrap certificate generation from `+POST_INSTALL`
+- ✅ `vbwebfront` has zero filesystem access to certificates
+- ✅ Certificate data never touches the filesystem from `vauban-web`'s perspective
+- ✅ Simpler packaging: no `setfacl` calls for certs directory
+- ✅ Works identically on UFS and ZFS without ACL-type detection
+- ⚠️ Adds one IPC message (`TlsCertProvision`) to the startup protocol
+- ⚠️ Dev mode (without supervisor) still reads files directly (unchanged behavior)

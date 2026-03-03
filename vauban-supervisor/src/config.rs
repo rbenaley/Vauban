@@ -113,6 +113,18 @@ pub struct ServerBindConfig {
     pub host: String,
     #[serde(default = "default_port")]
     pub port: u16,
+    #[serde(default)]
+    pub tls: TlsCertPaths,
+}
+
+/// TLS certificate file paths. The supervisor reads (or generates) these
+/// as root and sends the PEM data to vauban-web via IPC.
+#[derive(Debug, Deserialize)]
+pub struct TlsCertPaths {
+    #[serde(default = "default_cert_path")]
+    pub cert_path: String,
+    #[serde(default = "default_key_path")]
+    pub key_path: String,
 }
 
 fn default_host() -> String {
@@ -123,11 +135,29 @@ fn default_port() -> u16 {
     8443
 }
 
+fn default_cert_path() -> String {
+    "/usr/local/etc/vauban/certs/server.crt".to_string()
+}
+
+fn default_key_path() -> String {
+    "/usr/local/etc/vauban/certs/server.key".to_string()
+}
+
 impl Default for ServerBindConfig {
     fn default() -> Self {
         Self {
             host: default_host(),
             port: default_port(),
+            tls: TlsCertPaths::default(),
+        }
+    }
+}
+
+impl Default for TlsCertPaths {
+    fn default() -> Self {
+        Self {
+            cert_path: default_cert_path(),
+            key_path: default_key_path(),
         }
     }
 }

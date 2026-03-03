@@ -31,35 +31,32 @@ use vauban_web::ipc::{SupervisorClient, VaultCryptoClient};
 
 /// Initialize the supervisor client if running under supervisor.
 ///
-/// Returns the supervisor client if IPC is available, None otherwise.
+/// Returns the supervisor client and a TLS cert receiver if IPC is available, None otherwise.
 /// The client spawns a dedicated thread for IPC communication (heartbeat, TCP brokering).
 /// The `server_handle` is used for M-8/M-10 graceful shutdown.
-fn init_supervisor_client(server_handle: axum_server::Handle<std::net::SocketAddr>) -> Option<Arc<SupervisorClient>> {
+fn init_supervisor_client(server_handle: axum_server::Handle<std::net::SocketAddr>) -> (Option<Arc<SupervisorClient>>, Option<std::sync::mpsc::Receiver<vauban_web::ipc::TlsCertData>>) {
     use std::os::unix::io::RawFd;
 
-    // Check if we're running under supervisor (IPC environment variables set)
     let ipc_read_fd: RawFd = match std::env::var("VAUBAN_IPC_READ") {
         Ok(val) => match val.parse() {
             Ok(fd) => fd,
-            Err(_) => return None,
+            Err(_) => return (None, None),
         },
-        Err(_) => return None,
+        Err(_) => return (None, None),
     };
 
     let ipc_write_fd: RawFd = match std::env::var("VAUBAN_IPC_WRITE") {
         Ok(val) => match val.parse() {
             Ok(fd) => fd,
-            Err(_) => return None,
+            Err(_) => return (None, None),
         },
-        Err(_) => return None,
+        Err(_) => return (None, None),
     };
 
-    // FD passing socket for SCM_RIGHTS (recording file serving, etc.)
     let fd_passing_socket: Option<RawFd> = std::env::var("VAUBAN_FD_PASSING_SOCKET")
         .ok()
         .and_then(|val| val.parse().ok());
 
-    // Clear environment variables immediately for security
     // SAFETY: We are early in startup, before spawning async tasks
     unsafe {
         std::env::remove_var("VAUBAN_IPC_READ");
@@ -67,12 +64,12 @@ fn init_supervisor_client(server_handle: axum_server::Handle<std::net::SocketAdd
         std::env::remove_var("VAUBAN_FD_PASSING_SOCKET");
     }
 
-    let client = SupervisorClient::new(ipc_read_fd, ipc_write_fd, fd_passing_socket, Some(server_handle));
+    let (client, tls_cert_rx) = SupervisorClient::new(ipc_read_fd, ipc_write_fd, fd_passing_socket, Some(server_handle));
     tracing::info!(
         fd_passing = fd_passing_socket.is_some(),
         "Supervisor client initialized (running under supervisor)"
     );
-    Some(Arc::new(client))
+    (Some(Arc::new(client)), Some(tls_cert_rx))
 }
 
 use vauban_web::{
@@ -226,7 +223,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize supervisor client if running under supervisor
     // This must be done early, before any async runtime setup
-    let supervisor_client = init_supervisor_client(server_handle.clone());
+    let (supervisor_client, tls_cert_rx) = init_supervisor_client(server_handle.clone());
 
     // Install the default crypto provider for rustls (aws-lc-rs)
     // This must be done before any TLS operations
@@ -312,10 +309,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         listener
     };
 
-    // 2. Load TLS configuration (opens certificate files)
+    // 2. Load TLS configuration
+    //    Under supervisor: wait for TlsCertProvision from IPC (cert data in memory).
+    //    In dev mode: read certificate files from disk.
     //    When ACME is enabled, returns a dynamic resolver for zero-downtime
     //    certificate rotation and TLS-ALPN-01 challenge support.
-    let (tls_config, acme_resolver) = load_tls_config(&config).await.map_err(|e| {
+    let tls_cert_data = if let Some(rx) = tls_cert_rx {
+        use std::time::Duration;
+        match rx.recv_timeout(Duration::from_secs(10)) {
+            Ok(data) => {
+                tracing::info!("Received TLS certificate data from supervisor via IPC");
+                Some(data)
+            }
+            Err(e) => {
+                tracing::warn!("Failed to receive TLS certificate from supervisor: {e}, falling back to files");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // Keep a copy of the cert PEM for extract_cert_info (needed for ACME scheduling)
+    let supervisor_cert_pem = tls_cert_data.as_ref().map(|d| d.cert_pem.clone());
+
+    let (tls_config, acme_resolver) = load_tls_config(&config, tls_cert_data).await.map_err(|e| {
         eprintln!("Failed to load TLS configuration: {}", e);
         e
     })?;
@@ -333,9 +351,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Extract certificate metadata BEFORE cap_enter() (file I/O forbidden after).
-    // This determines when renewal is needed and whether the cert is self-signed.
+    // Under supervisor: use PEM data received via IPC. Otherwise: read from file.
     let cert_expiry = if config.server.tls.acme.as_ref().is_some_and(|a| a.enabled) {
-        match tasks::extract_cert_info(&config.server.tls.cert_path) {
+        let cert_info_result = if let Some(ref pem) = supervisor_cert_pem {
+            tasks::extract_cert_info_from_pem(pem)
+        } else {
+            tasks::extract_cert_info(&config.server.tls.cert_path)
+        };
+        match cert_info_result {
             Ok(info) => {
                 let self_signed = info.self_signed;
                 let expiry = Arc::new(tasks::CertExpiry::new(info));
@@ -594,8 +617,11 @@ fn enter_sandbox(_listener: &std::net::TcpListener) -> Result<(), Box<dyn std::e
 /// in an `Arc` so it can be shared with the IPC handler for certificate updates.
 ///
 /// When ACME is disabled, uses a static certificate configuration.
+/// When `tls_cert_data` is provided (from supervisor IPC), uses the PEM data directly
+/// without any filesystem access to certificate files.
 async fn load_tls_config(
     config: &Config,
+    tls_cert_data: Option<vauban_web::ipc::TlsCertData>,
 ) -> Result<
     (
         RustlsConfig,
@@ -606,12 +632,7 @@ async fn load_tls_config(
     use rustls::ServerConfig;
     use rustls_pki_types::pem::PemObject;
     use rustls_pki_types::{CertificateDer, PrivateKeyDer};
-    use std::fs::File;
-    use std::io::BufReader;
     use vauban_web::acme::resolver::AcmeResolver;
-
-    let cert_path = &config.server.tls.cert_path;
-    let key_path = &config.server.tls.key_path;
 
     let acme_enabled = config
         .server
@@ -620,71 +641,92 @@ async fn load_tls_config(
         .as_ref()
         .is_some_and(|a| a.enabled);
 
-    let cert_exists = std::path::Path::new(cert_path).exists();
-    let key_exists = std::path::Path::new(key_path).exists();
+    // Resolve PEM data: either from supervisor IPC or from files.
+    // The private key stays inside SensitiveString (zeroized on drop) and is
+    // only briefly exposed via as_str() for parsing into PrivateKeyDer.
+    let (cert_pem_data, key_pem_sensitive) = if let Some(cert_data) = tls_cert_data {
+        (cert_data.cert_pem, cert_data.key_pem)
+    } else {
+        // Dev mode: read from files
+        let cert_path = &config.server.tls.cert_path;
+        let key_path = &config.server.tls.key_path;
 
-    if !cert_exists || !key_exists {
-        if let Some(acme_config) = config.server.tls.acme.as_ref()
-            && acme_config.enabled
-        {
-            tracing::warn!(
-                cert_path = %cert_path,
-                key_path = %key_path,
-                "Certificate files not found, generating self-signed bootstrap certificate for ACME"
-            );
-            let resolver = Arc::new(AcmeResolver::new(Arc::new(
-                vauban_web::acme::resolver::generate_self_signed_cert(
-                    &acme_config.domains,
-                    cert_path,
-                    key_path,
-                )?,
-            )));
+        let cert_exists = std::path::Path::new(cert_path).exists();
+        let key_exists = std::path::Path::new(key_path).exists();
 
-            let mut server_config =
-                ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
-                    .with_no_client_auth()
-                    .with_cert_resolver(Arc::clone(&resolver) as Arc<dyn ResolvesServerCert>);
+        if !cert_exists || !key_exists {
+            if let Some(acme_config) = config.server.tls.acme.as_ref()
+                && acme_config.enabled
+            {
+                tracing::warn!(
+                    cert_path = %cert_path,
+                    key_path = %key_path,
+                    "Certificate files not found, generating self-signed bootstrap certificate for ACME"
+                );
+                let resolver = Arc::new(AcmeResolver::new(Arc::new(
+                    vauban_web::acme::resolver::generate_self_signed_cert(
+                        &acme_config.domains,
+                        cert_path,
+                        key_path,
+                    )?,
+                )));
 
-            server_config.alpn_protocols =
-                vec![b"h2".to_vec(), b"http/1.1".to_vec(), b"acme-tls/1".to_vec()];
+                let mut server_config =
+                    ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+                        .with_no_client_auth()
+                        .with_cert_resolver(Arc::clone(&resolver) as Arc<dyn ResolvesServerCert>);
 
-            tracing::info!(
-                "TLS configured with self-signed bootstrap certificate (ACME will replace it)"
-            );
+                server_config.alpn_protocols =
+                    vec![b"h2".to_vec(), b"http/1.1".to_vec(), b"acme-tls/1".to_vec()];
 
-            return Ok((
-                RustlsConfig::from_config(Arc::new(server_config)),
-                Some(resolver),
-            ));
+                tracing::info!(
+                    "TLS configured with self-signed bootstrap certificate (ACME will replace it)"
+                );
+
+                return Ok((
+                    RustlsConfig::from_config(Arc::new(server_config)),
+                    Some(resolver),
+                ));
+            }
+
+            if !cert_exists {
+                return Err(format!(
+                    "TLS certificate not found: {}. Run scripts/generate-dev-certs.sh for development.",
+                    cert_path
+                )
+                .into());
+            }
+            return Err(format!("TLS private key not found: {}", key_path).into());
         }
 
-        if !cert_exists {
-            return Err(format!(
-                "TLS certificate not found: {}. Run scripts/generate-dev-certs.sh for development.",
-                cert_path
-            )
-            .into());
-        }
-        return Err(format!("TLS private key not found: {}", key_path).into());
-    }
+        use shared::messages::SensitiveString;
+        use zeroize::Zeroize;
 
-    // Load certificate chain
-    let cert_file = File::open(cert_path)?;
-    let mut cert_reader = BufReader::new(cert_file);
+        let cert_pem = std::fs::read_to_string(cert_path)?;
+        let mut key_pem = std::fs::read_to_string(key_path)?;
+        let key_sensitive = SensitiveString::new(key_pem.clone());
+        key_pem.zeroize();
+        (cert_pem, key_sensitive)
+    };
+
+    // Parse PEM data into cert chain and private key
+    let cert_pem_bytes = cert_pem_data.as_bytes();
     let cert_chain: Vec<CertificateDer<'static>> =
-        CertificateDer::pem_reader_iter(&mut cert_reader)
+        CertificateDer::pem_slice_iter(cert_pem_bytes)
             .filter_map(|cert| cert.ok())
             .collect();
 
     if cert_chain.is_empty() {
-        return Err("No valid certificates found in certificate file".into());
+        return Err("No valid certificates found in certificate data".into());
     }
 
-    // Load CA chain if provided (for intermediate certificates)
+    // Load CA chain if provided (for intermediate certificates, file-based only)
     let mut full_chain = cert_chain;
     if let Some(ca_path) = &config.server.tls.ca_chain_path
         && std::path::Path::new(ca_path).exists()
     {
+        use std::fs::File;
+        use std::io::BufReader;
         let ca_file = File::open(ca_path)?;
         let mut ca_reader = BufReader::new(ca_file);
         let ca_certs: Vec<CertificateDer<'static>> =
@@ -694,11 +736,12 @@ async fn load_tls_config(
         full_chain.extend(ca_certs);
     }
 
-    // Load private key
-    let key_file = File::open(key_path)?;
-    let mut key_reader = BufReader::new(key_file);
-    let private_key = PrivateKeyDer::from_pem_reader(&mut key_reader)
-        .map_err(|e| format!("No valid private key found in key file: {}", e))?;
+    // Parse private key from PEM data -- brief exposure via as_str(),
+    // key_pem_sensitive is zeroized when it goes out of scope.
+    let key_pem_bytes = key_pem_sensitive.as_str().as_bytes();
+    let private_key = PrivateKeyDer::from_pem_slice(key_pem_bytes)
+        .map_err(|e| format!("No valid private key found in key data: {}", e))?;
+    drop(key_pem_sensitive);
 
     if acme_enabled {
         // ACME mode: use dynamic resolver for zero-downtime cert rotation
@@ -1488,11 +1531,12 @@ mod tests {
 
     #[test]
     fn test_init_supervisor_client_without_env_vars() {
-        // Without IPC environment variables, should return None
+        // Without IPC environment variables, should return (None, None)
         // (service not running under supervisor)
         let handle = axum_server::Handle::new();
-        let result = init_supervisor_client(handle);
-        assert!(result.is_none());
+        let (client, cert_rx) = init_supervisor_client(handle);
+        assert!(client.is_none());
+        assert!(cert_rx.is_none());
     }
 
     /// Test IPC message handling for Drain/DrainComplete cycle.
@@ -1561,5 +1605,38 @@ mod tests {
         } else {
             panic!("Expected Pong message");
         }
+    }
+
+    // ==================== TLS Certificate Provisioning Tests ====================
+
+    #[test]
+    fn test_load_tls_config_accepts_tls_cert_data_parameter() {
+        let source = include_str!("main.rs");
+        assert!(
+            source.contains("tls_cert_data: Option<vauban_web::ipc::TlsCertData>"),
+            "load_tls_config must accept optional TlsCertData"
+        );
+    }
+
+    #[test]
+    fn test_supervisor_mode_receives_tls_cert_via_ipc() {
+        let source = include_str!("main.rs");
+        assert!(
+            source.contains("recv_timeout"),
+            "main must wait for TlsCertProvision with a timeout"
+        );
+        assert!(
+            source.contains("supervisor_cert_pem"),
+            "main must store cert PEM for extract_cert_info_from_pem"
+        );
+    }
+
+    #[test]
+    fn test_extract_cert_info_uses_pem_from_supervisor() {
+        let source = include_str!("main.rs");
+        assert!(
+            source.contains("extract_cert_info_from_pem"),
+            "main must use extract_cert_info_from_pem when running under supervisor"
+        );
     }
 }

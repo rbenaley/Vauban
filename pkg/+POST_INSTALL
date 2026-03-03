@@ -64,7 +64,7 @@ chmod 750 /var/vauban/recordings
 
 # =========================================================================== #
 # 2. Permissions -- /usr/local/etc/vauban  (all services)                    #
-#                   /usr/local/etc/vauban/certs  (vbwebfront only)           #
+#                   /usr/local/etc/vauban/certs  (root only, 0700)           #
 #                   /var/vauban/recordings  (audit + web)                    #
 # =========================================================================== #
 echo "==> Setting ACLs on configuration directories..."
@@ -82,23 +82,8 @@ for _u in ${_svc_users}; do
     set_default_acl "$_u" "r"  "${PREFIX}/etc/vauban"
 done
 
-set_acl         "vbwebfront" "rx" "${PREFIX}/etc/vauban/certs"
-set_default_acl "vbwebfront" "r"  "${PREFIX}/etc/vauban/certs"
-
-# Bootstrap self-signed certificate (replaced by ACME on first run)
-CERT_DIR="${PREFIX}/etc/vauban/certs"
-if [ ! -f "${CERT_DIR}/server.crt" ]; then
-    echo "==> Generating bootstrap TLS certificate..."
-    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
-        -keyout "${CERT_DIR}/server.key" \
-        -out "${CERT_DIR}/server.crt" \
-        -days 1 -nodes \
-        -subj "/CN=vauban-bootstrap" 2>/dev/null
-    chmod 600 "${CERT_DIR}/server.key" "${CERT_DIR}/server.crt"
-    set_acl "vbwebfront" "r" "${CERT_DIR}/server.crt"
-    set_acl "vbwebfront" "r" "${CERT_DIR}/server.key"
-    echo "  Generated self-signed bootstrap certificate (ACME will replace it)"
-fi
+# No ACLs on certs/ -- only root (vauban-supervisor) accesses cert files.
+# vauban-web receives cert data via IPC at startup.
 
 echo "==> Setting ACLs on recordings directory..."
 

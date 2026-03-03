@@ -23,7 +23,7 @@ use nix::sys::signal::{kill, Signal};
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::{execv, fork, setgid, setuid, ForkResult, Gid, Pid, Uid};
 use shared::ipc::{poll_readable, send_fd, IpcChannel, socketpair_for_fd_passing};
-use shared::messages::{ControlMessage, Message, Service, ServiceStats};
+use shared::messages::{ControlMessage, Message, SensitiveString, Service, ServiceStats};
 use std::net::ToSocketAddrs;
 use std::os::unix::io::{AsRawFd, OwnedFd, RawFd};
 use std::collections::HashMap;
@@ -32,6 +32,7 @@ use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
+use zeroize::Zeroize;
 
 /// M-8/M-10: Global shutdown flag set by signal handler, checked by watchdog loop.
 /// Using a static AtomicBool because the signal handler runs in a separate thread
@@ -336,7 +337,12 @@ fn run_supervisor() -> Result<()> {
         }
     }
 
-    // Pass the pre-bound listening socket to vauban-web via SCM_RIGHTS
+    // Pass the pre-bound listening socket to vauban-web via SCM_RIGHTS,
+    // then provision TLS certificates via IPC so vauban-web never touches cert files.
+    let tls_paths = &config.server.tls;
+    let (cert_pem, key_pem) = ensure_tls_certs(&tls_paths.cert_path, &tls_paths.key_path)
+        .context("Failed to ensure TLS certificates")?;
+
     if let Some(web_state) = children.get("web") {
         if let Some(ref fd_socket) = web_state.fd_passing_socket {
             let listener_fd = listener.as_raw_fd();
@@ -346,8 +352,12 @@ fn run_supervisor() -> Result<()> {
         } else {
             warn!("No FD passing socket for vauban-web, it will bind its own socket");
         }
+
+        send_tls_cert_provision(&web_state.channel, &cert_pem, &key_pem)
+            .context("Failed to send TLS certs to vauban-web")?;
+        info!("Sent TLS certificate data to vauban-web via IPC");
     } else {
-        warn!("vauban-web not started, skipping listener FD transfer");
+        warn!("vauban-web not started, skipping listener FD and cert transfer");
     }
     // Keep listener_fd alive for the lifetime of the supervisor.
     // The socket must remain open so vauban-web can accept() on its
@@ -371,6 +381,103 @@ fn run_supervisor() -> Result<()> {
     )?;
 
     Ok(())
+}
+
+/// Ensure TLS certificate files exist. If they are missing, generate a
+/// self-signed bootstrap certificate using `rcgen` (EC P-256).
+/// Returns the PEM data for both cert and key. The private key is wrapped
+/// in `SensitiveString` so the backing memory is zeroized on drop.
+fn ensure_tls_certs(cert_path: &str, key_path: &str) -> Result<(String, SensitiveString)> {
+    use std::path::Path;
+
+    let cert_exists = Path::new(cert_path).exists();
+    let key_exists = Path::new(key_path).exists();
+
+    if !cert_exists || !key_exists {
+        info!("TLS certificate files not found, generating self-signed bootstrap certificate");
+        generate_self_signed_cert(cert_path, key_path)?;
+    }
+
+    let cert_pem = std::fs::read_to_string(cert_path)
+        .with_context(|| format!("Failed to read TLS certificate: {cert_path}"))?;
+    let mut key_pem = std::fs::read_to_string(key_path)
+        .with_context(|| format!("Failed to read TLS key: {key_path}"))?;
+    let key_sensitive = SensitiveString::new(key_pem.clone());
+    key_pem.zeroize();
+
+    Ok((cert_pem, key_sensitive))
+}
+
+/// Generate a self-signed EC P-256 certificate and write it atomically to disk.
+fn generate_self_signed_cert(cert_path: &str, key_path: &str) -> Result<()> {
+    use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
+
+    let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)
+        .map_err(|e| anyhow::anyhow!("Failed to generate key pair: {e}"))?;
+    let params = CertificateParams::new(vec!["localhost".to_string()])
+        .map_err(|e| anyhow::anyhow!("Failed to create certificate params: {e}"))?;
+    let cert = params
+        .self_signed(&key_pair)
+        .map_err(|e| anyhow::anyhow!("Failed to self-sign certificate: {e}"))?;
+
+    let cert_pem = cert.pem();
+    let mut key_pem = key_pair.serialize_pem();
+
+    atomic_write_pem(cert_path, &cert_pem)?;
+    atomic_write_pem(key_path, &key_pem)?;
+    key_pem.zeroize();
+
+    info!(
+        cert_path,
+        key_path,
+        "Generated self-signed bootstrap certificate"
+    );
+
+    Ok(())
+}
+
+/// Write data to a file atomically (temp + rename) with 0600 permissions.
+fn atomic_write_pem(path: &str, data: &str) -> Result<()> {
+    use std::io::Write;
+    use std::path::Path;
+
+    let path = Path::new(path);
+    if let Some(parent) = path.parent()
+        && !parent.exists()
+    {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create directory {}", parent.display()))?;
+    }
+
+    let temp_path = path.with_extension("tmp");
+    let mut file = std::fs::File::create(&temp_path)
+        .with_context(|| "Failed to create temp file for PEM write")?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .with_context(|| "Failed to set file permissions")?;
+    }
+
+    file.write_all(data.as_bytes())
+        .with_context(|| "Failed to write PEM data")?;
+    file.sync_all()
+        .with_context(|| "Failed to sync PEM file")?;
+
+    std::fs::rename(&temp_path, path)
+        .with_context(|| "Failed to atomically rename PEM file")?;
+
+    Ok(())
+}
+
+/// Send TLS certificate data to vauban-web via IPC.
+fn send_tls_cert_provision(channel: &IpcChannel, cert_pem: &str, key_pem: &SensitiveString) -> Result<()> {
+    let msg = Message::TlsCertProvision {
+        cert_pem: cert_pem.to_string(),
+        key_pem: key_pem.clone(),
+    };
+    channel.send(&msg).context("Failed to send TlsCertProvision to vauban-web")
 }
 
 fn setup_signal_handlers() -> Result<()> {
@@ -1036,13 +1143,27 @@ fn respawn_service(state: &mut ChildState, config: &SupervisorConfig, topology_p
             state.drain_started = None;
             state.fd_passing_socket = fd_passing_socket;
 
-            if state.service_key == "web"
-                && let Some(ref fd_socket) = state.fd_passing_socket
-            {
-                if let Err(e) = send_fd(fd_socket.as_raw_fd(), listener_fd) {
-                    error!("Failed to send listener FD to respawned vauban-web: {}", e);
-                } else {
-                    info!("Sent listening socket FD to respawned vauban-web");
+            if state.service_key == "web" {
+                if let Some(ref fd_socket) = state.fd_passing_socket {
+                    if let Err(e) = send_fd(fd_socket.as_raw_fd(), listener_fd) {
+                        error!("Failed to send listener FD to respawned vauban-web: {}", e);
+                    } else {
+                        info!("Sent listening socket FD to respawned vauban-web");
+                    }
+                }
+
+                let tls_paths = &config.server.tls;
+                match ensure_tls_certs(&tls_paths.cert_path, &tls_paths.key_path) {
+                    Ok((cert_pem, key_pem)) => {
+                        if let Err(e) = send_tls_cert_provision(&state.channel, &cert_pem, &key_pem) {
+                            error!("Failed to send TLS certs to respawned vauban-web: {}", e);
+                        } else {
+                            info!("Sent TLS certificate data to respawned vauban-web");
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to read TLS certs for respawned vauban-web: {}", e);
+                    }
                 }
             }
         }
@@ -1226,13 +1347,27 @@ fn respawn_linked_group(
                     state.drain_started = None;
                     state.fd_passing_socket = fd_passing_socket;
 
-                    if service_key == "web"
-                        && let Some(ref fd_socket) = state.fd_passing_socket
-                    {
-                        if let Err(e) = send_fd(fd_socket.as_raw_fd(), listener_fd) {
-                            error!("Failed to send listener FD to respawned vauban-web: {}", e);
-                        } else {
-                            info!("Sent listening socket FD to respawned vauban-web");
+                    if service_key == "web" {
+                        if let Some(ref fd_socket) = state.fd_passing_socket {
+                            if let Err(e) = send_fd(fd_socket.as_raw_fd(), listener_fd) {
+                                error!("Failed to send listener FD to respawned vauban-web: {}", e);
+                            } else {
+                                info!("Sent listening socket FD to respawned vauban-web");
+                            }
+                        }
+
+                        let tls_paths = &config.server.tls;
+                        match ensure_tls_certs(&tls_paths.cert_path, &tls_paths.key_path) {
+                            Ok((cert_pem, key_pem)) => {
+                                if let Err(e) = send_tls_cert_provision(&state.channel, &cert_pem, &key_pem) {
+                                    error!("Failed to send TLS certs to respawned vauban-web (linked): {}", e);
+                                } else {
+                                    info!("Sent TLS certificate data to respawned vauban-web (linked)");
+                                }
+                            }
+                            Err(e) => {
+                                error!("Failed to read TLS certs for respawned vauban-web (linked): {}", e);
+                            }
                         }
                     }
                 }
@@ -3032,5 +3167,170 @@ mod tests {
                 &call_context[..80.min(call_context.len())]
             );
         }
+    }
+
+    // ==================== TLS Certificate Provisioning Tests ====================
+
+    #[test]
+    fn test_generate_self_signed_cert_creates_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert_path = dir.path().join("server.crt");
+        let key_path = dir.path().join("server.key");
+
+        generate_self_signed_cert(
+            cert_path.to_str().unwrap(),
+            key_path.to_str().unwrap(),
+        ).unwrap();
+
+        assert!(cert_path.exists(), "cert file must be created");
+        assert!(key_path.exists(), "key file must be created");
+
+        let cert_pem = std::fs::read_to_string(&cert_path).unwrap();
+        let key_pem = std::fs::read_to_string(&key_path).unwrap();
+        assert!(cert_pem.contains("BEGIN CERTIFICATE"), "cert must be PEM");
+        assert!(key_pem.contains("BEGIN"), "key must be PEM");
+    }
+
+    #[test]
+    fn test_generate_self_signed_cert_creates_parent_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert_path = dir.path().join("sub/dir/server.crt");
+        let key_path = dir.path().join("sub/dir/server.key");
+
+        generate_self_signed_cert(
+            cert_path.to_str().unwrap(),
+            key_path.to_str().unwrap(),
+        ).unwrap();
+
+        assert!(cert_path.exists());
+        assert!(key_path.exists());
+    }
+
+    #[test]
+    fn test_generate_self_signed_cert_file_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cert_path = dir.path().join("server.crt");
+        let key_path = dir.path().join("server.key");
+
+        generate_self_signed_cert(
+            cert_path.to_str().unwrap(),
+            key_path.to_str().unwrap(),
+        ).unwrap();
+
+        let cert_mode = std::fs::metadata(&cert_path).unwrap().permissions().mode() & 0o777;
+        let key_mode = std::fs::metadata(&key_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(cert_mode, 0o600, "cert must be 0600");
+        assert_eq!(key_mode, 0o600, "key must be 0600");
+    }
+
+    #[test]
+    fn test_ensure_tls_certs_generates_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert_path = dir.path().join("server.crt");
+        let key_path = dir.path().join("server.key");
+
+        let (cert_pem, key_pem) = ensure_tls_certs(
+            cert_path.to_str().unwrap(),
+            key_path.to_str().unwrap(),
+        ).unwrap();
+
+        assert!(cert_pem.contains("BEGIN CERTIFICATE"));
+        assert!(key_pem.as_str().contains("BEGIN"));
+        assert!(cert_path.exists());
+        assert!(key_path.exists());
+    }
+
+    #[test]
+    fn test_ensure_tls_certs_reads_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert_path = dir.path().join("server.crt");
+        let key_path = dir.path().join("server.key");
+
+        // Pre-create files
+        generate_self_signed_cert(
+            cert_path.to_str().unwrap(),
+            key_path.to_str().unwrap(),
+        ).unwrap();
+
+        let expected_cert = std::fs::read_to_string(&cert_path).unwrap();
+        let expected_key = std::fs::read_to_string(&key_path).unwrap();
+
+        // ensure_tls_certs should read, not regenerate
+        let (cert_pem, key_pem) = ensure_tls_certs(
+            cert_path.to_str().unwrap(),
+            key_path.to_str().unwrap(),
+        ).unwrap();
+
+        assert_eq!(cert_pem, expected_cert, "must read existing cert, not regenerate");
+        assert_eq!(key_pem.as_str(), expected_key, "must read existing key, not regenerate");
+    }
+
+    #[test]
+    fn test_send_tls_cert_provision_via_ipc() {
+        let (sender_channel, receiver_channel) = IpcChannel::pair().unwrap();
+
+        let cert_pem = "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----";
+        let key_pem = SensitiveString::new("-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----".to_string());
+
+        send_tls_cert_provision(&sender_channel, cert_pem, &key_pem).unwrap();
+
+        let msg = receiver_channel.recv().unwrap();
+        if let Message::TlsCertProvision { cert_pem: c, key_pem: k } = msg {
+            assert!(c.contains("CERTIFICATE"));
+            assert!(k.as_str().contains("PRIVATE KEY"));
+        } else {
+            panic!("Expected TlsCertProvision, got {:?}", msg);
+        }
+    }
+
+    #[test]
+    fn test_tls_cert_provision_sent_after_listener_fd_in_initial_startup() {
+        let source = supervisor_prod_source();
+        let send_fd_pos = source.find("Sent listening socket FD to vauban-web via SCM_RIGHTS")
+            .expect("must log FD send");
+        let cert_provision_pos = source.find("Sent TLS certificate data to vauban-web via IPC")
+            .expect("must log cert provision");
+        assert!(
+            send_fd_pos < cert_provision_pos,
+            "TlsCertProvision must be sent AFTER listener FD"
+        );
+    }
+
+    #[test]
+    fn test_tls_cert_provision_sent_on_respawn() {
+        let source = supervisor_prod_source();
+        let respawn_fn_start = source.find("fn respawn_service(")
+            .expect("respawn_service must exist");
+        let respawn_fn = &source[respawn_fn_start..];
+        let fn_end = respawn_fn.find("\n/// ").unwrap_or(respawn_fn.len());
+        let respawn_fn = &respawn_fn[..fn_end];
+
+        assert!(
+            respawn_fn.contains("send_tls_cert_provision"),
+            "respawn_service must call send_tls_cert_provision for web"
+        );
+        assert!(
+            respawn_fn.contains("ensure_tls_certs"),
+            "respawn_service must call ensure_tls_certs for web"
+        );
+    }
+
+    #[test]
+    fn test_tls_cert_provision_sent_on_linked_group_respawn() {
+        let source = supervisor_prod_source();
+        let linked_fn_start = source.find("fn respawn_linked_group(")
+            .expect("respawn_linked_group must exist");
+        let linked_fn = &source[linked_fn_start..];
+        let fn_end = linked_fn.find("\n/// ").unwrap_or(
+            linked_fn.find("\nfn ").unwrap_or(linked_fn.len())
+        );
+        let linked_fn = &linked_fn[..fn_end];
+
+        assert!(
+            linked_fn.contains("send_tls_cert_provision"),
+            "respawn_linked_group must call send_tls_cert_provision for web"
+        );
     }
 }

@@ -20,6 +20,7 @@ thiserror.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json = "1.0"
+zeroize.workspace = true
 
 # Configuration
 config.workspace = true
@@ -30,7 +31,7 @@ signal-hook = "0.4"
 
 # ACME certificate management (TLS-ALPN-01)
 instant-acme = { version = "0.8", default-features = false, features = ["aws-lc-rs", "hyper-rustls"] }
-rcgen = { version = "0.13", default-features = false, features = ["aws_lc_rs"] }
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
 rustls = "0.23"
 tokio = { version = "1", features = ["rt", "time", "net", "io-util", "macros"] }
 sha2 = "0.10"

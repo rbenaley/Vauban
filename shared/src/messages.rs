@@ -663,6 +663,19 @@ pub enum Message {
         key_pem: SensitiveString,
     },
 
+    // ========== TLS Certificate Provisioning (Supervisor -> Web) ==========
+
+    /// Supervisor provides TLS certificate data to vauban-web at startup.
+    /// The supervisor reads (or generates) the cert/key files as root,
+    /// then sends the PEM data so vauban-web never needs filesystem access
+    /// to the certs directory.
+    TlsCertProvision {
+        /// PEM-encoded certificate chain.
+        cert_pem: String,
+        /// PEM-encoded private key.
+        key_pem: SensitiveString,
+    },
+
     // ========== TCP Connection Brokering (Web -> Supervisor -> Proxy) ==========
     /// Request supervisor to establish a TCP connection on behalf of the sandboxed proxy.
     ///
@@ -2706,6 +2719,38 @@ mod tests {
         assert!(
             !debug.contains("private-key-material"),
             "AcmeCertActivate Debug must NOT contain private key"
+        );
+        assert!(debug.contains("REDACTED"));
+    }
+
+    #[test]
+    fn test_message_tls_cert_provision_roundtrip() {
+        let msg = Message::TlsCertProvision {
+            cert_pem: "-----BEGIN CERTIFICATE-----\nMIIB...\n-----END CERTIFICATE-----".to_string(),
+            key_pem: SensitiveString::new("-----BEGIN PRIVATE KEY-----\nMIIE...\n-----END PRIVATE KEY-----".to_string()),
+        };
+        assert_eq!(msg.request_id(), None);
+
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::TlsCertProvision { cert_pem, key_pem } = deserialized {
+            assert!(cert_pem.contains("CERTIFICATE"));
+            assert!(key_pem.as_str().contains("PRIVATE KEY"));
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_message_tls_cert_provision_debug_redacts_key() {
+        let msg = Message::TlsCertProvision {
+            cert_pem: "cert-data".to_string(),
+            key_pem: SensitiveString::new("secret-key-material".to_string()),
+        };
+        let debug = format!("{:?}", msg);
+        assert!(
+            !debug.contains("secret-key-material"),
+            "TlsCertProvision Debug must NOT contain private key"
         );
         assert!(debug.contains("REDACTED"));
     }

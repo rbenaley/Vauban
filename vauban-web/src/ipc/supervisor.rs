@@ -5,7 +5,7 @@
 //! and TCP connect, then passes the FD to the target service via SCM_RIGHTS.
 
 use shared::ipc::{recv_fd, IpcChannel};
-use shared::messages::{ControlMessage, Message, Service, ServiceStats};
+use shared::messages::{ControlMessage, Message, SensitiveString, Service, ServiceStats};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::os::unix::io::{FromRawFd, IntoRawFd, RawFd};
@@ -14,6 +14,12 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 use tracing::{debug, info, warn};
+
+/// TLS certificate data received from the supervisor via IPC.
+pub struct TlsCertData {
+    pub cert_pem: String,
+    pub key_pem: SensitiveString,
+}
 
 /// Pending TCP connect request waiting for response from supervisor.
 struct PendingTcpConnect {
@@ -74,6 +80,8 @@ pub struct SupervisorClientInner {
     /// ACME certificate expiry tracker, updated when AcmeCertActivate arrives.
     /// Extracted before cap_enter() and decremented between monitoring ticks.
     cert_expiry: OnceLock<Arc<crate::tasks::CertExpiry>>,
+    /// One-shot channel for receiving TLS cert data from supervisor at startup.
+    tls_cert_tx: Mutex<Option<std::sync::mpsc::SyncSender<TlsCertData>>>,
 }
 
 /// Async client for communication with the supervisor.
@@ -101,10 +109,12 @@ impl SupervisorClient {
         write_fd: RawFd,
         fd_passing_socket: Option<RawFd>,
         server_handle: Option<axum_server::Handle<SocketAddr>>,
-    ) -> Self {
+    ) -> (Self, std::sync::mpsc::Receiver<TlsCertData>) {
         // Create IPC channel from file descriptors
         // SAFETY: FDs are passed from supervisor and are valid
         let channel = unsafe { IpcChannel::from_raw_fds(read_fd, write_fd) };
+
+        let (tls_cert_tx, tls_cert_rx) = std::sync::mpsc::sync_channel(1);
 
         let inner = Arc::new(SupervisorClientInner {
             channel,
@@ -119,6 +129,7 @@ impl SupervisorClient {
             server_handle,
             acme_resolver: OnceLock::new(),
             cert_expiry: OnceLock::new(),
+            tls_cert_tx: Mutex::new(Some(tls_cert_tx)),
         });
 
         let thread_inner = Arc::clone(&inner);
@@ -129,10 +140,10 @@ impl SupervisorClient {
             })
             .unwrap_or_else(|e| panic!("Failed to spawn supervisor IPC thread: {}", e));
 
-        Self {
+        (Self {
             inner,
             _thread_handle: thread_handle,
-        }
+        }, tls_cert_rx)
     }
 
     /// Request the supervisor to establish a TCP connection.
@@ -416,6 +427,17 @@ fn supervisor_ipc_loop(inner: Arc<SupervisorClientInner>) {
                     warn!(request_id, "No pending request for recording file response");
                 }
             }
+            Ok(Message::TlsCertProvision { cert_pem, key_pem }) => {
+                info!("Received TLS certificate data from supervisor");
+                let tx = inner.tls_cert_tx.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take();
+                if let Some(tx) = tx {
+                    let _ = tx.send(TlsCertData { cert_pem, key_pem });
+                } else {
+                    warn!("TlsCertProvision received but no receiver (already consumed or duplicate)");
+                }
+            }
             Ok(Message::AcmeChallengeInstall {
                 request_id: _,
                 domain,
@@ -533,6 +555,29 @@ mod tests {
         };
         assert!(result.success);
         assert!(result.error.is_none());
+    }
+
+    #[test]
+    fn test_tls_cert_data_stores_pem() {
+        let data = TlsCertData {
+            cert_pem: "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----".to_string(),
+            key_pem: SensitiveString::new("-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----".to_string()),
+        };
+        assert!(data.cert_pem.contains("CERTIFICATE"));
+        assert!(data.key_pem.as_str().contains("PRIVATE KEY"));
+    }
+
+    #[test]
+    fn test_tls_cert_provision_handled_in_ipc_loop() {
+        let source = include_str!("supervisor.rs");
+        assert!(
+            source.contains("Message::TlsCertProvision"),
+            "supervisor_ipc_loop must handle TlsCertProvision"
+        );
+        assert!(
+            source.contains("tls_cert_tx"),
+            "TlsCertProvision handler must use tls_cert_tx channel"
+        );
     }
 
     #[test]
