@@ -8,17 +8,11 @@ secret_key = "CHANGE-ME-IN-PRODUCTION-32-CHARS!"
 # SUPERVISOR OVERRIDES
 # ==============================================================================
 
-[supervisor]
-# Development mode
-environment = "development"
 # Development: binaries in target/debug
 bin_path = "./target/debug"
-log_level = "debug"
 
-# Development mode: run as current user (uid=0 means don't change)
-[defaults]
-uid = 0
-gid = 0
+[supervisor]
+privsep = false
 
 # ==============================================================================
 # WEB OVERRIDES (vauban-web)

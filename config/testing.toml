@@ -8,17 +8,11 @@ secret_key = "test-secret-key-for-integration-tests!"
 # SUPERVISOR OVERRIDES
 # ==============================================================================
 
-[supervisor]
-# Testing mode (uses development behavior)
-environment = "development"
 # Testing: binaries in target/debug
 bin_path = "./target/debug"
-log_level = "warn"
 
-# Testing mode: run as current user
-[defaults]
-uid = 0
-gid = 0
+[supervisor]
+privsep = false
 
 # ==============================================================================
 # WEB OVERRIDES (vauban-web)

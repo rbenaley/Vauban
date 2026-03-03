@@ -186,15 +186,16 @@ fn run_supervisor() -> Result<()> {
         .context("Failed to load configuration")?;
     
     info!(
-        "Configuration loaded: environment={:?}, bin_path={}",
-        config.supervisor.environment,
-        config.supervisor.bin_path
+        "Configuration loaded: environment={}, bin_path={}, privsep={}",
+        config.environment,
+        config.bin_path,
+        config.supervisor.privsep
     );
 
-    if config.supervisor.environment.is_development() {
-        info!("Running in DEVELOPMENT mode - all services will use current user");
+    if !config.supervisor.privsep {
+        info!("Running with privsep DISABLED - all services will use current user");
     } else {
-        info!("Running in PRODUCTION mode - services will use dedicated UIDs");
+        info!("Running with privsep ENABLED - services will use dedicated UIDs");
     }
 
     // Setup signal handlers
@@ -320,6 +321,16 @@ fn run_supervisor() -> Result<()> {
     }
 
     info!("All services started, entering watchdog loop");
+
+    if let Some(g) = config.supervisor_gid() {
+        setgid(Gid::from_raw(g))
+            .with_context(|| format!("Failed to drop supervisor privileges: setgid({})", g))?;
+    }
+    if let Some(u) = config.supervisor_uid() {
+        setuid(Uid::from_raw(u))
+            .with_context(|| format!("Failed to drop supervisor privileges: setuid({})", u))?;
+        info!("Supervisor dropped privileges to uid={}, gid={}", u, config.supervisor.gid.unwrap_or(0));
+    }
 
     // Main watchdog loop
     let watchdog_config = &config.supervisor.watchdog;

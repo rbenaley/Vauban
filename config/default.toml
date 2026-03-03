@@ -11,13 +11,13 @@
 # SUPERVISOR CONFIGURATION
 # ==============================================================================
 
-[supervisor]
 # Environment: "development" or "production"
 environment = "development"
 # Path to service binaries (relative to workspace root or absolute)
 bin_path = "./target/debug"
-# Log level: "trace", "debug", "info", "warn", "error"
-log_level = "debug"
+
+[supervisor]
+privsep = false
 
 # Watchdog configuration
 [supervisor.watchdog]
@@ -27,14 +27,7 @@ max_missed_heartbeats = 3
 max_respawns_per_hour = 10
 drain_timeout_secs = 30
 
-# Default credentials for services
-# When uid/gid are 0, the current user is used (development mode).
-[defaults]
-uid = 0
-gid = 0
-
 # Service configurations
-# Each service can override uid/gid from [defaults].
 
 [services.audit]
 name = "vauban-audit"

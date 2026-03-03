@@ -681,7 +681,7 @@ impl Config {
         if environment.is_production() {
             // Production: single self-contained config file
             let conf_path = config_path.join("vauban.conf");
-            builder = builder.add_source(File::from(conf_path));
+            builder = builder.add_source(File::from(conf_path).format(config::FileFormat::Toml));
         } else {
             // Development / Testing: layered config files
             let default_path = config_path.join("default.toml");

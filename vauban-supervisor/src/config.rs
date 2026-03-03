@@ -20,8 +20,14 @@ use std::path::{Path, PathBuf};
 /// Main configuration structure.
 #[derive(Debug, Deserialize)]
 pub struct SupervisorConfig {
+    /// Environment: "development" or "production" (defaults to production)
+    #[serde(default)]
+    pub environment: Environment,
+    /// Path to service binaries
+    pub bin_path: String,
     pub supervisor: SupervisorSettings,
-    pub defaults: DefaultCredentials,
+    #[allow(dead_code)]
+    pub logging: LoggingConfig,
     pub services: HashMap<String, ServiceConfig>,
     /// RDP proxy configuration (injected as env vars at spawn).
     #[serde(default)]
@@ -89,29 +95,56 @@ impl Default for RecordingConfig {
     }
 }
 
-/// Supervisor settings.
+/// Logging configuration.
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+pub struct LoggingConfig {
+    pub level: String,
+}
+
+/// Supervisor privilege separation and watchdog settings.
 #[derive(Debug, Deserialize)]
 pub struct SupervisorSettings {
-    /// Environment: "development" or "production"
-    pub environment: Environment,
-    /// Path to service binaries
-    pub bin_path: String,
-    /// Log level
-    #[allow(dead_code)] // Will be used for dynamic log configuration
-    pub log_level: String,
+    /// Enable privilege separation (default: true).
+    /// When true, the supervisor setuid/setgid for each child and drops
+    /// its own privileges to uid/gid after spawning all services.
+    /// When false (dev/testing), all processes run as the current user.
+    #[serde(default = "default_privsep")]
+    pub privsep: bool,
+    /// UID the supervisor drops to after spawning children (production).
+    #[serde(default)]
+    pub uid: Option<u32>,
+    /// GID the supervisor drops to after spawning children (production).
+    #[serde(default)]
+    pub gid: Option<u32>,
     /// Watchdog configuration
     pub watchdog: WatchdogConfig,
 }
 
+fn default_privsep() -> bool {
+    true
+}
+
 /// Environment type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Environment {
     Development,
+    #[default]
     Production,
 }
 
+impl std::fmt::Display for Environment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Environment::Development => write!(f, "development"),
+            Environment::Production => write!(f, "production"),
+        }
+    }
+}
+
 impl Environment {
+    #[allow(dead_code)]
     pub fn is_development(&self) -> bool {
         matches!(self, Environment::Development)
     }
@@ -137,15 +170,6 @@ pub struct WatchdogConfig {
 
 fn default_drain_timeout() -> u64 {
     30
-}
-
-/// Default credentials for development mode.
-#[derive(Debug, Deserialize)]
-pub struct DefaultCredentials {
-    /// Default UID (0 = don't change, use current user)
-    pub uid: u32,
-    /// Default GID (0 = don't change, use current user)
-    pub gid: u32,
 }
 
 /// Service configuration.
@@ -292,33 +316,39 @@ impl SupervisorConfig {
 
     /// Get effective UID for a service.
     ///
-    /// In development mode (uid=0), returns None (don't change user).
-    /// In production mode, returns the configured UID.
+    /// When privsep is disabled, returns None (don't change user).
+    /// When privsep is enabled, returns the service's configured UID.
     pub fn effective_uid(&self, service_key: &str) -> Option<u32> {
-        let service = self.services.get(service_key)?;
-        
-        // Service-specific UID takes precedence
-        let uid = service.uid.unwrap_or(self.defaults.uid);
-        
-        // 0 means "don't change" (development mode)
-        if uid == 0 {
-            None
-        } else {
-            Some(uid)
+        if !self.supervisor.privsep {
+            return None;
         }
+        let service = self.services.get(service_key)?;
+        service.uid
     }
 
     /// Get effective GID for a service.
     pub fn effective_gid(&self, service_key: &str) -> Option<u32> {
-        let service = self.services.get(service_key)?;
-        
-        let gid = service.gid.unwrap_or(self.defaults.gid);
-        
-        if gid == 0 {
-            None
-        } else {
-            Some(gid)
+        if !self.supervisor.privsep {
+            return None;
         }
+        let service = self.services.get(service_key)?;
+        service.gid
+    }
+
+    /// Get the UID the supervisor should drop to after spawning children.
+    pub fn supervisor_uid(&self) -> Option<u32> {
+        if !self.supervisor.privsep {
+            return None;
+        }
+        self.supervisor.uid
+    }
+
+    /// Get the GID the supervisor should drop to after spawning children.
+    pub fn supervisor_gid(&self) -> Option<u32> {
+        if !self.supervisor.privsep {
+            return None;
+        }
+        self.supervisor.gid
     }
 
     /// Get full path to a service binary.
@@ -326,7 +356,7 @@ impl SupervisorConfig {
     /// Returns an absolute path to ensure it works after chdir.
     pub fn binary_path(&self, service_key: &str) -> Option<String> {
         let service = self.services.get(service_key)?;
-        let path = format!("{}/{}", self.supervisor.bin_path, service.binary);
+        let path = format!("{}/{}", self.bin_path, service.binary);
         
         // Convert relative paths to absolute
         if path.starts_with("./") || !path.starts_with('/') {
@@ -433,22 +463,21 @@ mod tests {
     fn test_development_config() {
         let config = test_config();
         
-        assert!(config.supervisor.environment.is_development());
-        assert_eq!(config.defaults.uid, 0);
-        assert_eq!(config.defaults.gid, 0);
+        assert!(config.environment.is_development());
+        assert!(!config.supervisor.privsep);
         assert_eq!(config.services.len(), 7);
     }
 
     #[test]
     fn test_development_bin_path() {
         let config = test_config();
-        assert_eq!(config.supervisor.bin_path, "./target/debug");
+        assert_eq!(config.bin_path, "./target/debug");
     }
 
     #[test]
     fn test_development_log_level() {
         let config = test_config();
-        assert_eq!(config.supervisor.log_level, "debug");
+        assert_eq!(config.logging.level, "debug");
     }
 
     #[test]
@@ -677,7 +706,7 @@ mod tests {
         let config = SupervisorConfig::load_from_dir_with_env(&config_dir, Environment::Development);
         assert!(config.is_ok(), "Failed to load config: {:?}", config.err());
         let config = config.unwrap();
-        assert!(config.supervisor.environment.is_development());
+        assert!(config.environment.is_development());
     }
 
     #[test]

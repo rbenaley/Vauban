@@ -19,10 +19,10 @@ check *ARGS:
     cargo check --workspace {{ARGS}}
     cargo check {{rdp_manifest}} {{ARGS}}
 
-# Run all tests
+# Run all tests (single-threaded to avoid shared DB conflicts)
 test *ARGS:
-    cargo test --workspace {{ARGS}}
-    cargo test {{rdp_manifest}} {{ARGS}}
+    cargo test --workspace {{ARGS}} -- --test-threads=1
+    cargo test {{rdp_manifest}} {{ARGS}} -- --test-threads=1
 
 # Run clippy on all crates
 clippy *ARGS:
