@@ -219,6 +219,7 @@ impl Environment {
 /// All values must be defined in TOML files.
 #[derive(Clone, Deserialize)]
 pub struct Config {
+    #[serde(default)]
     pub environment: Environment,
     pub secret_key: secrecy::SecretString,
     pub database: DatabaseConfig,
