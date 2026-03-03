@@ -1,0 +1,7 @@
+#!/bin/sh
+# Stop the Vauban service before removing files.
+
+if service vauban status >/dev/null 2>&1; then
+    echo "==> Stopping vauban service..."
+    service vauban stop
+fi

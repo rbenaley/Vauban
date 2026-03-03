@@ -1,0 +1,185 @@
+#!/bin/sh
+# Post-installation: directories, ACLs, vault master key, database setup.
+
+PREFIX=${PKG_PREFIX:-/usr/local}
+MIGRATION_DIR="${PREFIX}/share/vauban/migrations"
+
+# --------------------------------------------------------------------------- #
+# ACL helper -- auto-detects NFSv4 (ZFS) vs POSIX.1e (UFS)                   #
+# --------------------------------------------------------------------------- #
+_acl_type=""
+
+detect_acl_type() {
+    _probe=$1
+    if setfacl -m "u:root:rwx::allow" "$_probe" 2>/dev/null; then
+        setfacl -x "u:root:rwx::allow" "$_probe" 2>/dev/null
+        _acl_type="nfsv4"
+    else
+        _acl_type="posix"
+    fi
+}
+
+set_acl() {
+    _user=$1; _perms=$2; _path=$3
+    case "$_acl_type" in
+        nfsv4) setfacl -m "u:${_user}:${_perms}::allow" "$_path" ;;
+        *)     setfacl -m "u:${_user}:${_perms}" "$_path" ;;
+    esac
+}
+
+set_default_acl() {
+    _user=$1; _perms=$2; _path=$3
+    case "$_acl_type" in
+        nfsv4) setfacl -m "u:${_user}:${_perms}:fd:allow" "$_path" ;;
+        *)     setfacl -d -m "u:${_user}:${_perms}" "$_path" ;;
+    esac
+}
+
+# =========================================================================== #
+# 1. Runtime directories                                                      #
+# =========================================================================== #
+echo "==> Creating runtime directories..."
+
+mkdir -p /var/vauban/vault
+mkdir -p /var/vauban/recordings
+
+chown root:vauban-vault /var/vauban/vault
+chmod 750 /var/vauban/vault
+
+chown root:wheel /var/vauban/recordings
+chmod 750 /var/vauban/recordings
+
+# =========================================================================== #
+# 2. ACLs -- /usr/local/etc/vauban  (all services)                           #
+#            /usr/local/etc/vauban/certs  (vauban-web only)                   #
+# =========================================================================== #
+echo "==> Setting ACLs on configuration directories..."
+
+chown root:wheel "${PREFIX}/etc/vauban"
+chmod 750 "${PREFIX}/etc/vauban"
+chown root:wheel "${PREFIX}/etc/vauban/certs"
+chmod 750 "${PREFIX}/etc/vauban/certs"
+
+detect_acl_type "${PREFIX}/etc/vauban"
+
+_svc_users="vauban-audit vauban-vault vauban-rbac vauban-auth vauban-proxy-ssh vauban-proxy-rdp vauban-web"
+
+for _u in ${_svc_users}; do
+    set_acl         "$_u" "rx" "${PREFIX}/etc/vauban"
+    set_default_acl "$_u" "r"  "${PREFIX}/etc/vauban"
+done
+
+set_acl         "vauban-web" "rx" "${PREFIX}/etc/vauban/certs"
+set_default_acl "vauban-web" "r"  "${PREFIX}/etc/vauban/certs"
+
+# =========================================================================== #
+# 3. ACLs -- /var/vauban/recordings                                          #
+# =========================================================================== #
+echo "==> Setting ACLs on recordings directory..."
+
+detect_acl_type /var/vauban/recordings
+
+for _u in vauban-audit vauban-web; do
+    set_acl         "$_u" "rx" /var/vauban/recordings
+    set_default_acl "$_u" "r"  /var/vauban/recordings
+done
+
+# =========================================================================== #
+# 4. Vault master key                                                        #
+# =========================================================================== #
+echo "==> Setting up vault..."
+
+chown root:vauban-vault /var/vauban/vault
+chmod 750 /var/vauban/vault
+
+if [ ! -f /var/vauban/vault/master.key ]; then
+    dd if=/dev/random of=/var/vauban/vault/master.key bs=32 count=1 2>/dev/null
+    chown root:vauban-vault /var/vauban/vault/master.key
+    chmod 440 /var/vauban/vault/master.key
+    echo "  Generated new vault master key: /var/vauban/vault/master.key"
+    echo "  IMPORTANT: back up this key. Loss means encrypted data is unrecoverable."
+else
+    echo "  Vault master key already exists -- skipping generation."
+fi
+
+# =========================================================================== #
+# 5. PostgreSQL database setup                                               #
+# =========================================================================== #
+echo "==> Checking PostgreSQL..."
+
+if ! service postgresql status >/dev/null 2>&1; then
+    echo "  WARNING: PostgreSQL is not running."
+    echo "  Start it with:  service postgresql start"
+    echo "  Then initialise the database manually:"
+    echo ""
+    echo "    # As root:"
+    echo "    su -m postgres -c 'createdb vauban'"
+    echo "    su -m postgres -c \"psql -c \\\"CREATE USER vauban WITH PASSWORD '<password>';\\\"\""
+    echo "    su -m postgres -c \"psql -c \\\"GRANT ALL PRIVILEGES ON DATABASE vauban TO vauban;\\\"\""
+    echo "    su -m postgres -c \"psql -d vauban -c \\\"GRANT ALL ON SCHEMA public TO vauban; ALTER SCHEMA public OWNER TO vauban;\\\"\""
+    echo ""
+    echo "    # Apply migrations:"
+    echo "    for f in \$(ls -d ${MIGRATION_DIR}/*/up.sql | sort); do"
+    echo "      su -m postgres -c \"psql -d vauban -f \$f\""
+    echo "    done"
+else
+    DB_EXISTS=$(su -m postgres -c "psql -tAc \"SELECT 1 FROM pg_database WHERE datname='vauban'\"" 2>/dev/null || true)
+
+    if [ "$DB_EXISTS" != "1" ]; then
+        DB_PASSWORD=$(openssl rand -base64 24 | tr -d '/+=' | head -c 32)
+
+        su -m postgres -c "createdb vauban"
+        su -m postgres -c "psql -c \"CREATE USER vauban WITH PASSWORD '${DB_PASSWORD}';\""
+        su -m postgres -c "psql -c \"GRANT ALL PRIVILEGES ON DATABASE vauban TO vauban;\""
+        su -m postgres -c "psql -d vauban -c \"GRANT ALL ON SCHEMA public TO vauban; ALTER SCHEMA public OWNER TO vauban;\""
+
+        for _mig in $(ls -d "${MIGRATION_DIR}"/*/ 2>/dev/null | sort); do
+            if [ -f "${_mig}/up.sql" ]; then
+                su -m postgres -c "psql -d vauban -f '${_mig}/up.sql'" 2>/dev/null
+            fi
+        done
+
+        echo ""
+        echo "================================================================"
+        echo "  Vauban database created."
+        echo ""
+        echo "  Database user  : vauban"
+        echo "  Database password: ${DB_PASSWORD}"
+        echo ""
+        echo "  Record this password, then configure it in:"
+        echo "    ${PREFIX}/etc/vauban/production.toml"
+        echo ""
+        echo "  [database]"
+        echo "  url = \"postgresql://vauban:${DB_PASSWORD}@localhost/vauban\""
+        echo "================================================================"
+        echo ""
+    else
+        echo "  Database 'vauban' already exists -- applying migrations..."
+        for _mig in $(ls -d "${MIGRATION_DIR}"/*/ 2>/dev/null | sort); do
+            if [ -f "${_mig}/up.sql" ]; then
+                su -m postgres -c "psql -d vauban -f '${_mig}/up.sql'" 2>/dev/null || true
+            fi
+        done
+        echo "  Migrations applied (existing objects skipped)."
+    fi
+fi
+
+# =========================================================================== #
+# 6. Summary                                                                 #
+# =========================================================================== #
+echo ""
+echo "================================================================"
+echo "  Vauban %%VERSION%% installed."
+echo ""
+echo "  Next steps:"
+echo "    1. cp ${PREFIX}/etc/vauban/production.toml.sample \\"
+echo "          ${PREFIX}/etc/vauban/production.toml"
+echo "    2. Edit production.toml (database URL, domain, email, ...)"
+echo "    3. Set VAUBAN_SECRET_KEY or add secret_key to production.toml"
+echo "    4. Place TLS certificates in ${PREFIX}/etc/vauban/certs/"
+echo "       (or enable ACME in production.toml)"
+echo "    5. sysrc vauban_enable=YES"
+echo "    6. service vauban start"
+echo "    7. create_superuser"
+echo "================================================================"
+echo ""

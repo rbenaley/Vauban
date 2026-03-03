@@ -1,0 +1,34 @@
+#!/bin/sh
+
+# PROVIDE: vauban
+# REQUIRE: LOGIN postgresql
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="vauban"
+rcvar="vauban_enable"
+
+load_rc_config $name
+
+: ${vauban_enable:="NO"}
+: ${vauban_config:="/usr/local/etc/vauban"}
+
+pidfile="/var/run/${name}.pid"
+command="/usr/sbin/daemon"
+command_args="-P ${pidfile} -r -t ${name} -o /var/log/${name}.log /usr/local/libexec/vauban/vauban-supervisor"
+
+start_precmd="${name}_prestart"
+stop_postcmd="${name}_poststop"
+
+vauban_prestart()
+{
+    export VAUBAN_ENVIRONMENT=production
+}
+
+vauban_poststop()
+{
+    rm -f "${pidfile}"
+}
+
+run_rc_command "$1"

@@ -1,0 +1,27 @@
+name = "vauban";
+version = "0.2.0";
+origin = "security/vauban";
+comment = "Security bastion platform with SSH/RDP proxying, RBAC, and audit";
+maintainer = "none@freebsd.org";
+www = "https://github.com/rbenaley/Vauban";
+prefix = "/usr/local";
+licenselogic = "single";
+licenses = ["BSD2CLAUSE"];
+categories = ["security"];
+
+desc = <<EOD
+VAUBAN is a security bastion (PAM) platform providing:
+ - Privileged access management
+ - SSH and RDP session proxying with recording
+ - Role-based access control (RBAC)
+ - Multi-factor authentication (TOTP)
+ - Centralized audit logging
+ - Post-quantum cryptography support
+EOD;
+
+deps = {
+    postgresql18-server = {
+        origin = "databases/postgresql18-server";
+        version = "18";
+    };
+};

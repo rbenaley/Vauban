@@ -1,0 +1,42 @@
+#!/bin/sh
+# Create Vauban service groups and users with fixed UIDs/GIDs.
+# These system accounts have no login shell and no home directory.
+
+create_group_if_missing() {
+    _name=$1
+    _gid=$2
+    if ! pw groupshow "$_name" >/dev/null 2>&1; then
+        pw groupadd -n "$_name" -g "$_gid"
+        echo "  Created group ${_name} (GID ${_gid})"
+    fi
+}
+
+create_user_if_missing() {
+    _name=$1
+    _uid=$2
+    _gid=$3
+    if ! pw usershow "$_name" >/dev/null 2>&1; then
+        pw useradd -n "$_name" -u "$_uid" -g "$_gid" \
+            -d /nonexistent -s /usr/sbin/nologin \
+            -c "Vauban ${_name} service"
+        echo "  Created user ${_name} (UID ${_uid}, GID ${_gid})"
+    fi
+}
+
+echo "==> Creating Vauban service accounts..."
+
+create_group_if_missing vauban-audit     901
+create_group_if_missing vauban-vault     902
+create_group_if_missing vauban-rbac      903
+create_group_if_missing vauban-auth      904
+create_group_if_missing vauban-proxy-ssh 905
+create_group_if_missing vauban-proxy-rdp 906
+create_group_if_missing vauban-web       907
+
+create_user_if_missing vauban-audit     901 901
+create_user_if_missing vauban-vault     902 902
+create_user_if_missing vauban-rbac      903 903
+create_user_if_missing vauban-auth      904 904
+create_user_if_missing vauban-proxy-ssh 905 905
+create_user_if_missing vauban-proxy-rdp 906 906
+create_user_if_missing vauban-web       907 907
