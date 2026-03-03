@@ -5,7 +5,10 @@ PREFIX=${PKG_PREFIX:-/usr/local}
 MIGRATION_DIR="${PREFIX}/share/vauban/migrations"
 
 # --------------------------------------------------------------------------- #
-# ACL helper -- detects NFSv4 (ZFS) vs POSIX.1e (UFS) via filesystem type    #
+# ACL helpers -- detects NFSv4 (ZFS) vs POSIX.1e (UFS) via filesystem type   #
+#                                                                             #
+# Default (inheritable) ACLs are applied best-effort: some UFS configs do    #
+# not support them (acl_calc_mask EINVAL).  Access ACLs are mandatory.       #
 # --------------------------------------------------------------------------- #
 _acl_type=""
 
@@ -28,8 +31,8 @@ set_acl() {
 set_default_acl() {
     _user=$1; _perms=$2; _path=$3
     case "$_acl_type" in
-        nfsv4) setfacl -m "u:${_user}:${_perms}:fd:allow" "$_path" ;;
-        *)     setfacl -d -m "u:${_user}:${_perms}" "$_path" ;;
+        nfsv4) setfacl -m "u:${_user}:${_perms}:fd:allow" "$_path" 2>/dev/null ;;
+        *)     setfacl -d -m "u:${_user}:${_perms}" "$_path" 2>/dev/null ;;
     esac
 }
 
@@ -48,8 +51,9 @@ chown root:wheel /var/vauban/recordings
 chmod 750 /var/vauban/recordings
 
 # =========================================================================== #
-# 2. ACLs -- /usr/local/etc/vauban  (all services)                           #
-#            /usr/local/etc/vauban/certs  (vauban-web only)                   #
+# 2. Permissions -- /usr/local/etc/vauban  (all services)                    #
+#                   /usr/local/etc/vauban/certs  (vauban-web only)           #
+#                   /var/vauban/recordings  (audit + web)                    #
 # =========================================================================== #
 echo "==> Setting ACLs on configuration directories..."
 
@@ -61,7 +65,6 @@ chmod 750 "${PREFIX}/etc/vauban/certs"
 detect_acl_type "${PREFIX}/etc/vauban"
 
 _svc_users="vauban-audit vauban-vault vauban-rbac vauban-auth vauban-proxy-ssh vauban-proxy-rdp vauban-web"
-
 for _u in ${_svc_users}; do
     set_acl         "$_u" "rx" "${PREFIX}/etc/vauban"
     set_default_acl "$_u" "r"  "${PREFIX}/etc/vauban"
@@ -70,13 +73,9 @@ done
 set_acl         "vauban-web" "rx" "${PREFIX}/etc/vauban/certs"
 set_default_acl "vauban-web" "r"  "${PREFIX}/etc/vauban/certs"
 
-# =========================================================================== #
-# 3. ACLs -- /var/vauban/recordings                                          #
-# =========================================================================== #
 echo "==> Setting ACLs on recordings directory..."
 
 detect_acl_type /var/vauban/recordings
-
 for _u in vauban-audit vauban-web; do
     set_acl         "$_u" "rx" /var/vauban/recordings
     set_default_acl "$_u" "r"  /var/vauban/recordings
