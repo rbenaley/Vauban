@@ -681,7 +681,14 @@ impl Config {
         if environment.is_production() {
             // Production: single self-contained config file
             let conf_path = config_path.join("vauban.conf");
-            builder = builder.add_source(File::from(conf_path).format(config::FileFormat::Toml));
+            let contents = std::fs::read_to_string(&conf_path).map_err(|e| {
+                crate::error::AppError::Config(format!(
+                    "Failed to read config file {}: {}",
+                    conf_path.display(),
+                    e
+                ))
+            })?;
+            builder = builder.add_source(config::File::from_str(&contents, config::FileFormat::Toml));
         } else {
             // Development / Testing: layered config files
             let default_path = config_path.join("default.toml");
