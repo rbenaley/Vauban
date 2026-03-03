@@ -1,12 +1,18 @@
 #!/bin/sh
-# Inform the administrator about leftovers that require manual cleanup.
+# Remove Vauban service accounts and inform admin about remaining leftovers.
+
+echo "==> Removing Vauban service accounts..."
+
+for _svc in audit vault rbac auth proxy-ssh proxy-rdp web; do
+    pw userdel  "vauban-${_svc}" 2>/dev/null && echo "  Removed user vauban-${_svc}"
+    pw groupdel "vauban-${_svc}" 2>/dev/null && echo "  Removed group vauban-${_svc}"
+done
 
 echo ""
 echo "================================================================"
 echo "  Vauban has been removed."
 echo ""
 echo "  The following items were NOT removed automatically:"
-echo "    - System accounts  : vauban-{audit,vault,rbac,auth,proxy-ssh,proxy-rdp,web}"
 echo "    - PostgreSQL DB    : database 'vauban' and role 'vauban'"
 echo "    - Runtime data     : /var/vauban/{vault,recordings}"
 echo "    - Configuration    : /usr/local/etc/vauban/"
@@ -18,10 +24,5 @@ echo "    rm -rf /var/vauban"
 echo "    rm -rf /usr/local/etc/vauban"
 echo "    su -m postgres -c 'dropdb vauban'"
 echo "    su -m postgres -c \"psql -c \\\"DROP USER vauban;\\\"\""
-echo ""
-echo "    for svc in audit vault rbac auth proxy-ssh proxy-rdp web; do"
-echo "      pw userdel  \"vauban-\${svc}\""
-echo "      pw groupdel \"vauban-\${svc}\""
-echo "    done"
 echo "================================================================"
 echo ""
