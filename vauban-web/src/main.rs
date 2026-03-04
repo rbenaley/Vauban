@@ -286,9 +286,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 use std::os::unix::io::FromRawFd;
                 std::net::TcpListener::from_raw_fd(std::os::unix::io::IntoRawFd::into_raw_fd(owned_fd))
             };
-            listener.set_nonblocking(true).map_err(|e| {
-                format!("Failed to set listener to non-blocking: {}", e)
-            })?;
             tracing::info!(address = %addr, "Received pre-bound listening socket from supervisor");
             listener
         } else {
@@ -542,9 +539,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "HTTPS server listening (TLS 1.3 only)"
     );
 
-    // M-8/M-10: Pass server_handle so graceful_shutdown() from supervisor IPC
-    // thread will cause this .serve() to return, letting main() exit normally
-    // and all Drop/Zeroize destructors run.
+    // Ensure non-blocking mode: tokio's into_std() may reset to blocking,
+    // and SCM_RIGHTS sockets are blocking by default. axum-server panics
+    // if the socket is blocking when registering with the tokio reactor.
+    std_listener.set_nonblocking(true).map_err(|e| {
+        format!("Failed to set listener to non-blocking: {}", e)
+    })?;
+
     axum_server::from_tcp_rustls(std_listener, tls_config)?
         .handle(server_handle)
         .serve(app.into_make_service_with_connect_info::<SocketAddr>())
