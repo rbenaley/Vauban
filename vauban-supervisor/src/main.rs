@@ -181,6 +181,8 @@ fn main() -> ExitCode {
 }
 
 fn run_supervisor() -> Result<()> {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
     // Load configuration
     let config = SupervisorConfig::load_auto()
         .context("Failed to load configuration")?;
