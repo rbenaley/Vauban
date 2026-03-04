@@ -271,24 +271,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // After cap_enter(), no new file descriptors can be opened.
     // ========================================================================
 
-    // 1. Parse address and bind socket BEFORE sandbox
-    // This must be done before cap_enter() as bind() requires access to network namespace
+    // 1. Obtain listening socket: either from supervisor (SCM_RIGHTS) or bind directly
     let addr: SocketAddr = format!("{}:{}", config.server.host, config.server.port)
         .parse()
         .map_err(|e| format!("Invalid address: {}", e))?;
 
-    let tokio_listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| {
-        eprintln!("Failed to bind to {}: {}", addr, e);
-        e
-    })?;
-
-    // Convert to std listener BEFORE entering sandbox
-    // This must be done before cap_enter() as the conversion may require syscalls
-    let std_listener = tokio_listener.into_std().map_err(|e| {
-        eprintln!("Failed to convert listener: {}", e);
-        e
-    })?;
-    tracing::info!(address = %addr, "Socket bound for HTTPS");
+    let std_listener = if let Some(ref sup) = supervisor_client {
+        if let Some(fd_socket) = sup.fd_passing_socket() {
+            use shared::ipc::recv_fd;
+            let owned_fd = recv_fd(fd_socket).map_err(|e| {
+                format!("Failed to receive listening socket from supervisor: {}", e)
+            })?;
+            let listener = unsafe {
+                use std::os::unix::io::FromRawFd;
+                std::net::TcpListener::from_raw_fd(std::os::unix::io::IntoRawFd::into_raw_fd(owned_fd))
+            };
+            tracing::info!(address = %addr, "Received pre-bound listening socket from supervisor");
+            listener
+        } else {
+            tracing::warn!("Running under supervisor but no FD passing socket, binding directly");
+            let tokio_listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| {
+                eprintln!("Failed to bind to {}: {}", addr, e);
+                e
+            })?;
+            tokio_listener.into_std().map_err(|e| {
+                eprintln!("Failed to convert listener: {}", e);
+                e
+            })?
+        }
+    } else {
+        let tokio_listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| {
+            eprintln!("Failed to bind to {}: {}", addr, e);
+            e
+        })?;
+        let listener = tokio_listener.into_std().map_err(|e| {
+            eprintln!("Failed to convert listener: {}", e);
+            e
+        })?;
+        tracing::info!(address = %addr, "Socket bound for HTTPS");
+        listener
+    };
 
     // 2. Load TLS configuration (opens certificate files)
     //    When ACME is enabled, returns a dynamic resolver for zero-downtime

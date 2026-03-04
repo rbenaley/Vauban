@@ -28,6 +28,9 @@ pub struct SupervisorConfig {
     pub supervisor: SupervisorSettings,
     #[allow(dead_code)]
     pub logging: LoggingConfig,
+    /// Server bind address (used by supervisor to bind the listening socket).
+    #[serde(default)]
+    pub server: ServerBindConfig,
     pub services: HashMap<String, ServiceConfig>,
     /// RDP proxy configuration (injected as env vars at spawn).
     #[serde(default)]
@@ -100,6 +103,33 @@ impl Default for RecordingConfig {
 #[derive(Debug, Deserialize)]
 pub struct LoggingConfig {
     pub level: String,
+}
+
+/// Server bind configuration (host/port for the HTTPS listener).
+/// The supervisor binds the socket as root and passes it to vauban-web via SCM_RIGHTS.
+#[derive(Debug, Deserialize)]
+pub struct ServerBindConfig {
+    #[serde(default = "default_host")]
+    pub host: String,
+    #[serde(default = "default_port")]
+    pub port: u16,
+}
+
+fn default_host() -> String {
+    "0.0.0.0".to_string()
+}
+
+fn default_port() -> u16 {
+    8443
+}
+
+impl Default for ServerBindConfig {
+    fn default() -> Self {
+        Self {
+            host: default_host(),
+            port: default_port(),
+        }
+    }
 }
 
 /// Supervisor settings (privilege separation + watchdog).
@@ -742,5 +772,30 @@ mod tests {
         assert!(config.recording.rdp);
         assert!(config.recording.ssh);
         assert_eq!(config.recording.storage_path, "recordings");
+    }
+
+    // ==================== Server Bind Config Tests ====================
+
+    #[test]
+    fn test_server_bind_config_default() {
+        let sbc = ServerBindConfig::default();
+        assert_eq!(sbc.host, "0.0.0.0");
+        assert_eq!(sbc.port, 8443);
+    }
+
+    #[test]
+    fn test_server_bind_config_loaded_from_toml() {
+        let config = test_config();
+        assert_eq!(config.server.host, "0.0.0.0");
+        assert_eq!(config.server.port, 8443);
+    }
+
+    #[test]
+    fn test_server_bind_config_production() {
+        let config_dir = test_config_dir();
+        let config = SupervisorConfig::load_from_dir_with_env(&config_dir, Environment::Production)
+            .expect("Failed to load production config");
+        assert_eq!(config.server.host, "0.0.0.0");
+        assert!(config.server.port > 0, "port should be set");
     }
 }

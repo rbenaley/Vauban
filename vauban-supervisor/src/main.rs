@@ -248,6 +248,16 @@ fn run_supervisor() -> Result<()> {
         }
     }
 
+    // Bind the HTTPS listening socket as root (privileged port).
+    // The FD will be passed to vauban-web via SCM_RIGHTS after spawn.
+    let listener = {
+        let addr = format!("{}:{}", config.server.host, config.server.port);
+        let listener = std::net::TcpListener::bind(&addr)
+            .with_context(|| format!("Failed to bind listening socket on {}", addr))?;
+        info!("Bound listening socket on {}", addr);
+        listener
+    };
+
     // Spawn all child services in dependency order
     let mut children: HashMap<String, ChildState> = HashMap::new();
     
@@ -319,6 +329,21 @@ fn run_supervisor() -> Result<()> {
             }
         }
     }
+
+    // Pass the pre-bound listening socket to vauban-web via SCM_RIGHTS
+    if let Some(web_state) = children.get("web") {
+        if let Some(ref fd_socket) = web_state.fd_passing_socket {
+            let listener_fd = listener.as_raw_fd();
+            send_fd(fd_socket.as_raw_fd(), listener_fd)
+                .context("Failed to send listening socket FD to vauban-web")?;
+            info!("Sent listening socket FD to vauban-web via SCM_RIGHTS");
+        } else {
+            warn!("No FD passing socket for vauban-web, it will bind its own socket");
+        }
+    } else {
+        warn!("vauban-web not started, skipping listener FD transfer");
+    }
+    drop(listener);
 
     info!("All services started, entering watchdog loop");
 
@@ -965,7 +990,7 @@ fn respawn_service(state: &mut ChildState, config: &SupervisorConfig, topology_p
         }
     };
 
-    let needs_fd_passing = matches!(state.service_key.as_str(), "proxy_ssh" | "proxy_rdp" | "audit");
+    let needs_fd_passing = matches!(state.service_key.as_str(), "proxy_ssh" | "proxy_rdp" | "audit" | "web");
     let (fd_passing_socket, fd_passing_child_fd) = if needs_fd_passing {
         match socketpair_for_fd_passing() {
             Ok((supervisor_socket, child_socket)) => {
@@ -996,6 +1021,24 @@ fn respawn_service(state: &mut ChildState, config: &SupervisorConfig, topology_p
             state.is_draining = false;
             state.drain_started = None;
             state.fd_passing_socket = fd_passing_socket;
+
+            if state.service_key == "web"
+                && let Some(ref fd_socket) = state.fd_passing_socket
+            {
+                let addr = format!("{}:{}", config.server.host, config.server.port);
+                match std::net::TcpListener::bind(&addr) {
+                    Ok(listener) => {
+                        if let Err(e) = send_fd(fd_socket.as_raw_fd(), listener.as_raw_fd()) {
+                            error!("Failed to send listener FD to respawned vauban-web: {}", e);
+                        } else {
+                            info!("Sent listening socket FD to respawned vauban-web");
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to re-bind {} for respawned vauban-web: {}", addr, e);
+                    }
+                }
+            }
         }
         Err(e) => {
             error!("Failed to respawn {}: {}", state.service_key, e);
@@ -1144,7 +1187,7 @@ fn respawn_linked_group(
                 }
             };
 
-            let needs_fd_passing = matches!(service_key, "proxy_ssh" | "proxy_rdp" | "audit");
+            let needs_fd_passing = matches!(service_key, "proxy_ssh" | "proxy_rdp" | "audit" | "web");
             let (fd_passing_socket, fd_passing_child_fd) = if needs_fd_passing {
                 match socketpair_for_fd_passing() {
                     Ok((supervisor_socket, child_socket)) => {
@@ -1175,6 +1218,24 @@ fn respawn_linked_group(
                     state.is_draining = false;
                     state.drain_started = None;
                     state.fd_passing_socket = fd_passing_socket;
+
+                    if service_key == "web"
+                        && let Some(ref fd_socket) = state.fd_passing_socket
+                    {
+                        let addr = format!("{}:{}", config.server.host, config.server.port);
+                        match std::net::TcpListener::bind(&addr) {
+                            Ok(listener) => {
+                                if let Err(e) = send_fd(fd_socket.as_raw_fd(), listener.as_raw_fd()) {
+                                    error!("Failed to send listener FD to respawned vauban-web: {}", e);
+                                } else {
+                                    info!("Sent listening socket FD to respawned vauban-web");
+                                }
+                            }
+                            Err(e) => {
+                                error!("Failed to re-bind {} for respawned vauban-web: {}", addr, e);
+                            }
+                        }
+                    }
                 }
                 Err(e) => {
                     error!("Failed to respawn {} in linked group: {}", service_key, e);
@@ -2744,6 +2805,36 @@ mod tests {
         };
 
         assert!(state_without_fd.fd_passing_socket.is_none());
+    }
+
+    #[test]
+    fn test_listener_bind_and_send_fd_via_scm_rights() {
+        let (sup_sock, child_sock) = socketpair_for_fd_passing()
+            .expect("socketpair_for_fd_passing should succeed");
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("should bind to ephemeral port");
+        let bound_addr = listener.local_addr().unwrap();
+        assert!(bound_addr.port() > 0);
+
+        send_fd(sup_sock.as_raw_fd(), listener.as_raw_fd())
+            .expect("send_fd should succeed");
+
+        use shared::ipc::recv_fd;
+        let received = recv_fd(child_sock.as_raw_fd())
+            .expect("recv_fd should succeed");
+
+        let received_listener = unsafe {
+            use std::os::unix::io::{FromRawFd, IntoRawFd};
+            std::net::TcpListener::from_raw_fd(received.into_raw_fd())
+        };
+        let recv_addr = received_listener.local_addr().unwrap();
+        assert_eq!(recv_addr, bound_addr, "received listener should be on the same address");
+    }
+
+    #[test]
+    fn test_web_needs_fd_passing() {
+        assert!(matches!("web", "proxy_ssh" | "proxy_rdp" | "audit" | "web"));
     }
 
     #[test]

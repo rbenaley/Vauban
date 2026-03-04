@@ -73,6 +73,19 @@ done
 set_acl         "vbwebfront" "rx" "${PREFIX}/etc/vauban/certs"
 set_default_acl "vbwebfront" "r"  "${PREFIX}/etc/vauban/certs"
 
+# Bootstrap self-signed certificate (replaced by ACME on first run)
+CERT_DIR="${PREFIX}/etc/vauban/certs"
+if [ ! -f "${CERT_DIR}/server.crt" ]; then
+    echo "==> Generating bootstrap TLS certificate..."
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+        -keyout "${CERT_DIR}/server.key" \
+        -out "${CERT_DIR}/server.crt" \
+        -days 1 -nodes \
+        -subj "/CN=vauban-bootstrap" 2>/dev/null
+    chmod 600 "${CERT_DIR}/server.key" "${CERT_DIR}/server.crt"
+    echo "  Generated self-signed bootstrap certificate (ACME will replace it)"
+fi
+
 echo "==> Setting ACLs on recordings directory..."
 
 detect_acl_type /var/vauban/recordings

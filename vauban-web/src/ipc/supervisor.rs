@@ -255,6 +255,11 @@ impl SupervisorClient {
         &self.inner
     }
 
+    /// Get the raw FD passing socket (for receiving the listening socket from supervisor).
+    pub fn fd_passing_socket(&self) -> Option<RawFd> {
+        self.inner.fd_passing_socket
+    }
+
     /// Set the ACME resolver for dynamic certificate management.
     ///
     /// Must be called after TLS configuration is loaded (Phase 1) and before
