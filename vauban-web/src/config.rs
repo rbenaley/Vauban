@@ -594,16 +594,20 @@ impl Config {
             )));
         }
 
-        // 2. Check workspace root config/ directory (development)
-        // CARGO_MANIFEST_DIR is set at compile time to the crate's directory (vauban-web/)
-        // We go up one level to reach the workspace root
-        let workspace_config = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .map(|p| p.join("config"));
-        if let Some(ref config_path) = workspace_config
-            && config_path.exists()
+        // 2. Check workspace root config/ directory (debug builds only)
+        // CARGO_MANIFEST_DIR is a compile-time path: if the binary is deployed
+        // on the same machine where it was built, this directory still exists
+        // and would shadow /usr/local/etc/vauban.  Only check it in debug builds.
+        #[cfg(debug_assertions)]
         {
-            return Ok(config_path.clone());
+            let workspace_config = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .map(|p| p.join("config"));
+            if let Some(ref config_path) = workspace_config
+                && config_path.exists()
+            {
+                return Ok(config_path.clone());
+            }
         }
 
         // 3. Check system configuration directory (production on FreeBSD)
@@ -622,15 +626,25 @@ impl Config {
         ))
     }
 
-    /// Get the workspace root directory.
+    /// Get the workspace root directory for resolving relative config paths.
     ///
-    /// Uses CARGO_MANIFEST_DIR (set at compile time) to find the vauban-web crate,
-    /// then goes up one level to get the workspace root.
+    /// - Debug builds: uses CARGO_MANIFEST_DIR (compile-time) to find the
+    ///   workspace root. This works because debug builds run from the workspace.
+    /// - Release builds: uses the current working directory. Production configs
+    ///   should use absolute paths; this is a fallback for relative ones.
     fn workspace_root() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .to_path_buf()
+        #[cfg(debug_assertions)]
+        {
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .to_path_buf()
+        }
+
+        #[cfg(not(debug_assertions))]
+        {
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))
+        }
     }
 
     /// Resolve relative paths in configuration to absolute paths.

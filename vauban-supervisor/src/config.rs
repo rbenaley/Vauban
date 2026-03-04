@@ -268,16 +268,20 @@ impl SupervisorConfig {
             anyhow::bail!("VAUBAN_CONFIG_DIR points to non-existent directory: {}", path);
         }
 
-        // 2. Check workspace root config/ directory (development)
-        // CARGO_MANIFEST_DIR is set at compile time to the crate's directory (vauban-supervisor/)
-        // We go up one level to reach the workspace root
-        let workspace_config = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .map(|p| p.join("config"));
-        if let Some(ref config_path) = workspace_config
-            && config_path.exists()
+        // 2. Check workspace root config/ directory (debug builds only)
+        // CARGO_MANIFEST_DIR is a compile-time path: if the binary is deployed
+        // on the same machine where it was built, this directory still exists
+        // and would shadow /usr/local/etc/vauban.  Only check it in debug builds.
+        #[cfg(debug_assertions)]
         {
-            return Ok(config_path.clone());
+            let workspace_config = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .map(|p| p.join("config"));
+            if let Some(ref config_path) = workspace_config
+                && config_path.exists()
+            {
+                return Ok(config_path.clone());
+            }
         }
 
         // 3. Check system configuration directory (production on FreeBSD)
