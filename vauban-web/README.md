@@ -28,37 +28,77 @@ Web interface and API for the VAUBAN security bastion platform, built with Rust 
 
 ## Configuration
 
-Configuration is managed through TOML files in the `config/` directory:
+VAUBAN uses two distinct configuration strategies depending on how the binary
+is compiled. The build profile (`--release` or not) determines the behaviour
+**at compile time** -- there is no runtime switch.
+
+### Build Profiles
+
+| | Debug (`cargo build`) | Release (`cargo build --release`) |
+|---|---|---|
+| **Environment** | Configurable via `VAUBAN_ENVIRONMENT` | Always **Production** |
+| **Default env** | `development` | `production` |
+| **`VAUBAN_ENVIRONMENT`** | Functional | **Ignored** (not compiled in) |
+| **Config files** | `default.toml` + `{env}.toml` + `local.toml` | `vauban.conf` only |
+| **Config directory** | `config/` (workspace root) | `/usr/local/etc/vauban/` |
+
+### Debug Build (Development)
+
+Configuration files are layered in this order:
 
 ```
 config/
-├── default.toml      # Default values for all environments
-├── development.toml  # Development environment overrides
-├── testing.toml      # Testing environment overrides
-├── production.toml   # Production environment overrides (template)
-└── local.toml        # Local overrides (not versioned, create manually)
+├── default.toml      # Base values shared across environments
+├── development.toml  # Development overrides (default)
+├── testing.toml      # Testing overrides (cargo test)
+└── local.toml        # Personal overrides (gitignored, optional)
 ```
 
-### Environment Selection
-
-Set the environment via `VAUBAN_ENVIRONMENT`:
+You can switch the environment with `VAUBAN_ENVIRONMENT`:
 
 ```bash
-export VAUBAN_ENVIRONMENT=development  # or: testing, production
+export VAUBAN_ENVIRONMENT=development  # default when absent
+export VAUBAN_ENVIRONMENT=testing      # used by cargo test
+export VAUBAN_ENVIRONMENT=production   # loads vauban.conf even in debug
 ```
+
+### Release Build (Production)
+
+The release binary loads a **single** self-contained configuration file:
+
+```
+/usr/local/etc/vauban/vauban.conf
+```
+
+`VAUBAN_ENVIRONMENT` is compiled out and has no effect. This guarantees that
+a production binary always runs in production mode, regardless of the
+runtime environment.
+
+### Configuration Directory Lookup
+
+Both profiles search for the config directory in this order:
+
+1. `VAUBAN_CONFIG_DIR` environment variable (if set)
+2. Workspace root `config/` directory (via `CARGO_MANIFEST_DIR`)
+3. `/usr/local/etc/vauban/` (FreeBSD system path)
 
 ### Secret Key
 
-For production, set the secret key via environment variable:
+The application secret key can be set in three ways (highest priority first):
 
+1. **Environment variable** (cleared from memory after reading):
 ```bash
-export VAUBAN_SECRET_KEY=`openssl rand -base64 32`
+export VAUBAN_SECRET_KEY=$(openssl rand -base64 32)
 ```
 
-Or create a `config/local.toml` file (gitignored):
-
+2. **`local.toml`** (debug builds, gitignored):
 ```toml
 secret_key = "your-secure-random-key-here"
+```
+
+3. **`vauban.conf`** (release builds, managed by `+POST_INSTALL`):
+```toml
+secret_key = "generated-at-install-time"
 ```
 
 ### Cache
@@ -173,15 +213,20 @@ diesel migration run --database-url postgresql://vauban:vauban@localhost/vauban
 
 ## Running
 
-Development:
+Development (debug build, defaults to `development` environment):
 ```bash
 cargo run
 ```
 
-Production:
+Testing environment (debug build):
+```bash
+VAUBAN_ENVIRONMENT=testing cargo run
+```
+
+Production (release build, always production mode):
 ```bash
 cargo build --release
-./target/release/vauban-web
+./target/release/vauban-web   # reads /usr/local/etc/vauban/vauban.conf
 ```
 
 ## CLI Utilities

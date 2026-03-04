@@ -3,9 +3,14 @@
 //! Uses the centralized configuration from the workspace root `config/` directory.
 //! Configuration is shared with vauban-web and other components.
 //!
-//! Supports two modes:
-//! - Development: All services run as current user
-//! - Production: Each service runs with dedicated UID/GID
+//! Environment selection is determined at **compile time** by the build profile:
+//!
+//! - **Release** (`cargo build --release`): always Production mode.
+//!   `VAUBAN_ENVIRONMENT` has no effect. Loads only `vauban.conf`.
+//!
+//! - **Debug** (`cargo build`): `VAUBAN_ENVIRONMENT` selects the environment
+//!   (development or production). Defaults to `development`.
+//!   Loads `default.toml` + `{environment}.toml`.
 //!
 //! Configuration directory lookup order:
 //! 1. VAUBAN_CONFIG_DIR environment variable (if set)
@@ -155,12 +160,25 @@ fn default_privsep() -> bool {
 }
 
 /// Environment type.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+///
+/// The default value depends on the build profile:
+/// - Debug build (`cargo build`): defaults to `Development`
+/// - Release build (`cargo build --release`): defaults to `Production`
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Environment {
     Development,
-    #[default]
     Production,
+}
+
+impl Default for Environment {
+    fn default() -> Self {
+        if cfg!(debug_assertions) {
+            Self::Development
+        } else {
+            Self::Production
+        }
+    }
 }
 
 impl std::fmt::Display for Environment {
@@ -279,17 +297,32 @@ impl SupervisorConfig {
 
     /// Load configuration from a directory containing TOML files.
     ///
-    /// - Production (default): loads only `vauban.conf`
-    /// - Development: loads `default.toml` + `development.toml`
+    /// - **Release build**: always Production, `VAUBAN_ENVIRONMENT` is ignored.
+    /// - **Debug build**: reads `VAUBAN_ENVIRONMENT` (defaults to Development).
     pub fn load_from_dir(config_dir: &Path) -> Result<Self> {
-        let environment = std::env::var("VAUBAN_ENVIRONMENT")
-            .map(|e| match e.to_lowercase().as_str() {
-                "development" | "dev" => Environment::Development,
-                _ => Environment::Production,
-            })
-            .unwrap_or(Environment::Production);
-
+        let environment = Self::resolve_environment();
         Self::load_from_dir_with_env(config_dir, environment)
+    }
+
+    /// Determine the active environment based on the build profile.
+    ///
+    /// - Release (`--release`): always `Production`, env var has no effect.
+    /// - Debug: reads `VAUBAN_ENVIRONMENT`, defaults to `Development`.
+    fn resolve_environment() -> Environment {
+        #[cfg(not(debug_assertions))]
+        {
+            Environment::Production
+        }
+
+        #[cfg(debug_assertions)]
+        {
+            std::env::var("VAUBAN_ENVIRONMENT")
+                .map(|e| match e.to_lowercase().as_str() {
+                    "development" | "dev" => Environment::Development,
+                    _ => Environment::Production,
+                })
+                .unwrap_or(Environment::Development)
+        }
     }
 
     /// Load configuration from a directory with an explicit environment.
