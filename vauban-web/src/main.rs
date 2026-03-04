@@ -286,6 +286,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 use std::os::unix::io::FromRawFd;
                 std::net::TcpListener::from_raw_fd(std::os::unix::io::IntoRawFd::into_raw_fd(owned_fd))
             };
+            listener.set_nonblocking(true).map_err(|e| {
+                format!("Failed to set listener to non-blocking: {}", e)
+            })?;
             tracing::info!(address = %addr, "Received pre-bound listening socket from supervisor");
             listener
         } else {
