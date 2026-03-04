@@ -83,6 +83,8 @@ if [ ! -f "${CERT_DIR}/server.crt" ]; then
         -days 1 -nodes \
         -subj "/CN=vauban-bootstrap" 2>/dev/null
     chmod 600 "${CERT_DIR}/server.key" "${CERT_DIR}/server.crt"
+    setfacl -m u:vbwebfront:r-- "${CERT_DIR}/server.crt" 2>/dev/null
+    setfacl -m u:vbwebfront:r-- "${CERT_DIR}/server.key" 2>/dev/null
     echo "  Generated self-signed bootstrap certificate (ACME will replace it)"
 fi
 
