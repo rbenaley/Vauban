@@ -23,16 +23,28 @@ detect_acl_type() {
 set_acl() {
     _user=$1; _perms=$2; _path=$3
     case "$_acl_type" in
-        nfsv4) setfacl -m "u:${_user}:${_perms}::allow" "$_path" ;;
-        *)     setfacl -m "u:${_user}:${_perms}" "$_path" ;;
+        nfsv4)
+            # NFSv4: -m only modifies existing ACEs; -a adds new ones.
+            # Skip if an ACE for this user already exists (idempotent).
+            getfacl "$_path" 2>/dev/null | grep -q "user:${_user}:" ||
+                setfacl -a 0 "u:${_user}:${_perms}::allow" "$_path"
+            ;;
+        *)
+            setfacl -m "u:${_user}:${_perms}" "$_path"
+            ;;
     esac
 }
 
 set_default_acl() {
     _user=$1; _perms=$2; _path=$3
     case "$_acl_type" in
-        nfsv4) setfacl -m "u:${_user}:${_perms}:fd:allow" "$_path" 2>/dev/null ;;
-        *)     setfacl -d -m "u:${_user}:${_perms}" "$_path" 2>/dev/null ;;
+        nfsv4)
+            getfacl "$_path" 2>/dev/null | grep "user:${_user}:" | grep -q ':fd' ||
+                setfacl -a 0 "u:${_user}:${_perms}:fd:allow" "$_path" 2>/dev/null
+            ;;
+        *)
+            setfacl -d -m "u:${_user}:${_perms}" "$_path" 2>/dev/null
+            ;;
     esac
 }
 
@@ -171,13 +183,7 @@ else
         su -m postgres -c "psql -q -d vauban -c \"GRANT ALL ON ALL TABLES IN SCHEMA public TO vauban; GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO vauban;\""
 
         sed -i '' '/^# url is injected/d; /^# For manual setup: url/d' "${CONF}"
-        if grep -q '^url' "${CONF}" 2>/dev/null; then
-            sed -i '' "s|^url = .*|url = \"postgresql://vauban:${DB_PASSWORD}@localhost/vauban\"|" "${CONF}"
-        else
-            sed -i '' '/^\[database\]/a\
-url = "postgresql://vauban:'"${DB_PASSWORD}"'@localhost/vauban"
-' "${CONF}"
-        fi
+        sed -i '' 's|^url = "postgresql://.*|url = "postgresql://vauban:'"${DB_PASSWORD}"'@localhost/vauban"|' "${CONF}"
 
         echo "  Database created and configured in ${CONF}"
     else
