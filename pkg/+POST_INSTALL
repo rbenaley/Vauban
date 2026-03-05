@@ -116,11 +116,6 @@ CONF="${PREFIX}/etc/vauban/vauban.conf"
 chown root:wheel "${CONF}"
 chmod 600 "${CONF}"
 
-detect_acl_type "${CONF}"
-for _u in ${_svc_users}; do
-    set_acl "$_u" "r" "${CONF}"
-done
-
 SECRET_KEY=$(grep -m1 '^secret_key' "${CONF}" 2>/dev/null | sed 's/.*= *"//;s/"$//')
 if [ -z "${SECRET_KEY}" ] || [ "${SECRET_KEY}" = "CHANGE-ME-IN-PRODUCTION-32-CHARS!" ]; then
     SECRET_KEY=$(openssl rand -base64 32)
@@ -199,7 +194,22 @@ else
 fi
 
 # =========================================================================== #
-# 7. Summary                                                                 #
+# 7. Final ACLs on vauban.conf                                               #
+#    Must run AFTER all sed -i operations (secret_key, database url)          #
+#    because sed -i replaces the file, destroying existing ACLs.             #
+# =========================================================================== #
+echo "==> Setting ACLs on ${CONF}..."
+
+chown root:wheel "${CONF}"
+chmod 600 "${CONF}"
+
+detect_acl_type "${CONF}"
+for _u in ${_svc_users}; do
+    set_acl "$_u" "r" "${CONF}"
+done
+
+# =========================================================================== #
+# 8. Summary                                                                 #
 # =========================================================================== #
 echo ""
 echo "================================================================"
