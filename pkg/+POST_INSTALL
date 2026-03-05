@@ -101,11 +101,6 @@ done
 # =========================================================================== #
 CONF="${PREFIX}/etc/vauban/vauban.conf"
 
-if [ ! -f "${CONF}" ]; then
-    echo "==> Generating production configuration..."
-    cp "${CONF}.sample" "${CONF}"
-fi
-
 chown root:wheel "${CONF}"
 chmod 600 "${CONF}"
 
