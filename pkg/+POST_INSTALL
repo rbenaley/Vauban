@@ -167,6 +167,9 @@ else
             fi
         done
 
+        su -m postgres -c "psql -q -d vauban -c \"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO vauban; ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO vauban;\""
+        su -m postgres -c "psql -q -d vauban -c \"GRANT ALL ON ALL TABLES IN SCHEMA public TO vauban; GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO vauban;\""
+
         sed -i '' '/^# url is injected/d; /^# For manual setup: url/d' "${CONF}"
         if grep -q '^url' "${CONF}" 2>/dev/null; then
             sed -i '' "s|^url = .*|url = \"postgresql://vauban:${DB_PASSWORD}@localhost/vauban\"|" "${CONF}"
@@ -184,6 +187,7 @@ url = "postgresql://vauban:'"${DB_PASSWORD}"'@localhost/vauban"
                 su -m postgres -c "psql -q -d vauban -f '${_mig}/up.sql'" 2>/dev/null || true
             fi
         done
+        su -m postgres -c "psql -q -d vauban -c \"GRANT ALL ON ALL TABLES IN SCHEMA public TO vauban; GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO vauban;\""
         echo "  Migrations applied (existing objects skipped)."
     fi
 fi
@@ -197,8 +201,8 @@ echo "  Vauban %%VERSION%% installed."
 echo ""
 echo "  Next steps:"
 echo "    1. Edit ${CONF}:"
-echo "       - Set 'email' and 'domains' in [server.tls.acme]"
-echo "         so ACME can issue TLS certificates automatically"
+echo "       - To enable ACME: set enabled=true, email and domains"
+echo "         in [server.tls.acme]"
 echo "    2. sysrc vauban_enable=YES"
 echo "    3. service vauban start"
 echo "    4. create_superuser"

@@ -25,7 +25,7 @@ use nix::unistd::{execv, fork, setgid, setuid, ForkResult, Gid, Pid, Uid};
 use shared::ipc::{poll_readable, send_fd, IpcChannel, socketpair_for_fd_passing};
 use shared::messages::{ControlMessage, Message, Service, ServiceStats};
 use std::net::ToSocketAddrs;
-use std::os::unix::io::{AsRawFd, OwnedFd};
+use std::os::unix::io::{AsRawFd, OwnedFd, RawFd};
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::process::ExitCode;
@@ -349,7 +349,12 @@ fn run_supervisor() -> Result<()> {
     } else {
         warn!("vauban-web not started, skipping listener FD transfer");
     }
-    drop(listener);
+    // Keep listener_fd alive for the lifetime of the supervisor.
+    // The socket must remain open so vauban-web can accept() on its
+    // SCM_RIGHTS copy, and so respawns can re-send the same FD
+    // without re-binding (which would fail with EADDRINUSE).
+    let listener_fd = listener.as_raw_fd();
+    std::mem::forget(listener);
 
     info!("All services started, entering watchdog loop");
 
@@ -362,6 +367,7 @@ fn run_supervisor() -> Result<()> {
         Duration::from_secs(watchdog_config.heartbeat_interval_secs),
         watchdog_config.max_missed_heartbeats,
         watchdog_config.max_respawns_per_hour,
+        listener_fd,
     )?;
 
     Ok(())
@@ -552,6 +558,7 @@ fn watchdog_loop(
     heartbeat_interval: Duration,
     max_missed_heartbeats: u32,
     max_respawns_per_hour: u32,
+    listener_fd: RawFd,
 ) -> Result<()> {
     let mut last_heartbeat = Instant::now();
     // Track services that need linked restart (will be processed after reaping)
@@ -566,13 +573,13 @@ fn watchdog_loop(
         }
 
         // Reap any dead children and collect services needing restart
-        reap_children(children, config, service_pipes, max_respawns_per_hour, &mut pending_linked_restarts);
+        reap_children(children, config, service_pipes, max_respawns_per_hour, &mut pending_linked_restarts, listener_fd);
         
         // Process pending linked restarts (restart entire groups)
         while let Some(service_key) = pending_linked_restarts.pop() {
             if let Some(linked_group) = get_linked_services(&service_key) {
                 info!("Restarting linked group for {}: {:?}", service_key, linked_group);
-                respawn_linked_group(children, config, service_pipes, linked_group);
+                respawn_linked_group(children, config, service_pipes, linked_group, listener_fd);
             }
         }
 
@@ -603,7 +610,7 @@ fn watchdog_loop(
                     } else {
                         let topology = service_key_to_service(service_key)
                             .and_then(|s| service_pipes.get(&s));
-                        drain_and_restart(state, config, topology);
+                        drain_and_restart(state, config, topology, listener_fd);
                     }
                 }
                 RestartDecision::ForceNow => {
@@ -614,7 +621,7 @@ fn watchdog_loop(
                     } else {
                         let topology = service_key_to_service(service_key)
                             .and_then(|s| service_pipes.get(&s));
-                        kill_and_respawn(state, config, topology);
+                        kill_and_respawn(state, config, topology, listener_fd);
                     }
                 }
             }
@@ -624,7 +631,7 @@ fn watchdog_loop(
         for service_key in services_to_restart {
             if let Some(linked_group) = get_linked_services(&service_key) {
                 info!("Restarting linked group due to unresponsive {}: {:?}", service_key, linked_group);
-                respawn_linked_group(children, config, service_pipes, linked_group);
+                respawn_linked_group(children, config, service_pipes, linked_group, listener_fd);
             }
         }
 
@@ -701,6 +708,7 @@ fn reap_children(
     service_pipes: &HashMap<Service, ServicePipes>,
     max_respawns_per_hour: u32,
     pending_linked_restarts: &mut Vec<String>,
+    listener_fd: RawFd,
 ) {
     loop {
         match waitpid(Pid::from_raw(-1), Some(WaitPidFlag::WNOHANG)) {
@@ -732,7 +740,7 @@ fn reap_children(
                             info!("Respawning {}", service_key);
                             let topology = service_key_to_service(&service_key)
                                 .and_then(|s| service_pipes.get(&s));
-                            respawn_service(state, config, topology);
+                            respawn_service(state, config, topology, listener_fd);
                         }
                     } else {
                         error!("{} has crashed too many times, not respawning", service_key);
@@ -767,7 +775,7 @@ fn reap_children(
                             info!("Respawning {}", service_key);
                             let topology = service_key_to_service(&service_key)
                                 .and_then(|s| service_pipes.get(&s));
-                            respawn_service(state, config, topology);
+                            respawn_service(state, config, topology, listener_fd);
                         }
                     } else {
                         error!("{} has crashed too many times, not respawning", service_key);
@@ -950,7 +958,7 @@ fn should_force_restart(state: &ChildState, max_missed: u32) -> RestartDecision 
     RestartDecision::ForceNow
 }
 
-fn kill_and_respawn(state: &mut ChildState, config: &SupervisorConfig, topology_pipes: Option<&ServicePipes>) {
+fn kill_and_respawn(state: &mut ChildState, config: &SupervisorConfig, topology_pipes: Option<&ServicePipes>, listener_fd: RawFd) {
     let pid = Pid::from_raw(state.pid);
     
     // Send SIGTERM
@@ -972,10 +980,10 @@ fn kill_and_respawn(state: &mut ChildState, config: &SupervisorConfig, topology_
         }
     }
 
-    respawn_service(state, config, topology_pipes);
+    respawn_service(state, config, topology_pipes, listener_fd);
 }
 
-fn respawn_service(state: &mut ChildState, config: &SupervisorConfig, topology_pipes: Option<&ServicePipes>) {
+fn respawn_service(state: &mut ChildState, config: &SupervisorConfig, topology_pipes: Option<&ServicePipes>, listener_fd: RawFd) {
     let uid = config.effective_uid(&state.service_key);
     let gid = config.effective_gid(&state.service_key);
     let workdir = config.effective_workdir(&state.service_key);
@@ -1031,18 +1039,10 @@ fn respawn_service(state: &mut ChildState, config: &SupervisorConfig, topology_p
             if state.service_key == "web"
                 && let Some(ref fd_socket) = state.fd_passing_socket
             {
-                let addr = format!("{}:{}", config.server.host, config.server.port);
-                match std::net::TcpListener::bind(&addr) {
-                    Ok(listener) => {
-                        if let Err(e) = send_fd(fd_socket.as_raw_fd(), listener.as_raw_fd()) {
-                            error!("Failed to send listener FD to respawned vauban-web: {}", e);
-                        } else {
-                            info!("Sent listening socket FD to respawned vauban-web");
-                        }
-                    }
-                    Err(e) => {
-                        error!("Failed to re-bind {} for respawned vauban-web: {}", addr, e);
-                    }
+                if let Err(e) = send_fd(fd_socket.as_raw_fd(), listener_fd) {
+                    error!("Failed to send listener FD to respawned vauban-web: {}", e);
+                } else {
+                    info!("Sent listening socket FD to respawned vauban-web");
                 }
             }
         }
@@ -1062,6 +1062,7 @@ fn respawn_linked_group(
     config: &SupervisorConfig,
     service_pipes: &mut HashMap<Service, ServicePipes>,
     group: &[&str],
+    listener_fd: RawFd,
 ) {
     info!("Starting linked group restart for: {:?}", group);
     
@@ -1228,18 +1229,10 @@ fn respawn_linked_group(
                     if service_key == "web"
                         && let Some(ref fd_socket) = state.fd_passing_socket
                     {
-                        let addr = format!("{}:{}", config.server.host, config.server.port);
-                        match std::net::TcpListener::bind(&addr) {
-                            Ok(listener) => {
-                                if let Err(e) = send_fd(fd_socket.as_raw_fd(), listener.as_raw_fd()) {
-                                    error!("Failed to send listener FD to respawned vauban-web: {}", e);
-                                } else {
-                                    info!("Sent listening socket FD to respawned vauban-web");
-                                }
-                            }
-                            Err(e) => {
-                                error!("Failed to re-bind {} for respawned vauban-web: {}", addr, e);
-                            }
+                        if let Err(e) = send_fd(fd_socket.as_raw_fd(), listener_fd) {
+                            error!("Failed to send listener FD to respawned vauban-web: {}", e);
+                        } else {
+                            info!("Sent listening socket FD to respawned vauban-web");
                         }
                     }
                 }
@@ -1680,14 +1673,14 @@ fn process_service_messages(children: &HashMap<String, ChildState>, recording_st
 ///
 /// This sends a Drain message, waits for DrainComplete with pending_requests=0,
 /// then proceeds with the standard kill_and_respawn sequence.
-fn drain_and_restart(state: &mut ChildState, config: &SupervisorConfig, topology_pipes: Option<&ServicePipes>) {
+fn drain_and_restart(state: &mut ChildState, config: &SupervisorConfig, topology_pipes: Option<&ServicePipes>, listener_fd: RawFd) {
     use shared::ipc::poll_readable;
     
     // 1. Send Drain message
     let drain_msg = Message::Control(ControlMessage::Drain);
     if let Err(e) = state.channel.send(&drain_msg) {
         warn!("{}: failed to send Drain, proceeding with kill: {}", state.service_key, e);
-        kill_and_respawn(state, config, topology_pipes);
+        kill_and_respawn(state, config, topology_pipes, listener_fd);
         return;
     }
     
@@ -1744,7 +1737,7 @@ fn drain_and_restart(state: &mut ChildState, config: &SupervisorConfig, topology
     let shutdown_msg = Message::Control(ControlMessage::Shutdown);
     let _ = state.channel.send(&shutdown_msg);
     
-    kill_and_respawn(state, config, topology_pipes);
+    kill_and_respawn(state, config, topology_pipes, listener_fd);
 }
 
 /// Frontend services: drained in parallel (no dependencies between them)
