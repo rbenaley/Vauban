@@ -158,6 +158,12 @@ const TOPOLOGY: &[PipeTopology] = &[
 ];
 
 fn main() -> ExitCode {
+    // Install rustls crypto provider before any TLS usage (ACME renewal).
+    #[allow(clippy::expect_used)]
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .expect("Failed to install rustls crypto provider");
+
     // Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -181,8 +187,6 @@ fn main() -> ExitCode {
 }
 
 fn run_supervisor() -> Result<()> {
-    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-
     // Load configuration
     let config = SupervisorConfig::load_auto()
         .context("Failed to load configuration")?;

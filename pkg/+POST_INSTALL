@@ -13,11 +13,11 @@ MIGRATION_DIR="${PREFIX}/share/vauban/migrations"
 _acl_type=""
 
 detect_acl_type() {
-    _fs=$(stat -f %HT "$1" 2>/dev/null)
-    case "$_fs" in
-        zfs) _acl_type="nfsv4" ;;
-        *)   _acl_type="posix" ;;
-    esac
+    if getfacl "$1" 2>/dev/null | head -5 | grep -q 'owner@'; then
+        _acl_type="nfsv4"
+    else
+        _acl_type="posix"
+    fi
 }
 
 set_acl() {
@@ -83,8 +83,8 @@ if [ ! -f "${CERT_DIR}/server.crt" ]; then
         -days 1 -nodes \
         -subj "/CN=vauban-bootstrap" 2>/dev/null
     chmod 600 "${CERT_DIR}/server.key" "${CERT_DIR}/server.crt"
-    setfacl -m u:vbwebfront:r-- "${CERT_DIR}/server.crt" 2>/dev/null
-    setfacl -m u:vbwebfront:r-- "${CERT_DIR}/server.key" 2>/dev/null
+    set_acl "vbwebfront" "r" "${CERT_DIR}/server.crt"
+    set_acl "vbwebfront" "r" "${CERT_DIR}/server.key"
     echo "  Generated self-signed bootstrap certificate (ACME will replace it)"
 fi
 
@@ -100,6 +100,11 @@ done
 # 4. Production configuration                                               #
 # =========================================================================== #
 CONF="${PREFIX}/etc/vauban/vauban.conf"
+
+if [ ! -f "${CONF}" ]; then
+    echo "==> Generating production configuration..."
+    cp "${CONF}.sample" "${CONF}"
+fi
 
 chown root:wheel "${CONF}"
 chmod 600 "${CONF}"
@@ -167,9 +172,6 @@ else
             fi
         done
 
-        su -m postgres -c "psql -q -d vauban -c \"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO vauban; ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO vauban;\""
-        su -m postgres -c "psql -q -d vauban -c \"GRANT ALL ON ALL TABLES IN SCHEMA public TO vauban; GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO vauban;\""
-
         sed -i '' '/^# url is injected/d; /^# For manual setup: url/d' "${CONF}"
         if grep -q '^url' "${CONF}" 2>/dev/null; then
             sed -i '' "s|^url = .*|url = \"postgresql://vauban:${DB_PASSWORD}@localhost/vauban\"|" "${CONF}"
@@ -187,7 +189,6 @@ url = "postgresql://vauban:'"${DB_PASSWORD}"'@localhost/vauban"
                 su -m postgres -c "psql -q -d vauban -f '${_mig}/up.sql'" 2>/dev/null || true
             fi
         done
-        su -m postgres -c "psql -q -d vauban -c \"GRANT ALL ON ALL TABLES IN SCHEMA public TO vauban; GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO vauban;\""
         echo "  Migrations applied (existing objects skipped)."
     fi
 fi
@@ -201,8 +202,8 @@ echo "  Vauban %%VERSION%% installed."
 echo ""
 echo "  Next steps:"
 echo "    1. Edit ${CONF}:"
-echo "       - To enable ACME: set enabled=true, email and domains"
-echo "         in [server.tls.acme]"
+echo "       - Set 'email' and 'domains' in [server.tls.acme]"
+echo "         so ACME can issue TLS certificates automatically"
 echo "    2. sysrc vauban_enable=YES"
 echo "    3. service vauban start"
 echo "    4. create_superuser"
