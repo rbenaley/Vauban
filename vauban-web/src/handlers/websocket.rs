@@ -1393,7 +1393,7 @@ async fn handle_rdp_socket(
 
         let now = chrono::Utc::now();
         let recording_path = format!(
-            "{}/{}/{:02}/{}.mp4",
+            "{}/{}/{:02}/{}/",
             state.config.recording.storage_path,
             now.format("%Y"),
             now.format("%m"),

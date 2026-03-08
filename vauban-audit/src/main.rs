@@ -328,28 +328,46 @@ fn handle_recording_message(
             height,
             data,
         } => {
-            mgr.handle_frame(&session_id, timestamp_us, is_keyframe, width, height, &data);
+            match mgr.handle_frame(&session_id, timestamp_us, is_keyframe, width, height, &data) {
+                recording_manager::FrameResult::Processed => {}
+                recording_manager::FrameResult::NewSegmentNeeded { relative_path } => {
+                    match request_file_from_supervisor(
+                        supervisor_channel,
+                        fd_passing_socket,
+                        &session_id,
+                        &relative_path,
+                    ) {
+                        Ok(file) => mgr.provide_segment_file(&session_id, file),
+                        Err(e) => {
+                            error!(session_id, error = %e, "Failed to obtain new segment file");
+                        }
+                    }
+                }
+            }
             state.requests_processed += 1;
         }
         Message::RdpRecordingEnd { session_id } => {
             if let Some(result) = mgr.end_session(&session_id) {
+                let meta_json = RecordingManager::serialize_meta_json(&result.segments);
                 match request_file_from_supervisor(
                     supervisor_channel,
                     fd_passing_socket,
                     &session_id,
-                    &result.blake3_relative_path,
+                    &result.meta_json_relative_path,
                 ) {
-                    Ok(blake3_file) => {
-                        if let Err(e) = recording_manager::write_blake3_sidecar(
-                            blake3_file,
-                            &result.hash_hex,
-                            &result.mp4_filename,
-                        ) {
-                            error!(session_id, error = %e, "Failed to write BLAKE3 sidecar");
+                    Ok(meta_file) => {
+                        use std::io::Write;
+                        let mut meta_file = meta_file;
+                        if let Err(e) = meta_file.write_all(meta_json.as_bytes())
+                            .and_then(|_| meta_file.flush())
+                        {
+                            error!(session_id, error = %e, "Failed to write meta.json");
+                        } else {
+                            info!(session_id, "meta.json written successfully");
                         }
                     }
                     Err(e) => {
-                        error!(session_id, error = %e, "Failed to obtain BLAKE3 sidecar file from supervisor");
+                        error!(session_id, error = %e, "Failed to obtain meta.json file from supervisor");
                     }
                 }
             }

@@ -87,7 +87,17 @@
         </div>
         {% else %}
         <!-- RDP/VNC Video Replay -->
-        {% if recording.recording_path.is_some() %}
+        {% if recording.is_segmented() %}
+        <video id="recordingVideo"
+               class="w-full"
+               preload="metadata"
+               controls
+               playsinline
+               data-manifest="/recordings/{{ recording.session_uuid }}/manifest.mpd">
+        </video>
+        <script src="/static/js/shaka-player.compiled.js"></script>
+        <script src="/static/js/shaka-init.js"></script>
+        {% else if recording.recording_path.is_some() %}
         <video id="recordingVideo"
                class="w-full"
                preload="metadata"

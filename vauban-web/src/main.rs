@@ -213,9 +213,39 @@ fn init_vault_client() -> Option<Arc<VaultCryptoClient>> {
 
 // Early startup uses eprintln! because tracing may not be initialized yet.
 // These are critical error paths that must be visible even without structured logging.
-#[allow(clippy::print_stderr)]
+#[allow(clippy::print_stderr, clippy::print_stdout)]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!(
+        r#"
+              *
+             /|\
+            / | \
+       ____/  |  \____
+      /   /   |   \   \
+  ___/   /    |    \   \___
+ |  /   / \   |   / \   \  |
+ | /   /   \__|__/   \   \ |
+ |/___/       |       \___\|
+ |   |   V A U B A N   |   |
+ |\   \       |       /   /|
+ | \   \   ___*___   /   / |
+ |  \   \_/   |   \_/   /  |
+  \  \___     |     ___/  /
+   \     \    |    /     /
+    \_____\   |   /_____/
+           \  |  /
+            \ | /
+             \|/
+              *
+
+ Open Source Security Bastion
+       v{} [{}]
+"#,
+        env!("CARGO_PKG_VERSION"),
+        env!("VAUBAN_GIT_HASH"),
+    );
+
     // M-8/M-10: Create server handle early for graceful shutdown.
     // The handle is shared with the supervisor IPC thread so it can trigger
     // graceful HTTP server shutdown instead of calling process::exit(0).
@@ -1034,6 +1064,14 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
         .route(
             "/recordings/{session_uuid}",
             get(handlers::web::serve_recording),
+        )
+        .route(
+            "/recordings/{session_uuid}/manifest.mpd",
+            get(handlers::web::serve_manifest),
+        )
+        .route(
+            "/recordings/{session_uuid}/{segment}",
+            get(handlers::web::serve_segment),
         )
         .route("/sessions/{id}", get(handlers::web::session_detail))
         .route("/sessions/approvals", get(handlers::web::approval_list))

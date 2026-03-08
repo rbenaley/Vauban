@@ -441,6 +441,7 @@ async fn active_session_loop(
     let mut video_mode = false;
     let framebuffer_dirty = Arc::new(AtomicBool::new(false));
     let mut encode_interval = interval(std::time::Duration::from_millis(16)); // 60 FPS max
+    let mut suppress_encoding_until: Option<Instant> = None;
 
     // Channel for receiving encoded H.264 frames from the encoder thread
     let (encoded_tx, mut encoded_rx) = mpsc::channel::<(crate::video_encoder::VideoFrame, u64)>(4);
@@ -618,8 +619,9 @@ async fn active_session_loop(
                                             aligned_w,
                                             aligned_h,
                                         ));
-                                        let _ = tx.try_send(EncoderCommand::ForceKeyframe);
-                                        framebuffer_dirty.store(true, Ordering::Relaxed);
+                                        suppress_encoding_until = Some(
+                                            Instant::now() + std::time::Duration::from_millis(500)
+                                        );
                                     }
 
                                     let _ = web_tx.send(Message::RdpDesktopResize {
@@ -741,6 +743,16 @@ async fn active_session_loop(
 
             // H.264 encoding tick: snapshot framebuffer and send to encoder thread
             _ = encode_interval.tick(), if video_mode => {
+                if let Some(until) = suppress_encoding_until {
+                    if Instant::now() < until {
+                        continue;
+                    }
+                    suppress_encoding_until = None;
+                    if let Some(ref tx) = encoder_snapshot_tx {
+                        let _ = tx.try_send(EncoderCommand::ForceKeyframe);
+                    }
+                    debug!(session_id = %session_id, "Post-resize grace period ended, resuming encoding");
+                }
                 if !framebuffer_dirty.swap(false, Ordering::Relaxed) {
                     perf_dirty_skips += 1;
                     continue;
@@ -1972,8 +1984,32 @@ mod tests {
             "DeactivateAll handler must reconfigure H.264 encoder for new resolution"
         );
         assert!(
-            handler_body.contains("EncoderCommand::ForceKeyframe"),
-            "DeactivateAll handler must force a keyframe after resize"
+            handler_body.contains("suppress_encoding_until"),
+            "DeactivateAll handler must set encoding grace period to avoid black frames"
+        );
+        assert!(
+            !handler_body.contains("framebuffer_dirty.store(true"),
+            "DeactivateAll handler must NOT immediately set framebuffer_dirty (causes black frames)"
+        );
+    }
+
+    #[test]
+    fn test_encode_tick_respects_grace_period() {
+        let source = include_str!("session.rs");
+        let tick_start = source
+            .find("H.264 encoding tick")
+            .expect("encode tick comment must exist");
+        let tick_body = &source[tick_start..];
+        let tick_end = tick_body.find("Receive encoded H.264").unwrap_or(tick_body.len());
+        let tick_body = &tick_body[..tick_end];
+
+        assert!(
+            tick_body.contains("suppress_encoding_until"),
+            "Encode tick must check suppress_encoding_until grace period"
+        );
+        assert!(
+            tick_body.contains("EncoderCommand::ForceKeyframe"),
+            "Encode tick must send ForceKeyframe when grace period expires"
         );
     }
 

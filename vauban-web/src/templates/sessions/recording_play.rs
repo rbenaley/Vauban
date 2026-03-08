@@ -40,6 +40,14 @@ impl RecordingData {
     pub fn is_graphical(&self) -> bool {
         self.session_type == "rdp" || self.session_type == "vnc"
     }
+
+    /// Check if this recording uses segmented format (directory-based, DASH playback).
+    /// New recordings end with `/` (directory), legacy ones end with `.mp4`.
+    pub fn is_segmented(&self) -> bool {
+        self.recording_path
+            .as_deref()
+            .is_some_and(|p| p.ends_with('/'))
+    }
 }
 
 #[derive(Template)]
@@ -178,5 +186,95 @@ mod tests {
 
         let result = template.render();
         assert!(result.is_ok(), "RecordingPlayTemplate should render");
+    }
+
+    #[test]
+    fn test_is_segmented_directory_path() {
+        let mut data = create_test_recording_data("rdp");
+        data.recording_path = Some("/recordings/2026/03/uuid-123/".to_string());
+        assert!(data.is_segmented());
+    }
+
+    #[test]
+    fn test_is_segmented_legacy_mp4() {
+        let mut data = create_test_recording_data("rdp");
+        data.recording_path = Some("/recordings/2026/03/uuid-123.mp4".to_string());
+        assert!(!data.is_segmented());
+    }
+
+    #[test]
+    fn test_is_segmented_none() {
+        let mut data = create_test_recording_data("rdp");
+        data.recording_path = None;
+        assert!(!data.is_segmented());
+    }
+
+    #[test]
+    fn test_legacy_recording_renders_native_video() {
+        use crate::templates::base::{UserContext, VaubanConfig};
+
+        let mut rec = create_test_recording_data("rdp");
+        rec.recording_path = Some("/recordings/2026/03/uuid.mp4".to_string());
+
+        let template = RecordingPlayTemplate {
+            title: "Recording".to_string(),
+            user: Some(UserContext {
+                uuid: "admin".to_string(),
+                username: "admin".to_string(),
+                display_name: "Admin".to_string(),
+                is_superuser: true,
+                is_staff: false,
+            }),
+            vauban: VaubanConfig {
+                brand_name: "VAUBAN".to_string(),
+                brand_logo: None,
+                theme: "dark".to_string(),
+            },
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            recording: rec,
+        };
+
+        let html = template.render().unwrap();
+        assert!(html.contains("<source src=\"/recordings/"), "legacy should use <source>");
+        assert!(!html.contains("shaka-player"), "legacy should not load shaka");
+    }
+
+    #[test]
+    fn test_segmented_recording_renders_shaka_player() {
+        use crate::templates::base::{UserContext, VaubanConfig};
+
+        let mut rec = create_test_recording_data("rdp");
+        rec.recording_path = Some("/recordings/2026/03/uuid-seg/".to_string());
+
+        let template = RecordingPlayTemplate {
+            title: "Recording".to_string(),
+            user: Some(UserContext {
+                uuid: "admin".to_string(),
+                username: "admin".to_string(),
+                display_name: "Admin".to_string(),
+                is_superuser: true,
+                is_staff: false,
+            }),
+            vauban: VaubanConfig {
+                brand_name: "VAUBAN".to_string(),
+                brand_logo: None,
+                theme: "dark".to_string(),
+            },
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            recording: rec,
+        };
+
+        let html = template.render().unwrap();
+        assert!(html.contains("shaka-player.compiled.js"), "segmented should load shaka");
+        assert!(html.contains("shaka-init.js"), "segmented should load shaka init script");
+        assert!(html.contains("data-manifest=\"/recordings/"), "segmented should have data-manifest attr");
+        assert!(html.contains("/manifest.mpd"), "segmented should reference MPD manifest");
+        assert!(!html.contains("<source src=\"/recordings/"), "segmented should not use <source>");
     }
 }

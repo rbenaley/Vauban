@@ -94,6 +94,17 @@ pub struct Sample {
     pub is_keyframe: bool,
 }
 
+/// Build the AVC codec string from SPS NAL unit bytes (e.g. `avc1.42c01e`).
+///
+/// The SPS must include the NAL header byte (0x67). Bytes 1-3 after the
+/// header are profile_idc, constraint_flags, and level_idc.
+pub fn codec_string_from_sps(sps: &[u8]) -> String {
+    let profile_idc = if sps.len() > 1 { sps[1] } else { 66 };
+    let profile_compat = if sps.len() > 2 { sps[2] } else { 0xC0 };
+    let level_idc = if sps.len() > 3 { sps[3] } else { 30 };
+    format!("avc1.{profile_idc:02x}{profile_compat:02x}{level_idc:02x}")
+}
+
 /// State for writing a fragmented MP4 file.
 pub struct Fmp4Writer<W: Write> {
     writer: W,
@@ -101,6 +112,7 @@ pub struct Fmp4Writer<W: Write> {
     base_decode_time: u64,
     track_id: u32,
     bytes_written: u64,
+    init_size: u64,
 }
 
 impl<W: Write> Fmp4Writer<W> {
@@ -131,6 +143,7 @@ impl<W: Write> Fmp4Writer<W> {
             base_decode_time: 0,
             track_id: 1,
             bytes_written,
+            init_size: bytes_written,
         })
     }
 
@@ -162,8 +175,20 @@ impl<W: Write> Fmp4Writer<W> {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn bytes_written(&self) -> u64 {
         self.bytes_written
+    }
+
+    /// Size of the initialization segment (ftyp + moov) in bytes.
+    /// Used by DASH MPD generation to set the `Initialization range` attribute.
+    pub fn init_size(&self) -> u64 {
+        self.init_size
+    }
+
+    /// Total media duration in timescale ticks (90 kHz).
+    pub fn duration_ticks(&self) -> u64 {
+        self.base_decode_time
     }
 
     #[allow(dead_code)]
@@ -1048,5 +1073,50 @@ mod tests {
         let (sps, pps) = extract_sps_pps(&data);
         assert!(sps.is_none());
         assert!(pps.is_none());
+    }
+
+    #[test]
+    fn test_init_size_matches_ftyp_moov() {
+        let sps = test_sps();
+        let pps = test_pps();
+        let mut output = Vec::new();
+        let writer = Fmp4Writer::new(&mut output, &sps, &pps, 1920, 1080).unwrap();
+
+        let init_size = writer.init_size();
+        assert!(init_size > 0);
+        assert_eq!(init_size, writer.bytes_written());
+
+        // ftyp starts at 0, moov follows; init_size should cover both
+        let ftyp_size = u32::from_be_bytes([output[0], output[1], output[2], output[3]]) as u64;
+        let moov_offset = ftyp_size as usize;
+        let moov_size = u32::from_be_bytes([
+            output[moov_offset],
+            output[moov_offset + 1],
+            output[moov_offset + 2],
+            output[moov_offset + 3],
+        ]) as u64;
+        assert_eq!(init_size, ftyp_size + moov_size);
+    }
+
+    #[test]
+    fn test_codec_string_baseline() {
+        // SPS: NAL header 0x67, profile_idc=0x42 (Baseline), compat=0xC0, level=0x1E (3.0)
+        let sps = vec![0x67, 0x42, 0xC0, 0x1E, 0xD9, 0x00, 0xA0];
+        assert_eq!(codec_string_from_sps(&sps), "avc1.42c01e");
+    }
+
+    #[test]
+    fn test_codec_string_extraction() {
+        // High profile, level 4.0
+        let sps_high = vec![0x67, 0x64, 0x00, 0x28];
+        assert_eq!(codec_string_from_sps(&sps_high), "avc1.640028");
+
+        // Main profile, level 3.1
+        let sps_main = vec![0x67, 0x4D, 0x40, 0x1F];
+        assert_eq!(codec_string_from_sps(&sps_main), "avc1.4d401f");
+
+        // Short SPS (fallback values)
+        let sps_short: Vec<u8> = vec![0x67];
+        assert_eq!(codec_string_from_sps(&sps_short), "avc1.42c01e");
     }
 }

@@ -59,6 +59,16 @@ pub static STATIC_FILES: &[StaticAsset] = &[
         content: include_bytes!("../static/js/vauban-components.js"),
         content_type: "application/javascript; charset=utf-8",
     },
+    StaticAsset {
+        path: "js/shaka-player.compiled.js",
+        content: include_bytes!("../static/js/shaka-player.compiled.js"),
+        content_type: "application/javascript; charset=utf-8",
+    },
+    StaticAsset {
+        path: "js/shaka-init.js",
+        content: include_bytes!("../static/js/shaka-init.js"),
+        content_type: "application/javascript; charset=utf-8",
+    },
     // ── CSS ───────────────────────────────────────────────────────────────
     StaticAsset {
         path: "css/vauban.css",

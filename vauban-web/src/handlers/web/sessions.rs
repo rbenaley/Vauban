@@ -1285,9 +1285,325 @@ fn parse_range_header(header: &str, file_size: u64) -> Option<(u64, u64)> {
     Some((start, end))
 }
 
+/// Metadata for a recording segment (deserialized from meta.json).
+#[derive(serde::Deserialize)]
+struct SegmentMeta {
+    index: u32,
+    width: u16,
+    height: u16,
+    duration_ticks: u64,
+    init_size: u64,
+    file_size: u64,
+    codec_string: String,
+}
+
+/// Wrapper for meta.json deserialization.
+#[derive(serde::Deserialize)]
+struct RecordingMeta {
+    segments: Vec<SegmentMeta>,
+}
+
+const DASH_TIMESCALE: u32 = 90_000;
+
+/// Generate a DASH MPD manifest for a segmented recording.
+///
+/// Each segment becomes a DASH Period with its own resolution and codec
+/// parameters. Shaka Player uses this to drive MSE-based playback with
+/// seamless resolution transitions.
+pub async fn serve_manifest(
+    State(state): State<AppState>,
+    auth_user: WebAuthUser,
+    axum::extract::Path(session_uuid_str): axum::extract::Path<String>,
+) -> Result<axum::response::Response, AppError> {
+    use axum::body::Body;
+    use axum::http::{StatusCode, header};
+
+    if !is_admin(&auth_user) {
+        return Err(AppError::Authorization(
+            "Only administrators can access recordings".to_string(),
+        ));
+    }
+
+    let session_uuid = ::uuid::Uuid::parse_str(&session_uuid_str)
+        .map_err(|_| AppError::Validation("Invalid session UUID".to_string()))?;
+
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+
+    use crate::schema::proxy_sessions::dsl;
+    let session: crate::models::session::ProxySession = dsl::proxy_sessions
+        .filter(dsl::uuid.eq(session_uuid))
+        .first(&mut conn)
+        .await
+        .map_err(|_| AppError::NotFound("Session not found".to_string()))?;
+
+    if !session.is_recorded {
+        return Err(AppError::NotFound("No recording for this session".to_string()));
+    }
+
+    let recording_path = session
+        .recording_path
+        .as_deref()
+        .ok_or_else(|| AppError::NotFound("Recording path not set".to_string()))?;
+
+    let storage_base = &state.config.recording.storage_path;
+    let base_dir = recording_path
+        .strip_prefix(storage_base)
+        .unwrap_or(recording_path)
+        .trim_start_matches('/');
+    let meta_relative = format!("{}meta.json", base_dir);
+
+    let supervisor = state.supervisor.as_ref().ok_or_else(|| {
+        AppError::Internal(anyhow::anyhow!("Requires supervisor (SCM_RIGHTS)"))
+    })?;
+
+    let result = supervisor
+        .request_recording_file(&session.uuid.to_string(), &meta_relative)
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Supervisor request failed: {}", e)))?;
+
+    if !result.success {
+        return Err(AppError::NotFound(format!(
+            "meta.json not available: {}",
+            result.error.unwrap_or_default()
+        )));
+    }
+
+    let meta_file = result.file.ok_or_else(|| {
+        AppError::Internal(anyhow::anyhow!("Supervisor returned success but no FD"))
+    })?;
+
+    let mut tokio_file = tokio::fs::File::from_std(meta_file);
+    let mut json_buf = String::new();
+    {
+        use tokio::io::AsyncReadExt;
+        tokio_file.read_to_string(&mut json_buf).await
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to read meta.json: {}", e)))?;
+    }
+
+    let meta: RecordingMeta = serde_json::from_str(&json_buf)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Invalid meta.json: {}", e)))?;
+
+    let mpd = build_mpd_xml(&session_uuid_str, &meta.segments);
+
+    axum::http::Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/dash+xml")
+        .header(header::CACHE_CONTROL, "private, max-age=3600")
+        .body(Body::from(mpd))
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Response build error: {}", e)))
+}
+
+/// Build DASH MPD XML from segment metadata.
+///
+/// Uses the `isoff-main` profile with `SegmentList` and explicit byte ranges
+/// for initialization and media data. This avoids the `sidx` box requirement
+/// of the `isoff-on-demand` profile (our fMP4 writer does not produce `sidx`).
+fn build_mpd_xml(session_uuid: &str, segments: &[SegmentMeta]) -> String {
+    let total_duration_ticks: u64 = segments.iter().map(|s| s.duration_ticks).sum();
+    let total_seconds = total_duration_ticks as f64 / f64::from(DASH_TIMESCALE);
+    let total_hours = (total_seconds / 3600.0).floor() as u64;
+    let total_mins = ((total_seconds % 3600.0) / 60.0).floor() as u64;
+    let total_secs = total_seconds % 60.0;
+    let iso_duration = format!("PT{total_hours}H{total_mins}M{total_secs:.3}S");
+
+    let mut xml = String::with_capacity(2048);
+    xml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+    xml.push_str(&format!(
+        "<MPD xmlns=\"urn:mpeg:dash:schema:mpd:2011\" \
+         type=\"static\" \
+         mediaPresentationDuration=\"{iso_duration}\" \
+         minBufferTime=\"PT2S\" \
+         profiles=\"urn:mpeg:dash:profile:isoff-main:2011\">\n"
+    ));
+
+    for seg in segments {
+        let seg_seconds = seg.duration_ticks as f64 / f64::from(DASH_TIMESCALE);
+        let seg_hours = (seg_seconds / 3600.0).floor() as u64;
+        let seg_mins = ((seg_seconds % 3600.0) / 60.0).floor() as u64;
+        let seg_secs = seg_seconds % 60.0;
+        let seg_iso = format!("PT{seg_hours}H{seg_mins}M{seg_secs:.3}S");
+
+        let init_end = seg.init_size.saturating_sub(1);
+
+        xml.push_str(&format!("  <Period id=\"{idx}\" duration=\"{seg_iso}\">\n",
+            idx = seg.index
+        ));
+        xml.push_str("    <AdaptationSet mimeType=\"video/mp4\" startWithSAP=\"1\">\n");
+        xml.push_str(&format!(
+            "      <Representation id=\"{idx}\" codecs=\"{codec}\" \
+             width=\"{w}\" height=\"{h}\" bandwidth=\"500000\">\n",
+            idx = seg.index,
+            codec = seg.codec_string,
+            w = seg.width,
+            h = seg.height,
+        ));
+        xml.push_str(&format!(
+            "        <BaseURL>/recordings/{session_uuid}/{idx:03}.mp4</BaseURL>\n",
+            idx = seg.index,
+        ));
+        let media_end = seg.file_size.saturating_sub(1);
+        xml.push_str(&format!(
+            "        <SegmentList>\n\
+             \x20         <Initialization range=\"0-{init_end}\"/>\n\
+             \x20         <SegmentURL mediaRange=\"{media_start}-{media_end}\"/>\n\
+             \x20       </SegmentList>\n",
+            media_start = seg.init_size,
+        ));
+        xml.push_str("      </Representation>\n");
+        xml.push_str("    </AdaptationSet>\n");
+        xml.push_str("  </Period>\n");
+    }
+
+    xml.push_str("</MPD>\n");
+    xml
+}
+
+/// Serve a single segment file from a segmented recording.
+///
+/// Route: GET /recordings/{session_uuid}/{segment}.mp4
+pub async fn serve_segment(
+    State(state): State<AppState>,
+    auth_user: WebAuthUser,
+    headers: axum::http::HeaderMap,
+    axum::extract::Path((session_uuid_str, segment_str)): axum::extract::Path<(String, String)>,
+) -> Result<axum::response::Response, AppError> {
+    use axum::body::Body;
+    use axum::http::{StatusCode, header};
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+    use tokio_util::io::ReaderStream;
+
+    if !is_admin(&auth_user) {
+        return Err(AppError::Authorization(
+            "Only administrators can access recordings".to_string(),
+        ));
+    }
+
+    let session_uuid = ::uuid::Uuid::parse_str(&session_uuid_str)
+        .map_err(|_| AppError::Validation("Invalid session UUID".to_string()))?;
+
+    let segment_name = segment_str.strip_suffix(".mp4").unwrap_or(&segment_str);
+    if segment_name.is_empty() || !segment_name.chars().all(|c| c.is_ascii_digit()) {
+        return Err(AppError::Validation("Invalid segment index".to_string()));
+    }
+
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+
+    use crate::schema::proxy_sessions::dsl;
+    let session: crate::models::session::ProxySession = dsl::proxy_sessions
+        .filter(dsl::uuid.eq(session_uuid))
+        .first(&mut conn)
+        .await
+        .map_err(|_| AppError::NotFound("Session not found".to_string()))?;
+
+    if !session.is_recorded {
+        return Err(AppError::NotFound("No recording for this session".to_string()));
+    }
+
+    let recording_path = session
+        .recording_path
+        .as_deref()
+        .ok_or_else(|| AppError::NotFound("Recording path not set".to_string()))?;
+
+    let storage_base = &state.config.recording.storage_path;
+    let base_dir = recording_path
+        .strip_prefix(storage_base)
+        .unwrap_or(recording_path)
+        .trim_start_matches('/');
+    let segment_relative = format!("{}{}.mp4", base_dir, segment_name);
+
+    let supervisor = state.supervisor.as_ref().ok_or_else(|| {
+        AppError::Internal(anyhow::anyhow!("Requires supervisor (SCM_RIGHTS)"))
+    })?;
+
+    let result = supervisor
+        .request_recording_file(&session.uuid.to_string(), &segment_relative)
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Supervisor request failed: {}", e)))?;
+
+    if !result.success {
+        return Err(AppError::NotFound(format!(
+            "Segment not available: {}",
+            result.error.unwrap_or_default()
+        )));
+    }
+
+    let std_file = result.file.ok_or_else(|| {
+        AppError::Internal(anyhow::anyhow!("Supervisor returned success but no FD"))
+    })?;
+
+    let metadata = std_file.metadata()
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to read file metadata: {}", e)))?;
+    let file_size = metadata.len();
+
+    let mut tokio_file = tokio::fs::File::from_std(std_file);
+
+    let range = headers
+        .get(header::RANGE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| parse_range_header(s, file_size));
+
+    let common_headers = [
+        (header::CONTENT_TYPE, "video/mp4".to_string()),
+        (header::ACCEPT_RANGES, "bytes".to_string()),
+        (header::CACHE_CONTROL, "private, max-age=3600".to_string()),
+    ];
+
+    const CHUNK_SIZE: usize = 64 * 1024;
+
+    if let Some((start, end)) = range {
+        let length = end - start + 1;
+
+        tokio_file
+            .seek(std::io::SeekFrom::Start(start))
+            .await
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("Seek failed: {}", e)))?;
+
+        let limited = tokio_file.take(length);
+        let stream = ReaderStream::with_capacity(limited, CHUNK_SIZE);
+
+        let mut builder = axum::http::Response::builder()
+            .status(StatusCode::PARTIAL_CONTENT)
+            .header(header::CONTENT_LENGTH, length.to_string())
+            .header(
+                header::CONTENT_RANGE,
+                format!("bytes {}-{}/{}", start, end, file_size),
+            );
+
+        for (k, v) in &common_headers {
+            builder = builder.header(k, v.as_str());
+        }
+
+        builder
+            .body(Body::from_stream(stream))
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("Response build error: {}", e)))
+    } else {
+        let stream = ReaderStream::with_capacity(tokio_file, CHUNK_SIZE);
+
+        let mut builder = axum::http::Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_LENGTH, file_size.to_string());
+
+        for (k, v) in &common_headers {
+            builder = builder.header(k, v.as_str());
+        }
+
+        builder
+            .body(Body::from_stream(stream))
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("Response build error: {}", e)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::parse_range_header;
+    use super::*;
 
     const FILE_SIZE: u64 = 10_000_000;
 
@@ -1365,4 +1681,66 @@ mod tests {
         assert_eq!(parse_range_header("bytes=0-0", 1), Some((0, 0)));
         assert_eq!(parse_range_header("bytes=1-", 1), None);
     }
+
+    fn make_segment(index: u32, w: u16, h: u16, duration_ticks: u64, init_size: u64, file_size: u64) -> SegmentMeta {
+        SegmentMeta {
+            index,
+            width: w,
+            height: h,
+            duration_ticks,
+            init_size,
+            file_size,
+            codec_string: format!("avc1.42c01e"),
+        }
+    }
+
+    #[test]
+    fn test_mpd_single_period() {
+        let segments = vec![make_segment(1, 1280, 720, 900_000, 512, 4096)];
+        let mpd = build_mpd_xml("test-uuid", &segments);
+
+        assert!(mpd.contains("<?xml version=\"1.0\""));
+        assert!(mpd.contains("<MPD"));
+        assert!(mpd.contains("type=\"static\""));
+        assert!(mpd.contains("isoff-main"));
+        assert!(mpd.contains("<Period id=\"1\""));
+        assert!(!mpd.contains("<Period id=\"2\""));
+        assert!(mpd.contains("width=\"1280\""));
+        assert!(mpd.contains("height=\"720\""));
+        assert!(mpd.contains("codecs=\"avc1.42c01e\""));
+        assert!(mpd.contains("/recordings/test-uuid/001.mp4"));
+        assert!(mpd.contains("<SegmentList>"));
+        assert!(mpd.contains("Initialization range=\"0-511\""));
+        assert!(mpd.contains("mediaRange=\"512-4095\""));
+    }
+
+    #[test]
+    fn test_mpd_multi_period() {
+        let segments = vec![
+            make_segment(1, 1280, 720, 450_000, 512, 4096),
+            make_segment(2, 1920, 1080, 900_000, 640, 8192),
+            make_segment(3, 800, 600, 225_000, 480, 2048),
+        ];
+        let mpd = build_mpd_xml("multi-uuid", &segments);
+
+        assert!(mpd.contains("<Period id=\"1\""));
+        assert!(mpd.contains("<Period id=\"2\""));
+        assert!(mpd.contains("<Period id=\"3\""));
+        assert!(mpd.contains("width=\"1280\""));
+        assert!(mpd.contains("width=\"1920\""));
+        assert!(mpd.contains("width=\"800\""));
+        assert!(mpd.contains("/recordings/multi-uuid/001.mp4"));
+        assert!(mpd.contains("/recordings/multi-uuid/002.mp4"));
+        assert!(mpd.contains("/recordings/multi-uuid/003.mp4"));
+    }
+
+    #[test]
+    fn test_mpd_byte_ranges() {
+        let segments = vec![make_segment(1, 1920, 1080, 900_000, 1024, 65536)];
+        let mpd = build_mpd_xml("range-uuid", &segments);
+
+        assert!(mpd.contains("Initialization range=\"0-1023\""));
+        assert!(mpd.contains("mediaRange=\"1024-65535\""));
+    }
+
 }
