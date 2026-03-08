@@ -11,7 +11,11 @@ set -e
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 PROJECT_ROOT=$(cd "${SCRIPT_DIR}/.." && pwd)
 STAGING="${SCRIPT_DIR}/staging"
-VERSION="0.2.0"
+VERSION=$(sed -n '/^\[workspace\.package\]/,/^version/{s/^version *= *"\(.*\)"/\1/p;}' "${PROJECT_ROOT}/Cargo.toml")
+if [ -z "$VERSION" ]; then
+    echo "ERROR: could not extract version from Cargo.toml"
+    exit 1
+fi
 RELEASE_DIR="${PROJECT_ROOT}/target/release"
 
 echo "==> Building Vauban ${VERSION} package..."
@@ -58,9 +62,11 @@ cp -R "${PROJECT_ROOT}/vauban-web/migrations/"* "${STAGING}/usr/local/share/vaub
 
 install -m 555 "${SCRIPT_DIR}/rc.d/vauban" "${STAGING}/usr/local/etc/rc.d/vauban"
 
-# ---- Replace version placeholder in +POST_INSTALL -------------------------
-sed "s/%%VERSION%%/${VERSION}/g" "${SCRIPT_DIR}/+POST_INSTALL" > "${SCRIPT_DIR}/+POST_INSTALL.tmp"
-mv "${SCRIPT_DIR}/+POST_INSTALL.tmp" "${SCRIPT_DIR}/+POST_INSTALL"
+# ---- Replace version placeholders ------------------------------------------
+for _tmpl in +MANIFEST +POST_INSTALL; do
+    sed "s/%%VERSION%%/${VERSION}/g" "${SCRIPT_DIR}/${_tmpl}" > "${SCRIPT_DIR}/${_tmpl}.tmp"
+    mv "${SCRIPT_DIR}/${_tmpl}.tmp" "${SCRIPT_DIR}/${_tmpl}"
+done
 
 # ---- Create package --------------------------------------------------------
 echo "==> Creating package..."

@@ -285,8 +285,8 @@ When the desktop resolution changes (DeactivateAll / Reactivation sequence in RD
 #### 3.4.1 Problem
 
 ```
-t=0ms     DecodedImage::new(new_w, new_h)     Framebuffer = all zeros (black)
-t=0ms     EncoderCommand::Reconfigure          Encoder ready for new dimensions
+t=0ms     DecodedImage::new(new_w, new_h)       Framebuffer = all zeros (black)
+t=0ms     EncoderCommand::Reconfigure           Encoder ready for new dimensions
 t=0ms     framebuffer_dirty = true              Triggers immediate encode
 t=16ms    encode tick                           Encodes BLACK framebuffer as keyframe
 t=32ms    encode tick                           dirty=false, skip
@@ -302,9 +302,9 @@ t=1500ms  Last RDP update                       Framebuffer finally complete
 After a resolution change, encoding is suppressed for a 500ms grace period (`suppress_encoding_until`). During this window, RDP graphics updates arrive and populate the framebuffer normally, but no frames are captured or encoded. When the grace period expires, a `ForceKeyframe` command is sent to the encoder and encoding resumes with the now-complete framebuffer.
 
 ```
-t=0ms     DecodedImage::new(new_w, new_h)     Framebuffer = black
-t=0ms     EncoderCommand::Reconfigure          Encoder ready
-t=0ms     suppress_encoding_until = now+500ms  Grace period starts
+t=0ms     DecodedImage::new(new_w, new_h)       Framebuffer = black
+t=0ms     EncoderCommand::Reconfigure           Encoder ready
+t=0ms     suppress_encoding_until = now+500ms   Grace period starts
           (NO ForceKeyframe, NO framebuffer_dirty)
 
           During 500ms:

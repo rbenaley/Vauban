@@ -1,5 +1,5 @@
 name = "vauban";
-version = "0.2.0";
+version = "%%VERSION%%";
 origin = "security/vauban";
 comment = "Security bastion platform with SSH/RDP session recording, RBAC, and audit";
 maintainer = "none@freebsd.org";
