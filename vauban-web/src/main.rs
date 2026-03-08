@@ -213,39 +213,9 @@ fn init_vault_client() -> Option<Arc<VaultCryptoClient>> {
 
 // Early startup uses eprintln! because tracing may not be initialized yet.
 // These are critical error paths that must be visible even without structured logging.
-#[allow(clippy::print_stderr, clippy::print_stdout)]
+#[allow(clippy::print_stderr)]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!(
-        r#"
-              *
-             /|\
-            / | \
-       ____/  |  \____
-      /   /   |   \   \
-  ___/   /    |    \   \___
- |  /   / \   |   / \   \  |
- | /   /   \__|__/   \   \ |
- |/___/       |       \___\|
- |   |   V A U B A N   |   |
- |\   \       |       /   /|
- | \   \   ___*___   /   / |
- |  \   \_/   |   \_/   /  |
-  \  \___     |     ___/  /
-   \     \    |    /     /
-    \_____\   |   /_____/
-           \  |  /
-            \ | /
-             \|/
-              *
-
- Open Source Security Bastion
-       v{} [{}]
-"#,
-        env!("CARGO_PKG_VERSION"),
-        env!("VAUBAN_GIT_HASH"),
-    );
-
     // M-8/M-10: Create server handle early for graceful shutdown.
     // The handle is shared with the supervisor IPC thread so it can trigger
     // graceful HTTP server shutdown instead of calling process::exit(0).

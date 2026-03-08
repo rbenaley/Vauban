@@ -158,7 +158,38 @@ const TOPOLOGY: &[PipeTopology] = &[
     PipeTopology { from: Service::ProxyRdp, to: Service::Audit },
 ];
 
+#[allow(clippy::print_stdout)]
 fn main() -> ExitCode {
+    println!(
+        r#"
+              *
+             /|\
+            / | \
+       ____/  |  \____
+      /   /   |   \   \
+  ___/   /    |    \   \___
+ |  /   / \   |   / \   \  |
+ | /   /   \__|__/   \   \ |
+ |/___/       |       \___\|
+ |    |  V A U B A N   |   |
+ |\   \       |       /   /|
+ | \   \   ___*___   /   / |
+ |  \   \_/   |   \_/   /  |
+  \  \___     |     ___/  /
+   \     \    |    /     /
+    \_____\   |   /_____/
+           \  |  /
+            \ | /
+             \|/
+              *
+
+    Open Source Security Bastion
+          v{} [{}]
+"#,
+        env!("CARGO_PKG_VERSION"),
+        env!("VAUBAN_GIT_HASH"),
+    );
+
     // Install rustls crypto provider before any TLS usage (ACME renewal).
     #[allow(clippy::expect_used)]
     rustls::crypto::aws_lc_rs::default_provider()
