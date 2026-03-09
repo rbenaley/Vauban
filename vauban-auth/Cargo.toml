@@ -18,3 +18,5 @@ tracing-subscriber.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 serde.workspace = true
+argon2 = "0.5"
+rand = "0.8"

@@ -116,6 +116,21 @@ impl BaseTemplate {
         self
     }
 
+    /// Override sidebar RBAC permissions (computed async by handlers).
+    pub fn with_sidebar_permissions(
+        mut self,
+        can_view_groups: bool,
+        can_view_access_rules: bool,
+        can_view_admin: bool,
+    ) -> Self {
+        if let Some(ref mut sidebar) = self.sidebar_content {
+            sidebar.can_view_groups = can_view_groups;
+            sidebar.can_view_access_rules = can_view_access_rules;
+            sidebar.can_view_admin = can_view_admin;
+        }
+        self
+    }
+
     /// Decompose BaseTemplate into individual fields for child templates.
     #[allow(clippy::type_complexity)]
     pub fn into_fields(

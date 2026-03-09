@@ -18,3 +18,5 @@ tracing-subscriber.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 serde.workspace = true
+casbin.workspace = true
+tokio = { workspace = true, features = ["rt"] }

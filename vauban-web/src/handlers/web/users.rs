@@ -14,7 +14,7 @@ pub async fn user_list(
     let base =
         BaseTemplate::new("Users".to_string(), user.clone()).with_current_path("/accounts/users");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        base.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
 
     // Load users from database
     let mut conn = state
@@ -269,12 +269,11 @@ pub async fn user_detail(
         created_at: created_at.format("%b %d, %Y").to_string(),
     };
 
-    // Determine if current user can edit this user
-    // Staff can edit non-superusers, superusers can edit anyone
-    let can_edit = auth_user.is_superuser || (auth_user.is_staff && !is_superuser);
+    let has_user_write = check_rbac(&state, &auth_user, "users", "write").await;
+    let can_edit = has_user_write && (!is_superuser || auth_user.is_superuser);
 
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        base.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
     let template = UserDetailTemplate {
         title,
         user: user_ctx,
@@ -332,8 +331,7 @@ pub async fn user_create_form(
 ) -> Result<impl IntoResponse, AppError> {
     use crate::templates::accounts::UserCreateTemplate;
 
-    // Only staff or superuser can access
-    if !auth_user.is_superuser && !auth_user.is_staff {
+    if !check_rbac(&state, &auth_user, "users", "write").await {
         return Err(AppError::Authorization(
             "You do not have permission to create users".to_string(),
         ));
@@ -346,7 +344,7 @@ pub async fn user_create_form(
     let can_manage_superusers = auth_user.is_superuser;
 
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        base.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
     let template = UserCreateTemplate {
         title,
         user: user_ctx,
@@ -391,15 +389,13 @@ pub async fn create_user_web(
         );
     }
 
-    // Permission check
-    if !auth_user.is_superuser && !auth_user.is_staff {
+    if !check_rbac(&state, &auth_user, "users", "write").await {
         return flash_redirect(
             flash.error("You do not have permission to create users"),
             "/accounts/users",
         );
     }
 
-    // Check if trying to create a superuser without being a superuser
     let wants_superuser = form.is_superuser.as_deref() == Some("on");
     if wants_superuser && !auth_user.is_superuser {
         return flash_redirect(
@@ -435,8 +431,8 @@ pub async fn create_user_web(
         }
     };
 
-    // Check for duplicate username or email
-    let existing: Option<i32> = users::table
+    // Check for duplicate username or email among active users
+    let active_duplicate: Option<i32> = users::table
         .filter(
             users::username
                 .eq(&form.username)
@@ -449,21 +445,32 @@ pub async fn create_user_web(
         .optional()
         .unwrap_or(None);
 
-    if existing.is_some() {
+    if active_duplicate.is_some() {
         return flash_redirect(
             flash.error("Username or email already exists"),
             "/accounts/users/new",
         );
     }
 
-    // Hash password
-    let password_hash = match state.auth_service.hash_password(&form.password) {
-        Ok(hash) => hash,
-        Err(_) => {
-            return flash_redirect(
-                flash.error("Failed to process password. Please try again."),
-                "/accounts/users/new",
-            );
+    let password_hash = if let Some(ref client) = state.auth_ipc_client {
+        match client.hash_password(&form.password).await {
+            Ok(hash) => hash,
+            Err(_) => {
+                return flash_redirect(
+                    flash.error("Failed to process password. Please try again."),
+                    "/accounts/users/new",
+                );
+            }
+        }
+    } else {
+        match state.auth_service.hash_password(&form.password) {
+            Ok(hash) => hash,
+            Err(_) => {
+                return flash_redirect(
+                    flash.error("Failed to process password. Please try again."),
+                    "/accounts/users/new",
+                );
+            }
         }
     };
 
@@ -497,10 +504,17 @@ pub async fn create_user_web(
             flash.success(format!("User '{}' created successfully", form.username)),
             &format!("/accounts/users/{}", user_uuid),
         ),
-        Err(_) => flash_redirect(
-            flash.error("Failed to create user. Please try again."),
-            "/accounts/users/new",
-        ),
+        Err(e) => {
+            tracing::error!(
+                username = %form.username,
+                error = %e,
+                "Failed to insert user into database"
+            );
+            flash_redirect(
+                flash.error("Failed to create user. Please try again."),
+                "/accounts/users/new",
+            )
+        }
     }
 }
 
@@ -516,8 +530,7 @@ pub async fn user_edit_form(
 
     let flash = incoming_flash.flash();
 
-    // Only staff or superuser can access
-    if !auth_user.is_superuser && !auth_user.is_staff {
+    if !check_rbac(&state, &auth_user, "users", "write").await {
         return flash_redirect(
             flash.error("You do not have permission to edit users"),
             "/accounts/users",
@@ -607,15 +620,15 @@ pub async fn user_edit_form(
 
     let password_min_length = state.config.security.password_min_length;
     let can_manage_superusers = auth_user.is_superuser;
-    // Can delete if: superuser can delete anyone (except last superuser), staff can delete non-superusers
-    let can_delete = auth_user.is_superuser || (auth_user.is_staff && !is_superuser);
+    let has_user_write = check_rbac(&state, &auth_user, "users", "write").await;
+    let can_delete = has_user_write && (!is_superuser || auth_user.is_superuser);
 
     let user = Some(user_context_from_auth(&auth_user));
     let base =
         BaseTemplate::new("Edit User".to_string(), user).with_current_path("/accounts/users");
 
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        base.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
     let template = UserEditTemplate {
         title,
         user: user_ctx,
@@ -664,8 +677,7 @@ pub async fn update_user_web(
         );
     }
 
-    // Permission check
-    if !auth_user.is_superuser && !auth_user.is_staff {
+    if !check_rbac(&state, &auth_user, "users", "write").await {
         return flash_redirect(
             flash.error("You do not have permission to edit users"),
             "/accounts/users",
@@ -731,8 +743,8 @@ pub async fn update_user_web(
         );
     }
 
-    // Check for duplicate username or email (excluding current user)
-    let existing: Option<i32> = users::table
+    // Check for duplicate username or email (excluding current user, active only)
+    let active_duplicate: Option<i32> = users::table
         .filter(
             users::username
                 .eq(&form.username)
@@ -746,7 +758,7 @@ pub async fn update_user_web(
         .optional()
         .unwrap_or(None);
 
-    if existing.is_some() {
+    if active_duplicate.is_some() {
         return flash_redirect(
             flash.error("Username or email already exists"),
             &format!("/accounts/users/{}/edit", user_uuid),
@@ -763,7 +775,12 @@ pub async fn update_user_web(
                     &format!("/accounts/users/{}/edit", user_uuid),
                 );
             }
-            match state.auth_service.hash_password(password) {
+            let h = if let Some(ref client) = state.auth_ipc_client {
+                client.hash_password(password).await
+            } else {
+                state.auth_service.hash_password(password)
+            };
+            match h {
                 Ok(hash) => Some(hash),
                 Err(_) => {
                     return flash_redirect(
@@ -860,8 +877,7 @@ pub async fn delete_user_web(
         );
     }
 
-    // Permission check - must be staff or superuser
-    if !auth_user.is_superuser && !auth_user.is_staff {
+    if !check_rbac(&state, &auth_user, "users", "write").await {
         return flash_redirect(
             flash.error("You do not have permission to delete users"),
             "/accounts/users",
@@ -932,13 +948,25 @@ pub async fn delete_user_web(
         }
     }
 
-    // Soft delete the user
+    // Soft-delete: mark as deleted and retire username/email so the UNIQUE
+    // constraints are freed for future reuse while preserving audit history.
     let now = Utc::now();
+    let suffix = format!("_deleted_{}", now.timestamp_millis());
+
+    let current: (String, String) = users::table
+        .filter(users::id.eq(user_id))
+        .select((users::username, users::email))
+        .first(&mut conn)
+        .await
+        .unwrap_or_default();
+
     let result = diesel::update(users::table.filter(users::id.eq(user_id)))
         .set((
             users::is_deleted.eq(true),
             users::deleted_at.eq(now),
             users::updated_at.eq(now),
+            users::username.eq(format!("{}{}", current.0, suffix)),
+            users::email.eq(format!("{}{}", current.1, suffix)),
         ))
         .execute(&mut conn)
         .await;
@@ -1067,7 +1095,7 @@ pub async fn profile(
     let base = BaseTemplate::new("My Profile".to_string(), user.clone())
         .with_current_path("/accounts/profile");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        base.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
 
     let template = ProfileTemplate {
         title,
@@ -1100,7 +1128,7 @@ pub async fn mfa_setup(
     let base =
         BaseTemplate::new("MFA Setup".to_string(), user.clone()).with_current_path("/accounts/mfa");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        base.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
 
     let mut conn = state
         .db_pool
@@ -1243,7 +1271,7 @@ pub async fn user_sessions(
     let base = BaseTemplate::new("My Sessions".to_string(), user.clone())
         .with_current_path("/accounts/sessions");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        base.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
 
     // Load user sessions from database
     let mut conn = state
@@ -1344,7 +1372,7 @@ pub async fn api_keys(
     let base = BaseTemplate::new("API Keys".to_string(), user.clone())
         .with_current_path("/accounts/apikeys");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        base.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
 
     // Load user API keys from database
     let mut conn = state

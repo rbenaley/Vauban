@@ -14,7 +14,7 @@ pub async fn session_list(
     let base =
         BaseTemplate::new("Sessions".to_string(), user.clone()).with_current_path("/sessions");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        base.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
 
     // Load sessions from database
     let mut conn = state
@@ -29,7 +29,7 @@ pub async fn session_list(
     let asset_filter = params.get("asset").filter(|s| !s.is_empty()).cloned();
 
     // Determine if user is admin
-    let user_is_admin = is_admin(&auth_user);
+    let user_is_admin = check_rbac(&state, &auth_user, "admin", "view").await;
 
     // For non-admin users, we need to get their user ID to filter sessions
     let current_user_id: Option<i32> = if !user_is_admin {
@@ -238,7 +238,7 @@ pub async fn session_detail(
             );
         }
     };
-    let user_is_admin = is_admin(&auth_user);
+    let user_is_admin = check_rbac(&state, &auth_user, "admin", "view").await;
 
     // NOTE: Raw SQL required - complex triple JOIN with PostgreSQL ::text casts
     // Cannot be migrated to Diesel DSL due to:
@@ -345,7 +345,7 @@ pub async fn session_detail(
     let base =
         BaseTemplate::new(format!("Session #{}", id), user.clone()).with_current_path("/sessions");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        base.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
 
     let template = crate::templates::sessions::session_detail::SessionDetailTemplate {
         title,
@@ -425,7 +425,7 @@ pub async fn recording_list(
     use crate::templates::sessions::recording_list::RecordingListItem;
 
     // Only admin users (superuser or staff) can view recordings
-    if !is_admin(&auth_user) {
+    if !check_rbac(&state, &auth_user, "admin", "view").await {
         return Err(AppError::Authorization(
             "Only administrators can view recordings".to_string(),
         ));
@@ -435,7 +435,7 @@ pub async fn recording_list(
     let base = BaseTemplate::new("Recordings".to_string(), user.clone())
         .with_current_path("/sessions/recordings");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        base.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
 
     // Load recordings from database (sessions with is_recorded = true)
     let mut conn = state
@@ -570,7 +570,7 @@ pub async fn recording_play(
     };
 
     // Only admin users (superuser or staff) can play recordings
-    if !is_admin(&auth_user) {
+    if !check_rbac(&state, &auth_user, "admin", "view").await {
         return flash_redirect(
             flash.error("Only administrators can play recordings"),
             "/sessions/recordings",
@@ -656,7 +656,7 @@ pub async fn recording_play(
     )
     .with_current_path("/sessions/recordings");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        base.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
 
     let template = crate::templates::sessions::recording_play::RecordingPlayTemplate {
         title,
@@ -711,7 +711,7 @@ pub async fn approval_list(
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
     // Only admin users (superuser or staff) can view approvals
-    if !is_admin(&auth_user) {
+    if !check_rbac(&state, &auth_user, "admin", "view").await {
         return Err(AppError::Authorization(
             "Only administrators can view approvals".to_string(),
         ));
@@ -721,7 +721,7 @@ pub async fn approval_list(
     let base = BaseTemplate::new("Approvals".to_string(), user.clone())
         .with_current_path("/sessions/approvals");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        base.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
 
     let mut conn = state
         .db_pool
@@ -883,7 +883,7 @@ pub async fn approval_detail(
     let flash = incoming_flash.flash();
 
     // Only admin users (superuser or staff) can view approval details
-    if !is_admin(&auth_user) {
+    if !check_rbac(&state, &auth_user, "admin", "view").await {
         return flash_redirect(
             flash.error("Only administrators can view approval details"),
             "/sessions/approvals",
@@ -962,7 +962,7 @@ pub async fn approval_detail(
     let base = BaseTemplate::new("Approval Request".to_string(), user.clone())
         .with_current_path("/sessions/approvals");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        base.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
 
     let template = ApprovalDetailTemplate {
         title,
@@ -1018,7 +1018,7 @@ pub async fn active_sessions(
     auth_user: WebAuthUser,
 ) -> Result<impl IntoResponse, AppError> {
     // Only admin users (superuser or staff) can view active sessions
-    if !is_admin(&auth_user) {
+    if !check_rbac(&state, &auth_user, "admin", "view").await {
         return Err(AppError::Authorization(
             "Only administrators can view active sessions".to_string(),
         ));
@@ -1028,7 +1028,7 @@ pub async fn active_sessions(
     let base = BaseTemplate::new("Active Sessions".to_string(), user.clone())
         .with_current_path("/sessions/active");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        base.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
 
     let mut conn = state
         .db_pool
@@ -1135,7 +1135,7 @@ pub async fn serve_recording(
     use tokio::io::{AsyncReadExt, AsyncSeekExt};
     use tokio_util::io::ReaderStream;
 
-    if !is_admin(&auth_user) {
+    if !check_rbac(&state, &auth_user, "admin", "view").await {
         return Err(AppError::Authorization(
             "Only administrators can access recordings".to_string(),
         ));
@@ -1318,7 +1318,7 @@ pub async fn serve_manifest(
     use axum::body::Body;
     use axum::http::{StatusCode, header};
 
-    if !is_admin(&auth_user) {
+    if !check_rbac(&state, &auth_user, "admin", "view").await {
         return Err(AppError::Authorization(
             "Only administrators can access recordings".to_string(),
         ));
@@ -1476,7 +1476,7 @@ pub async fn serve_segment(
     use tokio::io::{AsyncReadExt, AsyncSeekExt};
     use tokio_util::io::ReaderStream;
 
-    if !is_admin(&auth_user) {
+    if !check_rbac(&state, &auth_user, "admin", "view").await {
         return Err(AppError::Authorization(
             "Only administrators can access recordings".to_string(),
         ));

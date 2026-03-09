@@ -26,8 +26,8 @@ use tower_http::{
 };
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-// Import for supervisor and vault IPC clients
-use vauban_web::ipc::{SupervisorClient, VaultCryptoClient};
+// Import for supervisor, vault, and RBAC IPC clients
+use vauban_web::ipc::{AuthIpcClient, RbacIpcClient, SupervisorClient, VaultCryptoClient};
 
 /// Initialize the supervisor client if running under supervisor.
 ///
@@ -164,6 +164,88 @@ fn init_rdp_proxy_client() -> Option<Arc<ProxyRdpClient>> {
         }
         Err(e) => {
             tracing::warn!("Failed to initialize RDP proxy client: {}", e);
+            None
+        }
+    }
+}
+
+/// Initialize the RBAC IPC client if running under supervisor.
+///
+/// Returns Some(Arc<RbacIpcClient>) if VAUBAN_RBAC_IPC_READ and VAUBAN_RBAC_IPC_WRITE
+/// environment variables are set (running under supervisor), None otherwise.
+fn init_rbac_client() -> Option<Arc<RbacIpcClient>> {
+    use std::os::unix::io::RawFd;
+
+    let read_fd: RawFd = match std::env::var("VAUBAN_RBAC_IPC_READ") {
+        Ok(val) => match val.parse() {
+            Ok(fd) => fd,
+            Err(_) => return None,
+        },
+        Err(_) => return None,
+    };
+
+    let write_fd: RawFd = match std::env::var("VAUBAN_RBAC_IPC_WRITE") {
+        Ok(val) => match val.parse() {
+            Ok(fd) => fd,
+            Err(_) => return None,
+        },
+        Err(_) => return None,
+    };
+
+    // SAFETY: We are early in startup, before spawning async tasks
+    unsafe {
+        std::env::remove_var("VAUBAN_RBAC_IPC_READ");
+        std::env::remove_var("VAUBAN_RBAC_IPC_WRITE");
+    }
+
+    match RbacIpcClient::new(read_fd, write_fd) {
+        Ok(client) => {
+            tracing::info!("RBAC IPC client initialized (running under supervisor)");
+            Some(client)
+        }
+        Err(e) => {
+            tracing::warn!("Failed to initialize RBAC IPC client: {}", e);
+            None
+        }
+    }
+}
+
+/// Initialize the auth IPC client if running under supervisor.
+///
+/// Returns Some(Arc<AuthIpcClient>) if VAUBAN_AUTH_IPC_READ and VAUBAN_AUTH_IPC_WRITE
+/// environment variables are set (running under supervisor), None otherwise.
+fn init_auth_client() -> Option<Arc<AuthIpcClient>> {
+    use std::os::unix::io::RawFd;
+
+    let read_fd: RawFd = match std::env::var("VAUBAN_AUTH_IPC_READ") {
+        Ok(val) => match val.parse() {
+            Ok(fd) => fd,
+            Err(_) => return None,
+        },
+        Err(_) => return None,
+    };
+
+    let write_fd: RawFd = match std::env::var("VAUBAN_AUTH_IPC_WRITE") {
+        Ok(val) => match val.parse() {
+            Ok(fd) => fd,
+            Err(_) => return None,
+        },
+        Err(_) => return None,
+    };
+
+    // SAFETY: We are early in startup, before spawning async tasks
+    unsafe {
+        std::env::remove_var("VAUBAN_AUTH_IPC_READ");
+        std::env::remove_var("VAUBAN_AUTH_IPC_WRITE");
+    }
+
+    match AuthIpcClient::new(read_fd, write_fd) {
+        Ok(client) => {
+            tracing::info!("Auth IPC client initialized (running under supervisor)");
+            Some(client)
+        }
+        Err(e) => {
+            tracing::warn!("Failed to initialize Auth IPC client: {}", e);
             None
         }
     }
@@ -514,6 +596,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("Vault IPC processing task started");
     }
 
+    // Create RBAC IPC client if running under supervisor
+    let rbac_client = init_rbac_client();
+
+    // Spawn RBAC IPC processing task if client is available
+    if let Some(ref client) = rbac_client {
+        let client_clone = Arc::clone(client);
+        tokio::spawn(async move {
+            if let Err(e) = client_clone.process_incoming().await {
+                tracing::error!(error = %e, "RBAC IPC processing task failed");
+            }
+        });
+        tracing::info!("RBAC IPC processing task started");
+    }
+
+    // Create Auth IPC client if running under supervisor
+    let auth_ipc_client = init_auth_client();
+
+    if let Some(ref client) = auth_ipc_client {
+        let client_clone = Arc::clone(client);
+        tokio::spawn(async move {
+            if let Err(e) = client_clone.process_incoming().await {
+                tracing::error!(error = %e, "Auth IPC processing task failed");
+            }
+        });
+        tracing::info!("Auth IPC processing task started");
+    }
+
     // Create application state
     let app_state = AppState {
         config: config.clone(),
@@ -528,6 +637,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         rdp_proxy,
         supervisor: supervisor_client.clone(),
         vault_client,
+        rbac_client,
+        auth_ipc_client,
     };
 
     // Start background tasks for WebSocket updates

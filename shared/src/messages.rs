@@ -224,6 +224,30 @@ pub enum Message {
         session_id: Option<String>,
     },
 
+    // ========== Password hashing (Web -> Auth) ==========
+
+    /// Verify a password against a stored Argon2id hash.
+    AuthVerifyPassword {
+        request_id: u64,
+        password_hash: String,
+        password: SensitiveString,
+    },
+    AuthVerifyPasswordResponse {
+        request_id: u64,
+        valid: bool,
+    },
+
+    /// Hash a plaintext password with Argon2id.
+    AuthHashPassword {
+        request_id: u64,
+        password: SensitiveString,
+    },
+    AuthHashPasswordResponse {
+        request_id: u64,
+        hash: Option<String>,
+        error: Option<String>,
+    },
+
     // ========== RBAC (Web/Auth/Proxy -> Rbac) ==========
     RbacCheck {
         request_id: u64,
@@ -716,6 +740,10 @@ impl Message {
             | Message::AuthResponse { request_id, .. }
             | Message::MfaVerify { request_id, .. }
             | Message::MfaVerifyResponse { request_id, .. }
+            | Message::AuthVerifyPassword { request_id, .. }
+            | Message::AuthVerifyPasswordResponse { request_id, .. }
+            | Message::AuthHashPassword { request_id, .. }
+            | Message::AuthHashPasswordResponse { request_id, .. }
             | Message::RbacCheck { request_id, .. }
             | Message::RbacResponse { request_id, .. }
             | Message::VaultGetSecret { request_id, .. }

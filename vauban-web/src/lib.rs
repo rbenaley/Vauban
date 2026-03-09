@@ -31,8 +31,10 @@ pub mod utils;
 use cache::CacheConnection;
 use config::Config;
 use db::DbPool;
+use ipc::AuthIpcClient;
 use ipc::ProxyRdpClient;
 use ipc::ProxySshClient;
+use ipc::RbacIpcClient;
 use ipc::VaultCryptoClient;
 use services::auth::AuthService;
 use services::broadcast::BroadcastService;
@@ -71,6 +73,12 @@ pub struct AppState {
     /// Provides encrypt/decrypt and MFA operations.
     /// None if vault is not available (development mode without supervisor).
     pub vault_client: Option<Arc<VaultCryptoClient>>,
+    /// RBAC IPC client for authorization checks via vauban-rbac (Casbin).
+    /// None if not running under supervisor (development mode).
+    pub rbac_client: Option<Arc<RbacIpcClient>>,
+    /// Auth IPC client for password hashing/verification via vauban-auth (Argon2id).
+    /// None if not running under supervisor (development mode).
+    pub auth_ipc_client: Option<Arc<AuthIpcClient>>,
 }
 
 #[cfg(test)]

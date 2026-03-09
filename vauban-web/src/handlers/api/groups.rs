@@ -44,7 +44,7 @@ pub async fn list_group_members(
     auth_user: AuthUser,
     Path(uuid_str): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    super::require_staff(&auth_user)?;
+    super::require_staff(&state, &auth_user).await?;
 
     use crate::schema::user_groups::dsl as ug;
     use crate::schema::users::dsl as u;

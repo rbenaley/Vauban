@@ -17,17 +17,19 @@ pub mod assets;
 pub mod groups;
 pub mod sessions;
 
+use crate::AppState;
 use crate::error::AppError;
 use crate::middleware::auth::AuthUser;
 
 /// Verify the authenticated user has staff or superuser privileges.
 ///
-/// Used by API endpoints that perform administrative operations such as
-/// creating/modifying users, assets, sessions, or accessing sensitive data.
+/// Uses the RBAC IPC client (Casbin) when available, otherwise falls back
+/// to the local `is_staff || is_superuser` check.
 /// Returns `Err(AppError::Authorization)` with a 403 Forbidden if the user
 /// does not have sufficient privileges.
-pub fn require_staff(user: &AuthUser) -> Result<(), AppError> {
-    if user.is_staff || user.is_superuser {
+pub async fn require_staff(state: &AppState, user: &AuthUser) -> Result<(), AppError> {
+    let allowed = crate::handlers::web::check_rbac(state, user, "admin", "view").await;
+    if allowed {
         Ok(())
     } else {
         Err(AppError::Authorization(

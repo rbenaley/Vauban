@@ -112,9 +112,50 @@ pub(crate) fn user_context_from_auth(auth_user: &AuthUser) -> UserContext {
     }
 }
 
-/// Check if the user has admin privileges (superuser or staff).
-pub(crate) fn is_admin(auth_user: &WebAuthUser) -> bool {
-    auth_user.is_superuser || auth_user.is_staff
+/// Check RBAC permission via IPC (Casbin) or fallback.
+///
+/// Maps `AuthUser` flags to a Casbin role subject, then delegates to the
+/// RBAC service. Fail-closed: returns `false` on IPC error.
+///
+/// When no IPC client is available (dev mode without supervisor),
+/// falls back to the legacy `is_superuser || is_staff` check.
+pub(crate) async fn check_rbac(
+    state: &AppState,
+    auth_user: &crate::middleware::auth::AuthUser,
+    resource: &str,
+    action: &str,
+) -> bool {
+    let subject = if auth_user.is_superuser {
+        "role:superuser"
+    } else if auth_user.is_staff {
+        "role:staff"
+    } else {
+        "role:user"
+    };
+    if let Some(ref rbac) = state.rbac_client {
+        rbac.check_permission(subject, resource, action)
+            .await
+            .unwrap_or(false)
+    } else {
+        auth_user.is_superuser || auth_user.is_staff
+    }
+}
+
+/// Apply RBAC-based sidebar permissions to a `BaseTemplate`.
+///
+/// Queries the RBAC service for groups/access_rules/admin view permissions
+/// and overrides the sync defaults set during template construction.
+pub(crate) async fn apply_sidebar_rbac(
+    state: &AppState,
+    auth_user: &crate::middleware::auth::AuthUser,
+    base: crate::templates::base::BaseTemplate,
+) -> crate::templates::base::BaseTemplate {
+    let (groups, access_rules, admin) = tokio::join!(
+        check_rbac(state, auth_user, "groups", "read"),
+        check_rbac(state, auth_user, "access_rules", "read"),
+        check_rbac(state, auth_user, "admin", "view"),
+    );
+    base.with_sidebar_permissions(groups, access_rules, admin)
 }
 
 /// Strip ALL HTML tags from a string to prevent stored XSS.

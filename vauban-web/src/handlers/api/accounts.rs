@@ -30,7 +30,7 @@ pub async fn list_users(
     user: AuthUser,
     Query(params): Query<ListUsersParams>,
 ) -> AppResult<Json<Vec<UserDto>>> {
-    super::require_staff(&user)?;
+    super::require_staff(&state, &user).await?;
 
     let mut conn = state
         .db_pool
@@ -63,7 +63,7 @@ pub async fn get_user(
     user: AuthUser,
     Path(user_uuid_str): Path<String>,
 ) -> AppResult<Json<UserDto>> {
-    super::require_staff(&user)?;
+    super::require_staff(&state, &user).await?;
 
     // Parse UUID manually for better error messages
     let user_uuid = Uuid::parse_str(&user_uuid_str)
@@ -104,7 +104,7 @@ pub async fn create_user(
     user: AuthUser,
     Json(request): Json<CreateUserRequest>,
 ) -> AppResult<Json<UserDto>> {
-    super::require_staff(&user)?;
+    super::require_staff(&state, &user).await?;
 
     validator::Validate::validate(&request)
         .map_err(|e| AppError::Validation(format!("Validation failed: {:?}", e)))?;
@@ -115,8 +115,11 @@ pub async fn create_user(
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
-    // Hash password
-    let hashed_password = state.auth_service.hash_password(&request.password)?;
+    let hashed_password = if let Some(ref client) = state.auth_ipc_client {
+        client.hash_password(&request.password).await?
+    } else {
+        state.auth_service.hash_password(&request.password)?
+    };
 
     // Sanitize text fields to prevent XSS
     let sanitized_first_name = sanitize_text(request.first_name);
@@ -158,7 +161,7 @@ pub async fn update_user(
     Path(user_uuid_str): Path<String>,
     Json(request): Json<UpdateUserRequest>,
 ) -> AppResult<Json<UserDto>> {
-    super::require_staff(&user)?;
+    super::require_staff(&state, &user).await?;
 
     // Parse UUID manually for better error messages
     let user_uuid = Uuid::parse_str(&user_uuid_str)

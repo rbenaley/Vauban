@@ -109,6 +109,8 @@ impl TestApp {
             rdp_proxy: None,      // No RDP proxy in tests
             supervisor: None,     // No supervisor in tests
             vault_client: None,   // No vault in tests (dev mode fallback)
+            rbac_client: None,    // No RBAC IPC in tests (dev mode fallback)
+            auth_ipc_client: None, // No Auth IPC in tests (dev mode fallback)
         };
 
         // Build router

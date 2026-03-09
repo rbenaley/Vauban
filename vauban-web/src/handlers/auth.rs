@@ -169,10 +169,15 @@ pub async fn login(
         return Err(AppError::Auth("Account is locked".to_string()));
     }
 
-    // Verify password
-    let password_valid = state
-        .auth_service
-        .verify_password(&request.password, &user.password_hash)?;
+    let password_valid = if let Some(ref client) = state.auth_ipc_client {
+        client
+            .verify_password(&request.password, &user.password_hash)
+            .await?
+    } else {
+        state
+            .auth_service
+            .verify_password(&request.password, &user.password_hash)?
+    };
     if !password_valid {
         // Increment failed attempts and apply progressive lockout if needed
         let max_failed_attempts = state.config.security.max_failed_login_attempts as i32;

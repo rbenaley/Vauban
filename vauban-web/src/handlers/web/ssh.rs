@@ -962,7 +962,7 @@ pub async fn verify_ssh_host_key(
 ///
 /// GET /sessions/terminal/{session_id}
 pub async fn terminal_page(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     incoming_flash: IncomingFlash,
     auth_user: WebAuthUser,
     axum::extract::Path(session_id): axum::extract::Path<String>,
@@ -985,7 +985,7 @@ pub async fn terminal_page(
     let base = BaseTemplate::new("SSH Terminal".to_string(), user.clone())
         .with_current_path("/assets");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        base.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
 
     let template = TerminalTemplate {
         title,

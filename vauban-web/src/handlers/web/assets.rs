@@ -4,14 +4,13 @@ use crate::models::asset::AssetType;
 
 /// Asset create form page.
 pub async fn asset_create_form(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     auth_user: WebAuthUser,
     jar: CookieJar,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::templates::assets::asset_create::{AssetCreateForm, AssetCreateTemplate};
 
-    // Only admin users can create assets
-    if !is_admin(&auth_user) {
+    if !check_rbac(&state, &auth_user, "assets", "write").await {
         return Err(AppError::Authorization(
             "Only administrators can create assets".to_string(),
         ));
@@ -21,7 +20,7 @@ pub async fn asset_create_form(
     let base =
         BaseTemplate::new("New Asset".to_string(), user.clone()).with_current_path("/assets");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        base.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
 
     let csrf_token = jar
         .get(crate::middleware::csrf::CSRF_COOKIE_NAME)
@@ -119,8 +118,7 @@ pub async fn create_asset_web(
         return flash_redirect(flash.error("Invalid CSRF token"), "/assets/new");
     }
 
-    // Permission check - only admin can create assets
-    if !is_admin(&auth_user) {
+    if !check_rbac(&state, &auth_user, "assets", "write").await {
         return flash_redirect(
             flash.error("Only administrators can create assets"),
             "/assets",
@@ -288,10 +286,9 @@ pub async fn asset_list(
     let user = Some(user_context_from_auth(&auth_user));
     let base = BaseTemplate::new("Assets".to_string(), user.clone()).with_current_path("/assets");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        base.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
 
-    // Determine if user is admin (can view asset details)
-    let user_is_admin = is_admin(&auth_user);
+    let user_is_admin = check_rbac(&state, &auth_user, "assets", "read").await;
 
     // Load assets from database
     let mut conn = state
@@ -484,8 +481,7 @@ pub async fn asset_detail(
         }
     };
 
-    // Only admin users (superuser or staff) can view asset details
-    if !is_admin(&auth_user) {
+    if !check_rbac(&state, &auth_user, "assets", "read").await {
         return flash_redirect(
             flash.error("Only administrators can view asset details"),
             "/assets",
@@ -638,7 +634,7 @@ pub async fn asset_detail(
     let base = BaseTemplate::new(format!("{} - Asset", asset_name), user.clone())
         .with_current_path("/assets");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        base.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
 
     let template = AssetDetailTemplate {
         title,
@@ -668,8 +664,7 @@ pub async fn asset_edit(
 ) -> Response {
     let flash = incoming_flash.flash();
 
-    // Only admin users can edit assets
-    if !is_admin(&auth_user) {
+    if !check_rbac(&state, &auth_user, "assets", "write").await {
         return flash_redirect(
             flash.error("Only administrators can edit assets"),
             "/assets",
@@ -817,7 +812,7 @@ pub async fn asset_edit(
         .with_current_path("/assets")
         .with_messages(flash_messages);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        base.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
 
     let template = AssetEditTemplate {
         title,
@@ -864,7 +859,7 @@ pub async fn delete_asset_web(
         );
     }
 
-    if !auth_user.is_superuser && !auth_user.is_staff {
+    if !check_rbac(&state, &auth_user, "assets", "write").await {
         return flash_redirect(
             flash.error("You do not have permission to delete assets"),
             &format!("/assets/{}", uuid_str),
@@ -1029,8 +1024,7 @@ pub async fn update_asset_web(
         );
     }
 
-    // Permission check - only admin can update assets
-    if !is_admin(&auth_user) {
+    if !check_rbac(&state, &auth_user, "assets", "write").await {
         return flash_redirect(
             flash.error("Only administrators can modify assets"),
             &format!("/assets/{}", uuid_str),

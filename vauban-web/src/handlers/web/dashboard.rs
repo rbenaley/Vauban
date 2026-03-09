@@ -4,7 +4,7 @@ use crate::models::session::SessionType;
 
 /// Dashboard home page - requires authentication.
 pub async fn dashboard_home(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     OptionalAuthUser(auth_user): OptionalAuthUser,
 ) -> Result<Response, AppError> {
     use axum::response::Redirect;
@@ -19,7 +19,7 @@ pub async fn dashboard_home(
     let base = BaseTemplate::new("Dashboard".to_string(), user.clone()).with_current_path("/");
 
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        base.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
     let template = HomeTemplate {
         title,
         user: user_ctx,
@@ -39,14 +39,14 @@ pub async fn dashboard_home(
 
 /// Dashboard admin page.
 pub async fn dashboard_admin(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     auth_user: WebAuthUser,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
     let base =
         BaseTemplate::new("Admin Dashboard".to_string(), user.clone()).with_current_path("/admin");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        base.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
 
     let template = AdminTemplate {
         title,

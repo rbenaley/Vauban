@@ -12,6 +12,7 @@
 //! - Authorization decisions
 
 use anyhow::{Context, Result};
+use casbin::prelude::*;
 use shared::capsicum;
 use shared::ipc::{poll_readable, IpcChannel};
 use shared::messages::{ControlMessage, Message, RbacResult, ServiceStats};
@@ -29,6 +30,9 @@ struct ServiceState {
     /// M-8: Flag set by ControlMessage::Shutdown to break the main loop
     /// and allow destructors to run.
     shutdown_requested: bool,
+    /// Casbin policy enforcer, loaded before sandbox entry.
+    /// None only in tests or when env vars are not set (dev without supervisor).
+    enforcer: Option<Enforcer>,
 }
 
 impl Default for ServiceState {
@@ -39,6 +43,7 @@ impl Default for ServiceState {
             requests_failed: 0,
             draining: false,
             shutdown_requested: false,
+            enforcer: None,
         }
     }
 }
@@ -75,57 +80,167 @@ fn run_service() -> Result<()> {
         .parse()
         .context("Invalid VAUBAN_IPC_WRITE")?;
 
+    let model_path = std::env::var("VAUBAN_RBAC_MODEL_PATH").ok();
+    let policy_path = std::env::var("VAUBAN_RBAC_POLICY_PATH").ok();
+
+    let web_channel = parse_topology_channel("WEB");
+
     // SAFETY: We are the only thread at this point, no concurrent access.
     unsafe {
         std::env::remove_var("VAUBAN_IPC_READ");
         std::env::remove_var("VAUBAN_IPC_WRITE");
+        std::env::remove_var("VAUBAN_RBAC_MODEL_PATH");
+        std::env::remove_var("VAUBAN_RBAC_POLICY_PATH");
+        std::env::remove_var("VAUBAN_WEB_IPC_READ");
+        std::env::remove_var("VAUBAN_WEB_IPC_WRITE");
     }
 
-    let channel = unsafe { IpcChannel::from_raw_fds(ipc_read_fd, ipc_write_fd) };
+    let supervisor_channel = unsafe { IpcChannel::from_raw_fds(ipc_read_fd, ipc_write_fd) };
 
-    // TODO: Load Casbin policies before entering sandbox
+    let enforcer = load_casbin_enforcer(model_path.as_deref(), policy_path.as_deref())?;
+
     info!("Resources opened, preparing to enter sandbox");
 
-    let ipc_fds = [ipc_read_fd, ipc_write_fd];
-    capsicum::setup_service_sandbox(&ipc_fds, None)
+    let mut all_fds = vec![ipc_read_fd, ipc_write_fd];
+    let mut peer_channels: Vec<(&str, &IpcChannel)> = Vec::new();
+
+    if let Some(ref ch) = web_channel {
+        all_fds.push(ch.read_fd());
+        all_fds.push(ch.write_fd());
+        peer_channels.push(("web", ch));
+    }
+
+    capsicum::setup_service_sandbox(&all_fds, None)
         .context("Failed to setup sandbox")?;
 
-    info!("Entered Capsicum sandbox, starting main loop");
+    info!(
+        "Entered Capsicum sandbox, starting main loop ({} peer channels)",
+        peer_channels.len()
+    );
 
-    let mut state = ServiceState::default();
-    main_loop(&channel, &mut state)
+    let mut state = ServiceState {
+        enforcer,
+        ..ServiceState::default()
+    };
+    main_loop(&supervisor_channel, &peer_channels, &mut state)
 }
 
-fn main_loop(channel: &IpcChannel, state: &mut ServiceState) -> Result<()> {
-    let fds = [channel.read_fd()];
+/// Parse topology channel env vars for a peer service.
+/// Returns None if the env vars are not set (dev mode without full topology).
+fn parse_topology_channel(service_suffix: &str) -> Option<IpcChannel> {
+    let read_var = format!("VAUBAN_{}_IPC_READ", service_suffix);
+    let write_var = format!("VAUBAN_{}_IPC_WRITE", service_suffix);
+
+    let read_fd: RawFd = std::env::var(&read_var).ok()?.parse().ok()?;
+    let write_fd: RawFd = std::env::var(&write_var).ok()?.parse().ok()?;
+
+    Some(unsafe { IpcChannel::from_raw_fds(read_fd, write_fd) })
+}
+
+/// Load the Casbin enforcer from model and policy files.
+///
+/// Must be called BEFORE entering the Capsicum sandbox, since file access
+/// is required to read model.conf and policy.csv.
+/// Returns None if paths are not provided (dev mode without supervisor).
+fn load_casbin_enforcer(
+    model_path: Option<&str>,
+    policy_path: Option<&str>,
+) -> Result<Option<Enforcer>> {
+    match (model_path, policy_path) {
+        (Some(model), Some(policy)) => {
+            info!(model = %model, policy = %policy, "Loading Casbin model and policies");
+            let model_string = model.to_string();
+            let policy_string = policy.to_string();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("Failed to create Casbin tokio runtime")?;
+            let casbin_model = rt
+                .block_on(DefaultModel::from_file(model_string))
+                .map_err(|e| anyhow::anyhow!("Failed to load Casbin model: {}", e))?;
+            let adapter = FileAdapter::new(policy_string);
+            let enforcer = rt
+                .block_on(Enforcer::new(casbin_model, adapter))
+                .map_err(|e| anyhow::anyhow!("Failed to create Casbin enforcer: {}", e))?;
+            info!(
+                policies = enforcer.get_all_policy().len(),
+                roles = enforcer.get_all_roles().len(),
+                "Casbin enforcer loaded"
+            );
+            Ok(Some(enforcer))
+        }
+        (None, None) => {
+            warn!("RBAC model/policy paths not set, using fallback behavior");
+            Ok(None)
+        }
+        _ => {
+            anyhow::bail!(
+                "Both VAUBAN_RBAC_MODEL_PATH and VAUBAN_RBAC_POLICY_PATH must be set (or neither)"
+            );
+        }
+    }
+}
+
+fn main_loop(
+    supervisor: &IpcChannel,
+    peers: &[(&str, &IpcChannel)],
+    state: &mut ServiceState,
+) -> Result<()> {
+    let mut poll_fds: Vec<RawFd> = vec![supervisor.read_fd()];
+    for (_, ch) in peers {
+        poll_fds.push(ch.read_fd());
+    }
 
     loop {
-        // M-8/M-10: Check shutdown flag before blocking on poll.
         if state.shutdown_requested {
             info!("Shutdown flag set, exiting main loop to run destructors");
             return Ok(());
         }
 
-        let ready = poll_readable(&fds, 1000)?;
+        let ready_indices = poll_readable(&poll_fds, 1000)?;
 
-        if ready.is_empty() {
+        if ready_indices.is_empty() {
             continue;
         }
 
-        match channel.recv() {
-            Ok(msg) => {
-                if let Err(e) = handle_message(channel, state, msg) {
-                    warn!("Error handling message: {}", e);
-                    state.requests_failed += 1;
+        for &idx in &ready_indices {
+            if idx == 0 {
+                match supervisor.recv() {
+                    Ok(msg) => {
+                        if let Err(e) = handle_message(supervisor, state, msg) {
+                            warn!("Error handling supervisor message: {}", e);
+                            state.requests_failed += 1;
+                        }
+                    }
+                    Err(shared::ipc::IpcError::ConnectionClosed) => {
+                        info!("Supervisor IPC connection closed, exiting");
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        error!("Supervisor IPC receive error: {}", e);
+                        state.requests_failed += 1;
+                    }
                 }
-            }
-            Err(shared::ipc::IpcError::ConnectionClosed) => {
-                info!("IPC connection closed, exiting");
-                return Ok(());
-            }
-            Err(e) => {
-                error!("IPC receive error: {}", e);
-                state.requests_failed += 1;
+            } else {
+                let peer_idx = idx - 1;
+                if peer_idx < peers.len() {
+                    let (name, channel) = peers[peer_idx];
+                    match channel.recv() {
+                        Ok(msg) => {
+                            if let Err(e) = handle_message(channel, state, msg) {
+                                warn!("Error handling message from {}: {}", name, e);
+                                state.requests_failed += 1;
+                            }
+                        }
+                        Err(shared::ipc::IpcError::ConnectionClosed) => {
+                            info!("IPC connection from {} closed", name);
+                        }
+                        Err(e) => {
+                            error!("IPC receive error from {}: {}", name, e);
+                            state.requests_failed += 1;
+                        }
+                    }
+                }
             }
         }
     }
@@ -143,17 +258,48 @@ fn handle_message(channel: &IpcChannel, state: &mut ServiceState, msg: Message) 
         } => {
             state.requests_processed += 1;
 
-            // Security: the RBAC stub is only allowed in debug builds.
-            // In release builds, all requests are denied by default until
-            // the Casbin policy engine is implemented.
-            let result = {
+            let result = if let Some(ref enforcer) = state.enforcer {
+                match enforcer.enforce(vec![subject.clone(), object.clone(), action.clone()]) {
+                    Ok(allowed) => {
+                        info!(
+                            subject = %subject,
+                            object = %object,
+                            action = %action,
+                            allowed,
+                            "RBAC check"
+                        );
+                        RbacResult {
+                            allowed,
+                            reason: if allowed {
+                                None
+                            } else {
+                                Some("Policy denied".to_string())
+                            },
+                        }
+                    }
+                    Err(e) => {
+                        error!(
+                            subject = %subject,
+                            object = %object,
+                            action = %action,
+                            error = %e,
+                            "Casbin enforce error, denying by default"
+                        );
+                        RbacResult {
+                            allowed: false,
+                            reason: Some(format!("Enforcer error: {}", e)),
+                        }
+                    }
+                }
+            } else {
+                // Fallback when no enforcer is loaded (dev mode without supervisor)
                 #[cfg(debug_assertions)]
                 {
                     warn!(
                         subject = %subject,
                         object = %object,
                         action = %action,
-                        "RBAC stub: allowing request (debug build only)"
+                        "RBAC fallback: allowing request (debug build, no enforcer)"
                     );
                     RbacResult {
                         allowed: true,
@@ -166,13 +312,11 @@ fn handle_message(channel: &IpcChannel, state: &mut ServiceState, msg: Message) 
                         subject = %subject,
                         object = %object,
                         action = %action,
-                        "RBAC policy engine not implemented - denying by default"
+                        "RBAC policy engine not loaded - denying by default"
                     );
                     RbacResult {
                         allowed: false,
-                        reason: Some(
-                            "RBAC policy engine not configured".to_string(),
-                        ),
+                        reason: Some("RBAC policy engine not configured".to_string()),
                     }
                 }
             };
@@ -225,12 +369,44 @@ fn handle_control(channel: &IpcChannel, state: &mut ServiceState, ctrl: ControlM
 mod tests {
     use super::*;
 
+    // ==================== Helpers ====================
+
+    fn test_config_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("workspace root")
+            .join("config")
+            .join("rbac")
+    }
+
+    fn test_enforcer() -> Enforcer {
+        let dir = test_config_dir();
+        let model = dir.join("model.conf");
+        let policy = dir.join("default_policy.csv");
+        load_casbin_enforcer(
+            Some(model.to_str().unwrap()),
+            Some(policy.to_str().unwrap()),
+        )
+        .expect("Failed to load test enforcer")
+        .expect("Enforcer should be Some")
+    }
+
+    fn state_with_enforcer() -> ServiceState {
+        ServiceState {
+            enforcer: Some(test_enforcer()),
+            ..ServiceState::default()
+        }
+    }
+
+    // ==================== Basic Tests ====================
+
     #[test]
     fn test_service_state_default() {
         let state = ServiceState::default();
         assert_eq!(state.requests_processed, 0);
         assert_eq!(state.requests_failed, 0);
         assert!(!state.draining);
+        assert!(state.enforcer.is_none());
     }
 
     #[test]
@@ -264,30 +440,6 @@ mod tests {
     }
 
     #[test]
-    fn test_handle_message_rbac_check() {
-        let (client, service) = IpcChannel::pair().unwrap();
-        let mut state = ServiceState::default();
-
-        let request = Message::RbacCheck {
-            request_id: 1,
-            subject: "user:alice".to_string(),
-            object: "server:web1".to_string(),
-            action: "ssh".to_string(),
-        };
-        handle_message(&service, &mut state, request).unwrap();
-
-        assert_eq!(state.requests_processed, 1);
-
-        let response: Message = client.recv().unwrap();
-        if let Message::RbacResponse { request_id, result } = response {
-            assert_eq!(request_id, 1);
-            assert!(result.allowed);
-        } else {
-            panic!("Expected RbacResponse");
-        }
-    }
-
-    #[test]
     fn test_handle_message_control() {
         let (supervisor, service) = IpcChannel::pair().unwrap();
         let mut state = ServiceState::default();
@@ -299,14 +451,11 @@ mod tests {
         assert!(matches!(response, Message::Control(ControlMessage::Pong { seq: 5, .. })));
     }
 
-    // ==================== H-8 Regression Tests ====================
+    // ==================== Fallback Tests (no enforcer) ====================
 
-    /// Verify that in debug builds (cargo test default), the RBAC stub
-    /// allows requests. This test documents the intentional debug behavior
-    /// and will catch accidental removal of the #[cfg(debug_assertions)] guard.
     #[test]
     #[cfg(debug_assertions)]
-    fn test_rbac_stub_allows_in_debug_build() {
+    fn test_rbac_fallback_allows_in_debug_build() {
         let (client, service) = IpcChannel::pair().unwrap();
         let mut state = ServiceState::default();
 
@@ -321,31 +470,247 @@ mod tests {
         let response: Message = client.recv().unwrap();
         if let Message::RbacResponse { request_id, result } = response {
             assert_eq!(request_id, 42);
-            // In debug builds, stub allows all requests
             assert!(
                 result.allowed,
-                "RBAC stub must allow requests in debug builds"
-            );
-            assert!(
-                result.reason.is_none(),
-                "RBAC stub must not set a denial reason in debug builds"
+                "RBAC fallback must allow requests in debug builds when no enforcer"
             );
         } else {
             panic!("Expected RbacResponse");
         }
     }
 
-    /// Verify that the RBAC response preserves the request_id correctly,
-    /// which is critical for matching async responses to requests.
+    // ==================== Casbin Enforcer Tests ====================
+
+    #[test]
+    fn test_load_casbin_enforcer_success() {
+        let enforcer = test_enforcer();
+        assert!(
+            !enforcer.get_all_policy().is_empty(),
+            "Enforcer must have loaded policies"
+        );
+    }
+
+    #[test]
+    fn test_load_casbin_enforcer_none_when_no_paths() {
+        let result = load_casbin_enforcer(None, None).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_load_casbin_enforcer_error_when_partial_paths() {
+        let result = load_casbin_enforcer(Some("model.conf"), None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_casbin_superuser_has_full_access() {
+        let (client, service) = IpcChannel::pair().unwrap();
+        let mut state = state_with_enforcer();
+
+        let request = Message::RbacCheck {
+            request_id: 1,
+            subject: "role:superuser".to_string(),
+            object: "users".to_string(),
+            action: "write".to_string(),
+        };
+        handle_message(&service, &mut state, request).unwrap();
+
+        let response: Message = client.recv().unwrap();
+        if let Message::RbacResponse { result, .. } = response {
+            assert!(result.allowed, "superuser must have full access");
+        } else {
+            panic!("Expected RbacResponse");
+        }
+    }
+
+    #[test]
+    fn test_casbin_superuser_wildcard() {
+        let (client, service) = IpcChannel::pair().unwrap();
+        let mut state = state_with_enforcer();
+
+        for (obj, act) in [("anything", "any_action"), ("admin", "delete"), ("users", "write")] {
+            let request = Message::RbacCheck {
+                request_id: 100,
+                subject: "role:superuser".to_string(),
+                object: obj.to_string(),
+                action: act.to_string(),
+            };
+            handle_message(&service, &mut state, request).unwrap();
+
+            let response: Message = client.recv().unwrap();
+            if let Message::RbacResponse { result, .. } = response {
+                assert!(
+                    result.allowed,
+                    "superuser must be allowed for {obj}/{act}"
+                );
+            } else {
+                panic!("Expected RbacResponse");
+            }
+        }
+    }
+
+    #[test]
+    fn test_casbin_staff_allowed_permissions() {
+        let (client, service) = IpcChannel::pair().unwrap();
+        let mut state = state_with_enforcer();
+
+        let allowed = [
+            ("users", "read"),
+            ("users", "write"),
+            ("assets", "read"),
+            ("assets", "write"),
+            ("sessions", "read"),
+            ("sessions", "write"),
+            ("groups", "read"),
+            ("groups", "write"),
+            ("access_rules", "read"),
+            ("access_rules", "write"),
+            ("admin", "view"),
+        ];
+
+        for (obj, act) in allowed {
+            let request = Message::RbacCheck {
+                request_id: 200,
+                subject: "role:staff".to_string(),
+                object: obj.to_string(),
+                action: act.to_string(),
+            };
+            handle_message(&service, &mut state, request).unwrap();
+
+            let response: Message = client.recv().unwrap();
+            if let Message::RbacResponse { result, .. } = response {
+                assert!(
+                    result.allowed,
+                    "staff must be allowed for {obj}/{act}"
+                );
+            } else {
+                panic!("Expected RbacResponse");
+            }
+        }
+    }
+
+    #[test]
+    fn test_casbin_staff_denied_unknown_resource() {
+        let (client, service) = IpcChannel::pair().unwrap();
+        let mut state = state_with_enforcer();
+
+        let request = Message::RbacCheck {
+            request_id: 300,
+            subject: "role:staff".to_string(),
+            object: "superadmin_panel".to_string(),
+            action: "delete".to_string(),
+        };
+        handle_message(&service, &mut state, request).unwrap();
+
+        let response: Message = client.recv().unwrap();
+        if let Message::RbacResponse { result, .. } = response {
+            assert!(
+                !result.allowed,
+                "staff must be denied for unknown resources"
+            );
+        } else {
+            panic!("Expected RbacResponse");
+        }
+    }
+
+    #[test]
+    fn test_casbin_user_limited_access() {
+        let (client, service) = IpcChannel::pair().unwrap();
+        let mut state = state_with_enforcer();
+
+        let allowed = [
+            ("assets", "read"),
+            ("sessions", "read"),
+            ("sessions", "create"),
+            ("profile", "read"),
+            ("profile", "write"),
+        ];
+
+        for (obj, act) in allowed {
+            let request = Message::RbacCheck {
+                request_id: 400,
+                subject: "role:user".to_string(),
+                object: obj.to_string(),
+                action: act.to_string(),
+            };
+            handle_message(&service, &mut state, request).unwrap();
+
+            let response: Message = client.recv().unwrap();
+            if let Message::RbacResponse { result, .. } = response {
+                assert!(
+                    result.allowed,
+                    "user must be allowed for {obj}/{act}"
+                );
+            } else {
+                panic!("Expected RbacResponse");
+            }
+        }
+    }
+
+    #[test]
+    fn test_casbin_user_denied_admin() {
+        let (client, service) = IpcChannel::pair().unwrap();
+        let mut state = state_with_enforcer();
+
+        let denied = [
+            ("admin", "view"),
+            ("users", "write"),
+            ("groups", "write"),
+            ("assets", "write"),
+        ];
+
+        for (obj, act) in denied {
+            let request = Message::RbacCheck {
+                request_id: 500,
+                subject: "role:user".to_string(),
+                object: obj.to_string(),
+                action: act.to_string(),
+            };
+            handle_message(&service, &mut state, request).unwrap();
+
+            let response: Message = client.recv().unwrap();
+            if let Message::RbacResponse { result, .. } = response {
+                assert!(
+                    !result.allowed,
+                    "user must be denied for {obj}/{act}"
+                );
+            } else {
+                panic!("Expected RbacResponse");
+            }
+        }
+    }
+
+    #[test]
+    fn test_casbin_unknown_role_denied() {
+        let (client, service) = IpcChannel::pair().unwrap();
+        let mut state = state_with_enforcer();
+
+        let request = Message::RbacCheck {
+            request_id: 600,
+            subject: "role:unknown".to_string(),
+            object: "assets".to_string(),
+            action: "read".to_string(),
+        };
+        handle_message(&service, &mut state, request).unwrap();
+
+        let response: Message = client.recv().unwrap();
+        if let Message::RbacResponse { result, .. } = response {
+            assert!(!result.allowed, "unknown role must be denied");
+        } else {
+            panic!("Expected RbacResponse");
+        }
+    }
+
+    /// Verify that the RBAC response preserves the request_id correctly.
     #[test]
     fn test_rbac_check_preserves_request_id() {
         let (client, service) = IpcChannel::pair().unwrap();
-        let mut state = ServiceState::default();
+        let mut state = state_with_enforcer();
 
         for id in [0, 1, 100, u64::MAX] {
             let request = Message::RbacCheck {
                 request_id: id,
-                subject: "user:test".to_string(),
+                subject: "role:superuser".to_string(),
                 object: "resource:test".to_string(),
                 action: "read".to_string(),
             };
@@ -367,36 +732,36 @@ mod tests {
     #[test]
     fn test_rbac_check_increments_counter() {
         let (client, service) = IpcChannel::pair().unwrap();
-        let mut state = ServiceState::default();
+        let mut state = state_with_enforcer();
 
         assert_eq!(state.requests_processed, 0);
 
         for i in 1..=5 {
             let request = Message::RbacCheck {
                 request_id: i,
-                subject: format!("user:u{i}"),
+                subject: "role:superuser".to_string(),
                 object: "resource:any".to_string(),
                 action: "read".to_string(),
             };
             handle_message(&service, &mut state, request).unwrap();
             assert_eq!(state.requests_processed, i);
 
-            // Drain the response
             let _ = client.recv().unwrap();
         }
     }
 
-    /// Structural regression test: verify that the RBAC service source code
-    /// contains cfg(debug_assertions) guards around the allow-all stub.
-    /// This prevents accidental removal of the compile-time safety.
+    // ==================== Structural Regression Tests ====================
+
+    /// Verify that the source code contains cfg(debug_assertions) guards
+    /// for the fallback path when no enforcer is loaded.
     #[test]
-    fn test_rbac_stub_has_cfg_debug_guard() {
+    fn test_rbac_fallback_has_cfg_debug_guard() {
         let source = include_str!("main.rs");
 
         assert!(
             source.contains("#[cfg(debug_assertions)]"),
             "vauban-rbac/src/main.rs must contain #[cfg(debug_assertions)] \
-             to guard the RBAC allow-all stub"
+             to guard the RBAC allow-all fallback"
         );
         assert!(
             source.contains("#[cfg(not(debug_assertions))]"),
@@ -410,9 +775,31 @@ mod tests {
         );
     }
 
+    /// Verify that Casbin enforcer loading is present in the source.
+    #[test]
+    fn test_casbin_integration_structural() {
+        let source = include_str!("main.rs");
+
+        assert!(
+            source.contains("Enforcer::new"),
+            "vauban-rbac must create a Casbin Enforcer"
+        );
+        assert!(
+            source.contains("VAUBAN_RBAC_MODEL_PATH"),
+            "vauban-rbac must read VAUBAN_RBAC_MODEL_PATH"
+        );
+        assert!(
+            source.contains("VAUBAN_RBAC_POLICY_PATH"),
+            "vauban-rbac must read VAUBAN_RBAC_POLICY_PATH"
+        );
+        assert!(
+            source.contains("enforcer.enforce"),
+            "vauban-rbac must call enforcer.enforce()"
+        );
+    }
+
     // ==================== M-8/M-10 Structural Regression Tests ====================
 
-    /// Helper: Extract production code (before #[cfg(test)]).
     fn prod_source() -> &'static str {
         let full = include_str!("main.rs");
         if let Some(idx) = full.find("#[cfg(test)]") {

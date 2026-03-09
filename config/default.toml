@@ -38,6 +38,14 @@ binary = "vauban-vault"
 name = "vauban-rbac"
 binary = "vauban-rbac"
 
+# ==============================================================================
+# RBAC CONFIGURATION (vauban-rbac / Casbin)
+# ==============================================================================
+
+[rbac]
+model_path = "config/rbac/model.conf"
+policy_path = "config/rbac/default_policy.csv"
+
 [services.auth]
 name = "vauban-auth"
 binary = "vauban-auth"

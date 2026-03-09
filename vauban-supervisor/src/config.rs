@@ -32,12 +32,81 @@ pub struct SupervisorConfig {
     #[serde(default)]
     pub server: ServerBindConfig,
     pub services: HashMap<String, ServiceConfig>,
+    /// RBAC configuration (Casbin model and policy paths).
+    #[serde(default)]
+    pub rbac: RbacConfig,
+    /// Auth service configuration (Argon2id parameters).
+    #[serde(default)]
+    pub auth: AuthConfig,
     /// RDP proxy configuration (injected as env vars at spawn).
     #[serde(default)]
     pub rdp: RdpProxyConfig,
     /// Session recording configuration.
     #[serde(default)]
     pub recording: RecordingConfig,
+}
+
+/// RBAC (Casbin) configuration.
+///
+/// These paths are injected as environment variables into `vauban-rbac`
+/// at spawn time. The RBAC service loads the model and policies before
+/// entering the Capsicum sandbox.
+#[derive(Debug, Deserialize)]
+pub struct RbacConfig {
+    #[serde(default = "default_rbac_model_path")]
+    pub model_path: String,
+    #[serde(default = "default_rbac_policy_path")]
+    pub policy_path: String,
+}
+
+fn default_rbac_model_path() -> String {
+    "config/rbac/model.conf".to_string()
+}
+
+fn default_rbac_policy_path() -> String {
+    "config/rbac/default_policy.csv".to_string()
+}
+
+impl Default for RbacConfig {
+    fn default() -> Self {
+        Self {
+            model_path: default_rbac_model_path(),
+            policy_path: default_rbac_policy_path(),
+        }
+    }
+}
+
+/// Auth service configuration (Argon2id parameters).
+///
+/// Injected as environment variables into `vauban-auth` at spawn time.
+#[derive(Debug, Deserialize)]
+pub struct AuthConfig {
+    #[serde(default = "default_argon2_memory_kb")]
+    pub argon2_memory_kb: u32,
+    #[serde(default = "default_argon2_iterations")]
+    pub argon2_iterations: u32,
+    #[serde(default = "default_argon2_parallelism")]
+    pub argon2_parallelism: u32,
+}
+
+fn default_argon2_memory_kb() -> u32 {
+    19456
+}
+fn default_argon2_iterations() -> u32 {
+    2
+}
+fn default_argon2_parallelism() -> u32 {
+    1
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            argon2_memory_kb: default_argon2_memory_kb(),
+            argon2_iterations: default_argon2_iterations(),
+            argon2_parallelism: default_argon2_parallelism(),
+        }
+    }
 }
 
 /// RDP proxy configuration.
@@ -423,6 +492,16 @@ impl SupervisorConfig {
     pub fn service_env_vars(&self, service_key: &str) -> Vec<(String, String)> {
         let mut vars = Vec::new();
         match service_key {
+            "rbac" => {
+                vars.push((
+                    "VAUBAN_RBAC_MODEL_PATH".to_string(),
+                    self.rbac.model_path.clone(),
+                ));
+                vars.push((
+                    "VAUBAN_RBAC_POLICY_PATH".to_string(),
+                    self.rbac.policy_path.clone(),
+                ));
+            }
             "proxy_rdp" => {
                 vars.push((
                     "VAUBAN_RDP_VIDEO_BITRATE_BPS".to_string(),
@@ -432,6 +511,20 @@ impl SupervisorConfig {
                 vars.push((
                     "VAUBAN_RECORDING_ENABLED".to_string(),
                     rdp_recording.to_string(),
+                ));
+            }
+            "auth" => {
+                vars.push((
+                    "VAUBAN_ARGON2_MEMORY_KB".to_string(),
+                    self.auth.argon2_memory_kb.to_string(),
+                ));
+                vars.push((
+                    "VAUBAN_ARGON2_ITERATIONS".to_string(),
+                    self.auth.argon2_iterations.to_string(),
+                ));
+                vars.push((
+                    "VAUBAN_ARGON2_PARALLELISM".to_string(),
+                    self.auth.argon2_parallelism.to_string(),
                 ));
             }
             "audit" => {
@@ -748,6 +841,20 @@ mod tests {
     // ==================== RDP Config Tests ====================
 
     #[test]
+    fn test_rbac_config_default() {
+        let rbac = RbacConfig::default();
+        assert_eq!(rbac.model_path, "config/rbac/model.conf");
+        assert_eq!(rbac.policy_path, "config/rbac/default_policy.csv");
+    }
+
+    #[test]
+    fn test_rbac_config_loaded_from_toml() {
+        let config = test_config();
+        assert_eq!(config.rbac.model_path, "config/rbac/model.conf");
+        assert_eq!(config.rbac.policy_path, "config/rbac/default_policy.csv");
+    }
+
+    #[test]
     fn test_rdp_config_default() {
         let rdp = RdpProxyConfig::default();
         assert_eq!(rdp.video_bitrate_bps, 5_000_000);
@@ -786,13 +893,34 @@ mod tests {
     #[test]
     fn test_service_env_vars_other_services_empty() {
         let config = test_config();
-        for key in ["vault", "rbac", "auth", "proxy_ssh", "web"] {
+        for key in ["vault", "proxy_ssh", "web"] {
             let vars = config.service_env_vars(key);
             assert!(
                 vars.is_empty(),
                 "service_env_vars for {} should be empty, got {:?}", key, vars
             );
         }
+    }
+
+    #[test]
+    fn test_service_env_vars_auth() {
+        let config = test_config();
+        let vars = config.service_env_vars("auth");
+        assert_eq!(vars.len(), 3);
+        assert_eq!(vars[0].0, "VAUBAN_ARGON2_MEMORY_KB");
+        assert_eq!(vars[1].0, "VAUBAN_ARGON2_ITERATIONS");
+        assert_eq!(vars[2].0, "VAUBAN_ARGON2_PARALLELISM");
+    }
+
+    #[test]
+    fn test_service_env_vars_rbac() {
+        let config = test_config();
+        let vars = config.service_env_vars("rbac");
+        assert_eq!(vars.len(), 2);
+        assert_eq!(vars[0].0, "VAUBAN_RBAC_MODEL_PATH");
+        assert_eq!(vars[0].1, "config/rbac/model.conf");
+        assert_eq!(vars[1].0, "VAUBAN_RBAC_POLICY_PATH");
+        assert_eq!(vars[1].1, "config/rbac/default_policy.csv");
     }
 
     #[test]

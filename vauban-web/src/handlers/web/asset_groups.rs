@@ -2,14 +2,14 @@
 use super::*;
 
 pub async fn access_rules_list(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     auth_user: WebAuthUser,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
     let base = BaseTemplate::new("Access Rules".to_string(), user.clone())
         .with_current_path("/assets/access");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        base.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
 
     let template = AccessListTemplate {
         title,
@@ -37,7 +37,7 @@ pub async fn asset_group_list(
     let base = BaseTemplate::new("Asset Groups".to_string(), user.clone())
         .with_current_path("/assets/groups");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        base.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
 
     let mut conn = state
         .db_pool
@@ -246,7 +246,7 @@ pub async fn asset_group_detail(
     let base = BaseTemplate::new(format!("{} - Asset Group", group_data.name), user.clone())
         .with_current_path("/assets/groups");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        base.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
 
     let template = AssetGroupDetailTemplate {
         title,
@@ -314,8 +314,7 @@ pub async fn asset_group_add_asset_form(
         AssetGroupAddAssetTemplate, AvailableAsset, GroupSummary,
     };
 
-    // Only admin users can add assets to groups
-    if !is_admin(&auth_user) {
+    if !check_rbac(&state, &auth_user, "groups", "write").await {
         return Err(AppError::Authorization(
             "Only administrators can manage asset group membership".to_string(),
         ));
@@ -419,7 +418,7 @@ pub async fn asset_group_add_asset_form(
     .with_current_path("/assets/groups")
     .with_messages(flash_messages);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        base.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
 
     let template = AssetGroupAddAssetTemplate {
         title,
@@ -498,8 +497,7 @@ pub async fn asset_group_add_asset(
         );
     }
 
-    // Permission check
-    if !is_admin(&auth_user) {
+    if !check_rbac(&state, &auth_user, "groups", "write").await {
         return flash_redirect(
             flash.error("Only administrators can manage asset group membership"),
             &format!("/assets/groups/{}", uuid_str),
@@ -637,8 +635,7 @@ pub async fn asset_group_remove_asset(
         );
     }
 
-    // Permission check
-    if !is_admin(&auth_user) {
+    if !check_rbac(&state, &auth_user, "groups", "write").await {
         return flash_redirect(
             flash.error("Only administrators can manage asset group membership"),
             &format!("/assets/groups/{}", uuid_str),
@@ -711,8 +708,7 @@ pub async fn asset_group_edit(
 ) -> Response {
     let flash = incoming_flash.flash();
 
-    // Only admin users can edit asset groups
-    if !is_admin(&auth_user) {
+    if !check_rbac(&state, &auth_user, "groups", "write").await {
         return flash_redirect(
             flash.error("Only administrators can edit asset groups"),
             "/assets/groups",
@@ -785,7 +781,7 @@ pub async fn asset_group_edit(
     .with_current_path("/assets/groups")
     .with_messages(flash_messages);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        base.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
 
     let template = AssetGroupEditTemplate {
         title,
@@ -859,8 +855,7 @@ pub async fn update_asset_group(
         );
     }
 
-    // Permission check - only admin can update asset groups
-    if !is_admin(&auth_user) {
+    if !check_rbac(&state, &auth_user, "groups", "write").await {
         return flash_redirect(
             flash.error("Only administrators can modify asset groups"),
             &format!("/assets/groups/{}", uuid_str),
@@ -941,15 +936,14 @@ pub async fn update_asset_group(
 
 /// Asset group create form page.
 pub async fn asset_group_create_form(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     auth_user: WebAuthUser,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::templates::assets::group_create::{AssetGroupCreateForm, AssetGroupCreateTemplate};
 
-    // Only admin users can create asset groups
-    if !is_admin(&auth_user) {
+    if !check_rbac(&state, &auth_user, "groups", "write").await {
         return Err(AppError::Authorization(
             "Only administrators can create asset groups".to_string(),
         ));
@@ -970,7 +964,7 @@ pub async fn asset_group_create_form(
         .with_current_path("/assets/groups")
         .with_messages(flash_messages);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        base.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
 
     let csrf_token = jar
         .get(crate::middleware::csrf::CSRF_COOKIE_NAME)
@@ -1035,8 +1029,7 @@ pub async fn create_asset_group_web(
         return flash_redirect(flash.error("Invalid CSRF token"), "/assets/groups/new");
     }
 
-    // Permission check - only admin can create asset groups
-    if !is_admin(&auth_user) {
+    if !check_rbac(&state, &auth_user, "groups", "write").await {
         return flash_redirect(
             flash.error("Only administrators can create asset groups"),
             "/assets/groups",
@@ -1155,8 +1148,7 @@ pub async fn delete_asset_group_web(
         );
     }
 
-    // Permission check - only admin can delete asset groups
-    if !is_admin(&auth_user) {
+    if !check_rbac(&state, &auth_user, "groups", "write").await {
         return flash_redirect(
             flash.error("Only administrators can delete asset groups"),
             "/assets/groups",

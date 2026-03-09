@@ -10,7 +10,7 @@ pub async fn group_list(
     let base =
         BaseTemplate::new("Groups".to_string(), user.clone()).with_current_path("/accounts/groups");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        base.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
 
     let mut conn = state
         .db_pool
@@ -274,7 +274,7 @@ pub async fn group_detail(
         .with_current_path("/accounts/groups")
         .with_messages(flash_messages);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        base.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
 
     let template = GroupDetailTemplate {
         title,
@@ -327,7 +327,7 @@ pub struct CreateGroupWebForm {
 
 /// Vauban group create form page (GET /accounts/groups/new).
 pub async fn vauban_group_create_form(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     auth_user: WebAuthUser,
     jar: CookieJar,
 ) -> Result<impl IntoResponse, AppError> {
@@ -351,7 +351,7 @@ pub async fn vauban_group_create_form(
         BaseTemplate::new("Create Group".to_string(), user).with_current_path("/accounts/groups");
 
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        base.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
 
     let template = GroupCreateTemplate {
         title,
@@ -529,7 +529,7 @@ pub async fn vauban_group_edit_form(
         .with_current_path("/accounts/groups");
 
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        base.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
 
     let template = GroupEditTemplate {
         title,
@@ -715,7 +715,7 @@ pub async fn group_add_member_form(
         .with_current_path("/accounts/groups");
 
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        base.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
 
     let template = GroupAddMemberTemplate {
         title,

@@ -4233,6 +4233,528 @@ async fn test_user_delete_soft_deletes() {
 }
 
 #[tokio::test]
+async fn test_user_delete_retires_username_and_email() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_username = unique_name("admin_retire");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
+        .await;
+    let csrf_token = app.generate_csrf_token();
+
+    let target_username = unique_name("retire_tgt");
+    let target_id = create_simple_user(&mut conn, &target_username).await;
+    let target_uuid = get_user_uuid(&mut conn, target_id).await;
+
+    use vauban_web::schema::users;
+    let (original_username, original_email): (String, String) = users::table
+        .filter(users::id.eq(target_id))
+        .select((users::username, users::email))
+        .first(&mut conn)
+        .await
+        .unwrap();
+
+    let response = app
+        .server
+        .post(&format!("/accounts/users/{}/delete", target_uuid))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[("csrf_token", csrf_token.as_str())])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(status == 303 || status == 302, "Expected redirect, got {}", status);
+
+    let (new_username, new_email, is_deleted): (String, String, bool) = users::table
+        .filter(users::id.eq(target_id))
+        .select((users::username, users::email, users::is_deleted))
+        .first(&mut conn)
+        .await
+        .unwrap();
+
+    assert!(is_deleted, "User should be soft-deleted");
+    assert!(
+        new_username.starts_with(&original_username),
+        "Retired username '{}' must start with original '{}'",
+        new_username, original_username
+    );
+    assert!(
+        new_username.contains("_deleted_"),
+        "Retired username '{}' must contain '_deleted_' suffix",
+        new_username
+    );
+    assert!(
+        new_email.starts_with(&original_email),
+        "Retired email '{}' must start with original '{}'",
+        new_email, original_email
+    );
+    assert!(
+        new_email.contains("_deleted_"),
+        "Retired email '{}' must contain '_deleted_' suffix",
+        new_email
+    );
+
+    let suffix = new_username.strip_prefix(&original_username).unwrap();
+    let ts_str = suffix.strip_prefix("_deleted_").unwrap();
+    assert!(
+        ts_str.parse::<i64>().is_ok(),
+        "Suffix '{}' must end with a unix timestamp",
+        suffix
+    );
+}
+
+#[tokio::test]
+async fn test_user_create_succeeds_after_soft_delete_of_same_username() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_username = unique_name("admin_reuse");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
+        .await;
+    let csrf_token = app.generate_csrf_token();
+
+    // Create a user, then soft-delete them
+    let reusable_name = unique_name("reusable");
+    let target_id = create_simple_user(&mut conn, &reusable_name).await;
+    let target_uuid = get_user_uuid(&mut conn, target_id).await;
+
+    use vauban_web::schema::users;
+    let actual_username: String = users::table
+        .filter(users::id.eq(target_id))
+        .select(users::username)
+        .first(&mut conn)
+        .await
+        .unwrap();
+
+    let actual_email = format!("{}@test.vauban.io", actual_username);
+
+    app.server
+        .post(&format!("/accounts/users/{}/delete", target_uuid))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[("csrf_token", csrf_token.as_str())])
+        .await;
+
+    // Now create a new user with the exact same username and email
+    let response = app
+        .server
+        .post("/accounts/users")
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[
+            ("csrf_token", csrf_token.as_str()),
+            ("username", &actual_username),
+            ("email", &actual_email),
+            ("password", "SecurePassword123!"),
+            ("is_active", "on"),
+        ])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 303 || status == 302,
+        "Expected redirect after creating user with reused username, got {}",
+        status
+    );
+
+    // Verify the new active user exists
+    let new_user_id: Option<i32> = users::table
+        .filter(users::username.eq(&actual_username))
+        .filter(users::is_deleted.eq(false))
+        .select(users::id)
+        .first(&mut conn)
+        .await
+        .optional()
+        .unwrap();
+
+    assert!(
+        new_user_id.is_some(),
+        "New user with reused username should exist as active"
+    );
+    assert_ne!(
+        new_user_id.unwrap(),
+        target_id,
+        "New user must have a different ID than the deleted one"
+    );
+
+    // Verify the old soft-deleted record still exists with the retired name
+    let old_record: Option<(String, bool)> = users::table
+        .filter(users::id.eq(target_id))
+        .select((users::username, users::is_deleted))
+        .first(&mut conn)
+        .await
+        .optional()
+        .unwrap();
+
+    assert!(old_record.is_some(), "Old soft-deleted record must still exist for audit");
+    let (old_username, old_deleted) = old_record.unwrap();
+    assert!(old_deleted, "Old record must remain soft-deleted");
+    assert!(
+        old_username.contains("_deleted_"),
+        "Old record username '{}' must have _deleted_ suffix",
+        old_username
+    );
+}
+
+#[tokio::test]
+async fn test_user_create_rejects_active_duplicate_username() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_username = unique_name("admin_dup");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
+        .await;
+    let csrf_token = app.generate_csrf_token();
+
+    // Create a user
+    let existing_name = unique_name("existing");
+    let _existing_id = create_simple_user(&mut conn, &existing_name).await;
+
+    use vauban_web::schema::users;
+    let actual_username: String = users::table
+        .filter(users::id.eq(_existing_id))
+        .select(users::username)
+        .first(&mut conn)
+        .await
+        .unwrap();
+
+    let actual_email = format!("{}@test.vauban.io", actual_username);
+
+    // Try to create another user with the same username (NOT soft-deleted)
+    let response = app
+        .server
+        .post("/accounts/users")
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[
+            ("csrf_token", csrf_token.as_str()),
+            ("username", &actual_username),
+            ("email", &actual_email),
+            ("password", "SecurePassword123!"),
+            ("is_active", "on"),
+        ])
+        .await;
+
+    // Should redirect back to form (duplicate detected)
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 303 || status == 302,
+        "Expected redirect for duplicate, got {}",
+        status
+    );
+
+    // Verify only one user with this username exists
+    let count: i64 = users::table
+        .filter(users::username.eq(&actual_username))
+        .count()
+        .get_result(&mut conn)
+        .await
+        .unwrap();
+
+    assert_eq!(count, 1, "Only one user with this username should exist");
+}
+
+#[tokio::test]
+async fn test_user_delete_preserves_record_for_audit() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_username = unique_name("admin_audit");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
+        .await;
+    let csrf_token = app.generate_csrf_token();
+
+    let target_username = unique_name("audit_tgt");
+    let target_id = create_simple_user(&mut conn, &target_username).await;
+    let target_uuid = get_user_uuid(&mut conn, target_id).await;
+
+    app.server
+        .post(&format!("/accounts/users/{}/delete", target_uuid))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[("csrf_token", csrf_token.as_str())])
+        .await;
+
+    // The record must remain in DB (not hard-deleted)
+    use vauban_web::schema::users;
+    let record: Option<(i32, uuid::Uuid, bool, Option<chrono::DateTime<chrono::Utc>>)> =
+        users::table
+            .filter(users::id.eq(target_id))
+            .select((users::id, users::uuid, users::is_deleted, users::deleted_at))
+            .first(&mut conn)
+            .await
+            .optional()
+            .unwrap();
+
+    assert!(record.is_some(), "Deleted user record must persist for audit trail");
+    let (id, uuid_val, deleted, del_at) = record.unwrap();
+    assert_eq!(id, target_id);
+    assert_eq!(uuid_val, target_uuid);
+    assert!(deleted);
+    assert!(del_at.is_some());
+}
+
+#[tokio::test]
+async fn test_user_update_can_use_username_freed_by_soft_delete() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_username = unique_name("admin_upd_free");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
+        .await;
+    let csrf_token = app.generate_csrf_token();
+
+    // Create user A, then soft-delete them to free their username
+    let freed_name = unique_name("freed");
+    let user_a_id = create_simple_user(&mut conn, &freed_name).await;
+    let user_a_uuid = get_user_uuid(&mut conn, user_a_id).await;
+
+    use vauban_web::schema::users;
+    let freed_username: String = users::table
+        .filter(users::id.eq(user_a_id))
+        .select(users::username)
+        .first(&mut conn)
+        .await
+        .unwrap();
+
+    let freed_email = format!("{}@test.vauban.io", freed_username);
+
+    app.server
+        .post(&format!("/accounts/users/{}/delete", user_a_uuid))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[("csrf_token", csrf_token.as_str())])
+        .await;
+
+    // Create user B with a different name
+    let user_b_name = unique_name("user_b");
+    let user_b_id = create_simple_user(&mut conn, &user_b_name).await;
+    let user_b_uuid = get_user_uuid(&mut conn, user_b_id).await;
+
+    // Update user B to take the freed username/email
+    let response = app
+        .server
+        .post(&format!("/accounts/users/{}", user_b_uuid))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[
+            ("csrf_token", csrf_token.as_str()),
+            ("username", &freed_username),
+            ("email", &freed_email),
+            ("is_active", "on"),
+        ])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 303 || status == 302,
+        "Expected redirect after updating to freed username, got {}",
+        status
+    );
+
+    // Verify user B now has the freed username
+    let updated_username: String = users::table
+        .filter(users::id.eq(user_b_id))
+        .select(users::username)
+        .first(&mut conn)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        updated_username, freed_username,
+        "User B should now own the freed username"
+    );
+}
+
+#[tokio::test]
+async fn test_user_create_delete_create_cycle_works_multiple_times() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_username = unique_name("admin_cycle");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
+        .await;
+    let csrf_token = app.generate_csrf_token();
+
+    let reused_base = unique_name("cycled");
+    let reused_username = format!("{}_{}", reused_base, &uuid::Uuid::new_v4().to_string()[..8]);
+    let reused_email = format!("{}@test.vauban.io", reused_username);
+
+    use vauban_web::schema::users;
+
+    for iteration in 0..3 {
+        // Create the user
+        let response = app
+            .server
+            .post("/accounts/users")
+            .add_header(
+                COOKIE,
+                format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+            )
+            .form(&[
+                ("csrf_token", csrf_token.as_str()),
+                ("username", &reused_username),
+                ("email", &reused_email),
+                ("password", "SecurePassword123!"),
+                ("is_active", "on"),
+            ])
+            .await;
+
+        let status = response.status_code().as_u16();
+        assert!(
+            status == 303 || status == 302,
+            "Iteration {}: expected redirect after create, got {}",
+            iteration, status
+        );
+
+        // Find the active user
+        let (user_id, user_uuid): (i32, uuid::Uuid) = users::table
+            .filter(users::username.eq(&reused_username))
+            .filter(users::is_deleted.eq(false))
+            .select((users::id, users::uuid))
+            .first(&mut conn)
+            .await
+            .expect(&format!("Iteration {}: active user should exist", iteration));
+
+        // Soft-delete
+        let del_resp = app
+            .server
+            .post(&format!("/accounts/users/{}/delete", user_uuid))
+            .add_header(
+                COOKIE,
+                format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+            )
+            .form(&[("csrf_token", csrf_token.as_str())])
+            .await;
+
+        let del_status = del_resp.status_code().as_u16();
+        assert!(
+            del_status == 303 || del_status == 302,
+            "Iteration {}: expected redirect after delete, got {}",
+            iteration, del_status
+        );
+
+        // Verify username was retired
+        let retired_name: String = users::table
+            .filter(users::id.eq(user_id))
+            .select(users::username)
+            .first(&mut conn)
+            .await
+            .unwrap();
+
+        assert!(
+            retired_name.contains("_deleted_"),
+            "Iteration {}: retired username '{}' must contain '_deleted_'",
+            iteration, retired_name
+        );
+
+        // Small delay to ensure different timestamps
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+    }
+
+    // After 3 cycles, there should be exactly 3 soft-deleted records
+    let deleted_count: i64 = users::table
+        .filter(users::username.like(format!("{}%", reused_username)))
+        .filter(users::is_deleted.eq(true))
+        .count()
+        .get_result(&mut conn)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        deleted_count, 3,
+        "Should have 3 soft-deleted records after 3 create/delete cycles"
+    );
+}
+
+#[tokio::test]
+async fn test_user_delete_already_deleted_returns_not_found() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_username = unique_name("admin_2del");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
+        .await;
+    let csrf_token = app.generate_csrf_token();
+
+    let target_username = unique_name("double_del");
+    let target_id = create_simple_user(&mut conn, &target_username).await;
+    let target_uuid = get_user_uuid(&mut conn, target_id).await;
+
+    // First delete - should succeed
+    app.server
+        .post(&format!("/accounts/users/{}/delete", target_uuid))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[("csrf_token", csrf_token.as_str())])
+        .await;
+
+    use vauban_web::schema::users;
+    let is_deleted: bool = users::table
+        .filter(users::id.eq(target_id))
+        .select(users::is_deleted)
+        .first(&mut conn)
+        .await
+        .unwrap();
+    assert!(is_deleted, "User should be soft-deleted after first delete");
+
+    // Second delete - should fail gracefully (user not found among active)
+    let response = app
+        .server
+        .post(&format!("/accounts/users/{}/delete", target_uuid))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[("csrf_token", csrf_token.as_str())])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 303 || status == 302,
+        "Expected redirect for already-deleted user, got {}",
+        status
+    );
+}
+
+#[tokio::test]
 #[serial_test::serial]
 async fn test_user_delete_protects_last_superuser() {
     // This test verifies that when there is only 1 active superuser,

@@ -1,7 +1,10 @@
 /// VAUBAN Web - RBAC service client wrapper.
-use crate::config::Config;
 use crate::error::AppResult;
-use crate::ipc::RbacClient;
+use crate::ipc::RbacIpcClient;
+use std::sync::Arc;
+#[cfg(not(debug_assertions))]
+use tracing::error;
+use tracing::warn;
 
 /// RBAC permission check parameters.
 #[derive(Debug, Clone)]
@@ -23,27 +26,46 @@ impl PermissionCheck {
 }
 
 /// RBAC service wrapper.
-pub struct RbacService {
-    client: RbacClient,
-}
+///
+/// Uses the IPC client when running under supervisor, otherwise falls back
+/// to debug-allow / release-deny behavior.
+pub struct RbacService;
 
 impl RbacService {
-    /// Create a new RBAC service.
-    pub async fn new(config: Config) -> AppResult<Self> {
-        let client = RbacClient::new(&config).await?;
-        Ok(Self { client })
-    }
-
-    /// Check if user has permission.
+    /// Check if a subject has permission via the RBAC IPC client.
+    ///
+    /// Fail-closed: returns false on IPC errors or when client is unavailable
+    /// in release builds.
     pub async fn check_permission(
-        &self,
-        user_id: &str,
+        rbac_client: Option<&Arc<RbacIpcClient>>,
+        subject: &str,
         resource: &str,
         action: &str,
     ) -> AppResult<bool> {
-        self.client
-            .check_permission(user_id, resource, action)
-            .await
+        if let Some(client) = rbac_client {
+            client.check_permission(subject, resource, action).await
+        } else {
+            #[cfg(debug_assertions)]
+            {
+                warn!(
+                    subject,
+                    resource,
+                    action,
+                    "RBAC fallback: allowing (no IPC client, debug build)"
+                );
+                Ok(true)
+            }
+            #[cfg(not(debug_assertions))]
+            {
+                error!(
+                    subject,
+                    resource,
+                    action,
+                    "RBAC IPC client not available - denying by default"
+                );
+                Ok(false)
+            }
+        }
     }
 }
 

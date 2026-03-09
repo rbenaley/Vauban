@@ -96,7 +96,7 @@ pub async fn create_asset(
     user: AuthUser,
     Json(request): Json<CreateAssetRequest>,
 ) -> AppResult<Json<Asset>> {
-    super::require_staff(&user)?;
+    super::require_staff(&state, &user).await?;
 
     validator::Validate::validate(&request)
         .map_err(|e| AppError::Validation(format!("Validation failed: {:?}", e)))?;
@@ -171,7 +171,7 @@ pub async fn update_asset(
 ) -> Response {
     use crate::error::{htmx_error_response, is_htmx_request};
 
-    if let Err(e) = super::require_staff(&user) {
+    if let Err(e) = super::require_staff(&state, &user).await {
         return e.into_response();
     }
 
@@ -469,7 +469,7 @@ pub async fn fetch_ssh_host_key_api(
     Path(asset_uuid_str): Path<String>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> AppResult<Json<serde_json::Value>> {
-    super::require_staff(&user)?;
+    super::require_staff(&state, &user).await?;
 
     let confirm = params.get("confirm").map(|v| v == "true").unwrap_or(false);
 
