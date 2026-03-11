@@ -1099,7 +1099,7 @@ Extend to all credential types with zero vault code changes (new domains only):
 | LDAP/OIDC bind secrets | `credentials` | Auth service config |
 | Third-party application secrets | `external` | New `secrets` table via REST API |
 
-**IPC message size**: the current 16 KB limit accommodates all credential types (SSH private keys are typically 2-4 KB in PEM). For larger blobs (e.g. configuration files > 10 KB), the IPC message size limit in `shared/src/ipc.rs` can be increased or a chunked transfer protocol added.
+**IPC message size**: the current 256 KB limit (`MAX_MESSAGE_SIZE` in `shared/src/ipc.rs`) comfortably accommodates all credential types (SSH private keys are typically 2-4 KB in PEM).
 
 #### Phase 3 -- Third-Party Secrets API
 

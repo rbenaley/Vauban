@@ -227,7 +227,7 @@ Messages are serialized using **bincode** for efficiency:
 ```
 ┌─────────────────┬─────────────────────────────────┐
 │ Length (4 bytes)│ Serialized Message (bincode)    │
-│ Little-endian   │ Variable length, max 128 KB     │
+│ Little-endian   │ Variable length, max 256 KB     │
 └─────────────────┴─────────────────────────────────┘
 ```
 

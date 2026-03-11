@@ -501,7 +501,7 @@ flowchart LR
 
 ### 8.3 IPC Message Size
 
-RDP messages, especially H.264 frames, can be larger than typical IPC messages. The `MAX_MESSAGE_SIZE` is set to **128 KB** to accommodate keyframes (which are larger than delta frames). This does not mean every message uses 128 KB -- delta frames are typically 1-5 KB.
+RDP messages, especially H.264 frames, can be larger than typical IPC messages. The `MAX_MESSAGE_SIZE` is set to **256 KB** to accommodate keyframes at very high resolutions (5K+) with complex graphical content, where I-frames can exceed 128 KB. This does not mean every message uses 256 KB -- delta frames are typically 1-5 KB, and most keyframes stay well under 100 KB at standard resolutions.
 
 ---
 
