@@ -77,7 +77,7 @@ flowchart TB
         R1["Feature-level<br/><i>Can this role manage users?</i>"]
     end
 
-    subgraph L2 ["Layer 2: Instance-Level Access Rules"]
+    subgraph L2 ["Layer 2: Instance-Level Rules"]
         R2["Asset-level<br/><i>Can this user SSH to server X?</i>"]
     end
 ```
@@ -286,8 +286,8 @@ struct ServiceState {
     requests_failed: u64,
     draining: bool,
     shutdown_requested: bool,
-    enforcer: Option<Enforcer>,    // Casbin policy engine
-    db_pool: Option<db::DbPool>,   // Async PG pool (diesel-async)
+    enforcer: Option<Enforcer>,           // Casbin policy engine
+    db_pool: Option<db::DbPool>,          // Async PG pool (diesel-async)
     rt: Option<tokio::runtime::Runtime>,  // Single-threaded Tokio RT
 }
 ```
@@ -490,7 +490,7 @@ flowchart TB
 
     FindRules --> Empty{Rules found?}
     Empty -->|No| Deny["AccessChecked<br/>allowed: false"]
-    Empty -->|Yes| Aggregate["Aggregate constraints:<br/>MFA = any(require_mfa)<br/>Justification = any(require_justification)<br/>Duration = min(max_session_duration)"]
+    Empty -->|Yes| Aggregate["Aggregate constraints:<br/>any(require_mfa)<br/>any(require_justification)<br/>min(max_session_duration)"]
     Aggregate --> Allow["AccessChecked<br/>allowed: true<br/>+ constraints"]
 ```
 
