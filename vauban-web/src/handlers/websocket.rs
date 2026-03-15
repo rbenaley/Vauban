@@ -222,14 +222,9 @@ pub async fn ws_session_guard(
 #[serde(tag = "type", rename_all = "lowercase")]
 enum TerminalCommand {
     /// Resize the terminal PTY.
-    Resize {
-        cols: u16,
-        rows: u16,
-    },
+    Resize { cols: u16, rows: u16 },
     /// Explicit data to send to terminal (alternative to raw text).
-    Data {
-        data: String,
-    },
+    Data { data: String },
 }
 
 /// Ping interval to keep WebSocket connection alive.
@@ -250,7 +245,12 @@ pub async fn dashboard_ws(
 }
 
 /// Handle dashboard WebSocket connection.
-async fn handle_dashboard_socket(socket: WebSocket, state: AppState, user: AuthUser, _ws_guard: WsGuard) {
+async fn handle_dashboard_socket(
+    socket: WebSocket,
+    state: AppState,
+    user: AuthUser,
+    _ws_guard: WsGuard,
+) {
     let (mut sender, mut receiver) = socket.split();
 
     info!(user = %user.username, "Dashboard WebSocket connected");
@@ -791,7 +791,12 @@ pub async fn active_sessions_ws(
 }
 
 /// Handle active sessions list WebSocket connection.
-async fn handle_active_sessions_socket(socket: WebSocket, state: AppState, user: AuthUser, _ws_guard: WsGuard) {
+async fn handle_active_sessions_socket(
+    socket: WebSocket,
+    state: AppState,
+    user: AuthUser,
+    _ws_guard: WsGuard,
+) {
     let (mut sender, mut receiver) = socket.split();
 
     info!(user = %user.username, "Active sessions list WebSocket connected");
@@ -1163,12 +1168,36 @@ pub struct TerminalResize {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum RdpCommand {
-    MouseMove { x: u16, y: u16 },
-    MouseButton { button: u8, pressed: bool, x: u16, y: u16 },
-    MouseWheel { delta_x: i16, delta_y: i16 },
-    Key { code: String, key: String, pressed: bool, shift: bool, ctrl: bool, alt: bool, meta: bool },
-    Resize { width: u16, height: u16 },
-    Capabilities { video_codecs: Vec<String> },
+    MouseMove {
+        x: u16,
+        y: u16,
+    },
+    MouseButton {
+        button: u8,
+        pressed: bool,
+        x: u16,
+        y: u16,
+    },
+    MouseWheel {
+        delta_x: i16,
+        delta_y: i16,
+    },
+    Key {
+        code: String,
+        key: String,
+        pressed: bool,
+        shift: bool,
+        ctrl: bool,
+        alt: bool,
+        meta: bool,
+    },
+    Resize {
+        width: u16,
+        height: u16,
+    },
+    Capabilities {
+        video_codecs: Vec<String>,
+    },
 }
 
 /// Handle RDP WebSocket upgrade.
@@ -1402,17 +1431,16 @@ async fn handle_rdp_socket(
         if let Ok(mut conn) = state.db_pool.get().await {
             use crate::schema::proxy_sessions::dsl;
             if let Ok(session_uuid) = ::uuid::Uuid::parse_str(&session_id) {
-                let update_result = diesel::update(
-                    dsl::proxy_sessions.filter(dsl::uuid.eq(session_uuid)),
-                )
-                .set((
-                    dsl::is_recorded.eq(true),
-                    dsl::recording_path.eq(&recording_path),
-                    dsl::status.eq("disconnected"),
-                    dsl::disconnected_at.eq(chrono::Utc::now()),
-                ))
-                .execute(&mut conn)
-                .await;
+                let update_result =
+                    diesel::update(dsl::proxy_sessions.filter(dsl::uuid.eq(session_uuid)))
+                        .set((
+                            dsl::is_recorded.eq(true),
+                            dsl::recording_path.eq(&recording_path),
+                            dsl::status.eq("disconnected"),
+                            dsl::disconnected_at.eq(chrono::Utc::now()),
+                        ))
+                        .execute(&mut conn)
+                        .await;
 
                 match update_result {
                     Ok(count) if count > 0 => {
@@ -1678,7 +1706,13 @@ mod tests {
     fn test_rdp_command_mouse_button_pressed() {
         let json = r#"{"type": "mouse_button", "button": 0, "pressed": true, "x": 50, "y": 60}"#;
         let cmd: RdpCommand = serde_json::from_str(json).unwrap();
-        if let RdpCommand::MouseButton { button, pressed, x, y } = cmd {
+        if let RdpCommand::MouseButton {
+            button,
+            pressed,
+            x,
+            y,
+        } = cmd
+        {
             assert_eq!(button, 0);
             assert!(pressed);
             assert_eq!(x, 50);
@@ -1692,7 +1726,10 @@ mod tests {
     fn test_rdp_command_mouse_button_released() {
         let json = r#"{"type": "mouse_button", "button": 2, "pressed": false, "x": 300, "y": 400}"#;
         let cmd: RdpCommand = serde_json::from_str(json).unwrap();
-        if let RdpCommand::MouseButton { button, pressed, .. } = cmd {
+        if let RdpCommand::MouseButton {
+            button, pressed, ..
+        } = cmd
+        {
             assert_eq!(button, 2);
             assert!(!pressed);
         } else {
@@ -1716,7 +1753,16 @@ mod tests {
     fn test_rdp_command_key_pressed() {
         let json = r#"{"type": "key", "code": "KeyA", "key": "a", "pressed": true, "shift": false, "ctrl": false, "alt": false, "meta": false}"#;
         let cmd: RdpCommand = serde_json::from_str(json).unwrap();
-        if let RdpCommand::Key { code, key, pressed, shift, ctrl, alt, meta } = cmd {
+        if let RdpCommand::Key {
+            code,
+            key,
+            pressed,
+            shift,
+            ctrl,
+            alt,
+            meta,
+        } = cmd
+        {
             assert_eq!(code, "KeyA");
             assert_eq!(key, "a");
             assert!(pressed);
@@ -1805,7 +1851,14 @@ mod tests {
     fn test_rdp_command_key_all_modifiers() {
         let json = r#"{"type": "key", "code": "KeyA", "key": "A", "pressed": true, "shift": true, "ctrl": true, "alt": true, "meta": true}"#;
         let cmd: RdpCommand = serde_json::from_str(json).unwrap();
-        if let RdpCommand::Key { shift, ctrl, alt, meta, .. } = cmd {
+        if let RdpCommand::Key {
+            shift,
+            ctrl,
+            alt,
+            meta,
+            ..
+        } = cmd
+        {
             assert!(shift);
             assert!(ctrl);
             assert!(alt);

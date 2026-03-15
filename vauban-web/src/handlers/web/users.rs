@@ -14,7 +14,9 @@ pub async fn user_list(
     let base =
         BaseTemplate::new("Users".to_string(), user.clone()).with_current_path("/accounts/users");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base)
+            .await
+            .into_fields();
 
     // Load users from database
     let mut conn = state
@@ -273,7 +275,9 @@ pub async fn user_detail(
     let can_edit = has_user_write && (!is_superuser || auth_user.is_superuser);
 
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base)
+            .await
+            .into_fields();
     let template = UserDetailTemplate {
         title,
         user: user_ctx,
@@ -344,7 +348,9 @@ pub async fn user_create_form(
     let can_manage_superusers = auth_user.is_superuser;
 
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base)
+            .await
+            .into_fields();
     let template = UserCreateTemplate {
         title,
         user: user_ctx,
@@ -628,7 +634,9 @@ pub async fn user_edit_form(
         BaseTemplate::new("Edit User".to_string(), user).with_current_path("/accounts/users");
 
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base)
+            .await
+            .into_fields();
     let template = UserEditTemplate {
         title,
         user: user_ctx,
@@ -1095,7 +1103,9 @@ pub async fn profile(
     let base = BaseTemplate::new("My Profile".to_string(), user.clone())
         .with_current_path("/accounts/profile");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base)
+            .await
+            .into_fields();
 
     let template = ProfileTemplate {
         title,
@@ -1128,7 +1138,9 @@ pub async fn mfa_setup(
     let base =
         BaseTemplate::new("MFA Setup".to_string(), user.clone()).with_current_path("/accounts/mfa");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base)
+            .await
+            .into_fields();
 
     let mut conn = state
         .db_pool
@@ -1172,9 +1184,10 @@ pub async fn mfa_setup(
                 (s, qr)
             } else {
                 // Plaintext secret (pre-migration): encrypt-on-read, then generate QR
-                let encrypted = vault.encrypt("mfa", &s).await.map_err(|e| {
-                    AppError::Internal(anyhow::anyhow!("MFA encryption: {}", e))
-                })?;
+                let encrypted = vault
+                    .encrypt("mfa", &s)
+                    .await
+                    .map_err(|e| AppError::Internal(anyhow::anyhow!("MFA encryption: {}", e)))?;
                 diesel::update(
                     crate::schema::users::table.filter(crate::schema::users::id.eq(user_id)),
                 )
@@ -1204,11 +1217,8 @@ pub async fn mfa_setup(
                 .mfa_generate(&user_username, "VAUBAN")
                 .await
                 .map_err(|e| AppError::Internal(anyhow::anyhow!("MFA generation: {}", e)))?;
-            let qr = AuthService::generate_totp_qr_code(
-                plaintext.as_str(),
-                &user_username,
-                "VAUBAN",
-            )?;
+            let qr =
+                AuthService::generate_totp_qr_code(plaintext.as_str(), &user_username, "VAUBAN")?;
             // plaintext (SensitiveString) zeroized on drop here
             diesel::update(
                 crate::schema::users::table.filter(crate::schema::users::id.eq(user_id)),
@@ -1271,7 +1281,9 @@ pub async fn user_sessions(
     let base = BaseTemplate::new("My Sessions".to_string(), user.clone())
         .with_current_path("/accounts/sessions");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base)
+            .await
+            .into_fields();
 
     // Load user sessions from database
     let mut conn = state
@@ -1372,7 +1384,9 @@ pub async fn api_keys(
     let base = BaseTemplate::new("API Keys".to_string(), user.clone())
         .with_current_path("/accounts/apikeys");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base)
+            .await
+            .into_fields();
 
     // Load user API keys from database
     let mut conn = state
@@ -1541,7 +1555,10 @@ pub async fn broadcast_sessions_update(state: &AppState, user_uuid: &str, user_i
 }
 
 /// Build HTML for the sessions list, personalized for the client's token_hash.
-pub(crate) fn build_sessions_html(sessions: &[crate::models::AuthSession], client_token_hash: &str) -> String {
+pub(crate) fn build_sessions_html(
+    sessions: &[crate::models::AuthSession],
+    client_token_hash: &str,
+) -> String {
     use crate::models::AuthSession;
 
     if sessions.is_empty() {

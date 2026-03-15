@@ -1,0 +1,170 @@
+{% extends "base.html" %}
+
+{% block title %}New Access Rule - {{ vauban.brand_name }}{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <!-- Header -->
+    <div class="md:flex md:items-center md:justify-between">
+        <div class="min-w-0 flex-1">
+            <nav class="flex" aria-label="Breadcrumb">
+                <ol class="flex items-center space-x-2">
+                    <li>
+                        <a href="/assets/access" class="text-gray-400 hover:text-gray-500 dark:text-gray-500 dark:hover:text-gray-400">
+                            <svg class="h-5 w-5 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd" d="M9.293 2.293a1 1 0 011.414 0l7 7A1 1 0 0117 11h-1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-3a1 1 0 00-1-1H9a1 1 0 00-1 1v3a1 1 0 01-1 1H5a1 1 0 01-1-1v-6H3a1 1 0 01-.707-1.707l7-7z" clip-rule="evenodd"/>
+                            </svg>
+                        </a>
+                    </li>
+                    <li>
+                        <div class="flex items-center">
+                            <svg class="h-5 w-5 flex-shrink-0 text-gray-300 dark:text-gray-600" viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd"/>
+                            </svg>
+                            <a href="/assets/access" class="ml-2 text-sm font-medium text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300">Access Rules</a>
+                        </div>
+                    </li>
+                    <li>
+                        <div class="flex items-center">
+                            <svg class="h-5 w-5 flex-shrink-0 text-gray-300 dark:text-gray-600" viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd"/>
+                            </svg>
+                            <span class="ml-2 text-sm font-medium text-gray-500 dark:text-gray-400">New</span>
+                        </div>
+                    </li>
+                </ol>
+            </nav>
+            <h2 class="mt-2 text-2xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-3xl sm:tracking-tight">
+                New Access Rule
+            </h2>
+        </div>
+    </div>
+
+    <form action="/assets/access" method="POST" class="space-y-6" x-data="csrf">
+        <input type="hidden" name="csrf_token" x-model="token" />
+        <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+            <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
+                <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Rule Details</h3>
+                <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">Define the access rule configuration.</p>
+            </div>
+            <div class="px-4 py-5 sm:p-6 space-y-6">
+                <div class="grid grid-cols-1 gap-6 sm:grid-cols-2">
+                    <div>
+                        <label for="name" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Name *</label>
+                        <input type="text" name="name" id="name" value="{{ form.name }}"
+                               class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
+                               required placeholder="e.g. Dev Team - Production SSH">
+                    </div>
+                    <div>
+                        <label for="priority" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Priority</label>
+                        <input type="number" name="priority" id="priority" value="{{ form.priority }}"
+                               class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
+                               placeholder="0">
+                        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Higher priority rules take precedence</p>
+                    </div>
+                </div>
+
+                <div>
+                    <label for="description" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Description</label>
+                    <textarea name="description" id="description" rows="3"
+                              class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
+                              placeholder="Describe the purpose of this access rule...">{{ form.description }}</textarea>
+                </div>
+
+                <div class="grid grid-cols-1 gap-6 sm:grid-cols-2">
+                    <div>
+                        <label for="user_group_id" class="block text-sm font-medium text-gray-700 dark:text-gray-300">User Group *</label>
+                        <select name="user_group_id" id="user_group_id" required
+                                class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
+                            <option value="">Select a user group...</option>
+                            {% for group in user_groups %}
+                            <option value="{{ group.id }}" {% if form.user_group_id == group.id.to_string() %}selected{% endif %}>{{ group.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div>
+                        <label for="asset_group_id" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Asset Group *</label>
+                        <select name="asset_group_id" id="asset_group_id" required
+                                class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
+                            <option value="">Select an asset group...</option>
+                            {% for group in asset_groups %}
+                            <option value="{{ group.id }}" {% if form.asset_group_id == group.id.to_string() %}selected{% endif %}>{{ group.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                </div>
+
+                <fieldset>
+                    <legend class="text-sm font-medium text-gray-700 dark:text-gray-300">Allowed Protocols *</legend>
+                    <div class="mt-2 flex space-x-6">
+                        <label class="flex items-center">
+                            <input type="checkbox" name="allowed_ssh" value="true" {% if form.allowed_ssh %}checked{% endif %}
+                                   class="rounded border-gray-300 text-vauban-600 focus:ring-vauban-500 dark:border-gray-600 dark:bg-gray-700">
+                            <span class="ml-2 text-sm text-gray-700 dark:text-gray-300">SSH</span>
+                        </label>
+                        <label class="flex items-center">
+                            <input type="checkbox" name="allowed_rdp" value="true" {% if form.allowed_rdp %}checked{% endif %}
+                                   class="rounded border-gray-300 text-vauban-600 focus:ring-vauban-500 dark:border-gray-600 dark:bg-gray-700">
+                            <span class="ml-2 text-sm text-gray-700 dark:text-gray-300">RDP</span>
+                        </label>
+                    </div>
+                </fieldset>
+
+                <div class="grid grid-cols-1 gap-6 sm:grid-cols-2">
+                    <div>
+                        <label for="valid_from" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Valid From</label>
+                        <input type="datetime-local" name="valid_from" id="valid_from" value="{{ form.valid_from }}"
+                               class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
+                        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Leave empty for immediate effect</p>
+                    </div>
+                    <div>
+                        <label for="valid_until" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Valid Until</label>
+                        <input type="datetime-local" name="valid_until" id="valid_until" value="{{ form.valid_until }}"
+                               class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
+                        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Leave empty for no expiration</p>
+                    </div>
+                </div>
+
+                <div>
+                    <label for="max_session_duration" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Max Session Duration (seconds)</label>
+                    <input type="number" name="max_session_duration" id="max_session_duration" value="{{ form.max_session_duration }}"
+                           class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
+                           placeholder="Leave empty for unlimited" min="60">
+                </div>
+
+                <fieldset>
+                    <legend class="text-sm font-medium text-gray-700 dark:text-gray-300">Security Requirements</legend>
+                    <div class="mt-2 space-y-3">
+                        <label class="flex items-center">
+                            <input type="checkbox" name="require_mfa" value="true" {% if form.require_mfa %}checked{% endif %}
+                                   class="rounded border-gray-300 text-vauban-600 focus:ring-vauban-500 dark:border-gray-600 dark:bg-gray-700">
+                            <span class="ml-2 text-sm text-gray-700 dark:text-gray-300">Require MFA before connection</span>
+                        </label>
+                        <label class="flex items-center">
+                            <input type="checkbox" name="require_justification" value="true" {% if form.require_justification %}checked{% endif %}
+                                   class="rounded border-gray-300 text-vauban-600 focus:ring-vauban-500 dark:border-gray-600 dark:bg-gray-700">
+                            <span class="ml-2 text-sm text-gray-700 dark:text-gray-300">Require justification before connection</span>
+                        </label>
+                        <label class="flex items-center">
+                            <input type="checkbox" name="is_active" value="true" {% if form.is_active %}checked{% endif %}
+                                   class="rounded border-gray-300 text-vauban-600 focus:ring-vauban-500 dark:border-gray-600 dark:bg-gray-700">
+                            <span class="ml-2 text-sm text-gray-700 dark:text-gray-300">Rule is active</span>
+                        </label>
+                    </div>
+                </fieldset>
+            </div>
+        </div>
+
+        <div class="flex justify-end space-x-3">
+            <a href="/assets/access"
+               class="inline-flex items-center rounded-md bg-white dark:bg-gray-700 px-4 py-2 text-sm font-semibold text-gray-900 dark:text-white shadow-sm ring-1 ring-inset ring-gray-300 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600">
+                Cancel
+            </a>
+            <button type="submit"
+                    class="inline-flex items-center rounded-md bg-vauban-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-600">
+                Create Rule
+            </button>
+        </div>
+    </form>
+</div>
+{% endblock %}

@@ -16,8 +16,8 @@
 //! The actual ACME protocol execution (account management, order creation,
 //! TLS-ALPN-01 challenge, CSR finalization) is handled by the supervisor.
 
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Duration;
 use tokio::sync::Notify;
 use tracing::{error, info, warn};
@@ -78,7 +78,8 @@ impl CertExpiry {
     pub fn update_from_der(&self, cert_der: &[u8]) {
         match parse_x509_cert_info(cert_der) {
             Ok(info) => {
-                self.not_after_epoch.store(info.not_after_epoch, Ordering::Relaxed);
+                self.not_after_epoch
+                    .store(info.not_after_epoch, Ordering::Relaxed);
                 self.self_signed.store(info.self_signed, Ordering::Relaxed);
                 let days = self.days_remaining();
                 info!(
@@ -104,8 +105,8 @@ impl CertExpiry {
 ///
 /// **Must be called before `cap_enter()`** since it performs file I/O.
 pub fn extract_cert_info(cert_path: &str) -> Result<CertInfo, String> {
-    use rustls_pki_types::pem::PemObject;
     use rustls_pki_types::CertificateDer;
+    use rustls_pki_types::pem::PemObject;
     use std::fs::File;
     use std::io::BufReader;
 
@@ -125,8 +126,8 @@ pub fn extract_cert_info(cert_path: &str) -> Result<CertInfo, String> {
 /// Extract certificate metadata from PEM data in memory (no filesystem access).
 /// Used when the supervisor provides cert data via IPC.
 pub fn extract_cert_info_from_pem(cert_pem: &str) -> Result<CertInfo, String> {
-    use rustls_pki_types::pem::PemObject;
     use rustls_pki_types::CertificateDer;
+    use rustls_pki_types::pem::PemObject;
 
     let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(cert_pem.as_bytes())
         .filter_map(|c| c.ok())
@@ -278,9 +279,7 @@ fn parse_x509_cert_info(der: &[u8]) -> Result<CertInfo, String> {
     // notAfter Time
     let tag = *der.get(pos).ok_or("Unexpected end of DER")?;
     let (len, _) = parse_tag_length(der, &mut pos, tag)?;
-    let time_bytes = der
-        .get(pos..pos + len)
-        .ok_or("notAfter value truncated")?;
+    let time_bytes = der.get(pos..pos + len).ok_or("notAfter value truncated")?;
     let not_after = parse_asn1_time(tag, time_bytes)?;
     pos += len;
 
@@ -296,7 +295,11 @@ fn parse_x509_cert_info(der: &[u8]) -> Result<CertInfo, String> {
 }
 
 /// Parse an ASN.1 tag and length, returning (content_length, end_position).
-fn parse_tag_length(der: &[u8], pos: &mut usize, expected_tag: u8) -> Result<(usize, usize), String> {
+fn parse_tag_length(
+    der: &[u8],
+    pos: &mut usize,
+    expected_tag: u8,
+) -> Result<(usize, usize), String> {
     let tag = *der.get(*pos).ok_or("Unexpected end of DER at tag")?;
     if tag != expected_tag {
         return Err(format!(
@@ -316,7 +319,9 @@ fn parse_tag_length(der: &[u8], pos: &mut usize, expected_tag: u8) -> Result<(us
         let mut length = 0usize;
         for _ in 0..num_bytes {
             length = (length << 8)
-                | (*der.get(*pos).ok_or("Unexpected end of DER in long length")? as usize);
+                | (*der
+                    .get(*pos)
+                    .ok_or("Unexpected end of DER in long length")? as usize);
             *pos += 1;
         }
         length
@@ -342,7 +347,9 @@ fn skip_tlv(der: &[u8], pos: &mut usize) -> Result<(), String> {
         let mut length = 0usize;
         for _ in 0..num_bytes {
             length = (length << 8)
-                | (*der.get(*pos).ok_or("Unexpected end of DER in long length")? as usize);
+                | (*der
+                    .get(*pos)
+                    .ok_or("Unexpected end of DER in long length")? as usize);
             *pos += 1;
         }
         length
@@ -353,12 +360,8 @@ fn skip_tlv(der: &[u8], pos: &mut usize) -> Result<(), String> {
 }
 
 /// Parse an ASN.1 UTCTime or GeneralizedTime into a chrono DateTime.
-fn parse_asn1_time(
-    tag: u8,
-    bytes: &[u8],
-) -> Result<chrono::DateTime<chrono::Utc>, String> {
-    let s =
-        std::str::from_utf8(bytes).map_err(|e| format!("Invalid time string: {}", e))?;
+fn parse_asn1_time(tag: u8, bytes: &[u8]) -> Result<chrono::DateTime<chrono::Utc>, String> {
+    let s = std::str::from_utf8(bytes).map_err(|e| format!("Invalid time string: {}", e))?;
 
     match tag {
         // UTCTime: YYMMDDHHMMSSZ
@@ -412,7 +415,12 @@ fn parse_datetime_components(
     chrono::Utc
         .with_ymd_and_hms(year, month, day, hour, min, sec)
         .single()
-        .ok_or_else(|| format!("Invalid date: {}-{:02}-{:02} {:02}:{:02}:{:02}", year, month, day, hour, min, sec))
+        .ok_or_else(|| {
+            format!(
+                "Invalid date: {}-{:02}-{:02} {:02}:{:02}:{:02}",
+                year, month, day, hour, min, sec
+            )
+        })
 }
 
 /// Request certificate renewal from the supervisor via IPC.
@@ -476,7 +484,10 @@ mod tests {
         let result = parse_asn1_time(0x17, b"260301120000Z");
         assert!(result.is_ok());
         let dt = result.unwrap();
-        assert_eq!(dt.format("%Y-%m-%d %H:%M:%S").to_string(), "2026-03-01 12:00:00");
+        assert_eq!(
+            dt.format("%Y-%m-%d %H:%M:%S").to_string(),
+            "2026-03-01 12:00:00"
+        );
     }
 
     #[test]
@@ -484,7 +495,10 @@ mod tests {
         let result = parse_asn1_time(0x18, b"20260301120000Z");
         assert!(result.is_ok());
         let dt = result.unwrap();
-        assert_eq!(dt.format("%Y-%m-%d %H:%M:%S").to_string(), "2026-03-01 12:00:00");
+        assert_eq!(
+            dt.format("%Y-%m-%d %H:%M:%S").to_string(),
+            "2026-03-01 12:00:00"
+        );
     }
 
     #[test]
@@ -527,7 +541,12 @@ mod tests {
 
     #[test]
     fn test_parse_asn1_time_invalid_utf8() {
-        let result = parse_asn1_time(0x17, &[0xFF, 0xFE, 0xFD, 0xFC, 0xFB, 0xFA, 0xF9, 0xF8, 0xF7, 0xF6, 0xF5, 0xF4, 0xF3]);
+        let result = parse_asn1_time(
+            0x17,
+            &[
+                0xFF, 0xFE, 0xFD, 0xFC, 0xFB, 0xFA, 0xF9, 0xF8, 0xF7, 0xF6, 0xF5, 0xF4, 0xF3,
+            ],
+        );
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Invalid time string"));
     }
@@ -537,7 +556,10 @@ mod tests {
         let result = parse_datetime_components(2026, "0615143022");
         assert!(result.is_ok());
         let dt = result.unwrap();
-        assert_eq!(dt.format("%Y-%m-%d %H:%M:%S").to_string(), "2026-06-15 14:30:22");
+        assert_eq!(
+            dt.format("%Y-%m-%d %H:%M:%S").to_string(),
+            "2026-06-15 14:30:22"
+        );
     }
 
     #[test]
@@ -631,12 +653,16 @@ mod tests {
 
     /// Generate a CA-signed certificate (issuer != subject).
     fn generate_ca_signed_cert(cn: &str, days: u32) -> Vec<u8> {
-        use rcgen::{CertificateParams, DnType, IsCa, BasicConstraints, Issuer, KeyPair};
+        use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair};
 
         let ca_key = KeyPair::generate().unwrap();
         let mut ca_params = CertificateParams::new(vec![]).unwrap();
-        ca_params.distinguished_name.push(DnType::CommonName, "Test CA");
-        ca_params.distinguished_name.push(DnType::OrganizationName, "Test Org");
+        ca_params
+            .distinguished_name
+            .push(DnType::CommonName, "Test CA");
+        ca_params
+            .distinguished_name
+            .push(DnType::OrganizationName, "Test Org");
         ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
         let ca_issuer = Issuer::from_params(&ca_params, &ca_key);
 
@@ -655,7 +681,10 @@ mod tests {
     fn test_parse_self_signed_cert_detected() {
         let der = generate_self_signed_cert("localhost", 90);
         let info = parse_x509_cert_info(&der).unwrap();
-        assert!(info.self_signed, "Self-signed cert must have self_signed=true");
+        assert!(
+            info.self_signed,
+            "Self-signed cert must have self_signed=true"
+        );
         assert!(info.not_after_epoch > 0, "not_after_epoch must be positive");
     }
 
@@ -663,7 +692,10 @@ mod tests {
     fn test_parse_ca_signed_cert_not_self_signed() {
         let der = generate_ca_signed_cert("example.com", 90);
         let info = parse_x509_cert_info(&der).unwrap();
-        assert!(!info.self_signed, "CA-signed cert must have self_signed=false");
+        assert!(
+            !info.self_signed,
+            "CA-signed cert must have self_signed=false"
+        );
         assert!(info.not_after_epoch > 0);
     }
 
@@ -752,7 +784,10 @@ mod tests {
         let der = generate_ca_signed_cert("updated.com", 90);
         expiry.update_from_der(&der);
 
-        assert!(!expiry.is_self_signed(), "Must become non-self-signed after update");
+        assert!(
+            !expiry.is_self_signed(),
+            "Must become non-self-signed after update"
+        );
         assert!(expiry.days_remaining() >= 88, "Must reflect new expiry");
     }
 
@@ -767,7 +802,11 @@ mod tests {
 
         expiry.update_from_der(&[0xFF, 0xFF]);
 
-        assert_eq!(expiry.days_remaining(), days_before, "Invalid DER must not change state");
+        assert_eq!(
+            expiry.days_remaining(),
+            days_before,
+            "Invalid DER must not change state"
+        );
         assert!(!expiry.is_self_signed());
     }
 
@@ -799,12 +838,14 @@ mod tests {
 
     #[test]
     fn test_extract_cert_info_self_signed_pem() {
-        use std::io::Write;
         use rcgen::{CertificateParams, DnType, KeyPair};
+        use std::io::Write;
 
         let key_pair = KeyPair::generate().unwrap();
         let mut params = CertificateParams::new(vec!["localhost".to_string()]).unwrap();
-        params.distinguished_name.push(DnType::CommonName, "localhost");
+        params
+            .distinguished_name
+            .push(DnType::CommonName, "localhost");
         let cert = params.self_signed(&key_pair).unwrap();
 
         let mut tmpfile = tempfile::NamedTempFile::new().unwrap();
@@ -817,18 +858,22 @@ mod tests {
 
     #[test]
     fn test_extract_cert_info_ca_signed_pem() {
+        use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair};
         use std::io::Write;
-        use rcgen::{CertificateParams, DnType, IsCa, BasicConstraints, Issuer, KeyPair};
 
         let ca_key = KeyPair::generate().unwrap();
         let mut ca_params = CertificateParams::new(vec![]).unwrap();
-        ca_params.distinguished_name.push(DnType::CommonName, "Test CA");
+        ca_params
+            .distinguished_name
+            .push(DnType::CommonName, "Test CA");
         ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
         let ca_issuer = Issuer::from_params(&ca_params, &ca_key);
 
         let ee_key = KeyPair::generate().unwrap();
         let mut ee_params = CertificateParams::new(vec!["signed.example.com".to_string()]).unwrap();
-        ee_params.distinguished_name.push(DnType::CommonName, "signed.example.com");
+        ee_params
+            .distinguished_name
+            .push(DnType::CommonName, "signed.example.com");
         let ee_cert = ee_params.signed_by(&ee_key, &ca_issuer).unwrap();
 
         let mut tmpfile = tempfile::NamedTempFile::new().unwrap();
@@ -870,7 +915,9 @@ mod tests {
 
         let key_pair = KeyPair::generate().unwrap();
         let mut params = CertificateParams::new(vec!["localhost".to_string()]).unwrap();
-        params.distinguished_name.push(DnType::CommonName, "self-signed-test");
+        params
+            .distinguished_name
+            .push(DnType::CommonName, "self-signed-test");
         let cert = params.self_signed(&key_pair).unwrap();
         let cert_pem = cert.pem();
 

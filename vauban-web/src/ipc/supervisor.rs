@@ -4,7 +4,7 @@
 //! sandboxed services (Capsicum). The supervisor performs DNS resolution
 //! and TCP connect, then passes the FD to the target service via SCM_RIGHTS.
 
-use shared::ipc::{recv_fd, IpcChannel};
+use shared::ipc::{IpcChannel, recv_fd};
 use shared::messages::{ControlMessage, Message, SensitiveString, Service, ServiceStats};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -82,6 +82,10 @@ pub struct SupervisorClientInner {
     cert_expiry: OnceLock<Arc<crate::tasks::CertExpiry>>,
     /// One-shot channel for receiving TLS cert data from supervisor at startup.
     tls_cert_tx: Mutex<Option<std::sync::mpsc::SyncSender<TlsCertData>>>,
+    /// DB pool for admin command processing (set after pool creation).
+    admin_db_pool: OnceLock<crate::db::DbPool>,
+    /// Tokio runtime handle for running async admin commands from the sync IPC thread.
+    tokio_handle: OnceLock<tokio::runtime::Handle>,
 }
 
 /// Async client for communication with the supervisor.
@@ -130,6 +134,8 @@ impl SupervisorClient {
             acme_resolver: OnceLock::new(),
             cert_expiry: OnceLock::new(),
             tls_cert_tx: Mutex::new(Some(tls_cert_tx)),
+            admin_db_pool: OnceLock::new(),
+            tokio_handle: OnceLock::new(),
         });
 
         let thread_inner = Arc::clone(&inner);
@@ -140,10 +146,13 @@ impl SupervisorClient {
             })
             .unwrap_or_else(|e| panic!("Failed to spawn supervisor IPC thread: {}", e));
 
-        (Self {
-            inner,
-            _thread_handle: thread_handle,
-        }, tls_cert_rx)
+        (
+            Self {
+                inner,
+                _thread_handle: thread_handle,
+            },
+            tls_cert_rx,
+        )
     }
 
     /// Request the supervisor to establish a TCP connection.
@@ -173,7 +182,10 @@ impl SupervisorClient {
         // Create response channel
         let (tx, rx) = oneshot::channel();
         {
-            let mut pending = self.inner.pending_tcp_connects.lock()
+            let mut pending = self
+                .inner
+                .pending_tcp_connects
+                .lock()
                 .unwrap_or_else(|e| e.into_inner());
             pending.insert(request_id, PendingTcpConnect { response_tx: tx });
         }
@@ -189,7 +201,9 @@ impl SupervisorClient {
 
         if let Err(e) = self.inner.channel.send(&msg) {
             // Remove pending request on send error
-            self.inner.pending_tcp_connects.lock()
+            self.inner
+                .pending_tcp_connects
+                .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(&request_id);
             return Err(format!("Failed to send TcpConnectRequest: {}", e));
@@ -204,7 +218,9 @@ impl SupervisorClient {
             }
             Err(_) => {
                 // Timeout
-                self.inner.pending_tcp_connects.lock()
+                self.inner
+                    .pending_tcp_connects
+                    .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .remove(&request_id);
                 Err("TCP connect request timeout".to_string())
@@ -230,7 +246,10 @@ impl SupervisorClient {
 
         let (tx, rx) = oneshot::channel();
         {
-            let mut pending = self.inner.pending_recording_files.lock()
+            let mut pending = self
+                .inner
+                .pending_recording_files
+                .lock()
                 .unwrap_or_else(|e| e.into_inner());
             pending.insert(request_id, PendingRecordingFile { response_tx: tx });
         }
@@ -243,7 +262,9 @@ impl SupervisorClient {
         };
 
         if let Err(e) = self.inner.channel.send(&msg) {
-            self.inner.pending_recording_files.lock()
+            self.inner
+                .pending_recording_files
+                .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(&request_id);
             return Err(format!("Failed to send RecordingFileRequest: {}", e));
@@ -253,7 +274,9 @@ impl SupervisorClient {
             Ok(Ok(result)) => Ok(result),
             Ok(Err(_)) => Err("Response channel dropped".to_string()),
             Err(_) => {
-                self.inner.pending_recording_files.lock()
+                self.inner
+                    .pending_recording_files
+                    .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .remove(&request_id);
                 Err("Recording file request timeout".to_string())
@@ -287,6 +310,20 @@ impl SupervisorClient {
     pub fn set_cert_expiry(&self, expiry: Arc<crate::tasks::CertExpiry>) {
         if self.inner.cert_expiry.set(expiry).is_err() {
             warn!("Certificate expiry tracker already set, ignoring duplicate");
+        }
+    }
+
+    /// Register the DB pool for admin command processing via IPC.
+    pub fn set_admin_pool(&self, pool: crate::db::DbPool) {
+        if self.inner.admin_db_pool.set(pool).is_err() {
+            warn!("Admin DB pool already set, ignoring duplicate");
+        }
+    }
+
+    /// Register the Tokio runtime handle for running async admin commands.
+    pub fn set_tokio_handle(&self, handle: tokio::runtime::Handle) {
+        if self.inner.tokio_handle.set(handle).is_err() {
+            warn!("Tokio handle already set, ignoring duplicate");
         }
     }
 }
@@ -366,14 +403,19 @@ fn supervisor_ipc_loop(inner: Arc<SupervisorClientInner>) {
                     "TCP connect response from supervisor"
                 );
 
-                let pending = inner.pending_tcp_connects.lock()
+                let pending = inner
+                    .pending_tcp_connects
+                    .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .remove(&request_id);
                 if let Some(pending) = pending {
                     let result = TcpConnectResult { success, error };
                     let _ = pending.response_tx.send(result);
                 } else {
-                    warn!(request_id = request_id, "No pending request for TCP connect response");
+                    warn!(
+                        request_id = request_id,
+                        "No pending request for TCP connect response"
+                    );
                 }
             }
             Ok(Message::RecordingFileResponse {
@@ -409,7 +451,9 @@ fn supervisor_ipc_loop(inner: Arc<SupervisorClientInner>) {
                     None
                 };
 
-                let pending = inner.pending_recording_files.lock()
+                let pending = inner
+                    .pending_recording_files
+                    .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .remove(&request_id);
                 if let Some(pending) = pending {
@@ -429,13 +473,17 @@ fn supervisor_ipc_loop(inner: Arc<SupervisorClientInner>) {
             }
             Ok(Message::TlsCertProvision { cert_pem, key_pem }) => {
                 info!("Received TLS certificate data from supervisor");
-                let tx = inner.tls_cert_tx.lock()
+                let tx = inner
+                    .tls_cert_tx
+                    .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .take();
                 if let Some(tx) = tx {
                     let _ = tx.send(TlsCertData { cert_pem, key_pem });
                 } else {
-                    warn!("TlsCertProvision received but no receiver (already consumed or duplicate)");
+                    warn!(
+                        "TlsCertProvision received but no receiver (already consumed or duplicate)"
+                    );
                 }
             }
             Ok(Message::AcmeChallengeInstall {
@@ -481,16 +529,14 @@ fn supervisor_ipc_loop(inner: Arc<SupervisorClientInner>) {
                 key_pem,
             }) => {
                 if let Some(resolver) = inner.acme_resolver.get() {
-                    match crate::acme::resolver::certified_key_from_pem(
-                        &cert_pem,
-                        key_pem.as_str(),
-                    ) {
+                    match crate::acme::resolver::certified_key_from_pem(&cert_pem, key_pem.as_str())
+                    {
                         Ok(certified_key) => {
                             resolver.activate_production_cert(Arc::new(certified_key));
                             // Update in-memory expiry tracker from the new certificate
                             if let Some(expiry) = inner.cert_expiry.get() {
-                                use rustls_pki_types::pem::PemObject;
                                 use rustls_pki_types::CertificateDer;
+                                use rustls_pki_types::pem::PemObject;
                                 let certs: Vec<CertificateDer<'static>> =
                                     CertificateDer::pem_slice_iter(cert_pem.as_bytes())
                                         .filter_map(|c| c.ok())
@@ -522,6 +568,30 @@ fn supervisor_ipc_loop(inner: Arc<SupervisorClientInner>) {
                         error = ?error,
                         "ACME renewal failed"
                     );
+                }
+            }
+            Ok(Message::AdminCommand {
+                request_id,
+                command,
+            }) => {
+                info!(request_id, cmd = ?std::mem::discriminant(&command), "Admin command received");
+                let response = match (inner.admin_db_pool.get(), inner.tokio_handle.get()) {
+                    (Some(pool), Some(handle)) => {
+                        handle.block_on(super::admin::handle_admin_command(pool, command))
+                    }
+                    _ => {
+                        warn!("Admin command received but DB pool or Tokio handle not configured");
+                        shared::messages::AdminResponse::Error(
+                            "Service not ready for admin commands".to_string(),
+                        )
+                    }
+                };
+                let msg = Message::AdminResponse {
+                    request_id,
+                    response,
+                };
+                if let Err(e) = inner.channel.send(&msg) {
+                    warn!(request_id, error = %e, "Failed to send AdminResponse");
                 }
             }
             Ok(_) => {
@@ -561,7 +631,9 @@ mod tests {
     fn test_tls_cert_data_stores_pem() {
         let data = TlsCertData {
             cert_pem: "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----".to_string(),
-            key_pem: SensitiveString::new("-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----".to_string()),
+            key_pem: SensitiveString::new(
+                "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----".to_string(),
+            ),
         };
         assert!(data.cert_pem.contains("CERTIFICATE"));
         assert!(data.key_pem.as_str().contains("PRIVATE KEY"));

@@ -10,7 +10,7 @@ Vauban is an open-source security bastion, developed in Rust, designed to protec
 vauban-supervisor/    # Process orchestrator, watchdog, signal handling
 vauban-web/           # HTTPS server, REST API, WebSocket handlers, frontend
 vauban-auth/          # Authentication, MFA, SSO, LDAP integration
-vauban-rbac/          # Role-based access control (Casbin)
+vauban-access/        # Access control, groups, and instance-level authorization (Casbin)
 vauban-vault/         # Secrets management, encryption/decryption service
 vauban-audit/         # Audit logging, session recording
 vauban-proxy-ssh/     # SSH protocol proxy (russh)

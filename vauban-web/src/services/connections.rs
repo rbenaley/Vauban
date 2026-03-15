@@ -70,7 +70,10 @@ impl WsConnectionCounter {
     /// accurate even on panics or abrupt disconnections.
     ///
     /// Returns `Err(ConnectionLimitError)` if the limit is reached.
-    pub async fn try_acquire(&self, user_uuid: &str) -> Result<WsConnectionGuard, ConnectionLimitError> {
+    pub async fn try_acquire(
+        &self,
+        user_uuid: &str,
+    ) -> Result<WsConnectionGuard, ConnectionLimitError> {
         let mut counts = self.counts.write().await;
         let counter = counts
             .entry(user_uuid.to_string())
@@ -801,9 +804,7 @@ mod tests {
 
         let mut receivers = Vec::new();
         for i in 0..50 {
-            let (_id, rx) = registry
-                .register("user-1", format!("hash-{}", i))
-                .await;
+            let (_id, rx) = registry.register("user-1", format!("hash-{}", i)).await;
             receivers.push(rx);
         }
 

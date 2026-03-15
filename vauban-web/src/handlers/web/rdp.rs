@@ -56,11 +56,6 @@ pub async fn connect_rdp(
         Err(_) => return htmx_error_response("Invalid asset identifier"),
     };
 
-    let proxy_client = match &state.rdp_proxy {
-        Some(client) => client.clone(),
-        None => return htmx_error_response("RDP proxy not available"),
-    };
-
     // Fetch asset from database
     let mut conn = match state.db_pool.get().await {
         Ok(c) => c,
@@ -170,13 +165,37 @@ pub async fn connect_rdp(
         }
     };
 
+    // Access rule enforcement: non-admin users must have a matching access rule
+    if !auth_user.is_superuser && !auth_user.is_staff {
+        let access_result = crate::services::access::can_access_asset(
+            state.access_client.as_ref(),
+            &mut conn,
+            user_id,
+            asset_id,
+            "rdp",
+        )
+        .await
+        .unwrap_or_else(|_| crate::services::access::AccessCheckResult::denied());
+        if !access_result.allowed {
+            return htmx_error_response("No access rule grants you access to this asset");
+        }
+    }
+
+    // Get RDP proxy client (checked after access rules to avoid leaking proxy state)
+    let proxy_client = match &state.rdp_proxy {
+        Some(client) => client.clone(),
+        None => return htmx_error_response("RDP proxy not available"),
+    };
+
     // Record the session in the database so that ws_session_guard can verify
     // WebSocket ownership before allowing the upgrade.
     {
         use crate::models::session::{NewProxySession, SessionType};
-        let client_ip: ipnetwork::IpNetwork = "0.0.0.0/0".parse().unwrap_or_else(
-            |_| ipnetwork::IpNetwork::V4(ipnetwork::Ipv4Network::from(std::net::Ipv4Addr::UNSPECIFIED)),
-        );
+        let client_ip: ipnetwork::IpNetwork = "0.0.0.0/0".parse().unwrap_or_else(|_| {
+            ipnetwork::IpNetwork::V4(ipnetwork::Ipv4Network::from(
+                std::net::Ipv4Addr::UNSPECIFIED,
+            ))
+        });
         let new_session = NewProxySession {
             uuid: session_uuid,
             user_id,
@@ -292,7 +311,8 @@ pub struct RdpViewerTemplate {
     pub vauban: crate::templates::base::VaubanConfig,
     pub messages: Vec<crate::templates::base::FlashMessage>,
     pub language_code: String,
-    pub sidebar_content: Option<crate::templates::partials::sidebar_content::SidebarContentTemplate>,
+    pub sidebar_content:
+        Option<crate::templates::partials::sidebar_content::SidebarContentTemplate>,
     pub header_user: Option<UserContext>,
     pub session_id: String,
 }
@@ -313,10 +333,12 @@ pub async fn rdp_page(
     }
 
     let user = Some(user_context_from_auth(&auth_user));
-    let base = BaseTemplate::new("RDP Session".to_string(), user.clone())
-        .with_current_path("/assets");
+    let base =
+        BaseTemplate::new("RDP Session".to_string(), user.clone()).with_current_path("/assets");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base)
+            .await
+            .into_fields();
 
     let template = RdpViewerTemplate {
         title,

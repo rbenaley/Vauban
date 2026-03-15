@@ -22,7 +22,9 @@ use instant_acme::{
     Account, AccountCredentials, AuthorizationStatus, ChallengeType, Identifier, NewAccount,
     NewOrder, OrderStatus, RetryPolicy,
 };
-use rcgen::{CertificateParams, CustomExtension, DistinguishedName, KeyPair, PKCS_ECDSA_P256_SHA256};
+use rcgen::{
+    CertificateParams, CustomExtension, DistinguishedName, KeyPair, PKCS_ECDSA_P256_SHA256,
+};
 use sha2::{Digest, Sha256};
 use shared::ipc::IpcChannel;
 use shared::messages::{Message, SensitiveString};
@@ -78,7 +80,14 @@ pub fn handle_acme_renew(params: AcmeRenewParams, web_channel: &IpcChannel) {
         Ok(rt) => rt,
         Err(e) => {
             error!(error = %e, "Failed to create tokio runtime for ACME");
-            send_renew_response(web_channel, request_id, false, Some(e.to_string()), None, None);
+            send_renew_response(
+                web_channel,
+                request_id,
+                false,
+                Some(e.to_string()),
+                None,
+                None,
+            );
             return;
         }
     };
@@ -99,7 +108,10 @@ pub fn handle_acme_renew(params: AcmeRenewParams, web_channel: &IpcChannel) {
         .await
         {
             Ok((cert_pem, key_pem)) => {
-                info!(request_id = request_id, "ACME renewal completed successfully");
+                info!(
+                    request_id = request_id,
+                    "ACME renewal completed successfully"
+                );
                 send_renew_response(
                     web_channel,
                     request_id,
@@ -153,10 +165,7 @@ async fn acme_workflow(
     info!(request_id = request_id, "ACME account ready");
 
     // Step 2: Create certificate order
-    let identifiers: Vec<Identifier> = domains
-        .iter()
-        .map(|d| Identifier::Dns(d.clone()))
-        .collect();
+    let identifiers: Vec<Identifier> = domains.iter().map(|d| Identifier::Dns(d.clone())).collect();
 
     let mut order = account
         .new_order(&NewOrder::new(&identifiers))
@@ -195,9 +204,7 @@ async fn acme_workflow(
         // Find TLS-ALPN-01 challenge
         let mut challenge = authz
             .challenge(ChallengeType::TlsAlpn01)
-            .ok_or_else(|| {
-                format!("No TLS-ALPN-01 challenge available for {}", domain)
-            })?;
+            .ok_or_else(|| format!("No TLS-ALPN-01 challenge available for {}", domain))?;
 
         // Step 3a: Compute the key authorization SHA-256 digest for acmeIdentifier
         let key_auth = challenge.key_authorization();
@@ -317,19 +324,16 @@ async fn get_or_create_account(
         };
 
         let eab = match (eab_kid, eab_hmac_key) {
-            (Some(kid), Some(hmac)) => {
-                Some(instant_acme::ExternalAccountKey::new(kid.to_string(), hmac.as_bytes()))
-            }
+            (Some(kid), Some(hmac)) => Some(instant_acme::ExternalAccountKey::new(
+                kid.to_string(),
+                hmac.as_bytes(),
+            )),
             _ => None,
         };
 
         let (account, credentials) = Account::builder()
             .map_err(|e| format!("Failed to create account builder: {}", e))?
-            .create(
-                &new_account,
-                directory_url.to_owned(),
-                eab.as_ref(),
-            )
+            .create(&new_account, directory_url.to_owned(), eab.as_ref())
             .await
             .map_err(|e| format!("Failed to create ACME account: {}", e))?;
 
@@ -344,10 +348,7 @@ async fn get_or_create_account(
 
         atomic_write_pem(account_key_path, &credentials_json)?;
 
-        info!(
-            "Created new ACME account, saved to {}",
-            account_key_path
-        );
+        info!("Created new ACME account, saved to {}", account_key_path);
         Ok(account)
     }
 }
@@ -416,8 +417,7 @@ fn atomic_write_pem(path: &str, data: &str) -> Result<(), Box<dyn std::error::Er
     file.sync_all()
         .map_err(|e| format!("Failed to sync file: {}", e))?;
 
-    std::fs::rename(&temp_path, path)
-        .map_err(|e| format!("Failed to atomically rename: {}", e))?;
+    std::fs::rename(&temp_path, path).map_err(|e| format!("Failed to atomically rename: {}", e))?;
 
     Ok(())
 }
@@ -465,7 +465,10 @@ mod tests {
         let (cert_der, key_der) = result.unwrap();
         assert!(!cert_der.is_empty(), "Certificate DER should not be empty");
         assert!(!key_der.is_empty(), "Key DER should not be empty");
-        assert_eq!(cert_der[0], 0x30, "Certificate should start with SEQUENCE tag");
+        assert_eq!(
+            cert_der[0], 0x30,
+            "Certificate should start with SEQUENCE tag"
+        );
     }
 
     #[test]

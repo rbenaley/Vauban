@@ -1,5 +1,22 @@
 /// Vauban group management page handlers.
 use super::*;
+use shared::messages::VaubanGroupInfo as IpcVaubanGroupInfo;
+
+/// Format RFC3339 date string to display format.
+fn format_rfc3339_date(s: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|d| d.format("%b %d, %Y").to_string())
+        .unwrap_or_else(|| s.to_string())
+}
+
+/// Format RFC3339 date string to display format with time.
+fn format_rfc3339_datetime(s: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|d| d.format("%b %d, %Y %H:%M").to_string())
+        .unwrap_or_else(|| s.to_string())
+}
 
 pub async fn group_list(
     State(state): State<AppState>,
@@ -10,80 +27,126 @@ pub async fn group_list(
     let base =
         BaseTemplate::new("Groups".to_string(), user.clone()).with_current_path("/accounts/groups");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base)
+            .await
+            .into_fields();
 
-    let mut conn = state
-        .db_pool
-        .get()
-        .await
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
     // Filter out empty strings - form sends empty string when search is cleared
     let search_filter = params.get("search").filter(|s| !s.is_empty()).cloned();
 
-    // Query groups with member count
-    // Groups list query - migrated to Diesel DSL
-    use crate::schema::vauban_groups::dsl::*;
+    let group_items: Vec<crate::templates::accounts::group_list::GroupListItem> =
+        if let Some(ref client) = state.access_client {
+            let groups = client
+                .list_vauban_groups()
+                .await
+                .map_err(|e| AppError::Internal(anyhow::anyhow!("IPC error: {}", e)))?;
+            let mut items: Vec<_> = groups
+                .into_iter()
+                .map(|g: IpcVaubanGroupInfo| {
+                    crate::templates::accounts::group_list::GroupListItem {
+                        uuid: g.uuid,
+                        name: g.name,
+                        description: g.description,
+                        source: g.source,
+                        member_count: g.member_count,
+                        created_at: format_rfc3339_date(&g.created_at),
+                    }
+                })
+                .collect();
+            if let Some(ref s) = search_filter {
+                let search_lower = s.to_lowercase();
+                items.retain(|item| {
+                    item.name.to_lowercase().contains(&search_lower)
+                        || item
+                            .description
+                            .as_ref()
+                            .is_some_and(|d| d.to_lowercase().contains(&search_lower))
+                });
+            }
+            items
+        } else {
+            // SQL fallback
+            let mut conn = state
+                .db_pool
+                .get()
+                .await
+                .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+            use crate::schema::user_groups::dsl::{group_id as ug_group_id, user_groups};
+            use crate::schema::vauban_groups::dsl as vg;
 
-    #[allow(clippy::type_complexity)]
-    let groups_data: Vec<(
-        ::uuid::Uuid,
-        String,
-        Option<String>,
-        String,
-        chrono::DateTime<chrono::Utc>,
-    )> = if let Some(ref s) = search_filter {
-        let pattern = crate::db::like_contains(s);
-        vauban_groups
-            .filter(name.ilike(&pattern).or(description.ilike(&pattern)))
-            .order(name.asc())
-            .select((uuid, name, description, source, created_at))
-            .load::<(
+            #[allow(clippy::type_complexity)]
+            let groups_data: Vec<(
                 ::uuid::Uuid,
                 String,
                 Option<String>,
                 String,
                 chrono::DateTime<chrono::Utc>,
-            )>(&mut conn)
-            .await
-            .map_err(AppError::Database)?
-    } else {
-        vauban_groups
-            .order(name.asc())
-            .select((uuid, name, description, source, created_at))
-            .load::<(
-                ::uuid::Uuid,
-                String,
-                Option<String>,
-                String,
-                chrono::DateTime<chrono::Utc>,
-            )>(&mut conn)
-            .await
-            .map_err(AppError::Database)?
-    };
+            )> = if let Some(ref s) = search_filter {
+                let pattern = crate::db::like_contains(s);
+                vg::vauban_groups
+                    .filter(vg::name.ilike(&pattern).or(vg::description.ilike(&pattern)))
+                    .order(vg::name.asc())
+                    .select((
+                        vg::uuid,
+                        vg::name,
+                        vg::description,
+                        vg::source,
+                        vg::created_at,
+                    ))
+                    .load::<(
+                        ::uuid::Uuid,
+                        String,
+                        Option<String>,
+                        String,
+                        chrono::DateTime<chrono::Utc>,
+                    )>(&mut conn)
+                    .await
+                    .map_err(AppError::Database)?
+            } else {
+                vg::vauban_groups
+                    .order(vg::name.asc())
+                    .select((
+                        vg::uuid,
+                        vg::name,
+                        vg::description,
+                        vg::source,
+                        vg::created_at,
+                    ))
+                    .load::<(
+                        ::uuid::Uuid,
+                        String,
+                        Option<String>,
+                        String,
+                        chrono::DateTime<chrono::Utc>,
+                    )>(&mut conn)
+                    .await
+                    .map_err(AppError::Database)?
+            };
 
-    // Get member counts - migrated to Diesel DSL
-    use crate::schema::user_groups::dsl::{group_id as ug_group_id, user_groups};
-    let mut group_items: Vec<crate::templates::accounts::group_list::GroupListItem> =
-        Vec::with_capacity(groups_data.len());
-    for (group_uuid, group_name, group_description, group_source, group_created_at) in groups_data {
-        // Get member count for this group using JOIN
-        let member_count: i64 = user_groups
-            .inner_join(vauban_groups.on(id.eq(ug_group_id)))
-            .filter(uuid.eq(group_uuid))
-            .count()
-            .get_result(&mut conn)
-            .await
-            .unwrap_or(0);
+            let mut group_items: Vec<crate::templates::accounts::group_list::GroupListItem> =
+                Vec::with_capacity(groups_data.len());
+            for (group_uuid, group_name, group_description, group_source, group_created_at) in
+                groups_data
+            {
+                let member_count: i64 = user_groups
+                    .inner_join(vg::vauban_groups.on(vg::id.eq(ug_group_id)))
+                    .filter(vg::uuid.eq(group_uuid))
+                    .count()
+                    .get_result(&mut conn)
+                    .await
+                    .unwrap_or(0);
 
-        group_items.push(crate::templates::accounts::group_list::GroupListItem {
-            uuid: group_uuid.to_string(),
-            name: group_name,
-            description: group_description,
-            source: group_source,
-            member_count,
-            created_at: group_created_at.format("%b %d, %Y").to_string(),
-        });
-    }
+                group_items.push(crate::templates::accounts::group_list::GroupListItem {
+                    uuid: group_uuid.to_string(),
+                    name: group_name,
+                    description: group_description,
+                    source: group_source,
+                    member_count,
+                    created_at: group_created_at.format("%b %d, %Y").to_string(),
+                });
+            }
+            group_items
+        };
 
     let template = GroupListTemplate {
         title,
@@ -132,16 +195,6 @@ pub async fn group_detail(
         .map(|c| c.value().to_string())
         .unwrap_or_default();
 
-    let mut conn = match state.db_pool.get().await {
-        Ok(conn) => conn,
-        Err(_) => {
-            return flash_redirect(
-                flash.error("Database connection error. Please try again."),
-                "/accounts/groups",
-            );
-        }
-    };
-
     let group_uuid = match ::uuid::Uuid::parse_str(&uuid_str) {
         Ok(uuid) => uuid,
         Err(_) => {
@@ -149,132 +202,237 @@ pub async fn group_detail(
         }
     };
 
-    // Query group details - migrated to Diesel DSL (combined into single query)
-    use crate::schema::vauban_groups::dsl as vg;
-    #[allow(clippy::type_complexity)]
-    let group_row: (
-        ::uuid::Uuid,
-        String,
-        Option<String>,
-        String,
-        chrono::DateTime<chrono::Utc>,
-        Option<String>,
-        chrono::DateTime<chrono::Utc>,
-        Option<chrono::DateTime<chrono::Utc>>,
-    ) = match vg::vauban_groups
-        .filter(vg::uuid.eq(group_uuid))
-        .select((
-            vg::uuid,
-            vg::name,
-            vg::description,
-            vg::source,
-            vg::created_at,
-            vg::external_id,
-            vg::updated_at,
-            vg::last_synced,
-        ))
-        .first(&mut conn)
-        .await
-    {
-        Ok(row) => row,
-        Err(diesel::result::Error::NotFound) => {
-            return flash_redirect(flash.error("Group not found"), "/accounts/groups");
-        }
-        Err(_) => {
-            return flash_redirect(
-                flash.error("Database error. Please try again."),
-                "/accounts/groups",
-            );
-        }
-    };
+    let group = if let Some(ref client) = state.access_client {
+        let group_info = match client.get_vauban_group(&uuid_str).await {
+            Ok(g) => g,
+            Err(_) => {
+                return flash_redirect(flash.error("Group not found"), "/accounts/groups");
+            }
+        };
+        let member_ids = client
+            .list_group_members(group_info.id)
+            .await
+            .unwrap_or_default();
 
-    // Unpack the combined result
-    let (
-        g_uuid,
-        g_name,
-        g_description,
-        g_source,
-        g_created_at,
-        g_external_id,
-        g_updated_at,
-        g_last_synced,
-    ) = group_row;
-
-    // Query group members - migrated to Diesel DSL with JOINs
-    use crate::schema::user_groups::dsl as ug;
-    use crate::schema::users::dsl as u;
-    #[allow(clippy::type_complexity)]
-    let members_data: Vec<(
-        ::uuid::Uuid,
-        String,
-        String,
-        Option<String>,
-        Option<String>,
-        bool,
-    )> = match u::users
-        .inner_join(ug::user_groups.on(ug::user_id.eq(u::id)))
-        .inner_join(vg::vauban_groups.on(vg::id.eq(ug::group_id)))
-        .filter(vg::uuid.eq(group_uuid))
-        .filter(u::is_deleted.eq(false))
-        .order(u::username.asc())
-        .select((
-            u::uuid,
-            u::username,
-            u::email,
-            u::first_name,
-            u::last_name,
-            u::is_active,
-        ))
-        .load(&mut conn)
-        .await
-    {
-        Ok(data) => data,
-        Err(_) => {
-            return flash_redirect(
-                flash.error("Database error. Please try again."),
-                "/accounts/groups",
-            );
-        }
-    };
-
-    let members: Vec<crate::templates::accounts::group_detail::GroupMember> = members_data
-        .into_iter()
-        .map(
-            |(m_uuid, m_username, m_email, m_first_name, m_last_name, m_is_active)| {
-                let full_name = match (m_first_name, m_last_name) {
-                    (Some(f), Some(l)) => Some(format!("{} {}", f, l)),
-                    (Some(f), None) => Some(f),
-                    (None, Some(l)) => Some(l),
-                    (None, None) => None,
+        let members: Vec<crate::templates::accounts::group_detail::GroupMember> =
+            if member_ids.is_empty() {
+                vec![]
+            } else {
+                let mut conn = match state.db_pool.get().await {
+                    Ok(conn) => conn,
+                    Err(_) => {
+                        return flash_redirect(
+                            flash.error("Database connection error. Please try again."),
+                            "/accounts/groups",
+                        );
+                    }
                 };
-                crate::templates::accounts::group_detail::GroupMember {
-                    uuid: m_uuid.to_string(),
-                    username: m_username,
-                    email: m_email,
-                    full_name,
-                    is_active: m_is_active,
-                }
-            },
-        )
-        .collect();
+                use crate::schema::users::dsl as u;
+                #[allow(clippy::type_complexity)]
+                let members_data: Vec<(
+                    ::uuid::Uuid,
+                    String,
+                    String,
+                    Option<String>,
+                    Option<String>,
+                    bool,
+                )> = match u::users
+                    .filter(u::id.eq_any(&member_ids))
+                    .filter(u::is_deleted.eq(false))
+                    .order(u::username.asc())
+                    .select((
+                        u::uuid,
+                        u::username,
+                        u::email,
+                        u::first_name,
+                        u::last_name,
+                        u::is_active,
+                    ))
+                    .load(&mut conn)
+                    .await
+                {
+                    Ok(data) => data,
+                    Err(_) => {
+                        return flash_redirect(
+                            flash.error("Database error. Please try again."),
+                            "/accounts/groups",
+                        );
+                    }
+                };
+                members_data
+                    .into_iter()
+                    .map(
+                        |(m_uuid, m_username, m_email, m_first_name, m_last_name, m_is_active)| {
+                            let full_name = match (m_first_name, m_last_name) {
+                                (Some(f), Some(l)) => Some(format!("{} {}", f, l)),
+                                (Some(f), None) => Some(f),
+                                (None, Some(l)) => Some(l),
+                                (None, None) => None,
+                            };
+                            crate::templates::accounts::group_detail::GroupMember {
+                                uuid: m_uuid.to_string(),
+                                username: m_username,
+                                email: m_email,
+                                full_name,
+                                is_active: m_is_active,
+                            }
+                        },
+                    )
+                    .collect()
+            };
 
-    let group = crate::templates::accounts::group_detail::GroupDetail {
-        uuid: g_uuid.to_string(),
-        name: g_name.clone(),
-        description: g_description,
-        source: g_source,
-        external_id: g_external_id,
-        created_at: g_created_at.format("%b %d, %Y %H:%M").to_string(),
-        updated_at: g_updated_at.format("%b %d, %Y %H:%M").to_string(),
-        last_synced: g_last_synced.map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
-        members,
+        crate::templates::accounts::group_detail::GroupDetail {
+            uuid: group_info.uuid,
+            name: group_info.name.clone(),
+            description: group_info.description,
+            source: group_info.source,
+            external_id: group_info.external_id,
+            created_at: format_rfc3339_datetime(&group_info.created_at),
+            updated_at: format_rfc3339_datetime(&group_info.updated_at),
+            last_synced: group_info
+                .last_synced
+                .as_ref()
+                .map(|s| format_rfc3339_datetime(s)),
+            members,
+        }
+    } else {
+        // SQL fallback
+        let mut conn = match state.db_pool.get().await {
+            Ok(conn) => conn,
+            Err(_) => {
+                return flash_redirect(
+                    flash.error("Database connection error. Please try again."),
+                    "/accounts/groups",
+                );
+            }
+        };
+
+        use crate::schema::user_groups::dsl as ug;
+        use crate::schema::users::dsl as u;
+        use crate::schema::vauban_groups::dsl as vg;
+        #[allow(clippy::type_complexity)]
+        let group_row: (
+            ::uuid::Uuid,
+            String,
+            Option<String>,
+            String,
+            chrono::DateTime<chrono::Utc>,
+            Option<String>,
+            chrono::DateTime<chrono::Utc>,
+            Option<chrono::DateTime<chrono::Utc>>,
+        ) = match vg::vauban_groups
+            .filter(vg::uuid.eq(group_uuid))
+            .select((
+                vg::uuid,
+                vg::name,
+                vg::description,
+                vg::source,
+                vg::created_at,
+                vg::external_id,
+                vg::updated_at,
+                vg::last_synced,
+            ))
+            .first(&mut conn)
+            .await
+        {
+            Ok(row) => row,
+            Err(diesel::result::Error::NotFound) => {
+                return flash_redirect(flash.error("Group not found"), "/accounts/groups");
+            }
+            Err(_) => {
+                return flash_redirect(
+                    flash.error("Database error. Please try again."),
+                    "/accounts/groups",
+                );
+            }
+        };
+
+        let (
+            g_uuid,
+            g_name,
+            g_description,
+            g_source,
+            g_created_at,
+            g_external_id,
+            g_updated_at,
+            g_last_synced,
+        ) = group_row;
+
+        #[allow(clippy::type_complexity)]
+        let members_data: Vec<(
+            ::uuid::Uuid,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            bool,
+        )> = match u::users
+            .inner_join(ug::user_groups.on(ug::user_id.eq(u::id)))
+            .inner_join(vg::vauban_groups.on(vg::id.eq(ug::group_id)))
+            .filter(vg::uuid.eq(group_uuid))
+            .filter(u::is_deleted.eq(false))
+            .order(u::username.asc())
+            .select((
+                u::uuid,
+                u::username,
+                u::email,
+                u::first_name,
+                u::last_name,
+                u::is_active,
+            ))
+            .load(&mut conn)
+            .await
+        {
+            Ok(data) => data,
+            Err(_) => {
+                return flash_redirect(
+                    flash.error("Database error. Please try again."),
+                    "/accounts/groups",
+                );
+            }
+        };
+
+        let members: Vec<crate::templates::accounts::group_detail::GroupMember> = members_data
+            .into_iter()
+            .map(
+                |(m_uuid, m_username, m_email, m_first_name, m_last_name, m_is_active)| {
+                    let full_name = match (m_first_name, m_last_name) {
+                        (Some(f), Some(l)) => Some(format!("{} {}", f, l)),
+                        (Some(f), None) => Some(f),
+                        (None, Some(l)) => Some(l),
+                        (None, None) => None,
+                    };
+                    crate::templates::accounts::group_detail::GroupMember {
+                        uuid: m_uuid.to_string(),
+                        username: m_username,
+                        email: m_email,
+                        full_name,
+                        is_active: m_is_active,
+                    }
+                },
+            )
+            .collect();
+
+        crate::templates::accounts::group_detail::GroupDetail {
+            uuid: g_uuid.to_string(),
+            name: g_name.clone(),
+            description: g_description,
+            source: g_source,
+            external_id: g_external_id,
+            created_at: g_created_at.format("%b %d, %Y %H:%M").to_string(),
+            updated_at: g_updated_at.format("%b %d, %Y %H:%M").to_string(),
+            last_synced: g_last_synced.map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
+            members,
+        }
     };
 
-    let base = BaseTemplate::new(format!("{} - Group", g_name), user.clone())
+    let base = BaseTemplate::new(format!("{} - Group", group.name), user.clone())
         .with_current_path("/accounts/groups")
         .with_messages(flash_messages);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base)
+            .await
+            .into_fields();
 
     let template = GroupDetailTemplate {
         title,
@@ -351,7 +509,9 @@ pub async fn vauban_group_create_form(
         BaseTemplate::new("Create Group".to_string(), user).with_current_path("/accounts/groups");
 
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base)
+            .await
+            .into_fields();
 
     let template = GroupCreateTemplate {
         title,
@@ -378,7 +538,6 @@ pub async fn create_vauban_group_web(
     jar: CookieJar,
     Form(form): Form<CreateGroupWebForm>,
 ) -> Response {
-    use crate::schema::vauban_groups::dsl as vg;
     use chrono::Utc;
 
     let flash = incoming_flash.flash();
@@ -413,6 +572,39 @@ pub async fn create_vauban_group_web(
         );
     }
 
+    // Sanitize text fields to prevent stored XSS
+    let sanitized_name = sanitize(&form.name);
+    let sanitized_description = sanitize_opt(form.description.filter(|d| !d.trim().is_empty()));
+
+    if let Some(ref client) = state.access_client {
+        match client
+            .create_vauban_group(&sanitized_name, sanitized_description.clone())
+            .await
+        {
+            Ok(info) => {
+                return flash_redirect(
+                    flash.success(format!("Group '{}' created successfully", sanitized_name)),
+                    &format!("/accounts/groups/{}", info.uuid),
+                );
+            }
+            Err(e) => {
+                let err_msg = e.to_string();
+                let is_already_exists = err_msg.to_lowercase().contains("already exists")
+                    || err_msg.to_lowercase().contains("duplicate");
+                return flash_redirect(
+                    flash.error(if is_already_exists {
+                        "A group with this name already exists"
+                    } else {
+                        "Failed to create group. Please try again."
+                    }),
+                    "/accounts/groups/new",
+                );
+            }
+        }
+    }
+
+    // SQL fallback
+    use crate::schema::vauban_groups::dsl as vg;
     let mut conn = match state.db_pool.get().await {
         Ok(conn) => conn,
         Err(_) => {
@@ -423,7 +615,6 @@ pub async fn create_vauban_group_web(
         }
     };
 
-    // Check if group name already exists
     let existing: Option<i32> = vg::vauban_groups
         .filter(vg::name.eq(&form.name))
         .select(vg::id)
@@ -439,13 +630,8 @@ pub async fn create_vauban_group_web(
         );
     }
 
-    // Create the group
     let new_uuid = ::uuid::Uuid::new_v4();
     let now = Utc::now();
-
-    // Sanitize text fields to prevent stored XSS
-    let sanitized_name = sanitize(&form.name);
-    let sanitized_description = sanitize_opt(form.description.filter(|d| !d.trim().is_empty()));
 
     let insert_result = diesel::insert_into(vg::vauban_groups)
         .values((
@@ -481,7 +667,6 @@ pub async fn vauban_group_edit_form(
     jar: CookieJar,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    use crate::schema::vauban_groups::dsl as vg;
     use crate::templates::accounts::{GroupEditData, GroupEditTemplate};
 
     // Only superuser can edit groups
@@ -497,39 +682,58 @@ pub async fn vauban_group_edit_form(
         .map(|c| c.value().to_string())
         .unwrap_or_default();
 
-    let mut conn = state
-        .db_pool
-        .get()
-        .await
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
-    let group_uuid = ::uuid::Uuid::parse_str(&uuid_str)
-        .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
+    let group = if let Some(ref client) = state.access_client {
+        let info = client
+            .get_vauban_group(&uuid_str)
+            .await
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("IPC error: {}", e)))?;
+        GroupEditData {
+            uuid: info.uuid,
+            name: info.name,
+            description: info.description,
+            source: info.source,
+        }
+    } else {
+        // SQL fallback
+        use crate::schema::vauban_groups::dsl as vg;
+        let mut conn = state
+            .db_pool
+            .get()
+            .await
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+        let group_uuid = ::uuid::Uuid::parse_str(&uuid_str)
+            .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
 
-    let group_row: (::uuid::Uuid, String, Option<String>, String) = vg::vauban_groups
-        .filter(vg::uuid.eq(group_uuid))
-        .select((vg::uuid, vg::name, vg::description, vg::source))
-        .first(&mut conn)
-        .await
-        .map_err(|e| match e {
-            diesel::result::Error::NotFound => AppError::NotFound("Group not found".to_string()),
-            _ => AppError::Database(e),
-        })?;
+        let group_row: (::uuid::Uuid, String, Option<String>, String) = vg::vauban_groups
+            .filter(vg::uuid.eq(group_uuid))
+            .select((vg::uuid, vg::name, vg::description, vg::source))
+            .first(&mut conn)
+            .await
+            .map_err(|e| match e {
+                diesel::result::Error::NotFound => {
+                    AppError::NotFound("Group not found".to_string())
+                }
+                _ => AppError::Database(e),
+            })?;
 
-    let (g_uuid, g_name, g_description, g_source) = group_row;
+        let (g_uuid, g_name, g_description, g_source) = group_row;
 
-    let group = GroupEditData {
-        uuid: g_uuid.to_string(),
-        name: g_name.clone(),
-        description: g_description,
-        source: g_source,
+        GroupEditData {
+            uuid: g_uuid.to_string(),
+            name: g_name.clone(),
+            description: g_description,
+            source: g_source,
+        }
     };
 
     let user = Some(user_context_from_auth(&auth_user));
-    let base = BaseTemplate::new(format!("Edit {} - Group", g_name), user)
+    let base = BaseTemplate::new(format!("Edit {} - Group", group.name), user)
         .with_current_path("/accounts/groups");
 
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base)
+            .await
+            .into_fields();
 
     let template = GroupEditTemplate {
         title,
@@ -558,7 +762,6 @@ pub async fn update_vauban_group_web(
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
     Form(form): Form<UpdateGroupWebForm>,
 ) -> Response {
-    use crate::schema::vauban_groups::dsl as vg;
     use chrono::Utc;
 
     let flash = incoming_flash.flash();
@@ -585,13 +788,6 @@ pub async fn update_vauban_group_web(
         );
     }
 
-    let group_uuid = match ::uuid::Uuid::parse_str(&uuid_str) {
-        Ok(uuid) => uuid,
-        Err(_) => {
-            return flash_redirect(flash.error("Invalid group identifier"), "/accounts/groups");
-        }
-    };
-
     // Validate name
     if form.name.trim().is_empty() || form.name.len() > 100 {
         return flash_redirect(
@@ -599,6 +795,40 @@ pub async fn update_vauban_group_web(
             &format!("/accounts/groups/{}/edit", uuid_str),
         );
     }
+
+    // Sanitize text fields to prevent stored XSS
+    let sanitized_name = sanitize(form.name.trim());
+    let sanitized_description =
+        sanitize_opt_ref(form.description.as_ref().filter(|s| !s.is_empty()));
+
+    if let Some(ref client) = state.access_client {
+        match client
+            .update_vauban_group(&uuid_str, &sanitized_name, sanitized_description)
+            .await
+        {
+            Ok(_) => {
+                return flash_redirect(
+                    flash.success("Group updated successfully"),
+                    &format!("/accounts/groups/{}", uuid_str),
+                );
+            }
+            Err(_) => {
+                return flash_redirect(
+                    flash.error("Failed to update group. Please try again."),
+                    &format!("/accounts/groups/{}/edit", uuid_str),
+                );
+            }
+        }
+    }
+
+    // SQL fallback
+    use crate::schema::vauban_groups::dsl as vg;
+    let group_uuid = match ::uuid::Uuid::parse_str(&uuid_str) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return flash_redirect(flash.error("Invalid group identifier"), "/accounts/groups");
+        }
+    };
 
     let mut conn = match state.db_pool.get().await {
         Ok(conn) => conn,
@@ -611,10 +841,6 @@ pub async fn update_vauban_group_web(
     };
 
     let now = Utc::now();
-
-    // Sanitize text fields to prevent stored XSS
-    let sanitized_name = sanitize(form.name.trim());
-    let sanitized_description = sanitize_opt_ref(form.description.as_ref().filter(|s| !s.is_empty()));
 
     let result = diesel::update(vg::vauban_groups.filter(vg::uuid.eq(group_uuid)))
         .set((
@@ -644,9 +870,6 @@ pub async fn group_add_member_form(
     auth_user: WebAuthUser,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    use crate::schema::user_groups::dsl as ug;
-    use crate::schema::users::dsl as u;
-    use crate::schema::vauban_groups::dsl as vg;
     use crate::templates::accounts::{AvailableUser, GroupAddMemberTemplate, GroupInfo};
 
     // Only staff or superuser can manage members
@@ -656,66 +879,116 @@ pub async fn group_add_member_form(
         ));
     }
 
-    let mut conn = state
-        .db_pool
-        .get()
-        .await
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
-    let group_uuid = ::uuid::Uuid::parse_str(&uuid_str)
-        .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
+    let (group, available_users) = if let Some(ref client) = state.access_client {
+        let group_info = client
+            .get_vauban_group(&uuid_str)
+            .await
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("IPC error: {}", e)))?;
+        let existing_member_ids = client
+            .list_group_members(group_info.id)
+            .await
+            .unwrap_or_default();
 
-    // Get group info
-    let group_row: (::uuid::Uuid, String, i32) = vg::vauban_groups
-        .filter(vg::uuid.eq(group_uuid))
-        .select((vg::uuid, vg::name, vg::id))
-        .first(&mut conn)
-        .await
-        .map_err(|e| match e {
-            diesel::result::Error::NotFound => AppError::NotFound("Group not found".to_string()),
-            _ => AppError::Database(e),
-        })?;
+        let mut conn = state
+            .db_pool
+            .get()
+            .await
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+        use crate::schema::users::dsl as u;
+        let available_users_data: Vec<(::uuid::Uuid, String, String)> = u::users
+            .filter(u::is_deleted.eq(false))
+            .filter(u::is_active.eq(true))
+            .filter(u::id.ne_all(&existing_member_ids))
+            .order(u::username.asc())
+            .select((u::uuid, u::username, u::email))
+            .limit(50)
+            .load(&mut conn)
+            .await
+            .map_err(AppError::Database)?;
 
-    let (g_uuid, g_name, group_id) = group_row;
+        let available_users: Vec<AvailableUser> = available_users_data
+            .into_iter()
+            .map(|(uuid, username, email)| AvailableUser {
+                uuid: uuid.to_string(),
+                username,
+                email,
+            })
+            .collect();
 
-    // Get users NOT in this group
-    let existing_member_ids: Vec<i32> = ug::user_groups
-        .filter(ug::group_id.eq(group_id))
-        .select(ug::user_id)
-        .load(&mut conn)
-        .await
-        .map_err(AppError::Database)?;
+        let group = GroupInfo {
+            uuid: group_info.uuid,
+            name: group_info.name,
+        };
+        (group, available_users)
+    } else {
+        // SQL fallback
+        use crate::schema::user_groups::dsl as ug;
+        use crate::schema::users::dsl as u;
+        use crate::schema::vauban_groups::dsl as vg;
+        let mut conn = state
+            .db_pool
+            .get()
+            .await
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+        let group_uuid = ::uuid::Uuid::parse_str(&uuid_str)
+            .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
 
-    let available_users_data: Vec<(::uuid::Uuid, String, String)> = u::users
-        .filter(u::is_deleted.eq(false))
-        .filter(u::is_active.eq(true))
-        .filter(u::id.ne_all(&existing_member_ids))
-        .order(u::username.asc())
-        .select((u::uuid, u::username, u::email))
-        .limit(50)
-        .load(&mut conn)
-        .await
-        .map_err(AppError::Database)?;
+        let group_row: (::uuid::Uuid, String, i32) = vg::vauban_groups
+            .filter(vg::uuid.eq(group_uuid))
+            .select((vg::uuid, vg::name, vg::id))
+            .first(&mut conn)
+            .await
+            .map_err(|e| match e {
+                diesel::result::Error::NotFound => {
+                    AppError::NotFound("Group not found".to_string())
+                }
+                _ => AppError::Database(e),
+            })?;
 
-    let available_users: Vec<AvailableUser> = available_users_data
-        .into_iter()
-        .map(|(uuid, username, email)| AvailableUser {
-            uuid: uuid.to_string(),
-            username,
-            email,
-        })
-        .collect();
+        let (g_uuid, g_name, group_id) = group_row;
 
-    let group = GroupInfo {
-        uuid: g_uuid.to_string(),
-        name: g_name.clone(),
+        let existing_member_ids: Vec<i32> = ug::user_groups
+            .filter(ug::group_id.eq(group_id))
+            .select(ug::user_id)
+            .load(&mut conn)
+            .await
+            .map_err(AppError::Database)?;
+
+        let available_users_data: Vec<(::uuid::Uuid, String, String)> = u::users
+            .filter(u::is_deleted.eq(false))
+            .filter(u::is_active.eq(true))
+            .filter(u::id.ne_all(&existing_member_ids))
+            .order(u::username.asc())
+            .select((u::uuid, u::username, u::email))
+            .limit(50)
+            .load(&mut conn)
+            .await
+            .map_err(AppError::Database)?;
+
+        let available_users: Vec<AvailableUser> = available_users_data
+            .into_iter()
+            .map(|(uuid, username, email)| AvailableUser {
+                uuid: uuid.to_string(),
+                username,
+                email,
+            })
+            .collect();
+
+        let group = GroupInfo {
+            uuid: g_uuid.to_string(),
+            name: g_name.clone(),
+        };
+        (group, available_users)
     };
 
     let user = Some(user_context_from_auth(&auth_user));
-    let base = BaseTemplate::new(format!("Add Member - {}", g_name), user)
+    let base = BaseTemplate::new(format!("Add Member - {}", group.name), user)
         .with_current_path("/accounts/groups");
 
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base)
+            .await
+            .into_fields();
 
     let template = GroupAddMemberTemplate {
         title,
@@ -742,10 +1015,6 @@ pub async fn group_member_search(
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
-    use crate::schema::user_groups::dsl as ug;
-    use crate::schema::users::dsl as u;
-    use crate::schema::vauban_groups::dsl as vg;
-
     // Only staff or superuser can manage members
     if !auth_user.is_superuser && !auth_user.is_staff {
         return Err(AppError::Authorization(
@@ -753,35 +1022,54 @@ pub async fn group_member_search(
         ));
     }
 
+    let search_term = params.get("user-search").cloned().unwrap_or_default();
+
+    let existing_member_ids: Vec<i32> = if let Some(ref client) = state.access_client {
+        let group_info = client
+            .get_vauban_group(&uuid_str)
+            .await
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("IPC error: {}", e)))?;
+        client
+            .list_group_members(group_info.id)
+            .await
+            .unwrap_or_default()
+    } else {
+        use crate::schema::user_groups::dsl as ug;
+        use crate::schema::vauban_groups::dsl as vg;
+        let mut conn = state
+            .db_pool
+            .get()
+            .await
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+        let group_uuid = ::uuid::Uuid::parse_str(&uuid_str)
+            .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
+
+        let group_id: i32 = vg::vauban_groups
+            .filter(vg::uuid.eq(group_uuid))
+            .select(vg::id)
+            .first(&mut conn)
+            .await
+            .map_err(|e| match e {
+                diesel::result::Error::NotFound => {
+                    AppError::NotFound("Group not found".to_string())
+                }
+                _ => AppError::Database(e),
+            })?;
+
+        ug::user_groups
+            .filter(ug::group_id.eq(group_id))
+            .select(ug::user_id)
+            .load(&mut conn)
+            .await
+            .map_err(AppError::Database)?
+    };
+
     let mut conn = state
         .db_pool
         .get()
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
-    let group_uuid = ::uuid::Uuid::parse_str(&uuid_str)
-        .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
-
-    let search_term = params.get("user-search").cloned().unwrap_or_default();
-
-    // Get group ID
-    let group_id: i32 = vg::vauban_groups
-        .filter(vg::uuid.eq(group_uuid))
-        .select(vg::id)
-        .first(&mut conn)
-        .await
-        .map_err(|e| match e {
-            diesel::result::Error::NotFound => AppError::NotFound("Group not found".to_string()),
-            _ => AppError::Database(e),
-        })?;
-
-    // Get users NOT in this group, optionally filtered by search
-    let existing_member_ids: Vec<i32> = ug::user_groups
-        .filter(ug::group_id.eq(group_id))
-        .select(ug::user_id)
-        .load(&mut conn)
-        .await
-        .map_err(AppError::Database)?;
-
+    use crate::schema::users::dsl as u;
     let available_users_data: Vec<(::uuid::Uuid, String, String)> = if search_term.is_empty() {
         u::users
             .filter(u::is_deleted.eq(false))
@@ -861,10 +1149,6 @@ pub async fn add_group_member_web(
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
     Form(form): Form<AddGroupMemberForm>,
 ) -> Response {
-    use crate::schema::user_groups::dsl as ug;
-    use crate::schema::users::dsl as u;
-    use crate::schema::vauban_groups::dsl as vg;
-
     let flash = incoming_flash.flash();
 
     // CSRF validation
@@ -906,6 +1190,70 @@ pub async fn add_group_member_web(
         }
     };
 
+    if let Some(ref client) = state.access_client {
+        let group_info = match client.get_vauban_group(&uuid_str).await {
+            Ok(g) => g,
+            Err(_) => {
+                return flash_redirect(flash.error("Group not found"), "/accounts/groups");
+            }
+        };
+
+        let mut conn = match state.db_pool.get().await {
+            Ok(conn) => conn,
+            Err(_) => {
+                return flash_redirect(
+                    flash.error("Database connection error. Please try again."),
+                    &format!("/accounts/groups/{}/members/add", uuid_str),
+                );
+            }
+        };
+        use crate::schema::users::dsl as u;
+        let user_id: Option<i32> = u::users
+            .filter(u::uuid.eq(user_uuid))
+            .filter(u::is_deleted.eq(false))
+            .select(u::id)
+            .first(&mut conn)
+            .await
+            .optional()
+            .unwrap_or(None);
+
+        let user_id = match user_id {
+            Some(id) => id,
+            None => {
+                return flash_redirect(
+                    flash.error("User not found"),
+                    &format!("/accounts/groups/{}/members/add", uuid_str),
+                );
+            }
+        };
+
+        match client.add_group_member(group_info.id, user_id).await {
+            Ok(_) => {
+                return flash_redirect(
+                    flash.success("Member added successfully"),
+                    &format!("/accounts/groups/{}", uuid_str),
+                );
+            }
+            Err(e) => {
+                let err_msg = e.to_string();
+                let is_already_member = err_msg.to_lowercase().contains("already")
+                    || err_msg.to_lowercase().contains("duplicate");
+                return flash_redirect(
+                    flash.error(if is_already_member {
+                        "User is already a member of this group"
+                    } else {
+                        "Failed to add member. Please try again."
+                    }),
+                    &format!("/accounts/groups/{}/members/add", uuid_str),
+                );
+            }
+        }
+    }
+
+    // SQL fallback
+    use crate::schema::user_groups::dsl as ug;
+    use crate::schema::users::dsl as u;
+    use crate::schema::vauban_groups::dsl as vg;
     let mut conn = match state.db_pool.get().await {
         Ok(conn) => conn,
         Err(_) => {
@@ -916,7 +1264,6 @@ pub async fn add_group_member_web(
         }
     };
 
-    // Get group ID
     let group_id: Option<i32> = vg::vauban_groups
         .filter(vg::uuid.eq(group_uuid))
         .select(vg::id)
@@ -932,7 +1279,6 @@ pub async fn add_group_member_web(
         }
     };
 
-    // Get user ID
     let user_id: Option<i32> = u::users
         .filter(u::uuid.eq(user_uuid))
         .filter(u::is_deleted.eq(false))
@@ -952,7 +1298,6 @@ pub async fn add_group_member_web(
         }
     };
 
-    // Insert membership
     let result = diesel::insert_into(ug::user_groups)
         .values((ug::user_id.eq(user_id), ug::group_id.eq(group_id)))
         .execute(&mut conn)
@@ -993,10 +1338,6 @@ pub async fn remove_group_member_web(
     axum::extract::Path((group_uuid_str, user_uuid_str)): axum::extract::Path<(String, String)>,
     Form(form): Form<DeleteAssetForm>,
 ) -> Response {
-    use crate::schema::user_groups::dsl as ug;
-    use crate::schema::users::dsl as u;
-    use crate::schema::vauban_groups::dsl as vg;
-
     let flash = incoming_flash.flash();
 
     // CSRF validation
@@ -1021,13 +1362,6 @@ pub async fn remove_group_member_web(
         );
     }
 
-    let group_uuid = match ::uuid::Uuid::parse_str(&group_uuid_str) {
-        Ok(uuid) => uuid,
-        Err(_) => {
-            return flash_redirect(flash.error("Invalid group identifier"), "/accounts/groups");
-        }
-    };
-
     let user_uuid = match ::uuid::Uuid::parse_str(&user_uuid_str) {
         Ok(uuid) => uuid,
         Err(_) => {
@@ -1035,6 +1369,69 @@ pub async fn remove_group_member_web(
                 flash.error("Invalid user identifier"),
                 &format!("/accounts/groups/{}", group_uuid_str),
             );
+        }
+    };
+
+    if let Some(ref client) = state.access_client {
+        let group_info = match client.get_vauban_group(&group_uuid_str).await {
+            Ok(g) => g,
+            Err(_) => {
+                return flash_redirect(flash.error("Group not found"), "/accounts/groups");
+            }
+        };
+
+        let mut conn = match state.db_pool.get().await {
+            Ok(conn) => conn,
+            Err(_) => {
+                return flash_redirect(
+                    flash.error("Database connection error. Please try again."),
+                    &format!("/accounts/groups/{}", group_uuid_str),
+                );
+            }
+        };
+        use crate::schema::users::dsl as u;
+        let user_id: Option<i32> = u::users
+            .filter(u::uuid.eq(user_uuid))
+            .select(u::id)
+            .first(&mut conn)
+            .await
+            .optional()
+            .unwrap_or(None);
+
+        let user_id = match user_id {
+            Some(id) => id,
+            None => {
+                return flash_redirect(
+                    flash.error("User not found"),
+                    &format!("/accounts/groups/{}", group_uuid_str),
+                );
+            }
+        };
+
+        match client.remove_group_member(group_info.id, user_id).await {
+            Ok(_) => {
+                return flash_redirect(
+                    flash.success("Member removed successfully"),
+                    &format!("/accounts/groups/{}", group_uuid_str),
+                );
+            }
+            Err(_) => {
+                return flash_redirect(
+                    flash.error("Failed to remove member. Please try again."),
+                    &format!("/accounts/groups/{}", group_uuid_str),
+                );
+            }
+        }
+    }
+
+    // SQL fallback
+    use crate::schema::user_groups::dsl as ug;
+    use crate::schema::users::dsl as u;
+    use crate::schema::vauban_groups::dsl as vg;
+    let group_uuid = match ::uuid::Uuid::parse_str(&group_uuid_str) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return flash_redirect(flash.error("Invalid group identifier"), "/accounts/groups");
         }
     };
 
@@ -1048,7 +1445,6 @@ pub async fn remove_group_member_web(
         }
     };
 
-    // Get group ID
     let group_id: Option<i32> = vg::vauban_groups
         .filter(vg::uuid.eq(group_uuid))
         .select(vg::id)
@@ -1064,7 +1460,6 @@ pub async fn remove_group_member_web(
         }
     };
 
-    // Get user ID
     let user_id: Option<i32> = u::users
         .filter(u::uuid.eq(user_uuid))
         .select(u::id)
@@ -1083,7 +1478,6 @@ pub async fn remove_group_member_web(
         }
     };
 
-    // Delete membership
     let result = diesel::delete(
         ug::user_groups
             .filter(ug::user_id.eq(user_id))
@@ -1119,9 +1513,6 @@ pub async fn delete_vauban_group_web(
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
     Form(form): Form<DeleteAssetForm>,
 ) -> Response {
-    use crate::schema::user_groups::dsl as ug;
-    use crate::schema::vauban_groups::dsl as vg;
-
     let flash = incoming_flash.flash();
 
     // CSRF validation
@@ -1146,6 +1537,31 @@ pub async fn delete_vauban_group_web(
         );
     }
 
+    if let Some(ref client) = state.access_client {
+        match client.delete_vauban_group(&uuid_str).await {
+            Ok(_) => {
+                return flash_redirect(
+                    flash.success("Group deleted successfully"),
+                    "/accounts/groups",
+                );
+            }
+            Err(e) => {
+                let err_msg = e.to_string();
+                let has_members = err_msg.to_lowercase().contains("member")
+                    || err_msg.to_lowercase().contains("has ");
+                let msg = if has_members {
+                    "Cannot delete group: it still has members. Remove all members first."
+                } else {
+                    "Failed to delete group. Please try again."
+                };
+                return flash_redirect(flash.error(msg), &format!("/accounts/groups/{}", uuid_str));
+            }
+        }
+    }
+
+    // SQL fallback
+    use crate::schema::user_groups::dsl as ug;
+    use crate::schema::vauban_groups::dsl as vg;
     let group_uuid = match ::uuid::Uuid::parse_str(&uuid_str) {
         Ok(uuid) => uuid,
         Err(_) => {
@@ -1163,7 +1579,6 @@ pub async fn delete_vauban_group_web(
         }
     };
 
-    // Get group ID
     let group_id: Option<i32> = vg::vauban_groups
         .filter(vg::uuid.eq(group_uuid))
         .select(vg::id)
@@ -1179,7 +1594,6 @@ pub async fn delete_vauban_group_web(
         }
     };
 
-    // Check if group has members
     let member_count: i64 = ug::user_groups
         .filter(ug::group_id.eq(group_id))
         .count()
@@ -1198,7 +1612,6 @@ pub async fn delete_vauban_group_web(
         );
     }
 
-    // Delete the group
     let result = diesel::delete(vg::vauban_groups.filter(vg::id.eq(group_id)))
         .execute(&mut conn)
         .await;
@@ -1215,4 +1628,3 @@ pub async fn delete_vauban_group_web(
         ),
     }
 }
-

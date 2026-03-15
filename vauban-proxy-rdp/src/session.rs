@@ -8,25 +8,28 @@ use crate::error::{SessionError, SessionResult};
 use crate::video_encoder::VideoEncoder;
 use image::codecs::png::PngEncoder;
 use image::{ExtendedColorType, ImageEncoder};
-use ironrdp::connector::{self, connection_activation::ConnectionActivationState, ClientConnector, ConnectionResult, Credentials, DesktopSize};
+use ironrdp::connector::{
+    self, ClientConnector, ConnectionResult, Credentials, DesktopSize,
+    connection_activation::ConnectionActivationState,
+};
+use ironrdp::core::WriteBuf;
+use ironrdp::displaycontrol::client::DisplayControlClient;
+use ironrdp::dvc::DrdynvcClient;
+use ironrdp::graphics::image_processing::PixelFormat;
+use ironrdp::input::{self as rdp_input, Database as InputDatabase};
 use ironrdp::pdu::gcc::KeyboardType;
 use ironrdp::pdu::geometry::Rectangle as _;
 use ironrdp::pdu::rdp::capability_sets::{self, MajorPlatformType};
 use ironrdp::pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
 use ironrdp::session::image::DecodedImage;
-use ironrdp::session::{fast_path, ActiveStage, ActiveStageOutput};
-use ironrdp::graphics::image_processing::PixelFormat;
-use ironrdp::input::{self as rdp_input, Database as InputDatabase};
-use ironrdp::dvc::DrdynvcClient;
-use ironrdp::displaycontrol::client::DisplayControlClient;
-use ironrdp::core::WriteBuf;
+use ironrdp::session::{ActiveStage, ActiveStageOutput, fast_path};
 use ironrdp_tokio::single_sequence_step;
 use ironrdp_tokio::{FramedWrite as _, NetworkClient};
 use secrecy::{ExposeSecret, SecretString};
 use shared::messages::{Message, RdpInputEvent};
 use std::os::unix::io::{FromRawFd, IntoRawFd, OwnedFd};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
@@ -120,10 +123,12 @@ impl RdpSession {
 
             // SAFETY: The FD comes from the supervisor via SCM_RIGHTS and is a valid TCP socket
             let std_stream = unsafe { std::net::TcpStream::from_raw_fd(fd.into_raw_fd()) };
-            std_stream.set_nonblocking(true)
-                .map_err(|e| SessionError::ConnectionFailed(format!("Failed to set non-blocking: {e}")))?;
-            TcpStream::from_std(std_stream)
-                .map_err(|e| SessionError::ConnectionFailed(format!("Failed to create tokio stream: {e}")))?
+            std_stream.set_nonblocking(true).map_err(|e| {
+                SessionError::ConnectionFailed(format!("Failed to set non-blocking: {e}"))
+            })?;
+            TcpStream::from_std(std_stream).map_err(|e| {
+                SessionError::ConnectionFailed(format!("Failed to create tokio stream: {e}"))
+            })?
         } else {
             // Non-sandboxed mode: resolve DNS and open connection directly (development/macOS)
             let addr_str = format!("{}:{}", config.host, config.port);
@@ -160,13 +165,13 @@ impl RdpSession {
 
         trace!(session_id = %config.session_id, %server_addr, "TCP connection established");
 
-        let drdynvc = DrdynvcClient::new()
-            .with_dynamic_channel(DisplayControlClient::new(|caps| {
+        let drdynvc =
+            DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|caps| {
                 trace!("Display Control capabilities: {:?}", caps);
                 Ok(Vec::new())
             }));
-        let mut connector = ClientConnector::new(connector_config, client_addr)
-            .with_static_channel(drdynvc);
+        let mut connector =
+            ClientConnector::new(connector_config, client_addr).with_static_channel(drdynvc);
 
         // Wrap in IronRDP framing
         let mut framed = ironrdp_tokio::TokioFramed::new(stream);
@@ -196,7 +201,9 @@ impl RdpSession {
             tls_connector.connect(server_name.clone(), tcp_stream),
         )
         .await
-        .map_err(|_| SessionError::TlsUpgradeFailed("TLS handshake timed out after 10s".to_string()))?
+        .map_err(|_| {
+            SessionError::TlsUpgradeFailed("TLS handshake timed out after 10s".to_string())
+        })?
         .map_err(|e| SessionError::TlsUpgradeFailed(e.to_string()))?;
 
         trace!(session_id = %config.session_id, "TLS upgrade complete");
@@ -458,11 +465,13 @@ async fn active_session_loop(
     trace!(session_id = %session_id, "Active session loop started");
 
     if let Some(ref tx) = audit_tx {
-        let _ = tx.send(Message::RdpRecordingStart {
-            session_id: session_id.clone(),
-            width: align_even(desktop_w),
-            height: align_even(desktop_h),
-        }).await;
+        let _ = tx
+            .send(Message::RdpRecordingStart {
+                session_id: session_id.clone(),
+                width: align_even(desktop_w),
+                height: align_even(desktop_h),
+            })
+            .await;
         debug!(session_id = %session_id, "Sent RdpRecordingStart to audit");
     }
 
@@ -804,9 +813,11 @@ async fn active_session_loop(
     }.await;
 
     if let Some(ref tx) = audit_tx {
-        let _ = tx.send(Message::RdpRecordingEnd {
-            session_id: session_id.clone(),
-        }).await;
+        let _ = tx
+            .send(Message::RdpRecordingEnd {
+                session_id: session_id.clone(),
+            })
+            .await;
         debug!(session_id = %session_id, "Sent RdpRecordingEnd to audit");
     }
 
@@ -845,10 +856,7 @@ fn translate_input_event(event: RdpInputEvent) -> Vec<rdp_input::Operation> {
             };
             vec![rdp_input::Operation::MouseButtonReleased(btn)]
         }
-        RdpInputEvent::WheelScroll {
-            vertical,
-            amount,
-        } => {
+        RdpInputEvent::WheelScroll { vertical, amount } => {
             vec![rdp_input::Operation::WheelRotations(
                 rdp_input::WheelRotations {
                     is_vertical: vertical,
@@ -858,11 +866,19 @@ fn translate_input_event(event: RdpInputEvent) -> Vec<rdp_input::Operation> {
         }
 
         // High-level variants from web frontend
-        RdpInputEvent::MouseButton { button, pressed, x, y } => {
+        RdpInputEvent::MouseButton {
+            button,
+            pressed,
+            x,
+            y,
+        } => {
             let Some(btn) = map_mouse_button(button) else {
                 return vec![];
             };
-            let mut ops = vec![rdp_input::Operation::MouseMove(rdp_input::MousePosition { x, y })];
+            let mut ops = vec![rdp_input::Operation::MouseMove(rdp_input::MousePosition {
+                x,
+                y,
+            })];
             if pressed {
                 ops.push(rdp_input::Operation::MouseButtonPressed(btn));
             } else {
@@ -934,38 +950,90 @@ fn map_mouse_button(button: u8) -> Option<rdp_input::MouseButton> {
 fn js_code_to_scancode(code: &str) -> u16 {
     match code {
         "Escape" => 0x01,
-        "Digit1" => 0x02, "Digit2" => 0x03, "Digit3" => 0x04,
-        "Digit4" => 0x05, "Digit5" => 0x06, "Digit6" => 0x07,
-        "Digit7" => 0x08, "Digit8" => 0x09, "Digit9" => 0x0A,
-        "Digit0" => 0x0B, "Minus" => 0x0C, "Equal" => 0x0D,
-        "Backspace" => 0x0E, "Tab" => 0x0F,
-        "KeyQ" => 0x10, "KeyW" => 0x11, "KeyE" => 0x12, "KeyR" => 0x13,
-        "KeyT" => 0x14, "KeyY" => 0x15, "KeyU" => 0x16, "KeyI" => 0x17,
-        "KeyO" => 0x18, "KeyP" => 0x19,
-        "BracketLeft" => 0x1A, "BracketRight" => 0x1B,
+        "Digit1" => 0x02,
+        "Digit2" => 0x03,
+        "Digit3" => 0x04,
+        "Digit4" => 0x05,
+        "Digit5" => 0x06,
+        "Digit6" => 0x07,
+        "Digit7" => 0x08,
+        "Digit8" => 0x09,
+        "Digit9" => 0x0A,
+        "Digit0" => 0x0B,
+        "Minus" => 0x0C,
+        "Equal" => 0x0D,
+        "Backspace" => 0x0E,
+        "Tab" => 0x0F,
+        "KeyQ" => 0x10,
+        "KeyW" => 0x11,
+        "KeyE" => 0x12,
+        "KeyR" => 0x13,
+        "KeyT" => 0x14,
+        "KeyY" => 0x15,
+        "KeyU" => 0x16,
+        "KeyI" => 0x17,
+        "KeyO" => 0x18,
+        "KeyP" => 0x19,
+        "BracketLeft" => 0x1A,
+        "BracketRight" => 0x1B,
         "Enter" => 0x1C,
         "ControlLeft" => 0x1D,
-        "KeyA" => 0x1E, "KeyS" => 0x1F, "KeyD" => 0x20, "KeyF" => 0x21,
-        "KeyG" => 0x22, "KeyH" => 0x23, "KeyJ" => 0x24, "KeyK" => 0x25,
+        "KeyA" => 0x1E,
+        "KeyS" => 0x1F,
+        "KeyD" => 0x20,
+        "KeyF" => 0x21,
+        "KeyG" => 0x22,
+        "KeyH" => 0x23,
+        "KeyJ" => 0x24,
+        "KeyK" => 0x25,
         "KeyL" => 0x26,
-        "Semicolon" => 0x27, "Quote" => 0x28, "Backquote" => 0x29,
-        "ShiftLeft" => 0x2A, "Backslash" => 0x2B,
-        "KeyZ" => 0x2C, "KeyX" => 0x2D, "KeyC" => 0x2E, "KeyV" => 0x2F,
-        "KeyB" => 0x30, "KeyN" => 0x31, "KeyM" => 0x32,
-        "Comma" => 0x33, "Period" => 0x34, "Slash" => 0x35,
-        "ShiftRight" => 0x36, "NumpadMultiply" => 0x37,
-        "AltLeft" => 0x38, "Space" => 0x39, "CapsLock" => 0x3A,
-        "F1" => 0x3B, "F2" => 0x3C, "F3" => 0x3D, "F4" => 0x3E,
-        "F5" => 0x3F, "F6" => 0x40, "F7" => 0x41, "F8" => 0x42,
-        "F9" => 0x43, "F10" => 0x44,
-        "NumLock" => 0x45, "ScrollLock" => 0x46,
-        "Numpad7" => 0x47, "Numpad8" => 0x48, "Numpad9" => 0x49,
+        "Semicolon" => 0x27,
+        "Quote" => 0x28,
+        "Backquote" => 0x29,
+        "ShiftLeft" => 0x2A,
+        "Backslash" => 0x2B,
+        "KeyZ" => 0x2C,
+        "KeyX" => 0x2D,
+        "KeyC" => 0x2E,
+        "KeyV" => 0x2F,
+        "KeyB" => 0x30,
+        "KeyN" => 0x31,
+        "KeyM" => 0x32,
+        "Comma" => 0x33,
+        "Period" => 0x34,
+        "Slash" => 0x35,
+        "ShiftRight" => 0x36,
+        "NumpadMultiply" => 0x37,
+        "AltLeft" => 0x38,
+        "Space" => 0x39,
+        "CapsLock" => 0x3A,
+        "F1" => 0x3B,
+        "F2" => 0x3C,
+        "F3" => 0x3D,
+        "F4" => 0x3E,
+        "F5" => 0x3F,
+        "F6" => 0x40,
+        "F7" => 0x41,
+        "F8" => 0x42,
+        "F9" => 0x43,
+        "F10" => 0x44,
+        "NumLock" => 0x45,
+        "ScrollLock" => 0x46,
+        "Numpad7" => 0x47,
+        "Numpad8" => 0x48,
+        "Numpad9" => 0x49,
         "NumpadSubtract" => 0x4A,
-        "Numpad4" => 0x4B, "Numpad5" => 0x4C, "Numpad6" => 0x4D,
+        "Numpad4" => 0x4B,
+        "Numpad5" => 0x4C,
+        "Numpad6" => 0x4D,
         "NumpadAdd" => 0x4E,
-        "Numpad1" => 0x4F, "Numpad2" => 0x50, "Numpad3" => 0x51,
-        "Numpad0" => 0x52, "NumpadDecimal" => 0x53,
-        "F11" => 0x57, "F12" => 0x58,
+        "Numpad1" => 0x4F,
+        "Numpad2" => 0x50,
+        "Numpad3" => 0x51,
+        "Numpad0" => 0x52,
+        "NumpadDecimal" => 0x53,
+        "F11" => 0x57,
+        "F12" => 0x58,
         // Extended keys (0xE0xx)
         "NumpadEnter" => 0xE01C,
         "ControlRight" => 0xE01D,
@@ -1110,9 +1178,7 @@ impl NetworkClient for NtlmOnlyNetworkClient {
     }
 }
 
-fn extract_tls_server_public_key(
-    cert: &pki_types::CertificateDer<'_>,
-) -> Result<Vec<u8>, String> {
+fn extract_tls_server_public_key(cert: &pki_types::CertificateDer<'_>) -> Result<Vec<u8>, String> {
     use x509_cert::der::Decode as _;
     let parsed = x509_cert::Certificate::from_der(cert.as_ref())
         .map_err(|e| format!("Failed to parse X.509 certificate: {e}"))?;
@@ -1541,10 +1607,10 @@ mod tests {
         let h: u32 = 2;
         // Simulate what encode_region_as_png does: strip alpha from RGBA
         let rgba_fb: Vec<u8> = vec![
-            255, 0,   0,   0,   // red, alpha=0
-            0,   255, 0,   0,   // green, alpha=0
-            0,   0,   255, 0,   // blue, alpha=0
-            255, 255, 255, 0,   // white, alpha=0
+            255, 0, 0, 0, // red, alpha=0
+            0, 255, 0, 0, // green, alpha=0
+            0, 0, 255, 0, // blue, alpha=0
+            255, 255, 255, 0, // white, alpha=0
         ];
         let mut rgb_buf = Vec::with_capacity((w * h * 3) as usize);
         for pixel in rgba_fb.chunks_exact(4) {
@@ -1687,7 +1753,8 @@ mod tests {
     #[test]
     fn test_connect_falls_back_to_direct_connect() {
         let source = include_str!("session.rs");
-        let preconn_check = source.find("if let Some(fd) = config.preconnected_fd")
+        let preconn_check = source
+            .find("if let Some(fd) = config.preconnected_fd")
             .expect("preconnected_fd check must exist");
         let after_check = &source[preconn_check..];
         assert!(
@@ -1703,7 +1770,10 @@ mod tests {
     #[test]
     fn test_session_command_variants() {
         let _input = SessionCommand::Input(RdpInputEvent::MouseMove { x: 10, y: 20 });
-        let _resize = SessionCommand::Resize { width: 1920, height: 1080 };
+        let _resize = SessionCommand::Resize {
+            width: 1920,
+            height: 1080,
+        };
         let _close = SessionCommand::Close;
     }
 
@@ -1734,8 +1804,14 @@ mod tests {
         for v in 1..=2000u16 {
             let aligned = align_even(v);
             assert_eq!(aligned % 2, 0, "align_even({v}) = {aligned} is not even");
-            assert!(aligned >= v, "align_even({v}) = {aligned} is smaller than input");
-            assert!(aligned - v <= 1, "align_even({v}) = {aligned} overshot by more than 1");
+            assert!(
+                aligned >= v,
+                "align_even({v}) = {aligned} is smaller than input"
+            );
+            assert!(
+                aligned - v <= 1,
+                "align_even({v}) = {aligned} overshot by more than 1"
+            );
         }
     }
 
@@ -1768,34 +1844,58 @@ mod tests {
     #[test]
     fn test_encoder_thread_handles_odd_dimensions() {
         let cmd_rx = tokio::sync::mpsc::channel::<EncoderCommand>(8);
-        let mut result_tx = tokio::sync::mpsc::channel::<(crate::video_encoder::VideoFrame, u64)>(8);
+        let mut result_tx =
+            tokio::sync::mpsc::channel::<(crate::video_encoder::VideoFrame, u64)>(8);
 
         spawn_encoder_thread(1280, 720, 0, cmd_rx.1, result_tx.0, "test-odd".to_string());
 
         let odd_w: u16 = 1727;
         let odd_h: u16 = 1117;
         let buf = vec![0u8; usize::from(odd_w) * usize::from(odd_h) * 4];
-        cmd_rx.0.blocking_send(EncoderCommand::Encode(buf, odd_w, odd_h)).unwrap();
+        cmd_rx
+            .0
+            .blocking_send(EncoderCommand::Encode(buf, odd_w, odd_h))
+            .unwrap();
 
         let (frame, _elapsed) = result_tx.1.blocking_recv().unwrap();
         assert_eq!(frame.width, align_even(odd_w));
         assert_eq!(frame.height, align_even(odd_h));
-        assert!(!frame.data.is_empty(), "H.264 frame data should not be empty");
+        assert!(
+            !frame.data.is_empty(),
+            "H.264 frame data should not be empty"
+        );
         assert!(frame.is_keyframe, "First frame should be a keyframe");
     }
 
     #[test]
     fn test_encoder_thread_reconfigure_odd_dimensions() {
         let cmd_rx = tokio::sync::mpsc::channel::<EncoderCommand>(8);
-        let mut result_tx = tokio::sync::mpsc::channel::<(crate::video_encoder::VideoFrame, u64)>(8);
+        let mut result_tx =
+            tokio::sync::mpsc::channel::<(crate::video_encoder::VideoFrame, u64)>(8);
 
-        spawn_encoder_thread(1280, 720, 0, cmd_rx.1, result_tx.0, "test-reconf-odd".to_string());
+        spawn_encoder_thread(
+            1280,
+            720,
+            0,
+            cmd_rx.1,
+            result_tx.0,
+            "test-reconf-odd".to_string(),
+        );
 
-        cmd_rx.0.blocking_send(EncoderCommand::Reconfigure(1727, 1117)).unwrap();
-        cmd_rx.0.blocking_send(EncoderCommand::ForceKeyframe).unwrap();
+        cmd_rx
+            .0
+            .blocking_send(EncoderCommand::Reconfigure(1727, 1117))
+            .unwrap();
+        cmd_rx
+            .0
+            .blocking_send(EncoderCommand::ForceKeyframe)
+            .unwrap();
 
         let buf = vec![0u8; usize::from(1728u16) * usize::from(1118u16) * 4];
-        cmd_rx.0.blocking_send(EncoderCommand::Encode(buf, 1728, 1118)).unwrap();
+        cmd_rx
+            .0
+            .blocking_send(EncoderCommand::Encode(buf, 1728, 1118))
+            .unwrap();
 
         let (frame, _elapsed) = result_tx.1.blocking_recv().unwrap();
         assert_eq!(frame.width, 1728);
@@ -1806,25 +1906,42 @@ mod tests {
     #[test]
     fn test_encoder_thread_exact_fullscreen_scenario() {
         let cmd_rx = tokio::sync::mpsc::channel::<EncoderCommand>(8);
-        let mut result_tx = tokio::sync::mpsc::channel::<(crate::video_encoder::VideoFrame, u64)>(8);
+        let mut result_tx =
+            tokio::sync::mpsc::channel::<(crate::video_encoder::VideoFrame, u64)>(8);
 
-        spawn_encoder_thread(1280, 720, 0, cmd_rx.1, result_tx.0, "test-fullscreen".to_string());
+        spawn_encoder_thread(
+            1280,
+            720,
+            0,
+            cmd_rx.1,
+            result_tx.0,
+            "test-fullscreen".to_string(),
+        );
 
         let buf_720p = vec![128u8; 1280 * 720 * 4];
-        cmd_rx.0.blocking_send(EncoderCommand::Encode(buf_720p, 1280, 720)).unwrap();
+        cmd_rx
+            .0
+            .blocking_send(EncoderCommand::Encode(buf_720p, 1280, 720))
+            .unwrap();
         let (frame1, _) = result_tx.1.blocking_recv().unwrap();
         assert_eq!(frame1.width, 1280);
         assert_eq!(frame1.height, 720);
 
         let buf_odd = vec![64u8; 1728 * 1117 * 4];
-        cmd_rx.0.blocking_send(EncoderCommand::Encode(buf_odd, 1728, 1117)).unwrap();
+        cmd_rx
+            .0
+            .blocking_send(EncoderCommand::Encode(buf_odd, 1728, 1117))
+            .unwrap();
         let (frame2, _) = result_tx.1.blocking_recv().unwrap();
         assert_eq!(frame2.width, 1728);
         assert_eq!(frame2.height, 1118);
         assert!(!frame2.data.is_empty());
 
         let buf_back = vec![200u8; 1280 * 720 * 4];
-        cmd_rx.0.blocking_send(EncoderCommand::Encode(buf_back, 1280, 720)).unwrap();
+        cmd_rx
+            .0
+            .blocking_send(EncoderCommand::Encode(buf_back, 1280, 720))
+            .unwrap();
         let (frame3, _) = result_tx.1.blocking_recv().unwrap();
         assert_eq!(frame3.width, 1280);
         assert_eq!(frame3.height, 720);
@@ -1833,12 +1950,23 @@ mod tests {
     #[test]
     fn test_encoder_thread_custom_bitrate() {
         let cmd_rx = tokio::sync::mpsc::channel::<EncoderCommand>(8);
-        let mut result_tx = tokio::sync::mpsc::channel::<(crate::video_encoder::VideoFrame, u64)>(8);
+        let mut result_tx =
+            tokio::sync::mpsc::channel::<(crate::video_encoder::VideoFrame, u64)>(8);
 
-        spawn_encoder_thread(1280, 720, 20_000_000, cmd_rx.1, result_tx.0, "test-bitrate".to_string());
+        spawn_encoder_thread(
+            1280,
+            720,
+            20_000_000,
+            cmd_rx.1,
+            result_tx.0,
+            "test-bitrate".to_string(),
+        );
 
         let buf = vec![0u8; 1280 * 720 * 4];
-        cmd_rx.0.blocking_send(EncoderCommand::Encode(buf, 1280, 720)).unwrap();
+        cmd_rx
+            .0
+            .blocking_send(EncoderCommand::Encode(buf, 1280, 720))
+            .unwrap();
         let (frame, _) = result_tx.1.blocking_recv().unwrap();
         assert!(frame.is_keyframe);
         assert!(!frame.data.is_empty());
@@ -1847,12 +1975,23 @@ mod tests {
     #[test]
     fn test_encoder_thread_zero_bitrate_uses_default() {
         let cmd_rx = tokio::sync::mpsc::channel::<EncoderCommand>(8);
-        let mut result_tx = tokio::sync::mpsc::channel::<(crate::video_encoder::VideoFrame, u64)>(8);
+        let mut result_tx =
+            tokio::sync::mpsc::channel::<(crate::video_encoder::VideoFrame, u64)>(8);
 
-        spawn_encoder_thread(1280, 720, 0, cmd_rx.1, result_tx.0, "test-default-bitrate".to_string());
+        spawn_encoder_thread(
+            1280,
+            720,
+            0,
+            cmd_rx.1,
+            result_tx.0,
+            "test-default-bitrate".to_string(),
+        );
 
         let buf = vec![0u8; 1280 * 720 * 4];
-        cmd_rx.0.blocking_send(EncoderCommand::Encode(buf, 1280, 720)).unwrap();
+        cmd_rx
+            .0
+            .blocking_send(EncoderCommand::Encode(buf, 1280, 720))
+            .unwrap();
         let (frame, _) = result_tx.1.blocking_recv().unwrap();
         assert!(frame.is_keyframe);
         assert!(!frame.data.is_empty());
@@ -1860,8 +1999,14 @@ mod tests {
 
     #[test]
     fn test_session_command_set_video_mode_has_bitrate() {
-        let _cmd = SessionCommand::SetVideoMode { enabled: true, bitrate_bps: 10_000_000 };
-        let _cmd_default = SessionCommand::SetVideoMode { enabled: false, bitrate_bps: 0 };
+        let _cmd = SessionCommand::SetVideoMode {
+            enabled: true,
+            bitrate_bps: 10_000_000,
+        };
+        let _cmd_default = SessionCommand::SetVideoMode {
+            enabled: false,
+            bitrate_bps: 0,
+        };
     }
 
     // ==================== Structural Regression Tests ====================
@@ -1924,7 +2069,8 @@ mod tests {
             .unwrap_or(handler_body.len());
         let handler_body = &handler_body[..handler_end];
 
-        let w_line = handler_body.lines()
+        let w_line = handler_body
+            .lines()
             .find(|l| l.contains("let w ="))
             .expect("Resize handler must assign w");
         assert!(
@@ -1932,7 +2078,8 @@ mod tests {
             "Resize width must be forced even (& !1), found: {w_line}"
         );
 
-        let h_line = handler_body.lines()
+        let h_line = handler_body
+            .lines()
             .find(|l| l.contains("let h ="))
             .expect("Resize handler must assign h");
         assert!(
@@ -2000,7 +2147,9 @@ mod tests {
             .find("H.264 encoding tick")
             .expect("encode tick comment must exist");
         let tick_body = &source[tick_start..];
-        let tick_end = tick_body.find("Receive encoded H.264").unwrap_or(tick_body.len());
+        let tick_end = tick_body
+            .find("Receive encoded H.264")
+            .unwrap_or(tick_body.len());
         let tick_body = &tick_body[..tick_end];
 
         assert!(
@@ -2020,7 +2169,10 @@ mod tests {
             .find("fn spawn_encoder_thread")
             .expect("spawn_encoder_thread must exist");
         let fn_body = &source[thread_start..];
-        let fn_end = fn_body.find("\n/// ").or_else(|| fn_body.find("\nfn ")).unwrap_or(fn_body.len());
+        let fn_end = fn_body
+            .find("\n/// ")
+            .or_else(|| fn_body.find("\nfn "))
+            .unwrap_or(fn_body.len());
         let fn_body = &fn_body[..fn_end];
 
         assert!(
@@ -2064,7 +2216,9 @@ mod tests {
         let fn_end = fn_body.find("\nfn ").unwrap_or(fn_body.len());
         let fn_body = &fn_body[..fn_end];
         assert!(
-            fn_body.contains("pixel[0]") && fn_body.contains("pixel[1]") && fn_body.contains("pixel[2]"),
+            fn_body.contains("pixel[0]")
+                && fn_body.contains("pixel[1]")
+                && fn_body.contains("pixel[2]"),
             "encode_region_as_png must extract R, G, B channels individually"
         );
         assert!(

@@ -1,6 +1,8 @@
 /// VAUBAN Web - API Integration Tests.
 ///
 /// REST API endpoint tests (/api/v1/*).
+pub mod access_control_test;
+pub mod access_rules_test;
 pub mod accounts_test;
 pub mod asset_groups_test;
 pub mod assets_test;

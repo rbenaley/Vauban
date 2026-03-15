@@ -63,8 +63,15 @@ pub fn validate_password_complexity(password: &str) -> Result<(), validator::Val
 
 /// User authentication source (L-7: Diesel enum instead of String).
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize,
-    diesel::expression::AsExpression, diesel::deserialize::FromSqlRow,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    diesel::expression::AsExpression,
+    diesel::deserialize::FromSqlRow,
 )]
 #[serde(rename_all = "lowercase")]
 #[diesel(sql_type = diesel::sql_types::Varchar)]
@@ -262,7 +269,6 @@ impl User {
             false
         }
     }
-
 }
 
 /// User creation request.

@@ -1,8 +1,14 @@
 // L-1: Relax strict clippy lints in test code where unwrap/expect/panic are idiomatic
-#![cfg_attr(test, allow(
-    clippy::unwrap_used, clippy::expect_used, clippy::panic,
-    clippy::print_stdout, clippy::print_stderr
-))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::print_stdout,
+        clippy::print_stderr
+    )
+)]
 
 //! Vauban Vault Service
 //!
@@ -25,7 +31,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use shared::capsicum;
-use shared::ipc::{poll_readable, IpcChannel};
+use shared::ipc::{IpcChannel, poll_readable};
 use shared::messages::{ControlMessage, Message, ServiceStats};
 use tracing::{error, info, warn};
 
@@ -172,11 +178,7 @@ fn run_service() -> Result<()> {
         keyrings,
     };
 
-    main_loop(
-        &supervisor_channel,
-        &peer_channels,
-        &mut state,
-    )
+    main_loop(&supervisor_channel, &peer_channels, &mut state)
 }
 
 /// Parse topology channel env vars for a peer service.
@@ -211,7 +213,9 @@ fn load_key_version() -> Result<u32> {
     if let Ok(v) = std::env::var("VAUBAN_VAULT_KEY_VERSION") {
         // SAFETY: single-threaded at this point
         unsafe { std::env::remove_var("VAUBAN_VAULT_KEY_VERSION") };
-        let version: u32 = v.parse().context("VAUBAN_VAULT_KEY_VERSION must be a number")?;
+        let version: u32 = v
+            .parse()
+            .context("VAUBAN_VAULT_KEY_VERSION must be a number")?;
         if version == 0 {
             anyhow::bail!("Key version must be >= 1");
         }
@@ -297,9 +301,7 @@ fn main_loop(
                     let (name, channel) = peers[peer_idx];
                     match channel.recv() {
                         Ok(msg) => {
-                            if let Err(e) =
-                                handle_peer_message(channel, state, msg, name)
-                            {
+                            if let Err(e) = handle_peer_message(channel, state, msg, name) {
                                 warn!("Error handling message from {}: {}", name, e);
                                 state.requests_failed += 1;
                             }
@@ -688,7 +690,9 @@ mod tests {
     fn test_m8_handle_control_sets_shutdown_flag() {
         let source = prod_source();
         // Find handle_control and verify it sets shutdown_requested
-        let handle_ctrl_start = source.find("fn handle_control").expect("handle_control must exist");
+        let handle_ctrl_start = source
+            .find("fn handle_control")
+            .expect("handle_control must exist");
         let handle_ctrl_source = &source[handle_ctrl_start..];
         assert!(
             handle_ctrl_source.contains("shutdown_requested = true"),

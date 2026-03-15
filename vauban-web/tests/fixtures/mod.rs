@@ -7,11 +7,12 @@ use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use sha3::{Digest, Sha3_256};
 use uuid::Uuid;
 
+use vauban_web::models::access_rule::NewAccessRule;
 use vauban_web::models::asset::{Asset, AssetType, NewAsset};
 use vauban_web::models::auth_session::NewAuthSession;
 use vauban_web::models::session::SessionType;
 use vauban_web::models::user::{AuthSource, NewUser, User};
-use vauban_web::schema::{assets, auth_sessions, users};
+use vauban_web::schema::{access_rules, assets, auth_sessions, users};
 use vauban_web::services::auth::AuthService;
 
 use crate::common::{unwrap_ok, unwrap_some};
@@ -803,6 +804,62 @@ pub async fn create_test_asset_in_group(
     asset.id
 }
 
+/// Create a test asset in a specific group with a given asset type and return asset_id.
+pub async fn create_test_asset_in_group_with_type(
+    conn: &mut AsyncPgConnection,
+    name: &str,
+    created_by: i32,
+    group_uuid: &Uuid,
+    asset_type: AssetType,
+) -> i32 {
+    use vauban_web::schema::asset_groups;
+
+    let group_id: i32 = unwrap_ok!(
+        asset_groups::table
+            .filter(asset_groups::uuid.eq(group_uuid))
+            .select(asset_groups::id)
+            .first(conn)
+            .await
+    );
+
+    let asset_uuid = Uuid::new_v4();
+    let unique_hostname = format!("{}-{}.test.local", name, &asset_uuid.to_string()[..8]);
+    let port = match asset_type {
+        AssetType::Ssh => 22,
+        AssetType::Rdp => 3389,
+        AssetType::Vnc => 5900,
+    };
+
+    let new_asset = NewAsset {
+        uuid: asset_uuid,
+        name: name.to_string(),
+        hostname: unique_hostname,
+        ip_address: None,
+        port,
+        asset_type,
+        status: "online".to_string(),
+        group_id: Some(group_id),
+        description: None,
+        os_type: None,
+        os_version: None,
+        connection_config: serde_json::json!({}),
+        default_credential_id: None,
+        require_mfa: false,
+        require_justification: false,
+        max_session_duration: 3600,
+        created_by_id: Some(created_by),
+    };
+
+    let asset: Asset = unwrap_ok!(
+        diesel::insert_into(assets::table)
+            .values(&new_asset)
+            .get_result(conn)
+            .await
+    );
+
+    asset.id
+}
+
 // =============================================================================
 // Auth Sessions and API Keys fixtures
 // =============================================================================
@@ -986,4 +1043,285 @@ pub async fn create_expired_auth_session(
     );
 
     session_uuid
+}
+
+// =============================================================================
+// Access Rule fixtures
+// =============================================================================
+
+/// Create a test access rule linking a user group to an asset group.
+pub async fn create_test_access_rule(
+    conn: &mut AsyncPgConnection,
+    user_group_uuid: &Uuid,
+    asset_group_uuid: &Uuid,
+    protocols: &[&str],
+) -> Uuid {
+    use vauban_web::schema::{asset_groups, vauban_groups};
+
+    let ug_id: i32 = unwrap_ok!(
+        vauban_groups::table
+            .filter(vauban_groups::uuid.eq(user_group_uuid))
+            .select(vauban_groups::id)
+            .first(conn)
+            .await
+    );
+
+    let ag_id: i32 = unwrap_ok!(
+        asset_groups::table
+            .filter(asset_groups::uuid.eq(asset_group_uuid))
+            .select(asset_groups::id)
+            .first(conn)
+            .await
+    );
+
+    let rule_uuid = Uuid::new_v4();
+    let allowed: Vec<Option<String>> = protocols.iter().map(|p| Some(p.to_string())).collect();
+    let unique_name = format!("test-rule_{}", &rule_uuid.to_string()[..8]);
+
+    let new_rule = NewAccessRule {
+        uuid: rule_uuid,
+        name: unique_name,
+        description: Some("Test access rule".to_string()),
+        user_group_id: ug_id,
+        asset_group_id: ag_id,
+        allowed_protocols: allowed,
+        valid_from: None,
+        valid_until: None,
+        require_mfa: false,
+        require_justification: false,
+        max_session_duration: None,
+        is_active: true,
+        priority: 0,
+        created_by_id: None,
+    };
+
+    unwrap_ok!(
+        diesel::insert_into(access_rules::table)
+            .values(&new_rule)
+            .execute(conn)
+            .await
+    );
+
+    rule_uuid
+}
+
+/// Create an access rule with MFA and justification requirements.
+pub async fn create_test_access_rule_with_constraints(
+    conn: &mut AsyncPgConnection,
+    user_group_uuid: &Uuid,
+    asset_group_uuid: &Uuid,
+    protocols: &[&str],
+    require_mfa: bool,
+    require_justification: bool,
+    max_duration: Option<i32>,
+) -> Uuid {
+    use vauban_web::schema::{asset_groups, vauban_groups};
+
+    let ug_id: i32 = unwrap_ok!(
+        vauban_groups::table
+            .filter(vauban_groups::uuid.eq(user_group_uuid))
+            .select(vauban_groups::id)
+            .first(conn)
+            .await
+    );
+
+    let ag_id: i32 = unwrap_ok!(
+        asset_groups::table
+            .filter(asset_groups::uuid.eq(asset_group_uuid))
+            .select(asset_groups::id)
+            .first(conn)
+            .await
+    );
+
+    let rule_uuid = Uuid::new_v4();
+    let allowed: Vec<Option<String>> = protocols.iter().map(|p| Some(p.to_string())).collect();
+    let unique_name = format!("test-constrained-rule_{}", &rule_uuid.to_string()[..8]);
+
+    let new_rule = NewAccessRule {
+        uuid: rule_uuid,
+        name: unique_name,
+        description: None,
+        user_group_id: ug_id,
+        asset_group_id: ag_id,
+        allowed_protocols: allowed,
+        valid_from: None,
+        valid_until: None,
+        require_mfa,
+        require_justification,
+        max_session_duration: max_duration,
+        is_active: true,
+        priority: 0,
+        created_by_id: None,
+    };
+
+    unwrap_ok!(
+        diesel::insert_into(access_rules::table)
+            .values(&new_rule)
+            .execute(conn)
+            .await
+    );
+
+    rule_uuid
+}
+
+/// Create an expired access rule (valid_until in the past).
+pub async fn create_expired_access_rule(
+    conn: &mut AsyncPgConnection,
+    user_group_uuid: &Uuid,
+    asset_group_uuid: &Uuid,
+) -> Uuid {
+    use vauban_web::schema::{asset_groups, vauban_groups};
+
+    let ug_id: i32 = unwrap_ok!(
+        vauban_groups::table
+            .filter(vauban_groups::uuid.eq(user_group_uuid))
+            .select(vauban_groups::id)
+            .first(conn)
+            .await
+    );
+
+    let ag_id: i32 = unwrap_ok!(
+        asset_groups::table
+            .filter(asset_groups::uuid.eq(asset_group_uuid))
+            .select(asset_groups::id)
+            .first(conn)
+            .await
+    );
+
+    let rule_uuid = Uuid::new_v4();
+    let unique_name = format!("test-expired-rule_{}", &rule_uuid.to_string()[..8]);
+
+    let new_rule = NewAccessRule {
+        uuid: rule_uuid,
+        name: unique_name,
+        description: None,
+        user_group_id: ug_id,
+        asset_group_id: ag_id,
+        allowed_protocols: vec![Some("ssh".to_string()), Some("rdp".to_string())],
+        valid_from: Some(Utc::now() - Duration::days(30)),
+        valid_until: Some(Utc::now() - Duration::hours(1)),
+        require_mfa: false,
+        require_justification: false,
+        max_session_duration: None,
+        is_active: true,
+        priority: 0,
+        created_by_id: None,
+    };
+
+    unwrap_ok!(
+        diesel::insert_into(access_rules::table)
+            .values(&new_rule)
+            .execute(conn)
+            .await
+    );
+
+    rule_uuid
+}
+
+/// Create a future access rule (valid_from in the future).
+pub async fn create_future_access_rule(
+    conn: &mut AsyncPgConnection,
+    user_group_uuid: &Uuid,
+    asset_group_uuid: &Uuid,
+) -> Uuid {
+    use vauban_web::schema::{asset_groups, vauban_groups};
+
+    let ug_id: i32 = unwrap_ok!(
+        vauban_groups::table
+            .filter(vauban_groups::uuid.eq(user_group_uuid))
+            .select(vauban_groups::id)
+            .first(conn)
+            .await
+    );
+
+    let ag_id: i32 = unwrap_ok!(
+        asset_groups::table
+            .filter(asset_groups::uuid.eq(asset_group_uuid))
+            .select(asset_groups::id)
+            .first(conn)
+            .await
+    );
+
+    let rule_uuid = Uuid::new_v4();
+    let unique_name = format!("test-future-rule_{}", &rule_uuid.to_string()[..8]);
+
+    let new_rule = NewAccessRule {
+        uuid: rule_uuid,
+        name: unique_name,
+        description: None,
+        user_group_id: ug_id,
+        asset_group_id: ag_id,
+        allowed_protocols: vec![Some("ssh".to_string()), Some("rdp".to_string())],
+        valid_from: Some(Utc::now() + Duration::hours(24)),
+        valid_until: None,
+        require_mfa: false,
+        require_justification: false,
+        max_session_duration: None,
+        is_active: true,
+        priority: 0,
+        created_by_id: None,
+    };
+
+    unwrap_ok!(
+        diesel::insert_into(access_rules::table)
+            .values(&new_rule)
+            .execute(conn)
+            .await
+    );
+
+    rule_uuid
+}
+
+/// Create an inactive access rule (is_active = false).
+pub async fn create_inactive_access_rule(
+    conn: &mut AsyncPgConnection,
+    user_group_uuid: &Uuid,
+    asset_group_uuid: &Uuid,
+) -> Uuid {
+    use vauban_web::schema::{asset_groups, vauban_groups};
+
+    let ug_id: i32 = unwrap_ok!(
+        vauban_groups::table
+            .filter(vauban_groups::uuid.eq(user_group_uuid))
+            .select(vauban_groups::id)
+            .first(conn)
+            .await
+    );
+
+    let ag_id: i32 = unwrap_ok!(
+        asset_groups::table
+            .filter(asset_groups::uuid.eq(asset_group_uuid))
+            .select(asset_groups::id)
+            .first(conn)
+            .await
+    );
+
+    let rule_uuid = Uuid::new_v4();
+    let unique_name = format!("test-inactive-rule_{}", &rule_uuid.to_string()[..8]);
+
+    let new_rule = NewAccessRule {
+        uuid: rule_uuid,
+        name: unique_name,
+        description: None,
+        user_group_id: ug_id,
+        asset_group_id: ag_id,
+        allowed_protocols: vec![Some("ssh".to_string()), Some("rdp".to_string())],
+        valid_from: None,
+        valid_until: None,
+        require_mfa: false,
+        require_justification: false,
+        max_session_duration: None,
+        is_active: false,
+        priority: 0,
+        created_by_id: None,
+    };
+
+    unwrap_ok!(
+        diesel::insert_into(access_rules::table)
+            .values(&new_rule)
+            .execute(conn)
+            .await
+    );
+
+    rule_uuid
 }

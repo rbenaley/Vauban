@@ -10,11 +10,11 @@ use shared::messages::{Message, SensitiveString};
 use std::collections::HashMap;
 use std::io;
 use std::os::unix::io::RawFd;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::io::unix::AsyncFd;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::Interest;
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::io::unix::AsyncFd;
+use tokio::sync::{Mutex, mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
 /// Request to open an SSH session.
@@ -70,12 +70,25 @@ impl std::fmt::Debug for SshSessionOpenRequest {
             .field("terminal_rows", &self.terminal_rows)
             .field("auth_type", &self.auth_type)
             .field("password", &self.password.as_ref().map(|_| "[REDACTED]"))
-            .field("private_key", &self.private_key.as_ref().map(|_| "[REDACTED]"))
-            .field("passphrase", &self.passphrase.as_ref().map(|_| "[REDACTED]"))
-            .field("expected_host_key", &self.expected_host_key.as_ref().map(|k| {
-                // Show only algorithm and first 16 chars of key data
-                if k.len() > 30 { format!("{}...", &k[..30]) } else { k.clone() }
-            }))
+            .field(
+                "private_key",
+                &self.private_key.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field(
+                "passphrase",
+                &self.passphrase.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field(
+                "expected_host_key",
+                &self.expected_host_key.as_ref().map(|k| {
+                    // Show only algorithm and first 16 chars of key data
+                    if k.len() > 30 {
+                        format!("{}...", &k[..30])
+                    } else {
+                        k.clone()
+                    }
+                }),
+            )
             .finish()
     }
 }
@@ -96,7 +109,8 @@ pub struct SshSessionOpened {
 /// Sender type for pending host key fetch responses.
 ///
 /// Carries `(success, host_key, fingerprint, error)`.
-type HostKeyResponseSender = oneshot::Sender<(bool, Option<String>, Option<String>, Option<String>)>;
+type HostKeyResponseSender =
+    oneshot::Sender<(bool, Option<String>, Option<String>, Option<String>)>;
 
 /// Async client for communicating with vauban-proxy-ssh.
 pub struct ProxySshClient {
@@ -150,11 +164,7 @@ impl ProxySshClient {
     /// Call `unsubscribe_session` when the WebSocket disconnects.
     pub async fn subscribe_session(&self, session_id: &str) -> mpsc::Receiver<Vec<u8>> {
         // First, try to take the pre-created receiver (from open_session)
-        let existing_rx = self
-            .session_data_receivers
-            .lock()
-            .await
-            .remove(session_id);
+        let existing_rx = self.session_data_receivers.lock().await.remove(session_id);
 
         if let Some(rx) = existing_rx {
             debug!(session_id = %session_id, "WebSocket claimed pre-created SSH data channel");
@@ -175,15 +185,15 @@ impl ProxySshClient {
     ///
     /// Should be called when the WebSocket disconnects.
     pub async fn unsubscribe_session(&self, session_id: &str) {
-        self.session_data_senders
-            .lock()
-            .await
-            .remove(session_id);
+        self.session_data_senders.lock().await.remove(session_id);
         debug!(session_id = %session_id, "WebSocket unsubscribed from SSH session");
     }
 
     /// Request to open a new SSH session.
-    pub async fn open_session(&self, request: SshSessionOpenRequest) -> AppResult<SshSessionOpened> {
+    pub async fn open_session(
+        &self,
+        request: SshSessionOpenRequest,
+    ) -> AppResult<SshSessionOpened> {
         let request_id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
         let session_id = request.session_id.clone();
 
@@ -401,8 +411,12 @@ impl ProxySshClient {
             Ok(Ok((false, _, _, Some(err)))) => {
                 Err(AppError::Ipc(format!("Host key fetch failed: {}", err)))
             }
-            Ok(Ok(_)) => Err(AppError::Ipc("Host key fetch returned unexpected response".to_string())),
-            Ok(Err(_)) => Err(AppError::Ipc("Host key response channel dropped".to_string())),
+            Ok(Ok(_)) => Err(AppError::Ipc(
+                "Host key fetch returned unexpected response".to_string(),
+            )),
+            Ok(Err(_)) => Err(AppError::Ipc(
+                "Host key response channel dropped".to_string(),
+            )),
             Err(_) => {
                 let mut pending = self.pending_host_key_requests.lock().await;
                 pending.remove(&request_id);
@@ -520,7 +534,7 @@ impl ProxySshClient {
 
 /// Set a file descriptor to non-blocking mode.
 fn set_nonblocking(fd: RawFd) -> io::Result<()> {
-    use libc::{fcntl, F_GETFL, F_SETFL, O_NONBLOCK};
+    use libc::{F_GETFL, F_SETFL, O_NONBLOCK, fcntl};
 
     // SAFETY: We're calling fcntl with valid arguments on a valid fd.
     unsafe {
@@ -588,7 +602,9 @@ mod tests {
     fn test_ssh_session_open_request_debug_redacts_secrets() {
         let mut request = make_test_request("debug-sess", "host.local", 22);
         request.password = Some(SecretString::from("super-secret-password".to_string()));
-        request.private_key = Some(SecretString::from("-----BEGIN RSA PRIVATE KEY-----".to_string()));
+        request.private_key = Some(SecretString::from(
+            "-----BEGIN RSA PRIVATE KEY-----".to_string(),
+        ));
         request.passphrase = Some(SecretString::from("my-passphrase".to_string()));
 
         let debug_str = format!("{:?}", request);
@@ -647,7 +663,10 @@ mod tests {
             terminal_rows: 24,
             auth_type: "private_key".to_string(),
             password: None,
-            private_key: Some(SecretString::from("-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----".to_string())),
+            private_key: Some(SecretString::from(
+                "-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----"
+                    .to_string(),
+            )),
             passphrase: Some(SecretString::from("key-passphrase".to_string())),
             expected_host_key: None,
         };
@@ -750,7 +769,7 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify it's non-blocking
-        use libc::{fcntl, F_GETFL, O_NONBLOCK};
+        use libc::{F_GETFL, O_NONBLOCK, fcntl};
         let flags = unsafe { fcntl(read_fd.as_raw_fd(), F_GETFL) };
         assert!(flags & O_NONBLOCK != 0);
     }
@@ -760,7 +779,7 @@ mod tests {
         // Create a pipe for testing
         let (read_fd, _write_fd) = nix::unistd::pipe().unwrap();
 
-        use libc::{fcntl, F_GETFL, O_NONBLOCK};
+        use libc::{F_GETFL, O_NONBLOCK, fcntl};
 
         // Get original flags
         let original_flags = unsafe { fcntl(read_fd.as_raw_fd(), F_GETFL) };
@@ -783,7 +802,7 @@ mod tests {
         set_nonblocking(read_fd.as_raw_fd()).unwrap();
 
         // Verify it's still non-blocking
-        use libc::{fcntl, F_GETFL, O_NONBLOCK};
+        use libc::{F_GETFL, O_NONBLOCK, fcntl};
         let flags = unsafe { fcntl(read_fd.as_raw_fd(), F_GETFL) };
         assert!(flags & O_NONBLOCK != 0);
     }

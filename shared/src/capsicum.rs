@@ -143,9 +143,9 @@ impl CapRights {
     /// receive data and file descriptors through this socket.
     pub fn fd_receiver_socket() -> Self {
         Self {
-            read: true,    // Required for recvmsg (receives data and SCM_RIGHTS)
-            event: true,   // Required for poll/kqueue (async I/O)
-            fstat: true,   // Required for status checks
+            read: true,       // Required for recvmsg (receives data and SCM_RIGHTS)
+            event: true,      // Required for poll/kqueue (async I/O)
+            fstat: true,      // Required for status checks
             getsockopt: true, // May be needed for socket options
             ..Default::default()
         }
@@ -276,9 +276,11 @@ pub fn limit_fd_rights(fd: RawFd, rights: &CapRights) -> Result<()> {
     // SAFETY: The caller guarantees the fd is valid
     let borrowed_fd = unsafe { BorrowedFd::borrow_raw(fd) };
 
-    file_rights
-        .limit(&borrowed_fd)
-        .map_err(|e| CapsicumError::LimitFailed(std::io::Error::from_raw_os_error(e.raw_os_error().unwrap_or(libc::EINVAL))))?;
+    file_rights.limit(&borrowed_fd).map_err(|e| {
+        CapsicumError::LimitFailed(std::io::Error::from_raw_os_error(
+            e.raw_os_error().unwrap_or(libc::EINVAL),
+        ))
+    })?;
 
     tracing::debug!("Limited rights on fd {}", fd);
     Ok(())
@@ -533,10 +535,10 @@ mod tests {
         // Create a real fd pair for testing
         let (parent, child) = crate::ipc::IpcChannel::pair().unwrap();
         let fds = [parent.read_fd(), parent.write_fd()];
-        
+
         let result = setup_service_sandbox(&fds, None);
         assert!(result.is_ok());
-        
+
         // Prevent unused warnings
         drop(child);
     }
@@ -546,10 +548,10 @@ mod tests {
         // Use a real fd for testing
         let (parent, child) = crate::ipc::IpcChannel::pair().unwrap();
         let db_fd = Some(parent.read_fd());
-        
+
         let result = setup_service_sandbox(&[], db_fd);
         assert!(result.is_ok());
-        
+
         // Prevent unused warnings
         drop(parent);
         drop(child);
@@ -559,10 +561,10 @@ mod tests {
     fn test_setup_service_sandbox_full() {
         let (ch1, _) = crate::ipc::IpcChannel::pair().unwrap();
         let (ch2, _) = crate::ipc::IpcChannel::pair().unwrap();
-        
+
         let ipc_fds = [ch1.read_fd(), ch1.write_fd()];
         let db_fd = Some(ch2.read_fd());
-        
+
         let result = setup_service_sandbox(&ipc_fds, db_fd);
         assert!(result.is_ok());
     }
@@ -578,7 +580,7 @@ mod tests {
             mmap: true,
             ..Default::default()
         };
-        
+
         assert!(rights.read);
         assert!(rights.write);
         assert!(rights.seek);

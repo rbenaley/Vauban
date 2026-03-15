@@ -157,14 +157,22 @@ mod tests {
     fn test_etag_is_quoted() {
         let a = lookup("css/vauban.css").unwrap();
         let etag = a.etag();
-        assert!(etag.starts_with('"') && etag.ends_with('"'), "ETag must be quoted: {}", etag);
+        assert!(
+            etag.starts_with('"') && etag.ends_with('"'),
+            "ETag must be quoted: {}",
+            etag
+        );
     }
 
     #[test]
     fn test_different_assets_have_different_etags() {
         let js = lookup("js/tailwind-config.js").unwrap();
         let css = lookup("css/vauban.css").unwrap();
-        assert_ne!(js.etag(), css.etag(), "Different files must have different ETags");
+        assert_ne!(
+            js.etag(),
+            css.etag(),
+            "Different files must have different ETags"
+        );
     }
 
     #[test]
@@ -176,7 +184,8 @@ mod tests {
             "tailwind-config.js must contain 'tailwind'"
         );
 
-        let components = lookup("js/vauban-components.js").expect("vauban-components.js must exist");
+        let components =
+            lookup("js/vauban-components.js").expect("vauban-components.js must exist");
         let content = std::str::from_utf8(components.content).expect("JS must be valid UTF-8");
         assert!(
             content.contains("Alpine"),

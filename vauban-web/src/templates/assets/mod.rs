@@ -1,4 +1,7 @@
 pub mod access_list;
+pub mod access_rule_create;
+pub mod access_rule_detail;
+pub mod access_rule_edit;
 pub mod asset_connect;
 pub mod asset_create;
 pub mod asset_detail;
@@ -12,6 +15,9 @@ pub mod group_edit;
 pub mod group_list;
 
 pub use access_list::AccessListTemplate;
+pub use access_rule_create::{AccessRuleCreateForm, AccessRuleCreateTemplate, GroupOption};
+pub use access_rule_detail::{AccessRuleDetailData, AccessRuleDetailTemplate};
+pub use access_rule_edit::{AccessRuleEdit, AccessRuleEditTemplate};
 pub use asset_connect::AssetConnectTemplate;
 pub use asset_create::{AssetCreateForm, AssetCreateTemplate};
 pub use asset_detail::AssetDetailTemplate;

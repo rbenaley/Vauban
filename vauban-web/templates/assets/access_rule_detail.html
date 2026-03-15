@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+
+{% block title %}{{ rule.name }} - Access Rule - {{ vauban.brand_name }}{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <!-- Header -->
+    <div class="md:flex md:items-center md:justify-between">
+        <div class="min-w-0 flex-1">
+            <nav class="flex" aria-label="Breadcrumb">
+                <ol class="flex items-center space-x-2">
+                    <li>
+                        <a href="/assets/access" class="text-gray-400 hover:text-gray-500 dark:text-gray-500 dark:hover:text-gray-400">
+                            <svg class="h-5 w-5 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd" d="M9.293 2.293a1 1 0 011.414 0l7 7A1 1 0 0117 11h-1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-3a1 1 0 00-1-1H9a1 1 0 00-1 1v3a1 1 0 01-1 1H5a1 1 0 01-1-1v-6H3a1 1 0 01-.707-1.707l7-7z" clip-rule="evenodd"/>
+                            </svg>
+                        </a>
+                    </li>
+                    <li>
+                        <div class="flex items-center">
+                            <svg class="h-5 w-5 flex-shrink-0 text-gray-300 dark:text-gray-600" viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd"/>
+                            </svg>
+                            <a href="/assets/access" class="ml-2 text-sm font-medium text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300">Access Rules</a>
+                        </div>
+                    </li>
+                    <li>
+                        <div class="flex items-center">
+                            <svg class="h-5 w-5 flex-shrink-0 text-gray-300 dark:text-gray-600" viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd"/>
+                            </svg>
+                            <span class="ml-2 text-sm font-medium text-gray-500 dark:text-gray-400">{{ rule.name }}</span>
+                        </div>
+                    </li>
+                </ol>
+            </nav>
+            <div class="mt-2 flex items-center">
+                <h2 class="text-2xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-3xl sm:tracking-tight">
+                    {{ rule.name }}
+                </h2>
+                <span class="ml-3 inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium {{ rule.status_class() }}">
+                    {% if rule.is_active %}Active{% else %}Inactive{% endif %}
+                </span>
+            </div>
+        </div>
+        <div class="mt-4 flex space-x-3 md:ml-4 md:mt-0">
+            <a href="/assets/access/{{ rule.uuid }}/edit"
+               class="inline-flex items-center rounded-md bg-white dark:bg-gray-700 px-3 py-2 text-sm font-semibold text-gray-900 dark:text-white shadow-sm ring-1 ring-inset ring-gray-300 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600">
+                Edit
+            </a>
+            <form action="/assets/access/{{ rule.uuid }}/delete" method="POST" onsubmit="return confirm('Are you sure you want to delete this access rule?');" x-data="csrf">
+                <input type="hidden" name="csrf_token" x-model="token" />
+                <button type="submit"
+                        class="inline-flex items-center rounded-md bg-red-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-red-500">
+                    Delete
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Details Card -->
+    <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
+            <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Rule Configuration</h3>
+        </div>
+        <div class="px-4 py-5 sm:p-6">
+            <dl class="grid grid-cols-1 gap-x-4 gap-y-6 sm:grid-cols-2">
+                <div>
+                    <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">User Group</dt>
+                    <dd class="mt-1 text-sm text-gray-900 dark:text-white">{{ rule.user_group_name }}</dd>
+                </div>
+                <div>
+                    <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Asset Group</dt>
+                    <dd class="mt-1 text-sm text-gray-900 dark:text-white">{{ rule.asset_group_name }}</dd>
+                </div>
+                <div>
+                    <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Allowed Protocols</dt>
+                    <dd class="mt-1 text-sm text-gray-900 dark:text-white">{{ rule.protocols_display() }}</dd>
+                </div>
+                <div>
+                    <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Priority</dt>
+                    <dd class="mt-1 text-sm text-gray-900 dark:text-white">{{ rule.priority }}</dd>
+                </div>
+                {% if let Some(desc) = rule.description %}
+                <div class="sm:col-span-2">
+                    <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Description</dt>
+                    <dd class="mt-1 text-sm text-gray-900 dark:text-white">{{ desc }}</dd>
+                </div>
+                {% endif %}
+            </dl>
+        </div>
+    </div>
+
+    <!-- Temporal & Security -->
+    <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
+            <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Constraints</h3>
+        </div>
+        <div class="px-4 py-5 sm:p-6">
+            <dl class="grid grid-cols-1 gap-x-4 gap-y-6 sm:grid-cols-2">
+                <div>
+                    <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Valid From</dt>
+                    <dd class="mt-1 text-sm text-gray-900 dark:text-white">
+                        {% if let Some(from) = rule.valid_from %}{{ from }}{% else %}Immediate{% endif %}
+                    </dd>
+                </div>
+                <div>
+                    <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Valid Until</dt>
+                    <dd class="mt-1 text-sm text-gray-900 dark:text-white">
+                        {% if let Some(until) = rule.valid_until %}{{ until }}{% else %}No expiration{% endif %}
+                    </dd>
+                </div>
+                <div>
+                    <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Require MFA</dt>
+                    <dd class="mt-1 text-sm text-gray-900 dark:text-white">{% if rule.require_mfa %}Yes{% else %}No{% endif %}</dd>
+                </div>
+                <div>
+                    <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Require Justification</dt>
+                    <dd class="mt-1 text-sm text-gray-900 dark:text-white">{% if rule.require_justification %}Yes{% else %}No{% endif %}</dd>
+                </div>
+                <div>
+                    <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Max Session Duration</dt>
+                    <dd class="mt-1 text-sm text-gray-900 dark:text-white">
+                        {% if let Some(dur) = rule.max_session_duration %}{{ dur }}s{% else %}Unlimited{% endif %}
+                    </dd>
+                </div>
+            </dl>
+        </div>
+    </div>
+
+    <!-- Metadata -->
+    <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
+            <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Metadata</h3>
+        </div>
+        <div class="px-4 py-5 sm:p-6">
+            <dl class="grid grid-cols-1 gap-x-4 gap-y-6 sm:grid-cols-2">
+                <div>
+                    <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Created</dt>
+                    <dd class="mt-1 text-sm text-gray-900 dark:text-white">{{ rule.created_at }}</dd>
+                </div>
+                <div>
+                    <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Last Updated</dt>
+                    <dd class="mt-1 text-sm text-gray-900 dark:text-white">{{ rule.updated_at }}</dd>
+                </div>
+            </dl>
+        </div>
+    </div>
+</div>
+{% endblock %}

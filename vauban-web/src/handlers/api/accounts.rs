@@ -13,7 +13,9 @@ use serde::Deserialize;
 use crate::AppState;
 use crate::error::{AppError, AppResult};
 use crate::middleware::auth::AuthUser;
-use crate::models::user::{AuthSource, CreateUserRequest, NewUser, UpdateUserRequest, User, UserDto};
+use crate::models::user::{
+    AuthSource, CreateUserRequest, NewUser, UpdateUserRequest, User, UserDto,
+};
 use crate::schema::users::dsl::*;
 
 /// Query parameters for list users.
@@ -41,11 +43,7 @@ pub async fn list_users(
 
     if let Some(search) = params.search {
         let pattern = crate::db::like_contains(&search);
-        query = query.filter(
-            username
-                .ilike(pattern.clone())
-                .or(email.ilike(pattern)),
-        );
+        query = query.filter(username.ilike(pattern.clone()).or(email.ilike(pattern)));
     }
 
     let users_list = query

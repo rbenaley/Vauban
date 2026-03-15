@@ -76,7 +76,10 @@ impl CacheConnection {
     /// all Drop/Zeroize destructors to run (M-8/M-10).
     ///
     /// For mock cache, this always succeeds without triggering shutdown.
-    pub async fn check_or_shutdown(&self, server_handle: Option<&axum_server::Handle<std::net::SocketAddr>>) {
+    pub async fn check_or_shutdown(
+        &self,
+        server_handle: Option<&axum_server::Handle<std::net::SocketAddr>>,
+    ) {
         match self {
             CacheConnection::Redis(conn) => {
                 let mut conn = conn.clone();
@@ -624,10 +627,7 @@ mod tests {
     async fn test_m2_cache_enabled_invalid_url_returns_error() {
         // When cache.enabled = true but the URL is unreachable, the function
         // must return an error (fail-closed), NOT a silent MockCache fallback.
-        let config = config_with_cache(
-            "redis://invalid-host-that-does-not-exist:9999",
-            true,
-        );
+        let config = config_with_cache("redis://invalid-host-that-does-not-exist:9999", true);
         assert!(config.cache.enabled);
 
         let result = create_cache_client(&config).await;

@@ -5,11 +5,11 @@
 //! encoded (typically via a dirty flag + timer).
 
 use crate::error::{SessionError, SessionResult};
+use openh264::Timestamp;
 use openh264::encoder::{
     BitRate, Encoder, EncoderConfig, FrameRate, FrameType, RateControlMode, UsageType,
 };
 use openh264::formats::{RgbaSliceU8, YUVBuffer};
-use openh264::Timestamp;
 use std::time::Instant;
 use tracing::debug;
 
@@ -100,9 +100,10 @@ impl VideoEncoder {
         let timestamp_us = elapsed.as_micros() as u64;
         let timestamp = Timestamp::from_millis(elapsed.as_millis() as u64);
 
-        let bitstream = self.encoder.encode_at(&yuv, timestamp).map_err(|e| {
-            SessionError::SessionFailed(format!("H.264 encode failed: {e}"))
-        })?;
+        let bitstream = self
+            .encoder
+            .encode_at(&yuv, timestamp)
+            .map_err(|e| SessionError::SessionFailed(format!("H.264 encode failed: {e}")))?;
 
         let is_keyframe = matches!(
             bitstream.frame_type(),
@@ -131,19 +132,19 @@ impl VideoEncoder {
     /// but this ensures a clean state and correct bitrate allocation.
     pub fn reconfigure(&mut self, width: u16, height: u16) -> SessionResult<()> {
         let config = build_config(self.max_bitrate_bps);
-        self.encoder =
-            Encoder::with_api_config(openh264::OpenH264API::from_source(), config).map_err(
-                |e| SessionError::SessionFailed(format!("Failed to reconfigure H.264 encoder: {e}")),
-            )?;
+        self.encoder = Encoder::with_api_config(openh264::OpenH264API::from_source(), config)
+            .map_err(|e| {
+                SessionError::SessionFailed(format!("Failed to reconfigure H.264 encoder: {e}"))
+            })?;
         self.width = width;
         self.height = height;
         debug!(width, height, "H.264 encoder reconfigured");
         Ok(())
     }
 
-        /// Number of frames encoded so far.
-        #[allow(dead_code)]
-        pub fn frame_count(&self) -> u64 {
+    /// Number of frames encoded so far.
+    #[allow(dead_code)]
+    pub fn frame_count(&self) -> u64 {
         self.frame_count
     }
 
@@ -189,11 +190,9 @@ mod tests {
 
     #[test]
     fn test_encode_black_frame() {
-        let mut enc = VideoEncoder::with_defaults(320, 240)
-            .unwrap_or_else(|e| panic!("{e}"));
+        let mut enc = VideoEncoder::with_defaults(320, 240).unwrap_or_else(|e| panic!("{e}"));
         let rgba = black_rgba(320, 240);
-        let frame = enc.encode_frame(&rgba)
-            .unwrap_or_else(|e| panic!("{e}"));
+        let frame = enc.encode_frame(&rgba).unwrap_or_else(|e| panic!("{e}"));
 
         assert!(!frame.data.is_empty(), "encoded frame must not be empty");
         assert_eq!(frame.width, 320);
@@ -203,27 +202,25 @@ mod tests {
 
     #[test]
     fn test_first_frame_is_keyframe() {
-        let mut enc = VideoEncoder::with_defaults(320, 240)
-            .unwrap_or_else(|e| panic!("{e}"));
+        let mut enc = VideoEncoder::with_defaults(320, 240).unwrap_or_else(|e| panic!("{e}"));
         let rgba = gradient_rgba(320, 240);
-        let frame = enc.encode_frame(&rgba)
-            .unwrap_or_else(|e| panic!("{e}"));
+        let frame = enc.encode_frame(&rgba).unwrap_or_else(|e| panic!("{e}"));
 
         assert!(frame.is_keyframe, "first frame must be a keyframe");
     }
 
     #[test]
     fn test_subsequent_frames_are_delta() {
-        let mut enc = VideoEncoder::with_defaults(320, 240)
-            .unwrap_or_else(|e| panic!("{e}"));
+        let mut enc = VideoEncoder::with_defaults(320, 240).unwrap_or_else(|e| panic!("{e}"));
         let rgba = gradient_rgba(320, 240);
 
-        let first = enc.encode_frame(&rgba)
-            .unwrap_or_else(|e| panic!("{e}"));
-        let second = enc.encode_frame(&rgba)
-            .unwrap_or_else(|e| panic!("{e}"));
+        let first = enc.encode_frame(&rgba).unwrap_or_else(|e| panic!("{e}"));
+        let second = enc.encode_frame(&rgba).unwrap_or_else(|e| panic!("{e}"));
 
-        assert!(!second.is_keyframe, "second identical frame should be a P-frame");
+        assert!(
+            !second.is_keyframe,
+            "second identical frame should be a P-frame"
+        );
         assert!(
             second.data.len() < first.data.len(),
             "P-frame of identical content should be smaller than I-frame ({} >= {})",
@@ -234,41 +231,34 @@ mod tests {
 
     #[test]
     fn test_force_keyframe() {
-        let mut enc = VideoEncoder::with_defaults(320, 240)
-            .unwrap_or_else(|e| panic!("{e}"));
+        let mut enc = VideoEncoder::with_defaults(320, 240).unwrap_or_else(|e| panic!("{e}"));
         let rgba = gradient_rgba(320, 240);
 
-        let _first = enc.encode_frame(&rgba)
-            .unwrap_or_else(|e| panic!("{e}"));
+        let _first = enc.encode_frame(&rgba).unwrap_or_else(|e| panic!("{e}"));
 
         enc.force_keyframe();
-        let forced = enc.encode_frame(&rgba)
-            .unwrap_or_else(|e| panic!("{e}"));
+        let forced = enc.encode_frame(&rgba).unwrap_or_else(|e| panic!("{e}"));
 
         assert!(forced.is_keyframe, "forced keyframe must be an I-frame");
     }
 
     #[test]
     fn test_reconfigure_dimensions() {
-        let mut enc = VideoEncoder::with_defaults(640, 480)
-            .unwrap_or_else(|e| panic!("{e}"));
+        let mut enc = VideoEncoder::with_defaults(640, 480).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(enc.dimensions(), (640, 480));
 
-        enc.reconfigure(1280, 720)
-            .unwrap_or_else(|e| panic!("{e}"));
+        enc.reconfigure(1280, 720).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(enc.dimensions(), (1280, 720));
 
         let rgba = black_rgba(1280, 720);
-        let frame = enc.encode_frame(&rgba)
-            .unwrap_or_else(|e| panic!("{e}"));
+        let frame = enc.encode_frame(&rgba).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(frame.width, 1280);
         assert_eq!(frame.height, 720);
     }
 
     #[test]
     fn test_buffer_too_small() {
-        let mut enc = VideoEncoder::with_defaults(320, 240)
-            .unwrap_or_else(|e| panic!("{e}"));
+        let mut enc = VideoEncoder::with_defaults(320, 240).unwrap_or_else(|e| panic!("{e}"));
         let small_buf = vec![0u8; 100];
         let result = enc.encode_frame(&small_buf);
         assert!(result.is_err());
@@ -276,15 +266,12 @@ mod tests {
 
     #[test]
     fn test_timestamps_increase() {
-        let mut enc = VideoEncoder::with_defaults(320, 240)
-            .unwrap_or_else(|e| panic!("{e}"));
+        let mut enc = VideoEncoder::with_defaults(320, 240).unwrap_or_else(|e| panic!("{e}"));
         let rgba = black_rgba(320, 240);
 
-        let f1 = enc.encode_frame(&rgba)
-            .unwrap_or_else(|e| panic!("{e}"));
+        let f1 = enc.encode_frame(&rgba).unwrap_or_else(|e| panic!("{e}"));
         std::thread::sleep(std::time::Duration::from_millis(5));
-        let f2 = enc.encode_frame(&rgba)
-            .unwrap_or_else(|e| panic!("{e}"));
+        let f2 = enc.encode_frame(&rgba).unwrap_or_else(|e| panic!("{e}"));
 
         assert!(
             f2.timestamp_us > f1.timestamp_us,
@@ -294,14 +281,12 @@ mod tests {
 
     #[test]
     fn test_frame_count_increments() {
-        let mut enc = VideoEncoder::with_defaults(320, 240)
-            .unwrap_or_else(|e| panic!("{e}"));
+        let mut enc = VideoEncoder::with_defaults(320, 240).unwrap_or_else(|e| panic!("{e}"));
         let rgba = black_rgba(320, 240);
 
         for i in 0..5 {
             assert_eq!(enc.frame_count(), i);
-            let _f = enc.encode_frame(&rgba)
-                .unwrap_or_else(|e| panic!("{e}"));
+            let _f = enc.encode_frame(&rgba).unwrap_or_else(|e| panic!("{e}"));
         }
         assert_eq!(enc.frame_count(), 5);
     }
@@ -314,18 +299,19 @@ mod tests {
 
     #[test]
     fn test_h264_nal_start_code() {
-        let mut enc = VideoEncoder::with_defaults(320, 240)
-            .unwrap_or_else(|e| panic!("{e}"));
+        let mut enc = VideoEncoder::with_defaults(320, 240).unwrap_or_else(|e| panic!("{e}"));
         let rgba = gradient_rgba(320, 240);
-        let frame = enc.encode_frame(&rgba)
-            .unwrap_or_else(|e| panic!("{e}"));
+        let frame = enc.encode_frame(&rgba).unwrap_or_else(|e| panic!("{e}"));
 
         assert!(
             frame.data.len() >= 4,
             "H.264 data must contain at least one NAL unit"
         );
-        let has_start_code = frame.data.starts_with(&[0, 0, 0, 1])
-            || frame.data.starts_with(&[0, 0, 1]);
-        assert!(has_start_code, "H.264 data must begin with a NAL start code");
+        let has_start_code =
+            frame.data.starts_with(&[0, 0, 0, 1]) || frame.data.starts_with(&[0, 0, 1]);
+        assert!(
+            has_start_code,
+            "H.264 data must begin with a NAL start code"
+        );
     }
 }

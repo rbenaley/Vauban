@@ -105,11 +105,11 @@ impl TestApp {
             user_connections: user_connections.clone(),
             ws_counter: ws_counter.clone(),
             rate_limiter,
-            ssh_proxy: None,      // No SSH proxy in tests
-            rdp_proxy: None,      // No RDP proxy in tests
-            supervisor: None,     // No supervisor in tests
-            vault_client: None,   // No vault in tests (dev mode fallback)
-            rbac_client: None,    // No RBAC IPC in tests (dev mode fallback)
+            ssh_proxy: None,       // No SSH proxy in tests
+            rdp_proxy: None,       // No RDP proxy in tests
+            supervisor: None,      // No supervisor in tests
+            vault_client: None,    // No vault in tests (dev mode fallback)
+            access_client: None,   // No Access IPC in tests (dev mode fallback)
             auth_ipc_client: None, // No Auth IPC in tests (dev mode fallback)
         };
 
@@ -251,8 +251,8 @@ async fn serve_static_test(
         return Err(axum::http::StatusCode::FORBIDDEN);
     }
 
-    let asset = vauban_web::static_assets::lookup(&path)
-        .ok_or(axum::http::StatusCode::NOT_FOUND)?;
+    let asset =
+        vauban_web::static_assets::lookup(&path).ok_or(axum::http::StatusCode::NOT_FOUND)?;
 
     Response::builder()
         .status(axum::http::StatusCode::OK)
@@ -269,10 +269,8 @@ fn build_test_router(state: AppState) -> Router {
     use vauban_web::middleware;
 
     // Session ownership middleware for WS routes
-    let session_guard = axum::middleware::from_fn_with_state(
-        state.clone(),
-        handlers::websocket::ws_session_guard,
-    );
+    let session_guard =
+        axum::middleware::from_fn_with_state(state.clone(), handlers::websocket::ws_session_guard);
 
     // L-8: Per-user WS connection limit middleware
     let ws_limit_layer = axum::middleware::from_fn_with_state(
@@ -324,9 +322,7 @@ fn build_test_router(state: AppState) -> Router {
             "/api/v1/accounts/{uuid}",
             get(handlers::api::get_user)
                 .put(handlers::api::update_user)
-                .delete(|| async {
-                    (axum::http::StatusCode::NOT_IMPLEMENTED, "Not implemented")
-                }),
+                .delete(|| async { (axum::http::StatusCode::NOT_IMPLEMENTED, "Not implemented") }),
         )
         // Assets routes
         .route("/api/v1/assets", get(handlers::api::list_assets))
@@ -336,9 +332,7 @@ fn build_test_router(state: AppState) -> Router {
             "/api/v1/assets/{uuid}",
             get(handlers::api::get_asset)
                 .put(handlers::api::update_asset)
-                .delete(|| async {
-                    (axum::http::StatusCode::NOT_IMPLEMENTED, "Not implemented")
-                }),
+                .delete(|| async { (axum::http::StatusCode::NOT_IMPLEMENTED, "Not implemented") }),
         )
         // Asset Groups API
         .route(
@@ -354,6 +348,17 @@ fn build_test_router(state: AppState) -> Router {
             "/api/v1/assets/groups/{uuid}",
             post(handlers::web::update_asset_group),
         )
+        // Access Rules API
+        .route(
+            "/api/v1/access-rules",
+            get(handlers::api::list_access_rules).post(handlers::api::create_access_rule),
+        )
+        .route(
+            "/api/v1/access-rules/{uuid}",
+            get(handlers::api::get_access_rule)
+                .put(handlers::api::update_access_rule)
+                .delete(handlers::api::delete_access_rule),
+        )
         // Sessions routes
         .route("/api/v1/sessions", get(handlers::api::list_sessions))
         .route("/api/v1/sessions", post(handlers::api::create_session))
@@ -361,9 +366,7 @@ fn build_test_router(state: AppState) -> Router {
         .route(
             "/api/v1/sessions/{uuid}",
             get(handlers::api::get_session)
-                .delete(|| async {
-                    (axum::http::StatusCode::NOT_IMPLEMENTED, "Not implemented")
-                }),
+                .delete(|| async { (axum::http::StatusCode::NOT_IMPLEMENTED, "Not implemented") }),
         )
         // Web pages (HTML) - for testing raw SQL queries
         .route("/sessions", get(handlers::web::session_list))
@@ -398,6 +401,27 @@ fn build_test_router(state: AppState) -> Router {
         )
         .route("/assets/{uuid}", get(handlers::web::asset_detail))
         .route("/assets/search", get(handlers::web::asset_search))
+        // Access rules - literal routes MUST come before parameterized routes
+        .route(
+            "/assets/access/new",
+            get(handlers::web::access_rule_create_form),
+        )
+        .route(
+            "/assets/access",
+            get(handlers::web::access_rules_list).post(handlers::web::create_access_rule_web),
+        )
+        .route(
+            "/assets/access/{uuid}",
+            get(handlers::web::access_rule_detail),
+        )
+        .route(
+            "/assets/access/{uuid}/edit",
+            get(handlers::web::access_rule_edit).post(handlers::web::update_access_rule_web),
+        )
+        .route(
+            "/assets/access/{uuid}/delete",
+            post(handlers::web::delete_access_rule_web),
+        )
         // Asset groups - literal routes MUST come before parameterized routes
         .route(
             "/assets/groups/new",
@@ -504,11 +528,13 @@ fn build_test_router(state: AppState) -> Router {
             "/accounts/apikeys/{uuid}/revoke",
             post(handlers::web::revoke_api_key),
         )
-        // SSH connection endpoints
+        // SSH/RDP connection endpoints
+        .route("/assets/{uuid}/connect", post(handlers::web::connect_ssh))
         .route(
-            "/assets/{uuid}/connect",
-            post(handlers::web::connect_ssh),
+            "/assets/{uuid}/connect-rdp",
+            post(handlers::web::connect_rdp),
         )
+        .route("/sessions/rdp/{session_id}", get(handlers::web::rdp_page))
         // SSH host key management (H-9)
         .route(
             "/assets/{uuid}/fetch-host-key",
@@ -520,8 +546,7 @@ fn build_test_router(state: AppState) -> Router {
         )
         .route(
             "/api/v1/assets/{uuid}/ssh-host-key",
-            get(handlers::api::get_ssh_host_key_status)
-                .post(handlers::api::fetch_ssh_host_key_api),
+            get(handlers::api::get_ssh_host_key_status).post(handlers::api::fetch_ssh_host_key_api),
         )
         .route(
             "/sessions/terminal/{session_id}",
@@ -584,6 +609,10 @@ pub mod test_db {
             .execute(conn)
             .await
             .ok();
+        diesel::sql_query("DELETE FROM access_rules")
+            .execute(conn)
+            .await
+            .ok();
         diesel::sql_query("DELETE FROM assets WHERE name LIKE 'test-%'")
             .execute(conn)
             .await
@@ -600,6 +629,123 @@ pub mod test_db {
             .execute(conn)
             .await
             .ok();
+    }
+}
+
+/// In-process access service for IPC integration tests.
+///
+/// Spawns a background thread running the vauban-access handler logic,
+/// connected via a pipe pair. Returns the `AccessIpcClient` and a handle
+/// to the background service thread.
+pub mod ipc_test_service {
+    use std::os::unix::io::IntoRawFd;
+    use std::sync::Arc;
+    use std::thread::JoinHandle;
+
+    use shared::ipc::IpcChannel;
+    use shared::messages::{Message, RbacResult};
+    use vauban_web::ipc::AccessIpcClient;
+
+    pub struct InProcessAccessService {
+        pub access_client: Arc<AccessIpcClient>,
+        _service_thread: JoinHandle<()>,
+        _reader_thread: JoinHandle<()>,
+    }
+
+    pub fn spawn(database_url: &str) -> InProcessAccessService {
+        let (p2c_read, p2c_write) = nix::unistd::pipe().expect("pipe p2c");
+        let (c2p_read, c2p_write) = nix::unistd::pipe().expect("pipe c2p");
+
+        let web_read_fd = c2p_read.into_raw_fd();
+        let web_write_fd = p2c_write.into_raw_fd();
+        let svc_read_fd = p2c_read.into_raw_fd();
+        let svc_write_fd = c2p_write.into_raw_fd();
+
+        let svc_channel = unsafe { IpcChannel::from_raw_fds(svc_read_fd, svc_write_fd) };
+
+        let db_url = database_url.to_string();
+        let service_thread = std::thread::spawn(move || {
+            run_access_service_loop(svc_channel, &db_url);
+        });
+
+        let (client_tx, client_rx) = std::sync::mpsc::channel::<Arc<AccessIpcClient>>();
+
+        let reader_thread = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("reader tokio runtime");
+
+            rt.block_on(async move {
+                let client =
+                    AccessIpcClient::new(web_read_fd, web_write_fd).expect("AccessIpcClient::new");
+                client_tx.send(Arc::clone(&client)).expect("send client");
+                let _ = client.process_incoming().await;
+            });
+        });
+
+        let access_client = client_rx.recv().expect("receive client Arc");
+
+        InProcessAccessService {
+            access_client,
+            _service_thread: service_thread,
+            _reader_thread: reader_thread,
+        }
+    }
+
+    fn run_access_service_loop(channel: IpcChannel, database_url: &str) {
+        use diesel_async::AsyncPgConnection;
+        use diesel_async::pooled_connection::AsyncDieselConnectionManager;
+        use diesel_async::pooled_connection::deadpool::Pool;
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime for access service");
+
+        let pool = {
+            let manager = AsyncDieselConnectionManager::<AsyncPgConnection>::new(database_url);
+            Pool::builder(manager).max_size(2).build().expect("DB pool")
+        };
+
+        loop {
+            match channel.recv() {
+                Ok(Message::AccessRequest {
+                    request_id,
+                    request,
+                }) => {
+                    let response = rt.block_on(vauban_access::handlers::handle_access_request(
+                        &pool, request,
+                    ));
+                    let msg = Message::AccessResponse {
+                        request_id,
+                        response,
+                    };
+                    if channel.send(&msg).is_err() {
+                        break;
+                    }
+                }
+                Ok(Message::RbacCheck {
+                    request_id,
+                    subject: _,
+                    object: _,
+                    action: _,
+                }) => {
+                    let result = RbacResult {
+                        allowed: true,
+                        reason: None,
+                    };
+                    let msg = Message::RbacResponse { request_id, result };
+                    if channel.send(&msg).is_err() {
+                        break;
+                    }
+                }
+                Ok(Message::Control(shared::messages::ControlMessage::Shutdown)) => break,
+                Err(shared::ipc::IpcError::ConnectionClosed) => break,
+                Err(_) => continue,
+                _ => {}
+            }
+        }
     }
 }
 

@@ -25,9 +25,9 @@ use crate::AppState;
 use crate::error::{AppError, AppResult};
 use crate::middleware::flash::{IncomingFlash, flash_redirect};
 use crate::models::auth_session::{AuthSession, NewAuthSession};
-use crate::models::user::User;
 #[cfg(test)]
 use crate::models::user::AuthSource;
+use crate::models::user::User;
 use crate::schema::{auth_sessions, users::dsl::*};
 use crate::services::auth::AuthService;
 use crate::templates::accounts::{MfaSetupTemplate, MfaVerifyTemplate};
@@ -561,11 +561,8 @@ fn extract_client_ip(
     connect_addr: SocketAddr,
     trusted_proxies: &[std::net::IpAddr],
 ) -> IpNetwork {
-    let resolved = crate::middleware::resolve_client_ip(
-        headers,
-        connect_addr.ip(),
-        trusted_proxies,
-    );
+    let resolved =
+        crate::middleware::resolve_client_ip(headers, connect_addr.ip(), trusted_proxies);
     IpNetwork::from(resolved)
 }
 
@@ -722,9 +719,10 @@ pub async fn mfa_setup_page(
                 (s, qr)
             } else {
                 // Plaintext secret (pre-migration): encrypt-on-read, then generate QR
-                let encrypted = vault.encrypt("mfa", &s).await.map_err(|e| {
-                    AppError::Internal(anyhow::anyhow!("MFA encryption: {}", e))
-                })?;
+                let encrypted = vault
+                    .encrypt("mfa", &s)
+                    .await
+                    .map_err(|e| AppError::Internal(anyhow::anyhow!("MFA encryption: {}", e)))?;
                 diesel::update(users.filter(crate::schema::users::id.eq(user_id)))
                     .set(mfa_secret.eq(Some(&encrypted)))
                     .execute(&mut conn)
@@ -752,11 +750,8 @@ pub async fn mfa_setup_page(
                 .mfa_generate(&user_username, "VAUBAN")
                 .await
                 .map_err(|e| AppError::Internal(anyhow::anyhow!("MFA generation: {}", e)))?;
-            let qr = AuthService::generate_totp_qr_code(
-                plaintext.as_str(),
-                &user_username,
-                "VAUBAN",
-            )?;
+            let qr =
+                AuthService::generate_totp_qr_code(plaintext.as_str(), &user_username, "VAUBAN")?;
             // plaintext (SensitiveString) zeroized on drop here
             diesel::update(users.filter(crate::schema::users::id.eq(user_id)))
                 .set(mfa_secret.eq(Some(&encrypted_secret)))
@@ -1309,10 +1304,7 @@ mod tests {
     #[test]
     fn test_extract_client_ip_xff_ignored_untrusted() {
         let mut headers = HeaderMap::new();
-        headers.insert(
-            "X-Forwarded-For",
-            unwrap_ok!("203.0.113.50".parse()),
-        );
+        headers.insert("X-Forwarded-For", unwrap_ok!("203.0.113.50".parse()));
 
         let fallback_addr: SocketAddr = unwrap_ok!("192.168.1.1:12345".parse());
         // Connection NOT from trusted proxy -> XFF ignored

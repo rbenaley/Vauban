@@ -121,13 +121,7 @@ impl<W: Write> Fmp4Writer<W> {
     /// `sps` and `pps` are full NAL unit bytes including the NAL header byte
     /// (e.g. 0x67 for SPS, 0x68 for PPS), without Annex B start codes.
     /// `width` and `height` are the video dimensions.
-    pub fn new(
-        mut writer: W,
-        sps: &[u8],
-        pps: &[u8],
-        width: u16,
-        height: u16,
-    ) -> io::Result<Self> {
+    pub fn new(mut writer: W, sps: &[u8], pps: &[u8], width: u16, height: u16) -> io::Result<Self> {
         let ftyp = build_ftyp();
         let moov = build_moov(sps, pps, width, height);
 
@@ -522,8 +516,7 @@ fn build_moof(
     let data_offset_pos = trun_offset_in_traf + 16;
 
     let mut patched_traf = traf;
-    patched_traf[data_offset_pos..data_offset_pos + 4]
-        .copy_from_slice(&data_offset.to_be_bytes());
+    patched_traf[data_offset_pos..data_offset_pos + 4].copy_from_slice(&data_offset.to_be_bytes());
 
     let mut content = Vec::new();
     content.extend_from_slice(&mfhd);
@@ -555,9 +548,12 @@ mod tests {
     fn find_box(data: &[u8], box_type: &[u8; 4]) -> Option<(usize, usize)> {
         let mut offset = 0;
         while offset + 8 <= data.len() {
-            let size =
-                u32::from_be_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]])
-                    as usize;
+            let size = u32::from_be_bytes([
+                data[offset],
+                data[offset + 1],
+                data[offset + 2],
+                data[offset + 3],
+            ]) as usize;
             if size < 8 || offset + size > data.len() {
                 break;
             }
@@ -595,14 +591,19 @@ mod tests {
                 len = found.1 - header_size;
             }
         }
-        Some((abs_offset, path.last().map(|_| {
-            u32::from_be_bytes([
-                data[abs_offset],
-                data[abs_offset + 1],
-                data[abs_offset + 2],
-                data[abs_offset + 3],
-            ]) as usize
-        }).unwrap_or(0)))
+        Some((
+            abs_offset,
+            path.last()
+                .map(|_| {
+                    u32::from_be_bytes([
+                        data[abs_offset],
+                        data[abs_offset + 1],
+                        data[abs_offset + 2],
+                        data[abs_offset + 3],
+                    ]) as usize
+                })
+                .unwrap_or(0),
+        ))
     }
 
     // Minimal SPS for H.264 Baseline Level 3.0, 1920x1080
@@ -707,8 +708,7 @@ mod tests {
         let mut output = Vec::new();
 
         {
-            let mut writer =
-                Fmp4Writer::new(&mut output, &sps, &pps, 1920, 1080).unwrap();
+            let mut writer = Fmp4Writer::new(&mut output, &sps, &pps, 1920, 1080).unwrap();
 
             let samples = vec![Sample {
                 data: vec![0x00, 0x00, 0x00, 0x05, 0x65, 0x88, 0x80, 0x40, 0x00],
@@ -732,8 +732,7 @@ mod tests {
         let mut output = Vec::new();
 
         {
-            let mut writer =
-                Fmp4Writer::new(&mut output, &sps, &pps, 1920, 1080).unwrap();
+            let mut writer = Fmp4Writer::new(&mut output, &sps, &pps, 1920, 1080).unwrap();
 
             for i in 0..3 {
                 let samples = vec![
@@ -779,8 +778,7 @@ mod tests {
         let pps = test_pps();
         let mut output = Vec::new();
 
-        let mut writer =
-            Fmp4Writer::new(&mut output, &sps, &pps, 1920, 1080).unwrap();
+        let mut writer = Fmp4Writer::new(&mut output, &sps, &pps, 1920, 1080).unwrap();
         let header_bytes = writer.bytes_written();
         assert!(header_bytes > 0);
 
@@ -820,21 +818,36 @@ mod tests {
 
         let avc1_pos = output.windows(4).position(|w| w == b"avc1").unwrap();
         let avc1_start = avc1_pos - 4;
-        let avc1_size =
-            u32::from_be_bytes([output[avc1_start], output[avc1_start+1], output[avc1_start+2], output[avc1_start+3]]) as usize;
+        let avc1_size = u32::from_be_bytes([
+            output[avc1_start],
+            output[avc1_start + 1],
+            output[avc1_start + 2],
+            output[avc1_start + 3],
+        ]) as usize;
         let content = &output[avc1_start + 8..avc1_start + avc1_size];
 
         // VisualSampleEntry fixed fields: 6+2+16+2+2+4+4+4+2+32+2+2 = 78 bytes
-        assert!(content.len() >= 78, "avc1 content must be at least 78 bytes");
+        assert!(
+            content.len() >= 78,
+            "avc1 content must be at least 78 bytes"
+        );
 
         // pre_defined at offset 76 must be exactly 2 bytes (0xFFFF), NOT 4
         assert_eq!(content[76], 0xFF);
         assert_eq!(content[77], 0xFF);
 
         // Child box (avcC) must start at offset 78
-        let child_size = u32::from_be_bytes([content[78], content[79], content[80], content[81]]) as usize;
-        assert_eq!(&content[82..86], b"avcC", "avcC must be the first child box at offset 78");
-        assert!(child_size > 8 && child_size < avc1_size, "avcC size must be reasonable");
+        let child_size =
+            u32::from_be_bytes([content[78], content[79], content[80], content[81]]) as usize;
+        assert_eq!(
+            &content[82..86],
+            b"avcC",
+            "avcC must be the first child box at offset 78"
+        );
+        assert!(
+            child_size > 8 && child_size < avc1_size,
+            "avcC size must be reasonable"
+        );
     }
 
     #[test]
@@ -848,9 +861,18 @@ mod tests {
         assert!(moov.is_some(), "moov box must exist");
 
         // Check nested structure
-        assert!(find_box_nested(&output, &[b"moov", b"mvhd"]).is_some(), "mvhd must exist");
-        assert!(find_box_nested(&output, &[b"moov", b"trak"]).is_some(), "trak must exist");
-        assert!(find_box_nested(&output, &[b"moov", b"mvex"]).is_some(), "mvex must exist");
+        assert!(
+            find_box_nested(&output, &[b"moov", b"mvhd"]).is_some(),
+            "mvhd must exist"
+        );
+        assert!(
+            find_box_nested(&output, &[b"moov", b"trak"]).is_some(),
+            "trak must exist"
+        );
+        assert!(
+            find_box_nested(&output, &[b"moov", b"mvex"]).is_some(),
+            "mvex must exist"
+        );
     }
 
     #[test]
@@ -858,8 +880,7 @@ mod tests {
         let sps = test_sps();
         let pps = test_pps();
         let mut output = Vec::new();
-        let mut writer =
-            Fmp4Writer::new(&mut output, &sps, &pps, 1920, 1080).unwrap();
+        let mut writer = Fmp4Writer::new(&mut output, &sps, &pps, 1920, 1080).unwrap();
         let before = writer.bytes_written();
         writer.write_fragment(&[]).unwrap();
         assert_eq!(writer.bytes_written(), before);
@@ -873,8 +894,7 @@ mod tests {
         let mut output = Vec::new();
 
         {
-            let mut writer =
-                Fmp4Writer::new(&mut output, &sps, &pps, 1920, 1080).unwrap();
+            let mut writer = Fmp4Writer::new(&mut output, &sps, &pps, 1920, 1080).unwrap();
             writer
                 .write_fragment(&[Sample {
                     data: sample_data.clone(),
@@ -897,8 +917,7 @@ mod tests {
         let mut output = Vec::new();
 
         {
-            let mut writer =
-                Fmp4Writer::new(&mut output, &sps, &pps, 1920, 1080).unwrap();
+            let mut writer = Fmp4Writer::new(&mut output, &sps, &pps, 1920, 1080).unwrap();
             writer
                 .write_fragment(&[Sample {
                     data: sample_data.clone(),
@@ -923,8 +942,7 @@ mod tests {
         let mut output = Vec::new();
 
         {
-            let mut writer =
-                Fmp4Writer::new(&mut output, &sps, &pps, 1920, 1080).unwrap();
+            let mut writer = Fmp4Writer::new(&mut output, &sps, &pps, 1920, 1080).unwrap();
             for _ in 0..5 {
                 writer
                     .write_fragment(&[
@@ -1001,8 +1019,7 @@ mod tests {
         let mut output = Vec::new();
 
         {
-            let mut writer =
-                Fmp4Writer::new(&mut output, &sps, &pps, 1920, 1080).unwrap();
+            let mut writer = Fmp4Writer::new(&mut output, &sps, &pps, 1920, 1080).unwrap();
 
             writer
                 .write_fragment(&[Sample {
@@ -1047,8 +1064,8 @@ mod tests {
         let mut data = Vec::new();
         data.extend_from_slice(&[0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0xC0, 0x1E]); // SPS
         data.extend_from_slice(&[0x00, 0x00, 0x00, 0x01, 0x68, 0xCE, 0x38, 0x80]); // PPS
-        data.extend_from_slice(&[0x00, 0x00, 0x00, 0x01, 0x65, 0x88, 0x80]);       // IDR
-        data.extend_from_slice(&[0x00, 0x00, 0x01, 0x41, 0x9A]);                   // non-IDR (3-byte start code)
+        data.extend_from_slice(&[0x00, 0x00, 0x00, 0x01, 0x65, 0x88, 0x80]); // IDR
+        data.extend_from_slice(&[0x00, 0x00, 0x01, 0x41, 0x9A]); // non-IDR (3-byte start code)
 
         let avcc = annex_b_to_avcc(&data);
         // Should have two NAL units: IDR (3 bytes) + non-IDR (2 bytes)

@@ -113,7 +113,10 @@ mod tests {
     #[test]
     fn test_session_error_channel_open_failed() {
         let err = SessionError::ChannelOpenFailed("channel rejected".to_string());
-        assert_eq!(err.to_string(), "Failed to open SSH channel: channel rejected");
+        assert_eq!(
+            err.to_string(),
+            "Failed to open SSH channel: channel rejected"
+        );
     }
 
     #[test]

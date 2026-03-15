@@ -1,0 +1,101 @@
+/// VAUBAN Web - Access rule create template.
+use askama::Template;
+
+use crate::templates::base::{FlashMessage, UserContext, VaubanConfig};
+
+/// Select option for user groups and asset groups dropdowns.
+#[derive(Debug, Clone)]
+pub struct GroupOption {
+    pub id: i32,
+    pub name: String,
+}
+
+/// Form data for access rule creation (pre-populated on validation error).
+#[derive(Debug, Default, Clone)]
+pub struct AccessRuleCreateForm {
+    pub name: String,
+    pub description: String,
+    pub user_group_id: String,
+    pub asset_group_id: String,
+    pub allowed_ssh: bool,
+    pub allowed_rdp: bool,
+    pub valid_from: String,
+    pub valid_until: String,
+    pub require_mfa: bool,
+    pub require_justification: bool,
+    pub max_session_duration: String,
+    pub is_active: bool,
+    pub priority: String,
+}
+
+#[derive(Template)]
+#[template(path = "assets/access_rule_create.html")]
+pub struct AccessRuleCreateTemplate {
+    pub title: String,
+    pub user: Option<UserContext>,
+    pub vauban: VaubanConfig,
+    pub messages: Vec<FlashMessage>,
+    pub language_code: String,
+    pub sidebar_content:
+        Option<crate::templates::partials::sidebar_content::SidebarContentTemplate>,
+    pub header_user: Option<crate::templates::base::UserContext>,
+    pub form: AccessRuleCreateForm,
+    pub user_groups: Vec<GroupOption>,
+    pub asset_groups: Vec<GroupOption>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_access_rule_create_form_default() {
+        let form = AccessRuleCreateForm::default();
+        assert!(form.name.is_empty());
+        assert!(!form.allowed_ssh);
+    }
+
+    #[test]
+    fn test_group_option_creation() {
+        let opt = GroupOption {
+            id: 1,
+            name: "Test Group".to_string(),
+        };
+        assert_eq!(opt.id, 1);
+        assert_eq!(opt.name, "Test Group");
+    }
+
+    #[test]
+    fn test_access_rule_create_template_renders() {
+        let template = AccessRuleCreateTemplate {
+            title: "New Access Rule".to_string(),
+            user: Some(UserContext {
+                uuid: "test".to_string(),
+                username: "admin".to_string(),
+                display_name: "Admin".to_string(),
+                is_superuser: true,
+                is_staff: true,
+            }),
+            vauban: VaubanConfig {
+                brand_name: "VAUBAN".to_string(),
+                brand_logo: None,
+                theme: "dark".to_string(),
+            },
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            form: AccessRuleCreateForm::default(),
+            user_groups: vec![GroupOption {
+                id: 1,
+                name: "Users".to_string(),
+            }],
+            asset_groups: vec![GroupOption {
+                id: 1,
+                name: "Servers".to_string(),
+            }],
+        };
+        let result = template.render();
+        assert!(result.is_ok(), "AccessRuleCreateTemplate should render");
+    }
+}

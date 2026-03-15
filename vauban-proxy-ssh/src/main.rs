@@ -1,8 +1,14 @@
 // L-1: Relax strict clippy lints in test code where unwrap/expect/panic are idiomatic
-#![cfg_attr(test, allow(
-    clippy::unwrap_used, clippy::expect_used, clippy::panic,
-    clippy::print_stdout, clippy::print_stderr
-))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::print_stdout,
+        clippy::print_stderr
+    )
+)]
 
 //! Vauban SSH Proxy Service
 //!
@@ -29,15 +35,15 @@ use secrecy::SecretString;
 use session::{SessionConfig, SshCredential, fetch_host_key};
 use session_manager::SessionManager;
 use shared::capsicum;
-use shared::ipc::{recv_fd, IpcChannel};
+use shared::ipc::{IpcChannel, recv_fd};
 use shared::messages::{ControlMessage, Message, ServiceStats};
 use std::collections::HashMap;
 use std::os::unix::io::{OwnedFd, RawFd};
 use std::process::ExitCode;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tracing::{debug, error, info, warn};
 
 /// Service runtime state (shared across async tasks).
@@ -234,7 +240,12 @@ async fn run_service() -> Result<()> {
     info!("Resources opened, preparing to enter sandbox");
 
     // Collect IPC file descriptors for sandboxing (read/write pipes)
-    let ipc_fds = vec![supervisor_read_fd, supervisor_write_fd, web_read_fd, web_write_fd];
+    let ipc_fds = vec![
+        supervisor_read_fd,
+        supervisor_write_fd,
+        web_read_fd,
+        web_write_fd,
+    ];
 
     // FD passing socket needs different rights (receive-only for SCM_RIGHTS)
     let fd_receiver_fds: Option<Vec<RawFd>> = fd_passing_socket.map(|fd| vec![fd]);
@@ -257,7 +268,16 @@ async fn run_service() -> Result<()> {
     let (web_tx, web_rx) = mpsc::channel::<Message>(256);
 
     // Run the main event loop
-    main_loop(supervisor_async, web_async, state, sessions, web_tx, web_rx, fd_passing).await
+    main_loop(
+        supervisor_async,
+        web_async,
+        state,
+        sessions,
+        web_tx,
+        web_rx,
+        fd_passing,
+    )
+    .await
 }
 
 async fn main_loop(
@@ -483,7 +503,10 @@ async fn handle_web_message(
                             request_id,
                             session_id,
                             success: false,
-                            error: Some("Private key authentication selected but no key provided".to_string()),
+                            error: Some(
+                                "Private key authentication selected but no key provided"
+                                    .to_string(),
+                            ),
                         };
                         let _ = response_tx.send(response);
                         return Ok(());
@@ -498,7 +521,10 @@ async fn handle_web_message(
                             request_id,
                             session_id,
                             success: false,
-                            error: Some("Password authentication selected but no password provided".to_string()),
+                            error: Some(
+                                "Password authentication selected but no password provided"
+                                    .to_string(),
+                            ),
                         };
                         let _ = response_tx.send(response);
                         return Ok(());
@@ -539,7 +565,7 @@ async fn handle_web_message(
             let sessions_clone = Arc::clone(&sessions);
             let state_clone = Arc::clone(&state);
             let response_tx_clone = response_tx.clone();
-            
+
             tokio::spawn(async move {
                 match sessions_clone.create_session(config, web_tx).await {
                     Ok(_) => {
@@ -711,9 +737,14 @@ mod tests {
         let state = ServiceState::default();
         let sessions = SessionManager::new();
 
-        handle_control_message(&service_async, &state, &sessions, ControlMessage::Ping { seq: 42 })
-            .await
-            .unwrap();
+        handle_control_message(
+            &service_async,
+            &state,
+            &sessions,
+            ControlMessage::Ping { seq: 42 },
+        )
+        .await
+        .unwrap();
 
         let response: Message = supervisor.recv().unwrap();
         if let Message::Control(ControlMessage::Pong { seq, stats }) = response {
@@ -790,7 +821,9 @@ mod tests {
     #[test]
     fn test_m8_handle_control_sets_shutdown_flag() {
         let source = prod_source();
-        let handle_start = source.find("fn handle_control_message").expect("handle_control_message must exist");
+        let handle_start = source
+            .find("fn handle_control_message")
+            .expect("handle_control_message must exist");
         let handle_source = &source[handle_start..];
         assert!(
             handle_source.contains("shutdown_requested.store(true"),

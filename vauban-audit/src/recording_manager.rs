@@ -111,7 +111,10 @@ impl RecordingManager {
     /// arrives, since SPS/PPS are needed and only present in keyframes.
     pub fn start_session(&mut self, session_id: &str, file: File, relative_path: String) {
         if self.recordings.contains_key(session_id) {
-            warn!(session_id, "Recording already active, ignoring duplicate start");
+            warn!(
+                session_id,
+                "Recording already active, ignoring duplicate start"
+            );
             return;
         }
 
@@ -128,22 +131,25 @@ impl RecordingManager {
 
         info!(session_id, path = %relative_path, "Recording session started (pending first keyframe)");
 
-        self.recordings.insert(session_id.to_string(), ActiveRecording {
-            file: Some(file),
-            writer: None,
-            segment_hasher: blake3::Hasher::new(),
-            current_fragment: Vec::new(),
-            prev_timestamp_us: None,
-            base_dir,
-            segment_index: 1,
-            current_width: 0,
-            current_height: 0,
-            current_sps: Vec::new(),
-            segments: Vec::new(),
-            pending_keyframe: None,
-            frame_count: 0,
-            total_fragment_count: 0,
-        });
+        self.recordings.insert(
+            session_id.to_string(),
+            ActiveRecording {
+                file: Some(file),
+                writer: None,
+                segment_hasher: blake3::Hasher::new(),
+                current_fragment: Vec::new(),
+                prev_timestamp_us: None,
+                base_dir,
+                segment_index: 1,
+                current_width: 0,
+                current_height: 0,
+                current_sps: Vec::new(),
+                segments: Vec::new(),
+                pending_keyframe: None,
+                frame_count: 0,
+                total_fragment_count: 0,
+            },
+        );
     }
 
     /// Compute the base directory for a session (e.g. "2026/03/uuid").
@@ -183,7 +189,10 @@ impl RecordingManager {
 
         // If we're waiting for a new segment file, drop frames
         if rec.pending_keyframe.is_some() {
-            debug!(session_id, "Dropping frame while waiting for new segment file");
+            debug!(
+                session_id,
+                "Dropping frame while waiting for new segment file"
+            );
             return FrameResult::Processed;
         }
 
@@ -218,18 +227,17 @@ impl RecordingManager {
         {
             info!(
                 session_id,
-                old_w = rec.current_width, old_h = rec.current_height,
-                new_w = width, new_h = height,
+                old_w = rec.current_width,
+                old_h = rec.current_height,
+                new_w = width,
+                new_h = height,
                 "Resolution change detected, splitting segment"
             );
 
             finalize_current_segment(rec, session_id);
 
             rec.segment_index += 1;
-            let relative_path = format!(
-                "{}/{:03}.mp4",
-                rec.base_dir, rec.segment_index
-            );
+            let relative_path = format!("{}/{:03}.mp4", rec.base_dir, rec.segment_index);
 
             rec.pending_keyframe = Some(PendingFrame {
                 timestamp_us,
@@ -242,13 +250,16 @@ impl RecordingManager {
         }
 
         // Drop P-frames with mismatched dimensions (defensive)
-        if !is_keyframe && rec.current_width != 0
+        if !is_keyframe
+            && rec.current_width != 0
             && (width != rec.current_width || height != rec.current_height)
         {
             debug!(
                 session_id,
-                frame_w = width, frame_h = height,
-                seg_w = rec.current_width, seg_h = rec.current_height,
+                frame_w = width,
+                frame_h = height,
+                seg_w = rec.current_width,
+                seg_h = rec.current_height,
                 "Dropping P-frame with mismatched dimensions"
             );
             return FrameResult::Processed;
@@ -271,24 +282,28 @@ impl RecordingManager {
         };
 
         let Some(pending) = rec.pending_keyframe.take() else {
-            warn!(session_id, "provide_segment_file called without pending keyframe");
+            warn!(
+                session_id,
+                "provide_segment_file called without pending keyframe"
+            );
             return;
         };
 
         rec.segment_hasher = blake3::Hasher::new();
         rec.segment_hasher.update(&pending.data);
 
-        if !init_writer(rec, session_id, file, &pending.data, pending.width, pending.height) {
+        if !init_writer(
+            rec,
+            session_id,
+            file,
+            &pending.data,
+            pending.width,
+            pending.height,
+        ) {
             return;
         }
 
-        append_frame(
-            rec,
-            session_id,
-            pending.timestamp_us,
-            true,
-            &pending.data,
-        );
+        append_frame(rec, session_id, pending.timestamp_us, true, &pending.data);
     }
 
     /// End a recording session. Flushes the last fragment and returns metadata.
@@ -302,7 +317,10 @@ impl RecordingManager {
         };
 
         if rec.writer.is_none() && rec.segments.is_empty() {
-            info!(session_id, "Recording ended before any keyframe was received");
+            info!(
+                session_id,
+                "Recording ended before any keyframe was received"
+            );
             return None;
         }
 
@@ -355,7 +373,10 @@ fn init_writer(
 ) -> bool {
     let (sps, pps) = fmp4_writer::extract_sps_pps(data);
     let Some(sps) = sps else {
-        warn!(session_id, "Keyframe missing SPS, cannot initialize segment");
+        warn!(
+            session_id,
+            "Keyframe missing SPS, cannot initialize segment"
+        );
         return false;
     };
     let pps = pps.unwrap_or_else(|| {
@@ -371,7 +392,9 @@ fn init_writer(
             rec.current_height = height;
             rec.current_sps = sps;
             info!(
-                session_id, width, height,
+                session_id,
+                width,
+                height,
                 segment = rec.segment_index,
                 "fMP4 writer initialized for segment"
             );
@@ -538,9 +561,14 @@ mod tests {
         let mut count = 0;
         let mut off = 0;
         while off + 8 <= data.len() {
-            let sz = u32::from_be_bytes([data[off], data[off+1], data[off+2], data[off+3]]) as usize;
-            if sz < 8 || off + sz > data.len() { break; }
-            if &data[off+4..off+8] == box_type { count += 1; }
+            let sz = u32::from_be_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]])
+                as usize;
+            if sz < 8 || off + sz > data.len() {
+                break;
+            }
+            if &data[off + 4..off + 8] == box_type {
+                count += 1;
+            }
             off += sz;
         }
         count
@@ -561,12 +589,42 @@ mod tests {
         assert_eq!(mgr.active_count(), 1);
 
         mgr.handle_frame(session_id, 0, true, 1920, 1080, &sample_keyframe_annex_b());
-        mgr.handle_frame(session_id, 33333, false, 1920, 1080, &sample_pframe_annex_b());
-        mgr.handle_frame(session_id, 66666, false, 1920, 1080, &sample_pframe_annex_b());
-        mgr.handle_frame(session_id, 100000, true, 1920, 1080, &sample_keyframe_annex_b());
-        mgr.handle_frame(session_id, 133333, false, 1920, 1080, &sample_pframe_annex_b());
+        mgr.handle_frame(
+            session_id,
+            33333,
+            false,
+            1920,
+            1080,
+            &sample_pframe_annex_b(),
+        );
+        mgr.handle_frame(
+            session_id,
+            66666,
+            false,
+            1920,
+            1080,
+            &sample_pframe_annex_b(),
+        );
+        mgr.handle_frame(
+            session_id,
+            100000,
+            true,
+            1920,
+            1080,
+            &sample_keyframe_annex_b(),
+        );
+        mgr.handle_frame(
+            session_id,
+            133333,
+            false,
+            1920,
+            1080,
+            &sample_pframe_annex_b(),
+        );
 
-        let result = mgr.end_session(session_id).expect("should return EndSessionResult");
+        let result = mgr
+            .end_session(session_id)
+            .expect("should return EndSessionResult");
         assert_eq!(mgr.active_count(), 0);
         assert_eq!(result.segments.len(), 1);
         assert_eq!(result.segments[0].width, 1920);
@@ -697,7 +755,11 @@ mod tests {
 
         let data = std::fs::read(&mp4_path).unwrap();
         assert_eq!(&data[4..8], b"ftyp");
-        assert_eq!(count_mp4_boxes(&data, b"moof"), 2, "Two fragments should survive a crash");
+        assert_eq!(
+            count_mp4_boxes(&data, b"moof"),
+            2,
+            "Two fragments should survive a crash"
+        );
     }
 
     #[test]
@@ -753,8 +815,22 @@ mod tests {
         mgr.start_session("nosplit", file, "2026/03/nosplit/001.mp4".to_string());
         mgr.handle_frame("nosplit", 0, true, 1280, 720, &sample_keyframe_annex_b());
         mgr.handle_frame("nosplit", 33333, false, 1280, 720, &sample_pframe_annex_b());
-        mgr.handle_frame("nosplit", 66666, true, 1280, 720, &sample_keyframe_annex_b());
-        mgr.handle_frame("nosplit", 100000, false, 1280, 720, &sample_pframe_annex_b());
+        mgr.handle_frame(
+            "nosplit",
+            66666,
+            true,
+            1280,
+            720,
+            &sample_keyframe_annex_b(),
+        );
+        mgr.handle_frame(
+            "nosplit",
+            100000,
+            false,
+            1280,
+            720,
+            &sample_pframe_annex_b(),
+        );
 
         let result = mgr.end_session("nosplit").unwrap();
         assert_eq!(result.segments.len(), 1);
@@ -785,9 +861,7 @@ mod tests {
         mgr.handle_frame("split", 33333, false, 1280, 720, &sample_pframe_annex_b());
 
         // Keyframe at new resolution triggers split
-        let result = mgr.handle_frame(
-            "split", 66666, true, 1920, 1080, &sample_keyframe_alt_sps(),
-        );
+        let result = mgr.handle_frame("split", 66666, true, 1920, 1080, &sample_keyframe_alt_sps());
         assert!(matches!(result, FrameResult::NewSegmentNeeded { .. }));
 
         // Provide the new segment file
@@ -854,7 +928,14 @@ mod tests {
         mgr.handle_frame("bounce", 0, true, 1280, 720, &sample_keyframe_annex_b());
 
         // 720 -> 1080
-        let r = mgr.handle_frame("bounce", 33333, true, 1920, 1080, &sample_keyframe_alt_sps());
+        let r = mgr.handle_frame(
+            "bounce",
+            33333,
+            true,
+            1920,
+            1080,
+            &sample_keyframe_alt_sps(),
+        );
         assert!(matches!(r, FrameResult::NewSegmentNeeded { .. }));
         let (file2, _) = create_test_file(&dir, "bounce/002.mp4");
         mgr.provide_segment_file("bounce", file2);
@@ -917,11 +998,17 @@ mod tests {
         // Verify hashes independently
         let mut h1 = blake3::Hasher::new();
         h1.update(&kf1);
-        assert_eq!(result.segments[0].blake3_hex, h1.finalize().to_hex().to_string());
+        assert_eq!(
+            result.segments[0].blake3_hex,
+            h1.finalize().to_hex().to_string()
+        );
 
         let mut h2 = blake3::Hasher::new();
         h2.update(&kf2);
-        assert_eq!(result.segments[1].blake3_hex, h2.finalize().to_hex().to_string());
+        assert_eq!(
+            result.segments[1].blake3_hex,
+            h2.finalize().to_hex().to_string()
+        );
     }
 
     #[test]
@@ -942,7 +1029,12 @@ mod tests {
         let data = std::fs::read(&path).unwrap();
         let ftyp_size = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as u64;
         let moov_off = ftyp_size as usize;
-        let moov_size = u32::from_be_bytes([data[moov_off], data[moov_off+1], data[moov_off+2], data[moov_off+3]]) as u64;
+        let moov_size = u32::from_be_bytes([
+            data[moov_off],
+            data[moov_off + 1],
+            data[moov_off + 2],
+            data[moov_off + 3],
+        ]) as u64;
         assert_eq!(init_size, ftyp_size + moov_size);
     }
 
@@ -999,7 +1091,12 @@ mod tests {
         assert_eq!(segs[0]["height"], 720);
         assert!(segs[0]["init_size"].as_u64().unwrap() > 0);
         assert!(segs[0]["blake3_hex"].as_str().unwrap().len() == 64);
-        assert!(segs[0]["codec_string"].as_str().unwrap().starts_with("avc1."));
+        assert!(
+            segs[0]["codec_string"]
+                .as_str()
+                .unwrap()
+                .starts_with("avc1.")
+        );
         assert_eq!(segs[1]["index"], 2);
         assert_eq!(segs[1]["width"], 1920);
     }
@@ -1072,7 +1169,14 @@ mod tests {
         mgr.handle_frame("csplit", 100000, false, 1280, 720, &sample_pframe_annex_b());
 
         // Resolution change -> split (flushes current fragment)
-        let r = mgr.handle_frame("csplit", 133333, true, 1920, 1080, &sample_keyframe_alt_sps());
+        let r = mgr.handle_frame(
+            "csplit",
+            133333,
+            true,
+            1920,
+            1080,
+            &sample_keyframe_alt_sps(),
+        );
         assert!(matches!(r, FrameResult::NewSegmentNeeded { .. }));
 
         // Simulate crash: drop without providing new file or calling end_session
@@ -1103,23 +1207,69 @@ mod tests {
         let (file1, path1) = create_test_file(&dir, "integ-resize/001.mp4");
         let mut mgr = RecordingManager::new();
 
-        mgr.start_session("integ-resize", file1, "2026/03/integ-resize/001.mp4".to_string());
+        mgr.start_session(
+            "integ-resize",
+            file1,
+            "2026/03/integ-resize/001.mp4".to_string(),
+        );
 
         // Segment 1: 1280x720
-        mgr.handle_frame("integ-resize", 0, true, 1280, 720, &sample_keyframe_annex_b());
-        mgr.handle_frame("integ-resize", 33333, false, 1280, 720, &sample_pframe_annex_b());
-        mgr.handle_frame("integ-resize", 66666, false, 1280, 720, &sample_pframe_annex_b());
+        mgr.handle_frame(
+            "integ-resize",
+            0,
+            true,
+            1280,
+            720,
+            &sample_keyframe_annex_b(),
+        );
+        mgr.handle_frame(
+            "integ-resize",
+            33333,
+            false,
+            1280,
+            720,
+            &sample_pframe_annex_b(),
+        );
+        mgr.handle_frame(
+            "integ-resize",
+            66666,
+            false,
+            1280,
+            720,
+            &sample_pframe_annex_b(),
+        );
 
         // Resolution change to 1920x1080
-        let r = mgr.handle_frame("integ-resize", 100000, true, 1920, 1080, &sample_keyframe_alt_sps());
+        let r = mgr.handle_frame(
+            "integ-resize",
+            100000,
+            true,
+            1920,
+            1080,
+            &sample_keyframe_alt_sps(),
+        );
         assert!(matches!(r, FrameResult::NewSegmentNeeded { .. }));
 
         let (file2, path2) = create_test_file(&dir, "integ-resize/002.mp4");
         mgr.provide_segment_file("integ-resize", file2);
 
         // Segment 2: 1920x1080
-        mgr.handle_frame("integ-resize", 133333, false, 1920, 1080, &sample_pframe_annex_b());
-        mgr.handle_frame("integ-resize", 166666, false, 1920, 1080, &sample_pframe_annex_b());
+        mgr.handle_frame(
+            "integ-resize",
+            133333,
+            false,
+            1920,
+            1080,
+            &sample_pframe_annex_b(),
+        );
+        mgr.handle_frame(
+            "integ-resize",
+            166666,
+            false,
+            1920,
+            1080,
+            &sample_pframe_annex_b(),
+        );
 
         let result = mgr.end_session("integ-resize").unwrap();
 
@@ -1149,11 +1299,36 @@ mod tests {
         let (file, path) = create_test_file(&dir, "integ-noresize/001.mp4");
         let mut mgr = RecordingManager::new();
 
-        mgr.start_session("integ-nr", file, "2026/03/integ-noresize/001.mp4".to_string());
+        mgr.start_session(
+            "integ-nr",
+            file,
+            "2026/03/integ-noresize/001.mp4".to_string(),
+        );
         mgr.handle_frame("integ-nr", 0, true, 1920, 1080, &sample_keyframe_annex_b());
-        mgr.handle_frame("integ-nr", 33333, false, 1920, 1080, &sample_pframe_annex_b());
-        mgr.handle_frame("integ-nr", 66666, true, 1920, 1080, &sample_keyframe_annex_b());
-        mgr.handle_frame("integ-nr", 100000, false, 1920, 1080, &sample_pframe_annex_b());
+        mgr.handle_frame(
+            "integ-nr",
+            33333,
+            false,
+            1920,
+            1080,
+            &sample_pframe_annex_b(),
+        );
+        mgr.handle_frame(
+            "integ-nr",
+            66666,
+            true,
+            1920,
+            1080,
+            &sample_keyframe_annex_b(),
+        );
+        mgr.handle_frame(
+            "integ-nr",
+            100000,
+            false,
+            1920,
+            1080,
+            &sample_pframe_annex_b(),
+        );
 
         let result = mgr.end_session("integ-nr").unwrap();
         assert_eq!(result.segments.len(), 1);

@@ -83,7 +83,10 @@ mod tests {
         };
 
         assert!(template.user.is_some());
-        assert_eq!(template.user.as_ref().map(|u| u.username.as_str()), Some("testuser"));
+        assert_eq!(
+            template.user.as_ref().map(|u| u.username.as_str()),
+            Some("testuser")
+        );
     }
 
     #[test]

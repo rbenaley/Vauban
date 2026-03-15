@@ -20,7 +20,9 @@ pub async fn asset_create_form(
     let base =
         BaseTemplate::new("New Asset".to_string(), user.clone()).with_current_path("/assets");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base)
+            .await
+            .into_fields();
 
     let csrf_token = jar
         .get(crate::middleware::csrf::CSRF_COOKIE_NAME)
@@ -181,9 +183,8 @@ pub async fn create_asset_web(
 
     // Sanitize text fields to prevent stored XSS
     let sanitized_name = sanitize(form.name.trim());
-    let sanitized_description = sanitize_opt(
-        form.description.as_ref().filter(|s| !s.is_empty()).cloned(),
-    );
+    let sanitized_description =
+        sanitize_opt(form.description.as_ref().filter(|s| !s.is_empty()).cloned());
     let parsed_asset_type = AssetType::parse(&form.asset_type);
 
     if let Some((deleted_id, deleted_uuid)) = existing_deleted {
@@ -235,7 +236,10 @@ pub async fn create_asset_web(
         && let Err(e) = encrypt_connection_config(vault, &mut connection_config).await
     {
         tracing::error!("Failed to encrypt connection config: {}", e);
-        return flash_redirect(flash.error("Failed to encrypt credentials"), "/assets/create");
+        return flash_redirect(
+            flash.error("Failed to encrypt credentials"),
+            "/assets/create",
+        );
     }
 
     // Parse IP address if provided
@@ -286,7 +290,9 @@ pub async fn asset_list(
     let user = Some(user_context_from_auth(&auth_user));
     let base = BaseTemplate::new("Assets".to_string(), user.clone()).with_current_path("/assets");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base)
+            .await
+            .into_fields();
 
     let user_is_admin = check_rbac(&state, &auth_user, "assets", "read").await;
 
@@ -305,6 +311,27 @@ pub async fn asset_list(
     let mut query = schema_assets::table
         .filter(schema_assets::is_deleted.eq(false))
         .into_boxed();
+
+    // Non-admin users: filter to only accessible assets via access rules
+    if !auth_user.is_superuser && !auth_user.is_staff {
+        let user_internal_id: i32 = crate::schema::users::table
+            .filter(
+                crate::schema::users::uuid
+                    .eq(::uuid::Uuid::parse_str(&auth_user.uuid).unwrap_or_default()),
+            )
+            .select(crate::schema::users::id)
+            .first(&mut conn)
+            .await
+            .map_err(|_| AppError::Authorization("User not found".to_string()))?;
+
+        let accessible_ids = crate::services::access::list_accessible_asset_ids(
+            state.access_client.as_ref(),
+            &mut conn,
+            user_internal_id,
+        )
+        .await?;
+        query = query.filter(schema_assets::id.eq_any(accessible_ids));
+    }
 
     if let Some(ref search) = search_filter
         && !search.is_empty()
@@ -581,6 +608,44 @@ pub async fn asset_detail(
         asset_connection_config,
     ) = asset_row;
 
+    // Instance-level access control: non-admin users must have an access rule
+    if !auth_user.is_superuser && !auth_user.is_staff {
+        let user_internal_id: i32 = match crate::schema::users::table
+            .filter(
+                crate::schema::users::uuid
+                    .eq(::uuid::Uuid::parse_str(&auth_user.uuid).unwrap_or_default()),
+            )
+            .select(crate::schema::users::id)
+            .first(&mut conn)
+            .await
+        {
+            Ok(id) => id,
+            Err(_) => return flash_redirect(flash.error("Access denied"), "/assets"),
+        };
+
+        let asset_internal_id: i32 = match a::assets
+            .filter(a::uuid.eq(asset_uuid))
+            .select(a::id)
+            .first(&mut conn)
+            .await
+        {
+            Ok(id) => id,
+            Err(_) => return flash_redirect(flash.error("Asset not found"), "/assets"),
+        };
+
+        let accessible_ids = crate::services::access::list_accessible_asset_ids(
+            state.access_client.as_ref(),
+            &mut conn,
+            user_internal_id,
+        )
+        .await
+        .unwrap_or_default();
+
+        if !accessible_ids.contains(&asset_internal_id) {
+            return flash_redirect(flash.error("Access denied"), "/assets");
+        }
+    }
+
     // Extract SSH host key fingerprint and mismatch status from connection_config (H-9)
     let ssh_host_key_fingerprint = asset_connection_config
         .get("ssh_host_key_fingerprint")
@@ -634,7 +699,9 @@ pub async fn asset_detail(
     let base = BaseTemplate::new(format!("{} - Asset", asset_name), user.clone())
         .with_current_path("/assets");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base)
+            .await
+            .into_fields();
 
     let template = AssetDetailTemplate {
         title,
@@ -812,7 +879,9 @@ pub async fn asset_edit(
         .with_current_path("/assets")
         .with_messages(flash_messages);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base)
+            .await
+            .into_fields();
 
     let template = AssetEditTemplate {
         title,

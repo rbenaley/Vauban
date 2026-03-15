@@ -1,7 +1,10 @@
 // L-1: Integration tests legitimately use unwrap/expect/panic/println
 #![allow(
-    clippy::unwrap_used, clippy::expect_used, clippy::panic,
-    clippy::print_stdout, clippy::print_stderr
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stdout,
+    clippy::print_stderr
 )]
 
 /// VAUBAN Web - Integration Tests.

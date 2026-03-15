@@ -158,7 +158,10 @@ mod tests {
         // Less than nonce (12) + tag (16) = 28 bytes minimum
         let result = decrypt(&key, &[0u8; 27]);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), CryptoError::InvalidCiphertext));
+        assert!(matches!(
+            result.unwrap_err(),
+            CryptoError::InvalidCiphertext
+        ));
     }
 
     #[test]
@@ -166,7 +169,10 @@ mod tests {
         let key = test_key();
         let result = decrypt(&key, &[]);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), CryptoError::InvalidCiphertext));
+        assert!(matches!(
+            result.unwrap_err(),
+            CryptoError::InvalidCiphertext
+        ));
     }
 
     #[test]

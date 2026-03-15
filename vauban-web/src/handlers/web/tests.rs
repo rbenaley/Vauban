@@ -714,7 +714,12 @@ fn test_connect_ssh_response_success() {
 
     assert!(response.success);
     assert_eq!(response.session_id, Some("sess-123".to_string()));
-    assert!(response.redirect_url.unwrap().contains("/sessions/terminal/"));
+    assert!(
+        response
+            .redirect_url
+            .unwrap()
+            .contains("/sessions/terminal/")
+    );
     assert!(response.error.is_none());
 }
 

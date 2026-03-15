@@ -83,7 +83,7 @@ pub enum Service {
     Supervisor,
     Web,
     Auth,
-    Rbac,
+    Access,
     Vault,
     Audit,
     ProxySsh,
@@ -135,11 +135,306 @@ pub enum AuthResult {
     },
 }
 
-/// RBAC authorization result from vauban-rbac.
+/// RBAC authorization result from vauban-access.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RbacResult {
     pub allowed: bool,
     pub reason: Option<String>,
+}
+
+/// Access check result from vauban-access (instance-level authorization).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccessCheckResult {
+    pub allowed: bool,
+    pub require_mfa: bool,
+    pub require_justification: bool,
+    pub max_session_duration: Option<i32>,
+}
+
+/// Entry describing which asset groups a user can access and with which protocols.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccessibleGroupEntry {
+    pub asset_group_id: i32,
+    pub protocols: Vec<String>,
+}
+
+/// Data for creating or updating an access rule.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccessRuleData {
+    pub name: String,
+    pub description: Option<String>,
+    pub user_group_id: i32,
+    pub asset_group_id: i32,
+    pub allowed_protocols: Vec<String>,
+    pub valid_from: Option<String>,
+    pub valid_until: Option<String>,
+    pub require_mfa: bool,
+    pub require_justification: bool,
+    pub max_session_duration: Option<i32>,
+    pub is_active: bool,
+    pub priority: i32,
+}
+
+/// Full info about an access rule (returned from queries).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccessRuleInfo {
+    pub uuid: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub user_group_id: i32,
+    pub user_group_uuid: String,
+    pub user_group_name: String,
+    pub asset_group_id: i32,
+    pub asset_group_uuid: String,
+    pub asset_group_name: String,
+    pub allowed_protocols: Vec<String>,
+    pub valid_from: Option<String>,
+    pub valid_until: Option<String>,
+    pub require_mfa: bool,
+    pub require_justification: bool,
+    pub max_session_duration: Option<i32>,
+    pub is_active: bool,
+    pub priority: i32,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Info about a vauban group (user group).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VaubanGroupInfo {
+    pub id: i32,
+    pub uuid: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub source: String,
+    pub external_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub last_synced: Option<String>,
+    pub member_count: i64,
+}
+
+/// Info about an asset group.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssetGroupInfo {
+    pub id: i32,
+    pub uuid: String,
+    pub name: String,
+    pub slug: String,
+    pub description: Option<String>,
+    pub color: String,
+    pub icon: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Minimal group info for form dropdowns.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupOption {
+    pub id: i32,
+    pub uuid: String,
+    pub name: String,
+}
+
+/// Access control request sent to vauban-access.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AccessRequest {
+    CheckAccess {
+        user_id: i32,
+        asset_group_id: i32,
+        protocol: String,
+    },
+    ListAccessibleGroups {
+        user_id: i32,
+    },
+
+    CreateAccessRule {
+        data: AccessRuleData,
+    },
+    GetAccessRule {
+        uuid: String,
+    },
+    ListAccessRules,
+    UpdateAccessRule {
+        uuid: String,
+        data: AccessRuleData,
+    },
+    DeleteAccessRule {
+        uuid: String,
+    },
+
+    CreateVaubanGroup {
+        name: String,
+        description: Option<String>,
+    },
+    GetVaubanGroup {
+        uuid: String,
+    },
+    GetVaubanGroupById {
+        id: i32,
+    },
+    ListVaubanGroups,
+    UpdateVaubanGroup {
+        uuid: String,
+        name: String,
+        description: Option<String>,
+    },
+    DeleteVaubanGroup {
+        uuid: String,
+    },
+
+    AddGroupMember {
+        group_id: i32,
+        user_id: i32,
+    },
+    RemoveGroupMember {
+        group_id: i32,
+        user_id: i32,
+    },
+    ListGroupMembers {
+        group_id: i32,
+    },
+    ListUserGroups {
+        user_id: i32,
+    },
+
+    CreateAssetGroup {
+        name: String,
+        slug: String,
+        description: Option<String>,
+        color: String,
+        icon: String,
+    },
+    GetAssetGroup {
+        uuid: String,
+    },
+    ListAssetGroups,
+    UpdateAssetGroup {
+        uuid: String,
+        name: String,
+        slug: String,
+        description: Option<String>,
+        color: String,
+        icon: String,
+    },
+    DeleteAssetGroup {
+        uuid: String,
+    },
+
+    GetGroupOptions,
+}
+
+/// Access control response from vauban-access.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AccessResponse {
+    AccessChecked(AccessCheckResult),
+    AccessibleGroups(Vec<AccessibleGroupEntry>),
+
+    AccessRule(Result<AccessRuleInfo, String>),
+    AccessRuleList(Vec<AccessRuleInfo>),
+
+    VaubanGroup(Result<VaubanGroupInfo, String>),
+    VaubanGroupList(Vec<VaubanGroupInfo>),
+
+    MemberList(Vec<i32>),
+    UserGroupList(Vec<VaubanGroupInfo>),
+
+    AssetGroup(Result<AssetGroupInfo, String>),
+    AssetGroupList(Vec<AssetGroupInfo>),
+
+    GroupOptions {
+        user_groups: Vec<GroupOption>,
+        asset_groups: Vec<GroupOption>,
+    },
+
+    Ok,
+    Deleted(Result<(), String>),
+    Error(String),
+}
+
+/// Seed user data for admin commands.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SeedUser {
+    pub username: String,
+    pub email: String,
+    pub password_hash: String,
+    pub first_name: Option<String>,
+    pub last_name: Option<String>,
+    pub is_superuser: bool,
+    pub is_staff: bool,
+}
+
+/// Seed asset data for admin commands.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SeedAsset {
+    pub name: String,
+    pub hostname: String,
+    pub port: i32,
+    pub asset_type: String,
+    pub group_id: Option<i32>,
+    pub description: Option<String>,
+}
+
+/// Seed session data for admin commands.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SeedSession {
+    pub user_id: i32,
+    pub asset_id: i32,
+    pub session_type: String,
+}
+
+/// Unencrypted secret entry returned by ListUnencryptedSecrets.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnencryptedSecretEntry {
+    pub entry_type: String,
+    pub id: i32,
+    pub value: String,
+}
+
+/// Admin command sent to services via IPC.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AdminCommand {
+    CreateUser {
+        username: String,
+        email: String,
+        password_hash: String,
+        is_superuser: bool,
+        is_staff: bool,
+    },
+    ResetPassword {
+        username: String,
+        password_hash: String,
+    },
+    ResetMfa {
+        username: String,
+    },
+    ListUnencryptedSecrets,
+    UpdateUserMfaSecret {
+        user_id: i32,
+        encrypted_secret: String,
+    },
+    UpdateAssetConnectionConfig {
+        asset_id: i32,
+        encrypted_config: String,
+    },
+    SeedUsers {
+        users: Vec<SeedUser>,
+    },
+    SeedAssets {
+        assets: Vec<SeedAsset>,
+    },
+    SeedSessions {
+        sessions: Vec<SeedSession>,
+    },
+}
+
+/// Admin command response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AdminResponse {
+    Ok,
+    Created { uuid: String },
+    UnencryptedSecrets(Vec<UnencryptedSecretEntry>),
+    Error(String),
 }
 
 /// Audit event types for vauban-audit.
@@ -175,9 +470,13 @@ pub enum RdpInputEvent {
 
     // ── High-level variants from web frontend ─────────────────────
     // The proxy converts these into the low-level variants above.
-
     /// Mouse button with position (from web frontend).
-    MouseButton { button: u8, pressed: bool, x: u16, y: u16 },
+    MouseButton {
+        button: u8,
+        pressed: bool,
+        x: u16,
+        y: u16,
+    },
     /// Mouse wheel with raw delta (from web frontend).
     MouseWheel { delta_x: i16, delta_y: i16 },
     /// Keyboard event with JavaScript key code (from web frontend).
@@ -225,7 +524,6 @@ pub enum Message {
     },
 
     // ========== Password hashing (Web -> Auth) ==========
-
     /// Verify a password against a stored Argon2id hash.
     AuthVerifyPassword {
         request_id: u64,
@@ -283,7 +581,6 @@ pub enum Message {
     },
 
     // ========== Vault Crypto (Any service -> Vault) ==========
-
     /// Encrypt plaintext with a named key domain (M-1, C-2).
     VaultEncrypt {
         request_id: u64,
@@ -317,7 +614,6 @@ pub enum Message {
     },
 
     // ========== Vault MFA (Web -> Vault) ==========
-
     /// Generate a new TOTP secret, encrypt it, and return both forms.
     /// The vault generates the secret, encrypts it for DB storage, and returns
     /// the plaintext as a `SensitiveString` (zeroize-on-drop) so the web layer
@@ -478,7 +774,6 @@ pub enum Message {
     },
 
     // ========== RDP Session (Web <-> ProxyRdp) ==========
-
     /// Request to open an RDP session.
     RdpSessionOpen {
         request_id: u64,
@@ -585,7 +880,6 @@ pub enum Message {
     },
 
     // ========== RDP Recording (ProxyRdp -> Audit) ==========
-
     /// Signal vauban-audit to start recording a new RDP session.
     RdpRecordingStart {
         session_id: String,
@@ -599,7 +893,6 @@ pub enum Message {
     },
 
     // ========== Recording File Requests (Service -> Supervisor) ==========
-
     /// Request the supervisor to open/create a recording file and send its FD
     /// via SCM_RIGHTS. Used by audit (create, write) and web (open, read-only).
     RecordingFileRequest {
@@ -622,7 +915,6 @@ pub enum Message {
     },
 
     // ========== ACME Certificate Management (Web <-> Supervisor) ==========
-
     /// Request the supervisor to perform ACME certificate renewal.
     /// The supervisor handles the ACME protocol (instant-acme) and coordinates
     /// TLS-ALPN-01 challenges via AcmeChallengeInstall/Remove messages.
@@ -688,7 +980,6 @@ pub enum Message {
     },
 
     // ========== TLS Certificate Provisioning (Supervisor -> Web) ==========
-
     /// Supervisor provides TLS certificate data to vauban-web at startup.
     /// The supervisor reads (or generates) the cert/key files as root,
     /// then sends the PEM data so vauban-web never needs filesystem access
@@ -729,6 +1020,26 @@ pub enum Message {
         success: bool,
         /// Error message if connection failed (DNS resolution, connection refused, etc.).
         error: Option<String>,
+    },
+
+    // ========== Access Control (Web <-> Access) ==========
+    AccessRequest {
+        request_id: u64,
+        request: AccessRequest,
+    },
+    AccessResponse {
+        request_id: u64,
+        response: AccessResponse,
+    },
+
+    // ========== Admin Commands (Supervisor -> Services) ==========
+    AdminCommand {
+        request_id: u64,
+        command: AdminCommand,
+    },
+    AdminResponse {
+        request_id: u64,
+        response: AdminResponse,
     },
 }
 
@@ -772,7 +1083,11 @@ impl Message {
             | Message::AcmeChallengeRemove { request_id, .. }
             | Message::AcmeCertActivate { request_id, .. }
             | Message::TcpConnectRequest { request_id, .. }
-            | Message::TcpConnectResponse { request_id, .. } => Some(*request_id),
+            | Message::TcpConnectResponse { request_id, .. }
+            | Message::AccessRequest { request_id, .. }
+            | Message::AccessResponse { request_id, .. }
+            | Message::AdminCommand { request_id, .. }
+            | Message::AdminResponse { request_id, .. } => Some(*request_id),
             _ => None,
         }
     }
@@ -802,7 +1117,7 @@ mod tests {
             Service::Supervisor,
             Service::Web,
             Service::Auth,
-            Service::Rbac,
+            Service::Access,
             Service::Vault,
             Service::Audit,
             Service::ProxySsh,
@@ -847,7 +1162,9 @@ mod tests {
 
     #[test]
     fn test_control_message_drain_complete() {
-        let msg = ControlMessage::DrainComplete { pending_requests: 5 };
+        let msg = ControlMessage::DrainComplete {
+            pending_requests: 5,
+        };
         let serialized = serialize(&msg);
         let deserialized: ControlMessage = deserialize(&serialized);
         if let ControlMessage::DrainComplete { pending_requests } = deserialized {
@@ -1036,10 +1353,15 @@ mod tests {
             source_ip: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
         };
         assert_eq!(msg.request_id(), Some(100));
-        
+
         let serialized = serialize(&msg);
         let deserialized: Message = deserialize(&serialized);
-        if let Message::AuthRequest { username, source_ip, .. } = deserialized {
+        if let Message::AuthRequest {
+            username,
+            source_ip,
+            ..
+        } = deserialized
+        {
             assert_eq!(username, "testuser");
             assert_eq!(source_ip, IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
         } else {
@@ -1108,10 +1430,15 @@ mod tests {
         };
         // SessionRecordingChunk has no request_id
         assert!(msg.request_id().is_none());
-        
+
         let serialized = serialize(&msg);
         let deserialized: Message = deserialize(&serialized);
-        if let Message::SessionRecordingChunk { session_id, sequence, data } = deserialized {
+        if let Message::SessionRecordingChunk {
+            session_id,
+            sequence,
+            data,
+        } = deserialized
+        {
             assert_eq!(session_id, "sess123");
             assert_eq!(sequence, 42);
             assert_eq!(data.len(), 1024);
@@ -1173,7 +1500,9 @@ mod tests {
             },
             Message::AuthResponse {
                 request_id: 1,
-                result: AuthResult::Failure { reason: "test".to_string() },
+                result: AuthResult::Failure {
+                    reason: "test".to_string(),
+                },
             },
             Message::RbacCheck {
                 request_id: 2,
@@ -1183,7 +1512,10 @@ mod tests {
             },
             Message::RbacResponse {
                 request_id: 2,
-                result: RbacResult { allowed: true, reason: None },
+                result: RbacResult {
+                    allowed: true,
+                    reason: None,
+                },
             },
             Message::AuditAck { timestamp: 12345 },
         ];
@@ -1261,10 +1593,7 @@ mod tests {
 
         let serialized = serialize(&msg);
         let deserialized: Message = deserialize(&serialized);
-        if let Message::SshSessionOpened {
-            success, error, ..
-        } = deserialized
-        {
+        if let Message::SshSessionOpened { success, error, .. } = deserialized {
             assert!(success);
             assert!(error.is_none());
         } else {
@@ -1284,10 +1613,7 @@ mod tests {
 
         let serialized = serialize(&msg);
         let deserialized: Message = deserialize(&serialized);
-        if let Message::SshSessionOpened {
-            success, error, ..
-        } = deserialized
-        {
+        if let Message::SshSessionOpened { success, error, .. } = deserialized {
             assert!(!success);
             assert_eq!(error, Some("Connection refused".to_string()));
         } else {
@@ -1476,12 +1802,12 @@ mod tests {
 
         let serialized = serialize(&msg);
         let deserialized: Message = deserialize(&serialized);
-        if let Message::TcpConnectResponse {
-            success, error, ..
-        } = deserialized
-        {
+        if let Message::TcpConnectResponse { success, error, .. } = deserialized {
             assert!(!success);
-            assert_eq!(error, Some("DNS resolution failed: unknown host".to_string()));
+            assert_eq!(
+                error,
+                Some("DNS resolution failed: unknown host".to_string())
+            );
         } else {
             panic!("Wrong variant");
         }
@@ -1596,10 +1922,7 @@ mod tests {
 
         let serialized = serialize(&msg);
         let deserialized: Message = deserialize(&serialized);
-        if let Message::SshHostKeyResult {
-            success, error, ..
-        } = deserialized
-        {
+        if let Message::SshHostKeyResult { success, error, .. } = deserialized {
             assert!(!success);
             assert_eq!(error, Some("Connection refused".to_string()));
         } else {
@@ -1713,7 +2036,10 @@ mod tests {
             plaintext, error, ..
         } = deserialized
         {
-            assert_eq!(plaintext.as_ref().map(|s| s.as_str()), Some("decrypted-value"));
+            assert_eq!(
+                plaintext.as_ref().map(|s| s.as_str()),
+                Some("decrypted-value")
+            );
             assert!(error.is_none());
         } else {
             panic!("Wrong variant");
@@ -2047,10 +2373,7 @@ mod tests {
 
         let serialized = serialize(&msg);
         let deserialized: Message = deserialize(&serialized);
-        if let Message::RdpSessionOpened {
-            success, error, ..
-        } = deserialized
-        {
+        if let Message::RdpSessionOpened { success, error, .. } = deserialized {
             assert!(!success);
             assert_eq!(error.as_deref(), Some("Authentication failed"));
         } else {
@@ -2349,11 +2672,7 @@ mod tests {
 
         let serialized = serialize(&msg);
         let deserialized: Message = deserialize(&serialized);
-        if let Message::RdpSetVideoMode {
-            enabled,
-            ..
-        } = deserialized
-        {
+        if let Message::RdpSetVideoMode { enabled, .. } = deserialized {
             assert!(!enabled);
         } else {
             panic!("Wrong variant");
@@ -2496,7 +2815,10 @@ mod tests {
             !debug.contains("super-secret-rdp-pwd"),
             "H-10: RDP Message Debug must NOT contain password"
         );
-        assert!(debug.contains("REDACTED"), "H-10: RDP password must show [REDACTED]");
+        assert!(
+            debug.contains("REDACTED"),
+            "H-10: RDP password must show [REDACTED]"
+        );
     }
 
     // ==================== RDP Recording Message Tests ====================
@@ -2554,7 +2876,13 @@ mod tests {
         };
         let serialized = serialize(&msg);
         let deserialized: Message = deserialize(&serialized);
-        if let Message::RecordingFileRequest { request_id, session_id, relative_path, read_only } = deserialized {
+        if let Message::RecordingFileRequest {
+            request_id,
+            session_id,
+            relative_path,
+            read_only,
+        } = deserialized
+        {
             assert_eq!(request_id, 42);
             assert_eq!(session_id, "rec-123");
             assert_eq!(relative_path, "2026/02/rec-123.mp4");
@@ -2574,7 +2902,13 @@ mod tests {
         };
         let serialized = serialize(&msg);
         let deserialized: Message = deserialize(&serialized);
-        if let Message::RecordingFileResponse { request_id, session_id, success, error } = deserialized {
+        if let Message::RecordingFileResponse {
+            request_id,
+            session_id,
+            success,
+            error,
+        } = deserialized
+        {
             assert_eq!(request_id, 42);
             assert_eq!(session_id, "rec-123");
             assert!(success);
@@ -2624,15 +2958,22 @@ mod tests {
             request_id: 2000,
             success: true,
             error: None,
-            cert_pem: Some("-----BEGIN CERTIFICATE-----\nMIIB...\n-----END CERTIFICATE-----".to_string()),
-            key_pem: Some(SensitiveString::new("-----BEGIN PRIVATE KEY-----\nMIIE...\n-----END PRIVATE KEY-----".to_string())),
+            cert_pem: Some(
+                "-----BEGIN CERTIFICATE-----\nMIIB...\n-----END CERTIFICATE-----".to_string(),
+            ),
+            key_pem: Some(SensitiveString::new(
+                "-----BEGIN PRIVATE KEY-----\nMIIE...\n-----END PRIVATE KEY-----".to_string(),
+            )),
         };
         assert_eq!(msg.request_id(), Some(2000));
 
         let serialized = serialize(&msg);
         let deserialized: Message = deserialize(&serialized);
         if let Message::AcmeRenewResponse {
-            success, cert_pem, key_pem, ..
+            success,
+            cert_pem,
+            key_pem,
+            ..
         } = deserialized
         {
             assert!(success);
@@ -2719,7 +3060,9 @@ mod tests {
         let msg = Message::AcmeCertActivate {
             request_id: 2020,
             cert_pem: "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----".to_string(),
-            key_pem: SensitiveString::new("-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----".to_string()),
+            key_pem: SensitiveString::new(
+                "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----".to_string(),
+            ),
         };
         assert_eq!(msg.request_id(), Some(2020));
 
@@ -2755,7 +3098,9 @@ mod tests {
     fn test_message_tls_cert_provision_roundtrip() {
         let msg = Message::TlsCertProvision {
             cert_pem: "-----BEGIN CERTIFICATE-----\nMIIB...\n-----END CERTIFICATE-----".to_string(),
-            key_pem: SensitiveString::new("-----BEGIN PRIVATE KEY-----\nMIIE...\n-----END PRIVATE KEY-----".to_string()),
+            key_pem: SensitiveString::new(
+                "-----BEGIN PRIVATE KEY-----\nMIIE...\n-----END PRIVATE KEY-----".to_string(),
+            ),
         };
         assert_eq!(msg.request_id(), None);
 
@@ -2856,7 +3201,10 @@ mod tests {
     fn test_sensitive_string_debug_redacts() {
         let secret = SensitiveString::new("my-password".to_string());
         let debug = format!("{:?}", secret);
-        assert_eq!(debug, "[REDACTED]", "SensitiveString Debug must show [REDACTED]");
+        assert_eq!(
+            debug, "[REDACTED]",
+            "SensitiveString Debug must show [REDACTED]"
+        );
         assert!(
             !debug.contains("my-password"),
             "SensitiveString Debug must NOT contain the actual secret"
@@ -2940,7 +3288,10 @@ mod tests {
             !debug.contains("my-passphrase"),
             "H-10: Message Debug must NOT contain passphrase"
         );
-        assert!(debug.contains("REDACTED"), "H-10: Message Debug must show [REDACTED]");
+        assert!(
+            debug.contains("REDACTED"),
+            "H-10: Message Debug must show [REDACTED]"
+        );
     }
 
     #[test]
@@ -2969,6 +3320,461 @@ mod tests {
                 Some("roundtrip-pwd"),
                 "SensitiveString must survive IPC serialization roundtrip"
             );
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    // ==================== Access Control Message Tests ====================
+
+    #[test]
+    fn test_access_check_result_serialization() {
+        let result = AccessCheckResult {
+            allowed: true,
+            require_mfa: false,
+            require_justification: true,
+            max_session_duration: Some(3600),
+        };
+        let serialized = serialize(&result);
+        let deserialized: AccessCheckResult = deserialize(&serialized);
+        assert!(deserialized.allowed);
+        assert!(!deserialized.require_mfa);
+        assert!(deserialized.require_justification);
+        assert_eq!(deserialized.max_session_duration, Some(3600));
+    }
+
+    #[test]
+    fn test_access_request_check_access() {
+        let req = AccessRequest::CheckAccess {
+            user_id: 1,
+            asset_group_id: 2,
+            protocol: "ssh".to_string(),
+        };
+        let serialized = serialize(&req);
+        let deserialized: AccessRequest = deserialize(&serialized);
+        if let AccessRequest::CheckAccess {
+            user_id,
+            asset_group_id,
+            protocol,
+        } = deserialized
+        {
+            assert_eq!(user_id, 1);
+            assert_eq!(asset_group_id, 2);
+            assert_eq!(protocol, "ssh");
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_access_request_list_accessible_groups() {
+        let req = AccessRequest::ListAccessibleGroups { user_id: 42 };
+        let serialized = serialize(&req);
+        let deserialized: AccessRequest = deserialize(&serialized);
+        if let AccessRequest::ListAccessibleGroups { user_id } = deserialized {
+            assert_eq!(user_id, 42);
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_access_request_create_rule() {
+        let data = AccessRuleData {
+            name: "Test Rule".to_string(),
+            description: Some("desc".to_string()),
+            user_group_id: 1,
+            asset_group_id: 2,
+            allowed_protocols: vec!["ssh".to_string(), "rdp".to_string()],
+            valid_from: None,
+            valid_until: None,
+            require_mfa: true,
+            require_justification: false,
+            max_session_duration: Some(7200),
+            is_active: true,
+            priority: 10,
+        };
+        let req = AccessRequest::CreateAccessRule { data };
+        let serialized = serialize(&req);
+        let deserialized: AccessRequest = deserialize(&serialized);
+        if let AccessRequest::CreateAccessRule { data } = deserialized {
+            assert_eq!(data.name, "Test Rule");
+            assert_eq!(data.allowed_protocols.len(), 2);
+            assert!(data.require_mfa);
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_access_request_all_variants_serialize() {
+        let requests: Vec<AccessRequest> = vec![
+            AccessRequest::CheckAccess {
+                user_id: 1,
+                asset_group_id: 1,
+                protocol: "ssh".to_string(),
+            },
+            AccessRequest::ListAccessibleGroups { user_id: 1 },
+            AccessRequest::CreateAccessRule {
+                data: AccessRuleData {
+                    name: "r".to_string(),
+                    description: None,
+                    user_group_id: 1,
+                    asset_group_id: 1,
+                    allowed_protocols: vec![],
+                    valid_from: None,
+                    valid_until: None,
+                    require_mfa: false,
+                    require_justification: false,
+                    max_session_duration: None,
+                    is_active: true,
+                    priority: 0,
+                },
+            },
+            AccessRequest::GetAccessRule {
+                uuid: "u".to_string(),
+            },
+            AccessRequest::ListAccessRules,
+            AccessRequest::UpdateAccessRule {
+                uuid: "u".to_string(),
+                data: AccessRuleData {
+                    name: "r".to_string(),
+                    description: None,
+                    user_group_id: 1,
+                    asset_group_id: 1,
+                    allowed_protocols: vec![],
+                    valid_from: None,
+                    valid_until: None,
+                    require_mfa: false,
+                    require_justification: false,
+                    max_session_duration: None,
+                    is_active: true,
+                    priority: 0,
+                },
+            },
+            AccessRequest::DeleteAccessRule {
+                uuid: "u".to_string(),
+            },
+            AccessRequest::CreateVaubanGroup {
+                name: "g".to_string(),
+                description: None,
+            },
+            AccessRequest::GetVaubanGroup {
+                uuid: "u".to_string(),
+            },
+            AccessRequest::GetVaubanGroupById { id: 1 },
+            AccessRequest::ListVaubanGroups,
+            AccessRequest::UpdateVaubanGroup {
+                uuid: "u".to_string(),
+                name: "g".to_string(),
+                description: None,
+            },
+            AccessRequest::DeleteVaubanGroup {
+                uuid: "u".to_string(),
+            },
+            AccessRequest::AddGroupMember {
+                group_id: 1,
+                user_id: 1,
+            },
+            AccessRequest::RemoveGroupMember {
+                group_id: 1,
+                user_id: 1,
+            },
+            AccessRequest::ListGroupMembers { group_id: 1 },
+            AccessRequest::ListUserGroups { user_id: 1 },
+            AccessRequest::CreateAssetGroup {
+                name: "ag".to_string(),
+                slug: "ag".to_string(),
+                description: None,
+                color: "#000".to_string(),
+                icon: "server".to_string(),
+            },
+            AccessRequest::GetAssetGroup {
+                uuid: "u".to_string(),
+            },
+            AccessRequest::ListAssetGroups,
+            AccessRequest::UpdateAssetGroup {
+                uuid: "u".to_string(),
+                name: "ag".to_string(),
+                slug: "ag".to_string(),
+                description: None,
+                color: "#000".to_string(),
+                icon: "server".to_string(),
+            },
+            AccessRequest::DeleteAssetGroup {
+                uuid: "u".to_string(),
+            },
+            AccessRequest::GetGroupOptions,
+        ];
+        assert_eq!(requests.len(), 23);
+        for req in requests {
+            let serialized = serialize(&req);
+            let _: AccessRequest = deserialize(&serialized);
+        }
+    }
+
+    #[test]
+    fn test_access_response_all_variants_serialize() {
+        let responses: Vec<AccessResponse> = vec![
+            AccessResponse::AccessChecked(AccessCheckResult {
+                allowed: true,
+                require_mfa: false,
+                require_justification: false,
+                max_session_duration: None,
+            }),
+            AccessResponse::AccessibleGroups(vec![AccessibleGroupEntry {
+                asset_group_id: 1,
+                protocols: vec!["ssh".to_string()],
+            }]),
+            AccessResponse::AccessRule(Ok(AccessRuleInfo {
+                uuid: "u".to_string(),
+                name: "r".to_string(),
+                description: None,
+                user_group_id: 1,
+                user_group_uuid: "ug-uuid".to_string(),
+                user_group_name: "ug".to_string(),
+                asset_group_id: 1,
+                asset_group_uuid: "ag-uuid".to_string(),
+                asset_group_name: "ag".to_string(),
+                allowed_protocols: vec![],
+                valid_from: None,
+                valid_until: None,
+                require_mfa: false,
+                require_justification: false,
+                max_session_duration: None,
+                is_active: true,
+                priority: 0,
+                created_at: "now".to_string(),
+                updated_at: "now".to_string(),
+            })),
+            AccessResponse::AccessRuleList(vec![]),
+            AccessResponse::VaubanGroup(Ok(VaubanGroupInfo {
+                id: 1,
+                uuid: "u".to_string(),
+                name: "g".to_string(),
+                description: None,
+                source: "local".to_string(),
+                external_id: None,
+                created_at: "now".to_string(),
+                updated_at: "now".to_string(),
+                last_synced: None,
+                member_count: 5,
+            })),
+            AccessResponse::VaubanGroupList(vec![]),
+            AccessResponse::MemberList(vec![1, 2, 3]),
+            AccessResponse::UserGroupList(vec![]),
+            AccessResponse::AssetGroup(Ok(AssetGroupInfo {
+                id: 1,
+                uuid: "u".to_string(),
+                name: "ag".to_string(),
+                slug: "ag".to_string(),
+                description: None,
+                color: "#000".to_string(),
+                icon: "server".to_string(),
+                created_at: "now".to_string(),
+                updated_at: "now".to_string(),
+            })),
+            AccessResponse::AssetGroupList(vec![]),
+            AccessResponse::GroupOptions {
+                user_groups: vec![],
+                asset_groups: vec![],
+            },
+            AccessResponse::Ok,
+            AccessResponse::Deleted(Ok(())),
+            AccessResponse::Error("err".to_string()),
+        ];
+        assert_eq!(responses.len(), 14);
+        for resp in responses {
+            let serialized = serialize(&resp);
+            let _: AccessResponse = deserialize(&serialized);
+        }
+    }
+
+    #[test]
+    fn test_message_access_request_roundtrip() {
+        let msg = Message::AccessRequest {
+            request_id: 3000,
+            request: AccessRequest::CheckAccess {
+                user_id: 5,
+                asset_group_id: 10,
+                protocol: "rdp".to_string(),
+            },
+        };
+        assert_eq!(msg.request_id(), Some(3000));
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::AccessRequest {
+            request_id,
+            request,
+        } = deserialized
+        {
+            assert_eq!(request_id, 3000);
+            if let AccessRequest::CheckAccess { user_id, .. } = request {
+                assert_eq!(user_id, 5);
+            } else {
+                panic!("Wrong inner variant");
+            }
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_message_access_response_roundtrip() {
+        let msg = Message::AccessResponse {
+            request_id: 3001,
+            response: AccessResponse::AccessChecked(AccessCheckResult {
+                allowed: true,
+                require_mfa: true,
+                require_justification: false,
+                max_session_duration: Some(1800),
+            }),
+        };
+        assert_eq!(msg.request_id(), Some(3001));
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::AccessResponse {
+            response: AccessResponse::AccessChecked(result),
+            ..
+        } = deserialized
+        {
+            assert!(result.allowed);
+            assert!(result.require_mfa);
+            assert_eq!(result.max_session_duration, Some(1800));
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    // ==================== Admin Command Message Tests ====================
+
+    #[test]
+    fn test_admin_command_create_user() {
+        let cmd = AdminCommand::CreateUser {
+            username: "admin".to_string(),
+            email: "admin@test.com".to_string(),
+            password_hash: "argon2:hash".to_string(),
+            is_superuser: true,
+            is_staff: true,
+        };
+        let serialized = serialize(&cmd);
+        let deserialized: AdminCommand = deserialize(&serialized);
+        if let AdminCommand::CreateUser {
+            username,
+            is_superuser,
+            ..
+        } = deserialized
+        {
+            assert_eq!(username, "admin");
+            assert!(is_superuser);
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_admin_command_all_variants_serialize() {
+        let commands: Vec<AdminCommand> = vec![
+            AdminCommand::CreateUser {
+                username: "u".to_string(),
+                email: "e@e".to_string(),
+                password_hash: "h".to_string(),
+                is_superuser: false,
+                is_staff: false,
+            },
+            AdminCommand::ResetPassword {
+                username: "u".to_string(),
+                password_hash: "h".to_string(),
+            },
+            AdminCommand::ResetMfa {
+                username: "u".to_string(),
+            },
+            AdminCommand::ListUnencryptedSecrets,
+            AdminCommand::UpdateUserMfaSecret {
+                user_id: 1,
+                encrypted_secret: "s".to_string(),
+            },
+            AdminCommand::UpdateAssetConnectionConfig {
+                asset_id: 1,
+                encrypted_config: "c".to_string(),
+            },
+            AdminCommand::SeedUsers { users: vec![] },
+            AdminCommand::SeedAssets { assets: vec![] },
+            AdminCommand::SeedSessions { sessions: vec![] },
+        ];
+        assert_eq!(commands.len(), 9);
+        for cmd in commands {
+            let serialized = serialize(&cmd);
+            let _: AdminCommand = deserialize(&serialized);
+        }
+    }
+
+    #[test]
+    fn test_admin_response_all_variants_serialize() {
+        let responses: Vec<AdminResponse> = vec![
+            AdminResponse::Ok,
+            AdminResponse::Created {
+                uuid: "uuid-123".to_string(),
+            },
+            AdminResponse::UnencryptedSecrets(vec![UnencryptedSecretEntry {
+                entry_type: "mfa".to_string(),
+                id: 1,
+                value: "secret".to_string(),
+            }]),
+            AdminResponse::Error("something failed".to_string()),
+        ];
+        assert_eq!(responses.len(), 4);
+        for resp in responses {
+            let serialized = serialize(&resp);
+            let _: AdminResponse = deserialize(&serialized);
+        }
+    }
+
+    #[test]
+    fn test_message_admin_command_roundtrip() {
+        let msg = Message::AdminCommand {
+            request_id: 4000,
+            command: AdminCommand::ResetPassword {
+                username: "alice".to_string(),
+                password_hash: "argon2:newhash".to_string(),
+            },
+        };
+        assert_eq!(msg.request_id(), Some(4000));
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::AdminCommand {
+            request_id,
+            command,
+        } = deserialized
+        {
+            assert_eq!(request_id, 4000);
+            if let AdminCommand::ResetPassword { username, .. } = command {
+                assert_eq!(username, "alice");
+            } else {
+                panic!("Wrong inner variant");
+            }
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_message_admin_response_roundtrip() {
+        let msg = Message::AdminResponse {
+            request_id: 4001,
+            response: AdminResponse::Created {
+                uuid: "new-uuid".to_string(),
+            },
+        };
+        assert_eq!(msg.request_id(), Some(4001));
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::AdminResponse {
+            response: AdminResponse::Created { uuid },
+            ..
+        } = deserialized
+        {
+            assert_eq!(uuid, "new-uuid");
         } else {
             panic!("Wrong variant");
         }

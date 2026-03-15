@@ -372,9 +372,7 @@ impl AcmeConfig {
         self.resolve_directory_url()?;
 
         if self.eab_kid.is_some() != self.eab_hmac_key.is_some() {
-            return Err(
-                "eab_kid and eab_hmac_key must both be set or both be absent".to_string(),
-            );
+            return Err("eab_kid and eab_hmac_key must both be set or both be absent".to_string());
         }
 
         Ok(())
@@ -640,8 +638,7 @@ impl Config {
         if let Some(ref mut acme) = self.server.tls.acme
             && !acme.account_key_path.is_empty()
         {
-            acme.account_key_path =
-                Self::resolve_path(&workspace_root, &acme.account_key_path);
+            acme.account_key_path = Self::resolve_path(&workspace_root, &acme.account_key_path);
         }
     }
 
@@ -689,7 +686,8 @@ impl Config {
                     e
                 ))
             })?;
-            builder = builder.add_source(config::File::from_str(&contents, config::FileFormat::Toml));
+            builder =
+                builder.add_source(config::File::from_str(&contents, config::FileFormat::Toml));
         } else {
             // Development / Testing: layered config files
             let default_path = config_path.join("default.toml");
@@ -1407,11 +1405,9 @@ mod tests {
             "pre-condition: VAUBAN_SECRET_KEY should be set"
         );
 
-        let config = Config::load_with_environment(
-            test_fixtures::config_dir(),
-            Environment::Testing,
-        )
-        .expect("Config loading should succeed with VAUBAN_SECRET_KEY set");
+        let config =
+            Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing)
+                .expect("Config loading should succeed with VAUBAN_SECRET_KEY set");
 
         // (a) The env var value must have been picked up
         assert_eq!(
@@ -1443,11 +1439,9 @@ mod tests {
             "pre-condition: VAUBAN_SECRET_KEY should not be set"
         );
 
-        let config = Config::load_with_environment(
-            test_fixtures::config_dir(),
-            Environment::Testing,
-        )
-        .expect("Config loading should succeed from TOML alone (no env var)");
+        let config =
+            Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing)
+                .expect("Config loading should succeed from TOML alone (no env var)");
 
         // The secret_key from testing.toml must be present
         assert_eq!(
@@ -1467,11 +1461,9 @@ mod tests {
             std::env::set_var("VAUBAN_SECRET_KEY", env_secret);
         }
 
-        let config = Config::load_with_environment(
-            test_fixtures::config_dir(),
-            Environment::Testing,
-        )
-        .expect("Config loading should succeed with env var override");
+        let config =
+            Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing)
+                .expect("Config loading should succeed with env var override");
 
         assert_eq!(
             config.secret_key.expose_secret(),

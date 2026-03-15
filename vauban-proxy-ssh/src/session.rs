@@ -2,8 +2,8 @@
 
 use crate::error::{SessionError, SessionResult};
 use russh::client::{self, Handle};
-use russh::{Channel, ChannelId, ChannelMsg, Disconnect, Preferred};
 use russh::keys::decode_secret_key;
+use russh::{Channel, ChannelId, ChannelMsg, Disconnect, Preferred};
 use secrecy::{ExposeSecret, SecretString};
 use std::borrow::Cow;
 use std::os::unix::io::{FromRawFd, IntoRawFd, OwnedFd};
@@ -85,15 +85,12 @@ pub enum SshCredential {
 impl std::fmt::Debug for SshCredential {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SshCredential::Password(_) => {
-                f.debug_tuple("Password").field(&"[REDACTED]").finish()
-            }
-            SshCredential::PrivateKey { .. } => {
-                f.debug_struct("PrivateKey")
-                    .field("key_pem", &"[REDACTED]")
-                    .field("passphrase", &"[REDACTED]")
-                    .finish()
-            }
+            SshCredential::Password(_) => f.debug_tuple("Password").field(&"[REDACTED]").finish(),
+            SshCredential::PrivateKey { .. } => f
+                .debug_struct("PrivateKey")
+                .field("key_pem", &"[REDACTED]")
+                .field("passphrase", &"[REDACTED]")
+                .finish(),
         }
     }
 }
@@ -165,25 +162,24 @@ impl SshSession {
         let ssh_config = make_ssh_config();
 
         // Create handler for SSH events (with host key verification)
-        let handler = SshHandler::new(
-            config.session_id.clone(),
-            config.expected_host_key.clone(),
-        );
+        let handler = SshHandler::new(config.session_id.clone(), config.expected_host_key.clone());
 
         // Connect to the SSH server - use pre-established FD if provided (sandboxed mode)
         // or open a new connection (non-sandboxed mode, e.g., development on macOS)
         let mut session = if let Some(fd) = config.preconnected_fd {
             // Sandboxed mode: use pre-established connection from supervisor
             debug!(session_id = %config.session_id, "Using pre-established connection from supervisor");
-            
+
             // Convert OwnedFd to tokio TcpStream
             // SAFETY: The FD comes from the supervisor via SCM_RIGHTS and is a valid TCP socket
             let std_stream = unsafe { std::net::TcpStream::from_raw_fd(fd.into_raw_fd()) };
-            std_stream.set_nonblocking(true)
-                .map_err(|e| SessionError::ConnectionFailed(format!("Failed to set non-blocking: {}", e)))?;
-            let stream = TcpStream::from_std(std_stream)
-                .map_err(|e| SessionError::ConnectionFailed(format!("Failed to create tokio stream: {}", e)))?;
-            
+            std_stream.set_nonblocking(true).map_err(|e| {
+                SessionError::ConnectionFailed(format!("Failed to set non-blocking: {}", e))
+            })?;
+            let stream = TcpStream::from_std(std_stream).map_err(|e| {
+                SessionError::ConnectionFailed(format!("Failed to create tokio stream: {}", e))
+            })?;
+
             client::connect_stream(ssh_config, stream, handler)
                 .await
                 .map_err(|e| SessionError::ConnectionFailed(e.to_string()))?
@@ -199,7 +195,7 @@ impl SshSession {
 
         // Authenticate
         use russh::client::AuthResult;
-        
+
         let auth_result = match &config.credential {
             SshCredential::Password(password) => {
                 debug!(session_id = %config.session_id, "Authenticating with password");
@@ -208,7 +204,10 @@ impl SshSession {
                     .await
                     .map_err(|e| SessionError::AuthenticationFailed(e.to_string()))?
             }
-            SshCredential::PrivateKey { key_pem, passphrase } => {
+            SshCredential::PrivateKey {
+                key_pem,
+                passphrase,
+            } => {
                 debug!(session_id = %config.session_id, "Authenticating with private key");
                 let key = decode_secret_key(
                     key_pem.expose_secret(),
@@ -229,10 +228,14 @@ impl SshSession {
 
         match auth_result {
             AuthResult::Success => {}
-            AuthResult::Failure { remaining_methods, partial_success: _ } => {
-                return Err(SessionError::AuthenticationFailed(
-                    format!("Authentication rejected. Remaining methods: {:?}", remaining_methods),
-                ));
+            AuthResult::Failure {
+                remaining_methods,
+                partial_success: _,
+            } => {
+                return Err(SessionError::AuthenticationFailed(format!(
+                    "Authentication rejected. Remaining methods: {:?}",
+                    remaining_methods
+                )));
             }
         }
 
@@ -435,14 +438,10 @@ pub async fn fetch_host_key(
 
     // Helper: direct TCP connect (used as primary path or fallback).
     let direct_connect =
-        |cap: Arc<tokio::sync::Mutex<(Option<String>, Option<String>)>>,
-         h: &str,
-         p: u16| {
+        |cap: Arc<tokio::sync::Mutex<(Option<String>, Option<String>)>>, h: &str, p: u16| {
             let host_owned = h.to_string();
             async move {
-                let handler = HostKeyFetchHandler {
-                    captured: cap,
-                };
+                let handler = HostKeyFetchHandler { captured: cap };
                 let addr = format!("{}:{}", host_owned, p);
                 client::connect(make_ssh_config(), addr, handler).await
             }
@@ -467,8 +466,7 @@ pub async fn fetch_host_key(
             std_stream
                 .set_nonblocking(true)
                 .map_err(|e| format!("set_nonblocking: {}", e))?;
-            let stream = TcpStream::from_std(std_stream)
-                .map_err(|e| format!("from_std: {}", e))?;
+            let stream = TcpStream::from_std(std_stream).map_err(|e| format!("from_std: {}", e))?;
             client::connect_stream(make_ssh_config(), stream, handler)
                 .await
                 .map_err(|e| format!("connect_stream: {}", e))
@@ -519,12 +517,10 @@ pub async fn fetch_host_key(
             info!(fingerprint = %fp, "SSH host key fetched successfully");
             Ok((key.clone(), fp.clone()))
         }
-        _ => Err(SessionError::ConnectionFailed(
-            format!(
-                "Failed to retrieve host key during SSH handshake (pre-connected FD: {})",
-                if used_preconnected { "yes" } else { "no" },
-            ),
-        )),
+        _ => Err(SessionError::ConnectionFailed(format!(
+            "Failed to retrieve host key during SSH handshake (pre-connected FD: {})",
+            if used_preconnected { "yes" } else { "no" },
+        ))),
     }
 }
 
@@ -575,8 +571,7 @@ impl client::Handler for SshHandler {
                     Ok(true)
                 } else {
                     // Compute fingerprints for readable error reporting
-                    let received_fp = server_public_key
-                        .fingerprint(russh::keys::HashAlg::Sha256);
+                    let received_fp = server_public_key.fingerprint(russh::keys::HashAlg::Sha256);
                     error!(
                         session_id = %self.session_id,
                         received_fingerprint = %received_fp,
@@ -618,13 +613,21 @@ mod tests {
     #[test]
     fn test_ssh_credential_private_key() {
         let cred = SshCredential::PrivateKey {
-            key_pem: SecretString::from("-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----".to_string()),
+            key_pem: SecretString::from(
+                "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----".to_string(),
+            ),
             passphrase: Some(SecretString::from("secret".to_string())),
         };
         match &cred {
-            SshCredential::PrivateKey { key_pem, passphrase } => {
+            SshCredential::PrivateKey {
+                key_pem,
+                passphrase,
+            } => {
                 assert!(key_pem.expose_secret().contains("PRIVATE KEY"));
-                assert_eq!(passphrase.as_ref().map(|p| p.expose_secret()), Some("secret"));
+                assert_eq!(
+                    passphrase.as_ref().map(|p| p.expose_secret()),
+                    Some("secret")
+                );
             }
             _ => panic!("Expected private key credential"),
         }
@@ -662,8 +665,14 @@ mod tests {
         let debug = format!("{:?}", cred);
         assert!(debug.contains("Password"));
         // H-10: Debug must NOT contain actual secret
-        assert!(!debug.contains("secret"), "H-10: credential debug must be redacted");
-        assert!(debug.contains("REDACTED"), "H-10: credential debug must show [REDACTED]");
+        assert!(
+            !debug.contains("secret"),
+            "H-10: credential debug must be redacted"
+        );
+        assert!(
+            debug.contains("REDACTED"),
+            "H-10: credential debug must show [REDACTED]"
+        );
     }
 
     // ==================== SessionConfig Tests ====================
@@ -806,10 +815,7 @@ mod tests {
 
         // Must NOT contain the old unconditional Ok(true) accepting all keys.
         // (We split the needle so this test itself does not produce a false match.)
-        let old_todo = format!(
-            "// {}: Verify against known_hosts database",
-            "TODO"
-        );
+        let old_todo = format!("// {}: Verify against known_hosts database", "TODO");
         assert!(
             // Count occurrences: the only match should be this test itself if any
             source.matches(&old_todo).count() == 0,

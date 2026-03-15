@@ -2,6 +2,37 @@ use crate::templates::base::{FlashMessage, UserContext, VaubanConfig};
 /// VAUBAN Web - Access list template.
 use askama::Template;
 
+/// Access rule item for the list view.
+#[derive(Debug, Clone)]
+pub struct AccessRuleListItem {
+    pub uuid: String,
+    pub name: String,
+    pub user_group_name: String,
+    pub asset_group_name: String,
+    pub allowed_protocols: Vec<String>,
+    pub is_active: bool,
+    pub require_mfa: bool,
+    pub require_justification: bool,
+}
+
+impl AccessRuleListItem {
+    pub fn status_class(&self) -> &str {
+        if self.is_active {
+            "bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300"
+        } else {
+            "bg-red-100 text-red-800 dark:bg-red-900/50 dark:text-red-300"
+        }
+    }
+
+    pub fn protocols_display(&self) -> String {
+        self.allowed_protocols
+            .iter()
+            .map(|p| p.to_uppercase())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
 #[derive(Template)]
 #[template(path = "assets/access_list.html")]
 pub struct AccessListTemplate {
@@ -13,6 +44,7 @@ pub struct AccessListTemplate {
     pub sidebar_content:
         Option<crate::templates::partials::sidebar_content::SidebarContentTemplate>,
     pub header_user: Option<crate::templates::base::UserContext>,
+    pub rules: Vec<AccessRuleListItem>,
 }
 
 #[cfg(test)]
@@ -37,6 +69,7 @@ mod tests {
             language_code: "en".to_string(),
             sidebar_content: None,
             header_user: None,
+            rules: Vec::new(),
         };
         assert_eq!(template.title, "Access List");
     }
@@ -51,8 +84,45 @@ mod tests {
             language_code: "en".to_string(),
             sidebar_content: None,
             header_user: None,
+            rules: Vec::new(),
         };
         let result = template.render();
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_access_rule_list_item_status_class() {
+        let active = AccessRuleListItem {
+            uuid: "u".to_string(),
+            name: "r".to_string(),
+            user_group_name: "g".to_string(),
+            asset_group_name: "a".to_string(),
+            allowed_protocols: vec!["ssh".to_string()],
+            is_active: true,
+            require_mfa: false,
+            require_justification: false,
+        };
+        assert!(active.status_class().contains("green"));
+
+        let inactive = AccessRuleListItem {
+            is_active: false,
+            ..active.clone()
+        };
+        assert!(inactive.status_class().contains("red"));
+    }
+
+    #[test]
+    fn test_protocols_display() {
+        let item = AccessRuleListItem {
+            uuid: "u".to_string(),
+            name: "r".to_string(),
+            user_group_name: "g".to_string(),
+            asset_group_name: "a".to_string(),
+            allowed_protocols: vec!["ssh".to_string(), "rdp".to_string()],
+            is_active: true,
+            require_mfa: false,
+            require_justification: false,
+        };
+        assert_eq!(item.protocols_display(), "SSH, RDP");
     }
 }

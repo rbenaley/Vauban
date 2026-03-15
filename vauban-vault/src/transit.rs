@@ -422,8 +422,7 @@ mod tests {
         let current_code = totp.generate_current().unwrap();
 
         // Verify via vault handler
-        let verify_resp =
-            handle_mfa_verify(&keyrings, 3, &encrypted_secret, &current_code);
+        let verify_resp = handle_mfa_verify(&keyrings, 3, &encrypted_secret, &current_code);
         match verify_resp {
             Message::VaultMfaVerifyResponse {
                 valid: true,
@@ -525,10 +524,7 @@ mod tests {
                     e
                 );
             }
-            other => panic!(
-                "Expected error for plaintext secret, got: {:?}",
-                other
-            ),
+            other => panic!("Expected error for plaintext secret, got: {:?}", other),
         }
     }
 
@@ -550,10 +546,7 @@ mod tests {
                     e
                 );
             }
-            other => panic!(
-                "Expected error for plaintext secret, got: {:?}",
-                other
-            ),
+            other => panic!("Expected error for plaintext secret, got: {:?}", other),
         }
     }
 

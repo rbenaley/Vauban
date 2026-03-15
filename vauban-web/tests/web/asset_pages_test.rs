@@ -493,7 +493,10 @@ async fn test_ssh_connect_with_username_override() {
             header::COOKIE,
             format!("access_token={}; __vauban_csrf={}", admin.token, csrf_token),
         )
-        .form(&[("csrf_token", csrf_token.as_str()), ("username", "custom_admin")])
+        .form(&[
+            ("csrf_token", csrf_token.as_str()),
+            ("username", "custom_admin"),
+        ])
         .await;
 
     // Assert: Should return JSON response (success depends on SSH proxy)

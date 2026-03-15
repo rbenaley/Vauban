@@ -20,7 +20,7 @@ flowchart TD
 
     subgraph CoreServices["🦀 RUST CORE SERVICES"]
         direction LR
-        RBAC["<b>vauban-rbac</b><br/>─────────────<br/>• Casbin Engine<br/>• Policy Decision<br/>• Auth Cache"]
+        Access["<b>vauban-access</b><br/>─────────────<br/>• Casbin Engine<br/>• Policy Decision<br/>• Auth Cache"]
         Vault["<b>vauban-vault</b><br/>─────────────<br/>• Secrets Mgmt<br/>• Key Rotation<br/>• HSM Integration"]
         Audit["<b>vauban-audit</b><br/>─────────────<br/>• WORM Storage<br/>• Session Replay<br/>• Real-time Alerts"]
     end
@@ -65,22 +65,22 @@ flowchart TD
 
     %% Web layer connections (IPC via Unix pipes)
     Web <-->|"IPC"| Auth
-    Web <-->|"IPC"| RBAC
+    Web <-->|"IPC"| Access
     Web --> PG
     Web --> Valkey
 
     %% Auth connections
-    Auth <-->|"IPC"| RBAC
+    Auth <-->|"IPC"| Access
     Auth --> PG
     Auth --> Valkey
 
     %% Proxy connections (IPC via Unix pipes)
-    ProxySSH <-->|"IPC"| RBAC
+    ProxySSH <-->|"IPC"| Access
     ProxySSH <-->|"IPC"| Vault
     ProxySSH -->|"Events"| RobustMQ
     ProxySSH --> Targets
 
-    ProxyRDP <-->|"IPC"| RBAC
+    ProxyRDP <-->|"IPC"| Access
     ProxyRDP <-->|"IPC"| Vault
     ProxyRDP -->|"Events"| RobustMQ
     ProxyRDP --> WindowsServers
@@ -94,9 +94,9 @@ flowchart TD
     Audit --> S3
     Audit --> PG
 
-    %% RBAC data
-    RBAC --> PG
-    RBAC --> Valkey
+    %% Access data
+    Access --> PG
+    Access --> Valkey
 
     %% Styling
     classDef rustWeb fill:#0d6efd,stroke:#0a58ca,color:#fff
@@ -107,7 +107,7 @@ flowchart TD
     classDef messaging fill:#17a2b8,stroke:#138496,color:#fff
 
     class Web,Auth rustWeb
-    class RBAC,ProxySSH,ProxyRDP,Vault,Audit rust
+    class Access,ProxySSH,ProxyRDP,Vault,Audit rust
     class PG,Valkey,S3,HVault,StepCA infra
     class Browser,SSHClient,RDPClient client
     class LinuxServers,WindowsServers,NetworkDevices target

@@ -107,24 +107,6 @@ pub async fn connect_ssh(
         }
     };
 
-    // Get SSH proxy client
-    let proxy_client = match &state.ssh_proxy {
-        Some(client) => client.clone(),
-        None => {
-            let msg = "SSH proxy not available";
-            if is_htmx {
-                return htmx_error_response(msg);
-            }
-            return Json(ConnectSshResponse {
-                success: false,
-                session_id: None,
-                redirect_url: None,
-                error: Some(msg.to_string()),
-            })
-            .into_response();
-        }
-    };
-
     // Fetch asset from database
     let mut conn = match state.db_pool.get().await {
         Ok(conn) => conn,
@@ -240,6 +222,50 @@ pub async fn connect_ssh(
                 })
                 .into_response();
             }
+        }
+    };
+
+    // Access rule enforcement: non-admin users must have a matching access rule
+    if !auth_user.is_superuser && !auth_user.is_staff {
+        let access_result = crate::services::access::can_access_asset(
+            state.access_client.as_ref(),
+            &mut conn,
+            user_id,
+            asset.id,
+            "ssh",
+        )
+        .await
+        .unwrap_or_else(|_| crate::services::access::AccessCheckResult::denied());
+        if !access_result.allowed {
+            let msg = "No access rule grants you access to this asset";
+            if is_htmx {
+                return htmx_error_response(msg);
+            }
+            return Json(ConnectSshResponse {
+                success: false,
+                session_id: None,
+                redirect_url: None,
+                error: Some(msg.to_string()),
+            })
+            .into_response();
+        }
+    }
+
+    // Get SSH proxy client (checked after access rules to avoid leaking proxy state)
+    let proxy_client = match &state.ssh_proxy {
+        Some(client) => client.clone(),
+        None => {
+            let msg = "SSH proxy not available";
+            if is_htmx {
+                return htmx_error_response(msg);
+            }
+            return Json(ConnectSshResponse {
+                success: false,
+                session_id: None,
+                redirect_url: None,
+                error: Some(msg.to_string()),
+            })
+            .into_response();
         }
     };
 
@@ -380,10 +406,12 @@ pub async fn connect_ssh(
     {
         use crate::models::session::{NewProxySession, SessionType};
         // SAFETY: "0.0.0.0/0" is a valid CIDR; if parse() somehow fails,
-    // fall back to the equivalent IpNetwork constructed from Ipv4Addr.
-    let client_ip: ipnetwork::IpNetwork = "0.0.0.0/0".parse().unwrap_or_else(
-        |_| ipnetwork::IpNetwork::V4(ipnetwork::Ipv4Network::from(std::net::Ipv4Addr::UNSPECIFIED)),
-    );
+        // fall back to the equivalent IpNetwork constructed from Ipv4Addr.
+        let client_ip: ipnetwork::IpNetwork = "0.0.0.0/0".parse().unwrap_or_else(|_| {
+            ipnetwork::IpNetwork::V4(ipnetwork::Ipv4Network::from(
+                std::net::Ipv4Addr::UNSPECIFIED,
+            ))
+        });
         let new_session = NewProxySession {
             uuid: session_uuid,
             user_id,
@@ -531,7 +559,9 @@ pub async fn connect_ssh(
                 })
                 .into_response()
             } else {
-                let msg = response.error.unwrap_or_else(|| "Connection failed".to_string());
+                let msg = response
+                    .error
+                    .unwrap_or_else(|| "Connection failed".to_string());
 
                 // Detect host key mismatch errors and persist the
                 // mismatch flag in connection_config so that the asset
@@ -546,12 +576,11 @@ pub async fn connect_ssh(
                     );
                     let mut config = asset.connection_config.clone();
                     config["ssh_host_key_mismatch"] = serde_json::Value::Bool(true);
-                    if let Err(db_err) = diesel::update(
-                        dsl::assets.filter(dsl::uuid.eq(asset_uuid)),
-                    )
-                    .set(dsl::connection_config.eq(&config))
-                    .execute(&mut conn)
-                    .await
+                    if let Err(db_err) =
+                        diesel::update(dsl::assets.filter(dsl::uuid.eq(asset_uuid)))
+                            .set(dsl::connection_config.eq(&config))
+                            .execute(&mut conn)
+                            .await
                     {
                         tracing::error!(
                             asset_uuid = %asset_uuid,
@@ -593,12 +622,10 @@ pub async fn connect_ssh(
                 );
                 let mut config = asset.connection_config.clone();
                 config["ssh_host_key_mismatch"] = serde_json::Value::Bool(true);
-                if let Err(db_err) = diesel::update(
-                    dsl::assets.filter(dsl::uuid.eq(asset_uuid)),
-                )
-                .set(dsl::connection_config.eq(&config))
-                .execute(&mut conn)
-                .await
+                if let Err(db_err) = diesel::update(dsl::assets.filter(dsl::uuid.eq(asset_uuid)))
+                    .set(dsl::connection_config.eq(&config))
+                    .execute(&mut conn)
+                    .await
                 {
                     tracing::error!(
                         asset_uuid = %asset_uuid,
@@ -709,21 +736,20 @@ pub async fn fetch_ssh_host_key(
     // In sandboxed mode (Capsicum), the supervisor brokers the TCP
     // connection and passes the FD to the SSH proxy via SCM_RIGHTS.
     let supervisor_ref = state.supervisor.as_deref();
-    let (host_key, fingerprint) =
-        match proxy_client
-            .fetch_host_key(&asset.hostname, asset.port as u16, supervisor_ref)
-            .await
-        {
-            Ok(result) => result,
-            Err(e) => {
-                tracing::error!(
-                    asset_uuid = %asset_uuid,
-                    error = %e,
-                    "Failed to fetch SSH host key"
-                );
-                return htmx_error_response(&format!("Failed to fetch host key: {}", e));
-            }
-        };
+    let (host_key, fingerprint) = match proxy_client
+        .fetch_host_key(&asset.hostname, asset.port as u16, supervisor_ref)
+        .await
+    {
+        Ok(result) => result,
+        Err(e) => {
+            tracing::error!(
+                asset_uuid = %asset_uuid,
+                error = %e,
+                "Failed to fetch SSH host key"
+            );
+            return htmx_error_response(&format!("Failed to fetch host key: {}", e));
+        }
+    };
 
     // Detect host key change: if a key was previously stored and the
     // newly fetched key differs, warn the user unless they explicitly
@@ -756,7 +782,9 @@ pub async fn fetch_ssh_host_key(
     config["ssh_host_key"] = serde_json::Value::String(host_key.clone());
     config["ssh_host_key_fingerprint"] = serde_json::Value::String(fingerprint.clone());
     // Remove mismatch flag if it was set by a failed connection attempt
-    config.as_object_mut().map(|m| m.remove("ssh_host_key_mismatch"));
+    config
+        .as_object_mut()
+        .map(|m| m.remove("ssh_host_key_mismatch"));
 
     use chrono::Utc;
     if let Err(e) = diesel::update(dsl::assets.filter(dsl::uuid.eq(asset_uuid)))
@@ -876,9 +904,10 @@ pub async fn verify_ssh_host_key(
     // explicitly click Refresh to re-check.
     if stored_mismatch {
         let fp = stored_fingerprint.as_deref().unwrap_or("unknown");
-        let html = include_str!("../../../templates/assets/_ssh_host_key_stored_mismatch_fragment.html")
-            .replace("__FINGERPRINT__", fp)
-            .replace("__ASSET_UUID__", &uuid_str);
+        let html =
+            include_str!("../../../templates/assets/_ssh_host_key_stored_mismatch_fragment.html")
+                .replace("__FINGERPRINT__", fp)
+                .replace("__ASSET_UUID__", &uuid_str);
         return axum::response::Html(html).into_response();
     }
 
@@ -897,7 +926,10 @@ pub async fn verify_ssh_host_key(
     };
 
     let supervisor_ref = state.supervisor.as_deref();
-    match proxy_client.fetch_host_key(&asset.hostname, asset.port as u16, supervisor_ref).await {
+    match proxy_client
+        .fetch_host_key(&asset.hostname, asset.port as u16, supervisor_ref)
+        .await
+    {
         Ok((remote_key, remote_fingerprint)) => {
             let old_key = stored_host_key.as_deref().unwrap_or("");
 
@@ -920,12 +952,10 @@ pub async fn verify_ssh_host_key(
 
                 let mut config = asset.connection_config.clone();
                 config["ssh_host_key_mismatch"] = serde_json::Value::Bool(true);
-                if let Err(db_err) = diesel::update(
-                    dsl::assets.filter(dsl::uuid.eq(asset_uuid)),
-                )
-                .set(dsl::connection_config.eq(&config))
-                .execute(&mut conn)
-                .await
+                if let Err(db_err) = diesel::update(dsl::assets.filter(dsl::uuid.eq(asset_uuid)))
+                    .set(dsl::connection_config.eq(&config))
+                    .execute(&mut conn)
+                    .await
                 {
                     tracing::error!(
                         asset_uuid = %asset_uuid,
@@ -935,10 +965,11 @@ pub async fn verify_ssh_host_key(
                 }
 
                 // Return mismatch fragment with both fingerprints
-                let html = include_str!("../../../templates/assets/_ssh_host_key_mismatch_fragment.html")
-                    .replace("__OLD_FINGERPRINT__", old_fp)
-                    .replace("__NEW_FINGERPRINT__", &remote_fingerprint)
-                    .replace("__ASSET_UUID__", &uuid_str);
+                let html =
+                    include_str!("../../../templates/assets/_ssh_host_key_mismatch_fragment.html")
+                        .replace("__OLD_FINGERPRINT__", old_fp)
+                        .replace("__NEW_FINGERPRINT__", &remote_fingerprint)
+                        .replace("__ASSET_UUID__", &uuid_str);
                 axum::response::Html(html).into_response()
             }
         }
@@ -982,10 +1013,12 @@ pub async fn terminal_page(
     let user = Some(user_context_from_auth(&auth_user));
 
     // Build base template with sidebar
-    let base = BaseTemplate::new("SSH Terminal".to_string(), user.clone())
-        .with_current_path("/assets");
+    let base =
+        BaseTemplate::new("SSH Terminal".to_string(), user.clone()).with_current_path("/assets");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base)
+            .await
+            .into_fields();
 
     let template = TerminalTemplate {
         title,

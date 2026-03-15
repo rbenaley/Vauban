@@ -1,8 +1,14 @@
 // L-1: Relax strict clippy lints in test code where unwrap/expect/panic are idiomatic
-#![cfg_attr(test, allow(
-    clippy::unwrap_used, clippy::expect_used, clippy::panic,
-    clippy::print_stdout, clippy::print_stderr
-))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::print_stdout,
+        clippy::print_stderr
+    )
+)]
 
 /// VAUBAN Web - Main application entry point.
 ///
@@ -26,15 +32,20 @@ use tower_http::{
 };
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-// Import for supervisor, vault, and RBAC IPC clients
-use vauban_web::ipc::{AuthIpcClient, RbacIpcClient, SupervisorClient, VaultCryptoClient};
+// Import for supervisor, vault, and Access IPC clients
+use vauban_web::ipc::{AccessIpcClient, AuthIpcClient, SupervisorClient, VaultCryptoClient};
 
 /// Initialize the supervisor client if running under supervisor.
 ///
 /// Returns the supervisor client and a TLS cert receiver if IPC is available, None otherwise.
 /// The client spawns a dedicated thread for IPC communication (heartbeat, TCP brokering).
 /// The `server_handle` is used for M-8/M-10 graceful shutdown.
-fn init_supervisor_client(server_handle: axum_server::Handle<std::net::SocketAddr>) -> (Option<Arc<SupervisorClient>>, Option<std::sync::mpsc::Receiver<vauban_web::ipc::TlsCertData>>) {
+fn init_supervisor_client(
+    server_handle: axum_server::Handle<std::net::SocketAddr>,
+) -> (
+    Option<Arc<SupervisorClient>>,
+    Option<std::sync::mpsc::Receiver<vauban_web::ipc::TlsCertData>>,
+) {
     use std::os::unix::io::RawFd;
 
     let ipc_read_fd: RawFd = match std::env::var("VAUBAN_IPC_READ") {
@@ -64,7 +75,12 @@ fn init_supervisor_client(server_handle: axum_server::Handle<std::net::SocketAdd
         std::env::remove_var("VAUBAN_FD_PASSING_SOCKET");
     }
 
-    let (client, tls_cert_rx) = SupervisorClient::new(ipc_read_fd, ipc_write_fd, fd_passing_socket, Some(server_handle));
+    let (client, tls_cert_rx) = SupervisorClient::new(
+        ipc_read_fd,
+        ipc_write_fd,
+        fd_passing_socket,
+        Some(server_handle),
+    );
     tracing::info!(
         fd_passing = fd_passing_socket.is_some(),
         "Supervisor client initialized (running under supervisor)"
@@ -78,8 +94,9 @@ use vauban_web::{
     config::{Config, LogFormat},
     db::create_pool_sandboxed,
     error::AppError,
-    handlers, middleware,
-    ipc::{ProxySshClient, ProxyRdpClient},
+    handlers,
+    ipc::{ProxyRdpClient, ProxySshClient},
+    middleware,
     services::auth::AuthService,
     services::broadcast::BroadcastService,
     services::rate_limit::RateLimiter,
@@ -169,14 +186,14 @@ fn init_rdp_proxy_client() -> Option<Arc<ProxyRdpClient>> {
     }
 }
 
-/// Initialize the RBAC IPC client if running under supervisor.
+/// Initialize the Access IPC client if running under supervisor.
 ///
-/// Returns Some(Arc<RbacIpcClient>) if VAUBAN_RBAC_IPC_READ and VAUBAN_RBAC_IPC_WRITE
+/// Returns Some(Arc<AccessIpcClient>) if VAUBAN_ACCESS_IPC_READ and VAUBAN_ACCESS_IPC_WRITE
 /// environment variables are set (running under supervisor), None otherwise.
-fn init_rbac_client() -> Option<Arc<RbacIpcClient>> {
+fn init_access_client() -> Option<Arc<AccessIpcClient>> {
     use std::os::unix::io::RawFd;
 
-    let read_fd: RawFd = match std::env::var("VAUBAN_RBAC_IPC_READ") {
+    let read_fd: RawFd = match std::env::var("VAUBAN_ACCESS_IPC_READ") {
         Ok(val) => match val.parse() {
             Ok(fd) => fd,
             Err(_) => return None,
@@ -184,7 +201,7 @@ fn init_rbac_client() -> Option<Arc<RbacIpcClient>> {
         Err(_) => return None,
     };
 
-    let write_fd: RawFd = match std::env::var("VAUBAN_RBAC_IPC_WRITE") {
+    let write_fd: RawFd = match std::env::var("VAUBAN_ACCESS_IPC_WRITE") {
         Ok(val) => match val.parse() {
             Ok(fd) => fd,
             Err(_) => return None,
@@ -194,17 +211,17 @@ fn init_rbac_client() -> Option<Arc<RbacIpcClient>> {
 
     // SAFETY: We are early in startup, before spawning async tasks
     unsafe {
-        std::env::remove_var("VAUBAN_RBAC_IPC_READ");
-        std::env::remove_var("VAUBAN_RBAC_IPC_WRITE");
+        std::env::remove_var("VAUBAN_ACCESS_IPC_READ");
+        std::env::remove_var("VAUBAN_ACCESS_IPC_WRITE");
     }
 
-    match RbacIpcClient::new(read_fd, write_fd) {
+    match AccessIpcClient::new(read_fd, write_fd) {
         Ok(client) => {
-            tracing::info!("RBAC IPC client initialized (running under supervisor)");
+            tracing::info!("Access IPC client initialized (running under supervisor)");
             Some(client)
         }
         Err(e) => {
-            tracing::warn!("Failed to initialize RBAC IPC client: {}", e);
+            tracing::warn!("Failed to initialize Access IPC client: {}", e);
             None
         }
     }
@@ -363,7 +380,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             })?;
             let listener = unsafe {
                 use std::os::unix::io::FromRawFd;
-                std::net::TcpListener::from_raw_fd(std::os::unix::io::IntoRawFd::into_raw_fd(owned_fd))
+                std::net::TcpListener::from_raw_fd(std::os::unix::io::IntoRawFd::into_raw_fd(
+                    owned_fd,
+                ))
             };
             tracing::info!(address = %addr, "Received pre-bound listening socket from supervisor");
             listener
@@ -404,7 +423,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Some(data)
             }
             Err(e) => {
-                tracing::warn!("Failed to receive TLS certificate from supervisor: {e}, falling back to files");
+                tracing::warn!(
+                    "Failed to receive TLS certificate from supervisor: {e}, falling back to files"
+                );
                 None
             }
         }
@@ -415,10 +436,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Keep a copy of the cert PEM for extract_cert_info (needed for ACME scheduling)
     let supervisor_cert_pem = tls_cert_data.as_ref().map(|d| d.cert_pem.clone());
 
-    let (tls_config, acme_resolver) = load_tls_config(&config, tls_cert_data).await.map_err(|e| {
-        eprintln!("Failed to load TLS configuration: {}", e);
-        e
-    })?;
+    let (tls_config, acme_resolver) =
+        load_tls_config(&config, tls_cert_data).await.map_err(|e| {
+            eprintln!("Failed to load TLS configuration: {}", e);
+            e
+        })?;
     tracing::debug!(
         acme_resolver = acme_resolver.is_some(),
         "TLS configuration loaded"
@@ -481,6 +503,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("Failed to create database pool: {}", e);
         e
     })?;
+
+    // Register DB pool and Tokio handle with supervisor for admin command processing.
+    // The supervisor IPC thread (sync) uses block_on(handle) to run async DB ops.
+    if let Some(ref sup) = supervisor_client {
+        sup.set_admin_pool(db_pool.clone());
+        sup.set_tokio_handle(tokio::runtime::Handle::current());
+    }
 
     // 4. Create cache client and validate connection
     let cache = create_cache_client(&config).await.map_err(|e| {
@@ -596,18 +625,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("Vault IPC processing task started");
     }
 
-    // Create RBAC IPC client if running under supervisor
-    let rbac_client = init_rbac_client();
+    // Create Access IPC client if running under supervisor
+    let access_client = init_access_client();
 
-    // Spawn RBAC IPC processing task if client is available
-    if let Some(ref client) = rbac_client {
+    // Spawn Access IPC processing task if client is available
+    if let Some(ref client) = access_client {
         let client_clone = Arc::clone(client);
         tokio::spawn(async move {
             if let Err(e) = client_clone.process_incoming().await {
-                tracing::error!(error = %e, "RBAC IPC processing task failed");
+                tracing::error!(error = %e, "Access IPC processing task failed");
             }
         });
-        tracing::info!("RBAC IPC processing task started");
+        tracing::info!("Access IPC processing task started");
     }
 
     // Create Auth IPC client if running under supervisor
@@ -637,7 +666,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         rdp_proxy,
         supervisor: supervisor_client.clone(),
         vault_client,
-        rbac_client,
+        access_client,
         auth_ipc_client,
     };
 
@@ -676,9 +705,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Ensure non-blocking mode: tokio's into_std() may reset to blocking,
     // and SCM_RIGHTS sockets are blocking by default. axum-server panics
     // if the socket is blocking when registering with the tokio reactor.
-    std_listener.set_nonblocking(true).map_err(|e| {
-        format!("Failed to set listener to non-blocking: {}", e)
-    })?;
+    std_listener
+        .set_nonblocking(true)
+        .map_err(|e| format!("Failed to set listener to non-blocking: {}", e))?;
 
     axum_server::from_tcp_rustls(std_listener, tls_config)?
         .handle(server_handle)
@@ -745,12 +774,7 @@ async fn load_tls_config(
     use rustls_pki_types::{CertificateDer, PrivateKeyDer};
     use vauban_web::acme::resolver::AcmeResolver;
 
-    let acme_enabled = config
-        .server
-        .tls
-        .acme
-        .as_ref()
-        .is_some_and(|a| a.enabled);
+    let acme_enabled = config.server.tls.acme.as_ref().is_some_and(|a| a.enabled);
 
     // Resolve PEM data: either from supervisor IPC or from files.
     // The private key stays inside SensitiveString (zeroized on drop) and is
@@ -822,10 +846,9 @@ async fn load_tls_config(
 
     // Parse PEM data into cert chain and private key
     let cert_pem_bytes = cert_pem_data.as_bytes();
-    let cert_chain: Vec<CertificateDer<'static>> =
-        CertificateDer::pem_slice_iter(cert_pem_bytes)
-            .filter_map(|cert| cert.ok())
-            .collect();
+    let cert_chain: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(cert_pem_bytes)
+        .filter_map(|cert| cert.ok())
+        .collect();
 
     if cert_chain.is_empty() {
         return Err("No valid certificates found in certificate data".into());
@@ -859,8 +882,7 @@ async fn load_tls_config(
         // and TLS-ALPN-01 challenge support.
         let signing_key = rustls::crypto::aws_lc_rs::sign::any_supported_type(&private_key)
             .map_err(|e| format!("Unsupported key type: {}", e))?;
-        let certified_key =
-            Arc::new(rustls::sign::CertifiedKey::new(full_chain, signing_key));
+        let certified_key = Arc::new(rustls::sign::CertifiedKey::new(full_chain, signing_key));
 
         let resolver = Arc::new(AcmeResolver::new(certified_key));
 
@@ -893,10 +915,7 @@ async fn load_tls_config(
             server_config.crypto_provider().cipher_suites.len()
         );
 
-        Ok((
-            RustlsConfig::from_config(Arc::new(server_config)),
-            None,
-        ))
+        Ok((RustlsConfig::from_config(Arc::new(server_config)), None))
     }
 }
 
@@ -944,10 +963,8 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
 
     // Session ownership middleware: verifies the authenticated user owns the
     // session (or is staff/superuser) before allowing WebSocket upgrade.
-    let session_guard = axum::middleware::from_fn_with_state(
-        state.clone(),
-        handlers::websocket::ws_session_guard,
-    );
+    let session_guard =
+        axum::middleware::from_fn_with_state(state.clone(), handlers::websocket::ws_session_guard);
 
     // L-8: ws_connection_limit middleware enforces per-user WebSocket connection limit
     // on ALL WS routes. Every current and future handler added to ws_routes is
@@ -1120,7 +1137,26 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             "/assets/groups/{uuid}/remove-asset",
             post(handlers::web::asset_group_remove_asset),
         )
-        .route("/assets/access", get(handlers::web::access_rules_list))
+        .route(
+            "/assets/access/new",
+            get(handlers::web::access_rule_create_form),
+        )
+        .route(
+            "/assets/access",
+            get(handlers::web::access_rules_list).post(handlers::web::create_access_rule_web),
+        )
+        .route(
+            "/assets/access/{uuid}",
+            get(handlers::web::access_rule_detail),
+        )
+        .route(
+            "/assets/access/{uuid}/edit",
+            get(handlers::web::access_rule_edit).post(handlers::web::update_access_rule_web),
+        )
+        .route(
+            "/assets/access/{uuid}/delete",
+            post(handlers::web::delete_access_rule_web),
+        )
         .route("/assets/search", get(handlers::web::asset_search))
         .route(
             "/assets/{uuid}/edit",
@@ -1162,10 +1198,7 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
         )
         .route("/sessions/active", get(handlers::web::active_sessions))
         // SSH connection endpoints
-        .route(
-            "/assets/{uuid}/connect",
-            post(handlers::web::connect_ssh),
-        )
+        .route("/assets/{uuid}/connect", post(handlers::web::connect_ssh))
         // SSH host key management (H-9)
         .route(
             "/assets/{uuid}/fetch-host-key",
@@ -1184,10 +1217,7 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             "/assets/{uuid}/connect-rdp",
             post(handlers::web::connect_rdp),
         )
-        .route(
-            "/sessions/rdp/{session_id}",
-            get(handlers::web::rdp_page),
-        );
+        .route("/sessions/rdp/{session_id}", get(handlers::web::rdp_page));
 
     // ==========================================================================
     // API ROUTES - Conditionally active based on config.api.enabled
@@ -1247,10 +1277,9 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             // L-2: DELETE stub returns 501 Not Implemented (not 200 OK)
             .route(
                 "/api/v1/sessions/{uuid}",
-                get(handlers::api::get_session)
-                    .delete(|| async {
-                        (axum::http::StatusCode::NOT_IMPLEMENTED, "Not implemented")
-                    }),
+                get(handlers::api::get_session).delete(|| async {
+                    (axum::http::StatusCode::NOT_IMPLEMENTED, "Not implemented")
+                }),
             )
             .route(
                 "/api/v1/sessions/{id}/terminate",
@@ -1260,6 +1289,17 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             .route(
                 "/api/v1/groups/{uuid}/members",
                 get(handlers::api::list_group_members),
+            )
+            // Access rules API
+            .route(
+                "/api/v1/access-rules",
+                get(handlers::api::list_access_rules).post(handlers::api::create_access_rule),
+            )
+            .route(
+                "/api/v1/access-rules/{uuid}",
+                get(handlers::api::get_access_rule)
+                    .put(handlers::api::update_access_rule)
+                    .delete(handlers::api::delete_access_rule),
             )
     } else {
         tracing::info!("API routes disabled by configuration");
@@ -1304,14 +1344,13 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
     let ws_app = ws_routes.layer(common_layers.clone());
 
     // Web and API routes - WITH 30s timeout for regular HTTP requests
-    let http_app = web_routes
-        .merge(api_routes)
-        .layer(
-            common_layers.layer(TimeoutLayer::with_status_code(
+    let http_app =
+        web_routes
+            .merge(api_routes)
+            .layer(common_layers.layer(TimeoutLayer::with_status_code(
                 axum::http::StatusCode::REQUEST_TIMEOUT,
                 std::time::Duration::from_secs(30),
-            )),
-        );
+            )));
 
     // Merge all routes
     let app = ws_app
@@ -1386,8 +1425,8 @@ async fn serve_static(
         return Err(axum::http::StatusCode::FORBIDDEN);
     }
 
-    let asset = vauban_web::static_assets::lookup(&path)
-        .ok_or(axum::http::StatusCode::NOT_FOUND)?;
+    let asset =
+        vauban_web::static_assets::lookup(&path).ok_or(axum::http::StatusCode::NOT_FOUND)?;
 
     let etag = asset.etag();
 
@@ -1404,7 +1443,10 @@ async fn serve_static(
     Response::builder()
         .status(axum::http::StatusCode::OK)
         .header(header::CONTENT_TYPE, asset.content_type)
-        .header(header::CACHE_CONTROL, "public, max-age=300, must-revalidate")
+        .header(
+            header::CACHE_CONTROL,
+            "public, max-age=300, must-revalidate",
+        )
         .header(header::ETAG, &etag)
         .body(Body::from(asset.content))
         .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)
@@ -1516,7 +1558,10 @@ mod tests {
             response.headers().get("content-type").unwrap(),
             "application/javascript; charset=utf-8"
         );
-        assert!(response.headers().get("etag").is_some(), "Must include ETag");
+        assert!(
+            response.headers().get("etag").is_some(),
+            "Must include ETag"
+        );
     }
 
     #[tokio::test]
@@ -1531,7 +1576,10 @@ mod tests {
             response.headers().get("content-type").unwrap(),
             "text/css; charset=utf-8"
         );
-        assert!(response.headers().get("etag").is_some(), "Must include ETag");
+        assert!(
+            response.headers().get("etag").is_some(),
+            "Must include ETag"
+        );
     }
 
     #[tokio::test]

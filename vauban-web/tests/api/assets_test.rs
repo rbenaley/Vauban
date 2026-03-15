@@ -738,10 +738,7 @@ async fn test_ssh_host_key_status_no_key() {
 
     let response = app
         .server
-        .get(&format!(
-            "/api/v1/assets/{}/ssh-host-key",
-            asset.asset.uuid
-        ))
+        .get(&format!("/api/v1/assets/{}/ssh-host-key", asset.asset.uuid))
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .await;
 
@@ -785,10 +782,7 @@ async fn test_ssh_host_key_status_verified() {
 
     let response = app
         .server
-        .get(&format!(
-            "/api/v1/assets/{}/ssh-host-key",
-            asset.asset.uuid
-        ))
+        .get(&format!("/api/v1/assets/{}/ssh-host-key", asset.asset.uuid))
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .await;
 
@@ -839,10 +833,7 @@ async fn test_ssh_host_key_status_mismatch() {
 
     let response = app
         .server
-        .get(&format!(
-            "/api/v1/assets/{}/ssh-host-key",
-            asset.asset.uuid
-        ))
+        .get(&format!("/api/v1/assets/{}/ssh-host-key", asset.asset.uuid))
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .await;
 
@@ -903,10 +894,7 @@ async fn test_ssh_host_key_status_requires_auth() {
 
     let response = app
         .server
-        .get(&format!(
-            "/api/v1/assets/{}/ssh-host-key",
-            asset.asset.uuid
-        ))
+        .get(&format!("/api/v1/assets/{}/ssh-host-key", asset.asset.uuid))
         .await;
 
     assert_status(&response, 401);
@@ -970,10 +958,15 @@ async fn test_get_asset_exposes_mismatch_in_connection_config() {
     assert_status(&response, 200);
     let json: serde_json::Value = response.json();
     let config = json.get("connection_config");
-    assert!(config.is_some(), "Response should include connection_config");
+    assert!(
+        config.is_some(),
+        "Response should include connection_config"
+    );
     let config = config.unwrap();
     assert_eq!(
-        config.get("ssh_host_key_mismatch").and_then(|v| v.as_bool()),
+        config
+            .get("ssh_host_key_mismatch")
+            .and_then(|v| v.as_bool()),
         Some(true),
         "connection_config should contain ssh_host_key_mismatch = true"
     );
@@ -1016,10 +1009,7 @@ async fn test_mismatch_flag_cleared_after_update() {
     // Verify mismatch state via API
     let response = app
         .server
-        .get(&format!(
-            "/api/v1/assets/{}/ssh-host-key",
-            asset.asset.uuid
-        ))
+        .get(&format!("/api/v1/assets/{}/ssh-host-key", asset.asset.uuid))
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .await;
     assert_status(&response, 200);
@@ -1044,10 +1034,7 @@ async fn test_mismatch_flag_cleared_after_update() {
     // Verify it's now "verified"
     let response = app
         .server
-        .get(&format!(
-            "/api/v1/assets/{}/ssh-host-key",
-            asset.asset.uuid
-        ))
+        .get(&format!("/api/v1/assets/{}/ssh-host-key", asset.asset.uuid))
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .await;
     assert_status(&response, 200);

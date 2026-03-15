@@ -34,7 +34,7 @@ pub struct SupervisorConfig {
     pub services: HashMap<String, ServiceConfig>,
     /// RBAC configuration (Casbin model and policy paths).
     #[serde(default)]
-    pub rbac: RbacConfig,
+    pub access: AccessConfig,
     /// Auth service configuration (Argon2id parameters).
     #[serde(default)]
     pub auth: AuthConfig,
@@ -44,15 +44,37 @@ pub struct SupervisorConfig {
     /// Session recording configuration.
     #[serde(default)]
     pub recording: RecordingConfig,
+    /// Database configuration (shared URL for services that need DB access).
+    #[serde(default)]
+    pub database: DatabaseConfig,
+}
+
+/// Database configuration for services that require direct DB access.
+#[derive(Debug, Deserialize)]
+pub struct DatabaseConfig {
+    #[serde(default = "default_database_url")]
+    pub url: String,
+}
+
+fn default_database_url() -> String {
+    "postgresql://vauban:vauban@localhost/vauban".to_string()
+}
+
+impl Default for DatabaseConfig {
+    fn default() -> Self {
+        Self {
+            url: default_database_url(),
+        }
+    }
 }
 
 /// RBAC (Casbin) configuration.
 ///
-/// These paths are injected as environment variables into `vauban-rbac`
-/// at spawn time. The RBAC service loads the model and policies before
+/// These paths are injected as environment variables into `vauban-access`
+/// at spawn time. The access service loads the model and policies before
 /// entering the Capsicum sandbox.
 #[derive(Debug, Deserialize)]
-pub struct RbacConfig {
+pub struct AccessConfig {
     #[serde(default = "default_rbac_model_path")]
     pub model_path: String,
     #[serde(default = "default_rbac_policy_path")]
@@ -60,14 +82,14 @@ pub struct RbacConfig {
 }
 
 fn default_rbac_model_path() -> String {
-    "config/rbac/model.conf".to_string()
+    "config/access/model.conf".to_string()
 }
 
 fn default_rbac_policy_path() -> String {
-    "config/rbac/default_policy.csv".to_string()
+    "config/access/default_policy.csv".to_string()
 }
 
-impl Default for RbacConfig {
+impl Default for AccessConfig {
     fn default() -> Self {
         Self {
             model_path: default_rbac_model_path(),
@@ -311,10 +333,10 @@ impl SupervisorConfig {
         let path = path.as_ref();
         let contents = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read config file: {}", path.display()))?;
-        
+
         let config: SupervisorConfig = toml::from_str(&contents)
             .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
-        
+
         Ok(config)
     }
 
@@ -346,7 +368,10 @@ impl SupervisorConfig {
             if config_path.exists() {
                 return Ok(config_path);
             }
-            anyhow::bail!("VAUBAN_CONFIG_DIR points to non-existent directory: {}", path);
+            anyhow::bail!(
+                "VAUBAN_CONFIG_DIR points to non-existent directory: {}",
+                path
+            );
         }
 
         // 2. Check workspace root config/ directory (development)
@@ -399,13 +424,16 @@ impl SupervisorConfig {
             let conf_path = config_dir.join("vauban.conf");
             let contents = std::fs::read_to_string(&conf_path)
                 .with_context(|| format!("Failed to read config file: {}", conf_path.display()))?;
-            builder = builder.add_source(config::File::from_str(&contents, config::FileFormat::Toml));
+            builder =
+                builder.add_source(config::File::from_str(&contents, config::FileFormat::Toml));
         } else {
             let default_path = config_dir.join("default.toml");
             if default_path.exists() {
-                let contents = std::fs::read_to_string(&default_path)
-                    .with_context(|| format!("Failed to read config file: {}", default_path.display()))?;
-                builder = builder.add_source(config::File::from_str(&contents, config::FileFormat::Toml));
+                let contents = std::fs::read_to_string(&default_path).with_context(|| {
+                    format!("Failed to read config file: {}", default_path.display())
+                })?;
+                builder =
+                    builder.add_source(config::File::from_str(&contents, config::FileFormat::Toml));
             }
 
             let env_name = match environment {
@@ -414,9 +442,11 @@ impl SupervisorConfig {
             };
             let env_path = config_dir.join(format!("{}.toml", env_name));
             if env_path.exists() {
-                let contents = std::fs::read_to_string(&env_path)
-                    .with_context(|| format!("Failed to read config file: {}", env_path.display()))?;
-                builder = builder.add_source(config::File::from_str(&contents, config::FileFormat::Toml));
+                let contents = std::fs::read_to_string(&env_path).with_context(|| {
+                    format!("Failed to read config file: {}", env_path.display())
+                })?;
+                builder =
+                    builder.add_source(config::File::from_str(&contents, config::FileFormat::Toml));
             }
         }
 
@@ -456,7 +486,7 @@ impl SupervisorConfig {
     pub fn binary_path(&self, service_key: &str) -> Option<String> {
         let service = self.services.get(service_key)?;
         let path = format!("{}/{}", self.bin_path, service.binary);
-        
+
         // Convert relative paths to absolute
         if path.starts_with("./") || !path.starts_with('/') {
             std::env::current_dir()
@@ -474,12 +504,12 @@ impl SupervisorConfig {
     /// In production mode, uses the configured workdir if set.
     pub fn effective_workdir(&self, service_key: &str) -> Option<String> {
         let service = self.services.get(service_key)?;
-        
+
         // Use explicit workdir if configured (production)
         if let Some(ref workdir) = service.workdir {
             return Some(workdir.clone());
         }
-        
+
         // In development mode, don't change working directory
         // All services run from workspace root where config paths are relative to
         None
@@ -492,14 +522,18 @@ impl SupervisorConfig {
     pub fn service_env_vars(&self, service_key: &str) -> Vec<(String, String)> {
         let mut vars = Vec::new();
         match service_key {
-            "rbac" => {
+            "access" => {
                 vars.push((
-                    "VAUBAN_RBAC_MODEL_PATH".to_string(),
-                    self.rbac.model_path.clone(),
+                    "VAUBAN_ACCESS_MODEL_PATH".to_string(),
+                    self.access.model_path.clone(),
                 ));
                 vars.push((
-                    "VAUBAN_RBAC_POLICY_PATH".to_string(),
-                    self.rbac.policy_path.clone(),
+                    "VAUBAN_ACCESS_POLICY_PATH".to_string(),
+                    self.access.policy_path.clone(),
+                ));
+                vars.push((
+                    "VAUBAN_DATABASE_URL".to_string(),
+                    self.database.url.to_string(),
                 ));
             }
             "proxy_rdp" => {
@@ -550,11 +584,11 @@ impl SupervisorConfig {
         vec![
             "audit",     // No dependencies
             "vault",     // No dependencies
-            "rbac",      // No dependencies
-            "auth",      // Depends on rbac, vault
-            "proxy_ssh", // Depends on rbac, vault, audit
-            "proxy_rdp", // Depends on rbac, vault, audit
-            "web",       // Depends on auth, rbac, audit
+            "access",    // No dependencies
+            "auth",      // Depends on access, vault
+            "proxy_ssh", // Depends on access, vault, audit
+            "proxy_rdp", // Depends on access, vault, audit
+            "web",       // Depends on auth, access, audit
         ]
     }
 }
@@ -576,8 +610,9 @@ mod tests {
     /// Load development configuration from the real config files for tests.
     fn test_config() -> SupervisorConfig {
         let config_dir = test_config_dir();
-        SupervisorConfig::load_from_dir_with_env(&config_dir, Environment::Development)
-            .expect("Failed to load config from config/ directory. Ensure config/default.toml exists.")
+        SupervisorConfig::load_from_dir_with_env(&config_dir, Environment::Development).expect(
+            "Failed to load config from config/ directory. Ensure config/default.toml exists.",
+        )
     }
 
     // ==================== Development Config Tests ====================
@@ -585,7 +620,7 @@ mod tests {
     #[test]
     fn test_development_config() {
         let config = test_config();
-        
+
         assert!(config.environment.is_development());
         assert!(!config.supervisor.privsep);
         assert_eq!(config.services.len(), 7);
@@ -616,10 +651,10 @@ mod tests {
     #[test]
     fn test_development_all_services_present() {
         let config = test_config();
-        
+
         assert!(config.services.contains_key("audit"));
         assert!(config.services.contains_key("vault"));
-        assert!(config.services.contains_key("rbac"));
+        assert!(config.services.contains_key("access"));
         assert!(config.services.contains_key("auth"));
         assert!(config.services.contains_key("proxy_ssh"));
         assert!(config.services.contains_key("proxy_rdp"));
@@ -631,7 +666,7 @@ mod tests {
     #[test]
     fn test_effective_uid_development() {
         let config = test_config();
-        
+
         // In development, effective_uid should return None (don't change)
         assert_eq!(config.effective_uid("audit"), None);
         assert_eq!(config.effective_uid("web"), None);
@@ -640,7 +675,7 @@ mod tests {
     #[test]
     fn test_effective_gid_development() {
         let config = test_config();
-        
+
         // In development, effective_gid should return None (don't change)
         assert_eq!(config.effective_gid("audit"), None);
         assert_eq!(config.effective_gid("web"), None);
@@ -649,7 +684,7 @@ mod tests {
     #[test]
     fn test_effective_uid_unknown_service() {
         let config = test_config();
-        
+
         // Unknown service should return None
         assert_eq!(config.effective_uid("unknown"), None);
     }
@@ -657,7 +692,7 @@ mod tests {
     #[test]
     fn test_effective_gid_unknown_service() {
         let config = test_config();
-        
+
         // Unknown service should return None
         assert_eq!(config.effective_gid("unknown"), None);
     }
@@ -667,31 +702,47 @@ mod tests {
     #[test]
     fn test_binary_path() {
         let config = test_config();
-        
+
         // binary_path returns an absolute path
         let path = config.binary_path("audit");
         assert!(path.is_some());
         let path = path.unwrap();
-        assert!(path.ends_with("target/debug/vauban-audit"), "path was: {}", path);
+        assert!(
+            path.ends_with("target/debug/vauban-audit"),
+            "path was: {}",
+            path
+        );
     }
 
     #[test]
     fn test_binary_path_all_services() {
         let config = test_config();
-        
-        let services = ["audit", "vault", "rbac", "auth", "proxy_ssh", "proxy_rdp", "web"];
+
+        let services = [
+            "audit",
+            "vault",
+            "access",
+            "auth",
+            "proxy_ssh",
+            "proxy_rdp",
+            "web",
+        ];
         for service in services {
             let path = config.binary_path(service);
             assert!(path.is_some(), "binary_path for {} should be Some", service);
             let path = path.unwrap();
-            assert!(path.contains("target/debug/vauban-"), "path {} should contain 'target/debug/vauban-'", path);
+            assert!(
+                path.contains("target/debug/vauban-"),
+                "path {} should contain 'target/debug/vauban-'",
+                path
+            );
         }
     }
 
     #[test]
     fn test_binary_path_unknown_service() {
         let config = test_config();
-        
+
         let path = config.binary_path("nonexistent");
         assert!(path.is_none());
     }
@@ -701,7 +752,7 @@ mod tests {
     #[test]
     fn test_effective_workdir_development() {
         let config = test_config();
-        
+
         // In development, workdir should be None (run from workspace root)
         // This ensures all relative paths in configuration work correctly
         let workdir = config.effective_workdir("audit");
@@ -711,9 +762,17 @@ mod tests {
     #[test]
     fn test_effective_workdir_all_services_development() {
         let config = test_config();
-        
-        let services = ["audit", "vault", "rbac", "auth", "proxy_ssh", "proxy_rdp", "web"];
-        
+
+        let services = [
+            "audit",
+            "vault",
+            "access",
+            "auth",
+            "proxy_ssh",
+            "proxy_rdp",
+            "web",
+        ];
+
         for key in services {
             let workdir = config.effective_workdir(key);
             assert!(
@@ -727,7 +786,7 @@ mod tests {
     #[test]
     fn test_effective_workdir_unknown_service() {
         let config = test_config();
-        
+
         let workdir = config.effective_workdir("nonexistent");
         assert!(workdir.is_none());
     }
@@ -740,7 +799,7 @@ mod tests {
     #[test]
     fn test_development_workdir_none_prevents_path_doubling() {
         let config = test_config();
-        
+
         // Critical: web service must NOT have a workdir in development
         // Otherwise paths like "vauban-web/certs/..." would fail
         let web_workdir = config.effective_workdir("web");
@@ -758,7 +817,7 @@ mod tests {
     fn test_startup_order() {
         let config = test_config();
         let order = config.startup_order();
-        
+
         assert_eq!(order.len(), 7);
         assert_eq!(order[0], "audit");
         assert_eq!(order[6], "web");
@@ -768,21 +827,21 @@ mod tests {
     fn test_startup_order_dependencies() {
         let config = test_config();
         let order = config.startup_order();
-        
+
         // Verify dependency order
         let audit_pos = order.iter().position(|&s| s == "audit").unwrap();
         let vault_pos = order.iter().position(|&s| s == "vault").unwrap();
-        let rbac_pos = order.iter().position(|&s| s == "rbac").unwrap();
+        let access_pos = order.iter().position(|&s| s == "access").unwrap();
         let auth_pos = order.iter().position(|&s| s == "auth").unwrap();
         let web_pos = order.iter().position(|&s| s == "web").unwrap();
-        
-        // Auth depends on rbac and vault, so should start after them
-        assert!(auth_pos > rbac_pos);
+
+        // Auth depends on access and vault, so should start after them
+        assert!(auth_pos > access_pos);
         assert!(auth_pos > vault_pos);
-        
-        // Web depends on auth, rbac, audit
+
+        // Web depends on auth, access, audit
         assert!(web_pos > auth_pos);
-        assert!(web_pos > rbac_pos);
+        assert!(web_pos > access_pos);
         assert!(web_pos > audit_pos);
     }
 
@@ -805,7 +864,7 @@ mod tests {
     #[test]
     fn test_service_config_name() {
         let config = test_config();
-        
+
         let audit = config.services.get("audit").unwrap();
         assert_eq!(audit.name, "vauban-audit");
         assert_eq!(audit.binary, "vauban-audit");
@@ -814,7 +873,7 @@ mod tests {
     #[test]
     fn test_service_config_no_uid_gid_in_development() {
         let config = test_config();
-        
+
         for (_, service) in &config.services {
             assert!(service.uid.is_none());
             assert!(service.gid.is_none());
@@ -826,7 +885,8 @@ mod tests {
     #[test]
     fn test_load_from_config_dir() {
         let config_dir = test_config_dir();
-        let config = SupervisorConfig::load_from_dir_with_env(&config_dir, Environment::Development);
+        let config =
+            SupervisorConfig::load_from_dir_with_env(&config_dir, Environment::Development);
         assert!(config.is_ok(), "Failed to load config: {:?}", config.err());
         let config = config.unwrap();
         assert!(config.environment.is_development());
@@ -841,17 +901,17 @@ mod tests {
     // ==================== RDP Config Tests ====================
 
     #[test]
-    fn test_rbac_config_default() {
-        let rbac = RbacConfig::default();
-        assert_eq!(rbac.model_path, "config/rbac/model.conf");
-        assert_eq!(rbac.policy_path, "config/rbac/default_policy.csv");
+    fn test_access_config_default() {
+        let access = AccessConfig::default();
+        assert_eq!(access.model_path, "config/access/model.conf");
+        assert_eq!(access.policy_path, "config/access/default_policy.csv");
     }
 
     #[test]
-    fn test_rbac_config_loaded_from_toml() {
+    fn test_access_config_loaded_from_toml() {
         let config = test_config();
-        assert_eq!(config.rbac.model_path, "config/rbac/model.conf");
-        assert_eq!(config.rbac.policy_path, "config/rbac/default_policy.csv");
+        assert_eq!(config.access.model_path, "config/access/model.conf");
+        assert_eq!(config.access.policy_path, "config/access/default_policy.csv");
     }
 
     #[test]
@@ -897,7 +957,9 @@ mod tests {
             let vars = config.service_env_vars(key);
             assert!(
                 vars.is_empty(),
-                "service_env_vars for {} should be empty, got {:?}", key, vars
+                "service_env_vars for {} should be empty, got {:?}",
+                key,
+                vars
             );
         }
     }
@@ -913,14 +975,15 @@ mod tests {
     }
 
     #[test]
-    fn test_service_env_vars_rbac() {
+    fn test_service_env_vars_access() {
         let config = test_config();
-        let vars = config.service_env_vars("rbac");
-        assert_eq!(vars.len(), 2);
-        assert_eq!(vars[0].0, "VAUBAN_RBAC_MODEL_PATH");
-        assert_eq!(vars[0].1, "config/rbac/model.conf");
-        assert_eq!(vars[1].0, "VAUBAN_RBAC_POLICY_PATH");
-        assert_eq!(vars[1].1, "config/rbac/default_policy.csv");
+        let vars = config.service_env_vars("access");
+        assert_eq!(vars.len(), 3);
+        assert_eq!(vars[0].0, "VAUBAN_ACCESS_MODEL_PATH");
+        assert_eq!(vars[0].1, "config/access/model.conf");
+        assert_eq!(vars[1].0, "VAUBAN_ACCESS_POLICY_PATH");
+        assert_eq!(vars[1].1, "config/access/default_policy.csv");
+        assert_eq!(vars[2].0, "VAUBAN_DATABASE_URL");
     }
 
     #[test]

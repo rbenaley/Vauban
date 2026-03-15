@@ -1,4 +1,5 @@
 /// VAUBAN Web - Services module.
+pub mod access;
 pub mod auth;
 pub mod broadcast;
 pub mod connections;
@@ -6,6 +7,7 @@ pub mod rate_limit;
 pub mod rbac;
 pub mod vault;
 
+pub use access::*;
 pub use auth::*;
 pub use broadcast::*;
 pub use connections::*;

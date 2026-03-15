@@ -4268,7 +4268,11 @@ async fn test_user_delete_retires_username_and_email() {
         .await;
 
     let status = response.status_code().as_u16();
-    assert!(status == 303 || status == 302, "Expected redirect, got {}", status);
+    assert!(
+        status == 303 || status == 302,
+        "Expected redirect, got {}",
+        status
+    );
 
     let (new_username, new_email, is_deleted): (String, String, bool) = users::table
         .filter(users::id.eq(target_id))
@@ -4281,7 +4285,8 @@ async fn test_user_delete_retires_username_and_email() {
     assert!(
         new_username.starts_with(&original_username),
         "Retired username '{}' must start with original '{}'",
-        new_username, original_username
+        new_username,
+        original_username
     );
     assert!(
         new_username.contains("_deleted_"),
@@ -4291,7 +4296,8 @@ async fn test_user_delete_retires_username_and_email() {
     assert!(
         new_email.starts_with(&original_email),
         "Retired email '{}' must start with original '{}'",
-        new_email, original_email
+        new_email,
+        original_email
     );
     assert!(
         new_email.contains("_deleted_"),
@@ -4398,7 +4404,10 @@ async fn test_user_create_succeeds_after_soft_delete_of_same_username() {
         .optional()
         .unwrap();
 
-    assert!(old_record.is_some(), "Old soft-deleted record must still exist for audit");
+    assert!(
+        old_record.is_some(),
+        "Old soft-deleted record must still exist for audit"
+    );
     let (old_username, old_deleted) = old_record.unwrap();
     assert!(old_deleted, "Old record must remain soft-deleted");
     assert!(
@@ -4508,7 +4517,10 @@ async fn test_user_delete_preserves_record_for_audit() {
             .optional()
             .unwrap();
 
-    assert!(record.is_some(), "Deleted user record must persist for audit trail");
+    assert!(
+        record.is_some(),
+        "Deleted user record must persist for audit trail"
+    );
     let (id, uuid_val, deleted, del_at) = record.unwrap();
     assert_eq!(id, target_id);
     assert_eq!(uuid_val, target_uuid);
@@ -4636,7 +4648,8 @@ async fn test_user_create_delete_create_cycle_works_multiple_times() {
         assert!(
             status == 303 || status == 302,
             "Iteration {}: expected redirect after create, got {}",
-            iteration, status
+            iteration,
+            status
         );
 
         // Find the active user
@@ -4646,7 +4659,10 @@ async fn test_user_create_delete_create_cycle_works_multiple_times() {
             .select((users::id, users::uuid))
             .first(&mut conn)
             .await
-            .expect(&format!("Iteration {}: active user should exist", iteration));
+            .expect(&format!(
+                "Iteration {}: active user should exist",
+                iteration
+            ));
 
         // Soft-delete
         let del_resp = app
@@ -4663,7 +4679,8 @@ async fn test_user_create_delete_create_cycle_works_multiple_times() {
         assert!(
             del_status == 303 || del_status == 302,
             "Iteration {}: expected redirect after delete, got {}",
-            iteration, del_status
+            iteration,
+            del_status
         );
 
         // Verify username was retired
@@ -4677,7 +4694,8 @@ async fn test_user_create_delete_create_cycle_works_multiple_times() {
         assert!(
             retired_name.contains("_deleted_"),
             "Iteration {}: retired username '{}' must contain '_deleted_'",
-            iteration, retired_name
+            iteration,
+            retired_name
         );
 
         // Small delay to ensure different timestamps

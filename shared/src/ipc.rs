@@ -64,7 +64,7 @@ impl IpcChannel {
     /// Both channels have their read file descriptors set to non-blocking mode
     /// to support `try_recv()`.
     pub fn pair() -> Result<(Self, Self)> {
-        use nix::fcntl::{fcntl, FcntlArg, OFlag};
+        use nix::fcntl::{FcntlArg, OFlag, fcntl};
 
         // Create two pipes: one for each direction
         // nix::unistd::pipe() returns (read_fd, write_fd) as OwnedFd
@@ -211,7 +211,7 @@ fn write_all_fd(fd: RawFd, mut buf: &[u8]) -> Result<()> {
     // SAFETY: We borrow the fd for the duration of this function.
     // The caller ensures the fd is valid.
     let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
-    
+
     while !buf.is_empty() {
         match write(borrowed, buf) {
             Ok(0) => return Err(IpcError::ConnectionClosed),
@@ -262,12 +262,16 @@ fn read_exact_fd(fd: RawFd, buf: &mut [u8]) -> Result<()> {
 ///
 /// Works on all Unix platforms (FreeBSD, Linux, macOS).
 pub fn socketpair_for_fd_passing() -> Result<(OwnedFd, OwnedFd)> {
-    use nix::fcntl::{fcntl, FcntlArg, FdFlag};
-    use nix::sys::socket::{socketpair, AddressFamily, SockFlag, SockType};
+    use nix::fcntl::{FcntlArg, FdFlag, fcntl};
+    use nix::sys::socket::{AddressFamily, SockFlag, SockType, socketpair};
 
-    let (sock1, sock2) =
-        socketpair(AddressFamily::Unix, SockType::Stream, None, SockFlag::empty())
-            .map_err(|e| IpcError::Io(e.into()))?;
+    let (sock1, sock2) = socketpair(
+        AddressFamily::Unix,
+        SockType::Stream,
+        None,
+        SockFlag::empty(),
+    )
+    .map_err(|e| IpcError::Io(e.into()))?;
 
     fcntl(&sock1, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC)).map_err(|e| IpcError::Io(e.into()))?;
     fcntl(&sock2, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC)).map_err(|e| IpcError::Io(e.into()))?;
@@ -280,7 +284,7 @@ pub fn socketpair_for_fd_passing() -> Result<(OwnedFd, OwnedFd)> {
 /// SCM_RIGHTS is POSIX and works on FreeBSD, Linux, and macOS.
 /// Used to pass pre-opened file descriptors to sandboxed child processes.
 pub fn send_fd(socket_fd: RawFd, fd_to_send: RawFd) -> Result<()> {
-    use nix::sys::socket::{sendmsg, ControlMessage, MsgFlags};
+    use nix::sys::socket::{ControlMessage, MsgFlags, sendmsg};
 
     let iov = [io::IoSlice::new(b"F")];
     let fds = [fd_to_send];
@@ -296,7 +300,7 @@ pub fn send_fd(socket_fd: RawFd, fd_to_send: RawFd) -> Result<()> {
 ///
 /// Blocks until a file descriptor is available on the socket.
 pub fn recv_fd(socket_fd: RawFd) -> Result<OwnedFd> {
-    use nix::sys::socket::{recvmsg, ControlMessageOwned, MsgFlags};
+    use nix::sys::socket::{ControlMessageOwned, MsgFlags, recvmsg};
 
     let mut buf = [0u8; 1];
     let mut iov = [io::IoSliceMut::new(&mut buf)];
@@ -376,13 +380,13 @@ mod tests {
         let result = IpcChannel::pair();
         assert!(result.is_ok());
         let (parent, child) = result.unwrap();
-        
+
         // Verify FDs are valid (non-negative)
         assert!(parent.read_fd() >= 0);
         assert!(parent.write_fd() >= 0);
         assert!(child.read_fd() >= 0);
         assert!(child.write_fd() >= 0);
-        
+
         // FDs should be different
         assert_ne!(parent.read_fd(), parent.write_fd());
         assert_ne!(child.read_fd(), child.write_fd());
@@ -391,11 +395,11 @@ mod tests {
     #[test]
     fn test_ipc_channel_send_recv_ping() {
         let (parent, child) = IpcChannel::pair().unwrap();
-        
+
         // Parent sends Ping
         let ping = Message::Control(ControlMessage::Ping { seq: 42 });
         parent.send(&ping).unwrap();
-        
+
         // Child receives Ping
         let received: Message = child.recv().unwrap();
         if let Message::Control(ControlMessage::Ping { seq }) = received {
@@ -408,7 +412,7 @@ mod tests {
     #[test]
     fn test_ipc_channel_send_recv_pong() {
         let (parent, child) = IpcChannel::pair().unwrap();
-        
+
         // Child sends Pong
         let stats = ServiceStats {
             uptime_secs: 100,
@@ -419,7 +423,7 @@ mod tests {
         };
         let pong = Message::Control(ControlMessage::Pong { seq: 42, stats });
         child.send(&pong).unwrap();
-        
+
         // Parent receives Pong
         let received: Message = parent.recv().unwrap();
         if let Message::Control(ControlMessage::Pong { seq, stats }) = received {
@@ -434,33 +438,39 @@ mod tests {
     #[test]
     fn test_ipc_channel_bidirectional() {
         let (parent, child) = IpcChannel::pair().unwrap();
-        
+
         // Parent -> Child
         let msg1 = Message::Control(ControlMessage::Ping { seq: 1 });
         parent.send(&msg1).unwrap();
         let recv1: Message = child.recv().unwrap();
-        assert!(matches!(recv1, Message::Control(ControlMessage::Ping { seq: 1 })));
-        
+        assert!(matches!(
+            recv1,
+            Message::Control(ControlMessage::Ping { seq: 1 })
+        ));
+
         // Child -> Parent
-        let msg2 = Message::Control(ControlMessage::Pong { 
-            seq: 1, 
-            stats: ServiceStats::default() 
+        let msg2 = Message::Control(ControlMessage::Pong {
+            seq: 1,
+            stats: ServiceStats::default(),
         });
         child.send(&msg2).unwrap();
         let recv2: Message = parent.recv().unwrap();
-        assert!(matches!(recv2, Message::Control(ControlMessage::Pong { seq: 1, .. })));
+        assert!(matches!(
+            recv2,
+            Message::Control(ControlMessage::Pong { seq: 1, .. })
+        ));
     }
 
     #[test]
     fn test_ipc_channel_multiple_messages() {
         let (parent, child) = IpcChannel::pair().unwrap();
-        
+
         // Send multiple messages
         for i in 0..10 {
             let msg = Message::Control(ControlMessage::Ping { seq: i });
             parent.send(&msg).unwrap();
         }
-        
+
         // Receive all messages
         for i in 0..10 {
             let received: Message = child.recv().unwrap();
@@ -475,7 +485,7 @@ mod tests {
     #[test]
     fn test_ipc_channel_large_message() {
         let (parent, child) = IpcChannel::pair().unwrap();
-        
+
         // Create a message with large data (just under MAX_MESSAGE_SIZE)
         let large_data = vec![0xAB; 8000];
         let msg = Message::SessionRecordingChunk {
@@ -483,10 +493,10 @@ mod tests {
             sequence: 1,
             data: large_data.clone(),
         };
-        
+
         parent.send(&msg).unwrap();
         let received: Message = child.recv().unwrap();
-        
+
         if let Message::SessionRecordingChunk { data, .. } = received {
             assert_eq!(data.len(), 8000);
             assert_eq!(data[0], 0xAB);
@@ -524,7 +534,7 @@ mod tests {
     #[test]
     fn test_poll_readable_timeout() {
         let (parent, _child) = IpcChannel::pair().unwrap();
-        
+
         // Poll with short timeout, nothing to read
         let result = poll_readable(&[parent.read_fd()], 10);
         assert!(result.is_ok());
@@ -535,11 +545,11 @@ mod tests {
     #[test]
     fn test_poll_readable_with_data() {
         let (parent, child) = IpcChannel::pair().unwrap();
-        
+
         // Send data
         let msg = Message::Control(ControlMessage::Ping { seq: 1 });
         parent.send(&msg).unwrap();
-        
+
         // Poll should indicate data available
         let result = poll_readable(&[child.read_fd()], 1000);
         assert!(result.is_ok());
@@ -552,21 +562,21 @@ mod tests {
     fn test_poll_readable_multiple_fds() {
         let (parent1, child1) = IpcChannel::pair().unwrap();
         let (parent2, child2) = IpcChannel::pair().unwrap();
-        
+
         // Send data only to channel 2
         let msg = Message::Control(ControlMessage::Ping { seq: 2 });
         parent2.send(&msg).unwrap();
-        
+
         // Poll both
         let fds = [child1.read_fd(), child2.read_fd()];
         let result = poll_readable(&fds, 100);
         assert!(result.is_ok());
         let ready = result.unwrap();
-        
+
         // Only channel 2 (index 1) should be ready
         assert_eq!(ready.len(), 1);
         assert_eq!(ready[0], 1);
-        
+
         // Prevent unused warning
         drop(parent1);
     }
@@ -586,15 +596,15 @@ mod tests {
         let (parent, child) = IpcChannel::pair().unwrap();
         let parent_read_fd = parent.read_fd();
         let child_write_fd = child.write_fd();
-        
+
         // Drop child channel
         drop(child);
-        
+
         // Parent should still be usable until it tries to recv from closed pipe
         // Just verify we got valid FDs before drop
         assert!(parent_read_fd >= 0);
         assert!(child_write_fd >= 0);
-        
+
         drop(parent);
     }
 
@@ -620,11 +630,11 @@ mod tests {
     #[test]
     fn test_ping_pong_cycle() {
         let (supervisor, service) = IpcChannel::pair().unwrap();
-        
+
         // Supervisor sends Ping
         let ping = Message::Control(ControlMessage::Ping { seq: 100 });
         supervisor.send(&ping).unwrap();
-        
+
         // Service receives and responds with Pong
         let received: Message = service.recv().unwrap();
         if let Message::Control(ControlMessage::Ping { seq }) = received {
@@ -638,7 +648,7 @@ mod tests {
             let pong = Message::Control(ControlMessage::Pong { seq, stats });
             service.send(&pong).unwrap();
         }
-        
+
         // Supervisor receives Pong
         let response: Message = supervisor.recv().unwrap();
         if let Message::Control(ControlMessage::Pong { seq, stats }) = response {
@@ -651,11 +661,11 @@ mod tests {
 
     #[test]
     fn test_auth_request_response_cycle() {
-        use std::net::{IpAddr, Ipv4Addr};
         use crate::messages::AuthResult;
-        
+        use std::net::{IpAddr, Ipv4Addr};
+
         let (web, auth) = IpcChannel::pair().unwrap();
-        
+
         // Web sends auth request
         let request = Message::AuthRequest {
             request_id: 1,
@@ -664,12 +674,17 @@ mod tests {
             source_ip: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)),
         };
         web.send(&request).unwrap();
-        
+
         // Auth receives and processes
         let received: Message = auth.recv().unwrap();
-        if let Message::AuthRequest { request_id, username, .. } = received {
+        if let Message::AuthRequest {
+            request_id,
+            username,
+            ..
+        } = received
+        {
             assert_eq!(username, "alice");
-            
+
             // Auth sends response
             let response = Message::AuthResponse {
                 request_id,
@@ -681,7 +696,7 @@ mod tests {
             };
             auth.send(&response).unwrap();
         }
-        
+
         // Web receives response
         let response: Message = web.recv().unwrap();
         if let Message::AuthResponse { result, .. } = response {

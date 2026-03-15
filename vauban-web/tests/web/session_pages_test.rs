@@ -916,11 +916,13 @@ async fn test_session_filter_by_rdp_type() {
     // Create both SSH and RDP sessions
     let ssh_asset_name = format!("ssh-filter-{}", test_id);
     let ssh_asset_id = create_simple_ssh_asset(&mut conn, &ssh_asset_name, admin_id).await;
-    let _ssh_session = create_test_session(&mut conn, admin_id, ssh_asset_id, "ssh", "completed").await;
+    let _ssh_session =
+        create_test_session(&mut conn, admin_id, ssh_asset_id, "ssh", "completed").await;
 
     let rdp_asset_name = format!("rdp-filter-{}", test_id);
     let rdp_asset_id = create_simple_rdp_asset(&mut conn, &rdp_asset_name, admin_id).await;
-    let _rdp_session = create_test_session(&mut conn, admin_id, rdp_asset_id, "rdp", "completed").await;
+    let _rdp_session =
+        create_test_session(&mut conn, admin_id, rdp_asset_id, "rdp", "completed").await;
 
     let token = app
         .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)

@@ -231,7 +231,7 @@ cargo build --release
 
 ## CLI Utilities
 
-VAUBAN includes several command-line utilities for administration tasks.
+VAUBAN CLI administration is centralized in the supervisor binary.
 All utilities load their database configuration from `config/*.toml` (same as the main application).
 
 ### Create Superuser
@@ -239,7 +239,11 @@ All utilities load their database configuration from `config/*.toml` (same as th
 Create the initial superuser account:
 
 ```bash
-cargo run --bin create_superuser
+# Production (release binary)
+vauban-supervisor create-superuser
+
+# Development (supervisor is default-members)
+cargo run -- create-superuser
 ```
 
 ### Reset Password
@@ -247,7 +251,11 @@ cargo run --bin create_superuser
 Reset a user's password:
 
 ```bash
-cargo run --bin reset_password
+# Production
+vauban-supervisor reset-password <username>
+
+# Development
+cargo run -- reset-password <username>
 ```
 
 ### Reset 2FA
@@ -255,7 +263,11 @@ cargo run --bin reset_password
 Disable two-factor authentication for a user (the only way to disable MFA):
 
 ```bash
-cargo run --bin reset_2FA
+# Production
+vauban-supervisor reset-2fa <username>
+
+# Development
+cargo run -- reset-2fa <username>
 ```
 
 ### Seed Data
@@ -263,7 +275,11 @@ cargo run --bin reset_2FA
 Populate the database with sample data for development:
 
 ```bash
-cargo run --bin seed_data
+# Production
+vauban-supervisor seed-data
+
+# Development
+cargo run -- seed-data
 ```
 
 ### Migrate Secrets
@@ -273,10 +289,14 @@ This tool addresses M-1 (TOTP secrets) and C-2 (SSH credentials stored in plaint
 
 ```bash
 # Preview what would be migrated (no changes made)
-cargo run --bin migrate_secrets -- --dry-run
+vauban-supervisor migrate-secrets --dry-run
+# or in development:
+cargo run -- migrate-secrets --dry-run
 
 # Run the migration
-cargo run --bin migrate_secrets
+vauban-supervisor migrate-secrets
+# or in development:
+cargo run -- migrate-secrets
 ```
 
 **Prerequisites**:
@@ -300,7 +320,7 @@ The `--dry-run` flag is recommended before any production migration.
 
 > **Note**: Encrypt-on-read is also built into the application itself. When a user logs in
 > with a plaintext MFA secret, it is automatically encrypted and updated in the database.
-> The `migrate_secrets` tool is useful for bulk migration of all secrets at once.
+> The `migrate-secrets` subcommand is useful for bulk migration of all secrets at once.
 
 ## API Endpoints
 

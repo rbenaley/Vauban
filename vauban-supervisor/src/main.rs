@@ -1,8 +1,14 @@
 // L-1: Relax strict clippy lints in test code where unwrap/expect/panic are idiomatic
-#![cfg_attr(test, allow(
-    clippy::unwrap_used, clippy::expect_used, clippy::panic,
-    clippy::print_stdout, clippy::print_stderr
-))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::print_stdout,
+        clippy::print_stderr
+    )
+)]
 
 //! Vauban Supervisor - Process manager with privilege separation.
 //!
@@ -15,24 +21,58 @@
 //! - Respawns crashed children
 
 mod acme;
+mod admin;
 mod config;
 
 use anyhow::{Context, Result};
+use clap::{Parser, Subcommand};
 use config::SupervisorConfig;
-use nix::sys::signal::{kill, Signal};
-use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
-use nix::unistd::{execv, fork, setgid, setuid, ForkResult, Gid, Pid, Uid};
-use shared::ipc::{poll_readable, send_fd, IpcChannel, socketpair_for_fd_passing};
+use nix::sys::signal::{Signal, kill};
+use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
+use nix::unistd::{ForkResult, Gid, Pid, Uid, execv, fork, setgid, setuid};
+use shared::ipc::{IpcChannel, poll_readable, send_fd, socketpair_for_fd_passing};
 use shared::messages::{ControlMessage, Message, SensitiveString, Service, ServiceStats};
-use std::net::ToSocketAddrs;
-use std::os::unix::io::{AsRawFd, OwnedFd, RawFd};
 use std::collections::HashMap;
 use std::ffi::CString;
+use std::net::ToSocketAddrs;
+use std::os::unix::io::{AsRawFd, OwnedFd, RawFd};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 use zeroize::Zeroize;
+
+/// Vauban Supervisor - Process manager with privilege separation.
+#[derive(Parser)]
+#[command(name = "vauban-supervisor", version, about)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<AdminSubcommand>,
+}
+
+#[derive(Subcommand)]
+enum AdminSubcommand {
+    /// Create a superuser account (interactive).
+    CreateSuperuser,
+    /// Reset a user's password (interactive).
+    ResetPassword {
+        /// Username of the account to reset.
+        username: String,
+    },
+    /// Disable two-factor authentication for a user.
+    Reset2fa {
+        /// Username of the account to reset MFA for.
+        username: String,
+    },
+    /// Encrypt plaintext secrets in the database using vauban-vault keyrings.
+    MigrateSecrets {
+        /// Show what would be migrated without making changes.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Seed the database with test data (users, assets, sessions, groups).
+    SeedData,
+}
 
 /// M-8/M-10: Global shutdown flag set by signal handler, checked by watchdog loop.
 /// Using a static AtomicBool because the signal handler runs in a separate thread
@@ -95,7 +135,7 @@ struct FdPassingSockets {
 const LINKED_RESTART_GROUPS: &[&[&str]] = &[
     // Web and SSH proxy share IPC pipes
     &["web", "proxy_ssh"],
-    // Web and RDP proxy share IPC pipes  
+    // Web and RDP proxy share IPC pipes
     &["web", "proxy_rdp"],
 ];
 
@@ -112,7 +152,7 @@ fn service_key_to_service(key: &str) -> Option<Service> {
     match key {
         "web" => Some(Service::Web),
         "auth" => Some(Service::Auth),
-        "rbac" => Some(Service::Rbac),
+        "access" => Some(Service::Access),
         "vault" => Some(Service::Vault),
         "audit" => Some(Service::Audit),
         "proxy_ssh" => Some(Service::ProxySsh),
@@ -126,7 +166,7 @@ fn service_to_env_suffix(service: Service) -> &'static str {
     match service {
         Service::Web => "WEB",
         Service::Auth => "AUTH",
-        Service::Rbac => "RBAC",
+        Service::Access => "ACCESS",
         Service::Vault => "VAULT",
         Service::Audit => "AUDIT",
         Service::ProxySsh => "PROXY_SSH",
@@ -138,28 +178,83 @@ fn service_to_env_suffix(service: Service) -> &'static str {
 /// All pipe connections in the mesh topology.
 const TOPOLOGY: &[PipeTopology] = &[
     // Web connections
-    PipeTopology { from: Service::Web, to: Service::Auth },
-    PipeTopology { from: Service::Web, to: Service::Rbac },
-    PipeTopology { from: Service::Web, to: Service::Audit },
-    PipeTopology { from: Service::Web, to: Service::Vault },  // M-1, C-2: encrypt/decrypt secrets
+    PipeTopology {
+        from: Service::Web,
+        to: Service::Auth,
+    },
+    PipeTopology {
+        from: Service::Web,
+        to: Service::Access,
+    },
+    PipeTopology {
+        from: Service::Web,
+        to: Service::Audit,
+    },
+    PipeTopology {
+        from: Service::Web,
+        to: Service::Vault,
+    }, // M-1, C-2: encrypt/decrypt secrets
     // Web <-> Proxy connections (for SSH/RDP session data)
-    PipeTopology { from: Service::Web, to: Service::ProxySsh },
-    PipeTopology { from: Service::Web, to: Service::ProxyRdp },
+    PipeTopology {
+        from: Service::Web,
+        to: Service::ProxySsh,
+    },
+    PipeTopology {
+        from: Service::Web,
+        to: Service::ProxyRdp,
+    },
     // Auth connections
-    PipeTopology { from: Service::Auth, to: Service::Rbac },
-    PipeTopology { from: Service::Auth, to: Service::Vault },
+    PipeTopology {
+        from: Service::Auth,
+        to: Service::Access,
+    },
+    PipeTopology {
+        from: Service::Auth,
+        to: Service::Vault,
+    },
     // Proxy SSH connections
-    PipeTopology { from: Service::ProxySsh, to: Service::Rbac },
-    PipeTopology { from: Service::ProxySsh, to: Service::Vault },
-    PipeTopology { from: Service::ProxySsh, to: Service::Audit },
+    PipeTopology {
+        from: Service::ProxySsh,
+        to: Service::Access,
+    },
+    PipeTopology {
+        from: Service::ProxySsh,
+        to: Service::Vault,
+    },
+    PipeTopology {
+        from: Service::ProxySsh,
+        to: Service::Audit,
+    },
     // Proxy RDP connections
-    PipeTopology { from: Service::ProxyRdp, to: Service::Rbac },
-    PipeTopology { from: Service::ProxyRdp, to: Service::Vault },
-    PipeTopology { from: Service::ProxyRdp, to: Service::Audit },
+    PipeTopology {
+        from: Service::ProxyRdp,
+        to: Service::Access,
+    },
+    PipeTopology {
+        from: Service::ProxyRdp,
+        to: Service::Vault,
+    },
+    PipeTopology {
+        from: Service::ProxyRdp,
+        to: Service::Audit,
+    },
 ];
 
-#[allow(clippy::print_stdout)]
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 fn main() -> ExitCode {
+    let cli = Cli::parse();
+
+    // Admin subcommands run without the supervisor banner/tracing
+    if let Some(cmd) = cli.command {
+        return match admin::run_admin_command(cmd) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("Error: {e:#}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+
     println!(
         r#"
               *
@@ -220,14 +315,11 @@ fn main() -> ExitCode {
 
 fn run_supervisor() -> Result<()> {
     // Load configuration
-    let config = SupervisorConfig::load_auto()
-        .context("Failed to load configuration")?;
-    
+    let config = SupervisorConfig::load_auto().context("Failed to load configuration")?;
+
     info!(
         "Configuration loaded: environment={}, bin_path={}, privsep={}",
-        config.environment,
-        config.bin_path,
-        config.supervisor.privsep
+        config.environment, config.bin_path, config.supervisor.privsep
     );
 
     if !config.supervisor.privsep {
@@ -247,41 +339,52 @@ fn run_supervisor() -> Result<()> {
     let mut service_pipes: HashMap<Service, ServicePipes> = HashMap::new();
     for ((from, to), (from_channel, to_channel)) in &pipes {
         // The "from" service gets the from_channel (it writes to the pipe)
-        service_pipes
-            .entry(*from)
-            .or_default()
-            .outgoing
-            .push((*to, from_channel.read_fd(), from_channel.write_fd()));
-        
+        service_pipes.entry(*from).or_default().outgoing.push((
+            *to,
+            from_channel.read_fd(),
+            from_channel.write_fd(),
+        ));
+
         // The "to" service gets the to_channel (it reads from the pipe)
-        service_pipes
-            .entry(*to)
-            .or_default()
-            .incoming
-            .push((*from, to_channel.read_fd(), to_channel.write_fd()));
+        service_pipes.entry(*to).or_default().incoming.push((
+            *from,
+            to_channel.read_fd(),
+            to_channel.write_fd(),
+        ));
     }
 
     // Create FD passing socket pairs for services that need file descriptors
     // from the supervisor. Proxies receive TCP connection FDs; audit receives
     // recording file FDs (so it never needs direct filesystem access).
     let mut fd_passing_sockets: HashMap<Service, FdPassingSockets> = HashMap::new();
-    
-    for proxy_service in [Service::ProxySsh, Service::ProxyRdp, Service::Audit, Service::Web] {
+
+    for proxy_service in [
+        Service::ProxySsh,
+        Service::ProxyRdp,
+        Service::Audit,
+        Service::Web,
+    ] {
         match socketpair_for_fd_passing() {
             Ok((supervisor_socket, child_socket)) => {
                 let child_fd = child_socket.as_raw_fd();
                 // We need to keep child_socket alive until after fork
                 // Store the raw fd and leak the OwnedFd to prevent close
                 std::mem::forget(child_socket);
-                
-                fd_passing_sockets.insert(proxy_service, FdPassingSockets {
-                    supervisor_socket,
-                    child_socket_fd: child_fd,
-                });
+
+                fd_passing_sockets.insert(
+                    proxy_service,
+                    FdPassingSockets {
+                        supervisor_socket,
+                        child_socket_fd: child_fd,
+                    },
+                );
                 info!("Created FD passing socketpair for {:?}", proxy_service);
             }
             Err(e) => {
-                error!("Failed to create FD passing socketpair for {:?}: {}", proxy_service, e);
+                error!(
+                    "Failed to create FD passing socketpair for {:?}: {}",
+                    proxy_service, e
+                );
             }
         }
     }
@@ -298,22 +401,28 @@ fn run_supervisor() -> Result<()> {
 
     // Spawn all child services in dependency order
     let mut children: HashMap<String, ChildState> = HashMap::new();
-    
+
     for service_key in config.startup_order() {
         let service_config = match config.services.get(service_key) {
             Some(sc) => sc,
             None => {
-                warn!("Service {} not found in configuration, skipping", service_key);
+                warn!(
+                    "Service {} not found in configuration, skipping",
+                    service_key
+                );
                 continue;
             }
         };
 
-        info!("Starting service: {} ({})", service_config.name, service_key);
-        
+        info!(
+            "Starting service: {} ({})",
+            service_config.name, service_key
+        );
+
         // Get effective UID/GID for this service
         let uid = config.effective_uid(service_key);
         let gid = config.effective_gid(service_key);
-        
+
         if let (Some(u), Some(g)) = (uid, gid) {
             info!("  Will run as uid={}, gid={}", u, g);
         } else {
@@ -321,45 +430,61 @@ fn run_supervisor() -> Result<()> {
         }
 
         // Get binary path and working directory
-        let binary_path = config.binary_path(service_key)
+        let binary_path = config
+            .binary_path(service_key)
             .context("Failed to get binary path")?;
         let workdir = config.effective_workdir(service_key);
-        
+
         // Create IPC channel for supervisor-to-child communication
-        let (supervisor_channel, child_channel) = IpcChannel::pair()
-            .context("Failed to create IPC channel")?;
-        
+        let (supervisor_channel, child_channel) =
+            IpcChannel::pair().context("Failed to create IPC channel")?;
+
         // Get topology pipes for this service
         let service = service_key_to_service(service_key);
         let topology_pipes = service.and_then(|s| service_pipes.get(&s));
-        
+
         // Get FD passing socket for proxy services
-        let fd_passing_child_fd = service.and_then(|s| fd_passing_sockets.get(&s).map(|fps| fps.child_socket_fd));
-        
+        let fd_passing_child_fd =
+            service.and_then(|s| fd_passing_sockets.get(&s).map(|fps| fps.child_socket_fd));
+
         let svc_env = config.service_env_vars(service_key);
-        match spawn_child(&binary_path, uid, gid, workdir.as_deref(), child_channel, topology_pipes, fd_passing_child_fd, &svc_env) {
+        match spawn_child(
+            &binary_path,
+            uid,
+            gid,
+            workdir.as_deref(),
+            child_channel,
+            topology_pipes,
+            fd_passing_child_fd,
+            &svc_env,
+        ) {
             Ok(pid) => {
                 info!("Started {} with pid {}", service_config.name, pid);
-                
+
                 // Extract the supervisor's FD passing socket for proxies
                 let fd_passing_socket = service.and_then(|s| {
-                    fd_passing_sockets.remove(&s).map(|fps| fps.supervisor_socket)
+                    fd_passing_sockets
+                        .remove(&s)
+                        .map(|fps| fps.supervisor_socket)
                 });
-                
-                children.insert(service_key.to_string(), ChildState {
-                    pid,
-                    service_key: service_key.to_string(),
-                    channel: supervisor_channel,
-                    last_pong: Instant::now(),
-                    missed_heartbeats: 0,
-                    heartbeat_seq: 0,
-                    respawn_count: 0,
-                    last_respawn: Instant::now(),
-                    last_stats: None,
-                    is_draining: false,
-                    drain_started: None,
-                    fd_passing_socket,
-                });
+
+                children.insert(
+                    service_key.to_string(),
+                    ChildState {
+                        pid,
+                        service_key: service_key.to_string(),
+                        channel: supervisor_channel,
+                        last_pong: Instant::now(),
+                        missed_heartbeats: 0,
+                        heartbeat_seq: 0,
+                        respawn_count: 0,
+                        last_respawn: Instant::now(),
+                        last_stats: None,
+                        is_draining: false,
+                        drain_started: None,
+                        fd_passing_socket,
+                    },
+                );
             }
             Err(e) => {
                 error!("Failed to start {}: {}", service_config.name, e);
@@ -460,8 +585,7 @@ fn generate_self_signed_cert(cert_path: &str, key_path: &str) -> Result<()> {
 
     info!(
         cert_path,
-        key_path,
-        "Generated self-signed bootstrap certificate"
+        key_path, "Generated self-signed bootstrap certificate"
     );
 
     Ok(())
@@ -493,22 +617,26 @@ fn atomic_write_pem(path: &str, data: &str) -> Result<()> {
 
     file.write_all(data.as_bytes())
         .with_context(|| "Failed to write PEM data")?;
-    file.sync_all()
-        .with_context(|| "Failed to sync PEM file")?;
+    file.sync_all().with_context(|| "Failed to sync PEM file")?;
 
-    std::fs::rename(&temp_path, path)
-        .with_context(|| "Failed to atomically rename PEM file")?;
+    std::fs::rename(&temp_path, path).with_context(|| "Failed to atomically rename PEM file")?;
 
     Ok(())
 }
 
 /// Send TLS certificate data to vauban-web via IPC.
-fn send_tls_cert_provision(channel: &IpcChannel, cert_pem: &str, key_pem: &SensitiveString) -> Result<()> {
+fn send_tls_cert_provision(
+    channel: &IpcChannel,
+    cert_pem: &str,
+    key_pem: &SensitiveString,
+) -> Result<()> {
     let msg = Message::TlsCertProvision {
         cert_pem: cert_pem.to_string(),
         key_pem: key_pem.clone(),
     };
-    channel.send(&msg).context("Failed to send TlsCertProvision to vauban-web")
+    channel
+        .send(&msg)
+        .context("Failed to send TlsCertProvision to vauban-web")
 }
 
 fn setup_signal_handlers() -> Result<()> {
@@ -570,7 +698,7 @@ fn spawn_child(
     // Get raw FDs before fork (we'll pass them via env vars)
     let read_fd = channel.read_fd();
     let write_fd = channel.write_fd();
-    
+
     // Collect topology pipe env vars before fork
     // Format: VAUBAN_{TARGET}_IPC_READ and VAUBAN_{TARGET}_IPC_WRITE
     let mut topology_env_vars: Vec<(String, String)> = Vec::new();
@@ -596,21 +724,25 @@ fn spawn_child(
     match unsafe { fork() } {
         Ok(ForkResult::Child) => {
             // Child process
-            
+
             // M-8/M-10: Move child to its own process group so that CTRL+C
             // (SIGINT sent to the foreground process group) only reaches the
             // supervisor. The supervisor then orchestrates graceful shutdown
             // via IPC, allowing children's Drop/Zeroize destructors to run.
             let _ = nix::unistd::setpgid(Pid::from_raw(0), Pid::from_raw(0));
-            
+
             // Change working directory if specified
             if let Some(dir) = workdir
                 && std::env::set_current_dir(dir).is_err()
             {
-                eprintln!("Failed to chdir to {}: {}", dir, std::io::Error::last_os_error());
+                eprintln!(
+                    "Failed to chdir to {}: {}",
+                    dir,
+                    std::io::Error::last_os_error()
+                );
                 std::process::exit(1);
             }
-            
+
             // Drop privileges if configured (production mode)
             // Must set GID before UID
             if let Some(g) = gid
@@ -619,18 +751,18 @@ fn spawn_child(
                 eprintln!("Failed to setgid({}): {}", g, e);
                 std::process::exit(1);
             }
-            
+
             if let Some(u) = uid
                 && let Err(e) = setuid(Uid::from_raw(u))
             {
                 eprintln!("Failed to setuid({}): {}", u, e);
                 std::process::exit(1);
             }
-            
+
             // Clear FD_CLOEXEC on FD passing socket so it survives exec
             // This must be done before exec because the socket was created with FD_CLOEXEC
             if let Some(fd) = fd_passing_socket {
-                use nix::fcntl::{fcntl, FcntlArg, FdFlag};
+                use nix::fcntl::{FcntlArg, FdFlag, fcntl};
                 use std::os::unix::io::BorrowedFd;
                 // SAFETY: fd is valid and we're in the forked child
                 let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
@@ -639,19 +771,19 @@ fn spawn_child(
                     std::process::exit(1);
                 }
             }
-            
+
             // Set environment variables for supervisor IPC FDs
             // SAFETY: We are in a single-threaded child process right after fork(),
             // and the environment is not being accessed by other threads.
             unsafe {
                 std::env::set_var("VAUBAN_IPC_READ", read_fd.to_string());
                 std::env::set_var("VAUBAN_IPC_WRITE", write_fd.to_string());
-                
+
                 // Set topology pipe environment variables
                 for (name, value) in &topology_env_vars {
                     std::env::set_var(name, value);
                 }
-                
+
                 // Set FD passing socket for proxy services (used to receive TCP connections)
                 if let Some(fd) = fd_passing_socket {
                     std::env::set_var("VAUBAN_FD_PASSING_SOCKET", fd.to_string());
@@ -662,7 +794,7 @@ fn spawn_child(
                     std::env::set_var(name, value);
                 }
             }
-            
+
             // Exec the child binary
             let c_path = match CString::new(binary_path) {
                 Ok(p) => p,
@@ -671,7 +803,7 @@ fn spawn_child(
                     std::process::exit(1);
                 }
             };
-            
+
             // Execute the binary - execv only returns on error
             let Err(e) = execv(&c_path, &[&c_path]);
             eprintln!("Failed to exec {}: {}", binary_path, e);
@@ -683,9 +815,7 @@ fn spawn_child(
             drop(channel);
             Ok(child.as_raw())
         }
-        Err(e) => {
-            Err(anyhow::anyhow!("fork() failed: {}", e))
-        }
+        Err(e) => Err(anyhow::anyhow!("fork() failed: {}", e)),
     }
 }
 
@@ -711,12 +841,22 @@ fn watchdog_loop(
         }
 
         // Reap any dead children and collect services needing restart
-        reap_children(children, config, service_pipes, max_respawns_per_hour, &mut pending_linked_restarts, listener_fd);
-        
+        reap_children(
+            children,
+            config,
+            service_pipes,
+            max_respawns_per_hour,
+            &mut pending_linked_restarts,
+            listener_fd,
+        );
+
         // Process pending linked restarts (restart entire groups)
         while let Some(service_key) = pending_linked_restarts.pop() {
             if let Some(linked_group) = get_linked_services(&service_key) {
-                info!("Restarting linked group for {}: {:?}", service_key, linked_group);
+                info!(
+                    "Restarting linked group for {}: {:?}",
+                    service_key, linked_group
+                );
                 respawn_linked_group(children, config, service_pipes, linked_group, listener_fd);
             }
         }
@@ -746,8 +886,8 @@ fn watchdog_loop(
                     if get_linked_services(service_key).is_some() {
                         services_to_restart.push(service_key.clone());
                     } else {
-                        let topology = service_key_to_service(service_key)
-                            .and_then(|s| service_pipes.get(&s));
+                        let topology =
+                            service_key_to_service(service_key).and_then(|s| service_pipes.get(&s));
                         drain_and_restart(state, config, topology, listener_fd);
                     }
                 }
@@ -757,18 +897,21 @@ fn watchdog_loop(
                     if get_linked_services(service_key).is_some() {
                         services_to_restart.push(service_key.clone());
                     } else {
-                        let topology = service_key_to_service(service_key)
-                            .and_then(|s| service_pipes.get(&s));
+                        let topology =
+                            service_key_to_service(service_key).and_then(|s| service_pipes.get(&s));
                         kill_and_respawn(state, config, topology, listener_fd);
                     }
                 }
             }
         }
-        
+
         // Process linked restarts for unresponsive services
         for service_key in services_to_restart {
             if let Some(linked_group) = get_linked_services(&service_key) {
-                info!("Restarting linked group due to unresponsive {}: {:?}", service_key, linked_group);
+                info!(
+                    "Restarting linked group due to unresponsive {}: {:?}",
+                    service_key, linked_group
+                );
                 respawn_linked_group(children, config, service_pipes, linked_group, listener_fd);
             }
         }
@@ -821,7 +964,10 @@ fn graceful_shutdown_children(children: &mut HashMap<String, ChildState>) {
             // Send SIGTERM to remaining children
             for (service_key, state) in children.iter() {
                 if state.pid > 0 {
-                    warn!("{}: Still running after timeout, sending SIGTERM", service_key);
+                    warn!(
+                        "{}: Still running after timeout, sending SIGTERM",
+                        service_key
+                    );
                     let _ = kill(Pid::from_raw(state.pid), Signal::SIGTERM);
                 }
             }
@@ -862,7 +1008,7 @@ fn reap_children(
                         break;
                     }
                 }
-                
+
                 if let Some(service_key) = found_service
                     && let Some(state) = children.get_mut(&service_key)
                 {
@@ -897,7 +1043,7 @@ fn reap_children(
                         break;
                     }
                 }
-                
+
                 if let Some(service_key) = found_service
                     && let Some(state) = children.get_mut(&service_key)
                 {
@@ -942,9 +1088,11 @@ fn reap_children(
 fn send_heartbeat(service_key: &str, state: &mut ChildState) {
     use shared::ipc::poll_readable;
     use std::io::ErrorKind;
-    
+
     state.heartbeat_seq += 1;
-    let ping = Message::Control(ControlMessage::Ping { seq: state.heartbeat_seq });
+    let ping = Message::Control(ControlMessage::Ping {
+        seq: state.heartbeat_seq,
+    });
 
     if let Err(e) = state.channel.send(&ping) {
         warn!("Failed to send heartbeat to {}: {}", service_key, e);
@@ -960,7 +1108,7 @@ fn send_heartbeat(service_key: &str, state: &mut ChildState) {
             // Data available - drain all messages and find the best pong
             // This handles the case where pongs have accumulated in the buffer
             let mut best_pong: Option<(u64, ServiceStats)> = None;
-            
+
             loop {
                 match state.channel.try_recv() {
                     Ok(Message::Control(ControlMessage::Pong { seq, stats })) => {
@@ -991,7 +1139,7 @@ fn send_heartbeat(service_key: &str, state: &mut ChildState) {
                     }
                 }
             }
-            
+
             // Evaluate the best pong we found
             match best_pong {
                 Some((seq, stats)) if seq >= state.heartbeat_seq => {
@@ -999,7 +1147,7 @@ fn send_heartbeat(service_key: &str, state: &mut ChildState) {
                     state.missed_heartbeats = 0;
                     state.last_pong = Instant::now();
                     state.last_stats = Some(stats.clone());
-                    
+
                     debug!(
                         "{}: pong received (seq={}, expected={}), uptime={}s, active_connections={}, pending={}",
                         service_key,
@@ -1082,7 +1230,7 @@ fn should_force_restart(state: &ChildState, max_missed: u32) -> RestartDecision 
     if state.missed_heartbeats < max_missed {
         return RestartDecision::NotNeeded;
     }
-    
+
     // Check stats from last successful Pong
     if let Some(ref stats) = state.last_stats
         && (stats.active_connections > 0 || stats.pending_requests > 0)
@@ -1092,13 +1240,18 @@ fn should_force_restart(state: &ChildState, max_missed: u32) -> RestartDecision 
             pending: stats.pending_requests,
         };
     }
-    
+
     RestartDecision::ForceNow
 }
 
-fn kill_and_respawn(state: &mut ChildState, config: &SupervisorConfig, topology_pipes: Option<&ServicePipes>, listener_fd: RawFd) {
+fn kill_and_respawn(
+    state: &mut ChildState,
+    config: &SupervisorConfig,
+    topology_pipes: Option<&ServicePipes>,
+    listener_fd: RawFd,
+) {
     let pid = Pid::from_raw(state.pid);
-    
+
     // Send SIGTERM
     let _ = kill(pid, Signal::SIGTERM);
 
@@ -1121,7 +1274,12 @@ fn kill_and_respawn(state: &mut ChildState, config: &SupervisorConfig, topology_
     respawn_service(state, config, topology_pipes, listener_fd);
 }
 
-fn respawn_service(state: &mut ChildState, config: &SupervisorConfig, topology_pipes: Option<&ServicePipes>, listener_fd: RawFd) {
+fn respawn_service(
+    state: &mut ChildState,
+    config: &SupervisorConfig,
+    topology_pipes: Option<&ServicePipes>,
+    listener_fd: RawFd,
+) {
     let uid = config.effective_uid(&state.service_key);
     let gid = config.effective_gid(&state.service_key);
     let workdir = config.effective_workdir(&state.service_key);
@@ -1142,7 +1300,10 @@ fn respawn_service(state: &mut ChildState, config: &SupervisorConfig, topology_p
         }
     };
 
-    let needs_fd_passing = matches!(state.service_key.as_str(), "proxy_ssh" | "proxy_rdp" | "audit" | "web");
+    let needs_fd_passing = matches!(
+        state.service_key.as_str(),
+        "proxy_ssh" | "proxy_rdp" | "audit" | "web"
+    );
     let (fd_passing_socket, fd_passing_child_fd) = if needs_fd_passing {
         match socketpair_for_fd_passing() {
             Ok((supervisor_socket, child_socket)) => {
@@ -1151,7 +1312,10 @@ fn respawn_service(state: &mut ChildState, config: &SupervisorConfig, topology_p
                 (Some(supervisor_socket), Some(child_fd))
             }
             Err(e) => {
-                error!("Failed to create FD passing socketpair for {}: {}", state.service_key, e);
+                error!(
+                    "Failed to create FD passing socketpair for {}: {}",
+                    state.service_key, e
+                );
                 (None, None)
             }
         }
@@ -1160,7 +1324,16 @@ fn respawn_service(state: &mut ChildState, config: &SupervisorConfig, topology_p
     };
 
     let svc_env = config.service_env_vars(&state.service_key);
-    match spawn_child(&binary_path, uid, gid, workdir.as_deref(), child_channel, topology_pipes, fd_passing_child_fd, &svc_env) {
+    match spawn_child(
+        &binary_path,
+        uid,
+        gid,
+        workdir.as_deref(),
+        child_channel,
+        topology_pipes,
+        fd_passing_child_fd,
+        &svc_env,
+    ) {
         Ok(pid) => {
             info!("Respawned {} with pid {}", state.service_key, pid);
             state.pid = pid;
@@ -1186,7 +1359,8 @@ fn respawn_service(state: &mut ChildState, config: &SupervisorConfig, topology_p
                 let tls_paths = &config.server.tls;
                 match ensure_tls_certs(&tls_paths.cert_path, &tls_paths.key_path) {
                     Ok((cert_pem, key_pem)) => {
-                        if let Err(e) = send_tls_cert_provision(&state.channel, &cert_pem, &key_pem) {
+                        if let Err(e) = send_tls_cert_provision(&state.channel, &cert_pem, &key_pem)
+                        {
                             error!("Failed to send TLS certs to respawned vauban-web: {}", e);
                         } else {
                             info!("Sent TLS certificate data to respawned vauban-web");
@@ -1205,7 +1379,7 @@ fn respawn_service(state: &mut ChildState, config: &SupervisorConfig, topology_p
 }
 
 /// Respawn all services in a linked group together.
-/// 
+///
 /// When services share inter-process pipes (e.g., Web <-> ProxySsh),
 /// a crash of one service breaks the pipe. Both services must be
 /// restarted together with fresh pipes to re-establish communication.
@@ -1217,31 +1391,34 @@ fn respawn_linked_group(
     listener_fd: RawFd,
 ) {
     info!("Starting linked group restart for: {:?}", group);
-    
+
     // Step 1: Kill any still-running services in the group
     for &service_key in group {
         if let Some(state) = children.get_mut(service_key)
             && state.pid > 0
         {
-            info!("Killing {} (pid {}) for linked restart", service_key, state.pid);
+            info!(
+                "Killing {} (pid {}) for linked restart",
+                service_key, state.pid
+            );
             let _ = nix::sys::signal::kill(
                 nix::unistd::Pid::from_raw(state.pid),
-                nix::sys::signal::Signal::SIGTERM
+                nix::sys::signal::Signal::SIGTERM,
             );
             // Give it a moment to die gracefully
             std::thread::sleep(Duration::from_millis(100));
             // Force kill if still alive
             let _ = nix::sys::signal::kill(
                 nix::unistd::Pid::from_raw(state.pid),
-                nix::sys::signal::Signal::SIGKILL
+                nix::sys::signal::Signal::SIGKILL,
             );
             state.pid = 0;
         }
     }
-    
+
     // Step 2: Wait for all services in the group to be reaped
     std::thread::sleep(Duration::from_millis(200));
-    
+
     // Step 3: Reap any remaining zombie processes from the group
     loop {
         match waitpid(Pid::from_raw(-1), Some(WaitPidFlag::WNOHANG)) {
@@ -1258,22 +1435,25 @@ fn respawn_linked_group(
             _ => {}
         }
     }
-    
+
     // Step 4: Create new pipes for the linked services
     // For Web <-> ProxySsh, we need fresh pipe pairs
     let mut new_pipes: HashMap<(Service, Service), (IpcChannel, IpcChannel)> = HashMap::new();
-    
+
     // Find which pipe connections exist between services in this group
     for topology_entry in TOPOLOGY.iter() {
         let from_key = service_to_key(topology_entry.from);
         let to_key = service_to_key(topology_entry.to);
-        
+
         if group.contains(&from_key) && group.contains(&to_key) {
             // Create fresh pipes for this connection
             match IpcChannel::pair() {
                 Ok((from_channel, to_channel)) => {
                     info!("Created new pipe: {} -> {}", from_key, to_key);
-                    new_pipes.insert((topology_entry.from, topology_entry.to), (from_channel, to_channel));
+                    new_pipes.insert(
+                        (topology_entry.from, topology_entry.to),
+                        (from_channel, to_channel),
+                    );
                 }
                 Err(e) => {
                     error!("Failed to create pipe {} -> {}: {}", from_key, to_key, e);
@@ -1281,15 +1461,15 @@ fn respawn_linked_group(
             }
         }
     }
-    
+
     // Step 5: Build new ServicePipes for each service in the group
     let mut group_service_pipes: HashMap<Service, ServicePipes> = HashMap::new();
-    
+
     // Initialize with existing pipes to supervisor/other services (from original service_pipes)
     for &service_key in group {
         if let Some(service) = service_key_to_service(service_key) {
             let mut pipes = ServicePipes::default();
-            
+
             // Copy existing pipes that are NOT between services in this group
             if let Some(existing) = service_pipes.get(&service) {
                 for &(target, read_fd, write_fd) in &existing.outgoing {
@@ -1305,27 +1485,31 @@ fn respawn_linked_group(
                     }
                 }
             }
-            
+
             group_service_pipes.insert(service, pipes);
         }
     }
-    
+
     // Add the new pipes between services in the group
     for ((from, to), (from_channel, to_channel)) in &new_pipes {
         if let Some(pipes) = group_service_pipes.get_mut(from) {
-            pipes.outgoing.push((*to, from_channel.read_fd(), from_channel.write_fd()));
+            pipes
+                .outgoing
+                .push((*to, from_channel.read_fd(), from_channel.write_fd()));
         }
         if let Some(pipes) = group_service_pipes.get_mut(to) {
-            pipes.incoming.push((*from, to_channel.read_fd(), to_channel.write_fd()));
+            pipes
+                .incoming
+                .push((*from, to_channel.read_fd(), to_channel.write_fd()));
         }
     }
-    
+
     // Step 6: Respawn each service in the group with their new pipes
     for &service_key in group {
         if let Some(state) = children.get_mut(service_key) {
             let service = service_key_to_service(service_key);
             let topology = service.and_then(|s| group_service_pipes.get(&s));
-            
+
             let uid = config.effective_uid(&state.service_key);
             let gid = config.effective_gid(&state.service_key);
             let workdir = config.effective_workdir(&state.service_key);
@@ -1346,7 +1530,8 @@ fn respawn_linked_group(
                 }
             };
 
-            let needs_fd_passing = matches!(service_key, "proxy_ssh" | "proxy_rdp" | "audit" | "web");
+            let needs_fd_passing =
+                matches!(service_key, "proxy_ssh" | "proxy_rdp" | "audit" | "web");
             let (fd_passing_socket, fd_passing_child_fd) = if needs_fd_passing {
                 match socketpair_for_fd_passing() {
                     Ok((supervisor_socket, child_socket)) => {
@@ -1355,7 +1540,10 @@ fn respawn_linked_group(
                         (Some(supervisor_socket), Some(child_fd))
                     }
                     Err(e) => {
-                        error!("Failed to create FD passing socketpair for {}: {}", service_key, e);
+                        error!(
+                            "Failed to create FD passing socketpair for {}: {}",
+                            service_key, e
+                        );
                         (None, None)
                     }
                 }
@@ -1364,7 +1552,16 @@ fn respawn_linked_group(
             };
 
             let svc_env = config.service_env_vars(service_key);
-            match spawn_child(&binary_path, uid, gid, workdir.as_deref(), child_channel, topology, fd_passing_child_fd, &svc_env) {
+            match spawn_child(
+                &binary_path,
+                uid,
+                gid,
+                workdir.as_deref(),
+                child_channel,
+                topology,
+                fd_passing_child_fd,
+                &svc_env,
+            ) {
                 Ok(pid) => {
                     info!("Respawned {} (linked group) with pid {}", service_key, pid);
                     state.pid = pid;
@@ -1390,14 +1587,24 @@ fn respawn_linked_group(
                         let tls_paths = &config.server.tls;
                         match ensure_tls_certs(&tls_paths.cert_path, &tls_paths.key_path) {
                             Ok((cert_pem, key_pem)) => {
-                                if let Err(e) = send_tls_cert_provision(&state.channel, &cert_pem, &key_pem) {
-                                    error!("Failed to send TLS certs to respawned vauban-web (linked): {}", e);
+                                if let Err(e) =
+                                    send_tls_cert_provision(&state.channel, &cert_pem, &key_pem)
+                                {
+                                    error!(
+                                        "Failed to send TLS certs to respawned vauban-web (linked): {}",
+                                        e
+                                    );
                                 } else {
-                                    info!("Sent TLS certificate data to respawned vauban-web (linked)");
+                                    info!(
+                                        "Sent TLS certificate data to respawned vauban-web (linked)"
+                                    );
                                 }
                             }
                             Err(e) => {
-                                error!("Failed to read TLS certs for respawned vauban-web (linked): {}", e);
+                                error!(
+                                    "Failed to read TLS certs for respawned vauban-web (linked): {}",
+                                    e
+                                );
                             }
                         }
                     }
@@ -1408,7 +1615,7 @@ fn respawn_linked_group(
             }
         }
     }
-    
+
     // M-9: Update service_pipes with the new pipe FDs for respawned services.
     // Without this, service_pipes retains stale FDs from the killed processes,
     // causing IPC failures if a service in the group is later restarted individually.
@@ -1424,7 +1631,7 @@ fn service_to_key(service: Service) -> &'static str {
     match service {
         Service::Web => "web",
         Service::Auth => "auth",
-        Service::Rbac => "rbac",
+        Service::Access => "access",
         Service::Vault => "vault",
         Service::Audit => "audit",
         Service::ProxySsh => "proxy_ssh",
@@ -1454,7 +1661,10 @@ fn handle_tcp_connect_request(
         Service::ProxySsh => "proxy_ssh",
         Service::ProxyRdp => "proxy_rdp",
         _ => {
-            warn!("TcpConnectRequest for unsupported target service: {:?}", target_service);
+            warn!(
+                "TcpConnectRequest for unsupported target service: {:?}",
+                target_service
+            );
             let response = Message::TcpConnectResponse {
                 request_id,
                 session_id,
@@ -1465,12 +1675,15 @@ fn handle_tcp_connect_request(
             return;
         }
     };
-    
+
     // Get the target service's FD passing socket
     let target_state = match children.get(target_key) {
         Some(state) => state,
         None => {
-            error!("Target service {} not found for TcpConnectRequest", target_key);
+            error!(
+                "Target service {} not found for TcpConnectRequest",
+                target_key
+            );
             let response = Message::TcpConnectResponse {
                 request_id,
                 session_id,
@@ -1481,7 +1694,7 @@ fn handle_tcp_connect_request(
             return;
         }
     };
-    
+
     let fd_socket = match &target_state.fd_passing_socket {
         Some(sock) => sock.as_raw_fd(),
         None => {
@@ -1496,7 +1709,7 @@ fn handle_tcp_connect_request(
             return;
         }
     };
-    
+
     // Step 1: DNS resolution
     let addr_str = format!("{}:{}", host, port);
     let socket_addr = match addr_str.to_socket_addrs() {
@@ -1526,31 +1739,32 @@ fn handle_tcp_connect_request(
             return;
         }
     };
-    
+
     debug!("DNS resolved {} -> {}", host, socket_addr);
-    
+
     // Step 2: Establish TCP connection
-    let tcp_stream = match std::net::TcpStream::connect_timeout(
-        &socket_addr,
-        Duration::from_secs(10),
-    ) {
-        Ok(stream) => stream,
-        Err(e) => {
-            warn!("TCP connection to {} failed: {}", socket_addr, e);
-            let response = Message::TcpConnectResponse {
-                request_id,
-                session_id,
-                success: false,
-                error: Some(format!("Connection to {} failed: {}", socket_addr, e)),
-            };
-            let _ = requesting_channel.send(&response);
-            return;
-        }
-    };
-    
+    let tcp_stream =
+        match std::net::TcpStream::connect_timeout(&socket_addr, Duration::from_secs(10)) {
+            Ok(stream) => stream,
+            Err(e) => {
+                warn!("TCP connection to {} failed: {}", socket_addr, e);
+                let response = Message::TcpConnectResponse {
+                    request_id,
+                    session_id,
+                    success: false,
+                    error: Some(format!("Connection to {} failed: {}", socket_addr, e)),
+                };
+                let _ = requesting_channel.send(&response);
+                return;
+            }
+        };
+
     let tcp_fd = tcp_stream.as_raw_fd();
-    debug!("TCP connection established to {} (fd={})", socket_addr, tcp_fd);
-    
+    debug!(
+        "TCP connection established to {} (fd={})",
+        socket_addr, tcp_fd
+    );
+
     // Step 3: Send the FD to the target proxy service via SCM_RIGHTS
     // IMPORTANT: Send the FD FIRST via SCM_RIGHTS, THEN notify the proxy via IPC.
     // This ensures the FD is available when the proxy receives the notification
@@ -1566,9 +1780,12 @@ fn handle_tcp_connect_request(
         let _ = requesting_channel.send(&response);
         return;
     }
-    
-    debug!("FD {} sent to {} for session {}", tcp_fd, target_key, session_id);
-    
+
+    debug!(
+        "FD {} sent to {} for session {}",
+        tcp_fd, target_key, session_id
+    );
+
     // Step 4: Now notify the proxy via regular IPC channel that an FD is waiting
     let fd_info = Message::TcpConnectResponse {
         request_id,
@@ -1576,7 +1793,7 @@ fn handle_tcp_connect_request(
         success: true,
         error: None,
     };
-    
+
     if let Err(e) = target_state.channel.send(&fd_info) {
         error!("Failed to notify proxy about FD: {}", e);
         // FD was already sent, proxy may still receive it but won't know the session_id
@@ -1590,7 +1807,7 @@ fn handle_tcp_connect_request(
         let _ = requesting_channel.send(&response);
         return;
     }
-    
+
     // Step 5: Send success response back to web
     let response = Message::TcpConnectResponse {
         request_id,
@@ -1598,11 +1815,11 @@ fn handle_tcp_connect_request(
         success: true,
         error: None,
     };
-    
+
     if let Err(e) = requesting_channel.send(&response) {
         error!("Failed to send TcpConnectResponse to web: {}", e);
     }
-    
+
     // Keep the TcpStream alive until after the FD has been sent
     // The child will have its own copy of the FD after SCM_RIGHTS
     drop(tcp_stream);
@@ -1631,12 +1848,14 @@ fn handle_recording_file_request(
             Ok(f) => f,
             Err(e) => {
                 error!(session_id, path = %full_path.display(), error = %e, "Failed to open recording file");
-                let _ = requester_state.channel.send(&Message::RecordingFileResponse {
-                    request_id,
-                    session_id: session_id.to_string(),
-                    success: false,
-                    error: Some(format!("open: {e}")),
-                });
+                let _ = requester_state
+                    .channel
+                    .send(&Message::RecordingFileResponse {
+                        request_id,
+                        session_id: session_id.to_string(),
+                        success: false,
+                        error: Some(format!("open: {e}")),
+                    });
                 return;
             }
         }
@@ -1645,12 +1864,14 @@ fn handle_recording_file_request(
             && let Err(e) = std::fs::create_dir_all(parent)
         {
             error!(session_id, error = %e, "Failed to create recording directory");
-            let _ = requester_state.channel.send(&Message::RecordingFileResponse {
-                request_id,
-                session_id: session_id.to_string(),
-                success: false,
-                error: Some(format!("mkdir: {e}")),
-            });
+            let _ = requester_state
+                .channel
+                .send(&Message::RecordingFileResponse {
+                    request_id,
+                    session_id: session_id.to_string(),
+                    success: false,
+                    error: Some(format!("mkdir: {e}")),
+                });
             return;
         }
 
@@ -1658,12 +1879,14 @@ fn handle_recording_file_request(
             Ok(f) => f,
             Err(e) => {
                 error!(session_id, path = %full_path.display(), error = %e, "Failed to create recording file");
-                let _ = requester_state.channel.send(&Message::RecordingFileResponse {
-                    request_id,
-                    session_id: session_id.to_string(),
-                    success: false,
-                    error: Some(format!("create: {e}")),
-                });
+                let _ = requester_state
+                    .channel
+                    .send(&Message::RecordingFileResponse {
+                        request_id,
+                        session_id: session_id.to_string(),
+                        success: false,
+                        error: Some(format!("create: {e}")),
+                    });
                 return;
             }
         }
@@ -1673,34 +1896,40 @@ fn handle_recording_file_request(
         Some(sock) => sock.as_raw_fd(),
         None => {
             error!(session_id, "No FD passing socket for requesting service");
-            let _ = requester_state.channel.send(&Message::RecordingFileResponse {
-                request_id,
-                session_id: session_id.to_string(),
-                success: false,
-                error: Some("no fd_passing socket".to_string()),
-            });
+            let _ = requester_state
+                .channel
+                .send(&Message::RecordingFileResponse {
+                    request_id,
+                    session_id: session_id.to_string(),
+                    success: false,
+                    error: Some("no fd_passing socket".to_string()),
+                });
             return;
         }
     };
 
     if let Err(e) = send_fd(fd_socket, file.as_raw_fd()) {
         error!(session_id, error = %e, "Failed to send recording file fd via SCM_RIGHTS");
-        let _ = requester_state.channel.send(&Message::RecordingFileResponse {
-            request_id,
-            session_id: session_id.to_string(),
-            success: false,
-            error: Some(format!("send_fd: {e}")),
-        });
+        let _ = requester_state
+            .channel
+            .send(&Message::RecordingFileResponse {
+                request_id,
+                session_id: session_id.to_string(),
+                success: false,
+                error: Some(format!("send_fd: {e}")),
+            });
         return;
     }
 
     debug!(session_id, path = %full_path.display(), read_only, "Recording file fd sent");
-    let _ = requester_state.channel.send(&Message::RecordingFileResponse {
-        request_id,
-        session_id: session_id.to_string(),
-        success: true,
-        error: None,
-    });
+    let _ = requester_state
+        .channel
+        .send(&Message::RecordingFileResponse {
+            request_id,
+            session_id: session_id.to_string(),
+            success: true,
+            error: None,
+        });
 }
 
 /// Poll all service channels and process incoming messages.
@@ -1713,13 +1942,13 @@ fn process_service_messages(children: &HashMap<String, ChildState>, recording_st
         .iter()
         .map(|(key, state)| (key.clone(), state.channel.read_fd()))
         .collect();
-    
+
     if service_fds.is_empty() {
         return;
     }
-    
+
     let fds: Vec<i32> = service_fds.iter().map(|(_, fd)| *fd).collect();
-    
+
     // Poll with a short timeout (10ms) to not block the main loop
     match poll_readable(&fds, 10) {
         Ok(ready_indices) => {
@@ -1727,13 +1956,13 @@ fn process_service_messages(children: &HashMap<String, ChildState>, recording_st
                 if idx >= service_fds.len() {
                     continue;
                 }
-                
+
                 let (service_key, _) = &service_fds[idx];
                 let state = match children.get(service_key) {
                     Some(s) => s,
                     None => continue,
                 };
-                
+
                 // Try to read a message
                 match state.channel.try_recv() {
                     Ok(Message::TcpConnectRequest {
@@ -1816,7 +2045,10 @@ fn process_service_messages(children: &HashMap<String, ChildState>, recording_st
                         // Pong messages are handled by send_heartbeat, skip here
                     }
                     Ok(msg) => {
-                        debug!("Received unexpected message from {}: {:?}", service_key, msg);
+                        debug!(
+                            "Received unexpected message from {}: {:?}",
+                            service_key, msg
+                        );
                     }
                     Err(shared::ipc::IpcError::Io(ref e))
                         if e.kind() == std::io::ErrorKind::WouldBlock =>
@@ -1839,26 +2071,34 @@ fn process_service_messages(children: &HashMap<String, ChildState>, recording_st
 ///
 /// This sends a Drain message, waits for DrainComplete with pending_requests=0,
 /// then proceeds with the standard kill_and_respawn sequence.
-fn drain_and_restart(state: &mut ChildState, config: &SupervisorConfig, topology_pipes: Option<&ServicePipes>, listener_fd: RawFd) {
+fn drain_and_restart(
+    state: &mut ChildState,
+    config: &SupervisorConfig,
+    topology_pipes: Option<&ServicePipes>,
+    listener_fd: RawFd,
+) {
     use shared::ipc::poll_readable;
-    
+
     // 1. Send Drain message
     let drain_msg = Message::Control(ControlMessage::Drain);
     if let Err(e) = state.channel.send(&drain_msg) {
-        warn!("{}: failed to send Drain, proceeding with kill: {}", state.service_key, e);
+        warn!(
+            "{}: failed to send Drain, proceeding with kill: {}",
+            state.service_key, e
+        );
         kill_and_respawn(state, config, topology_pipes, listener_fd);
         return;
     }
-    
+
     state.is_draining = true;
     let drain_start = Instant::now();
     state.drain_started = Some(drain_start);
     info!("{}: drain initiated", state.service_key);
-    
+
     // 2. Wait for DrainComplete or timeout
     let drain_timeout = Duration::from_secs(config.supervisor.drain_timeout_secs);
     let fds = [state.channel.read_fd()];
-    
+
     while drain_start.elapsed() < drain_timeout {
         // Poll for DrainComplete message (500ms timeout per poll)
         match poll_readable(&fds, 500) {
@@ -1869,7 +2109,10 @@ fn drain_and_restart(state: &mut ChildState, config: &SupervisorConfig, topology
                             info!("{}: drain complete", state.service_key);
                             break;
                         }
-                        debug!("{}: draining, {} requests pending", state.service_key, pending_requests);
+                        debug!(
+                            "{}: draining, {} requests pending",
+                            state.service_key, pending_requests
+                        );
                     }
                     Ok(Message::Control(ControlMessage::Pong { seq: _, stats })) => {
                         // Service is still responding to heartbeats during drain
@@ -1893,16 +2136,18 @@ fn drain_and_restart(state: &mut ChildState, config: &SupervisorConfig, topology
             }
         }
     }
-    
+
     if drain_start.elapsed() >= drain_timeout {
-        warn!("{}: drain timeout after {:?}, forcing restart", 
-              state.service_key, drain_timeout);
+        warn!(
+            "{}: drain timeout after {:?}, forcing restart",
+            state.service_key, drain_timeout
+        );
     }
-    
+
     // 3. Send Shutdown and proceed with restart
     let shutdown_msg = Message::Control(ControlMessage::Shutdown);
     let _ = state.channel.send(&shutdown_msg);
-    
+
     kill_and_respawn(state, config, topology_pipes, listener_fd);
 }
 
@@ -1913,7 +2158,7 @@ const FRONTEND_SERVICES: &[&str] = &["web", "proxy_rdp", "proxy_ssh"];
 /// Backend services: drained sequentially after frontend completes
 /// Order matters: audit must be last to capture all events
 #[allow(dead_code)] // Will be used when graceful shutdown is fully implemented
-const BACKEND_SERVICES: &[&str] = &["auth", "rbac", "vault", "audit"];
+const BACKEND_SERVICES: &[&str] = &["auth", "access", "vault", "audit"];
 
 /// Gracefully shutdown all services respecting dependencies.
 ///
@@ -1923,9 +2168,9 @@ const BACKEND_SERVICES: &[&str] = &["auth", "rbac", "vault", "audit"];
 #[allow(dead_code)] // Will be used when graceful shutdown is fully implemented
 fn graceful_shutdown_all(children: &mut HashMap<String, ChildState>, config: &SupervisorConfig) {
     use shared::ipc::poll_readable;
-    
+
     let drain_timeout = Duration::from_secs(config.supervisor.drain_timeout_secs);
-    
+
     // Phase 1: Drain all frontend services simultaneously (parallel)
     info!("Phase 1: Draining frontend services (web, proxy_rdp, proxy_ssh)");
     for key in FRONTEND_SERVICES {
@@ -1940,25 +2185,25 @@ fn graceful_shutdown_all(children: &mut HashMap<String, ChildState>, config: &Su
             info!("{}: drain initiated", key);
         }
     }
-    
+
     // Wait for ALL frontend services to complete their active connections
     let start = Instant::now();
     let mut frontend_complete = [false; 3]; // web, proxy_rdp, proxy_ssh
-    
+
     while start.elapsed() < drain_timeout {
         let mut all_complete = true;
-        
+
         for (i, key) in FRONTEND_SERVICES.iter().enumerate() {
             if frontend_complete[i] {
                 continue;
             }
-            
+
             if let Some(state) = children.get_mut(*key) {
                 let fds = [state.channel.read_fd()];
                 if let Ok(ready) = poll_readable(&fds, 100)
                     && !ready.is_empty()
-                    && let Ok(Message::Control(ControlMessage::DrainComplete { pending_requests }))
-                        = state.channel.recv()
+                    && let Ok(Message::Control(ControlMessage::DrainComplete { pending_requests })) =
+                        state.channel.recv()
                 {
                     if pending_requests == 0 {
                         info!("{}: drain complete", key);
@@ -1968,25 +2213,25 @@ fn graceful_shutdown_all(children: &mut HashMap<String, ChildState>, config: &Su
                     }
                 }
             }
-            
+
             if !frontend_complete[i] {
                 all_complete = false;
             }
         }
-        
+
         if all_complete {
             break;
         }
-        
+
         std::thread::sleep(Duration::from_millis(100));
     }
-    
+
     if start.elapsed() >= drain_timeout {
         warn!("Frontend drain timeout after {:?}", drain_timeout);
     }
-    
+
     // Phase 2: Drain backend services sequentially (audit MUST be last)
-    info!("Phase 2: Draining backend services (auth, rbac, vault, audit)");
+    info!("Phase 2: Draining backend services (auth, access, vault, audit)");
     for key in BACKEND_SERVICES {
         if let Some(state) = children.get_mut(*key) {
             let drain_msg = Message::Control(ControlMessage::Drain);
@@ -1994,15 +2239,15 @@ fn graceful_shutdown_all(children: &mut HashMap<String, ChildState>, config: &Su
                 warn!("{}: failed to send Drain: {}", key, e);
                 continue;
             }
-            
+
             // Wait for this backend service to complete (quick, they're stateless)
             let fds = [state.channel.read_fd()];
             let backend_start = Instant::now();
             while backend_start.elapsed() < Duration::from_secs(5) {
                 if let Ok(ready) = poll_readable(&fds, 1000)
                     && !ready.is_empty()
-                    && let Ok(Message::Control(ControlMessage::DrainComplete { pending_requests }))
-                        = state.channel.recv()
+                    && let Ok(Message::Control(ControlMessage::DrainComplete { pending_requests })) =
+                        state.channel.recv()
                     && pending_requests == 0
                 {
                     info!("{}: drain complete", key);
@@ -2011,11 +2256,13 @@ fn graceful_shutdown_all(children: &mut HashMap<String, ChildState>, config: &Su
             }
         }
     }
-    
+
     // Phase 3: Send Shutdown to all
     info!("Phase 3: Sending Shutdown to all services");
     for state in children.values_mut() {
-        let _ = state.channel.send(&Message::Control(ControlMessage::Shutdown));
+        let _ = state
+            .channel
+            .send(&Message::Control(ControlMessage::Shutdown));
     }
 }
 
@@ -2026,7 +2273,7 @@ fn service_key_to_enum(key: &str) -> Option<Service> {
     match key {
         "web" => Some(Service::Web),
         "auth" => Some(Service::Auth),
-        "rbac" => Some(Service::Rbac),
+        "access" => Some(Service::Access),
         "vault" => Some(Service::Vault),
         "audit" => Some(Service::Audit),
         "proxy_ssh" => Some(Service::ProxySsh),
@@ -2056,8 +2303,9 @@ mod tests {
     /// not a hardcoded fallback that could become out of sync.
     fn test_config() -> config::SupervisorConfig {
         let config_dir = test_config_dir();
-        config::SupervisorConfig::load_from_dir(&config_dir)
-            .expect("Failed to load config from config/ directory. Ensure config/default.toml exists.")
+        config::SupervisorConfig::load_from_dir(&config_dir).expect(
+            "Failed to load config from config/ directory. Ensure config/default.toml exists.",
+        )
     }
 
     // ==================== PipeTopology Tests ====================
@@ -2073,8 +2321,8 @@ mod tests {
             .iter()
             .filter(|conn| conn.from == Service::Web)
             .collect();
-        
-        // Web connects to: Auth, Rbac, Audit, ProxySsh, ProxyRdp, Vault
+
+        // Web connects to: Auth, Access, Audit, ProxySsh, ProxyRdp, Vault
         assert_eq!(web_connections.len(), 6);
     }
 
@@ -2084,8 +2332,8 @@ mod tests {
             .iter()
             .filter(|conn| conn.from == Service::Auth)
             .collect();
-        
-        // Auth connects to: Rbac, Vault
+
+        // Auth connects to: Access, Vault
         assert_eq!(auth_connections.len(), 2);
     }
 
@@ -2095,8 +2343,8 @@ mod tests {
             .iter()
             .filter(|conn| conn.from == Service::ProxySsh)
             .collect();
-        
-        // ProxySsh connects to: Rbac, Vault, Audit
+
+        // ProxySsh connects to: Access, Vault, Audit
         assert_eq!(proxy_connections.len(), 3);
     }
 
@@ -2106,15 +2354,19 @@ mod tests {
             .iter()
             .filter(|conn| conn.from == Service::ProxyRdp)
             .collect();
-        
-        // ProxyRdp connects to: Rbac, Vault, Audit
+
+        // ProxyRdp connects to: Access, Vault, Audit
         assert_eq!(proxy_connections.len(), 3);
     }
 
     #[test]
     fn test_topology_no_self_connections() {
         for conn in TOPOLOGY {
-            assert_ne!(conn.from, conn.to, "Service {:?} should not connect to itself", conn.from);
+            assert_ne!(
+                conn.from, conn.to,
+                "Service {:?} should not connect to itself",
+                conn.from
+            );
         }
     }
 
@@ -2124,7 +2376,7 @@ mod tests {
     fn test_service_key_to_enum_all_valid() {
         assert_eq!(service_key_to_enum("web"), Some(Service::Web));
         assert_eq!(service_key_to_enum("auth"), Some(Service::Auth));
-        assert_eq!(service_key_to_enum("rbac"), Some(Service::Rbac));
+        assert_eq!(service_key_to_enum("access"), Some(Service::Access));
         assert_eq!(service_key_to_enum("vault"), Some(Service::Vault));
         assert_eq!(service_key_to_enum("audit"), Some(Service::Audit));
         assert_eq!(service_key_to_enum("proxy_ssh"), Some(Service::ProxySsh));
@@ -2144,7 +2396,7 @@ mod tests {
     fn test_create_pipe_topology() {
         let result = create_pipe_topology();
         assert!(result.is_ok());
-        
+
         let pipes = result.unwrap();
         assert_eq!(pipes.len(), TOPOLOGY.len());
     }
@@ -2152,7 +2404,7 @@ mod tests {
     #[test]
     fn test_create_pipe_topology_all_connections_present() {
         let pipes = create_pipe_topology().unwrap();
-        
+
         for conn in TOPOLOGY {
             assert!(
                 pipes.contains_key(&(conn.from, conn.to)),
@@ -2181,7 +2433,7 @@ mod tests {
             drain_started: None,
             fd_passing_socket: None,
         };
-        
+
         // First respawn should always be allowed
         assert!(should_respawn(&mut state, 10));
     }
@@ -2202,7 +2454,7 @@ mod tests {
             drain_started: None,
             fd_passing_socket: None,
         };
-        
+
         // Under limit (5 < 10), should be allowed
         assert!(should_respawn(&mut state, 10));
     }
@@ -2223,7 +2475,7 @@ mod tests {
             drain_started: None,
             fd_passing_socket: None,
         };
-        
+
         // At limit (10 >= 10), should NOT be allowed
         assert!(!should_respawn(&mut state, 10));
     }
@@ -2244,7 +2496,7 @@ mod tests {
             drain_started: None,
             fd_passing_socket: None,
         };
-        
+
         // Over limit (15 >= 10), should NOT be allowed
         assert!(!should_respawn(&mut state, 10));
     }
@@ -2270,7 +2522,7 @@ mod tests {
             drain_started: None,
             fd_passing_socket: None,
         };
-        
+
         // With max_missed = 3, and only 1 missed, should not restart
         assert_eq!(should_force_restart(&state, 3), RestartDecision::NotNeeded);
     }
@@ -2291,7 +2543,7 @@ mod tests {
             drain_started: None,
             fd_passing_socket: None,
         };
-        
+
         // Above threshold with no stats, should force restart
         assert_eq!(should_force_restart(&state, 3), RestartDecision::ForceNow);
     }
@@ -2318,7 +2570,7 @@ mod tests {
             drain_started: None,
             fd_passing_socket: None,
         };
-        
+
         // Above threshold with no active work, should force restart
         assert_eq!(should_force_restart(&state, 3), RestartDecision::ForceNow);
     }
@@ -2345,11 +2597,14 @@ mod tests {
             drain_started: None,
             fd_passing_socket: None,
         };
-        
+
         // Above threshold with active connections, should drain first
         assert_eq!(
             should_force_restart(&state, 3),
-            RestartDecision::DrainFirst { active: 10, pending: 0 }
+            RestartDecision::DrainFirst {
+                active: 10,
+                pending: 0
+            }
         );
     }
 
@@ -2375,11 +2630,14 @@ mod tests {
             drain_started: None,
             fd_passing_socket: None,
         };
-        
+
         // Above threshold with pending requests, should drain first
         assert_eq!(
             should_force_restart(&state, 3),
-            RestartDecision::DrainFirst { active: 0, pending: 5 }
+            RestartDecision::DrainFirst {
+                active: 0,
+                pending: 5
+            }
         );
     }
 
@@ -2402,7 +2660,7 @@ mod tests {
             drain_started: None,
             fd_passing_socket: None,
         };
-        
+
         assert_eq!(state.pid, 12345);
         assert_eq!(state.service_key, "audit");
         assert_eq!(state.missed_heartbeats, 0);
@@ -2418,25 +2676,25 @@ mod tests {
     #[test]
     fn test_config_service_keys_match_topology() {
         let config = test_config();
-        
+
         // All services in topology should be configurable
         let service_keys: std::collections::HashSet<_> = TOPOLOGY
             .iter()
             .flat_map(|conn| vec![conn.from, conn.to])
             .collect();
-        
+
         for service in service_keys {
             let key = match service {
                 Service::Web => "web",
                 Service::Auth => "auth",
-                Service::Rbac => "rbac",
+                Service::Access => "access",
                 Service::Vault => "vault",
                 Service::Audit => "audit",
                 Service::ProxySsh => "proxy_ssh",
                 Service::ProxyRdp => "proxy_rdp",
                 Service::Supervisor => continue, // Supervisor not in services
             };
-            
+
             assert!(
                 config.services.contains_key(key),
                 "Service {} should be in config",
@@ -2451,7 +2709,7 @@ mod tests {
     fn test_heartbeat_ping_pong_cycle() {
         // Create a pair of channels (supervisor <-> service)
         let (supervisor_channel, service_channel) = IpcChannel::pair().unwrap();
-        
+
         // Create child state
         let mut state = ChildState {
             pid: 12345,
@@ -2467,7 +2725,7 @@ mod tests {
             drain_started: None,
             fd_passing_socket: None,
         };
-        
+
         // Spawn a thread to simulate the service responding to Ping
         let service_thread = std::thread::spawn(move || {
             // Wait for Ping
@@ -2486,23 +2744,26 @@ mod tests {
             }
             service_channel
         });
-        
+
         // Send heartbeat from supervisor
         send_heartbeat("test_service", &mut state);
-        
+
         // Wait for service thread
         let _ = service_thread.join().unwrap();
-        
+
         // Verify state was updated correctly
         assert_eq!(state.heartbeat_seq, 1, "Heartbeat seq should increment");
-        assert_eq!(state.missed_heartbeats, 0, "Missed heartbeats should be 0 after valid Pong");
+        assert_eq!(
+            state.missed_heartbeats, 0,
+            "Missed heartbeats should be 0 after valid Pong"
+        );
     }
 
     #[test]
     fn test_heartbeat_missed_on_timeout() {
         // Create a pair of channels but don't respond
         let (supervisor_channel, _service_channel) = IpcChannel::pair().unwrap();
-        
+
         let mut state = ChildState {
             pid: 12345,
             service_key: "unresponsive_service".to_string(),
@@ -2517,20 +2778,23 @@ mod tests {
             drain_started: None,
             fd_passing_socket: None,
         };
-        
+
         // Send heartbeat - service won't respond, will timeout
         send_heartbeat("unresponsive_service", &mut state);
-        
+
         // Verify missed heartbeat was counted
         assert_eq!(state.heartbeat_seq, 1, "Heartbeat seq should increment");
-        assert_eq!(state.missed_heartbeats, 1, "Missed heartbeats should increment on timeout");
+        assert_eq!(
+            state.missed_heartbeats, 1,
+            "Missed heartbeats should increment on timeout"
+        );
     }
 
     #[test]
     fn test_heartbeat_seq_mismatch_counts_as_missed() {
         // Create a pair of channels
         let (supervisor_channel, service_channel) = IpcChannel::pair().unwrap();
-        
+
         let mut state = ChildState {
             pid: 12345,
             service_key: "bad_seq_service".to_string(),
@@ -2545,7 +2809,7 @@ mod tests {
             drain_started: None,
             fd_passing_socket: None,
         };
-        
+
         // Spawn thread to respond with a seq that has lag > 2
         let service_thread = std::thread::spawn(move || {
             let msg = service_channel.recv().unwrap();
@@ -2557,18 +2821,21 @@ mod tests {
             }
             service_channel
         });
-        
+
         send_heartbeat("bad_seq_service", &mut state);
         let _ = service_thread.join().unwrap();
-        
+
         // Significant seq lag should count as missed
-        assert_eq!(state.missed_heartbeats, 1, "Significant seq lag should count as missed heartbeat");
+        assert_eq!(
+            state.missed_heartbeats, 1,
+            "Significant seq lag should count as missed heartbeat"
+        );
     }
 
     #[test]
     fn test_heartbeat_resets_missed_count_on_valid_pong() {
         let (supervisor_channel, service_channel) = IpcChannel::pair().unwrap();
-        
+
         let mut state = ChildState {
             pid: 12345,
             service_key: "recovering_service".to_string(),
@@ -2583,7 +2850,7 @@ mod tests {
             drain_started: None,
             fd_passing_socket: None,
         };
-        
+
         // Spawn thread to respond correctly
         let service_thread = std::thread::spawn(move || {
             let msg = service_channel.recv().unwrap();
@@ -2594,12 +2861,15 @@ mod tests {
             }
             service_channel
         });
-        
+
         send_heartbeat("recovering_service", &mut state);
         let _ = service_thread.join().unwrap();
-        
+
         // Valid Pong should reset missed count
-        assert_eq!(state.missed_heartbeats, 0, "Valid Pong should reset missed heartbeats to 0");
+        assert_eq!(
+            state.missed_heartbeats, 0,
+            "Valid Pong should reset missed heartbeats to 0"
+        );
         assert_eq!(state.heartbeat_seq, 6, "Seq should have incremented");
     }
 
@@ -2607,7 +2877,7 @@ mod tests {
     fn test_heartbeat_multiple_missed_triggers_restart() {
         let config = test_config();
         let max_missed = config.supervisor.max_missed_heartbeats;
-        
+
         // Create state with max_missed - 1 already missed
         let (channel, _) = IpcChannel::pair().unwrap();
         let mut state = ChildState {
@@ -2624,10 +2894,10 @@ mod tests {
             drain_started: None,
             fd_passing_socket: None,
         };
-        
+
         // One more miss should trigger restart
         send_heartbeat("failing_service", &mut state);
-        
+
         assert!(
             state.missed_heartbeats >= max_missed,
             "After {} misses, should trigger restart (missed: {}, max: {})",
@@ -2640,7 +2910,7 @@ mod tests {
     #[test]
     fn test_service_stats_in_pong_response() {
         let (supervisor_channel, service_channel) = IpcChannel::pair().unwrap();
-        
+
         let mut state = ChildState {
             pid: 12345,
             service_key: "stats_service".to_string(),
@@ -2655,7 +2925,7 @@ mod tests {
             drain_started: None,
             fd_passing_socket: None,
         };
-        
+
         // Expected stats from service
         let expected_stats = ServiceStats {
             uptime_secs: 3600,
@@ -2665,33 +2935,45 @@ mod tests {
             pending_requests: 3,
         };
         let expected_stats_clone = expected_stats.clone();
-        
+
         let service_thread = std::thread::spawn(move || {
             let msg = service_channel.recv().unwrap();
             if let Message::Control(ControlMessage::Ping { seq }) = msg {
-                let pong = Message::Control(ControlMessage::Pong { 
-                    seq, 
+                let pong = Message::Control(ControlMessage::Pong {
+                    seq,
                     stats: expected_stats_clone,
                 });
                 service_channel.send(&pong).unwrap();
             }
             service_channel
         });
-        
+
         send_heartbeat("stats_service", &mut state);
         let _ = service_thread.join().unwrap();
-        
+
         // Heartbeat was successful
         assert_eq!(state.missed_heartbeats, 0);
-        
+
         // Verify stats are stored in last_stats
-        assert!(state.last_stats.is_some(), "Stats should be stored after successful Pong");
+        assert!(
+            state.last_stats.is_some(),
+            "Stats should be stored after successful Pong"
+        );
         let stored_stats = state.last_stats.as_ref().unwrap();
         assert_eq!(stored_stats.uptime_secs, expected_stats.uptime_secs);
-        assert_eq!(stored_stats.requests_processed, expected_stats.requests_processed);
+        assert_eq!(
+            stored_stats.requests_processed,
+            expected_stats.requests_processed
+        );
         assert_eq!(stored_stats.requests_failed, expected_stats.requests_failed);
-        assert_eq!(stored_stats.active_connections, expected_stats.active_connections);
-        assert_eq!(stored_stats.pending_requests, expected_stats.pending_requests);
+        assert_eq!(
+            stored_stats.active_connections,
+            expected_stats.active_connections
+        );
+        assert_eq!(
+            stored_stats.pending_requests,
+            expected_stats.pending_requests
+        );
     }
 
     // ==================== All Services Heartbeat Contract Tests ====================
@@ -2707,21 +2989,24 @@ mod tests {
         let services_with_heartbeat_tests = [
             "vauban-auth",      // test_handle_control_ping
             "vauban-vault",     // test_handle_control_ping
-            "vauban-rbac",      // test_handle_control_ping
+            "vauban-access",    // test_handle_control_ping
             "vauban-audit",     // test_handle_control_ping
             "vauban-proxy-ssh", // test_handle_control_ping
             "vauban-proxy-rdp", // test_handle_control_ping
             "vauban-web",       // test_heartbeat_state_new, etc.
         ];
-        
-        assert_eq!(services_with_heartbeat_tests.len(), 7, 
-            "All 7 services should have heartbeat tests");
+
+        assert_eq!(
+            services_with_heartbeat_tests.len(),
+            7,
+            "All 7 services should have heartbeat tests"
+        );
     }
 
     #[test]
     fn test_heartbeat_interval_config() {
         let config = test_config();
-        
+
         // Verify reasonable defaults
         assert!(
             config.supervisor.heartbeat_interval_secs >= 1,
@@ -2742,7 +3027,7 @@ mod tests {
     #[test]
     fn test_drain_timeout_config() {
         let config = test_config();
-        
+
         // Verify drain timeout is configured (default 30s per Section 9.2)
         assert_eq!(
             config.supervisor.drain_timeout_secs, 30,
@@ -2764,7 +3049,7 @@ mod tests {
         // Verify backend services list for drain order
         assert_eq!(BACKEND_SERVICES.len(), 4);
         assert_eq!(BACKEND_SERVICES[0], "auth");
-        assert_eq!(BACKEND_SERVICES[1], "rbac");
+        assert_eq!(BACKEND_SERVICES[1], "access");
         assert_eq!(BACKEND_SERVICES[2], "vault");
         assert_eq!(BACKEND_SERVICES[3], "audit"); // Must be last
     }
@@ -2784,16 +3069,16 @@ mod tests {
     fn test_drain_order_is_reverse_of_startup() {
         let config = test_config();
         let startup_order = config.startup_order();
-        
+
         // Drain order should be reverse of startup order
-        // Startup: audit, vault, rbac, auth, proxy_ssh, proxy_rdp, web
+        // Startup: audit, vault, access, auth, proxy_ssh, proxy_rdp, web
         // Drain frontend: web, proxy_rdp, proxy_ssh (parallel)
-        // Drain backend: auth, rbac, vault, audit (sequential)
-        
+        // Drain backend: auth, access, vault, audit (sequential)
+
         // First service to start should be last to drain
         assert_eq!(startup_order[0], "audit");
         assert_eq!(BACKEND_SERVICES.last(), Some(&"audit"));
-        
+
         // Last service to start should be first to drain
         assert_eq!(startup_order.last(), Some(&"web"));
         assert!(FRONTEND_SERVICES.contains(&"web"));
@@ -2818,7 +3103,7 @@ mod tests {
             drain_started: None,
             fd_passing_socket: None,
         };
-        
+
         // Initial drain state
         assert!(!state.is_draining);
         assert!(state.drain_started.is_none());
@@ -2828,17 +3113,29 @@ mod tests {
     fn test_restart_decision_variants() {
         // Test that all RestartDecision variants exist and are usable
         let not_needed = RestartDecision::NotNeeded;
-        let drain_first = RestartDecision::DrainFirst { active: 5, pending: 3 };
+        let drain_first = RestartDecision::DrainFirst {
+            active: 5,
+            pending: 3,
+        };
         let force_now = RestartDecision::ForceNow;
-        
+
         assert_eq!(not_needed, RestartDecision::NotNeeded);
-        assert_eq!(drain_first, RestartDecision::DrainFirst { active: 5, pending: 3 });
+        assert_eq!(
+            drain_first,
+            RestartDecision::DrainFirst {
+                active: 5,
+                pending: 3
+            }
+        );
         assert_eq!(force_now, RestartDecision::ForceNow);
     }
 
     #[test]
     fn test_restart_decision_is_clone() {
-        let decision = RestartDecision::DrainFirst { active: 10, pending: 5 };
+        let decision = RestartDecision::DrainFirst {
+            active: 10,
+            pending: 5,
+        };
         let cloned = decision.clone();
         assert_eq!(decision, cloned);
     }
@@ -2924,10 +3221,7 @@ mod tests {
         sender.send(&msg).unwrap();
 
         let received = receiver.recv().unwrap();
-        if let Message::TcpConnectResponse {
-            success, error, ..
-        } = received
-        {
+        if let Message::TcpConnectResponse { success, error, .. } = received {
             assert!(!success);
             assert_eq!(error, Some("Connection refused".to_string()));
         } else {
@@ -2939,7 +3233,10 @@ mod tests {
     #[test]
     fn test_socketpair_for_fd_passing_creates_valid_pair() {
         let result = socketpair_for_fd_passing();
-        assert!(result.is_ok(), "socketpair_for_fd_passing should succeed on FreeBSD");
+        assert!(
+            result.is_ok(),
+            "socketpair_for_fd_passing should succeed on FreeBSD"
+        );
 
         let (sock1, sock2) = result.unwrap();
         // Both sockets should have valid file descriptors
@@ -2974,27 +3271,28 @@ mod tests {
 
     #[test]
     fn test_listener_bind_and_send_fd_via_scm_rights() {
-        let (sup_sock, child_sock) = socketpair_for_fd_passing()
-            .expect("socketpair_for_fd_passing should succeed");
+        let (sup_sock, child_sock) =
+            socketpair_for_fd_passing().expect("socketpair_for_fd_passing should succeed");
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0")
-            .expect("should bind to ephemeral port");
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("should bind to ephemeral port");
         let bound_addr = listener.local_addr().unwrap();
         assert!(bound_addr.port() > 0);
 
-        send_fd(sup_sock.as_raw_fd(), listener.as_raw_fd())
-            .expect("send_fd should succeed");
+        send_fd(sup_sock.as_raw_fd(), listener.as_raw_fd()).expect("send_fd should succeed");
 
         use shared::ipc::recv_fd;
-        let received = recv_fd(child_sock.as_raw_fd())
-            .expect("recv_fd should succeed");
+        let received = recv_fd(child_sock.as_raw_fd()).expect("recv_fd should succeed");
 
         let received_listener = unsafe {
             use std::os::unix::io::{FromRawFd, IntoRawFd};
             std::net::TcpListener::from_raw_fd(received.into_raw_fd())
         };
         let recv_addr = received_listener.local_addr().unwrap();
-        assert_eq!(recv_addr, bound_addr, "received listener should be on the same address");
+        assert_eq!(
+            recv_addr, bound_addr,
+            "received listener should be on the same address"
+        );
     }
 
     #[test]
@@ -3048,7 +3346,9 @@ mod tests {
     #[test]
     fn test_m8_signal_handler_sets_shutdown_flag() {
         let source = supervisor_prod_source();
-        let handler_start = source.find("fn setup_signal_handlers").expect("setup_signal_handlers must exist");
+        let handler_start = source
+            .find("fn setup_signal_handlers")
+            .expect("setup_signal_handlers must exist");
         let handler_source = &source[handler_start..];
         assert!(
             handler_source.contains("SHUTDOWN_REQUESTED.store(true"),
@@ -3059,7 +3359,9 @@ mod tests {
     #[test]
     fn test_m8_watchdog_loop_checks_shutdown_flag() {
         let source = supervisor_prod_source();
-        let watchdog_start = source.find("fn watchdog_loop").expect("watchdog_loop must exist");
+        let watchdog_start = source
+            .find("fn watchdog_loop")
+            .expect("watchdog_loop must exist");
         let watchdog_source = &source[watchdog_start..];
         assert!(
             watchdog_source.contains("SHUTDOWN_REQUESTED.load"),
@@ -3079,7 +3381,9 @@ mod tests {
     #[test]
     fn test_m8_graceful_shutdown_sends_shutdown_message() {
         let source = supervisor_prod_source();
-        let shutdown_fn = source.find("fn graceful_shutdown_children").expect("graceful_shutdown_children must exist");
+        let shutdown_fn = source
+            .find("fn graceful_shutdown_children")
+            .expect("graceful_shutdown_children must exist");
         let shutdown_source = &source[shutdown_fn..];
         assert!(
             shutdown_source.contains("ControlMessage::Shutdown"),
@@ -3102,7 +3406,8 @@ mod tests {
         let source = supervisor_prod_source();
         // Children must be in their own process group so CTRL+C (SIGINT)
         // only reaches the supervisor, allowing graceful shutdown via IPC.
-        let child_branch = source.find("ForkResult::Child")
+        let child_branch = source
+            .find("ForkResult::Child")
             .expect("ForkResult::Child must exist");
         let child_source = &source[child_branch..];
         assert!(
@@ -3116,7 +3421,8 @@ mod tests {
     #[test]
     fn test_m9_respawn_linked_group_takes_mutable_service_pipes() {
         let source = supervisor_prod_source();
-        let fn_start = source.find("fn respawn_linked_group")
+        let fn_start = source
+            .find("fn respawn_linked_group")
             .expect("respawn_linked_group must exist");
         let fn_sig = &source[fn_start..fn_start + 300];
         assert!(
@@ -3128,7 +3434,8 @@ mod tests {
     #[test]
     fn test_m9_respawn_linked_group_updates_service_pipes() {
         let source = supervisor_prod_source();
-        let fn_start = source.find("fn respawn_linked_group")
+        let fn_start = source
+            .find("fn respawn_linked_group")
             .expect("respawn_linked_group must exist");
         let fn_body = &source[fn_start..];
         // Must insert updated pipes back into service_pipes
@@ -3141,7 +3448,8 @@ mod tests {
     #[test]
     fn test_m9_watchdog_loop_takes_mutable_service_pipes() {
         let source = supervisor_prod_source();
-        let fn_start = source.find("fn watchdog_loop")
+        let fn_start = source
+            .find("fn watchdog_loop")
             .expect("watchdog_loop must exist");
         let fn_sig = &source[fn_start..fn_start + 300];
         assert!(
@@ -3155,7 +3463,8 @@ mod tests {
     #[test]
     fn test_spawn_child_accepts_service_env_vars() {
         let source = supervisor_prod_source();
-        let spawn_start = source.find("fn spawn_child(")
+        let spawn_start = source
+            .find("fn spawn_child(")
             .expect("spawn_child must exist");
         let fn_sig = &source[spawn_start..spawn_start + 500];
         assert!(
@@ -3167,7 +3476,8 @@ mod tests {
     #[test]
     fn test_spawn_child_sets_service_env_vars_in_child() {
         let source = supervisor_prod_source();
-        let spawn_start = source.find("fn spawn_child(")
+        let spawn_start = source
+            .find("fn spawn_child(")
             .expect("spawn_child must exist");
         let fn_body = &source[spawn_start..];
         let fn_end = fn_body.find("\nfn ").unwrap_or(fn_body.len());
@@ -3182,8 +3492,13 @@ mod tests {
     #[test]
     fn test_all_spawn_call_sites_pass_service_env_vars() {
         let source = supervisor_prod_source();
-        // Count invocations of spawn_child (calls start with `spawn_child(&`)
-        let call_sites: Vec<_> = source.match_indices("spawn_child(&").collect();
+        let call_sites: Vec<_> = source
+            .match_indices("spawn_child(")
+            .filter(|(pos, _)| {
+                let before = &source[pos.saturating_sub(3)..*pos];
+                !before.ends_with("fn ")
+            })
+            .collect();
         assert!(
             call_sites.len() >= 3,
             "Expected at least 3 spawn_child invocations (initial, respawn, linked), found {}",
@@ -3191,7 +3506,7 @@ mod tests {
         );
 
         for (pos, _) in &call_sites {
-            let call_context = &source[*pos..(*pos + 300).min(source.len())];
+            let call_context = &source[*pos..(*pos + 400).min(source.len())];
             assert!(
                 call_context.contains("&svc_env"),
                 "All spawn_child call sites must pass &svc_env: {:?}",
@@ -3208,10 +3523,7 @@ mod tests {
         let cert_path = dir.path().join("server.crt");
         let key_path = dir.path().join("server.key");
 
-        generate_self_signed_cert(
-            cert_path.to_str().unwrap(),
-            key_path.to_str().unwrap(),
-        ).unwrap();
+        generate_self_signed_cert(cert_path.to_str().unwrap(), key_path.to_str().unwrap()).unwrap();
 
         assert!(cert_path.exists(), "cert file must be created");
         assert!(key_path.exists(), "key file must be created");
@@ -3228,10 +3540,7 @@ mod tests {
         let cert_path = dir.path().join("sub/dir/server.crt");
         let key_path = dir.path().join("sub/dir/server.key");
 
-        generate_self_signed_cert(
-            cert_path.to_str().unwrap(),
-            key_path.to_str().unwrap(),
-        ).unwrap();
+        generate_self_signed_cert(cert_path.to_str().unwrap(), key_path.to_str().unwrap()).unwrap();
 
         assert!(cert_path.exists());
         assert!(key_path.exists());
@@ -3245,10 +3554,7 @@ mod tests {
         let cert_path = dir.path().join("server.crt");
         let key_path = dir.path().join("server.key");
 
-        generate_self_signed_cert(
-            cert_path.to_str().unwrap(),
-            key_path.to_str().unwrap(),
-        ).unwrap();
+        generate_self_signed_cert(cert_path.to_str().unwrap(), key_path.to_str().unwrap()).unwrap();
 
         let cert_mode = std::fs::metadata(&cert_path).unwrap().permissions().mode() & 0o777;
         let key_mode = std::fs::metadata(&key_path).unwrap().permissions().mode() & 0o777;
@@ -3262,10 +3568,8 @@ mod tests {
         let cert_path = dir.path().join("server.crt");
         let key_path = dir.path().join("server.key");
 
-        let (cert_pem, key_pem) = ensure_tls_certs(
-            cert_path.to_str().unwrap(),
-            key_path.to_str().unwrap(),
-        ).unwrap();
+        let (cert_pem, key_pem) =
+            ensure_tls_certs(cert_path.to_str().unwrap(), key_path.to_str().unwrap()).unwrap();
 
         assert!(cert_pem.contains("BEGIN CERTIFICATE"));
         assert!(key_pem.as_str().contains("BEGIN"));
@@ -3280,22 +3584,24 @@ mod tests {
         let key_path = dir.path().join("server.key");
 
         // Pre-create files
-        generate_self_signed_cert(
-            cert_path.to_str().unwrap(),
-            key_path.to_str().unwrap(),
-        ).unwrap();
+        generate_self_signed_cert(cert_path.to_str().unwrap(), key_path.to_str().unwrap()).unwrap();
 
         let expected_cert = std::fs::read_to_string(&cert_path).unwrap();
         let expected_key = std::fs::read_to_string(&key_path).unwrap();
 
         // ensure_tls_certs should read, not regenerate
-        let (cert_pem, key_pem) = ensure_tls_certs(
-            cert_path.to_str().unwrap(),
-            key_path.to_str().unwrap(),
-        ).unwrap();
+        let (cert_pem, key_pem) =
+            ensure_tls_certs(cert_path.to_str().unwrap(), key_path.to_str().unwrap()).unwrap();
 
-        assert_eq!(cert_pem, expected_cert, "must read existing cert, not regenerate");
-        assert_eq!(key_pem.as_str(), expected_key, "must read existing key, not regenerate");
+        assert_eq!(
+            cert_pem, expected_cert,
+            "must read existing cert, not regenerate"
+        );
+        assert_eq!(
+            key_pem.as_str(),
+            expected_key,
+            "must read existing key, not regenerate"
+        );
     }
 
     #[test]
@@ -3303,12 +3609,18 @@ mod tests {
         let (sender_channel, receiver_channel) = IpcChannel::pair().unwrap();
 
         let cert_pem = "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----";
-        let key_pem = SensitiveString::new("-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----".to_string());
+        let key_pem = SensitiveString::new(
+            "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----".to_string(),
+        );
 
         send_tls_cert_provision(&sender_channel, cert_pem, &key_pem).unwrap();
 
         let msg = receiver_channel.recv().unwrap();
-        if let Message::TlsCertProvision { cert_pem: c, key_pem: k } = msg {
+        if let Message::TlsCertProvision {
+            cert_pem: c,
+            key_pem: k,
+        } = msg
+        {
             assert!(c.contains("CERTIFICATE"));
             assert!(k.as_str().contains("PRIVATE KEY"));
         } else {
@@ -3319,9 +3631,11 @@ mod tests {
     #[test]
     fn test_tls_cert_provision_sent_after_listener_fd_in_initial_startup() {
         let source = supervisor_prod_source();
-        let send_fd_pos = source.find("Sent listening socket FD to vauban-web via SCM_RIGHTS")
+        let send_fd_pos = source
+            .find("Sent listening socket FD to vauban-web via SCM_RIGHTS")
             .expect("must log FD send");
-        let cert_provision_pos = source.find("Sent TLS certificate data to vauban-web via IPC")
+        let cert_provision_pos = source
+            .find("Sent TLS certificate data to vauban-web via IPC")
             .expect("must log cert provision");
         assert!(
             send_fd_pos < cert_provision_pos,
@@ -3332,7 +3646,8 @@ mod tests {
     #[test]
     fn test_tls_cert_provision_sent_on_respawn() {
         let source = supervisor_prod_source();
-        let respawn_fn_start = source.find("fn respawn_service(")
+        let respawn_fn_start = source
+            .find("fn respawn_service(")
             .expect("respawn_service must exist");
         let respawn_fn = &source[respawn_fn_start..];
         let fn_end = respawn_fn.find("\n/// ").unwrap_or(respawn_fn.len());
@@ -3351,12 +3666,13 @@ mod tests {
     #[test]
     fn test_tls_cert_provision_sent_on_linked_group_respawn() {
         let source = supervisor_prod_source();
-        let linked_fn_start = source.find("fn respawn_linked_group(")
+        let linked_fn_start = source
+            .find("fn respawn_linked_group(")
             .expect("respawn_linked_group must exist");
         let linked_fn = &source[linked_fn_start..];
-        let fn_end = linked_fn.find("\n/// ").unwrap_or(
-            linked_fn.find("\nfn ").unwrap_or(linked_fn.len())
-        );
+        let fn_end = linked_fn
+            .find("\n/// ")
+            .unwrap_or(linked_fn.find("\nfn ").unwrap_or(linked_fn.len()));
         let linked_fn = &linked_fn[..fn_end];
 
         assert!(

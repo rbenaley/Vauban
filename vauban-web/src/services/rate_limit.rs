@@ -473,11 +473,7 @@ mod tests {
     #[test]
     fn test_m2_cache_disabled_with_url_returns_in_memory() {
         // Even when a URL is provided, cache_enabled = false -> InMemory.
-        let limiter = unwrap_ok!(RateLimiter::new(
-            false,
-            Some("redis://localhost:6379"),
-            10
-        ));
+        let limiter = unwrap_ok!(RateLimiter::new(false, Some("redis://localhost:6379"), 10));
         assert!(
             matches!(limiter, RateLimiter::InMemory { .. }),
             "cache_enabled = false must return InMemory even with a URL"
@@ -489,11 +485,7 @@ mod tests {
         // cache_enabled = true + valid URL format -> Redis variant.
         // Note: Client::open only validates the URL format, it does not
         // actually connect (that happens in check_redis).
-        let limiter = unwrap_ok!(RateLimiter::new(
-            true,
-            Some("redis://localhost:6379"),
-            10
-        ));
+        let limiter = unwrap_ok!(RateLimiter::new(true, Some("redis://localhost:6379"), 10));
         assert!(
             matches!(limiter, RateLimiter::Redis { .. }),
             "cache_enabled = true + valid URL must return Redis rate limiter"

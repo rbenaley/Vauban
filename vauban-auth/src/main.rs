@@ -1,8 +1,14 @@
 // L-1: Relax strict clippy lints in test code where unwrap/expect/panic are idiomatic
-#![cfg_attr(test, allow(
-    clippy::unwrap_used, clippy::expect_used, clippy::panic,
-    clippy::print_stdout, clippy::print_stderr
-))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::print_stdout,
+        clippy::print_stderr
+    )
+)]
 
 //! Vauban Authentication Service
 //!
@@ -17,7 +23,7 @@ use argon2::password_hash::SaltString;
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use rand::rngs::OsRng;
 use shared::capsicum;
-use shared::ipc::{poll_readable, IpcChannel};
+use shared::ipc::{IpcChannel, poll_readable};
 use shared::messages::{AuthResult, ControlMessage, Message, ServiceStats};
 use std::os::unix::io::RawFd;
 use std::process::ExitCode;
@@ -71,7 +77,11 @@ impl ServiceState {
             None,
         )
         .map_err(|e| anyhow::anyhow!("Invalid Argon2 params: {}", e))?;
-        Ok(Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params))
+        Ok(Argon2::new(
+            argon2::Algorithm::Argon2id,
+            argon2::Version::V0x13,
+            params,
+        ))
     }
 }
 
@@ -142,8 +152,7 @@ fn run_service() -> Result<()> {
         peer_channels.push(("web", ch));
     }
 
-    capsicum::setup_service_sandbox(&all_fds, None)
-        .context("Failed to setup sandbox")?;
+    capsicum::setup_service_sandbox(&all_fds, None).context("Failed to setup sandbox")?;
 
     info!(
         "Entered Capsicum sandbox, starting main loop ({} peer channels)",
@@ -301,18 +310,16 @@ fn handle_message(channel: &IpcChannel, state: &mut ServiceState, msg: Message) 
             state.requests_processed += 1;
 
             let valid = match PasswordHash::new(&password_hash) {
-                Ok(parsed_hash) => {
-                    match state.argon2() {
-                        Ok(argon2) => argon2
-                            .verify_password(password.as_str().as_bytes(), &parsed_hash)
-                            .is_ok(),
-                        Err(e) => {
-                            error!(request_id, "Argon2 init error: {}", e);
-                            state.requests_failed += 1;
-                            false
-                        }
+                Ok(parsed_hash) => match state.argon2() {
+                    Ok(argon2) => argon2
+                        .verify_password(password.as_str().as_bytes(), &parsed_hash)
+                        .is_ok(),
+                    Err(e) => {
+                        error!(request_id, "Argon2 init error: {}", e);
+                        state.requests_failed += 1;
+                        false
                     }
-                }
+                },
                 Err(e) => {
                     warn!(request_id, "Invalid password hash format: {}", e);
                     false
@@ -363,7 +370,11 @@ fn handle_message(channel: &IpcChannel, state: &mut ServiceState, msg: Message) 
     }
 }
 
-fn handle_control(channel: &IpcChannel, state: &mut ServiceState, ctrl: ControlMessage) -> Result<()> {
+fn handle_control(
+    channel: &IpcChannel,
+    state: &mut ServiceState,
+    ctrl: ControlMessage,
+) -> Result<()> {
     match ctrl {
         ControlMessage::Ping { seq } => {
             let stats = ServiceStats {
@@ -492,12 +503,12 @@ mod tests {
             credential: b"password".to_vec(),
             source_ip: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
         };
-        
+
         handle_message(&auth, &mut state, request).unwrap();
-        
+
         // Verify request was processed
         assert_eq!(state.requests_processed, 1);
-        
+
         // Read response
         let response: Message = web.recv().unwrap();
         if let Message::AuthResponse { request_id, result } = response {
@@ -519,15 +530,20 @@ mod tests {
             challenge_id: "chal123".to_string(),
             code: "123456".to_string(),
         };
-        
+
         handle_message(&auth, &mut state, request).unwrap();
-        
+
         // Verify request was processed
         assert_eq!(state.requests_processed, 1);
-        
+
         // Read response
         let response: Message = web.recv().unwrap();
-        if let Message::MfaVerifyResponse { request_id, success, session_id } = response {
+        if let Message::MfaVerifyResponse {
+            request_id,
+            success,
+            session_id,
+        } = response
+        {
             assert_eq!(request_id, 2);
             assert!(success);
             assert!(session_id.is_some());
@@ -547,7 +563,10 @@ mod tests {
 
         // Read Pong response
         let response: Message = supervisor.recv().unwrap();
-        assert!(matches!(response, Message::Control(ControlMessage::Pong { seq: 99, .. })));
+        assert!(matches!(
+            response,
+            Message::Control(ControlMessage::Pong { seq: 99, .. })
+        ));
     }
 
     #[test]
@@ -562,7 +581,7 @@ mod tests {
             object: "resource".to_string(),
             action: "read".to_string(),
         };
-        
+
         let result = handle_message(&service, &mut state, msg);
         assert!(result.is_ok());
     }
@@ -707,7 +726,7 @@ mod tests {
     fn test_service_stats_in_pong() {
         let (supervisor, service) = IpcChannel::pair().unwrap();
         let mut state = test_state();
-        
+
         // Process some requests
         state.requests_processed = 42;
         state.requests_failed = 3;
@@ -775,7 +794,9 @@ mod tests {
     #[test]
     fn test_m8_handle_control_sets_shutdown_flag() {
         let source = prod_source();
-        let handle_ctrl_start = source.find("fn handle_control").expect("handle_control must exist");
+        let handle_ctrl_start = source
+            .find("fn handle_control")
+            .expect("handle_control must exist");
         let handle_ctrl_source = &source[handle_ctrl_start..];
         assert!(
             handle_ctrl_source.contains("shutdown_requested = true"),

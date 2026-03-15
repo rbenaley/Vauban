@@ -739,11 +739,11 @@ const TOPOLOGY: &[PipeTopology] = &[
 Updated startup order (unchanged -- vault already starts in Phase 2):
 1. `vauban-audit` -- No dependencies
 2. `vauban-vault` -- No dependencies (reads master key file only)
-3. `vauban-rbac` -- No dependencies
-4. `vauban-auth` -- Depends on rbac, vault
-5. `vauban-proxy-ssh` -- Depends on rbac, vault, audit
-6. `vauban-proxy-rdp` -- Depends on rbac, vault, audit
-7. `vauban-web` -- Depends on auth, rbac, audit, **vault**
+3. `vauban-access` -- No dependencies
+4. `vauban-auth` -- Depends on access, vault
+5. `vauban-proxy-ssh` -- Depends on access, vault, audit
+6. `vauban-proxy-rdp` -- Depends on access, vault, audit
+7. `vauban-web` -- Depends on auth, access, audit, **vault**
 
 #### 7.1.2 vauban-web: MFA Handlers
 

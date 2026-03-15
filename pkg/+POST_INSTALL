@@ -85,10 +85,10 @@ done
 # No ACLs on certs/ -- only root (vauban-supervisor) accesses cert files.
 # vauban-web receives cert data via IPC at startup.
 
-chown root:wheel "${PREFIX}/etc/vauban/rbac"
-chmod 750 "${PREFIX}/etc/vauban/rbac"
-set_acl         "vbpolicyba" "rx" "${PREFIX}/etc/vauban/rbac"
-set_default_acl "vbpolicyba" "r"  "${PREFIX}/etc/vauban/rbac"
+chown root:wheel "${PREFIX}/etc/vauban/access"
+chmod 750 "${PREFIX}/etc/vauban/access"
+set_acl         "vbpolicyba" "rx" "${PREFIX}/etc/vauban/access"
+set_default_acl "vbpolicyba" "r"  "${PREFIX}/etc/vauban/access"
 
 echo "==> Setting ACLs on recordings directory..."
 
@@ -211,6 +211,6 @@ echo "       - To enable ACME: set enabled=true, email and domains"
 echo "         in [server.tls.acme]"
 echo "    2. sysrc vauban_enable=YES"
 echo "    3. service vauban start"
-echo "    4. create_superuser"
+echo "    4. vauban-supervisor create-superuser"
 echo "================================================================"
 echo ""

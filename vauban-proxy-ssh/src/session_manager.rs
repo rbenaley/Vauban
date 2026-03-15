@@ -4,10 +4,10 @@ use crate::error::{SessionError, SessionResult};
 use crate::session::{SessionConfig, SshSession};
 use shared::messages::Message;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, error, info, warn};
 
 /// Commands that can be sent to a session task.
@@ -359,7 +359,8 @@ mod tests {
     #[test]
     fn test_m11_clone_for_cleanup_shares_real_sessions() {
         let source = prod_source();
-        let fn_start = source.find("fn clone_for_cleanup")
+        let fn_start = source
+            .find("fn clone_for_cleanup")
             .expect("clone_for_cleanup must exist");
         let fn_body = &source[fn_start..fn_start + 400];
         // Must use Arc::clone to share the real sessions map
@@ -372,7 +373,8 @@ mod tests {
     #[test]
     fn test_m11_clone_for_cleanup_shares_real_active_count() {
         let source = prod_source();
-        let fn_start = source.find("fn clone_for_cleanup")
+        let fn_start = source
+            .find("fn clone_for_cleanup")
             .expect("clone_for_cleanup must exist");
         let fn_body = &source[fn_start..fn_start + 400];
         assert!(
@@ -385,7 +387,8 @@ mod tests {
     fn test_m11_cleanup_remove_actually_removes() {
         let source = prod_source();
         // Find SessionManagerCleanup::remove_session_internal
-        let cleanup_impl = source.find("impl SessionManagerCleanup")
+        let cleanup_impl = source
+            .find("impl SessionManagerCleanup")
             .expect("impl SessionManagerCleanup must exist");
         let cleanup_source = &source[cleanup_impl..];
         assert!(
@@ -397,7 +400,8 @@ mod tests {
     #[test]
     fn test_m11_cleanup_decrements_active_count() {
         let source = prod_source();
-        let cleanup_impl = source.find("impl SessionManagerCleanup")
+        let cleanup_impl = source
+            .find("impl SessionManagerCleanup")
             .expect("impl SessionManagerCleanup must exist");
         let cleanup_source = &source[cleanup_impl..];
         assert!(
@@ -409,7 +413,8 @@ mod tests {
     #[test]
     fn test_m11_no_empty_hashmap_in_clone_for_cleanup() {
         let source = prod_source();
-        let fn_start = source.find("fn clone_for_cleanup")
+        let fn_start = source
+            .find("fn clone_for_cleanup")
             .expect("clone_for_cleanup must exist");
         let fn_body = &source[fn_start..fn_start + 400];
         // Must NOT create a new empty HashMap (the old bug)
@@ -454,7 +459,10 @@ mod tests {
         // Verify the session was actually removed from the real map
         assert_eq!(manager.active_count(), 0);
         let sessions = manager.sessions.read().await;
-        assert!(sessions.is_empty(), "Session must be removed from the real HashMap");
+        assert!(
+            sessions.is_empty(),
+            "Session must be removed from the real HashMap"
+        );
     }
 
     #[tokio::test]

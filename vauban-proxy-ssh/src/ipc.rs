@@ -8,8 +8,8 @@ use shared::messages::Message;
 use std::io;
 use std::os::unix::io::RawFd;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::io::unix::AsyncFd;
 use tokio::io::Interest;
+use tokio::io::unix::AsyncFd;
 use tracing::{debug, warn};
 
 /// Async wrapper for IPC channel using tokio's AsyncFd.
@@ -24,12 +24,12 @@ impl AsyncIpcChannel {
     /// Create a new async IPC channel from a blocking one.
     pub fn new(channel: IpcChannel) -> io::Result<Self> {
         let read_fd = channel.read_fd();
-        
+
         // Set the read fd to non-blocking
         set_nonblocking(read_fd)?;
-        
+
         let read_async_fd = AsyncFd::new(read_fd)?;
-        
+
         Ok(Self {
             inner: channel,
             read_async_fd,
@@ -56,9 +56,7 @@ impl AsyncIpcChannel {
             // Try to receive
             match self.inner.try_recv() {
                 Ok(msg) => return Ok(msg),
-                Err(shared::ipc::IpcError::Io(ref e))
-                    if e.kind() == io::ErrorKind::WouldBlock =>
-                {
+                Err(shared::ipc::IpcError::Io(ref e)) if e.kind() == io::ErrorKind::WouldBlock => {
                     // Clear readiness and wait again
                     guard.clear_ready();
                     continue;
@@ -82,8 +80,8 @@ impl AsyncIpcChannel {
 
 /// Set a file descriptor to non-blocking mode.
 fn set_nonblocking(fd: RawFd) -> io::Result<()> {
-    use libc::{fcntl, F_GETFL, F_SETFL, O_NONBLOCK};
-    
+    use libc::{F_GETFL, F_SETFL, O_NONBLOCK, fcntl};
+
     // SAFETY: We're calling fcntl with valid arguments on a valid fd.
     unsafe {
         let flags = fcntl(fd, F_GETFL);
@@ -219,7 +217,9 @@ impl VaultClient {
                         } else {
                             // Treat as binary key (PEM encoded)
                             SshCredential::PrivateKey {
-                                key_pem: SecretString::from(String::from_utf8_lossy(&data).to_string()),
+                                key_pem: SecretString::from(
+                                    String::from_utf8_lossy(&data).to_string(),
+                                ),
                                 passphrase: None,
                             }
                         }
@@ -285,12 +285,7 @@ impl AuditClient {
     }
 
     /// Send a session end event.
-    pub fn session_end(
-        &self,
-        user_id: &str,
-        session_id: &str,
-        asset_id: &str,
-    ) -> IpcResult<()> {
+    pub fn session_end(&self, user_id: &str, session_id: &str, asset_id: &str) -> IpcResult<()> {
         use shared::messages::AuditEventType;
         use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -329,7 +324,7 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify it's non-blocking
-        use libc::{fcntl, F_GETFL, O_NONBLOCK};
+        use libc::{F_GETFL, O_NONBLOCK, fcntl};
         let flags = unsafe { fcntl(read_fd.as_raw_fd(), F_GETFL) };
         assert!(flags & O_NONBLOCK != 0);
     }
@@ -341,7 +336,7 @@ mod tests {
         // Create a pipe for testing
         let (read_fd, _write_fd) = nix::unistd::pipe().unwrap();
 
-        use libc::{fcntl, F_GETFL, O_NONBLOCK};
+        use libc::{F_GETFL, O_NONBLOCK, fcntl};
         let original_flags = unsafe { fcntl(read_fd.as_raw_fd(), F_GETFL) };
 
         // Set non-blocking
@@ -392,7 +387,10 @@ mod tests {
         };
         let cloned = cred.clone();
         match &cloned {
-            SshCredential::PrivateKey { key_pem, passphrase } => {
+            SshCredential::PrivateKey {
+                key_pem,
+                passphrase,
+            } => {
                 assert_eq!(key_pem.expose_secret(), "key-data");
                 assert!(passphrase.is_none());
             }
@@ -405,6 +403,9 @@ mod tests {
         let cred = SshCredential::Password(SecretString::from("secret".to_string()));
         let debug = format!("{:?}", cred);
         assert!(debug.contains("Password"));
-        assert!(!debug.contains("secret"), "H-10: credential must be redacted in debug");
+        assert!(
+            !debug.contains("secret"),
+            "H-10: credential must be redacted in debug"
+        );
     }
 }

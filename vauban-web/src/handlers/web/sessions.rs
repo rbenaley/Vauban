@@ -14,7 +14,9 @@ pub async fn session_list(
     let base =
         BaseTemplate::new("Sessions".to_string(), user.clone()).with_current_path("/sessions");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base)
+            .await
+            .into_fields();
 
     // Load sessions from database
     let mut conn = state
@@ -48,7 +50,9 @@ pub async fn session_list(
         None
     };
 
-    let mut query = proxy_sessions::table.inner_join(schema_assets::table).into_boxed();
+    let mut query = proxy_sessions::table
+        .inner_join(schema_assets::table)
+        .into_boxed();
 
     // Exclude pending approval requests
     query = query.filter(proxy_sessions::status.ne("pending"));
@@ -345,7 +349,9 @@ pub async fn session_detail(
     let base =
         BaseTemplate::new(format!("Session #{}", id), user.clone()).with_current_path("/sessions");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base)
+            .await
+            .into_fields();
 
     let template = crate::templates::sessions::session_detail::SessionDetailTemplate {
         title,
@@ -435,7 +441,9 @@ pub async fn recording_list(
     let base = BaseTemplate::new("Recordings".to_string(), user.clone())
         .with_current_path("/sessions/recordings");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base)
+            .await
+            .into_fields();
 
     // Load recordings from database (sessions with is_recorded = true)
     let mut conn = state
@@ -656,7 +664,9 @@ pub async fn recording_play(
     )
     .with_current_path("/sessions/recordings");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base)
+            .await
+            .into_fields();
 
     let template = crate::templates::sessions::recording_play::RecordingPlayTemplate {
         title,
@@ -721,7 +731,9 @@ pub async fn approval_list(
     let base = BaseTemplate::new("Approvals".to_string(), user.clone())
         .with_current_path("/sessions/approvals");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base)
+            .await
+            .into_fields();
 
     let mut conn = state
         .db_pool
@@ -962,7 +974,9 @@ pub async fn approval_detail(
     let base = BaseTemplate::new("Approval Request".to_string(), user.clone())
         .with_current_path("/sessions/approvals");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base)
+            .await
+            .into_fields();
 
     let template = ApprovalDetailTemplate {
         title,
@@ -1028,7 +1042,9 @@ pub async fn active_sessions(
     let base = BaseTemplate::new("Active Sessions".to_string(), user.clone())
         .with_current_path("/sessions/active");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base)
+            .await
+            .into_fields();
 
     let mut conn = state
         .db_pool
@@ -1141,7 +1157,9 @@ pub async fn serve_recording(
         ));
     }
 
-    let clean_uuid = session_uuid_str.strip_suffix(".mp4").unwrap_or(&session_uuid_str);
+    let clean_uuid = session_uuid_str
+        .strip_suffix(".mp4")
+        .unwrap_or(&session_uuid_str);
     let session_uuid = ::uuid::Uuid::parse_str(clean_uuid)
         .map_err(|_| AppError::Validation("Invalid session UUID".to_string()))?;
 
@@ -1159,7 +1177,9 @@ pub async fn serve_recording(
         .map_err(|_| AppError::NotFound("Session not found".to_string()))?;
 
     if !session.is_recorded {
-        return Err(AppError::NotFound("No recording for this session".to_string()));
+        return Err(AppError::NotFound(
+            "No recording for this session".to_string(),
+        ));
     }
 
     let recording_path = session
@@ -1192,10 +1212,13 @@ pub async fn serve_recording(
     }
 
     let std_file = result.file.ok_or_else(|| {
-        AppError::Internal(anyhow::anyhow!("Supervisor returned success but no file descriptor"))
+        AppError::Internal(anyhow::anyhow!(
+            "Supervisor returned success but no file descriptor"
+        ))
     })?;
 
-    let metadata = std_file.metadata()
+    let metadata = std_file
+        .metadata()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to read file metadata: {}", e)))?;
     let file_size = metadata.len();
 
@@ -1341,7 +1364,9 @@ pub async fn serve_manifest(
         .map_err(|_| AppError::NotFound("Session not found".to_string()))?;
 
     if !session.is_recorded {
-        return Err(AppError::NotFound("No recording for this session".to_string()));
+        return Err(AppError::NotFound(
+            "No recording for this session".to_string(),
+        ));
     }
 
     let recording_path = session
@@ -1356,9 +1381,10 @@ pub async fn serve_manifest(
         .trim_start_matches('/');
     let meta_relative = format!("{}meta.json", base_dir);
 
-    let supervisor = state.supervisor.as_ref().ok_or_else(|| {
-        AppError::Internal(anyhow::anyhow!("Requires supervisor (SCM_RIGHTS)"))
-    })?;
+    let supervisor = state
+        .supervisor
+        .as_ref()
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("Requires supervisor (SCM_RIGHTS)")))?;
 
     let result = supervisor
         .request_recording_file(&session.uuid.to_string(), &meta_relative)
@@ -1380,7 +1406,9 @@ pub async fn serve_manifest(
     let mut json_buf = String::new();
     {
         use tokio::io::AsyncReadExt;
-        tokio_file.read_to_string(&mut json_buf).await
+        tokio_file
+            .read_to_string(&mut json_buf)
+            .await
             .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to read meta.json: {}", e)))?;
     }
 
@@ -1429,7 +1457,8 @@ fn build_mpd_xml(session_uuid: &str, segments: &[SegmentMeta]) -> String {
 
         let init_end = seg.init_size.saturating_sub(1);
 
-        xml.push_str(&format!("  <Period id=\"{idx}\" duration=\"{seg_iso}\">\n",
+        xml.push_str(&format!(
+            "  <Period id=\"{idx}\" duration=\"{seg_iso}\">\n",
             idx = seg.index
         ));
         xml.push_str("    <AdaptationSet mimeType=\"video/mp4\" startWithSAP=\"1\">\n");
@@ -1504,7 +1533,9 @@ pub async fn serve_segment(
         .map_err(|_| AppError::NotFound("Session not found".to_string()))?;
 
     if !session.is_recorded {
-        return Err(AppError::NotFound("No recording for this session".to_string()));
+        return Err(AppError::NotFound(
+            "No recording for this session".to_string(),
+        ));
     }
 
     let recording_path = session
@@ -1519,9 +1550,10 @@ pub async fn serve_segment(
         .trim_start_matches('/');
     let segment_relative = format!("{}{}.mp4", base_dir, segment_name);
 
-    let supervisor = state.supervisor.as_ref().ok_or_else(|| {
-        AppError::Internal(anyhow::anyhow!("Requires supervisor (SCM_RIGHTS)"))
-    })?;
+    let supervisor = state
+        .supervisor
+        .as_ref()
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("Requires supervisor (SCM_RIGHTS)")))?;
 
     let result = supervisor
         .request_recording_file(&session.uuid.to_string(), &segment_relative)
@@ -1539,7 +1571,8 @@ pub async fn serve_segment(
         AppError::Internal(anyhow::anyhow!("Supervisor returned success but no FD"))
     })?;
 
-    let metadata = std_file.metadata()
+    let metadata = std_file
+        .metadata()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to read file metadata: {}", e)))?;
     let file_size = metadata.len();
 
@@ -1621,10 +1654,7 @@ mod tests {
 
     #[test]
     fn test_range_closed() {
-        assert_eq!(
-            parse_range_header("bytes=0-999", FILE_SIZE),
-            Some((0, 999))
-        );
+        assert_eq!(parse_range_header("bytes=0-999", FILE_SIZE), Some((0, 999)));
         assert_eq!(
             parse_range_header("bytes=100-200", FILE_SIZE),
             Some((100, 200))
@@ -1682,7 +1712,14 @@ mod tests {
         assert_eq!(parse_range_header("bytes=1-", 1), None);
     }
 
-    fn make_segment(index: u32, w: u16, h: u16, duration_ticks: u64, init_size: u64, file_size: u64) -> SegmentMeta {
+    fn make_segment(
+        index: u32,
+        w: u16,
+        h: u16,
+        duration_ticks: u64,
+        init_size: u64,
+        file_size: u64,
+    ) -> SegmentMeta {
         SegmentMeta {
             index,
             width: w,
@@ -1742,5 +1779,4 @@ mod tests {
         assert!(mpd.contains("Initialization range=\"0-1023\""));
         assert!(mpd.contains("mediaRange=\"1024-65535\""));
     }
-
 }

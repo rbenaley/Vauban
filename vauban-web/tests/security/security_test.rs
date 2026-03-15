@@ -139,7 +139,10 @@ async fn test_sql_injection_group_search_single_quote() {
     let response = app
         .server
         .get("/accounts/groups?search=%27%20OR%20%271%27%3D%271")
-        .add_header(axum::http::header::COOKIE, format!("access_token={}", admin.token))
+        .add_header(
+            axum::http::header::COOKIE,
+            format!("access_token={}", admin.token),
+        )
         .await;
 
     let status = response.status_code().as_u16();
@@ -166,7 +169,10 @@ async fn test_sql_injection_group_search_comment() {
     let response = app
         .server
         .get("/accounts/groups?search=test'--")
-        .add_header(axum::http::header::COOKIE, format!("access_token={}", admin.token))
+        .add_header(
+            axum::http::header::COOKIE,
+            format!("access_token={}", admin.token),
+        )
         .await;
 
     let status = response.status_code().as_u16();
@@ -222,7 +228,10 @@ async fn test_sql_injection_group_search_stacked() {
     let response = app
         .server
         .get("/accounts/groups?search=test%27%3B%20DROP%20TABLE%20vauban_groups%3B--")
-        .add_header(axum::http::header::COOKIE, format!("access_token={}", admin.token))
+        .add_header(
+            axum::http::header::COOKIE,
+            format!("access_token={}", admin.token),
+        )
         .await;
 
     let status = response.status_code().as_u16();
@@ -250,7 +259,10 @@ async fn test_sql_injection_group_search_backslash_escape() {
     let response = app
         .server
         .get("/accounts/groups?search=%5C%27%20OR%201%3D1--")
-        .add_header(axum::http::header::COOKIE, format!("access_token={}", admin.token))
+        .add_header(
+            axum::http::header::COOKIE,
+            format!("access_token={}", admin.token),
+        )
         .await;
 
     let status = response.status_code().as_u16();
@@ -281,11 +293,18 @@ async fn test_group_search_legitimate_query_works() {
     let response = app
         .server
         .get(&format!("/accounts/groups?search={}", &group_name[..10]))
-        .add_header(axum::http::header::COOKIE, format!("access_token={}", admin.token))
+        .add_header(
+            axum::http::header::COOKIE,
+            format!("access_token={}", admin.token),
+        )
         .await;
 
     let status = response.status_code().as_u16();
-    assert_eq!(status, 200, "Legitimate search should return 200, got {}", status);
+    assert_eq!(
+        status, 200,
+        "Legitimate search should return 200, got {}",
+        status
+    );
 
     let body = response.text();
     assert!(
@@ -314,11 +333,9 @@ async fn test_sql_injection_group_member_search_single_quote() {
     let admin = crate::fixtures::create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
     // Create a group to search members in
-    let group_uuid = crate::fixtures::create_test_vauban_group(
-        &mut conn,
-        &unique_name("test-sqli-mbr-grp"),
-    )
-    .await;
+    let group_uuid =
+        crate::fixtures::create_test_vauban_group(&mut conn, &unique_name("test-sqli-mbr-grp"))
+            .await;
 
     // SQL injection attempt on member search
     // URL-encoded: ' = %27, space = %20, = is %3D
@@ -328,7 +345,10 @@ async fn test_sql_injection_group_member_search_single_quote() {
             "/accounts/groups/{}/members/search?user-search=%27%20OR%20%271%27%3D%271",
             group_uuid
         ))
-        .add_header(axum::http::header::COOKIE, format!("access_token={}", admin.token))
+        .add_header(
+            axum::http::header::COOKIE,
+            format!("access_token={}", admin.token),
+        )
         .await;
 
     let status = response.status_code().as_u16();
@@ -351,11 +371,9 @@ async fn test_sql_injection_group_member_search_union() {
     let admin_name = unique_name("test_sqli_mbr_union");
     let admin = crate::fixtures::create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
-    let group_uuid = crate::fixtures::create_test_vauban_group(
-        &mut conn,
-        &unique_name("test-sqli-mbr-u-grp"),
-    )
-    .await;
+    let group_uuid =
+        crate::fixtures::create_test_vauban_group(&mut conn, &unique_name("test-sqli-mbr-u-grp"))
+            .await;
 
     // URL-encoded: ' = %27, space = %20, , = %2C
     let response = app
@@ -387,11 +405,9 @@ async fn test_sql_injection_group_member_search_stacked() {
     let admin_name = unique_name("test_sqli_mbr_stack");
     let admin = crate::fixtures::create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
-    let group_uuid = crate::fixtures::create_test_vauban_group(
-        &mut conn,
-        &unique_name("test-sqli-mbr-s-grp"),
-    )
-    .await;
+    let group_uuid =
+        crate::fixtures::create_test_vauban_group(&mut conn, &unique_name("test-sqli-mbr-s-grp"))
+            .await;
 
     // URL-encoded: ' = %27, ; = %3B, space = %20
     let response = app
@@ -400,7 +416,10 @@ async fn test_sql_injection_group_member_search_stacked() {
             "/accounts/groups/{}/members/search?user-search=x%27%3B%20DELETE%20FROM%20users%3B--",
             group_uuid
         ))
-        .add_header(axum::http::header::COOKIE, format!("access_token={}", admin.token))
+        .add_header(
+            axum::http::header::COOKIE,
+            format!("access_token={}", admin.token),
+        )
         .await;
 
     let status = response.status_code().as_u16();
@@ -423,11 +442,9 @@ async fn test_group_member_search_legitimate_query_works() {
     let admin_name = unique_name("test_mbr_search_ok");
     let admin = crate::fixtures::create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
-    let group_uuid = crate::fixtures::create_test_vauban_group(
-        &mut conn,
-        &unique_name("test-mbr-search-grp"),
-    )
-    .await;
+    let group_uuid =
+        crate::fixtures::create_test_vauban_group(&mut conn, &unique_name("test-mbr-search-grp"))
+            .await;
 
     // Create a user that should be findable
     let searchable_name = unique_name("test_findable_usr");
@@ -441,7 +458,10 @@ async fn test_group_member_search_legitimate_query_works() {
             group_uuid,
             &searchable_name[..8]
         ))
-        .add_header(axum::http::header::COOKIE, format!("access_token={}", admin.token))
+        .add_header(
+            axum::http::header::COOKIE,
+            format!("access_token={}", admin.token),
+        )
         .await;
 
     let status = response.status_code().as_u16();
@@ -564,6 +584,8 @@ async fn test_regular_user_cannot_create_asset() {
 }
 
 /// Test that regular users cannot create sessions via the API.
+/// With access rule enforcement, a non-existent asset returns 404 before
+/// the access check, so we accept either 403 or 404 as valid denial.
 #[tokio::test]
 #[serial]
 async fn test_regular_user_cannot_create_session() {
@@ -584,7 +606,12 @@ async fn test_regular_user_cannot_create_session() {
         }))
         .await;
 
-    assert_status(&response, 403);
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 403 || status == 404,
+        "Expected 403 or 404, got {}",
+        status
+    );
 
     test_db::cleanup(&mut conn).await;
 }
@@ -1496,13 +1523,17 @@ async fn test_connect_ssh_rejects_missing_csrf_token() {
     let admin = crate::fixtures::create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
     // Create a test SSH asset
-    let test_asset = crate::fixtures::create_test_ssh_asset(&mut conn, &unique_name("test-ssh-csrf")).await;
+    let test_asset =
+        crate::fixtures::create_test_ssh_asset(&mut conn, &unique_name("test-ssh-csrf")).await;
 
     // POST to connect_ssh with empty CSRF token (no CSRF cookie)
     let response = app
         .server
         .post(&format!("/assets/{}/connect", test_asset.asset.uuid))
-        .add_header(axum::http::header::COOKIE, format!("access_token={}", admin.token))
+        .add_header(
+            axum::http::header::COOKIE,
+            format!("access_token={}", admin.token),
+        )
         .form(&json!({
             "csrf_token": "",
         }))
@@ -1529,7 +1560,8 @@ async fn test_connect_ssh_rejects_invalid_csrf_token() {
     let admin_name = unique_name("test_ssh_csrf_inv");
     let admin = crate::fixtures::create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
-    let test_asset = crate::fixtures::create_test_ssh_asset(&mut conn, &unique_name("test-ssh-csrf2")).await;
+    let test_asset =
+        crate::fixtures::create_test_ssh_asset(&mut conn, &unique_name("test-ssh-csrf2")).await;
 
     // POST with a forged CSRF token that doesn't match the cookie
     let response = app
@@ -1567,13 +1599,17 @@ async fn test_connect_ssh_rejects_invalid_csrf_htmx() {
     let admin_name = unique_name("test_ssh_csrf_htmx");
     let admin = crate::fixtures::create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
-    let test_asset = crate::fixtures::create_test_ssh_asset(&mut conn, &unique_name("test-ssh-csrf3")).await;
+    let test_asset =
+        crate::fixtures::create_test_ssh_asset(&mut conn, &unique_name("test-ssh-csrf3")).await;
 
     // HTMX request with forged CSRF token
     let response = app
         .server
         .post(&format!("/assets/{}/connect", test_asset.asset.uuid))
-        .add_header(axum::http::header::COOKIE, format!("access_token={}", admin.token))
+        .add_header(
+            axum::http::header::COOKIE,
+            format!("access_token={}", admin.token),
+        )
         .add_header("HX-Request", "true")
         .form(&json!({
             "csrf_token": "forged_csrf_token",
@@ -1615,7 +1651,8 @@ async fn test_connect_ssh_accepts_valid_csrf_token() {
     let admin_name = unique_name("test_ssh_csrf_ok");
     let admin = crate::fixtures::create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
-    let test_asset = crate::fixtures::create_test_ssh_asset(&mut conn, &unique_name("test-ssh-csrf4")).await;
+    let test_asset =
+        crate::fixtures::create_test_ssh_asset(&mut conn, &unique_name("test-ssh-csrf4")).await;
 
     // Generate a valid CSRF token
     let csrf_token = app.generate_csrf_token();
@@ -1626,10 +1663,7 @@ async fn test_connect_ssh_accepts_valid_csrf_token() {
         .post(&format!("/assets/{}/connect", test_asset.asset.uuid))
         .add_header(
             axum::http::header::COOKIE,
-            format!(
-                "access_token={}; __vauban_csrf={}",
-                admin.token, csrf_token
-            ),
+            format!("access_token={}; __vauban_csrf={}", admin.token, csrf_token),
         )
         .form(&json!({
             "csrf_token": csrf_token,
@@ -1646,9 +1680,8 @@ async fn test_connect_ssh_accepts_valid_csrf_token() {
     );
 
     // Verify we get the expected "SSH proxy not available" error (not CSRF error)
-    let has_proxy_error = body.contains("SSH proxy")
-        || body.contains("proxy")
-        || body.contains("not available");
+    let has_proxy_error =
+        body.contains("SSH proxy") || body.contains("proxy") || body.contains("not available");
     assert!(
         has_proxy_error,
         "With valid CSRF, should reach SSH proxy check. Got: {}",
@@ -2154,9 +2187,7 @@ fn test_resolve_client_ip_uses_first_xff_entry() {
     let mut headers = HeaderMap::new();
     headers.insert(
         "X-Forwarded-For",
-        "203.0.113.50, 70.41.3.18, 150.172.238.178"
-            .parse()
-            .unwrap(),
+        "203.0.113.50, 70.41.3.18, 150.172.238.178".parse().unwrap(),
     );
 
     let connect_ip: IpAddr = "127.0.0.1".parse().unwrap();
@@ -2196,7 +2227,11 @@ fn test_security_config_parsed_trusted_proxies() {
     };
 
     let parsed = config.parsed_trusted_proxies();
-    assert_eq!(parsed.len(), 3, "Invalid entries should be silently skipped");
+    assert_eq!(
+        parsed.len(),
+        3,
+        "Invalid entries should be silently skipped"
+    );
     assert_eq!(parsed[0].to_string(), "127.0.0.1");
     assert_eq!(parsed[1].to_string(), "::1");
     assert_eq!(parsed[2].to_string(), "10.0.0.1");
@@ -2321,11 +2356,9 @@ async fn test_revoked_session_token_rejected_on_api() {
         use vauban_web::schema::auth_sessions;
 
         unwrap_ok!(
-            diesel::delete(
-                auth_sessions::table.filter(auth_sessions::user_id.eq(admin.user.id)),
-            )
-            .execute(&mut conn)
-            .await
+            diesel::delete(auth_sessions::table.filter(auth_sessions::user_id.eq(admin.user.id)),)
+                .execute(&mut conn)
+                .await
         );
     }
 
@@ -2362,7 +2395,9 @@ async fn test_revoked_session_token_redirects_on_web() {
         .get("/accounts/sessions")
         .add_header(
             header::COOKIE,
-            format!("access_token={}", admin.token).parse::<header::HeaderValue>().unwrap(),
+            format!("access_token={}", admin.token)
+                .parse::<header::HeaderValue>()
+                .unwrap(),
         )
         .await;
     assert_status(&response, 200);
@@ -2374,11 +2409,9 @@ async fn test_revoked_session_token_redirects_on_web() {
         use vauban_web::schema::auth_sessions;
 
         unwrap_ok!(
-            diesel::delete(
-                auth_sessions::table.filter(auth_sessions::user_id.eq(admin.user.id)),
-            )
-            .execute(&mut conn)
-            .await
+            diesel::delete(auth_sessions::table.filter(auth_sessions::user_id.eq(admin.user.id)),)
+                .execute(&mut conn)
+                .await
         );
     }
 
@@ -2388,7 +2421,9 @@ async fn test_revoked_session_token_redirects_on_web() {
         .get("/accounts/sessions")
         .add_header(
             header::COOKIE,
-            format!("access_token={}", admin.token).parse::<header::HeaderValue>().unwrap(),
+            format!("access_token={}", admin.token)
+                .parse::<header::HeaderValue>()
+                .unwrap(),
         )
         .await;
 
@@ -2420,11 +2455,9 @@ async fn test_new_session_works_after_revocation() {
         use vauban_web::schema::auth_sessions;
 
         unwrap_ok!(
-            diesel::delete(
-                auth_sessions::table.filter(auth_sessions::user_id.eq(admin.user.id)),
-            )
-            .execute(&mut conn)
-            .await
+            diesel::delete(auth_sessions::table.filter(auth_sessions::user_id.eq(admin.user.id)),)
+                .execute(&mut conn)
+                .await
         );
     }
 
@@ -2489,12 +2522,10 @@ async fn test_idle_expired_session_rejected_on_api() {
         use vauban_web::schema::auth_sessions;
 
         unwrap_ok!(
-            diesel::update(
-                auth_sessions::table.filter(auth_sessions::user_id.eq(admin.user.id)),
-            )
-            .set(auth_sessions::last_activity.eq(Utc::now() - Duration::hours(2)))
-            .execute(&mut conn)
-            .await
+            diesel::update(auth_sessions::table.filter(auth_sessions::user_id.eq(admin.user.id)),)
+                .set(auth_sessions::last_activity.eq(Utc::now() - Duration::hours(2)))
+                .execute(&mut conn)
+                .await
         );
     }
 
@@ -2541,12 +2572,10 @@ async fn test_max_duration_exceeded_session_rejected_on_api() {
         use vauban_web::schema::auth_sessions;
 
         unwrap_ok!(
-            diesel::update(
-                auth_sessions::table.filter(auth_sessions::user_id.eq(admin.user.id)),
-            )
-            .set(auth_sessions::created_at.eq(Utc::now() - Duration::hours(10)))
-            .execute(&mut conn)
-            .await
+            diesel::update(auth_sessions::table.filter(auth_sessions::user_id.eq(admin.user.id)),)
+                .set(auth_sessions::created_at.eq(Utc::now() - Duration::hours(10)))
+                .execute(&mut conn)
+                .await
         );
     }
 
@@ -2592,7 +2621,9 @@ async fn test_valid_session_accepted_on_api() {
         .get("/accounts/sessions")
         .add_header(
             header::COOKIE,
-            format!("access_token={}", admin.token).parse::<header::HeaderValue>().unwrap(),
+            format!("access_token={}", admin.token)
+                .parse::<header::HeaderValue>()
+                .unwrap(),
         )
         .await;
     assert_status(&response, 200);
@@ -2635,11 +2666,9 @@ async fn test_revoking_one_user_doesnt_affect_other() {
         use vauban_web::schema::auth_sessions;
 
         unwrap_ok!(
-            diesel::delete(
-                auth_sessions::table.filter(auth_sessions::user_id.eq(admin1.user.id)),
-            )
-            .execute(&mut conn)
-            .await
+            diesel::delete(auth_sessions::table.filter(auth_sessions::user_id.eq(admin1.user.id)),)
+                .execute(&mut conn)
+                .await
         );
     }
 
@@ -2684,7 +2713,9 @@ async fn test_regular_user_revoked_session_rejected() {
         .get("/accounts/sessions")
         .add_header(
             header::COOKIE,
-            format!("access_token={}", regular.token).parse::<header::HeaderValue>().unwrap(),
+            format!("access_token={}", regular.token)
+                .parse::<header::HeaderValue>()
+                .unwrap(),
         )
         .await;
     assert_status(&response, 200);
@@ -2710,7 +2741,9 @@ async fn test_regular_user_revoked_session_rejected() {
         .get("/accounts/sessions")
         .add_header(
             header::COOKIE,
-            format!("access_token={}", regular.token).parse::<header::HeaderValue>().unwrap(),
+            format!("access_token={}", regular.token)
+                .parse::<header::HeaderValue>()
+                .unwrap(),
         )
         .await;
 
@@ -2977,7 +3010,11 @@ async fn test_xss_sanitized_in_api_update_user() {
         .await;
 
     let status = response.status_code().as_u16();
-    assert_eq!(status, 200, "API update user should succeed, got {}", status);
+    assert_eq!(
+        status, 200,
+        "API update user should succeed, got {}",
+        status
+    );
 
     let body: serde_json::Value = response.json();
     let first = body["first_name"].as_str().unwrap_or("");
@@ -3320,7 +3357,8 @@ async fn test_terminal_ws_forbidden_for_non_owner() {
         create_test_user(&mut *conn, &app.auth_service, &unique_name("ws_attacker")).await;
 
     // Create an asset and a session owned by `owner`
-    let asset_id = create_simple_ssh_asset(&mut *conn, &unique_name("ws_asset"), owner.user.id).await;
+    let asset_id =
+        create_simple_ssh_asset(&mut *conn, &unique_name("ws_asset"), owner.user.id).await;
     let (_session_id, session_uuid) =
         create_test_session_with_uuid(&mut *conn, owner.user.id, asset_id, "ssh", "active").await;
 
@@ -3344,10 +3382,10 @@ async fn test_session_ws_forbidden_for_non_owner() {
     let mut conn = app.get_conn().await;
 
     let owner = create_test_user(&mut *conn, &app.auth_service, &unique_name("ws_own2")).await;
-    let attacker =
-        create_test_user(&mut *conn, &app.auth_service, &unique_name("ws_atk2")).await;
+    let attacker = create_test_user(&mut *conn, &app.auth_service, &unique_name("ws_atk2")).await;
 
-    let asset_id = create_simple_ssh_asset(&mut *conn, &unique_name("ws_asset2"), owner.user.id).await;
+    let asset_id =
+        create_simple_ssh_asset(&mut *conn, &unique_name("ws_asset2"), owner.user.id).await;
     let (_session_id, session_uuid) =
         create_test_session_with_uuid(&mut *conn, owner.user.id, asset_id, "ssh", "active").await;
 
@@ -3372,7 +3410,8 @@ async fn test_terminal_ws_allowed_for_owner() {
     let mut conn = app.get_conn().await;
 
     let owner = create_test_user(&mut *conn, &app.auth_service, &unique_name("ws_own3")).await;
-    let asset_id = create_simple_ssh_asset(&mut *conn, &unique_name("ws_asset3"), owner.user.id).await;
+    let asset_id =
+        create_simple_ssh_asset(&mut *conn, &unique_name("ws_asset3"), owner.user.id).await;
     let (_session_id, session_uuid) =
         create_test_session_with_uuid(&mut *conn, owner.user.id, asset_id, "ssh", "active").await;
 
@@ -3397,7 +3436,8 @@ async fn test_session_ws_allowed_for_owner() {
     let mut conn = app.get_conn().await;
 
     let owner = create_test_user(&mut *conn, &app.auth_service, &unique_name("ws_own4")).await;
-    let asset_id = create_simple_ssh_asset(&mut *conn, &unique_name("ws_asset4"), owner.user.id).await;
+    let asset_id =
+        create_simple_ssh_asset(&mut *conn, &unique_name("ws_asset4"), owner.user.id).await;
     let (_session_id, session_uuid) =
         create_test_session_with_uuid(&mut *conn, owner.user.id, asset_id, "ssh", "active").await;
 
@@ -3420,9 +3460,9 @@ async fn test_terminal_ws_allowed_for_admin() {
     let mut conn = app.get_conn().await;
 
     let owner = create_test_user(&mut *conn, &app.auth_service, &unique_name("ws_own5")).await;
-    let admin =
-        create_admin_user(&mut *conn, &app.auth_service, &unique_name("ws_admin5")).await;
-    let asset_id = create_simple_ssh_asset(&mut *conn, &unique_name("ws_asset5"), owner.user.id).await;
+    let admin = create_admin_user(&mut *conn, &app.auth_service, &unique_name("ws_admin5")).await;
+    let asset_id =
+        create_simple_ssh_asset(&mut *conn, &unique_name("ws_asset5"), owner.user.id).await;
     let (_session_id, session_uuid) =
         create_test_session_with_uuid(&mut *conn, owner.user.id, asset_id, "ssh", "active").await;
 
@@ -3447,9 +3487,9 @@ async fn test_session_ws_allowed_for_admin() {
     let mut conn = app.get_conn().await;
 
     let owner = create_test_user(&mut *conn, &app.auth_service, &unique_name("ws_own6")).await;
-    let admin =
-        create_admin_user(&mut *conn, &app.auth_service, &unique_name("ws_admin6")).await;
-    let asset_id = create_simple_ssh_asset(&mut *conn, &unique_name("ws_asset6"), owner.user.id).await;
+    let admin = create_admin_user(&mut *conn, &app.auth_service, &unique_name("ws_admin6")).await;
+    let asset_id =
+        create_simple_ssh_asset(&mut *conn, &unique_name("ws_asset6"), owner.user.id).await;
     let (_session_id, session_uuid) =
         create_test_session_with_uuid(&mut *conn, owner.user.id, asset_id, "ssh", "active").await;
 
@@ -3788,34 +3828,34 @@ async fn test_static_files_have_cache_headers() {
 // H-8 Regression: RBAC stub deny-by-default in release builds
 // =============================================================================
 
-/// H-8 Regression: The RBAC service source must contain compile-time guards
+/// H-8 Regression: The Access service source must contain compile-time guards
 /// (#[cfg(debug_assertions)]) around the allow-all stub to prevent production
-/// deployment with a permissive RBAC.
+/// deployment with a permissive Access service.
 #[tokio::test]
 #[serial]
-async fn test_rbac_service_has_compile_time_guard() {
-    // Read the RBAC service source at compile time to verify structural
+async fn test_access_service_has_compile_time_guard() {
+    // Read the Access service source at compile time to verify structural
     // safety. This catches accidental removal of the cfg guards.
-    let rbac_source = include_str!("../../../vauban-rbac/src/main.rs");
+    let access_source = include_str!("../../../vauban-access/src/main.rs");
 
     // Must have the debug-only guard
     assert!(
-        rbac_source.contains("#[cfg(debug_assertions)]"),
-        "vauban-rbac/src/main.rs must guard the allow-all RBAC stub \
+        access_source.contains("#[cfg(debug_assertions)]"),
+        "vauban-access/src/main.rs must guard the allow-all Access stub \
          with #[cfg(debug_assertions)]"
     );
 
     // Must have the release deny-by-default guard
     assert!(
-        rbac_source.contains("#[cfg(not(debug_assertions))]"),
-        "vauban-rbac/src/main.rs must contain #[cfg(not(debug_assertions))] \
+        access_source.contains("#[cfg(not(debug_assertions))]"),
+        "vauban-access/src/main.rs must contain #[cfg(not(debug_assertions))] \
          with a deny-by-default fallback for release builds"
     );
 
     // Must contain the deny-by-default result
     assert!(
-        rbac_source.contains("allowed: false"),
-        "vauban-rbac/src/main.rs must deny RBAC requests by default \
+        access_source.contains("allowed: false"),
+        "vauban-access/src/main.rs must deny Access requests by default \
          (allowed: false) in release builds"
     );
 }
@@ -3825,7 +3865,7 @@ async fn test_rbac_service_has_compile_time_guard() {
 /// in production.
 #[tokio::test]
 #[serial]
-async fn test_rbac_client_has_compile_time_guard() {
+async fn test_access_client_has_compile_time_guard() {
     let client_source = include_str!("../../src/ipc/clients.rs");
 
     assert!(
@@ -3847,18 +3887,18 @@ async fn test_rbac_client_has_compile_time_guard() {
     );
 }
 
-/// H-8 Regression: The RBAC service must not contain an unguarded
+/// H-8 Regression: The Access service must not contain an unguarded
 /// `allowed: true` (i.e., one that is NOT inside a cfg(debug_assertions) block).
 /// This is a heuristic check that scans for the pattern.
 #[tokio::test]
 #[serial]
-async fn test_rbac_no_unguarded_allow_all() {
-    let rbac_source = include_str!("../../../vauban-rbac/src/main.rs");
+async fn test_access_no_unguarded_allow_all() {
+    let access_source = include_str!("../../../vauban-access/src/main.rs");
 
     // Count occurrences of "allowed: true" - there should be exactly as many
     // as there are cfg(debug_assertions) blocks containing it (currently 1).
-    let allow_count = rbac_source.matches("allowed: true").count();
-    let deny_count = rbac_source.matches("allowed: false").count();
+    let allow_count = access_source.matches("allowed: true").count();
+    let deny_count = access_source.matches("allowed: false").count();
 
     assert!(
         deny_count >= 1,
@@ -4107,7 +4147,8 @@ async fn test_connect_ssh_marks_mismatch_on_failure() {
     );
     // Verify that the mismatch detection checks for relevant keywords
     assert!(
-        web_source.contains(r#"msg.contains("MITM")"#) || web_source.contains(r#"error_str.contains("MITM")"#),
+        web_source.contains(r#"msg.contains("MITM")"#)
+            || web_source.contains(r#"error_str.contains("MITM")"#),
         "H-9: connect_ssh must detect MITM-related error messages"
     );
 }
@@ -4140,8 +4181,7 @@ async fn test_asset_detail_template_three_host_key_states() {
     );
 
     // States 1 (verified) and 3 (mismatch) are now in HTMX fragments
-    let verified_fragment =
-        include_str!("../../templates/assets/_ssh_host_key_fragment.html");
+    let verified_fragment = include_str!("../../templates/assets/_ssh_host_key_fragment.html");
     assert!(
         verified_fragment.contains("Host Key Verified"),
         "H-9: verified fragment must show 'Host Key Verified'"
@@ -4161,8 +4201,7 @@ async fn test_asset_detail_template_three_host_key_states() {
         "H-9: stored mismatch fragment must show 'Host Key Mismatch'"
     );
 
-    let no_key_fragment =
-        include_str!("../../templates/assets/_ssh_host_key_no_key_fragment.html");
+    let no_key_fragment = include_str!("../../templates/assets/_ssh_host_key_no_key_fragment.html");
     assert!(
         no_key_fragment.contains("No Host Key Stored"),
         "H-9: no-key fragment must show 'No Host Key Stored'"
@@ -4322,7 +4361,8 @@ async fn test_verify_ssh_host_key_handler_exists() {
     );
     // Must handle proxy unavailability gracefully
     assert!(
-        web_source.contains("Proxy unavailable") || web_source.contains("SSH proxy not available, returning stored state"),
+        web_source.contains("Proxy unavailable")
+            || web_source.contains("SSH proxy not available, returning stored state"),
         "H-9: verify handler must fall back gracefully when proxy is unavailable"
     );
     // Must handle connection failure gracefully
@@ -5000,30 +5040,30 @@ fn test_vault_lib_exports_modules() {
     );
 }
 
-/// M-1 / C-2: migrate_secrets binary must exist in vauban-web/src/bin/.
+/// M-1 / C-2: migrate_secrets logic must exist in vauban-supervisor/src/admin.rs.
 #[test]
-fn test_migrate_secrets_binary_exists() {
-    let source = include_str!("../../src/bin/migrate_secrets.rs");
+fn test_migrate_secrets_exists_in_supervisor() {
+    let source = include_str!("../../../vauban-supervisor/src/admin.rs");
     assert!(
-        !source.is_empty(),
-        "M-1/C-2: migrate_secrets binary must exist in vauban-web/src/bin/"
+        source.contains("cmd_migrate_secrets"),
+        "M-1/C-2: migrate_secrets must exist in vauban-supervisor/src/admin.rs"
     );
 }
 
-/// M-1 / C-2: vauban-web must depend on vauban-vault for keyring reuse by migrate_secrets.
+/// M-1 / C-2: vauban-supervisor must depend on vauban-vault for keyring reuse by migrate_secrets.
 #[test]
-fn test_web_depends_on_vault() {
-    let cargo = include_str!("../../Cargo.toml");
+fn test_supervisor_depends_on_vault() {
+    let cargo = include_str!("../../../vauban-supervisor/Cargo.toml");
     assert!(
         cargo.contains("vauban-vault"),
-        "M-1/C-2: vauban-web must depend on vauban-vault for keyring reuse"
+        "M-1/C-2: vauban-supervisor must depend on vauban-vault for keyring reuse"
     );
 }
 
 /// M-1 / C-2: migrate_secrets must implement is_encrypted for idempotent migration.
 #[test]
 fn test_migrate_has_is_encrypted() {
-    let source = include_str!("../../src/bin/migrate_secrets.rs");
+    let source = include_str!("../../../vauban-supervisor/src/admin.rs");
     assert!(
         source.contains("fn is_encrypted("),
         "M-1/C-2: migrate_secrets must have is_encrypted() for idempotent migration"
@@ -5033,9 +5073,10 @@ fn test_migrate_has_is_encrypted() {
 /// M-1 / C-2: migrate_secrets must support --dry-run for safe operation.
 #[test]
 fn test_migrate_supports_dry_run() {
-    let source = include_str!("../../src/bin/migrate_secrets.rs");
+    let admin_source = include_str!("../../../vauban-supervisor/src/admin.rs");
+    let main_source = include_str!("../../../vauban-supervisor/src/main.rs");
     assert!(
-        source.contains("dry_run") && source.contains("--dry-run"),
+        admin_source.contains("dry_run") && main_source.contains("dry_run"),
         "M-1/C-2: migrate_secrets must support --dry-run flag for safe operation"
     );
 }
@@ -5043,7 +5084,7 @@ fn test_migrate_supports_dry_run() {
 /// M-1: migrate_secrets must migrate MFA secrets.
 #[test]
 fn test_migrate_handles_mfa_secrets() {
-    let source = include_str!("../../src/bin/migrate_secrets.rs");
+    let source = include_str!("../../../vauban-supervisor/src/admin.rs");
     assert!(
         source.contains("migrate_mfa_secrets"),
         "M-1: migrate_secrets must have migrate_mfa_secrets function"
@@ -5053,12 +5094,11 @@ fn test_migrate_handles_mfa_secrets() {
 /// C-2: migrate_secrets must migrate credential secrets in connection_config.
 #[test]
 fn test_migrate_handles_credential_secrets() {
-    let source = include_str!("../../src/bin/migrate_secrets.rs");
+    let source = include_str!("../../../vauban-supervisor/src/admin.rs");
     assert!(
         source.contains("migrate_credential_secrets"),
         "C-2: migrate_secrets must have migrate_credential_secrets function"
     );
-    // Must handle the same credential fields as web.rs
     assert!(
         source.contains("\"password\"")
             && source.contains("\"private_key\"")
@@ -5100,8 +5140,7 @@ fn test_m3_optional_secret_has_zeroize_drop() {
 fn test_m3_optional_secret_debug_redacts() {
     let source = include_str!("../../src/config.rs");
     assert!(
-        source.contains("impl std::fmt::Debug for OptionalSecret")
-            && source.contains("[REDACTED]"),
+        source.contains("impl std::fmt::Debug for OptionalSecret") && source.contains("[REDACTED]"),
         "M-3: OptionalSecret Debug must redact values as [REDACTED]"
     );
 }
@@ -5318,7 +5357,9 @@ fn test_m2_cache_error_messages_suggest_disabling() {
     // Error messages must tell the operator how to recover.
     let source = include_str!("../../src/cache.rs");
 
-    let error_count = source.matches("Set cache.enabled = false to run without cache").count();
+    let error_count = source
+        .matches("Set cache.enabled = false to run without cache")
+        .count();
     assert!(
         error_count >= 2,
         "M-2: both cache error paths must suggest 'Set cache.enabled = false' (found {})",
@@ -5656,23 +5697,137 @@ fn test_m8_web_main_uses_server_handle() {
     );
 }
 
-// --- create_superuser.rs ---
+// --- create_superuser (now in vauban-supervisor) ---
 
 #[test]
 fn test_m8_create_superuser_no_process_exit() {
-    let source = include_str!("../../src/bin/create_superuser.rs");
+    let source = include_str!("../../../vauban-supervisor/src/admin.rs");
     assert!(
         !source.contains("process::exit"),
-        "M-8/M-10: create_superuser.rs must not call process::exit() - use ExitCode instead"
+        "M-8/M-10: admin.rs must not call process::exit() - use anyhow::Result instead"
     );
 }
 
 #[test]
-fn test_m8_create_superuser_uses_exit_code() {
-    let source = include_str!("../../src/bin/create_superuser.rs");
+fn test_m8_create_superuser_uses_result() {
+    let source = include_str!("../../../vauban-supervisor/src/admin.rs");
     assert!(
-        source.contains("ExitCode"),
-        "M-8/M-10: create_superuser.rs must use std::process::ExitCode"
+        source.contains("-> Result<()>"),
+        "M-8/M-10: admin.rs must use anyhow::Result for error propagation"
+    );
+}
+
+// ==================== Phase 6e: Admin CLI Migration Regression Tests ====================
+// Verify that admin CLI tools have been moved from vauban-web to vauban-supervisor.
+
+#[test]
+fn test_no_admin_binaries_in_web() {
+    let binaries = [
+        "create_superuser",
+        "reset_password",
+        "reset_2FA",
+        "migrate_secrets",
+        "seed_data",
+    ];
+    for bin_name in &binaries {
+        let path = format!(
+            "{}/../../src/bin/{}.rs",
+            env!("CARGO_MANIFEST_DIR"),
+            bin_name
+        );
+        assert!(
+            !std::path::Path::new(&path).exists(),
+            "Admin binary {bin_name}.rs must NOT exist in vauban-web/src/bin/ (moved to supervisor)"
+        );
+    }
+}
+
+#[test]
+fn test_all_admin_commands_in_supervisor() {
+    let source = include_str!("../../../vauban-supervisor/src/admin.rs");
+    let commands = [
+        "cmd_create_superuser",
+        "cmd_reset_password",
+        "cmd_reset_2fa",
+        "cmd_migrate_secrets",
+        "cmd_seed_data",
+    ];
+    for cmd in &commands {
+        assert!(
+            source.contains(cmd),
+            "Admin command {cmd} must exist in vauban-supervisor/src/admin.rs"
+        );
+    }
+}
+
+#[test]
+fn test_supervisor_cli_has_all_subcommands() {
+    let source = include_str!("../../../vauban-supervisor/src/main.rs");
+    let subcommands = [
+        "CreateSuperuser",
+        "ResetPassword",
+        "Reset2fa",
+        "MigrateSecrets",
+        "SeedData",
+    ];
+    for sub in &subcommands {
+        assert!(
+            source.contains(sub),
+            "Supervisor must define AdminSubcommand::{sub}"
+        );
+    }
+}
+
+#[test]
+fn test_web_cargo_no_admin_bin_entries() {
+    let cargo = include_str!("../../Cargo.toml");
+    let old_bins = [
+        "create_superuser",
+        "reset_password",
+        "reset_2FA",
+        "migrate_secrets",
+        "seed_data",
+    ];
+    for bin in &old_bins {
+        assert!(
+            !cargo.contains(&format!("name = \"{bin}\"")),
+            "vauban-web Cargo.toml must not have [[bin]] entry for {bin}"
+        );
+    }
+}
+
+#[test]
+fn test_supervisor_uses_secure_password_hashing() {
+    let source = include_str!("../../../vauban-supervisor/src/admin.rs");
+    assert!(
+        source.contains("Argon2id") || source.contains("argon2id"),
+        "Supervisor admin must use Argon2id for password hashing"
+    );
+    assert!(
+        source.contains("SaltString::generate"),
+        "Supervisor admin must generate random salts"
+    );
+}
+
+#[test]
+fn test_supervisor_admin_validates_input() {
+    let source = include_str!("../../../vauban-supervisor/src/admin.rs");
+    assert!(
+        source.contains("validate_username"),
+        "Supervisor admin must validate usernames"
+    );
+    assert!(
+        source.contains("validate_email"),
+        "Supervisor admin must validate email addresses"
+    );
+}
+
+#[test]
+fn test_web_admin_ipc_handler_exists() {
+    let source = include_str!("../../src/ipc/admin.rs");
+    assert!(
+        source.contains("pub async fn handle_admin_command"),
+        "vauban-web must have IPC handler for AdminCommand messages"
     );
 }
 
@@ -5707,7 +5862,8 @@ fn test_l2_delete_stubs_use_not_implemented_status() {
         status_501_count >= not_impl_count,
         "L-2: Found {} 'Not implemented' strings but only {} StatusCode::NOT_IMPLEMENTED. \
          All stubs must return 501.",
-        not_impl_count, status_501_count
+        not_impl_count,
+        status_501_count
     );
 }
 
@@ -5845,10 +6001,7 @@ fn test_l5_like_contains_used_in_handlers() {
 fn test_l6_no_duplicate_is_htmx_request() {
     // L-6: is_htmx_request must only be defined once (in error.rs)
     let files = [
-        (
-            "handlers/auth",
-            include_str!("../../src/handlers/auth.rs"),
-        ),
+        ("handlers/auth", include_str!("../../src/handlers/auth.rs")),
         (
             "handlers/api/sessions",
             include_str!("../../src/handlers/api/sessions.rs"),
@@ -6071,11 +6224,13 @@ fn test_l8_all_ws_handlers_accept_ws_guard() {
 
     for handler in handlers {
         // Find the handler function and check it has WsGuard parameter
-        let handler_start = prod.find(&format!("fn {handler}("))
-            .unwrap_or_else(|| panic!("L-8 regression: handler {handler} not found in websocket.rs"));
+        let handler_start = prod.find(&format!("fn {handler}(")).unwrap_or_else(|| {
+            panic!("L-8 regression: handler {handler} not found in websocket.rs")
+        });
 
         // Get the function signature (up to the opening brace)
-        let signature_end = prod[handler_start..].find('{')
+        let signature_end = prod[handler_start..]
+            .find('{')
             .map(|i| handler_start + i)
             .unwrap_or(prod.len());
         let signature = &prod[handler_start..signature_end];
@@ -6104,10 +6259,12 @@ fn test_l8_all_handle_fns_receive_ws_guard() {
     ];
 
     for func in handle_fns {
-        let fn_start = prod.find(&format!("fn {func}("))
+        let fn_start = prod
+            .find(&format!("fn {func}("))
             .unwrap_or_else(|| panic!("L-8 regression: function {func} not found in websocket.rs"));
 
-        let signature_end = prod[fn_start..].find('{')
+        let signature_end = prod[fn_start..]
+            .find('{')
             .map(|i| fn_start + i)
             .unwrap_or(prod.len());
         let signature = &prod[fn_start..signature_end];

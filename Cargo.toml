@@ -5,7 +5,7 @@ members = [
     "vauban-supervisor",
     "vauban-web",
     "vauban-auth",
-    "vauban-rbac",
+    "vauban-access",
     "vauban-proxy-ssh",
     "vauban-vault",
     "vauban-audit",
@@ -21,7 +21,7 @@ exclude = ["vauban-proxy-rdp"]
 default-members = ["vauban-supervisor"]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.89"
 authors = ["Richard Ben Aleya"]
@@ -61,7 +61,7 @@ zeroize = { version = "1.8", features = ["derive"] }
 # Integrity hashing
 blake3 = "1.5"
 
-# RBAC policy engine (Casbin) - used by vauban-rbac
+# RBAC policy engine (Casbin) - used by vauban-access
 casbin = { version = "2.20", default-features = false, features = ["runtime-tokio"] }
 
 # Cryptography for vauban-vault (M-1, C-2)

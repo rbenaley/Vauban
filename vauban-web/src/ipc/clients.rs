@@ -3,9 +3,9 @@
 /// These clients use Unix pipes for inter-process communication with
 /// the privilege-separated Vauban services (auth, rbac, vault, audit).
 use std::time::Duration;
-use tracing::warn;
 #[cfg(not(debug_assertions))]
 use tracing::error;
+use tracing::warn;
 
 use crate::config::Config;
 use crate::error::AppResult;
@@ -37,7 +37,7 @@ impl Default for IpcClient {
 
 /// RBAC service client.
 ///
-/// Communicates with vauban-rbac via Unix pipe.
+/// Communicates with vauban-access via Unix pipe.
 pub struct RbacClient {
     #[allow(dead_code)]
     client: IpcClient,
@@ -53,11 +53,11 @@ impl RbacClient {
 
     /// Check permission.
     ///
-    /// TODO: Implement actual IPC communication with vauban-rbac.
+    /// TODO: Implement actual IPC communication with vauban-access.
     ///
     /// Security: the stub allow-all is only compiled in debug builds.
     /// In release builds, all requests are denied by default until the
-    /// IPC communication with vauban-rbac is implemented.
+    /// IPC communication with vauban-access is implemented.
     pub async fn check_permission(
         &self,
         _user_id: &str,

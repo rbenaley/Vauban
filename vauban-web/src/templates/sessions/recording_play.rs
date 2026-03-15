@@ -238,8 +238,14 @@ mod tests {
         };
 
         let html = template.render().unwrap();
-        assert!(html.contains("<source src=\"/recordings/"), "legacy should use <source>");
-        assert!(!html.contains("shaka-player"), "legacy should not load shaka");
+        assert!(
+            html.contains("<source src=\"/recordings/"),
+            "legacy should use <source>"
+        );
+        assert!(
+            !html.contains("shaka-player"),
+            "legacy should not load shaka"
+        );
     }
 
     #[test]
@@ -271,10 +277,25 @@ mod tests {
         };
 
         let html = template.render().unwrap();
-        assert!(html.contains("shaka-player.compiled.js"), "segmented should load shaka");
-        assert!(html.contains("shaka-init.js"), "segmented should load shaka init script");
-        assert!(html.contains("data-manifest=\"/recordings/"), "segmented should have data-manifest attr");
-        assert!(html.contains("/manifest.mpd"), "segmented should reference MPD manifest");
-        assert!(!html.contains("<source src=\"/recordings/"), "segmented should not use <source>");
+        assert!(
+            html.contains("shaka-player.compiled.js"),
+            "segmented should load shaka"
+        );
+        assert!(
+            html.contains("shaka-init.js"),
+            "segmented should load shaka init script"
+        );
+        assert!(
+            html.contains("data-manifest=\"/recordings/"),
+            "segmented should have data-manifest attr"
+        );
+        assert!(
+            html.contains("/manifest.mpd"),
+            "segmented should reference MPD manifest"
+        );
+        assert!(
+            !html.contains("<source src=\"/recordings/"),
+            "segmented should not use <source>"
+        );
     }
 }

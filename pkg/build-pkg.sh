@@ -22,9 +22,8 @@ echo "==> Building Vauban ${VERSION} package..."
 
 # ---- Verify release binaries exist ----------------------------------------
 _missing=""
-for _bin in create_superuser migrate_secrets reset_2FA reset_password seed_data \
-            vauban-audit vauban-auth vauban-proxy-rdp vauban-proxy-ssh \
-            vauban-rbac vauban-supervisor vauban-vault vauban-web; do
+for _bin in vauban-access vauban-audit vauban-auth vauban-proxy-rdp vauban-proxy-ssh \
+            vauban-supervisor vauban-vault vauban-web; do
     if [ ! -f "${RELEASE_DIR}/${_bin}" ]; then
         _missing="${_missing} ${_bin}"
     fi
@@ -44,22 +43,18 @@ echo "==> Staging files..."
 mkdir -p "${STAGING}/usr/local/bin"
 mkdir -p "${STAGING}/usr/local/libexec/vauban"
 mkdir -p "${STAGING}/usr/local/etc/vauban/certs"
-mkdir -p "${STAGING}/usr/local/etc/vauban/rbac"
+mkdir -p "${STAGING}/usr/local/etc/vauban/access"
 mkdir -p "${STAGING}/usr/local/etc/rc.d"
 mkdir -p "${STAGING}/usr/local/share/vauban/migrations"
 
-for _bin in create_superuser migrate_secrets reset_2FA reset_password seed_data; do
-    install -m 755 "${RELEASE_DIR}/${_bin}" "${STAGING}/usr/local/bin/"
-done
-
-for _svc in vauban-audit vauban-auth vauban-proxy-rdp vauban-proxy-ssh \
-            vauban-rbac vauban-supervisor vauban-vault vauban-web; do
+for _svc in vauban-access vauban-audit vauban-auth vauban-proxy-rdp vauban-proxy-ssh \
+            vauban-supervisor vauban-vault vauban-web; do
     install -m 755 "${RELEASE_DIR}/${_svc}" "${STAGING}/usr/local/libexec/vauban/"
 done
 
 install -m 644 "${PROJECT_ROOT}/config/vauban.conf" "${STAGING}/usr/local/etc/vauban/vauban.conf"
-install -m 644 "${PROJECT_ROOT}/config/rbac/model.conf" "${STAGING}/usr/local/etc/vauban/rbac/model.conf"
-install -m 644 "${PROJECT_ROOT}/config/rbac/default_policy.csv" "${STAGING}/usr/local/etc/vauban/rbac/policy.csv"
+install -m 644 "${PROJECT_ROOT}/config/access/model.conf" "${STAGING}/usr/local/etc/vauban/access/model.conf"
+install -m 644 "${PROJECT_ROOT}/config/access/default_policy.csv" "${STAGING}/usr/local/etc/vauban/access/policy.csv"
 
 cp -R "${PROJECT_ROOT}/vauban-web/migrations/"* "${STAGING}/usr/local/share/vauban/migrations/"
 

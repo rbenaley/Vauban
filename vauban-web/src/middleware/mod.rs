@@ -133,9 +133,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(
             "X-Forwarded-For",
-            "203.0.113.50, 70.41.3.18, 150.172.238.178"
-                .parse()
-                .unwrap(),
+            "203.0.113.50, 70.41.3.18, 150.172.238.178".parse().unwrap(),
         );
 
         let connect_ip: IpAddr = "10.0.0.1".parse().unwrap();

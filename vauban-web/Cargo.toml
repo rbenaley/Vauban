@@ -98,7 +98,6 @@ regex = "1"         # Regular expressions for input validation
 # Configuration
 config = "0.15"
 dotenvy = "0.15"
-rpassword = "7"
 
 # HTTP client
 reqwest = { version = "0.13", features = ["json", "rustls"] }
@@ -114,6 +113,7 @@ rustls-pki-types = "1"
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
 
 [dev-dependencies]
+vauban-access = { path = "../vauban-access" }
 tokio-test = "0.4"
 mockall = "0.14"
 axum-test = "18"
@@ -128,22 +128,3 @@ tokio-tungstenite = "0.28"
 [lints]
 workspace = true
 
-[[bin]]
-name = "seed_data"
-path = "src/bin/seed_data.rs"
-
-[[bin]]
-name = "reset_password"
-path = "src/bin/reset_password.rs"
-
-[[bin]]
-name = "create_superuser"
-path = "src/bin/create_superuser.rs"
-
-[[bin]]
-name = "reset_2FA"
-path = "src/bin/reset_2FA.rs"
-
-[[bin]]
-name = "migrate_secrets"
-path = "src/bin/migrate_secrets.rs"

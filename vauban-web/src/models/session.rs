@@ -15,8 +15,15 @@ use crate::schema::proxy_sessions;
 
 /// Session type (protocol) (L-7: Diesel enum instead of String).
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize,
-    diesel::expression::AsExpression, diesel::deserialize::FromSqlRow,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    diesel::expression::AsExpression,
+    diesel::deserialize::FromSqlRow,
 )]
 #[serde(rename_all = "lowercase")]
 #[diesel(sql_type = diesel::sql_types::Varchar)]

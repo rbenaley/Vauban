@@ -95,13 +95,15 @@ pub async fn get_session(
 }
 
 /// Create session handler.
+///
+/// Superusers bypass access rule checks. Staff and regular users must have
+/// a valid, active access rule linking their group to the asset's group for
+/// the requested protocol.
 pub async fn create_session(
     State(state): State<AppState>,
     user: AuthUser,
     Json(request): Json<CreateSessionRequest>,
 ) -> AppResult<Json<ProxySession>> {
-    super::require_staff(&state, &user).await?;
-
     validator::Validate::validate(&request)
         .map_err(|e| AppError::Validation(format!("Validation failed: {:?}", e)))?;
 
@@ -111,9 +113,59 @@ pub async fn create_session(
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
-    // TODO: Verify user has access to asset via RBAC
-    // TODO: Get asset and credential details
-    // TODO: Call proxy service to establish connection
+    // Resolve the user's internal ID
+    let user_uuid_parsed = Uuid::parse_str(&user.uuid)
+        .map_err(|_| AppError::Validation("Invalid user UUID".to_string()))?;
+    let user_internal_id: i32 = crate::schema::users::table
+        .filter(crate::schema::users::uuid.eq(user_uuid_parsed))
+        .select(crate::schema::users::id)
+        .first(&mut conn)
+        .await
+        .map_err(|_| AppError::Authorization("User not found".to_string()))?;
+
+    // Resolve the asset's internal ID
+    let asset_internal_id: i32 = crate::schema::assets::table
+        .filter(crate::schema::assets::uuid.eq(request.asset_id))
+        .filter(crate::schema::assets::is_deleted.eq(false))
+        .select(crate::schema::assets::id)
+        .first(&mut conn)
+        .await
+        .map_err(|e| match e {
+            diesel::result::Error::NotFound => AppError::NotFound("Asset not found".to_string()),
+            _ => AppError::Database(e),
+        })?;
+
+    let protocol = request.session_type.as_str();
+
+    // Superusers bypass access rule checks
+    if !user.is_superuser {
+        let access_result = crate::services::access::can_access_asset(
+            state.access_client.as_ref(),
+            &mut conn,
+            user_internal_id,
+            asset_internal_id,
+            protocol,
+        )
+        .await?;
+
+        if !access_result.allowed {
+            return Err(AppError::Authorization(
+                "No access rule grants you access to this asset".to_string(),
+            ));
+        }
+
+        if access_result.require_mfa && !user.mfa_verified {
+            return Err(AppError::Authorization(
+                "MFA verification required for this asset".to_string(),
+            ));
+        }
+
+        if access_result.require_justification && request.justification.is_none() {
+            return Err(AppError::Validation(
+                "Justification is required for this asset".to_string(),
+            ));
+        }
+    }
 
     // TODO: Get real client IP from request headers
     // SAFETY: "127.0.0.1" is a valid IP address literal, parsing cannot fail
@@ -125,8 +177,8 @@ pub async fn create_session(
 
     let new_session = NewProxySession {
         uuid: Uuid::new_v4(),
-        user_id: 0,  // TODO: Get from user UUID
-        asset_id: 0, // TODO: Get from asset UUID
+        user_id: user_internal_id,
+        asset_id: asset_internal_id,
         credential_id: request.credential_id,
         credential_username: String::new(), // TODO: Get from vault
         session_type: request.session_type,

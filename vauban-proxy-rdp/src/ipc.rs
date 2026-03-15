@@ -5,8 +5,8 @@ use shared::ipc::IpcChannel;
 use shared::messages::Message;
 use std::io;
 use std::os::unix::io::RawFd;
-use tokio::io::unix::AsyncFd;
 use tokio::io::Interest;
+use tokio::io::unix::AsyncFd;
 
 /// Async wrapper for IPC channel using tokio's AsyncFd.
 pub struct AsyncIpcChannel {
@@ -39,9 +39,7 @@ impl AsyncIpcChannel {
 
             match self.inner.try_recv() {
                 Ok(msg) => return Ok(msg),
-                Err(shared::ipc::IpcError::Io(ref e))
-                    if e.kind() == io::ErrorKind::WouldBlock =>
-                {
+                Err(shared::ipc::IpcError::Io(ref e)) if e.kind() == io::ErrorKind::WouldBlock => {
                     guard.clear_ready();
                     continue;
                 }
@@ -57,7 +55,7 @@ impl AsyncIpcChannel {
 }
 
 fn set_nonblocking(fd: RawFd) -> io::Result<()> {
-    use libc::{fcntl, F_GETFL, F_SETFL, O_NONBLOCK};
+    use libc::{F_GETFL, F_SETFL, O_NONBLOCK, fcntl};
     // SAFETY: fcntl with valid arguments on a valid fd.
     unsafe {
         let flags = fcntl(fd, F_GETFL);

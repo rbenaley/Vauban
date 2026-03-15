@@ -1,7 +1,10 @@
 // L-1: Integration tests legitimately use unwrap/expect/panic/println
 #![allow(
-    clippy::unwrap_used, clippy::expect_used, clippy::panic,
-    clippy::print_stdout, clippy::print_stderr
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stdout,
+    clippy::print_stderr
 )]
 
 /// VAUBAN Web - Integration Tests.
@@ -15,10 +18,11 @@
 /// - Run migrations: diesel migration run
 // Test modules organized by category
 mod api; // REST API tests (/api/v1/*)
+mod ipc;
 mod middleware; // Middleware tests
 mod security; // Security tests (auth, CSRF, rate limiting)
 mod web; // Web page tests (HTML)
-mod ws; // WebSocket tests
+mod ws; // WebSocket tests // IPC integration tests (vauban-access in-process)
 
 // Shared test utilities
 mod common;

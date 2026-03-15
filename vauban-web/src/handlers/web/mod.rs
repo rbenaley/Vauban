@@ -76,8 +76,9 @@ pub(crate) use askama::Template;
 // Sub-modules
 // ============================================================================
 
-mod assets;
+mod access_rules;
 mod asset_groups;
+mod assets;
 mod dashboard;
 mod groups;
 mod rdp;
@@ -85,8 +86,9 @@ mod sessions;
 mod ssh;
 mod users;
 
-pub use assets::*;
+pub use access_rules::*;
 pub use asset_groups::*;
+pub use assets::*;
 pub use dashboard::*;
 pub use groups::*;
 pub use rdp::*;
@@ -132,8 +134,9 @@ pub(crate) async fn check_rbac(
     } else {
         "role:user"
     };
-    if let Some(ref rbac) = state.rbac_client {
-        rbac.check_permission(subject, resource, action)
+    if let Some(ref access) = state.access_client {
+        access
+            .check_permission(subject, resource, action)
             .await
             .unwrap_or(false)
     } else {
@@ -194,28 +197,43 @@ pub(crate) fn build_connection_config(
 
     // Add username if provided
     if let Some(u) = username.filter(|s| !s.trim().is_empty()) {
-        config.insert("username".to_string(), serde_json::Value::String(u.trim().to_string()));
+        config.insert(
+            "username".to_string(),
+            serde_json::Value::String(u.trim().to_string()),
+        );
     }
 
     // Add auth_type if provided
     if let Some(at) = auth_type.filter(|s| !s.trim().is_empty()) {
-        config.insert("auth_type".to_string(), serde_json::Value::String(at.to_string()));
+        config.insert(
+            "auth_type".to_string(),
+            serde_json::Value::String(at.to_string()),
+        );
 
         match at {
             "password" => {
                 // Add password if auth type is password
                 if let Some(p) = password.filter(|s| !s.is_empty()) {
-                    config.insert("password".to_string(), serde_json::Value::String(p.to_string()));
+                    config.insert(
+                        "password".to_string(),
+                        serde_json::Value::String(p.to_string()),
+                    );
                 }
             }
             "private_key" => {
                 // Add private key if auth type is private_key
                 if let Some(pk) = private_key.filter(|s| !s.is_empty()) {
-                    config.insert("private_key".to_string(), serde_json::Value::String(pk.to_string()));
+                    config.insert(
+                        "private_key".to_string(),
+                        serde_json::Value::String(pk.to_string()),
+                    );
                 }
                 // Add passphrase if provided
                 if let Some(pp) = passphrase.filter(|s| !s.is_empty()) {
-                    config.insert("passphrase".to_string(), serde_json::Value::String(pp.to_string()));
+                    config.insert(
+                        "passphrase".to_string(),
+                        serde_json::Value::String(pp.to_string()),
+                    );
                 }
             }
             _ => {}

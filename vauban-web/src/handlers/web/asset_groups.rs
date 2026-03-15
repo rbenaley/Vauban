@@ -1,30 +1,16 @@
 /// Asset group management page handlers.
+///
+/// Asset group table operations delegate to AccessIpcClient when available,
+/// with fallback to direct SQL when IPC is not configured.
 use super::*;
+use shared::messages::AssetGroupInfo;
 
-pub async fn access_rules_list(
-    State(state): State<AppState>,
-    auth_user: WebAuthUser,
-) -> Result<impl IntoResponse, AppError> {
-    let user = Some(user_context_from_auth(&auth_user));
-    let base = BaseTemplate::new("Access Rules".to_string(), user.clone())
-        .with_current_path("/assets/access");
-    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
-
-    let template = AccessListTemplate {
-        title,
-        user: user_ctx,
-        vauban,
-        messages,
-        language_code,
-        sidebar_content,
-        header_user,
-    };
-
-    let html = template
-        .render()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
-    Ok(Html(html))
+/// Format RFC3339 date string to display format.
+fn format_rfc3339_date(s: &str, fmt: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|d| d.format(fmt).to_string())
+        .unwrap_or_else(|| s.to_string())
 }
 
 /// Asset group list page.
@@ -37,83 +23,128 @@ pub async fn asset_group_list(
     let base = BaseTemplate::new("Asset Groups".to_string(), user.clone())
         .with_current_path("/assets/groups");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base)
+            .await
+            .into_fields();
 
-    let mut conn = state
-        .db_pool
-        .get()
-        .await
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
     // Filter out empty strings - form sends empty string when search is cleared
     let search_filter = params.get("search").filter(|s| !s.is_empty()).cloned();
 
-    // L-5: Replaced raw SQL with Diesel DSL (left_join + group_by) for type safety
-    // and proper LIKE wildcard escaping via like_contains().
-    use crate::db::like_contains;
-    use crate::schema::asset_groups;
-    use diesel::dsl::count;
+    let groups: Vec<crate::templates::assets::group_list::AssetGroupItem> = if let Some(
+        ref client,
+    ) =
+        state.access_client
+    {
+        // IPC path: list groups via Access, counts via local SQL
+        let ipc_groups = client.list_asset_groups().await?;
+        let mut conn = state
+            .db_pool
+            .get()
+            .await
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+        let count_rows: Vec<GroupCountRow> = diesel::sql_query(
+                "SELECT group_id, COUNT(*)::bigint as cnt FROM assets WHERE is_deleted = false AND group_id IS NOT NULL GROUP BY group_id",
+            )
+            .load(&mut conn)
+            .await
+            .map_err(AppError::Database)?;
+        let counts: std::collections::HashMap<i32, i64> = count_rows
+            .into_iter()
+            .map(|r| (r.group_id, r.cnt))
+            .collect();
 
-    let mut query = asset_groups::table
-        .left_join(
-            schema_assets::table.on(
-                schema_assets::group_id
+        let search_lower = search_filter.as_ref().map(|s| s.to_lowercase());
+        let mut groups: Vec<_> = ipc_groups
+            .into_iter()
+            .filter(|g| {
+                search_lower.as_ref().is_none_or(|s| {
+                    g.name.to_lowercase().contains(s) || g.slug.to_lowercase().contains(s)
+                })
+            })
+            .map(|g| crate::templates::assets::group_list::AssetGroupItem {
+                uuid: g.uuid,
+                name: g.name,
+                slug: g.slug,
+                description: g.description,
+                color: g.color,
+                icon: g.icon,
+                asset_count: counts.get(&g.id).copied().unwrap_or(0),
+                created_at: format_rfc3339_date(&g.created_at, "%b %d, %Y"),
+            })
+            .collect();
+        groups.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        groups
+    } else {
+        // SQL fallback
+        let mut conn = state
+            .db_pool
+            .get()
+            .await
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+        use crate::db::like_contains;
+        use crate::schema::asset_groups;
+        use diesel::dsl::count;
+
+        let mut query = asset_groups::table
+            .left_join(
+                schema_assets::table.on(schema_assets::group_id
                     .eq(asset_groups::id.nullable())
-                    .and(schema_assets::is_deleted.eq(false)),
-            ),
-        )
-        .filter(asset_groups::is_deleted.eq(false))
-        .group_by((
-            asset_groups::id,
-            asset_groups::uuid,
-            asset_groups::name,
-            asset_groups::slug,
-            asset_groups::description,
-            asset_groups::color,
-            asset_groups::icon,
-            asset_groups::created_at,
-        ))
-        .select((
-            asset_groups::uuid,
-            asset_groups::name,
-            asset_groups::slug,
-            asset_groups::description,
-            asset_groups::color,
-            asset_groups::icon,
-            asset_groups::created_at,
-            count(schema_assets::id.nullable()),
-        ))
-        .order(asset_groups::name.asc())
-        .into_boxed();
+                    .and(schema_assets::is_deleted.eq(false))),
+            )
+            .filter(asset_groups::is_deleted.eq(false))
+            .group_by((
+                asset_groups::id,
+                asset_groups::uuid,
+                asset_groups::name,
+                asset_groups::slug,
+                asset_groups::description,
+                asset_groups::color,
+                asset_groups::icon,
+                asset_groups::created_at,
+            ))
+            .select((
+                asset_groups::uuid,
+                asset_groups::name,
+                asset_groups::slug,
+                asset_groups::description,
+                asset_groups::color,
+                asset_groups::icon,
+                asset_groups::created_at,
+                count(schema_assets::id.nullable()),
+            ))
+            .order(asset_groups::name.asc())
+            .into_boxed();
 
-    if let Some(ref s) = search_filter {
-        let pattern = like_contains(s);
-        query = query.filter(
-            asset_groups::name
-                .ilike(pattern.clone())
-                .or(asset_groups::slug.ilike(pattern)),
-        );
-    }
+        if let Some(ref s) = search_filter {
+            let pattern = like_contains(s);
+            query = query.filter(
+                asset_groups::name
+                    .ilike(pattern.clone())
+                    .or(asset_groups::slug.ilike(pattern)),
+            );
+        }
 
-    let groups_data: Vec<AssetGroupRow> =
-        query.load(&mut conn).await.map_err(AppError::Database)?;
+        let groups_data: Vec<AssetGroupRow> =
+            query.load(&mut conn).await.map_err(AppError::Database)?;
 
-    let groups: Vec<crate::templates::assets::group_list::AssetGroupItem> = groups_data
-        .into_iter()
-        .map(
-            |(uuid, name, slug, description, color, icon, created_at, asset_count)| {
-                crate::templates::assets::group_list::AssetGroupItem {
-                    uuid: uuid.to_string(),
-                    name,
-                    slug,
-                    description,
-                    color,
-                    icon,
-                    asset_count,
-                    created_at: created_at.format("%b %d, %Y").to_string(),
-                }
-            },
-        )
-        .collect();
+        groups_data
+            .into_iter()
+            .map(
+                |(uuid, name, slug, description, color, icon, created_at, asset_count)| {
+                    crate::templates::assets::group_list::AssetGroupItem {
+                        uuid: uuid.to_string(),
+                        name,
+                        slug,
+                        description,
+                        color,
+                        icon,
+                        asset_count,
+                        created_at: created_at.format("%b %d, %Y").to_string(),
+                    }
+                },
+            )
+            .collect()
+    };
 
     let template = AssetGroupListTemplate {
         title,
@@ -131,6 +162,15 @@ pub async fn asset_group_list(
         .render()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
     Ok(Html(html))
+}
+
+/// Helper for asset count by group_id query (IPC path).
+#[derive(diesel::QueryableByName)]
+struct GroupCountRow {
+    #[diesel(sql_type = diesel::sql_types::Integer)]
+    group_id: i32,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    cnt: i64,
 }
 
 /// Query result type for asset group list (L-5: Diesel DSL replaces raw SQL).
@@ -161,16 +201,6 @@ pub async fn asset_group_detail(
         .map(|c| c.value().to_string())
         .unwrap_or_default();
 
-    let mut conn = match state.db_pool.get().await {
-        Ok(conn) => conn,
-        Err(_) => {
-            return flash_redirect(
-                flash.error("Database connection error. Please try again."),
-                "/assets/groups",
-            );
-        }
-    };
-
     let group_uuid = match ::uuid::Uuid::parse_str(&uuid_str) {
         Ok(uuid) => uuid,
         Err(_) => {
@@ -178,75 +208,149 @@ pub async fn asset_group_detail(
         }
     };
 
-    // NOTE: Raw SQL - simple query but kept for consistency with related code
-    let group_data: AssetGroupDetailResult = match diesel::sql_query(
-        "SELECT uuid, name, slug, description, color, icon, created_at, updated_at
-         FROM asset_groups WHERE uuid = $1 AND is_deleted = false",
-    )
-    .bind::<DieselUuid, _>(group_uuid)
-    .get_result(&mut conn)
-    .await
-    {
-        Ok(data) => data,
-        Err(diesel::result::Error::NotFound) => {
-            return flash_redirect(flash.error("Asset group not found"), "/assets/groups");
-        }
-        Err(_) => {
-            return flash_redirect(
-                flash.error("Database error. Please try again."),
-                "/assets/groups",
-            );
-        }
+    let (group, group_name): (
+        crate::templates::assets::group_detail::AssetGroupDetail,
+        String,
+    ) = if let Some(ref client) = state.access_client {
+        // IPC path: get group via Access, assets via local SQL
+        let group_info = match client.get_asset_group(&uuid_str).await {
+            Ok(info) => info,
+            Err(_) => {
+                return flash_redirect(flash.error("Asset group not found"), "/assets/groups");
+            }
+        };
+        let mut conn = match state.db_pool.get().await {
+            Ok(conn) => conn,
+            Err(_) => {
+                return flash_redirect(
+                    flash.error("Database connection error. Please try again."),
+                    "/assets/groups",
+                );
+            }
+        };
+        let assets_data: Vec<GroupAssetResult> = match diesel::sql_query(
+            "SELECT uuid, name, hostname, asset_type, status FROM assets
+             WHERE group_id = $1 AND is_deleted = false ORDER BY name ASC",
+        )
+        .bind::<diesel::sql_types::Integer, _>(group_info.id)
+        .load(&mut conn)
+        .await
+        {
+            Ok(data) => data,
+            Err(_) => {
+                return flash_redirect(
+                    flash.error("Database error. Please try again."),
+                    "/assets/groups",
+                );
+            }
+        };
+
+        let assets: Vec<crate::templates::assets::group_detail::GroupAssetItem> = assets_data
+            .into_iter()
+            .map(|a| crate::templates::assets::group_detail::GroupAssetItem {
+                uuid: a.uuid.to_string(),
+                name: a.name,
+                hostname: a.hostname,
+                asset_type: a.asset_type,
+                status: a.status,
+            })
+            .collect();
+
+        let group = crate::templates::assets::group_detail::AssetGroupDetail {
+            uuid: group_info.uuid,
+            name: group_info.name.clone(),
+            slug: group_info.slug,
+            description: group_info.description,
+            color: group_info.color,
+            icon: group_info.icon,
+            created_at: format_rfc3339_date(&group_info.created_at, "%b %d, %Y %H:%M"),
+            updated_at: format_rfc3339_date(&group_info.updated_at, "%b %d, %Y %H:%M"),
+            assets,
+        };
+        (group, group_info.name)
+    } else {
+        // SQL fallback
+        let mut conn = match state.db_pool.get().await {
+            Ok(conn) => conn,
+            Err(_) => {
+                return flash_redirect(
+                    flash.error("Database connection error. Please try again."),
+                    "/assets/groups",
+                );
+            }
+        };
+
+        let group_data: AssetGroupDetailResult = match diesel::sql_query(
+            "SELECT uuid, name, slug, description, color, icon, created_at, updated_at
+             FROM asset_groups WHERE uuid = $1 AND is_deleted = false",
+        )
+        .bind::<DieselUuid, _>(group_uuid)
+        .get_result(&mut conn)
+        .await
+        {
+            Ok(data) => data,
+            Err(diesel::result::Error::NotFound) => {
+                return flash_redirect(flash.error("Asset group not found"), "/assets/groups");
+            }
+            Err(_) => {
+                return flash_redirect(
+                    flash.error("Database error. Please try again."),
+                    "/assets/groups",
+                );
+            }
+        };
+
+        let assets_data: Vec<GroupAssetResult> = match diesel::sql_query(
+            "SELECT a.uuid, a.name, a.hostname, a.asset_type, a.status
+             FROM assets a
+             INNER JOIN asset_groups g ON g.id = a.group_id
+             WHERE g.uuid = $1 AND a.is_deleted = false
+             ORDER BY a.name ASC",
+        )
+        .bind::<DieselUuid, _>(group_uuid)
+        .load(&mut conn)
+        .await
+        {
+            Ok(data) => data,
+            Err(_) => {
+                return flash_redirect(
+                    flash.error("Database error. Please try again."),
+                    "/assets/groups",
+                );
+            }
+        };
+
+        let assets: Vec<crate::templates::assets::group_detail::GroupAssetItem> = assets_data
+            .into_iter()
+            .map(|a| crate::templates::assets::group_detail::GroupAssetItem {
+                uuid: a.uuid.to_string(),
+                name: a.name,
+                hostname: a.hostname,
+                asset_type: a.asset_type,
+                status: a.status,
+            })
+            .collect();
+
+        let group = crate::templates::assets::group_detail::AssetGroupDetail {
+            uuid: group_data.uuid.to_string(),
+            name: group_data.name.clone(),
+            slug: group_data.slug,
+            description: group_data.description,
+            color: group_data.color,
+            icon: group_data.icon,
+            created_at: group_data.created_at.format("%b %d, %Y %H:%M").to_string(),
+            updated_at: group_data.updated_at.format("%b %d, %Y %H:%M").to_string(),
+            assets,
+        };
+        (group, group_data.name)
     };
 
-    // NOTE: Raw SQL - kept for consistency with asset_group_detail page
-    let assets_data: Vec<GroupAssetResult> = match diesel::sql_query(
-        "SELECT a.uuid, a.name, a.hostname, a.asset_type, a.status
-         FROM assets a
-         INNER JOIN asset_groups g ON g.id = a.group_id
-         WHERE g.uuid = $1 AND a.is_deleted = false
-         ORDER BY a.name ASC",
-    )
-    .bind::<DieselUuid, _>(group_uuid)
-    .load(&mut conn)
-    .await
-    {
-        Ok(data) => data,
-        Err(_) => {
-            return flash_redirect(
-                flash.error("Database error. Please try again."),
-                "/assets/groups",
-            );
-        }
-    };
-
-    let assets: Vec<crate::templates::assets::group_detail::GroupAssetItem> = assets_data
-        .into_iter()
-        .map(|a| crate::templates::assets::group_detail::GroupAssetItem {
-            uuid: a.uuid.to_string(),
-            name: a.name,
-            hostname: a.hostname,
-            asset_type: a.asset_type,
-            status: a.status,
-        })
-        .collect();
-
-    let group = crate::templates::assets::group_detail::AssetGroupDetail {
-        uuid: group_data.uuid.to_string(),
-        name: group_data.name.clone(),
-        slug: group_data.slug,
-        description: group_data.description,
-        color: group_data.color,
-        icon: group_data.icon,
-        created_at: group_data.created_at.format("%b %d, %Y %H:%M").to_string(),
-        updated_at: group_data.updated_at.format("%b %d, %Y %H:%M").to_string(),
-        assets,
-    };
-
-    let base = BaseTemplate::new(format!("{} - Asset Group", group_data.name), user.clone())
+    let base = BaseTemplate::new(format!("{} - Asset Group", group_name), user.clone())
         .with_current_path("/assets/groups");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base)
+            .await
+            .into_fields();
 
     let template = AssetGroupDetailTemplate {
         title,
@@ -336,31 +440,55 @@ pub async fn asset_group_add_asset_form(
         .get()
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
-    let group_uuid = ::uuid::Uuid::parse_str(&uuid_str)
-        .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
 
-    // Get the group details
-    use crate::schema::asset_groups::dsl as ag;
-    let group_row: (::uuid::Uuid, String) = ag::asset_groups
-        .filter(ag::uuid.eq(group_uuid))
-        .filter(ag::is_deleted.eq(false))
-        .select((ag::uuid, ag::name))
-        .first(&mut conn)
-        .await
-        .map_err(|e| match e {
-            diesel::result::Error::NotFound => {
-                AppError::NotFound("Asset group not found".to_string())
-            }
-            _ => AppError::Database(e),
-        })?;
+    let (group, group_names): (GroupSummary, std::collections::HashMap<i32, String>) =
+        if let Some(ref client) = state.access_client {
+            // IPC path: get group + list all groups for names
+            let group_info = client
+                .get_asset_group(&uuid_str)
+                .await
+                .map_err(|_| AppError::NotFound("Asset group not found".to_string()))?;
+            let all_groups = client.list_asset_groups().await?;
+            let group_names: std::collections::HashMap<i32, String> =
+                all_groups.into_iter().map(|g| (g.id, g.name)).collect();
+            let group = GroupSummary {
+                uuid: group_info.uuid,
+                name: group_info.name,
+            };
+            (group, group_names)
+        } else {
+            // SQL fallback
+            let group_uuid = ::uuid::Uuid::parse_str(&uuid_str)
+                .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
+            use crate::schema::asset_groups::dsl as ag;
+            let group_row: (::uuid::Uuid, String) = ag::asset_groups
+                .filter(ag::uuid.eq(group_uuid))
+                .filter(ag::is_deleted.eq(false))
+                .select((ag::uuid, ag::name))
+                .first(&mut conn)
+                .await
+                .map_err(|e| match e {
+                    diesel::result::Error::NotFound => {
+                        AppError::NotFound("Asset group not found".to_string())
+                    }
+                    _ => AppError::Database(e),
+                })?;
+            let group = GroupSummary {
+                uuid: group_row.0.to_string(),
+                name: group_row.1,
+            };
+            let group_names: std::collections::HashMap<i32, String> = ag::asset_groups
+                .filter(ag::is_deleted.eq(false))
+                .select((ag::id, ag::name))
+                .load::<(i32, String)>(&mut conn)
+                .await
+                .map_err(AppError::Database)?
+                .into_iter()
+                .collect();
+            (group, group_names)
+        };
 
-    let group = GroupSummary {
-        uuid: group_row.0.to_string(),
-        name: group_row.1,
-    };
-
-    // Get ALL assets (not deleted) with their current group name if assigned
-    // Assets already in a group will be displayed as grayed out and non-selectable
+    // Get ALL assets (not deleted) with their current group name if assigned (local SQL)
     use crate::schema::assets::dsl as a;
     let available_asset_rows: Vec<(::uuid::Uuid, String, String, String, String, Option<i32>)> =
         a::assets
@@ -377,16 +505,6 @@ pub async fn asset_group_add_asset_form(
             .load(&mut conn)
             .await
             .map_err(AppError::Database)?;
-
-    // Get all group names for lookup
-    let group_names: std::collections::HashMap<i32, String> = ag::asset_groups
-        .filter(ag::is_deleted.eq(false))
-        .select((ag::id, ag::name))
-        .load::<(i32, String)>(&mut conn)
-        .await
-        .map_err(AppError::Database)?
-        .into_iter()
-        .collect();
 
     let available_assets: Vec<AvailableAsset> = available_asset_rows
         .into_iter()
@@ -418,7 +536,9 @@ pub async fn asset_group_add_asset_form(
     .with_current_path("/assets/groups")
     .with_messages(flash_messages);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base)
+            .await
+            .into_fields();
 
     let template = AssetGroupAddAssetTemplate {
         title,
@@ -534,6 +654,47 @@ pub async fn asset_group_add_asset(
         }
     }
 
+    let group_id: i32 = if let Some(ref client) = state.access_client {
+        // IPC path: get group id
+        let group_info = match client.get_asset_group(&uuid_str).await {
+            Ok(info) => info,
+            Err(_) => {
+                return flash_redirect(flash.error("Asset group not found"), "/assets/groups");
+            }
+        };
+        group_info.id
+    } else {
+        // SQL fallback
+        let mut conn = match state.db_pool.get().await {
+            Ok(conn) => conn,
+            Err(_) => {
+                return flash_redirect(
+                    flash.error("Database connection error. Please try again."),
+                    &format!("/assets/groups/{}/add-asset", uuid_str),
+                );
+            }
+        };
+        use crate::schema::asset_groups::dsl as ag;
+        match ag::asset_groups
+            .filter(ag::uuid.eq(group_uuid))
+            .filter(ag::is_deleted.eq(false))
+            .select(ag::id)
+            .first(&mut conn)
+            .await
+        {
+            Ok(id) => id,
+            Err(diesel::result::Error::NotFound) => {
+                return flash_redirect(flash.error("Asset group not found"), "/assets/groups");
+            }
+            Err(_) => {
+                return flash_redirect(
+                    flash.error("Database error. Please try again."),
+                    &format!("/assets/groups/{}/add-asset", uuid_str),
+                );
+            }
+        }
+    };
+
     let mut conn = match state.db_pool.get().await {
         Ok(conn) => conn,
         Err(_) => {
@@ -544,28 +705,7 @@ pub async fn asset_group_add_asset(
         }
     };
 
-    // Get the group's internal ID
-    use crate::schema::asset_groups::dsl as ag;
-    let group_id: i32 = match ag::asset_groups
-        .filter(ag::uuid.eq(group_uuid))
-        .filter(ag::is_deleted.eq(false))
-        .select(ag::id)
-        .first(&mut conn)
-        .await
-    {
-        Ok(id) => id,
-        Err(diesel::result::Error::NotFound) => {
-            return flash_redirect(flash.error("Asset group not found"), "/assets/groups");
-        }
-        Err(_) => {
-            return flash_redirect(
-                flash.error("Database error. Please try again."),
-                &format!("/assets/groups/{}/add-asset", uuid_str),
-            );
-        }
-    };
-
-    // Update all selected assets to set their group_id
+    // Update all selected assets to set their group_id (local SQL)
     use crate::schema::assets::dsl as a;
     let updated = diesel::update(a::assets)
         .filter(a::uuid.eq_any(&asset_uuids))
@@ -727,61 +867,78 @@ pub async fn asset_group_edit(
         })
         .collect();
 
-    let mut conn = match state.db_pool.get().await {
-        Ok(conn) => conn,
-        Err(_) => {
-            return flash_redirect(
-                flash.error("Database connection error. Please try again."),
-                "/assets/groups",
-            );
+    let group = if let Some(ref client) = state.access_client {
+        // IPC path
+        let group_info = match client.get_asset_group(&uuid_str).await {
+            Ok(info) => info,
+            Err(_) => {
+                return flash_redirect(flash.error("Asset group not found"), "/assets/groups");
+            }
+        };
+        crate::templates::assets::group_edit::AssetGroupEdit {
+            uuid: group_info.uuid,
+            name: group_info.name,
+            slug: group_info.slug,
+            description: group_info.description,
+            color: group_info.color,
+            icon: group_info.icon,
+        }
+    } else {
+        // SQL fallback
+        let mut conn = match state.db_pool.get().await {
+            Ok(conn) => conn,
+            Err(_) => {
+                return flash_redirect(
+                    flash.error("Database connection error. Please try again."),
+                    "/assets/groups",
+                );
+            }
+        };
+
+        let group_uuid = match ::uuid::Uuid::parse_str(&uuid_str) {
+            Ok(uuid) => uuid,
+            Err(_) => {
+                return flash_redirect(flash.error("Invalid group identifier"), "/assets/groups");
+            }
+        };
+
+        let group_data: AssetGroupEditResult = match diesel::sql_query(
+            "SELECT uuid, name, slug, description, color, icon
+             FROM asset_groups WHERE uuid = $1 AND is_deleted = false",
+        )
+        .bind::<DieselUuid, _>(group_uuid)
+        .get_result(&mut conn)
+        .await
+        {
+            Ok(data) => data,
+            Err(diesel::result::Error::NotFound) => {
+                return flash_redirect(flash.error("Asset group not found"), "/assets/groups");
+            }
+            Err(_) => {
+                return flash_redirect(
+                    flash.error("Database error. Please try again."),
+                    "/assets/groups",
+                );
+            }
+        };
+
+        crate::templates::assets::group_edit::AssetGroupEdit {
+            uuid: group_data.uuid.to_string(),
+            name: group_data.name.clone(),
+            slug: group_data.slug,
+            description: group_data.description,
+            color: group_data.color,
+            icon: group_data.icon,
         }
     };
 
-    let group_uuid = match ::uuid::Uuid::parse_str(&uuid_str) {
-        Ok(uuid) => uuid,
-        Err(_) => {
-            return flash_redirect(flash.error("Invalid group identifier"), "/assets/groups");
-        }
-    };
-
-    // NOTE: Raw SQL - kept for consistency with asset_group pages
-    let group_data: AssetGroupEditResult = match diesel::sql_query(
-        "SELECT uuid, name, slug, description, color, icon
-         FROM asset_groups WHERE uuid = $1 AND is_deleted = false",
-    )
-    .bind::<DieselUuid, _>(group_uuid)
-    .get_result(&mut conn)
-    .await
-    {
-        Ok(data) => data,
-        Err(diesel::result::Error::NotFound) => {
-            return flash_redirect(flash.error("Asset group not found"), "/assets/groups");
-        }
-        Err(_) => {
-            return flash_redirect(
-                flash.error("Database error. Please try again."),
-                "/assets/groups",
-            );
-        }
-    };
-
-    let group = crate::templates::assets::group_edit::AssetGroupEdit {
-        uuid: group_data.uuid.to_string(),
-        name: group_data.name.clone(),
-        slug: group_data.slug,
-        description: group_data.description,
-        color: group_data.color,
-        icon: group_data.icon,
-    };
-
-    let base = BaseTemplate::new(
-        format!("Edit {} - Asset Group", group_data.name),
-        user.clone(),
-    )
-    .with_current_path("/assets/groups")
-    .with_messages(flash_messages);
+    let base = BaseTemplate::new(format!("Edit {} - Asset Group", group.name), user.clone())
+        .with_current_path("/assets/groups")
+        .with_messages(flash_messages);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base)
+            .await
+            .into_fields();
 
     let template = AssetGroupEditTemplate {
         title,
@@ -888,49 +1045,60 @@ pub async fn update_asset_group(
         );
     }
 
-    // Get database connection
-    let mut conn = match state.db_pool.get().await {
-        Ok(conn) => conn,
-        Err(_) => {
-            return flash_redirect(
-                flash.error("Database connection error. Please try again."),
-                &format!("/assets/groups/{}/edit", group_uuid),
-            );
-        }
-    };
-
     // Sanitize text fields to prevent stored XSS
     let sanitized_name = sanitize(&form.name);
     let sanitized_description = sanitize_opt(form.description.clone());
 
-    // NOTE: Raw SQL - UPDATE with NOW() PostgreSQL function, using parameterized queries
-    let result = diesel::sql_query(
-        "UPDATE asset_groups SET name = $1, slug = $2, description = $3, color = $4, icon = $5, updated_at = NOW()
-         WHERE uuid = $6 AND is_deleted = false"
-    )
-    .bind::<Text, _>(&sanitized_name)
-    .bind::<Text, _>(&form.slug)
-    .bind::<Nullable<Text>, _>(sanitized_description.as_deref())
-    .bind::<Text, _>(&form.color)
-    .bind::<Text, _>(&form.icon)
-    .bind::<DieselUuid, _>(group_uuid)
-    .execute(&mut conn).await;
+    let result: Result<(), AppError> = if let Some(ref client) = state.access_client {
+        // IPC path
+        client
+            .update_asset_group(
+                &uuid_str,
+                &sanitized_name,
+                &form.slug,
+                sanitized_description,
+                &form.color,
+                &form.icon,
+            )
+            .await
+            .map(|_| ())
+    } else {
+        // SQL fallback
+        let mut conn = match state.db_pool.get().await {
+            Ok(conn) => conn,
+            Err(_) => {
+                return flash_redirect(
+                    flash.error("Database connection error. Please try again."),
+                    &format!("/assets/groups/{}/edit", group_uuid),
+                );
+            }
+        };
+
+        diesel::sql_query(
+            "UPDATE asset_groups SET name = $1, slug = $2, description = $3, color = $4, icon = $5, updated_at = NOW()
+             WHERE uuid = $6 AND is_deleted = false",
+        )
+        .bind::<Text, _>(&sanitized_name)
+        .bind::<Text, _>(&form.slug)
+        .bind::<Nullable<Text>, _>(sanitized_description.as_deref())
+        .bind::<Text, _>(&form.color)
+        .bind::<Text, _>(&form.icon)
+        .bind::<DieselUuid, _>(group_uuid)
+        .execute(&mut conn)
+        .await
+        .map(|_| ())
+        .map_err(AppError::Database)
+    };
 
     match result {
-        Ok(_) => {
-            // Success: redirect to detail page with success message
-            flash_redirect(
-                flash.success("Asset group updated successfully"),
-                &format!("/assets/groups/{}", group_uuid),
-            )
-        }
-        Err(_) => {
-            // Error: redirect back to edit page with error message
-            flash_redirect(
-                flash.error("Failed to update asset group. Please try again."),
-                &format!("/assets/groups/{}/edit", group_uuid),
-            )
-        }
+        Ok(_) => flash_redirect(
+            flash.success("Asset group updated successfully"),
+            &format!("/assets/groups/{}", group_uuid),
+        ),
+        Err(_) => flash_redirect(
+            flash.error("Failed to update asset group. Please try again."),
+            &format!("/assets/groups/{}/edit", group_uuid),
+        ),
     }
 }
 
@@ -964,7 +1132,9 @@ pub async fn asset_group_create_form(
         .with_current_path("/assets/groups")
         .with_messages(flash_messages);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base)
+            .await
+            .into_fields();
 
     let csrf_token = jar
         .get(crate::middleware::csrf::CSRF_COOKIE_NAME)
@@ -1044,74 +1214,104 @@ pub async fn create_asset_group_web(
         return flash_redirect(flash.error("Group slug is required"), "/assets/groups/new");
     }
 
-    let mut conn = match state.db_pool.get().await {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!("Database connection error: {}", e);
+    // Sanitize text fields to prevent stored XSS
+    let sanitized_name = sanitize(form.name.trim());
+    let sanitized_description =
+        sanitize_opt(form.description.as_ref().filter(|s| !s.is_empty()).cloned());
+
+    let result = if let Some(ref client) = state.access_client {
+        // IPC path
+        client
+            .create_asset_group(
+                &sanitized_name,
+                form.slug.trim(),
+                sanitized_description,
+                &form.color,
+                &form.icon,
+            )
+            .await
+    } else {
+        // SQL fallback
+        let mut conn = match state.db_pool.get().await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!("Database connection error: {}", e);
+                return flash_redirect(
+                    flash.error("Database connection error"),
+                    "/assets/groups/new",
+                );
+            }
+        };
+
+        // Check if asset group with same slug already exists
+        use crate::schema::asset_groups::dsl as ag;
+        let existing: Option<i32> = ag::asset_groups
+            .filter(ag::slug.eq(form.slug.trim()))
+            .filter(ag::is_deleted.eq(false))
+            .select(ag::id)
+            .first(&mut conn)
+            .await
+            .optional()
+            .ok()
+            .flatten();
+
+        if existing.is_some() {
             return flash_redirect(
-                flash.error("Database connection error"),
+                flash.error("An asset group with this slug already exists"),
                 "/assets/groups/new",
             );
         }
+
+        let new_uuid = ::uuid::Uuid::new_v4();
+        let now = chrono::Utc::now();
+
+        diesel::insert_into(ag::asset_groups)
+            .values((
+                ag::uuid.eq(new_uuid),
+                ag::name.eq(&sanitized_name),
+                ag::slug.eq(form.slug.trim()),
+                ag::description.eq(&sanitized_description),
+                ag::color.eq(&form.color),
+                ag::icon.eq(&form.icon),
+                ag::is_deleted.eq(false),
+                ag::created_at.eq(now),
+                ag::updated_at.eq(now),
+            ))
+            .execute(&mut conn)
+            .await
+            .map(|_| AssetGroupInfo {
+                id: 0,
+                uuid: new_uuid.to_string(),
+                name: sanitized_name.clone(),
+                slug: form.slug.trim().to_string(),
+                description: sanitized_description.clone(),
+                color: form.color.clone(),
+                icon: form.icon.clone(),
+                created_at: now.to_rfc3339(),
+                updated_at: now.to_rfc3339(),
+            })
+            .map_err(AppError::Database)
     };
 
-    // Check if asset group with same slug already exists
-    use crate::schema::asset_groups::dsl as ag;
-    let existing: Option<i32> = ag::asset_groups
-        .filter(ag::slug.eq(form.slug.trim()))
-        .filter(ag::is_deleted.eq(false))
-        .select(ag::id)
-        .first(&mut conn)
-        .await
-        .optional()
-        .unwrap_or(None);
-
-    if existing.is_some() {
-        return flash_redirect(
-            flash.error("An asset group with this slug already exists"),
-            "/assets/groups/new",
-        );
-    }
-
-    // Create the asset group
-    let new_uuid = ::uuid::Uuid::new_v4();
-    let now = chrono::Utc::now();
-
-    // Sanitize text fields to prevent stored XSS
-    let sanitized_name = sanitize(form.name.trim());
-    let sanitized_description = sanitize_opt(
-        form.description.as_ref().filter(|s| !s.is_empty()).cloned(),
-    );
-
-    let result = diesel::insert_into(ag::asset_groups)
-        .values((
-            ag::uuid.eq(new_uuid),
-            ag::name.eq(&sanitized_name),
-            ag::slug.eq(form.slug.trim()),
-            ag::description.eq(&sanitized_description),
-            ag::color.eq(&form.color),
-            ag::icon.eq(&form.icon),
-            ag::is_deleted.eq(false),
-            ag::created_at.eq(now),
-            ag::updated_at.eq(now),
-        ))
-        .execute(&mut conn)
-        .await;
-
     match result {
-        Ok(_) => flash_redirect(
-            flash.success(format!(
-                "Asset group '{}' created successfully",
-                sanitized_name
-            )),
-            &format!("/assets/groups/{}", new_uuid),
+        Ok(info) => flash_redirect(
+            flash.success(format!("Asset group '{}' created successfully", info.name)),
+            &format!("/assets/groups/{}", info.uuid),
         ),
         Err(e) => {
-            tracing::error!("Failed to create asset group: {}", e);
-            flash_redirect(
-                flash.error("Failed to create asset group"),
-                "/assets/groups/new",
-            )
+            let msg = e.to_string();
+            if msg.to_lowercase().contains("slug") || msg.to_lowercase().contains("unique") {
+                flash_redirect(
+                    flash.error("An asset group with this slug already exists"),
+                    "/assets/groups/new",
+                )
+            } else {
+                tracing::error!("Failed to create asset group: {}", e);
+                flash_redirect(
+                    flash.error("Failed to create asset group"),
+                    "/assets/groups/new",
+                )
+            }
         }
     }
 }
@@ -1163,49 +1363,78 @@ pub async fn delete_asset_group_web(
         }
     };
 
-    let mut conn = match state.db_pool.get().await {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!("Database connection error: {}", e);
-            return flash_redirect(
-                flash.error("Database connection error"),
-                &format!("/assets/groups/{}", uuid_str),
-            );
-        }
+    let result = if let Some(ref client) = state.access_client {
+        // IPC path: get group to know id, clear local assets, then delete via IPC
+        let group_info = match client.get_asset_group(&uuid_str).await {
+            Ok(info) => info,
+            Err(_) => {
+                return flash_redirect(flash.error("Asset group not found"), "/assets/groups");
+            }
+        };
+        let mut conn = match state.db_pool.get().await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!("Database connection error: {}", e);
+                return flash_redirect(
+                    flash.error("Database connection error"),
+                    &format!("/assets/groups/{}", uuid_str),
+                );
+            }
+        };
+        use crate::schema::assets::dsl as a;
+        let _ = diesel::update(a::assets.filter(a::group_id.eq(group_info.id)))
+            .set(a::group_id.eq(None::<i32>))
+            .execute(&mut conn)
+            .await;
+        client
+            .delete_asset_group(&uuid_str)
+            .await
+            .map(|_| group_info.name)
+    } else {
+        // SQL fallback
+        let mut conn = match state.db_pool.get().await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!("Database connection error: {}", e);
+                return flash_redirect(
+                    flash.error("Database connection error"),
+                    &format!("/assets/groups/{}", uuid_str),
+                );
+            }
+        };
+        use crate::schema::asset_groups::dsl as ag;
+        let group_data: Option<(i32, String)> = ag::asset_groups
+            .filter(ag::uuid.eq(group_uuid))
+            .filter(ag::is_deleted.eq(false))
+            .select((ag::id, ag::name))
+            .first(&mut conn)
+            .await
+            .optional()
+            .ok()
+            .flatten();
+
+        let (group_id, group_name) = match group_data {
+            Some(data) => data,
+            None => {
+                return flash_redirect(flash.error("Asset group not found"), "/assets/groups");
+            }
+        };
+
+        use crate::schema::assets::dsl as a;
+        let _ = diesel::update(a::assets.filter(a::group_id.eq(group_id)))
+            .set(a::group_id.eq(None::<i32>))
+            .execute(&mut conn)
+            .await;
+
+        diesel::delete(ag::asset_groups.filter(ag::id.eq(group_id)))
+            .execute(&mut conn)
+            .await
+            .map(|_| group_name)
+            .map_err(AppError::Database)
     };
-
-    // Get the group id and name for logging
-    use crate::schema::asset_groups::dsl as ag;
-    let group_data: Option<(i32, String)> = ag::asset_groups
-        .filter(ag::uuid.eq(group_uuid))
-        .filter(ag::is_deleted.eq(false))
-        .select((ag::id, ag::name))
-        .first(&mut conn)
-        .await
-        .optional()
-        .unwrap_or(None);
-
-    let (group_id, group_name) = match group_data {
-        Some(data) => data,
-        None => {
-            return flash_redirect(flash.error("Asset group not found"), "/assets/groups");
-        }
-    };
-
-    // Remove group association from assets first (set group_id to NULL)
-    use crate::schema::assets::dsl as a;
-    let _ = diesel::update(a::assets.filter(a::group_id.eq(group_id)))
-        .set(a::group_id.eq(None::<i32>))
-        .execute(&mut conn)
-        .await;
-
-    // Hard delete the asset group
-    let result = diesel::delete(ag::asset_groups.filter(ag::id.eq(group_id)))
-        .execute(&mut conn)
-        .await;
 
     match result {
-        Ok(_) => flash_redirect(
+        Ok(group_name) => flash_redirect(
             flash.success(format!("Asset group '{}' deleted successfully", group_name)),
             "/assets/groups",
         ),

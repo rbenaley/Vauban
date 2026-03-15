@@ -1,6 +1,6 @@
 /// VAUBAN Web - RBAC service client wrapper.
 use crate::error::AppResult;
-use crate::ipc::RbacIpcClient;
+use crate::ipc::AccessIpcClient;
 use std::sync::Arc;
 #[cfg(not(debug_assertions))]
 use tracing::error;
@@ -37,21 +37,19 @@ impl RbacService {
     /// Fail-closed: returns false on IPC errors or when client is unavailable
     /// in release builds.
     pub async fn check_permission(
-        rbac_client: Option<&Arc<RbacIpcClient>>,
+        access_client: Option<&Arc<AccessIpcClient>>,
         subject: &str,
         resource: &str,
         action: &str,
     ) -> AppResult<bool> {
-        if let Some(client) = rbac_client {
+        if let Some(client) = access_client {
             client.check_permission(subject, resource, action).await
         } else {
             #[cfg(debug_assertions)]
             {
                 warn!(
                     subject,
-                    resource,
-                    action,
-                    "RBAC fallback: allowing (no IPC client, debug build)"
+                    resource, action, "RBAC fallback: allowing (no IPC client, debug build)"
                 );
                 Ok(true)
             }
@@ -59,9 +57,7 @@ impl RbacService {
             {
                 error!(
                     subject,
-                    resource,
-                    action,
-                    "RBAC IPC client not available - denying by default"
+                    resource, action, "RBAC IPC client not available - denying by default"
                 );
                 Ok(false)
             }

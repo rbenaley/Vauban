@@ -74,7 +74,9 @@ impl AcmeResolver {
     pub fn install_challenge(&self, domain: &str, certified_key: Arc<CertifiedKey>) {
         let mut state = self.state.write().unwrap_or_else(|e| e.into_inner());
         info!(domain = %domain, "Installing ACME TLS-ALPN-01 challenge certificate");
-        state.challenge_certs.insert(domain.to_string(), certified_key);
+        state
+            .challenge_certs
+            .insert(domain.to_string(), certified_key);
     }
 
     /// Remove a TLS-ALPN-01 challenge certificate for a domain.
@@ -201,8 +203,8 @@ pub fn generate_self_signed_cert(
         return Err("Cannot generate certificate: no domains configured".into());
     }
 
-    let key_pair = KeyPair::generate()
-        .map_err(|e| format!("Failed to generate key pair: {}", e))?;
+    let key_pair =
+        KeyPair::generate().map_err(|e| format!("Failed to generate key pair: {}", e))?;
     let params = CertificateParams::new(domains.to_vec())
         .map_err(|e| format!("Failed to create certificate params: {}", e))?;
     let cert = params
@@ -255,8 +257,7 @@ fn atomic_write_pem(path: &str, data: &str) -> Result<(), Box<dyn std::error::Er
     file.sync_all()
         .map_err(|e| format!("Failed to sync file: {}", e))?;
 
-    std::fs::rename(&temp_path, path)
-        .map_err(|e| format!("Failed to atomically rename: {}", e))?;
+    std::fs::rename(&temp_path, path).map_err(|e| format!("Failed to atomically rename: {}", e))?;
 
     Ok(())
 }
@@ -463,7 +464,9 @@ mod tests {
 
         let key_pair = KeyPair::generate().unwrap();
         let mut params = CertificateParams::new(vec!["test.com".to_string()]).unwrap();
-        params.distinguished_name.push(DnType::CommonName, "test.com");
+        params
+            .distinguished_name
+            .push(DnType::CommonName, "test.com");
         let cert = params.self_signed(&key_pair).unwrap();
 
         let cert_pem = cert.pem();
@@ -475,7 +478,10 @@ mod tests {
 
     #[test]
     fn test_certified_key_from_pem_empty_cert() {
-        let result = certified_key_from_pem("", "-----BEGIN PRIVATE KEY-----\nfoo\n-----END PRIVATE KEY-----");
+        let result = certified_key_from_pem(
+            "",
+            "-----BEGIN PRIVATE KEY-----\nfoo\n-----END PRIVATE KEY-----",
+        );
         assert!(result.is_err());
     }
 
@@ -493,7 +499,9 @@ mod tests {
 
         let key_pair = KeyPair::generate().unwrap();
         let mut params = CertificateParams::new(vec!["der-test.com".to_string()]).unwrap();
-        params.distinguished_name.push(DnType::CommonName, "der-test.com");
+        params
+            .distinguished_name
+            .push(DnType::CommonName, "der-test.com");
         let cert = params.self_signed(&key_pair).unwrap();
 
         let cert_der = cert.der().as_ref();
@@ -509,7 +517,9 @@ mod tests {
 
         let key_pair = KeyPair::generate().unwrap();
         let mut params = CertificateParams::new(vec!["test.com".to_string()]).unwrap();
-        params.distinguished_name.push(DnType::CommonName, "test.com");
+        params
+            .distinguished_name
+            .push(DnType::CommonName, "test.com");
         let cert = params.self_signed(&key_pair).unwrap();
 
         let result = certified_key_from_der(cert.der().as_ref(), &[0xFF, 0xFF, 0xFF]);
@@ -563,11 +573,8 @@ mod tests {
         let cert_path = dir.path().join("server.crt");
         let key_path = dir.path().join("server.key");
 
-        let result = generate_self_signed_cert(
-            &[],
-            cert_path.to_str().unwrap(),
-            key_path.to_str().unwrap(),
-        );
+        let result =
+            generate_self_signed_cert(&[], cert_path.to_str().unwrap(), key_path.to_str().unwrap());
 
         assert!(result.is_err());
         assert!(!cert_path.exists());

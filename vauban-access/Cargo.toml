@@ -1,0 +1,38 @@
+[package]
+name = "vauban-access"
+description = "Vauban - Access Control service (Casbin RBAC + instance-level access rules)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "vauban_access"
+path = "src/lib.rs"
+
+[[bin]]
+name = "vauban-access"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+shared.workspace = true
+libc.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+casbin.workspace = true
+tokio = { workspace = true, features = ["rt"] }
+diesel = { version = "2.3", features = ["postgres", "uuid", "chrono"] }
+diesel-async = { version = "0.7", features = ["postgres", "deadpool"] }
+deadpool = { version = "0.12", features = ["managed"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.11", features = ["v4", "serde"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }

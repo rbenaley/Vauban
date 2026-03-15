@@ -113,9 +113,10 @@ impl Keyring {
     /// Returns a string in the format `"v{N}:{base64(nonce || ciphertext || tag)}"`.
     pub fn encrypt(&self, plaintext: &[u8]) -> Result<String, KeyError> {
         let key = self.get_key(self.current_version)?;
-        let encrypted = crypto::encrypt(key, plaintext)
-            .map_err(|e| KeyError::CryptoError(e.to_string()))?;
-        let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &encrypted);
+        let encrypted =
+            crypto::encrypt(key, plaintext).map_err(|e| KeyError::CryptoError(e.to_string()))?;
+        let encoded =
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &encrypted);
         Ok(format!("v{}:{}", self.current_version, encoded))
     }
 
@@ -306,7 +307,11 @@ mod tests {
         let kr = Keyring::new(mk.as_bytes(), "mfa", 3);
 
         let ciphertext = kr.encrypt(b"secret").unwrap();
-        assert!(ciphertext.starts_with("v3:"), "Should use version 3, got: {}", ciphertext);
+        assert!(
+            ciphertext.starts_with("v3:"),
+            "Should use version 3, got: {}",
+            ciphertext
+        );
     }
 
     #[test]

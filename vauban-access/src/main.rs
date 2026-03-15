@@ -1,21 +1,30 @@
 // L-1: Relax strict clippy lints in test code where unwrap/expect/panic are idiomatic
-#![cfg_attr(test, allow(
-    clippy::unwrap_used, clippy::expect_used, clippy::panic,
-    clippy::print_stdout, clippy::print_stderr
-))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::print_stdout,
+        clippy::print_stderr
+    )
+)]
 
-//! Vauban RBAC Service
+//! Vauban Access Control Service
 //!
 //! Handles:
-//! - Role-Based Access Control using Casbin
+//! - Role-Based Access Control using Casbin (feature-level)
+//! - Instance-level access rules (SQL-based, per-asset authorization)
 //! - Policy evaluation and caching
 //! - Authorization decisions
+
+use vauban_access::{db, handlers};
 
 use anyhow::{Context, Result};
 use casbin::prelude::*;
 use shared::capsicum;
-use shared::ipc::{poll_readable, IpcChannel};
-use shared::messages::{ControlMessage, Message, RbacResult, ServiceStats};
+use shared::ipc::{IpcChannel, poll_readable};
+use shared::messages::{AccessResponse, ControlMessage, Message, RbacResult, ServiceStats};
 use std::os::unix::io::RawFd;
 use std::process::ExitCode;
 use std::time::Instant;
@@ -33,6 +42,12 @@ struct ServiceState {
     /// Casbin policy enforcer, loaded before sandbox entry.
     /// None only in tests or when env vars are not set (dev without supervisor).
     enforcer: Option<Enforcer>,
+    /// Database connection pool for access rules and groups.
+    /// None only in tests or dev mode without DATABASE_URL.
+    db_pool: Option<db::DbPool>,
+    /// Tokio runtime for running async DB queries in the sync main loop.
+    /// Created once at startup; None only in tests without DB.
+    rt: Option<tokio::runtime::Runtime>,
 }
 
 impl Default for ServiceState {
@@ -44,6 +59,8 @@ impl Default for ServiceState {
             draining: false,
             shutdown_requested: false,
             enforcer: None,
+            db_pool: None,
+            rt: None,
         }
     }
 }
@@ -56,15 +73,15 @@ fn main() -> ExitCode {
         )
         .init();
 
-    info!("vauban-rbac starting");
+    info!("vauban-access starting");
 
     match run_service() {
         Ok(()) => {
-            info!("vauban-rbac exiting normally");
+            info!("vauban-access exiting normally");
             ExitCode::SUCCESS
         }
         Err(e) => {
-            error!("vauban-rbac error: {:#}", e);
+            error!("vauban-access error: {:#}", e);
             ExitCode::FAILURE
         }
     }
@@ -80,8 +97,9 @@ fn run_service() -> Result<()> {
         .parse()
         .context("Invalid VAUBAN_IPC_WRITE")?;
 
-    let model_path = std::env::var("VAUBAN_RBAC_MODEL_PATH").ok();
-    let policy_path = std::env::var("VAUBAN_RBAC_POLICY_PATH").ok();
+    let model_path = std::env::var("VAUBAN_ACCESS_MODEL_PATH").ok();
+    let policy_path = std::env::var("VAUBAN_ACCESS_POLICY_PATH").ok();
+    let database_url = std::env::var("VAUBAN_DATABASE_URL").ok();
 
     let web_channel = parse_topology_channel("WEB");
 
@@ -89,8 +107,9 @@ fn run_service() -> Result<()> {
     unsafe {
         std::env::remove_var("VAUBAN_IPC_READ");
         std::env::remove_var("VAUBAN_IPC_WRITE");
-        std::env::remove_var("VAUBAN_RBAC_MODEL_PATH");
-        std::env::remove_var("VAUBAN_RBAC_POLICY_PATH");
+        std::env::remove_var("VAUBAN_ACCESS_MODEL_PATH");
+        std::env::remove_var("VAUBAN_ACCESS_POLICY_PATH");
+        std::env::remove_var("VAUBAN_DATABASE_URL");
         std::env::remove_var("VAUBAN_WEB_IPC_READ");
         std::env::remove_var("VAUBAN_WEB_IPC_WRITE");
     }
@@ -98,6 +117,25 @@ fn run_service() -> Result<()> {
     let supervisor_channel = unsafe { IpcChannel::from_raw_fds(ipc_read_fd, ipc_write_fd) };
 
     let enforcer = load_casbin_enforcer(model_path.as_deref(), policy_path.as_deref())?;
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("Failed to create tokio runtime")?;
+
+    let db_pool = if let Some(ref url) = database_url {
+        let pool_size = 4;
+        let pool = db::create_pool_sandboxed(url, pool_size)?;
+        rt.block_on(db::force_create_all_connections(&pool, pool_size))?;
+        info!(
+            "Database pool ready ({} connections pre-established)",
+            pool_size
+        );
+        Some(pool)
+    } else {
+        warn!("VAUBAN_DATABASE_URL not set, running without database (dev mode)");
+        None
+    };
 
     info!("Resources opened, preparing to enter sandbox");
 
@@ -110,8 +148,15 @@ fn run_service() -> Result<()> {
         peer_channels.push(("web", ch));
     }
 
-    capsicum::setup_service_sandbox(&all_fds, None)
-        .context("Failed to setup sandbox")?;
+    let db_fd = if db_pool.is_some() {
+        database_url
+            .as_ref()
+            .and_then(|_| std::env::var("VAUBAN_DB_FD").ok())
+            .and_then(|v| v.parse::<RawFd>().ok())
+    } else {
+        None
+    };
+    capsicum::setup_service_sandbox(&all_fds, db_fd).context("Failed to setup sandbox")?;
 
     info!(
         "Entered Capsicum sandbox, starting main loop ({} peer channels)",
@@ -120,6 +165,8 @@ fn run_service() -> Result<()> {
 
     let mut state = ServiceState {
         enforcer,
+        db_pool,
+        rt: Some(rt),
         ..ServiceState::default()
     };
     main_loop(&supervisor_channel, &peer_channels, &mut state)
@@ -170,12 +217,12 @@ fn load_casbin_enforcer(
             Ok(Some(enforcer))
         }
         (None, None) => {
-            warn!("RBAC model/policy paths not set, using fallback behavior");
+            warn!("Access model/policy paths not set, using fallback behavior");
             Ok(None)
         }
         _ => {
             anyhow::bail!(
-                "Both VAUBAN_RBAC_MODEL_PATH and VAUBAN_RBAC_POLICY_PATH must be set (or neither)"
+                "Both VAUBAN_ACCESS_MODEL_PATH and VAUBAN_ACCESS_POLICY_PATH must be set (or neither)"
             );
         }
     }
@@ -326,6 +373,30 @@ fn handle_message(channel: &IpcChannel, state: &mut ServiceState, msg: Message) 
             Ok(())
         }
 
+        Message::AccessRequest {
+            request_id,
+            request,
+        } => {
+            state.requests_processed += 1;
+
+            let response = match (&state.db_pool, &state.rt) {
+                (Some(pool), Some(rt)) => {
+                    rt.block_on(handlers::handle_access_request(pool, request))
+                }
+                _ => {
+                    warn!("AccessRequest received but no DB pool available");
+                    AccessResponse::Error("Database not configured".to_string())
+                }
+            };
+
+            let msg = Message::AccessResponse {
+                request_id,
+                response,
+            };
+            channel.send(&msg)?;
+            Ok(())
+        }
+
         _ => {
             warn!("Unexpected message type");
             Ok(())
@@ -333,7 +404,11 @@ fn handle_message(channel: &IpcChannel, state: &mut ServiceState, msg: Message) 
     }
 }
 
-fn handle_control(channel: &IpcChannel, state: &mut ServiceState, ctrl: ControlMessage) -> Result<()> {
+fn handle_control(
+    channel: &IpcChannel,
+    state: &mut ServiceState,
+    ctrl: ControlMessage,
+) -> Result<()> {
     match ctrl {
         ControlMessage::Ping { seq } => {
             let stats = ServiceStats {
@@ -376,7 +451,7 @@ mod tests {
             .parent()
             .expect("workspace root")
             .join("config")
-            .join("rbac")
+            .join("access")
     }
 
     fn test_enforcer() -> Enforcer {
@@ -436,7 +511,10 @@ mod tests {
         assert!(state.draining);
 
         let response: Message = supervisor.recv().unwrap();
-        assert!(matches!(response, Message::Control(ControlMessage::DrainComplete { .. })));
+        assert!(matches!(
+            response,
+            Message::Control(ControlMessage::DrainComplete { .. })
+        ));
     }
 
     #[test]
@@ -448,7 +526,10 @@ mod tests {
         handle_message(&service, &mut state, msg).unwrap();
 
         let response: Message = supervisor.recv().unwrap();
-        assert!(matches!(response, Message::Control(ControlMessage::Pong { seq: 5, .. })));
+        assert!(matches!(
+            response,
+            Message::Control(ControlMessage::Pong { seq: 5, .. })
+        ));
     }
 
     // ==================== Fallback Tests (no enforcer) ====================
@@ -528,7 +609,11 @@ mod tests {
         let (client, service) = IpcChannel::pair().unwrap();
         let mut state = state_with_enforcer();
 
-        for (obj, act) in [("anything", "any_action"), ("admin", "delete"), ("users", "write")] {
+        for (obj, act) in [
+            ("anything", "any_action"),
+            ("admin", "delete"),
+            ("users", "write"),
+        ] {
             let request = Message::RbacCheck {
                 request_id: 100,
                 subject: "role:superuser".to_string(),
@@ -539,10 +624,7 @@ mod tests {
 
             let response: Message = client.recv().unwrap();
             if let Message::RbacResponse { result, .. } = response {
-                assert!(
-                    result.allowed,
-                    "superuser must be allowed for {obj}/{act}"
-                );
+                assert!(result.allowed, "superuser must be allowed for {obj}/{act}");
             } else {
                 panic!("Expected RbacResponse");
             }
@@ -579,10 +661,7 @@ mod tests {
 
             let response: Message = client.recv().unwrap();
             if let Message::RbacResponse { result, .. } = response {
-                assert!(
-                    result.allowed,
-                    "staff must be allowed for {obj}/{act}"
-                );
+                assert!(result.allowed, "staff must be allowed for {obj}/{act}");
             } else {
                 panic!("Expected RbacResponse");
             }
@@ -637,10 +716,7 @@ mod tests {
 
             let response: Message = client.recv().unwrap();
             if let Message::RbacResponse { result, .. } = response {
-                assert!(
-                    result.allowed,
-                    "user must be allowed for {obj}/{act}"
-                );
+                assert!(result.allowed, "user must be allowed for {obj}/{act}");
             } else {
                 panic!("Expected RbacResponse");
             }
@@ -670,10 +746,7 @@ mod tests {
 
             let response: Message = client.recv().unwrap();
             if let Message::RbacResponse { result, .. } = response {
-                assert!(
-                    !result.allowed,
-                    "user must be denied for {obj}/{act}"
-                );
+                assert!(!result.allowed, "user must be denied for {obj}/{act}");
             } else {
                 panic!("Expected RbacResponse");
             }
@@ -718,10 +791,7 @@ mod tests {
 
             let response: Message = client.recv().unwrap();
             if let Message::RbacResponse { request_id, .. } = response {
-                assert_eq!(
-                    request_id, id,
-                    "RBAC response must echo request_id={id}"
-                );
+                assert_eq!(request_id, id, "RBAC response must echo request_id={id}");
             } else {
                 panic!("Expected RbacResponse for request_id={id}");
             }
@@ -760,17 +830,17 @@ mod tests {
 
         assert!(
             source.contains("#[cfg(debug_assertions)]"),
-            "vauban-rbac/src/main.rs must contain #[cfg(debug_assertions)] \
+            "vauban-access/src/main.rs must contain #[cfg(debug_assertions)] \
              to guard the RBAC allow-all fallback"
         );
         assert!(
             source.contains("#[cfg(not(debug_assertions))]"),
-            "vauban-rbac/src/main.rs must contain #[cfg(not(debug_assertions))] \
+            "vauban-access/src/main.rs must contain #[cfg(not(debug_assertions))] \
              with a deny-by-default fallback"
         );
         assert!(
             source.contains("allowed: false"),
-            "vauban-rbac/src/main.rs must contain a deny-by-default path \
+            "vauban-access/src/main.rs must contain a deny-by-default path \
              (allowed: false) for release builds"
         );
     }
@@ -782,19 +852,19 @@ mod tests {
 
         assert!(
             source.contains("Enforcer::new"),
-            "vauban-rbac must create a Casbin Enforcer"
+            "vauban-access must create a Casbin Enforcer"
         );
         assert!(
-            source.contains("VAUBAN_RBAC_MODEL_PATH"),
-            "vauban-rbac must read VAUBAN_RBAC_MODEL_PATH"
+            source.contains("VAUBAN_ACCESS_MODEL_PATH"),
+            "vauban-access must read VAUBAN_ACCESS_MODEL_PATH"
         );
         assert!(
-            source.contains("VAUBAN_RBAC_POLICY_PATH"),
-            "vauban-rbac must read VAUBAN_RBAC_POLICY_PATH"
+            source.contains("VAUBAN_ACCESS_POLICY_PATH"),
+            "vauban-access must read VAUBAN_ACCESS_POLICY_PATH"
         );
         assert!(
             source.contains("enforcer.enforce"),
-            "vauban-rbac must call enforcer.enforce()"
+            "vauban-access must call enforcer.enforce()"
         );
     }
 
@@ -841,7 +911,9 @@ mod tests {
     #[test]
     fn test_m8_handle_control_sets_shutdown_flag() {
         let source = prod_source();
-        let handle_ctrl_start = source.find("fn handle_control").expect("handle_control must exist");
+        let handle_ctrl_start = source
+            .find("fn handle_control")
+            .expect("handle_control must exist");
         let handle_ctrl_source = &source[handle_ctrl_start..];
         assert!(
             handle_ctrl_source.contains("shutdown_requested = true"),

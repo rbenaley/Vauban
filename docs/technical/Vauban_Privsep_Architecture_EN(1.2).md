@@ -54,7 +54,7 @@ Vauban consists of 8 processes:
 | `vauban-supervisor` | Process manager, watchdog, orchestrator | Root (briefly) |
 | `vauban-web` | HTTPS, Web UI, REST API, WebSockets | Unprivileged (uid 907) |
 | `vauban-auth` | Authentication, MFA, SSO, LDAP | Unprivileged (uid 904) |
-| `vauban-rbac` | Role-Based Access Control (Casbin) | Unprivileged (uid 903) |
+| `vauban-access` | Role-Based Access Control (Casbin) | Unprivileged (uid 903) |
 | `vauban-vault` | Secrets management, HSM integration | Unprivileged (uid 902) |
 | `vauban-audit` | Audit logging, session recording | Unprivileged (uid 901) |
 | `vauban-proxy-ssh` | SSH proxy (russh) | Unprivileged (uid 905) |
@@ -79,7 +79,7 @@ flowchart TB
 
     subgraph core_services [Core Services - Synchronous]
         Auth["vauban-auth<br/>MFA / SSO / LDAP"]
-        Rbac["vauban-rbac<br/>Casbin Engine"]
+        Access["vauban-access<br/>Casbin Engine"]
         Vault["vauban-vault<br/>Secrets / HSM"]
         Audit["vauban-audit<br/>WORM Storage"]
     end
@@ -98,7 +98,7 @@ flowchart TB
 
     S --> Web
     S --> Auth
-    S --> Rbac
+    S --> Access
     S --> Vault
     S --> Audit
     S --> SSH
@@ -107,7 +107,7 @@ flowchart TB
     Web --> DB
     Web --> Cache
     Auth --> DB
-    Rbac --> DB
+    Access --> DB
     Audit --> DB
     Audit --> S3
     Vault --> HSM
@@ -143,7 +143,7 @@ The other 5 services remain **synchronous and minimalist**:
 - Smaller binaries, reduced attack surface
 - More predictable behavior for debugging
 
-This applies to: `vauban-auth`, `vauban-rbac`, `vauban-vault`, `vauban-audit`, `vauban-supervisor`
+This applies to: `vauban-auth`, `vauban-access`, `vauban-vault`, `vauban-audit`, `vauban-supervisor`
 
 ---
 
@@ -158,16 +158,16 @@ Services communicate directly via Unix pipes in a partial mesh topology. This av
 | Source | Destination | Purpose |
 |--------|-------------|---------|
 | `web` | `auth` | User authentication, MFA |
-| `web` | `rbac` | UI permission checks |
+| `web` | `access` | UI permission checks |
 | `web` | `audit` | Audit log queries |
 | `web` | `proxy-ssh` | SSH terminal data (bidirectional) |
 | `web` | `proxy-rdp` | RDP session data (bidirectional) |
-| `auth` | `rbac` | Role verification during auth |
+| `auth` | `access` | Role verification during auth |
 | `auth` | `vault` | LDAP/OIDC credentials |
-| `proxy-ssh` | `rbac` | Session authorization |
+| `proxy-ssh` | `access` | Session authorization |
 | `proxy-ssh` | `vault` | SSH key injection |
 | `proxy-ssh` | `audit` | Session recording |
-| `proxy-rdp` | `rbac` | Session authorization |
+| `proxy-rdp` | `access` | Session authorization |
 | `proxy-rdp` | `vault` | Windows credentials |
 | `proxy-rdp` | `audit` | Video capture |
 | `web` | `vault` | Encrypt/decrypt secrets (M-1/C-2) |
@@ -180,27 +180,27 @@ Services communicate directly via Unix pipes in a partial mesh topology. This av
 flowchart LR
     Web[vauban-web]
     Auth[vauban-auth]
-    Rbac[vauban-rbac]
+    Access[vauban-access]
     Vault[vauban-vault]
     Audit[vauban-audit]
     SSH[vauban-proxy-ssh]
     RDP[vauban-proxy-rdp]
 
     Web ---|pipe| Auth
-    Web ---|pipe| Rbac
+    Web ---|pipe| Access
     Web ---|pipe| Audit
     Web ---|pipe| SSH
     Web ---|pipe| RDP
     Web ---|pipe| Vault
 
-    Auth ---|pipe| Rbac
+    Auth ---|pipe| Access
     Auth ---|pipe| Vault
 
-    SSH ---|pipe| Rbac
+    SSH ---|pipe| Access
     SSH ---|pipe| Vault
     SSH ---|pipe| Audit
 
-    RDP ---|pipe| Rbac
+    RDP ---|pipe| Access
     RDP ---|pipe| Vault
     RDP ---|pipe| Audit
 ```
@@ -244,9 +244,9 @@ pub enum Message {
     MfaVerify { request_id, challenge_id, code },
     MfaVerifyResponse { request_id, success, session_id },
 
-    // RBAC (Web/Auth/Proxy -> Rbac)
-    RbacCheck { request_id, subject, object, action },
-    RbacResponse { request_id, result },
+    // RBAC (Web/Auth/Proxy -> Access)
+    AccessCheck { request_id, subject, object, action },
+    AccessResponse { request_id, result },
 
     // Vault (Auth/Proxy -> Vault)
     VaultGetSecret { request_id, path },
@@ -463,7 +463,7 @@ pub fn get_connection_or_exit(pool: &DbPool) -> DbConnection {
 | `vauban-supervisor` | No | Needs to spawn/manage children |
 | `vauban-web` | **Yes** | Fixed pool, multiplexed cache, pre-bound socket |
 | `vauban-auth` | Yes | IPC + optional DB |
-| `vauban-rbac` | Yes | IPC only |
+| `vauban-access` | Yes | IPC only |
 | `vauban-vault` | Yes | IPC + HSM |
 | `vauban-audit` | Yes | IPC + audit storage |
 | `vauban-proxy-ssh` | Yes | IPC + pre-established connections via FD passing |
@@ -698,7 +698,7 @@ Each service opens its own database connection with a dedicated PostgreSQL user:
 |---------|-----------------|---------------|
 | `vauban-web` | `vauban_web` | `web.*`, read `auth.sessions` |
 | `vauban-auth` | `vauban_auth` | `auth.*` |
-| `vauban-rbac` | `vauban_rbac` | `rbac.*` |
+| `vauban-access` | `vauban_access` | `access.*` |
 | `vauban-vault` | `vauban_vault` | `vault.*` |
 | `vauban-audit` | `vauban_audit` | `audit.*` |
 
@@ -907,12 +907,12 @@ uid = 902
 gid = 902
 workdir = "/var/vauban/vault"
 
-[services.rbac]
-name = "vauban-rbac"
-binary = "vauban-rbac"
+[services.access]
+name = "vauban-access"
+binary = "vauban-access"
 uid = 903
 gid = 903
-workdir = "/var/vauban/rbac"
+workdir = "/var/vauban/access"
 
 [services.auth]
 name = "vauban-auth"
@@ -949,11 +949,11 @@ On FreeBSD production systems, create dedicated users:
 
 ```sh
 # Create users and groups for each service
-for svc in audit vault rbac auth proxy-ssh proxy-rdp web; do
+for svc in audit vault access auth proxy-ssh proxy-rdp web; do
     case $svc in
         audit)     id=901 ;;
         vault)     id=902 ;;
-        rbac)      id=903 ;;
+        access)    id=903 ;;
         auth)      id=904 ;;
         proxy-ssh) id=905 ;;
         proxy-rdp) id=906 ;;
@@ -966,7 +966,7 @@ for svc in audit vault rbac auth proxy-ssh proxy-rdp web; do
 done
 
 # Create working directories
-mkdir -p /var/vauban/{audit,vault,rbac,auth,proxy-ssh,proxy-rdp,web}
+mkdir -p /var/vauban/{audit,vault,access,auth,proxy-ssh,proxy-rdp,web}
 chown -R vauban_audit:vauban_audit /var/vauban/audit
 # ... repeat for each service
 ```
@@ -1022,11 +1022,11 @@ Services are started in dependency order:
 
 1. `vauban-audit` - No dependencies
 2. `vauban-vault` - No internal dependencies
-3. `vauban-rbac` - No internal dependencies
-4. `vauban-auth` - Depends on rbac, vault
-5. `vauban-proxy-ssh` - Depends on rbac, vault, audit
-6. `vauban-proxy-rdp` - Depends on rbac, vault, audit
-7. `vauban-web` - Depends on auth, rbac, vault, audit
+3. `vauban-access` - No internal dependencies
+4. `vauban-auth` - Depends on access, vault
+5. `vauban-proxy-ssh` - Depends on access, vault, audit
+6. `vauban-proxy-rdp` - Depends on access, vault, audit
+7. `vauban-web` - Depends on auth, access, vault, audit
 
 ### 10.2 Startup Diagram
 
@@ -1042,7 +1042,7 @@ gantt
     section Phase 2
     vauban-audit          :1, 2
     vauban-vault          :1, 2
-    vauban-rbac           :1, 2
+    vauban-access           :1, 2
     
     section Phase 3
     vauban-auth           :2, 3
@@ -1136,7 +1136,7 @@ run_rc_command "$1"
 │   └── src/
 │       └── main.rs
 ├── vauban-auth/                  # Authentication
-├── vauban-rbac/                  # RBAC (Casbin)
+├── vauban-access/                  # RBAC (Casbin)
 ├── vauban-vault/                 # Secrets management
 ├── vauban-audit/                 # Audit logging
 ├── vauban-proxy-ssh/             # SSH proxy
@@ -1154,13 +1154,13 @@ sequenceDiagram
     participant U as User Browser
     participant W as vauban-web
     participant A as vauban-auth
-    participant R as vauban-rbac
+    participant R as vauban-access
     participant Au as vauban-audit
 
     U->>W: POST /login (username, password)
     W->>A: AuthRequest
-    A->>R: RbacCheck (user roles)
-    R->>A: RbacResponse (roles)
+    A->>R: AccessCheck (user roles)
+    R->>A: AccessResponse (roles)
     A->>W: AuthResponse (success)
     W->>Au: AuditEvent (AuthSuccess)
     Au->>W: AuditAck
@@ -1177,7 +1177,7 @@ sequenceDiagram
     participant W as vauban-web
     participant S as vauban-supervisor
     participant P as vauban-proxy-ssh
-    participant R as vauban-rbac
+    participant R as vauban-access
     participant V as vauban-vault
     participant Au as vauban-audit
     participant T as Target Server
@@ -1196,8 +1196,8 @@ sequenceDiagram
     W->>W: Read expected_host_key from connection_config
     W->>P: SshSessionOpen(expected_host_key) via IPC pipe
     P->>P: Retrieve pre-connected FD for session_id
-    P->>R: RbacCheck (user, target, ssh)
-    R->>P: RbacResponse (allowed)
+    P->>R: AccessCheck (user, target, ssh)
+    R->>P: AccessResponse (allowed)
     P->>V: VaultGetCredential (target)
     V->>P: VaultCredentialResponse (SSH key/password)
     P->>T: SSH Handshake (over pre-connected socket)

@@ -3,10 +3,16 @@
 //! This file makes modules available for integration tests.
 
 // L-1: Relax strict clippy lints in test code where unwrap/expect/panic are idiomatic
-#![cfg_attr(test, allow(
-    clippy::unwrap_used, clippy::expect_used, clippy::panic,
-    clippy::print_stdout, clippy::print_stderr
-))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::print_stdout,
+        clippy::print_stderr
+    )
+)]
 
 // Test utilities - macros for replacing unwrap/expect in tests
 #[macro_use]
@@ -31,10 +37,10 @@ pub mod utils;
 use cache::CacheConnection;
 use config::Config;
 use db::DbPool;
+use ipc::AccessIpcClient;
 use ipc::AuthIpcClient;
 use ipc::ProxyRdpClient;
 use ipc::ProxySshClient;
-use ipc::RbacIpcClient;
 use ipc::VaultCryptoClient;
 use services::auth::AuthService;
 use services::broadcast::BroadcastService;
@@ -73,9 +79,9 @@ pub struct AppState {
     /// Provides encrypt/decrypt and MFA operations.
     /// None if vault is not available (development mode without supervisor).
     pub vault_client: Option<Arc<VaultCryptoClient>>,
-    /// RBAC IPC client for authorization checks via vauban-rbac (Casbin).
+    /// Access IPC client for authorization checks via vauban-access (Casbin).
     /// None if not running under supervisor (development mode).
-    pub rbac_client: Option<Arc<RbacIpcClient>>,
+    pub access_client: Option<Arc<AccessIpcClient>>,
     /// Auth IPC client for password hashing/verification via vauban-auth (Argon2id).
     /// None if not running under supervisor (development mode).
     pub auth_ipc_client: Option<Arc<AuthIpcClient>>,

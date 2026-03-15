@@ -34,17 +34,17 @@ binary = "vauban-audit"
 name = "vauban-vault"
 binary = "vauban-vault"
 
-[services.rbac]
-name = "vauban-rbac"
-binary = "vauban-rbac"
+[services.access]
+name = "vauban-access"
+binary = "vauban-access"
 
 # ==============================================================================
-# RBAC CONFIGURATION (vauban-rbac / Casbin)
+# ACCESS CONFIGURATION (vauban-access / Casbin)
 # ==============================================================================
 
-[rbac]
-model_path = "config/rbac/model.conf"
-policy_path = "config/rbac/default_policy.csv"
+[access]
+model_path = "config/access/model.conf"
+policy_path = "config/access/default_policy.csv"
 
 [services.auth]
 name = "vauban-auth"

@@ -10,11 +10,11 @@ use shared::messages::{Message, RdpInputEvent, SensitiveString};
 use std::collections::HashMap;
 use std::io;
 use std::os::unix::io::RawFd;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::io::unix::AsyncFd;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::Interest;
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::io::unix::AsyncFd;
+use tokio::sync::{Mutex, mpsc, oneshot};
 use tracing::{debug, error, info, trace, warn};
 
 /// Request to open an RDP session.
@@ -72,10 +72,7 @@ pub enum RdpSessionEvent {
         png_data: Vec<u8>,
     },
     /// Desktop size changed (after reactivation/resize).
-    DesktopResize {
-        width: u16,
-        height: u16,
-    },
+    DesktopResize { width: u16, height: u16 },
     /// H.264 encoded video frame.
     VideoFrame {
         timestamp_us: u64,
@@ -138,10 +135,7 @@ impl ProxyRdpClient {
 
     /// Unsubscribe from display updates for a session.
     pub async fn unsubscribe_session(&self, session_id: &str) {
-        self.session_display_senders
-            .lock()
-            .await
-            .remove(session_id);
+        self.session_display_senders.lock().await.remove(session_id);
         debug!(session_id = %session_id, "WebSocket unsubscribed from RDP session");
     }
 
@@ -408,7 +402,7 @@ impl ProxyRdpClient {
 }
 
 fn set_nonblocking(fd: RawFd) -> io::Result<()> {
-    use libc::{fcntl, F_GETFL, F_SETFL, O_NONBLOCK};
+    use libc::{F_GETFL, F_SETFL, O_NONBLOCK, fcntl};
     // SAFETY: fcntl with valid arguments on a valid fd.
     unsafe {
         let flags = fcntl(fd, F_GETFL);
@@ -612,7 +606,14 @@ mod tests {
             height: 480,
             png_data: vec![0x89, 0x50, 0x4E, 0x47],
         };
-        if let RdpSessionEvent::DisplayUpdate { x, y, width, height, png_data } = &event {
+        if let RdpSessionEvent::DisplayUpdate {
+            x,
+            y,
+            width,
+            height,
+            png_data,
+        } = &event
+        {
             assert_eq!(*x, 100);
             assert_eq!(*y, 200);
             assert_eq!(*width, 640);
@@ -649,7 +650,7 @@ mod tests {
         let result = set_nonblocking(read_fd.as_raw_fd());
         assert!(result.is_ok());
 
-        use libc::{fcntl, F_GETFL, O_NONBLOCK};
+        use libc::{F_GETFL, O_NONBLOCK, fcntl};
         let flags = unsafe { fcntl(read_fd.as_raw_fd(), F_GETFL) };
         assert!(flags & O_NONBLOCK != 0);
     }
@@ -657,7 +658,7 @@ mod tests {
     #[test]
     fn test_set_nonblocking_preserves_flags() {
         let (read_fd, _write_fd) = nix::unistd::pipe().unwrap();
-        use libc::{fcntl, F_GETFL, O_NONBLOCK};
+        use libc::{F_GETFL, O_NONBLOCK, fcntl};
         let original_flags = unsafe { fcntl(read_fd.as_raw_fd(), F_GETFL) };
         set_nonblocking(read_fd.as_raw_fd()).unwrap();
         let new_flags = unsafe { fcntl(read_fd.as_raw_fd(), F_GETFL) };
@@ -669,7 +670,7 @@ mod tests {
         let (read_fd, _write_fd) = nix::unistd::pipe().unwrap();
         set_nonblocking(read_fd.as_raw_fd()).unwrap();
         set_nonblocking(read_fd.as_raw_fd()).unwrap();
-        use libc::{fcntl, F_GETFL, O_NONBLOCK};
+        use libc::{F_GETFL, O_NONBLOCK, fcntl};
         let flags = unsafe { fcntl(read_fd.as_raw_fd(), F_GETFL) };
         assert!(flags & O_NONBLOCK != 0);
     }
@@ -710,7 +711,14 @@ mod tests {
         };
         tx.send(event).await.unwrap();
         let received = rx.recv().await.unwrap();
-        if let RdpSessionEvent::DisplayUpdate { x, y, width, height, png_data } = received {
+        if let RdpSessionEvent::DisplayUpdate {
+            x,
+            y,
+            width,
+            height,
+            png_data,
+        } = received
+        {
             assert_eq!(x, 100);
             assert_eq!(y, 200);
             assert_eq!(width, 640);
@@ -724,7 +732,10 @@ mod tests {
     #[tokio::test]
     async fn test_session_event_channel_desktop_resize() {
         let (tx, mut rx) = mpsc::channel::<RdpSessionEvent>(16);
-        let event = RdpSessionEvent::DesktopResize { width: 1920, height: 1080 };
+        let event = RdpSessionEvent::DesktopResize {
+            width: 1920,
+            height: 1080,
+        };
         tx.send(event).await.unwrap();
         let received = rx.recv().await.unwrap();
         if let RdpSessionEvent::DesktopResize { width, height } = received {
@@ -813,9 +824,18 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(matches!(rx.recv().await.unwrap(), RdpSessionEvent::DisplayUpdate { .. }));
-        assert!(matches!(rx.recv().await.unwrap(), RdpSessionEvent::VideoFrame { .. }));
-        assert!(matches!(rx.recv().await.unwrap(), RdpSessionEvent::DesktopResize { .. }));
+        assert!(matches!(
+            rx.recv().await.unwrap(),
+            RdpSessionEvent::DisplayUpdate { .. }
+        ));
+        assert!(matches!(
+            rx.recv().await.unwrap(),
+            RdpSessionEvent::VideoFrame { .. }
+        ));
+        assert!(matches!(
+            rx.recv().await.unwrap(),
+            RdpSessionEvent::DesktopResize { .. }
+        ));
     }
 
     #[tokio::test]

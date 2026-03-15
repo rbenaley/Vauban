@@ -28,9 +28,12 @@ pub struct ListAssetsParams {
 }
 
 /// List assets handler.
+///
+/// Staff/superusers see all assets. Regular users only see assets
+/// they have access to via access rules.
 pub async fn list_assets(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
     Query(params): Query<ListAssetsParams>,
 ) -> AppResult<Json<Vec<Asset>>> {
     let mut conn = state
@@ -40,11 +43,31 @@ pub async fn list_assets(
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
     let mut query = assets.filter(is_deleted.eq(false)).into_boxed();
 
+    // Non-admin users: filter to only accessible assets via access rules
+    if !user.is_superuser && !user.is_staff {
+        let user_internal_id: i32 = crate::schema::users::table
+            .filter(
+                crate::schema::users::uuid
+                    .eq(::uuid::Uuid::parse_str(&user.uuid).unwrap_or_default()),
+            )
+            .select(crate::schema::users::id)
+            .first(&mut conn)
+            .await
+            .map_err(|_| AppError::Authorization("User not found".to_string()))?;
+
+        let accessible_ids = crate::services::access::list_accessible_asset_ids(
+            state.access_client.as_ref(),
+            &mut conn,
+            user_internal_id,
+        )
+        .await?;
+        query = query.filter(crate::schema::assets::id.eq_any(accessible_ids));
+    }
+
     if let Some(ref asset_type_val) = params.asset_type {
         if let Some(parsed) = AssetType::try_parse(asset_type_val) {
             query = query.filter(asset_type.eq(parsed));
         } else {
-            // Invalid asset type filter: return no results
             query = query.filter(crate::schema::assets::id.eq(-1));
         }
     }
@@ -550,7 +573,9 @@ pub async fn fetch_ssh_host_key_api(
     let mut config = asset.connection_config.clone();
     config["ssh_host_key"] = serde_json::Value::String(host_key.clone());
     config["ssh_host_key_fingerprint"] = serde_json::Value::String(fingerprint.clone());
-    config.as_object_mut().map(|m| m.remove("ssh_host_key_mismatch"));
+    config
+        .as_object_mut()
+        .map(|m| m.remove("ssh_host_key_mismatch"));
 
     use crate::schema::assets::dsl::connection_config as config_col;
     use crate::schema::assets::dsl::updated_at;

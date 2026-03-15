@@ -1,8 +1,14 @@
 // L-1: Relax strict clippy lints in test code where unwrap/expect/panic are idiomatic
-#![cfg_attr(test, allow(
-    clippy::unwrap_used, clippy::expect_used, clippy::panic,
-    clippy::print_stdout, clippy::print_stderr
-))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::print_stdout,
+        clippy::print_stderr
+    )
+)]
 
 //! Vauban RDP Proxy Service
 //!
@@ -25,15 +31,15 @@ use ipc::AsyncIpcChannel;
 use session::SessionConfig;
 use session_manager::SessionManager;
 use shared::capsicum;
-use shared::ipc::{recv_fd, IpcChannel};
+use shared::ipc::{IpcChannel, recv_fd};
 use shared::messages::{ControlMessage, Message, ServiceStats};
 use std::collections::HashMap;
 use std::os::unix::io::{OwnedFd, RawFd};
 use std::process::ExitCode;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tracing::{debug, error, info, trace, warn};
 
 struct ServiceState {
@@ -132,9 +138,7 @@ fn main() -> ExitCode {
         .add_directive("picky=warn".parse().unwrap())
         .add_directive("rustls=warn".parse().unwrap());
 
-    tracing_subscriber::fmt()
-        .with_env_filter(env_filter)
-        .init();
+    tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
     info!("vauban-proxy-rdp starting (async mode with Tokio + IronRDP)");
 
@@ -221,7 +225,10 @@ async fn run_service() -> Result<()> {
         std::env::remove_var("VAUBAN_AUDIT_IPC_WRITE");
     }
 
-    info!(video_bitrate_bps, recording_enabled, "H.264 encoder bitrate configured");
+    info!(
+        video_bitrate_bps,
+        recording_enabled, "H.264 encoder bitrate configured"
+    );
 
     let supervisor_channel =
         unsafe { IpcChannel::from_raw_fds(supervisor_read_fd, supervisor_write_fd) };
@@ -250,19 +257,20 @@ async fn run_service() -> Result<()> {
 
     info!("Resources opened, preparing to enter sandbox");
 
-    let mut ipc_fds = vec![supervisor_read_fd, supervisor_write_fd, web_read_fd, web_write_fd];
+    let mut ipc_fds = vec![
+        supervisor_read_fd,
+        supervisor_write_fd,
+        web_read_fd,
+        web_write_fd,
+    ];
     if let Some((r, w)) = audit_fds {
         ipc_fds.push(r);
         ipc_fds.push(w);
     }
     let fd_receiver_fds: Option<Vec<RawFd>> = fd_passing_socket.map(|fd| vec![fd]);
 
-    capsicum::setup_service_sandbox_extended(
-        &ipc_fds,
-        None,
-        fd_receiver_fds.as_deref(),
-    )
-    .context("Failed to setup sandbox")?;
+    capsicum::setup_service_sandbox_extended(&ipc_fds, None, fd_receiver_fds.as_deref())
+        .context("Failed to setup sandbox")?;
 
     info!("Entered Capsicum sandbox, starting main loop");
 
@@ -285,7 +293,17 @@ async fn run_service() -> Result<()> {
         tx
     });
 
-    main_loop(supervisor_async, web_async, state, sessions, web_tx, web_rx, fd_passing, audit_tx).await
+    main_loop(
+        supervisor_async,
+        web_async,
+        state,
+        sessions,
+        web_tx,
+        web_rx,
+        fd_passing,
+        audit_tx,
+    )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -501,7 +519,10 @@ async fn handle_web_message(
             let response_tx_clone = response_tx.clone();
 
             tokio::spawn(async move {
-                match sessions_clone.create_session(config, web_tx, audit_tx).await {
+                match sessions_clone
+                    .create_session(config, web_tx, audit_tx)
+                    .await
+                {
                     Ok((_sid, w, h)) => {
                         state_clone.increment_processed();
                         let response = Message::RdpSessionOpened {
@@ -610,9 +631,14 @@ mod tests {
         let state = ServiceState::default();
         let sessions = SessionManager::new();
 
-        handle_control_message(&service_async, &state, &sessions, ControlMessage::Ping { seq: 42 })
-            .await
-            .unwrap();
+        handle_control_message(
+            &service_async,
+            &state,
+            &sessions,
+            ControlMessage::Ping { seq: 42 },
+        )
+        .await
+        .unwrap();
 
         let response: Message = supervisor.recv().unwrap();
         if let Message::Control(ControlMessage::Pong { seq, stats }) = response {
@@ -687,7 +713,9 @@ mod tests {
     #[test]
     fn test_m8_handle_control_sets_shutdown_flag() {
         let source = prod_source();
-        let handle_start = source.find("fn handle_control_message").expect("handle_control_message must exist");
+        let handle_start = source
+            .find("fn handle_control_message")
+            .expect("handle_control_message must exist");
         let handle_source = &source[handle_start..];
         assert!(
             handle_source.contains("shutdown_requested.store(true"),
@@ -713,7 +741,9 @@ mod tests {
     #[test]
     fn test_bitrate_not_received_from_ipc() {
         let source = prod_source();
-        let handler_start = source.find("Message::RdpSetVideoMode").expect("RdpSetVideoMode handler must exist");
+        let handler_start = source
+            .find("Message::RdpSetVideoMode")
+            .expect("RdpSetVideoMode handler must exist");
         let handler_body = &source[handler_start..handler_start + 300];
         assert!(
             !handler_body.contains("bitrate_bps,") || handler_body.contains(".."),

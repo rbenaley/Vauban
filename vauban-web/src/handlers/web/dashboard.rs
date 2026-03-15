@@ -19,7 +19,9 @@ pub async fn dashboard_home(
     let base = BaseTemplate::new("Dashboard".to_string(), user.clone()).with_current_path("/");
 
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base)
+            .await
+            .into_fields();
     let template = HomeTemplate {
         title,
         user: user_ctx,
@@ -46,7 +48,9 @@ pub async fn dashboard_admin(
     let base =
         BaseTemplate::new("Admin Dashboard".to_string(), user.clone()).with_current_path("/admin");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
-        apply_sidebar_rbac(&state, &auth_user, base).await.into_fields();
+        apply_sidebar_rbac(&state, &auth_user, base)
+            .await
+            .into_fields();
 
     let template = AdminTemplate {
         title,
@@ -131,21 +135,26 @@ pub async fn dashboard_widget_active_sessions(
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
     // Load active sessions with asset info
-    let active_sessions: Vec<(i32, String, String, SessionType, chrono::DateTime<chrono::Utc>)> =
-        proxy_sessions::table
-            .inner_join(schema_assets::table)
-            .filter(proxy_sessions::status.eq("active"))
-            .select((
-                proxy_sessions::id,
-                schema_assets::name,
-                schema_assets::hostname,
-                proxy_sessions::session_type,
-                proxy_sessions::created_at,
-            ))
-            .order(proxy_sessions::created_at.desc())
-            .limit(5)
-            .load(&mut conn)
-            .await?;
+    let active_sessions: Vec<(
+        i32,
+        String,
+        String,
+        SessionType,
+        chrono::DateTime<chrono::Utc>,
+    )> = proxy_sessions::table
+        .inner_join(schema_assets::table)
+        .filter(proxy_sessions::status.eq("active"))
+        .select((
+            proxy_sessions::id,
+            schema_assets::name,
+            schema_assets::hostname,
+            proxy_sessions::session_type,
+            proxy_sessions::created_at,
+        ))
+        .order(proxy_sessions::created_at.desc())
+        .limit(5)
+        .load(&mut conn)
+        .await?;
 
     let sessions: Vec<ActiveSessionItem> = active_sessions
         .into_iter()

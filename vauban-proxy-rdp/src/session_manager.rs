@@ -4,10 +4,10 @@ use crate::error::{SessionError, SessionResult};
 use crate::session::{RdpSession, SessionCommand, SessionConfig};
 use shared::messages::{Message, RdpInputEvent};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, info};
 
 /// Handle for communicating with a session task.
@@ -107,11 +107,7 @@ impl SessionManager {
     }
 
     /// Send an input event to a session.
-    pub async fn send_input(
-        &self,
-        session_id: &str,
-        input: RdpInputEvent,
-    ) -> SessionResult<()> {
+    pub async fn send_input(&self, session_id: &str, input: RdpInputEvent) -> SessionResult<()> {
         let sessions = self.sessions.read().await;
         if let Some(handle) = sessions.get(session_id) {
             handle
@@ -126,12 +122,7 @@ impl SessionManager {
     }
 
     /// Resize a session's desktop.
-    pub async fn resize(
-        &self,
-        session_id: &str,
-        width: u16,
-        height: u16,
-    ) -> SessionResult<()> {
+    pub async fn resize(&self, session_id: &str, width: u16, height: u16) -> SessionResult<()> {
         let sessions = self.sessions.read().await;
         if let Some(handle) = sessions.get(session_id) {
             handle
@@ -150,11 +141,7 @@ impl SessionManager {
     /// The bitrate is taken from the value injected by the supervisor at startup,
     /// not from the IPC message, to prevent a compromised vauban-web from
     /// overriding the configured encoder bitrate.
-    pub async fn set_video_mode(
-        &self,
-        session_id: &str,
-        enabled: bool,
-    ) -> SessionResult<()> {
+    pub async fn set_video_mode(&self, session_id: &str, enabled: bool) -> SessionResult<()> {
         let sessions = self.sessions.read().await;
         if let Some(handle) = sessions.get(session_id) {
             handle
@@ -255,7 +242,10 @@ mod tests {
             .find("pub async fn set_video_mode")
             .expect("set_video_mode must exist");
         let fn_body = &source[set_fn_start..];
-        let fn_end = fn_body.find("\n    /// ").or_else(|| fn_body.find("\n    pub fn ")).unwrap_or(fn_body.len());
+        let fn_end = fn_body
+            .find("\n    /// ")
+            .or_else(|| fn_body.find("\n    pub fn "))
+            .unwrap_or(fn_body.len());
         let fn_body = &fn_body[..fn_end];
 
         assert!(

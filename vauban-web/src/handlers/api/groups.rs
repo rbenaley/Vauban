@@ -39,6 +39,8 @@ pub struct ListMembersResponse {
 ///
 /// Returns the list of users that are members of the specified group.
 /// This is a read-only endpoint.
+///
+/// Delegates to AccessIpcClient when available; falls back to direct SQL otherwise.
 pub async fn list_group_members(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -50,79 +52,147 @@ pub async fn list_group_members(
     use crate::schema::users::dsl as u;
     use crate::schema::vauban_groups::dsl as vg;
 
-    let mut conn = state
-        .db_pool
-        .get()
-        .await
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+    if let Some(ref client) = state.access_client {
+        // IPC path: get group info and member IDs from vauban-access, then fetch user details locally
+        let group_info = client.get_vauban_group(&uuid_str).await?;
+        let member_ids = client.list_group_members(group_info.id).await?;
 
-    let group_uuid = uuid::Uuid::parse_str(&uuid_str)
-        .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
+        let members: Vec<GroupMemberResponse> = if member_ids.is_empty() {
+            vec![]
+        } else {
+            let mut conn = state
+                .db_pool
+                .get()
+                .await
+                .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
-    // Get group info
-    let group_row: (uuid::Uuid, String) = vg::vauban_groups
-        .filter(vg::uuid.eq(group_uuid))
-        .select((vg::uuid, vg::name))
-        .first(&mut conn)
-        .await
-        .map_err(|e| match e {
-            diesel::result::Error::NotFound => AppError::NotFound("Group not found".to_string()),
-            _ => AppError::Database(e),
-        })?;
+            #[allow(clippy::type_complexity)]
+            let members_data: Vec<(
+                uuid::Uuid,
+                String,
+                String,
+                Option<String>,
+                Option<String>,
+                bool,
+            )> = u::users
+                .filter(u::id.eq_any(&member_ids))
+                .filter(u::is_deleted.eq(false))
+                .order(u::username.asc())
+                .select((
+                    u::uuid,
+                    u::username,
+                    u::email,
+                    u::first_name,
+                    u::last_name,
+                    u::is_active,
+                ))
+                .load(&mut conn)
+                .await
+                .map_err(AppError::Database)?;
 
-    let (g_uuid, g_name) = group_row;
+            members_data
+                .into_iter()
+                .map(
+                    |(uuid, username, email, first_name, last_name, is_active)| {
+                        GroupMemberResponse {
+                            uuid: uuid.to_string(),
+                            username,
+                            email,
+                            first_name,
+                            last_name,
+                            is_active,
+                        }
+                    },
+                )
+                .collect()
+        };
 
-    // Get group members
-    #[allow(clippy::type_complexity)]
-    let members_data: Vec<(
-        uuid::Uuid,
-        String,
-        String,
-        Option<String>,
-        Option<String>,
-        bool,
-    )> = u::users
-        .inner_join(ug::user_groups.on(ug::user_id.eq(u::id)))
-        .inner_join(vg::vauban_groups.on(vg::id.eq(ug::group_id)))
-        .filter(vg::uuid.eq(group_uuid))
-        .filter(u::is_deleted.eq(false))
-        .order(u::username.asc())
-        .select((
-            u::uuid,
-            u::username,
-            u::email,
-            u::first_name,
-            u::last_name,
-            u::is_active,
-        ))
-        .load(&mut conn)
-        .await
-        .map_err(AppError::Database)?;
+        let response = ListMembersResponse {
+            group_uuid: group_info.uuid,
+            group_name: group_info.name,
+            total: members.len(),
+            members,
+        };
 
-    let members: Vec<GroupMemberResponse> = members_data
-        .into_iter()
-        .map(
-            |(uuid, username, email, first_name, last_name, is_active)| GroupMemberResponse {
-                uuid: uuid.to_string(),
-                username,
-                email,
-                first_name,
-                last_name,
-                is_active,
-            },
-        )
-        .collect();
+        Ok(Json(response))
+    } else {
+        // SQL fallback: existing direct DB logic
+        let mut conn = state
+            .db_pool
+            .get()
+            .await
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
-    let total = members.len();
+        let group_uuid = uuid::Uuid::parse_str(&uuid_str)
+            .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
 
-    let response = ListMembersResponse {
-        group_uuid: g_uuid.to_string(),
-        group_name: g_name,
-        members,
-        total,
-    };
+        // Get group info
+        let group_row: (uuid::Uuid, String) = vg::vauban_groups
+            .filter(vg::uuid.eq(group_uuid))
+            .select((vg::uuid, vg::name))
+            .first(&mut conn)
+            .await
+            .map_err(|e| match e {
+                diesel::result::Error::NotFound => {
+                    AppError::NotFound("Group not found".to_string())
+                }
+                _ => AppError::Database(e),
+            })?;
 
-    Ok(Json(response))
+        let (g_uuid, g_name) = group_row;
+
+        // Get group members
+        #[allow(clippy::type_complexity)]
+        let members_data: Vec<(
+            uuid::Uuid,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            bool,
+        )> = u::users
+            .inner_join(ug::user_groups.on(ug::user_id.eq(u::id)))
+            .inner_join(vg::vauban_groups.on(vg::id.eq(ug::group_id)))
+            .filter(vg::uuid.eq(group_uuid))
+            .filter(u::is_deleted.eq(false))
+            .order(u::username.asc())
+            .select((
+                u::uuid,
+                u::username,
+                u::email,
+                u::first_name,
+                u::last_name,
+                u::is_active,
+            ))
+            .load(&mut conn)
+            .await
+            .map_err(AppError::Database)?;
+
+        let members: Vec<GroupMemberResponse> = members_data
+            .into_iter()
+            .map(
+                |(uuid, username, email, first_name, last_name, is_active)| GroupMemberResponse {
+                    uuid: uuid.to_string(),
+                    username,
+                    email,
+                    first_name,
+                    last_name,
+                    is_active,
+                },
+            )
+            .collect();
+
+        let total = members.len();
+
+        let response = ListMembersResponse {
+            group_uuid: g_uuid.to_string(),
+            group_name: g_name,
+            members,
+            total,
+        };
+
+        Ok(Json(response))
+    }
 }
 
 #[cfg(test)]

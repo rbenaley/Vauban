@@ -12,11 +12,11 @@ use shared::messages::{Message, SensitiveString};
 use std::collections::HashMap;
 use std::io;
 use std::os::unix::io::RawFd;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::io::unix::AsyncFd;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::Interest;
-use tokio::sync::{oneshot, Mutex};
+use tokio::io::unix::AsyncFd;
+use tokio::sync::{Mutex, oneshot};
 use tracing::{debug, error, info, warn};
 
 /// Vault response variants, unified for the pending_requests map.
@@ -105,9 +105,9 @@ impl VaultCryptoClient {
                 ciphertext: Some(ct),
                 error: None,
             } => Ok(ct),
-            VaultResponse::Encrypt {
-                error: Some(e), ..
-            } => Err(AppError::Ipc(format!("vault encrypt error: {}", e))),
+            VaultResponse::Encrypt { error: Some(e), .. } => {
+                Err(AppError::Ipc(format!("vault encrypt error: {}", e)))
+            }
             _ => Err(AppError::Ipc(
                 "unexpected vault encrypt response".to_string(),
             )),
@@ -143,9 +143,9 @@ impl VaultCryptoClient {
                 plaintext: Some(pt),
                 error: None,
             } => Ok(pt),
-            VaultResponse::Decrypt {
-                error: Some(e), ..
-            } => Err(AppError::Ipc(format!("vault decrypt error: {}", e))),
+            VaultResponse::Decrypt { error: Some(e), .. } => {
+                Err(AppError::Ipc(format!("vault decrypt error: {}", e)))
+            }
             _ => Err(AppError::Ipc(
                 "unexpected vault decrypt response".to_string(),
             )),
@@ -189,9 +189,9 @@ impl VaultCryptoClient {
                 plaintext_secret: Some(pt),
                 error: None,
             } => Ok((enc, pt)),
-            VaultResponse::MfaGenerate {
-                error: Some(e), ..
-            } => Err(AppError::Ipc(format!("vault mfa_generate error: {}", e))),
+            VaultResponse::MfaGenerate { error: Some(e), .. } => {
+                Err(AppError::Ipc(format!("vault mfa_generate error: {}", e)))
+            }
             _ => Err(AppError::Ipc(
                 "unexpected vault mfa_generate response".to_string(),
             )),
@@ -222,9 +222,9 @@ impl VaultCryptoClient {
 
         match resp {
             VaultResponse::MfaVerify { valid, error: None } => Ok(valid),
-            VaultResponse::MfaVerify {
-                error: Some(e), ..
-            } => Err(AppError::Ipc(format!("vault mfa_verify error: {}", e))),
+            VaultResponse::MfaVerify { error: Some(e), .. } => {
+                Err(AppError::Ipc(format!("vault mfa_verify error: {}", e)))
+            }
             _ => Err(AppError::Ipc(
                 "unexpected vault mfa_verify response".to_string(),
             )),
@@ -235,10 +235,7 @@ impl VaultCryptoClient {
     ///
     /// Used to re-generate QR codes from existing encrypted secrets.
     /// Returns a `SensitiveString` (zeroize-on-drop).
-    pub async fn mfa_get_secret(
-        &self,
-        encrypted_secret: &str,
-    ) -> AppResult<SensitiveString> {
+    pub async fn mfa_get_secret(&self, encrypted_secret: &str) -> AppResult<SensitiveString> {
         let request_id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
 
@@ -263,9 +260,9 @@ impl VaultCryptoClient {
                 plaintext_secret: Some(pt),
                 error: None,
             } => Ok(pt),
-            VaultResponse::MfaGetSecret {
-                error: Some(e), ..
-            } => Err(AppError::Ipc(format!("vault mfa_get_secret error: {}", e))),
+            VaultResponse::MfaGetSecret { error: Some(e), .. } => {
+                Err(AppError::Ipc(format!("vault mfa_get_secret error: {}", e)))
+            }
             _ => Err(AppError::Ipc(
                 "unexpected vault mfa_get_secret response".to_string(),
             )),
@@ -368,7 +365,7 @@ impl VaultCryptoClient {
 
 /// Set a file descriptor to non-blocking mode.
 fn set_nonblocking(fd: RawFd) -> io::Result<()> {
-    use libc::{fcntl, F_GETFL, F_SETFL, O_NONBLOCK};
+    use libc::{F_GETFL, F_SETFL, O_NONBLOCK, fcntl};
 
     // SAFETY: We're calling fcntl with valid arguments on a valid fd.
     unsafe {
@@ -395,7 +392,7 @@ mod tests {
         let result = set_nonblocking(read_fd.as_raw_fd());
         assert!(result.is_ok());
 
-        use libc::{fcntl, F_GETFL, O_NONBLOCK};
+        use libc::{F_GETFL, O_NONBLOCK, fcntl};
         let flags = unsafe { fcntl(read_fd.as_raw_fd(), F_GETFL) };
         assert!(flags & O_NONBLOCK != 0);
     }

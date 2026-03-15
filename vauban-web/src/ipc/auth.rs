@@ -3,7 +3,7 @@
 //! Provides async methods for password hashing and verification
 //! via IPC pipes to the auth service (Argon2id).
 //!
-//! Follows the same pattern as `RbacIpcClient` and `VaultCryptoClient`.
+//! Follows the same pattern as `AccessIpcClient` and `VaultCryptoClient`.
 
 use crate::error::{AppError, AppResult};
 use shared::ipc::IpcChannel;
@@ -11,16 +11,21 @@ use shared::messages::{Message, SensitiveString};
 use std::collections::HashMap;
 use std::io;
 use std::os::unix::io::RawFd;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::io::unix::AsyncFd;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::Interest;
-use tokio::sync::{oneshot, Mutex};
+use tokio::io::unix::AsyncFd;
+use tokio::sync::{Mutex, oneshot};
 use tracing::{debug, error, info, warn};
 
 enum AuthResponse {
-    Verify { valid: bool },
-    Hash { hash: Option<String>, error: Option<String> },
+    Verify {
+        valid: bool,
+    },
+    Hash {
+        hash: Option<String>,
+        error: Option<String>,
+    },
 }
 
 pub struct AuthIpcClient {
@@ -100,7 +105,9 @@ impl AuthIpcClient {
                 if let Some(h) = hash {
                     Ok(h)
                 } else {
-                    Err(AppError::Ipc(error.unwrap_or_else(|| "hash failed".to_string())))
+                    Err(AppError::Ipc(
+                        error.unwrap_or_else(|| "hash failed".to_string()),
+                    ))
                 }
             }
             _ => Err(AppError::Ipc("unexpected auth response type".to_string())),
@@ -147,9 +154,7 @@ impl AuthIpcClient {
         let request_id = msg.request_id();
 
         let response = match msg {
-            Message::AuthVerifyPasswordResponse { valid, .. } => {
-                AuthResponse::Verify { valid }
-            }
+            Message::AuthVerifyPasswordResponse { valid, .. } => AuthResponse::Verify { valid },
             Message::AuthHashPasswordResponse { hash, error, .. } => {
                 AuthResponse::Hash { hash, error }
             }
@@ -171,7 +176,7 @@ impl AuthIpcClient {
 }
 
 fn set_nonblocking(fd: RawFd) -> io::Result<()> {
-    use libc::{fcntl, F_GETFL, F_SETFL, O_NONBLOCK};
+    use libc::{F_GETFL, F_SETFL, O_NONBLOCK, fcntl};
 
     unsafe {
         let flags = fcntl(fd, F_GETFL);
@@ -197,7 +202,7 @@ mod tests {
         let result = set_nonblocking(read_fd.as_raw_fd());
         assert!(result.is_ok());
 
-        use libc::{fcntl, F_GETFL, O_NONBLOCK};
+        use libc::{F_GETFL, O_NONBLOCK, fcntl};
         let flags = unsafe { fcntl(read_fd.as_raw_fd(), F_GETFL) };
         assert!(flags & O_NONBLOCK != 0);
     }

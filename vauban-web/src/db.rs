@@ -181,7 +181,9 @@ pub async fn get_connection_or_shutdown(
                 handle.graceful_shutdown(Some(std::time::Duration::from_secs(5)));
             }
             Err(crate::error::AppError::Internal(anyhow::anyhow!(
-                "Database {} in sandbox mode: {}", category, detail
+                "Database {} in sandbox mode: {}",
+                category,
+                detail
             )))
         }
     }
@@ -261,9 +263,7 @@ mod tests {
     use diesel_async::pooled_connection::PoolError as DieselPoolError;
 
     /// Helper to build a PoolError::Backend(ConnectionError(...)) for testing.
-    fn make_connection_error(
-        msg: &str,
-    ) -> diesel_async::pooled_connection::deadpool::PoolError {
+    fn make_connection_error(msg: &str) -> diesel_async::pooled_connection::deadpool::PoolError {
         PoolError::Backend(DieselPoolError::ConnectionError(
             diesel::result::ConnectionError::BadConnection(msg.to_string()),
         ))
