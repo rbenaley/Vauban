@@ -12,12 +12,15 @@ libexec/vauban/vauban-supervisor
 libexec/vauban/vauban-vault
 libexec/vauban/vauban-web
 etc/vauban/vauban.conf
+etc/vauban/rbac/model.conf
+etc/vauban/rbac/policy.csv
 share/vauban/migrations/20260102000000_initial_schema/up.sql
 share/vauban/migrations/20260102000000_initial_schema/down.sql
 share/vauban/migrations/20260110000000_auth_sessions_and_api_keys/up.sql
 share/vauban/migrations/20260110000000_auth_sessions_and_api_keys/down.sql
 etc/rc.d/vauban
 @dir libexec/vauban
+@dir etc/vauban/rbac
 @dir etc/vauban/certs
 @dir etc/vauban
 @dir share/vauban/migrations/20260110000000_auth_sessions_and_api_keys

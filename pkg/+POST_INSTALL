@@ -85,6 +85,11 @@ done
 # No ACLs on certs/ -- only root (vauban-supervisor) accesses cert files.
 # vauban-web receives cert data via IPC at startup.
 
+chown root:wheel "${PREFIX}/etc/vauban/rbac"
+chmod 750 "${PREFIX}/etc/vauban/rbac"
+set_acl         "vbpolicyba" "rx" "${PREFIX}/etc/vauban/rbac"
+set_default_acl "vbpolicyba" "r"  "${PREFIX}/etc/vauban/rbac"
+
 echo "==> Setting ACLs on recordings directory..."
 
 detect_acl_type /var/vauban/recordings

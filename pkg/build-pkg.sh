@@ -44,6 +44,7 @@ echo "==> Staging files..."
 mkdir -p "${STAGING}/usr/local/bin"
 mkdir -p "${STAGING}/usr/local/libexec/vauban"
 mkdir -p "${STAGING}/usr/local/etc/vauban/certs"
+mkdir -p "${STAGING}/usr/local/etc/vauban/rbac"
 mkdir -p "${STAGING}/usr/local/etc/rc.d"
 mkdir -p "${STAGING}/usr/local/share/vauban/migrations"
 
@@ -57,6 +58,8 @@ for _svc in vauban-audit vauban-auth vauban-proxy-rdp vauban-proxy-ssh \
 done
 
 install -m 644 "${PROJECT_ROOT}/config/vauban.conf" "${STAGING}/usr/local/etc/vauban/vauban.conf"
+install -m 644 "${PROJECT_ROOT}/config/rbac/model.conf" "${STAGING}/usr/local/etc/vauban/rbac/model.conf"
+install -m 644 "${PROJECT_ROOT}/config/rbac/default_policy.csv" "${STAGING}/usr/local/etc/vauban/rbac/policy.csv"
 
 cp -R "${PROJECT_ROOT}/vauban-web/migrations/"* "${STAGING}/usr/local/share/vauban/migrations/"
 
