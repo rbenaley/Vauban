@@ -31,7 +31,7 @@
 
 Prior to version 0.3.0, Vauban handled authentication and authorization inline within `vauban-web`:
 
-- **Password hashing** (Argon2id) ran inside the web process, exposing cryptographic material to the same address space as HTTP handlers.
+- **Password hashing** (Argon2id) ran inside the web process, exposing cryptographic material to the same address space as HTTPS handlers.
 - **Role checks** were hardcoded `is_superuser` / `is_staff` guards scattered across handlers, with no centralized policy engine.
 - **Access control** was coarse-grained: users either had access to all assets or none, with no per-protocol or per-asset-group granularity.
 
