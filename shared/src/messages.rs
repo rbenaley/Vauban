@@ -492,6 +492,17 @@ pub enum RdpInputEvent {
     },
 }
 
+/// SSH recording event type for asciicast v2 format.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SshRecordingEvent {
+    /// Server output ("o" in asciicast).
+    Output,
+    /// User input, redacted by proxy before sending ("i" in asciicast).
+    Input,
+    /// Terminal resize ("r" in asciicast).
+    Resize,
+}
+
 /// All IPC messages exchanged between services.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Message {
@@ -889,6 +900,29 @@ pub enum Message {
 
     /// Signal vauban-audit to finalize the fMP4 recording file.
     RdpRecordingEnd {
+        session_id: String,
+    },
+
+    // ========== SSH Recording (ProxySsh -> Audit) ==========
+    /// Signal vauban-audit to start recording a new SSH session (asciicast v2).
+    SshRecordingStart {
+        session_id: String,
+        width: u16,
+        height: u16,
+        asset_name: String,
+        username: String,
+    },
+
+    /// A single SSH recording event (output, redacted input, or resize).
+    SshRecordingData {
+        session_id: String,
+        timestamp_us: u64,
+        event_type: SshRecordingEvent,
+        data: Vec<u8>,
+    },
+
+    /// Signal vauban-audit to finalize the asciicast recording file.
+    SshRecordingEnd {
         session_id: String,
     },
 
@@ -2859,6 +2893,138 @@ mod tests {
         let deserialized: Message = deserialize(&serialized);
         if let Message::RdpRecordingEnd { session_id } = deserialized {
             assert_eq!(session_id, "rdp-rec-123");
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    // ==================== SSH Recording Message Tests ====================
+
+    #[test]
+    fn test_ssh_recording_event_serialization() {
+        for event in [
+            SshRecordingEvent::Output,
+            SshRecordingEvent::Input,
+            SshRecordingEvent::Resize,
+        ] {
+            let serialized = serialize(&event);
+            let deserialized: SshRecordingEvent = deserialize(&serialized);
+            assert_eq!(deserialized, event);
+        }
+    }
+
+    #[test]
+    fn test_message_ssh_recording_start_roundtrip() {
+        let msg = Message::SshRecordingStart {
+            session_id: "ssh-rec-456".to_string(),
+            width: 120,
+            height: 40,
+            asset_name: "prod-server".to_string(),
+            username: "admin".to_string(),
+        };
+        assert!(msg.request_id().is_none());
+
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::SshRecordingStart {
+            session_id,
+            width,
+            height,
+            asset_name,
+            username,
+        } = deserialized
+        {
+            assert_eq!(session_id, "ssh-rec-456");
+            assert_eq!(width, 120);
+            assert_eq!(height, 40);
+            assert_eq!(asset_name, "prod-server");
+            assert_eq!(username, "admin");
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_message_ssh_recording_data_output_roundtrip() {
+        let msg = Message::SshRecordingData {
+            session_id: "ssh-rec-456".to_string(),
+            timestamp_us: 1_234_567,
+            event_type: SshRecordingEvent::Output,
+            data: b"hello world\r\n".to_vec(),
+        };
+        assert!(msg.request_id().is_none());
+
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::SshRecordingData {
+            session_id,
+            timestamp_us,
+            event_type,
+            data,
+        } = deserialized
+        {
+            assert_eq!(session_id, "ssh-rec-456");
+            assert_eq!(timestamp_us, 1_234_567);
+            assert_eq!(event_type, SshRecordingEvent::Output);
+            assert_eq!(data, b"hello world\r\n");
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_message_ssh_recording_data_input_roundtrip() {
+        let msg = Message::SshRecordingData {
+            session_id: "ssh-rec-456".to_string(),
+            timestamp_us: 2_000_000,
+            event_type: SshRecordingEvent::Input,
+            data: b"[REDACTED]\r\n".to_vec(),
+        };
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::SshRecordingData {
+            event_type, data, ..
+        } = deserialized
+        {
+            assert_eq!(event_type, SshRecordingEvent::Input);
+            assert_eq!(data, b"[REDACTED]\r\n");
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_message_ssh_recording_data_resize_roundtrip() {
+        let msg = Message::SshRecordingData {
+            session_id: "ssh-rec-456".to_string(),
+            timestamp_us: 5_100_000,
+            event_type: SshRecordingEvent::Resize,
+            data: b"160x50".to_vec(),
+        };
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::SshRecordingData {
+            event_type, data, ..
+        } = deserialized
+        {
+            assert_eq!(event_type, SshRecordingEvent::Resize);
+            assert_eq!(data, b"160x50");
+        } else {
+            panic!("Wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_message_ssh_recording_end_roundtrip() {
+        let msg = Message::SshRecordingEnd {
+            session_id: "ssh-rec-456".to_string(),
+        };
+        assert!(msg.request_id().is_none());
+
+        let serialized = serialize(&msg);
+        let deserialized: Message = deserialize(&serialized);
+        if let Message::SshRecordingEnd { session_id } = deserialized {
+            assert_eq!(session_id, "ssh-rec-456");
         } else {
             panic!("Wrong variant");
         }

@@ -1146,6 +1146,48 @@ async fn handle_terminal_socket(
     // Unsubscribe from session data
     proxy_client.unsubscribe_session(&session_id).await;
 
+    // Update session recording metadata in the database (same pattern as RDP)
+    if state.config.recording.enabled && state.config.recording.ssh {
+        use diesel::prelude::*;
+        use diesel_async::RunQueryDsl;
+
+        let now = chrono::Utc::now();
+        let recording_path = format!(
+            "{}/{}/{:02}/{}/",
+            state.config.recording.storage_path,
+            now.format("%Y"),
+            now.format("%m"),
+            session_id
+        );
+        if let Ok(mut conn) = state.db_pool.get().await {
+            use crate::schema::proxy_sessions::dsl;
+            if let Ok(session_uuid) = ::uuid::Uuid::parse_str(&session_id) {
+                let update_result =
+                    diesel::update(dsl::proxy_sessions.filter(dsl::uuid.eq(session_uuid)))
+                        .set((
+                            dsl::is_recorded.eq(true),
+                            dsl::recording_path.eq(&recording_path),
+                            dsl::status.eq("disconnected"),
+                            dsl::disconnected_at.eq(chrono::Utc::now()),
+                        ))
+                        .execute(&mut conn)
+                        .await;
+
+                match update_result {
+                    Ok(count) if count > 0 => {
+                        debug!(session_id = %session_id, "SSH session recording metadata saved");
+                    }
+                    Ok(_) => {
+                        warn!(session_id = %session_id, "SSH session not found in database for recording update");
+                    }
+                    Err(e) => {
+                        warn!(session_id = %session_id, error = %e, "Failed to update SSH session recording metadata");
+                    }
+                }
+            }
+        }
+    }
+
     info!(
         user = %user.username,
         session_id = %session_id,
@@ -2097,5 +2139,26 @@ mod tests {
         let png_buf = png_x.to_le_bytes();
         assert_eq!(png_buf[0], 0x00); // low byte
         assert_ne!(png_buf[0], 0x01);
+    }
+
+    #[test]
+    fn test_ssh_terminal_disconnect_updates_recording_path() {
+        let source = include_str!("websocket.rs");
+        let terminal_fn_start = source
+            .find("fn handle_terminal_socket")
+            .expect("handle_terminal_socket must exist");
+        let terminal_fn_source = &source[terminal_fn_start..];
+        assert!(
+            terminal_fn_source.contains("recording_path"),
+            "handle_terminal_socket must update recording_path on disconnect"
+        );
+        assert!(
+            terminal_fn_source.contains("is_recorded.eq(true)"),
+            "handle_terminal_socket must set is_recorded = true"
+        );
+        assert!(
+            terminal_fn_source.contains("recording.ssh"),
+            "handle_terminal_socket must check recording.ssh config"
+        );
     }
 }

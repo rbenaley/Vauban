@@ -24,6 +24,7 @@
 //! continuous bidirectional streams with multiple concurrent connections.
 
 mod error;
+mod input_redactor;
 mod ipc;
 mod session;
 mod session_manager;
@@ -197,6 +198,29 @@ async fn run_service() -> Result<()> {
         .ok()
         .and_then(|s| s.parse().ok());
 
+    let recording_enabled: bool = std::env::var("VAUBAN_RECORDING_ENABLED")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(false);
+
+    let audit_fds: Option<(RawFd, RawFd)> = if recording_enabled {
+        let r: Option<RawFd> = std::env::var("VAUBAN_AUDIT_IPC_READ")
+            .ok()
+            .and_then(|s| s.parse().ok());
+        let w: Option<RawFd> = std::env::var("VAUBAN_AUDIT_IPC_WRITE")
+            .ok()
+            .and_then(|s| s.parse().ok());
+        match (r, w) {
+            (Some(r), Some(w)) => Some((r, w)),
+            _ => {
+                warn!("Recording enabled but VAUBAN_AUDIT_IPC_READ/WRITE not set");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // SAFETY: We clear environment variables immediately after reading.
     unsafe {
         std::env::remove_var("VAUBAN_IPC_READ");
@@ -204,6 +228,9 @@ async fn run_service() -> Result<()> {
         std::env::remove_var("VAUBAN_WEB_IPC_READ");
         std::env::remove_var("VAUBAN_WEB_IPC_WRITE");
         std::env::remove_var("VAUBAN_FD_PASSING_SOCKET");
+        std::env::remove_var("VAUBAN_RECORDING_ENABLED");
+        std::env::remove_var("VAUBAN_AUDIT_IPC_READ");
+        std::env::remove_var("VAUBAN_AUDIT_IPC_WRITE");
     }
 
     // Create IPC channels
@@ -237,15 +264,25 @@ async fn run_service() -> Result<()> {
     // let vault_client = VaultClient::new(vault_channel)?;
     // let audit_client = AuditClient::new(audit_channel)?;
 
+    let audit_channel = audit_fds.map(|(r, w)| {
+        let ch = unsafe { IpcChannel::from_raw_fds(r, w) };
+        info!("Audit IPC channel opened for session recording");
+        ch
+    });
+
     info!("Resources opened, preparing to enter sandbox");
 
     // Collect IPC file descriptors for sandboxing (read/write pipes)
-    let ipc_fds = vec![
+    let mut ipc_fds = vec![
         supervisor_read_fd,
         supervisor_write_fd,
         web_read_fd,
         web_write_fd,
     ];
+    if let Some((r, w)) = audit_fds {
+        ipc_fds.push(r);
+        ipc_fds.push(w);
+    }
 
     // FD passing socket needs different rights (receive-only for SCM_RIGHTS)
     let fd_receiver_fds: Option<Vec<RawFd>> = fd_passing_socket.map(|fd| vec![fd]);
@@ -264,6 +301,20 @@ async fn run_service() -> Result<()> {
     let state = Arc::new(ServiceState::default());
     let sessions = Arc::new(SessionManager::new());
 
+    let audit_tx: Option<mpsc::Sender<Message>> = audit_channel.map(|ch| {
+        let (tx, mut rx) = mpsc::channel::<Message>(512);
+        tokio::spawn(async move {
+            while let Some(msg) = rx.recv().await {
+                if let Err(e) = ch.send(&msg) {
+                    warn!(error = %e, "Failed to send recording frame to audit");
+                    break;
+                }
+            }
+            debug!("Audit IPC writer task exiting");
+        });
+        tx
+    });
+
     // Create channel for sending SSH data back to web
     let (web_tx, web_rx) = mpsc::channel::<Message>(256);
 
@@ -273,9 +324,9 @@ async fn run_service() -> Result<()> {
         web_async,
         state,
         sessions,
-        web_tx,
-        web_rx,
+        (web_tx, web_rx),
         fd_passing,
+        audit_tx,
     )
     .await
 }
@@ -285,10 +336,11 @@ async fn main_loop(
     web_channel: AsyncIpcChannel,
     state: Arc<ServiceState>,
     sessions: Arc<SessionManager>,
-    web_tx: mpsc::Sender<Message>,
-    mut web_rx: mpsc::Receiver<Message>,
+    web_mpsc: (mpsc::Sender<Message>, mpsc::Receiver<Message>),
     fd_passing: Option<Arc<FdPassingState>>,
+    audit_tx: Option<mpsc::Sender<Message>>,
 ) -> Result<()> {
+    let (web_tx, mut web_rx) = web_mpsc;
     info!("Main event loop started");
 
     // Create a channel for spawned tasks to send IPC responses back to the main loop.
@@ -364,6 +416,7 @@ async fn main_loop(
                             web_tx.clone(),
                             msg,
                             pending_connections.clone(),
+                            audit_tx.clone(),
                         ).await {
                             warn!(error = %e, "Error handling web message");
                             state.increment_failed();
@@ -445,6 +498,7 @@ async fn handle_web_message(
     web_tx: mpsc::Sender<Message>,
     msg: Message,
     pending_connections: Option<PendingConnections>,
+    audit_tx: Option<mpsc::Sender<Message>>,
 ) -> Result<()> {
     match msg {
         Message::SshSessionOpen {
@@ -567,7 +621,10 @@ async fn handle_web_message(
             let response_tx_clone = response_tx.clone();
 
             tokio::spawn(async move {
-                match sessions_clone.create_session(config, web_tx).await {
+                match sessions_clone
+                    .create_session(config, web_tx, audit_tx)
+                    .await
+                {
                     Ok(_) => {
                         state_clone.increment_processed();
                         let response = Message::SshSessionOpened {
@@ -838,6 +895,62 @@ mod tests {
         assert!(
             source.contains("shutdown_requested: AtomicBool"),
             "M-8/M-10: shutdown_requested must be AtomicBool for async safety"
+        );
+    }
+
+    // ==================== SSH Recording Structural Tests ====================
+
+    #[test]
+    fn test_ssh_recording_env_var_read() {
+        let source = prod_source();
+        assert!(
+            source.contains("VAUBAN_RECORDING_ENABLED"),
+            "proxy-ssh must read VAUBAN_RECORDING_ENABLED"
+        );
+        assert!(
+            source.contains("VAUBAN_AUDIT_IPC_READ"),
+            "proxy-ssh must read VAUBAN_AUDIT_IPC_READ"
+        );
+        assert!(
+            source.contains("VAUBAN_AUDIT_IPC_WRITE"),
+            "proxy-ssh must read VAUBAN_AUDIT_IPC_WRITE"
+        );
+    }
+
+    #[test]
+    fn test_ssh_recording_env_vars_cleaned() {
+        let source = prod_source();
+        assert!(
+            source.contains("remove_var(\"VAUBAN_RECORDING_ENABLED\")"),
+            "proxy-ssh must clean VAUBAN_RECORDING_ENABLED"
+        );
+        assert!(
+            source.contains("remove_var(\"VAUBAN_AUDIT_IPC_READ\")"),
+            "proxy-ssh must clean VAUBAN_AUDIT_IPC_READ"
+        );
+        assert!(
+            source.contains("remove_var(\"VAUBAN_AUDIT_IPC_WRITE\")"),
+            "proxy-ssh must clean VAUBAN_AUDIT_IPC_WRITE"
+        );
+    }
+
+    #[test]
+    fn test_ssh_recording_audit_tx_passed_to_main_loop() {
+        let source = prod_source();
+        let main_loop = source.find("fn main_loop").expect("main_loop must exist");
+        let main_loop_source = &source[main_loop..];
+        assert!(
+            main_loop_source.contains("audit_tx"),
+            "main_loop must receive audit_tx parameter"
+        );
+    }
+
+    #[test]
+    fn test_ssh_recording_audit_fds_in_sandbox() {
+        let source = prod_source();
+        assert!(
+            source.contains("if let Some((r, w)) = audit_fds"),
+            "Audit FDs must be added to sandbox ipc_fds"
         );
     }
 }

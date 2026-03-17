@@ -4,6 +4,7 @@ use crate::ipc::AccessIpcClient;
 use std::sync::Arc;
 #[cfg(not(debug_assertions))]
 use tracing::error;
+#[cfg(debug_assertions)]
 use tracing::warn;
 
 /// RBAC permission check parameters.

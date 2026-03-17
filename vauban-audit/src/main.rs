@@ -20,12 +20,14 @@
 
 mod fmp4_writer;
 mod recording_manager;
+mod ssh_recording_manager;
 
 use anyhow::{Context, Result};
 use recording_manager::RecordingManager;
 use shared::capsicum;
 use shared::ipc::{IpcChannel, poll_readable, recv_fd};
 use shared::messages::{ControlMessage, Message, ServiceStats};
+use ssh_recording_manager::SshRecordingManager;
 use std::os::unix::io::{FromRawFd, IntoRawFd, RawFd};
 use std::process::ExitCode;
 use std::time::Instant;
@@ -108,7 +110,28 @@ fn run_service() -> Result<()> {
                 Some((r, w))
             }
             _ => {
-                warn!("Recording enabled but VAUBAN_PROXY_RDP_IPC_READ/WRITE not set");
+                debug!("VAUBAN_PROXY_RDP_IPC_READ/WRITE not set (RDP recording disabled)");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let proxy_ssh_fds: Option<(RawFd, RawFd)> = if recording_enabled {
+        let r: Option<RawFd> = std::env::var("VAUBAN_PROXY_SSH_IPC_READ")
+            .ok()
+            .and_then(|s| s.parse().ok());
+        let w: Option<RawFd> = std::env::var("VAUBAN_PROXY_SSH_IPC_WRITE")
+            .ok()
+            .and_then(|s| s.parse().ok());
+        match (r, w) {
+            (Some(r), Some(w)) => {
+                info!("Proxy-SSH IPC channel available for recording");
+                Some((r, w))
+            }
+            _ => {
+                debug!("VAUBAN_PROXY_SSH_IPC_READ/WRITE not set (SSH recording disabled)");
                 None
             }
         }
@@ -124,16 +147,23 @@ fn run_service() -> Result<()> {
         std::env::remove_var("VAUBAN_FD_PASSING_SOCKET");
         std::env::remove_var("VAUBAN_PROXY_RDP_IPC_READ");
         std::env::remove_var("VAUBAN_PROXY_RDP_IPC_WRITE");
+        std::env::remove_var("VAUBAN_PROXY_SSH_IPC_READ");
+        std::env::remove_var("VAUBAN_PROXY_SSH_IPC_WRITE");
     }
 
     let channel = unsafe { IpcChannel::from_raw_fds(ipc_read_fd, ipc_write_fd) };
 
     let proxy_rdp_channel = proxy_rdp_fds.map(|(r, w)| unsafe { IpcChannel::from_raw_fds(r, w) });
+    let proxy_ssh_channel = proxy_ssh_fds.map(|(r, w)| unsafe { IpcChannel::from_raw_fds(r, w) });
 
     info!("Resources opened, preparing to enter sandbox");
 
     let mut ipc_fds = vec![ipc_read_fd, ipc_write_fd];
     if let Some((r, w)) = proxy_rdp_fds {
+        ipc_fds.push(r);
+        ipc_fds.push(w);
+    }
+    if let Some((r, w)) = proxy_ssh_fds {
         ipc_fds.push(r);
         ipc_fds.push(w);
     }
@@ -161,11 +191,19 @@ fn run_service() -> Result<()> {
         None
     };
 
+    let mut ssh_recording_mgr = if recording_enabled {
+        Some(SshRecordingManager::new())
+    } else {
+        None
+    };
+
     main_loop(
         &channel,
         proxy_rdp_channel.as_ref(),
+        proxy_ssh_channel.as_ref(),
         &mut state,
         &mut recording_mgr,
+        &mut ssh_recording_mgr,
         fd_passing_socket,
     )
 }
@@ -173,14 +211,27 @@ fn run_service() -> Result<()> {
 fn main_loop(
     channel: &IpcChannel,
     proxy_rdp_channel: Option<&IpcChannel>,
+    proxy_ssh_channel: Option<&IpcChannel>,
     state: &mut ServiceState,
     recording_mgr: &mut Option<RecordingManager>,
+    ssh_recording_mgr: &mut Option<SshRecordingManager>,
     fd_passing_socket: Option<RawFd>,
 ) -> Result<()> {
     let mut poll_fds: Vec<RawFd> = vec![channel.read_fd()];
-    if let Some(rdp_ch) = proxy_rdp_channel {
+
+    let rdp_poll_idx = if let Some(rdp_ch) = proxy_rdp_channel {
         poll_fds.push(rdp_ch.read_fd());
-    }
+        Some(poll_fds.len() - 1)
+    } else {
+        None
+    };
+
+    let ssh_poll_idx = if let Some(ssh_ch) = proxy_ssh_channel {
+        poll_fds.push(ssh_ch.read_fd());
+        Some(poll_fds.len() - 1)
+    } else {
+        None
+    };
 
     loop {
         // M-8/M-10: Check shutdown flag before blocking on poll.
@@ -199,9 +250,14 @@ fn main_loop(
         if ready.contains(&0) {
             match channel.recv() {
                 Ok(msg) => {
-                    if let Err(e) =
-                        handle_message(channel, state, recording_mgr, fd_passing_socket, msg)
-                    {
+                    if let Err(e) = handle_message(
+                        channel,
+                        state,
+                        recording_mgr,
+                        ssh_recording_mgr,
+                        fd_passing_socket,
+                        msg,
+                    ) {
                         warn!("Error handling message: {}", e);
                         state.requests_failed += 1;
                     }
@@ -217,12 +273,13 @@ fn main_loop(
             }
         }
 
-        // Index 1 (if present) is the proxy-rdp channel
-        if proxy_rdp_channel.is_some() && ready.contains(&1) {
-            let rdp_ch = proxy_rdp_channel.as_ref();
-            // SAFETY: we just checked is_some() above
+        // Proxy-RDP channel (if present)
+        if let Some(idx) = rdp_poll_idx
+            && ready.contains(&idx)
+        {
+            // SAFETY: rdp_poll_idx is only Some when proxy_rdp_channel is Some
             #[allow(clippy::unwrap_used)]
-            let rdp_ch = rdp_ch.unwrap();
+            let rdp_ch = proxy_rdp_channel.unwrap();
             match rdp_ch.recv() {
                 Ok(msg) => {
                     if let Err(e) = handle_recording_message(
@@ -244,6 +301,35 @@ fn main_loop(
                 }
             }
         }
+
+        // Proxy-SSH channel (if present)
+        if let Some(idx) = ssh_poll_idx
+            && ready.contains(&idx)
+        {
+            // SAFETY: ssh_poll_idx is only Some when proxy_ssh_channel is Some
+            #[allow(clippy::unwrap_used)]
+            let ssh_ch = proxy_ssh_channel.unwrap();
+            match ssh_ch.recv() {
+                Ok(msg) => {
+                    if let Err(e) = handle_ssh_recording_message(
+                        state,
+                        ssh_recording_mgr,
+                        channel,
+                        fd_passing_socket,
+                        msg,
+                    ) {
+                        warn!("Error handling SSH recording message: {}", e);
+                        state.requests_failed += 1;
+                    }
+                }
+                Err(shared::ipc::IpcError::ConnectionClosed) => {
+                    info!("Proxy-SSH IPC connection closed");
+                }
+                Err(e) => {
+                    debug!(error = %e, "Proxy-SSH IPC receive error");
+                }
+            }
+        }
     }
 }
 
@@ -251,6 +337,7 @@ fn handle_message(
     channel: &IpcChannel,
     state: &mut ServiceState,
     recording_mgr: &mut Option<RecordingManager>,
+    ssh_recording_mgr: &mut Option<SshRecordingManager>,
     fd_passing_socket: Option<RawFd>,
     msg: Message,
 ) -> Result<()> {
@@ -294,11 +381,24 @@ fn handle_message(
             Ok(())
         }
 
-        // Recording messages can also arrive on the supervisor channel
+        // RDP recording messages can also arrive on the supervisor channel
         Message::RdpRecordingStart { .. }
         | Message::RdpVideoFrame { .. }
         | Message::RdpRecordingEnd { .. } => {
             handle_recording_message(state, recording_mgr, channel, fd_passing_socket, msg)
+        }
+
+        // SSH recording messages can also arrive on the supervisor channel
+        Message::SshRecordingStart { .. }
+        | Message::SshRecordingData { .. }
+        | Message::SshRecordingEnd { .. } => {
+            handle_ssh_recording_message(
+                state,
+                ssh_recording_mgr,
+                channel,
+                fd_passing_socket,
+                msg,
+            )
         }
 
         _ => {
@@ -398,6 +498,97 @@ fn handle_recording_message(
         }
         _ => {
             debug!("Non-recording message on recording handler");
+        }
+    }
+
+    Ok(())
+}
+
+fn handle_ssh_recording_message(
+    state: &mut ServiceState,
+    ssh_recording_mgr: &mut Option<SshRecordingManager>,
+    supervisor_channel: &IpcChannel,
+    fd_passing_socket: Option<RawFd>,
+    msg: Message,
+) -> Result<()> {
+    let Some(mgr) = ssh_recording_mgr.as_mut() else {
+        debug!("SSH recording not enabled, ignoring SSH recording message");
+        return Ok(());
+    };
+
+    match msg {
+        Message::SshRecordingStart {
+            session_id,
+            width,
+            height,
+            asset_name,
+            username,
+        } => {
+            let relative_path = SshRecordingManager::compute_relative_path(&session_id);
+            match request_file_from_supervisor(
+                supervisor_channel,
+                fd_passing_socket,
+                &session_id,
+                &relative_path,
+            ) {
+                Ok(file) => {
+                    mgr.start_session(
+                        &session_id,
+                        ssh_recording_manager::SshSessionStartParams {
+                            file,
+                            relative_path,
+                            width,
+                            height,
+                            asset_name,
+                            username,
+                        },
+                    );
+                }
+                Err(e) => {
+                    error!(session_id, error = %e, "Failed to obtain SSH recording file from supervisor");
+                }
+            }
+            state.requests_processed += 1;
+        }
+        Message::SshRecordingData {
+            session_id,
+            timestamp_us,
+            event_type,
+            data,
+        } => {
+            mgr.handle_data(&session_id, timestamp_us, event_type, &data);
+            state.requests_processed += 1;
+        }
+        Message::SshRecordingEnd { session_id } => {
+            if let Some(result) = mgr.end_session(&session_id) {
+                let meta_json = SshRecordingManager::serialize_meta_json(&result);
+                match request_file_from_supervisor(
+                    supervisor_channel,
+                    fd_passing_socket,
+                    &session_id,
+                    &result.meta_json_relative_path,
+                ) {
+                    Ok(meta_file) => {
+                        use std::io::Write;
+                        let mut meta_file = meta_file;
+                        if let Err(e) = meta_file
+                            .write_all(meta_json.as_bytes())
+                            .and_then(|_| meta_file.flush())
+                        {
+                            error!(session_id, error = %e, "Failed to write SSH meta.json");
+                        } else {
+                            info!(session_id, "SSH meta.json written successfully");
+                        }
+                    }
+                    Err(e) => {
+                        error!(session_id, error = %e, "Failed to obtain SSH meta.json file from supervisor");
+                    }
+                }
+            }
+            state.requests_processed += 1;
+        }
+        _ => {
+            debug!("Non-SSH-recording message on SSH recording handler");
         }
     }
 
@@ -562,7 +753,7 @@ mod tests {
             source_ip: Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))),
             details: "SSH session started".to_string(),
         };
-        handle_message(&service, &mut state, &mut recording_mgr, None, event).unwrap();
+        handle_message(&service, &mut state, &mut recording_mgr, &mut None, None, event).unwrap();
 
         assert_eq!(state.requests_processed, 1);
 
@@ -585,7 +776,7 @@ mod tests {
             sequence: 1,
             data: vec![0; 1024],
         };
-        handle_message(&service, &mut state, &mut recording_mgr, None, chunk).unwrap();
+        handle_message(&service, &mut state, &mut recording_mgr, &mut None, None, chunk).unwrap();
 
         assert_eq!(state.requests_processed, 1);
     }
@@ -597,7 +788,7 @@ mod tests {
         let mut recording_mgr = None;
 
         let msg = Message::Control(ControlMessage::Ping { seq: 11 });
-        handle_message(&service, &mut state, &mut recording_mgr, None, msg).unwrap();
+        handle_message(&service, &mut state, &mut recording_mgr, &mut None, None, msg).unwrap();
 
         let response: Message = supervisor.recv().unwrap();
         assert!(matches!(
@@ -621,7 +812,8 @@ mod tests {
                 source_ip: None,
                 details: "Login".to_string(),
             };
-            handle_message(&service, &mut state, &mut recording_mgr, None, event).unwrap();
+            handle_message(&service, &mut state, &mut recording_mgr, &mut None, None, event)
+                .unwrap();
         }
 
         assert_eq!(state.requests_processed, 5);
@@ -764,6 +956,236 @@ mod tests {
         assert!(
             handle_ctrl_source.contains("shutdown_requested = true"),
             "M-8/M-10: handle_control must set shutdown_requested = true on Shutdown"
+        );
+    }
+
+    // ==================== SSH Recording Integration Tests ====================
+
+    #[test]
+    fn test_handle_ssh_recording_message_without_manager() {
+        let (_sup, service) = IpcChannel::pair().unwrap();
+        let mut state = ServiceState::default();
+        let mut ssh_mgr = None;
+
+        let msg = Message::SshRecordingStart {
+            session_id: "test".to_string(),
+            width: 80,
+            height: 24,
+            asset_name: "host".to_string(),
+            username: "user".to_string(),
+        };
+        handle_ssh_recording_message(&mut state, &mut ssh_mgr, &service, None, msg).unwrap();
+        assert_eq!(state.requests_processed, 0);
+    }
+
+    #[test]
+    fn test_handle_ssh_recording_full_ipc_flow() {
+        use shared::ipc::{send_fd, socketpair_for_fd_passing};
+        use shared::messages::SshRecordingEvent;
+        use std::os::unix::io::AsRawFd;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (supervisor_channel, audit_channel) = IpcChannel::pair().unwrap();
+        let (supervisor_fd_sock, audit_fd_sock) = socketpair_for_fd_passing().unwrap();
+
+        let audit_fd_sock_raw = audit_fd_sock.as_raw_fd();
+
+        let mut state = ServiceState::default();
+        let mut ssh_mgr = Some(SshRecordingManager::new());
+
+        let dir_path = dir.path().to_path_buf();
+
+        // Supervisor thread: handles 2 file requests (session.cast + meta.json)
+        let handle = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let msg = supervisor_channel.recv().unwrap();
+                if let Message::RecordingFileRequest {
+                    request_id,
+                    session_id,
+                    relative_path,
+                    ..
+                } = msg
+                {
+                    let full_path = dir_path.join(&relative_path);
+                    if let Some(parent) = full_path.parent() {
+                        std::fs::create_dir_all(parent).unwrap();
+                    }
+                    let file = std::fs::File::create(&full_path).unwrap();
+                    send_fd(supervisor_fd_sock.as_raw_fd(), file.as_raw_fd()).unwrap();
+                    supervisor_channel
+                        .send(&Message::RecordingFileResponse {
+                            request_id,
+                            session_id,
+                            success: true,
+                            error: None,
+                        })
+                        .unwrap();
+                } else {
+                    panic!("Expected RecordingFileRequest, got {:?}", msg);
+                }
+            }
+        });
+
+        // Start SSH recording
+        handle_ssh_recording_message(
+            &mut state,
+            &mut ssh_mgr,
+            &audit_channel,
+            Some(audit_fd_sock_raw),
+            Message::SshRecordingStart {
+                session_id: "ssh-ipc-test".to_string(),
+                width: 120,
+                height: 40,
+                asset_name: "prod-server".to_string(),
+                username: "admin".to_string(),
+            },
+        )
+        .unwrap();
+        assert_eq!(state.requests_processed, 1);
+
+        // Send data events
+        handle_ssh_recording_message(
+            &mut state,
+            &mut ssh_mgr,
+            &audit_channel,
+            Some(audit_fd_sock_raw),
+            Message::SshRecordingData {
+                session_id: "ssh-ipc-test".to_string(),
+                timestamp_us: 0,
+                event_type: SshRecordingEvent::Output,
+                data: b"$ ".to_vec(),
+            },
+        )
+        .unwrap();
+
+        handle_ssh_recording_message(
+            &mut state,
+            &mut ssh_mgr,
+            &audit_channel,
+            Some(audit_fd_sock_raw),
+            Message::SshRecordingData {
+                session_id: "ssh-ipc-test".to_string(),
+                timestamp_us: 500_000,
+                event_type: SshRecordingEvent::Input,
+                data: b"ls\r".to_vec(),
+            },
+        )
+        .unwrap();
+
+        handle_ssh_recording_message(
+            &mut state,
+            &mut ssh_mgr,
+            &audit_channel,
+            Some(audit_fd_sock_raw),
+            Message::SshRecordingData {
+                session_id: "ssh-ipc-test".to_string(),
+                timestamp_us: 1_000_000,
+                event_type: SshRecordingEvent::Output,
+                data: b"file1  file2\r\n".to_vec(),
+            },
+        )
+        .unwrap();
+
+        // End recording (triggers meta.json write)
+        handle_ssh_recording_message(
+            &mut state,
+            &mut ssh_mgr,
+            &audit_channel,
+            Some(audit_fd_sock_raw),
+            Message::SshRecordingEnd {
+                session_id: "ssh-ipc-test".to_string(),
+            },
+        )
+        .unwrap();
+
+        handle.join().unwrap();
+
+        // Verify .cast file is valid asciicast v2
+        let cast_files: Vec<_> = walkdir(dir.path(), "session.cast");
+        assert_eq!(cast_files.len(), 1, "Exactly one session.cast file");
+
+        let cast_content = std::fs::read_to_string(&cast_files[0]).unwrap();
+        let lines: Vec<&str> = cast_content.lines().collect();
+        assert!(lines.len() >= 4, "Header + 3 events minimum");
+
+        // Verify header
+        let header: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(header["version"], 2);
+        assert_eq!(header["width"], 120);
+        assert_eq!(header["height"], 40);
+
+        // Verify events are valid JSON arrays
+        for line in &lines[1..] {
+            let event: serde_json::Value = serde_json::from_str(line).unwrap();
+            assert!(event.is_array(), "Event must be a JSON array");
+            assert_eq!(event.as_array().unwrap().len(), 3, "Event must have 3 elements");
+        }
+
+        // Verify meta.json exists and is valid
+        let meta_files: Vec<_> = walkdir(dir.path(), "meta.json");
+        assert_eq!(meta_files.len(), 1, "Exactly one meta.json file");
+
+        let meta_content = std::fs::read_to_string(&meta_files[0]).unwrap();
+        let meta: serde_json::Value = serde_json::from_str(&meta_content).unwrap();
+        assert_eq!(meta["format"], "asciicast-v2");
+        assert!(meta["blake3_hex"].as_str().unwrap().len() == 64);
+        assert_eq!(meta["total_events"], 3);
+        assert_eq!(meta["width"], 120);
+        assert_eq!(meta["height"], 40);
+    }
+
+    fn walkdir(root: &std::path::Path, filename: &str) -> Vec<std::path::PathBuf> {
+        let mut results = Vec::new();
+        fn visit(dir: &std::path::Path, filename: &str, results: &mut Vec<std::path::PathBuf>) {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        visit(&path, filename, results);
+                    } else if path.file_name().and_then(|n| n.to_str()) == Some(filename) {
+                        results.push(path);
+                    }
+                }
+            }
+        }
+        visit(root, filename, &mut results);
+        results
+    }
+
+    // ==================== SSH Recording Structural Tests ====================
+
+    #[test]
+    fn test_ssh_recording_handler_exists() {
+        let source = prod_source();
+        assert!(
+            source.contains("fn handle_ssh_recording_message"),
+            "handle_ssh_recording_message function must exist"
+        );
+    }
+
+    #[test]
+    fn test_ssh_recording_main_loop_polls_ssh_channel() {
+        let source = prod_source();
+        let main_loop = source
+            .find("fn main_loop")
+            .expect("main_loop must exist");
+        let main_loop_source = &source[main_loop..];
+        assert!(
+            main_loop_source.contains("ssh_poll_idx"),
+            "main_loop must poll the SSH recording channel"
+        );
+    }
+
+    #[test]
+    fn test_ssh_recording_env_vars_cleaned() {
+        let source = prod_source();
+        assert!(
+            source.contains("remove_var(\"VAUBAN_PROXY_SSH_IPC_READ\")"),
+            "SSH IPC env vars must be cleaned up"
+        );
+        assert!(
+            source.contains("remove_var(\"VAUBAN_PROXY_SSH_IPC_WRITE\")"),
+            "SSH IPC env vars must be cleaned up"
         );
     }
 }

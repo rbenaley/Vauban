@@ -69,6 +69,16 @@ pub static STATIC_FILES: &[StaticAsset] = &[
         content: include_bytes!("../static/js/shaka-init.js"),
         content_type: "application/javascript; charset=utf-8",
     },
+    StaticAsset {
+        path: "js/asciinema-player.min.js",
+        content: include_bytes!("../static/js/asciinema-player.min.js"),
+        content_type: "application/javascript; charset=utf-8",
+    },
+    StaticAsset {
+        path: "js/asciinema-init.js",
+        content: include_bytes!("../static/js/asciinema-init.js"),
+        content_type: "application/javascript; charset=utf-8",
+    },
     // ── CSS ───────────────────────────────────────────────────────────────
     StaticAsset {
         path: "css/vauban.css",
@@ -78,6 +88,11 @@ pub static STATIC_FILES: &[StaticAsset] = &[
     StaticAsset {
         path: "css/terminal.css",
         content: include_bytes!("../static/css/terminal.css"),
+        content_type: "text/css; charset=utf-8",
+    },
+    StaticAsset {
+        path: "css/asciinema-player.css",
+        content: include_bytes!("../static/css/asciinema-player.css"),
         content_type: "text/css; charset=utf-8",
     },
 ];

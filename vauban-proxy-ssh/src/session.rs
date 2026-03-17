@@ -136,6 +136,13 @@ pub struct SshSession {
     /// Asset ID (for session tracking and audit).
     #[allow(dead_code)]
     pub asset_id: String,
+    /// SSH username on the target (for recording metadata).
+    username: String,
+    /// Target host (used as asset_name in recordings).
+    asset_name: String,
+    /// Terminal dimensions at session start.
+    terminal_cols: u16,
+    terminal_rows: u16,
     /// SSH client handle.
     handle: Handle<SshHandler>,
     /// Channel ID for the PTY session (for channel operations).
@@ -283,6 +290,10 @@ impl SshSession {
             session_id: config.session_id,
             user_id: config.user_id,
             asset_id: config.asset_id,
+            username: config.username,
+            asset_name: config.host,
+            terminal_cols: config.terminal_cols,
+            terminal_rows: config.terminal_rows,
             handle: session,
             channel_id,
             channel,
@@ -386,6 +397,21 @@ impl SshSession {
     #[allow(dead_code)] // Will be used for session metrics
     pub fn uptime_secs(&self) -> u64 {
         self.created_at.elapsed().as_secs()
+    }
+
+    /// Terminal dimensions at session start (cols, rows).
+    pub fn terminal_size(&self) -> (u16, u16) {
+        (self.terminal_cols, self.terminal_rows)
+    }
+
+    /// Target host (used as asset_name in recordings).
+    pub fn asset_name(&self) -> &str {
+        &self.asset_name
+    }
+
+    /// SSH username on the target.
+    pub fn username(&self) -> &str {
+        &self.username
     }
 }
 

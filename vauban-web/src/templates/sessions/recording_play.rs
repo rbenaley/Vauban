@@ -298,4 +298,101 @@ mod tests {
             "segmented should not use <source>"
         );
     }
+
+    #[test]
+    fn test_ssh_recording_renders_asciinema_player() {
+        use crate::templates::base::{UserContext, VaubanConfig};
+
+        let rec = create_test_recording_data("ssh");
+
+        let template = RecordingPlayTemplate {
+            title: "Recording".to_string(),
+            user: Some(UserContext {
+                uuid: "admin".to_string(),
+                username: "admin".to_string(),
+                display_name: "Admin".to_string(),
+                is_superuser: true,
+                is_staff: false,
+            }),
+            vauban: VaubanConfig {
+                brand_name: "VAUBAN".to_string(),
+                brand_logo: None,
+                theme: "dark".to_string(),
+            },
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            recording: rec,
+        };
+
+        let html = template.render().unwrap();
+        assert!(
+            html.contains("asciinema-player.min.js"),
+            "SSH should load asciinema player JS"
+        );
+        assert!(
+            html.contains("asciinema-init.js"),
+            "SSH should load asciinema init script"
+        );
+        assert!(
+            html.contains("asciinema-player.css"),
+            "SSH should load asciinema player CSS"
+        );
+        assert!(
+            html.contains("data-src=\"/recordings/session-uuid/session.cast\""),
+            "SSH should have data-src pointing to session.cast"
+        );
+        assert!(
+            !html.contains("shaka-player"),
+            "SSH should not load video player"
+        );
+        assert!(
+            !html.contains("<video"),
+            "SSH should not use <video> element"
+        );
+    }
+
+    #[test]
+    fn test_ssh_recording_unavailable_renders_fallback() {
+        use crate::templates::base::{UserContext, VaubanConfig};
+
+        let mut rec = create_test_recording_data("ssh");
+        rec.recording_path = None;
+
+        let template = RecordingPlayTemplate {
+            title: "Recording".to_string(),
+            user: Some(UserContext {
+                uuid: "admin".to_string(),
+                username: "admin".to_string(),
+                display_name: "Admin".to_string(),
+                is_superuser: true,
+                is_staff: false,
+            }),
+            vauban: VaubanConfig {
+                brand_name: "VAUBAN".to_string(),
+                brand_logo: None,
+                theme: "dark".to_string(),
+            },
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            recording: rec,
+        };
+
+        let html = template.render().unwrap();
+        assert!(
+            html.contains("SSH Recording not available"),
+            "unavailable SSH should show fallback message"
+        );
+        assert!(
+            !html.contains("asciinema-player.min.js"),
+            "unavailable SSH should not load player"
+        );
+        assert!(
+            !html.contains("data-src="),
+            "unavailable SSH should not have data-src"
+        );
+    }
 }

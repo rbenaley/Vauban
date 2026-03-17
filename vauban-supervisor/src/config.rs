@@ -165,7 +165,6 @@ pub struct RecordingConfig {
     #[serde(default = "default_recording_enabled")]
     pub rdp: bool,
     /// Enable recording of SSH sessions.
-    #[allow(dead_code)]
     #[serde(default = "default_recording_enabled")]
     pub ssh: bool,
 }
@@ -545,6 +544,13 @@ impl SupervisorConfig {
                 vars.push((
                     "VAUBAN_RECORDING_ENABLED".to_string(),
                     rdp_recording.to_string(),
+                ));
+            }
+            "proxy_ssh" => {
+                let ssh_recording = self.recording.enabled && self.recording.ssh;
+                vars.push((
+                    "VAUBAN_RECORDING_ENABLED".to_string(),
+                    ssh_recording.to_string(),
                 ));
             }
             "auth" => {
@@ -953,7 +959,7 @@ mod tests {
     #[test]
     fn test_service_env_vars_other_services_empty() {
         let config = test_config();
-        for key in ["vault", "proxy_ssh", "web"] {
+        for key in ["vault", "web"] {
             let vars = config.service_env_vars(key);
             assert!(
                 vars.is_empty(),
@@ -962,6 +968,15 @@ mod tests {
                 vars
             );
         }
+    }
+
+    #[test]
+    fn test_service_env_vars_proxy_ssh() {
+        let config = test_config();
+        let vars = config.service_env_vars("proxy_ssh");
+        assert_eq!(vars.len(), 1);
+        assert_eq!(vars[0].0, "VAUBAN_RECORDING_ENABLED");
+        assert_eq!(vars[0].1, "true");
     }
 
     #[test]

@@ -1187,6 +1187,10 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             get(handlers::web::serve_manifest),
         )
         .route(
+            "/recordings/{session_uuid}/session.cast",
+            get(handlers::web::serve_ssh_recording),
+        )
+        .route(
             "/recordings/{session_uuid}/{segment}",
             get(handlers::web::serve_segment),
         )
@@ -1805,5 +1809,74 @@ mod tests {
             source.contains("extract_cert_info_from_pem"),
             "main must use extract_cert_info_from_pem when running under supervisor"
         );
+    }
+
+    // ==================== SSH Recording Route & Static Assets Tests ====================
+
+    #[test]
+    fn test_ssh_recording_route_exists() {
+        let source = include_str!("main.rs");
+        assert!(
+            source.contains("/recordings/{session_uuid}/session.cast"),
+            "SSH recording route must exist"
+        );
+        assert!(
+            source.contains("serve_ssh_recording"),
+            "route must point to serve_ssh_recording handler"
+        );
+    }
+
+    #[test]
+    fn test_asciinema_static_assets_registered() {
+        assert!(
+            vauban_web::static_assets::lookup("js/asciinema-player.min.js").is_some(),
+            "asciinema-player.min.js must be in the static assets registry"
+        );
+        assert!(
+            vauban_web::static_assets::lookup("js/asciinema-init.js").is_some(),
+            "asciinema-init.js must be in the static assets registry"
+        );
+        assert!(
+            vauban_web::static_assets::lookup("css/asciinema-player.css").is_some(),
+            "asciinema-player.css must be in the static assets registry"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_serve_static_serves_asciinema_js() {
+        let path = axum::extract::Path("js/asciinema-player.min.js".to_string());
+        let headers = axum::http::HeaderMap::new();
+        let result = serve_static(path, headers).await;
+        assert!(result.is_ok(), "Must serve asciinema player JS");
+        let response = result.unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(
+            response.headers().get("content-type").unwrap(),
+            "application/javascript; charset=utf-8"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_serve_static_serves_asciinema_css() {
+        let path = axum::extract::Path("css/asciinema-player.css".to_string());
+        let headers = axum::http::HeaderMap::new();
+        let result = serve_static(path, headers).await;
+        assert!(result.is_ok(), "Must serve asciinema player CSS");
+        let response = result.unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(
+            response.headers().get("content-type").unwrap(),
+            "text/css; charset=utf-8"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_serve_static_serves_asciinema_init() {
+        let path = axum::extract::Path("js/asciinema-init.js".to_string());
+        let headers = axum::http::HeaderMap::new();
+        let result = serve_static(path, headers).await;
+        assert!(result.is_ok(), "Must serve asciinema init JS");
+        let response = result.unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
     }
 }

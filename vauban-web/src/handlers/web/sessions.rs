@@ -1634,6 +1634,89 @@ pub async fn serve_segment(
     }
 }
 
+/// Serve an SSH asciicast recording file (.cast).
+///
+/// Route: GET /recordings/{session_uuid}/session.cast
+pub async fn serve_ssh_recording(
+    State(state): State<AppState>,
+    auth_user: WebAuthUser,
+    axum::extract::Path(session_uuid_str): axum::extract::Path<String>,
+) -> Result<axum::response::Response, AppError> {
+    use axum::body::Body;
+    use axum::http::header;
+    use tokio_util::io::ReaderStream;
+
+    if !check_rbac(&state, &auth_user, "admin", "view").await {
+        return Err(AppError::Authorization(
+            "Only administrators can access recordings".to_string(),
+        ));
+    }
+
+    let session_uuid = ::uuid::Uuid::parse_str(&session_uuid_str)
+        .map_err(|_| AppError::Validation("Invalid session UUID".to_string()))?;
+
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+
+    use crate::schema::proxy_sessions::dsl;
+    let session: crate::models::session::ProxySession = dsl::proxy_sessions
+        .filter(dsl::uuid.eq(session_uuid))
+        .first(&mut conn)
+        .await
+        .map_err(|_| AppError::NotFound("Session not found".to_string()))?;
+
+    if !session.is_recorded {
+        return Err(AppError::NotFound(
+            "No recording for this session".to_string(),
+        ));
+    }
+
+    let recording_path = session
+        .recording_path
+        .as_deref()
+        .ok_or_else(|| AppError::NotFound("Recording path not set".to_string()))?;
+
+    let storage_base = &state.config.recording.storage_path;
+    let base_dir = recording_path
+        .strip_prefix(storage_base)
+        .unwrap_or(recording_path)
+        .trim_start_matches('/');
+    let cast_relative = format!("{}session.cast", base_dir);
+
+    let supervisor = state
+        .supervisor
+        .as_ref()
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("Requires supervisor (SCM_RIGHTS)")))?;
+
+    let result = supervisor
+        .request_recording_file(&session.uuid.to_string(), &cast_relative)
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Supervisor request failed: {}", e)))?;
+
+    if !result.success {
+        return Err(AppError::NotFound(format!(
+            "Recording not available: {}",
+            result.error.unwrap_or_default()
+        )));
+    }
+
+    let std_file = result.file.ok_or_else(|| {
+        AppError::Internal(anyhow::anyhow!("Supervisor returned success but no FD"))
+    })?;
+
+    let tokio_file = tokio::fs::File::from_std(std_file);
+    let stream = ReaderStream::with_capacity(tokio_file, 64 * 1024);
+
+    axum::http::Response::builder()
+        .header(header::CONTENT_TYPE, "application/x-asciicast")
+        .header(header::CACHE_CONTROL, "private, max-age=3600")
+        .body(Body::from_stream(stream))
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Response build error: {}", e)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1749,6 +1832,19 @@ mod tests {
         assert!(mpd.contains("<SegmentList>"));
         assert!(mpd.contains("Initialization range=\"0-511\""));
         assert!(mpd.contains("mediaRange=\"512-4095\""));
+    }
+
+    #[test]
+    fn test_serve_ssh_recording_structural() {
+        let source = include_str!("sessions.rs");
+        assert!(
+            source.contains("fn serve_ssh_recording"),
+            "serve_ssh_recording handler must exist"
+        );
+        assert!(
+            source.contains("session.cast"),
+            "serve_ssh_recording must reference session.cast"
+        );
     }
 
     #[test]

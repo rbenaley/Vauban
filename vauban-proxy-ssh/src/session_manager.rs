@@ -1,8 +1,9 @@
 //! Session manager for handling multiple concurrent SSH sessions.
 
 use crate::error::{SessionError, SessionResult};
+use crate::input_redactor::InputRedactor;
 use crate::session::{SessionConfig, SshSession};
-use shared::messages::Message;
+use shared::messages::{Message, SshRecordingEvent};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -61,6 +62,7 @@ impl SessionManager {
         &self,
         config: SessionConfig,
         web_tx: mpsc::Sender<Message>,
+        audit_tx: Option<mpsc::Sender<Message>>,
     ) -> SessionResult<String> {
         let session_id = config.session_id.clone();
 
@@ -103,7 +105,7 @@ impl SessionManager {
         let session_id_clone = session_id.clone();
         let manager = self.clone_for_cleanup();
         tokio::spawn(async move {
-            session_task(session_id_clone.clone(), ssh_session, cmd_rx, web_tx).await;
+            session_task(session_id_clone.clone(), ssh_session, cmd_rx, web_tx, audit_tx).await;
             // Cleanup when task ends
             manager.remove_session_internal(&session_id_clone).await;
         });
@@ -230,15 +232,43 @@ async fn session_task(
     mut ssh_session: SshSession,
     mut commands: mpsc::Receiver<SessionCommand>,
     web_tx: mpsc::Sender<Message>,
+    audit_tx: Option<mpsc::Sender<Message>>,
 ) {
     debug!(session_id = %session_id, "Session task started");
 
+    if let Some(ref tx) = audit_tx {
+        let (cols, rows) = ssh_session.terminal_size();
+        let _ = tx
+            .send(Message::SshRecordingStart {
+                session_id: session_id.clone(),
+                width: cols,
+                height: rows,
+                asset_name: ssh_session.asset_name().to_string(),
+                username: ssh_session.username().to_string(),
+            })
+            .await;
+    }
+
+    let mut redactor = InputRedactor::new();
+    let start_time = Instant::now();
+
     loop {
         tokio::select! {
-            // Data from SSH server -> send to web
+            // Data from SSH server -> send to web + record output
             data = ssh_session.read() => {
                 match data {
                     Some(data) => {
+                        redactor.on_server_output(&data);
+
+                        if let Some(ref tx) = audit_tx {
+                            let _ = tx.try_send(Message::SshRecordingData {
+                                session_id: session_id.clone(),
+                                timestamp_us: start_time.elapsed().as_micros() as u64,
+                                event_type: SshRecordingEvent::Output,
+                                data: data.clone(),
+                            });
+                        }
+
                         let msg = Message::SshData {
                             session_id: session_id.clone(),
                             data,
@@ -255,7 +285,7 @@ async fn session_task(
                 }
             }
 
-            // Commands from web -> send to SSH
+            // Commands from web -> send to SSH + record input (redacted)
             cmd = commands.recv() => {
                 match cmd {
                     Some(SessionCommand::Data(data)) => {
@@ -263,10 +293,31 @@ async fn session_task(
                             error!(session_id = %session_id, error = %e, "Failed to write to SSH");
                             break;
                         }
+
+                        redactor.on_user_input(&data);
+                        if let Some(ref tx) = audit_tx
+                            && let Some(redacted) = redactor.process_input_for_recording(&data)
+                        {
+                            let _ = tx.try_send(Message::SshRecordingData {
+                                session_id: session_id.clone(),
+                                timestamp_us: start_time.elapsed().as_micros() as u64,
+                                event_type: SshRecordingEvent::Input,
+                                data: redacted,
+                            });
+                        }
                     }
                     Some(SessionCommand::Resize { cols, rows }) => {
                         if let Err(e) = ssh_session.resize(cols, rows).await {
                             warn!(session_id = %session_id, error = %e, "Failed to resize PTY");
+                        }
+
+                        if let Some(ref tx) = audit_tx {
+                            let _ = tx.try_send(Message::SshRecordingData {
+                                session_id: session_id.clone(),
+                                timestamp_us: start_time.elapsed().as_micros() as u64,
+                                event_type: SshRecordingEvent::Resize,
+                                data: format!("{cols}x{rows}").into_bytes(),
+                            });
                         }
                     }
                     Some(SessionCommand::Close) => {
@@ -280,6 +331,14 @@ async fn session_task(
                 }
             }
         }
+    }
+
+    if let Some(ref tx) = audit_tx {
+        let _ = tx
+            .send(Message::SshRecordingEnd {
+                session_id: session_id.clone(),
+            })
+            .await;
     }
 
     // Cleanup
@@ -472,5 +531,111 @@ mod tests {
         // Removing a nonexistent session should be a no-op (no panic)
         cleanup.remove_session_internal("nonexistent").await;
         assert_eq!(manager.active_count(), 0);
+    }
+
+    // ==================== SSH Recording Structural Tests ====================
+
+    #[test]
+    fn test_session_task_accepts_audit_tx() {
+        let source = prod_source();
+        let session_task_start = source
+            .find("fn session_task")
+            .expect("session_task must exist");
+        let session_task_source = &source[session_task_start..];
+        assert!(
+            session_task_source.contains("audit_tx"),
+            "session_task must accept audit_tx parameter"
+        );
+    }
+
+    #[test]
+    fn test_session_task_sends_ssh_recording_start() {
+        let source = prod_source();
+        let session_task_start = source
+            .find("fn session_task")
+            .expect("session_task must exist");
+        let session_task_source = &source[session_task_start..];
+        assert!(
+            session_task_source.contains("SshRecordingStart"),
+            "session_task must send SshRecordingStart"
+        );
+    }
+
+    #[test]
+    fn test_session_task_uses_input_redactor() {
+        let source = prod_source();
+        let session_task_start = source
+            .find("fn session_task")
+            .expect("session_task must exist");
+        let session_task_source = &source[session_task_start..];
+        assert!(
+            session_task_source.contains("InputRedactor::new()"),
+            "session_task must create InputRedactor"
+        );
+    }
+
+    #[test]
+    fn test_session_task_sends_ssh_recording_end() {
+        let source = prod_source();
+        let session_task_start = source
+            .find("fn session_task")
+            .expect("session_task must exist");
+        let session_task_source = &source[session_task_start..];
+        assert!(
+            session_task_source.contains("SshRecordingEnd"),
+            "session_task must send SshRecordingEnd at cleanup"
+        );
+    }
+
+    #[test]
+    fn test_session_task_records_output_events() {
+        let source = prod_source();
+        let session_task_start = source
+            .find("fn session_task")
+            .expect("session_task must exist");
+        let session_task_source = &source[session_task_start..];
+        assert!(
+            session_task_source.contains("SshRecordingEvent::Output"),
+            "session_task must record output events"
+        );
+    }
+
+    #[test]
+    fn test_session_task_records_input_events() {
+        let source = prod_source();
+        let session_task_start = source
+            .find("fn session_task")
+            .expect("session_task must exist");
+        let session_task_source = &source[session_task_start..];
+        assert!(
+            session_task_source.contains("SshRecordingEvent::Input"),
+            "session_task must record input events"
+        );
+    }
+
+    #[test]
+    fn test_session_task_records_resize_events() {
+        let source = prod_source();
+        let session_task_start = source
+            .find("fn session_task")
+            .expect("session_task must exist");
+        let session_task_source = &source[session_task_start..];
+        assert!(
+            session_task_source.contains("SshRecordingEvent::Resize"),
+            "session_task must record resize events"
+        );
+    }
+
+    #[test]
+    fn test_create_session_accepts_audit_tx() {
+        let source = prod_source();
+        let create_session_start = source
+            .find("fn create_session")
+            .expect("create_session must exist");
+        let create_session_source = &source[create_session_start..];
+        assert!(
+            create_session_source.contains("audit_tx"),
+            "create_session must accept audit_tx parameter"
+        );
     }
 }
