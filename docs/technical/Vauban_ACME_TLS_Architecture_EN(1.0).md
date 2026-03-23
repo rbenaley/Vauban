@@ -89,7 +89,7 @@ flowchart TB
         AcmeWorker --> DiskWriter
     end
 
-    subgraph web ["vauban-web (vbwebfront)"]
+    subgraph web ["vauban-web (vb-web)"]
         TLSConfig["load_tls_config()<br/>(PEM in memory)"]
     end
 
@@ -104,7 +104,7 @@ flowchart TB
     AcmeWorker -->|"cert.pem + key.pem"| DiskWriter
 ```
 
-**Key architectural property:** `vauban-web` (running as unprivileged user `vbwebfront`) never accesses certificate files on disk. The supervisor reads/generates certs as root and sends PEM data via IPC (`TlsCertProvision` message). This eliminates all ACLs on the certs directory.
+**Key architectural property:** `vauban-web` (running as unprivileged user `vb-web`) never accesses certificate files on disk. The supervisor reads/generates certs as root and sends PEM data via IPC (`TlsCertProvision` message). This eliminates all ACLs on the certs directory.
 
 ### 2.2 Module Structure
 
@@ -411,7 +411,7 @@ vauban-supervisor (root):
         │
         └── send TlsCertProvision(cert_pem, key_pem) to vauban-web
 
-vauban-web (vbwebfront):
+vauban-web (vb-web):
     recv TlsCertProvision ──> load_tls_config(pem_data) ──> serve HTTPS
 ```
 
@@ -891,8 +891,8 @@ This avoids hardcoded DER blobs and ensures tests reflect real certificate struc
 
 **Decision:** The supervisor (root) reads or generates TLS certificates and provides them to `vauban-web` via a `TlsCertProvision` IPC message containing PEM data. `vauban-web` never accesses certificate files on disk in production.
 
-**Context:** The previous architecture required `vauban-web` (running as user `vbwebfront`) to read certificate files from `/usr/local/etc/vauban/certs/`. This required:
-- ACLs (`setfacl`) on the certs directory for `vbwebfront`
+**Context:** The previous architecture required `vauban-web` (running as user `vbwebfront`, now `vb-web` in current packages) to read certificate files from `/usr/local/etc/vauban/certs/`. This required:
+- ACLs (`setfacl`) on the certs directory for that unprivileged web service user
 - ACLs on individual cert/key files
 - Bootstrap certificate generation in `+POST_INSTALL` (run as root during pkg install)
 - Complex ACL logic to support both POSIX.1e (UFS) and NFSv4 (ZFS) filesystems
@@ -902,7 +902,7 @@ These ACLs were fragile: `sed -i` operations on other config files could destroy
 **Consequences:**
 - ✅ Eliminates all ACLs on `/usr/local/etc/vauban/certs/` (directory is `0700 root:wheel`)
 - ✅ Eliminates bootstrap certificate generation from `+POST_INSTALL`
-- ✅ `vbwebfront` has zero filesystem access to certificates
+- ✅ `vb-web` has zero filesystem access to certificates
 - ✅ Certificate data never touches the filesystem from `vauban-web`'s perspective
 - ✅ Simpler packaging: no `setfacl` calls for certs directory
 - ✅ Works identically on UFS and ZFS without ACL-type detection

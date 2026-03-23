@@ -25,18 +25,37 @@ create_user_if_missing() {
 
 echo "==> Creating Vauban service accounts..."
 
-create_group_if_missing vbauditsvc 901
-create_group_if_missing vbvaultsvc 902
-create_group_if_missing vbpolicyba 903
-create_group_if_missing vbauthenti 904
-create_group_if_missing vbproxyssh 905
-create_group_if_missing vbproxyrdp 906
-create_group_if_missing vbwebfront 907
+# Rename legacy account names (pre-hyphen) so UID/GID 901-907 stay stable on upgrade.
+rename_legacy_account() {
+    _old=$1
+    _new=$2
+    if pw usershow "${_old}" >/dev/null 2>&1 && ! pw usershow "${_new}" >/dev/null 2>&1; then
+        echo "  Renaming legacy account ${_old} -> ${_new}"
+        pw groupmod "${_old}" -n "${_new}" 2>/dev/null || true
+        pw usermod "${_old}" -l "${_new}" 2>/dev/null || true
+    fi
+}
 
-create_user_if_missing vbauditsvc 901 901
-create_user_if_missing vbvaultsvc 902 902
-create_user_if_missing vbpolicyba 903 903
-create_user_if_missing vbauthenti 904 904
-create_user_if_missing vbproxyssh 905 905
-create_user_if_missing vbproxyrdp 906 906
-create_user_if_missing vbwebfront 907 907
+rename_legacy_account vbauditsvc vb-audit
+rename_legacy_account vbvaultsvc vb-vault
+rename_legacy_account vbpolicyba vb-access
+rename_legacy_account vbauthenti vb-auth
+rename_legacy_account vbproxyssh vb-ssh
+rename_legacy_account vbproxyrdp vb-rdp
+rename_legacy_account vbwebfront vb-web
+
+create_group_if_missing vb-audit 901
+create_group_if_missing vb-vault 902
+create_group_if_missing vb-access 903
+create_group_if_missing vb-auth 904
+create_group_if_missing vb-ssh 905
+create_group_if_missing vb-rdp 906
+create_group_if_missing vb-web 907
+
+create_user_if_missing vb-audit 901 901
+create_user_if_missing vb-vault 902 902
+create_user_if_missing vb-access 903 903
+create_user_if_missing vb-auth 904 904
+create_user_if_missing vb-ssh 905 905
+create_user_if_missing vb-rdp 906 906
+create_user_if_missing vb-web 907 907

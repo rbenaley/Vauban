@@ -3,7 +3,9 @@
 
 echo "==> Removing Vauban service accounts..."
 
-for _u in vbauditsvc vbvaultsvc vbpolicyba vbauthenti vbproxyssh vbproxyrdp vbwebfront; do
+# Current account names (hyphenated) and legacy names (pre-0.5.x package).
+for _u in vb-audit vb-vault vb-access vb-auth vb-ssh vb-rdp vb-web \
+    vbauditsvc vbvaultsvc vbpolicyba vbauthenti vbproxyssh vbproxyrdp vbwebfront; do
     pw userdel  "$_u" 2>/dev/null && echo "  Removed user $_u"
     pw groupdel "$_u" 2>/dev/null && echo "  Removed group $_u"
 done
