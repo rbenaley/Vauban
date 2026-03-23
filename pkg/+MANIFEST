@@ -1,7 +1,7 @@
 name = "vauban";
 version = "%%VERSION%%";
 origin = "security/vauban";
-comment = "Security bastion platform with SSH/RDP session recording, RBAC, and audit";
+comment = "Security bastion platform with SSH (asciicast) and RDP (fMP4) recording, RBAC, audit";
 maintainer = "none@freebsd.org";
 www = "https://github.com/rbenaley/Vauban";
 prefix = "/usr/local";
@@ -12,7 +12,8 @@ categories = ["security"];
 desc = <<EOD
 VAUBAN is a security bastion (PAM) platform providing:
  - Privileged access management
- - SSH and RDP session proxying with recording
+ - SSH terminal proxying with asciicast v2 session recording and password redaction
+ - RDP desktop proxying with segmented fMP4 recording and DASH playback
  - Role-based access control (RBAC)
  - Multi-factor authentication (TOTP)
  - Centralized audit logging

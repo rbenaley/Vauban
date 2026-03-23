@@ -1,6 +1,9 @@
 #!/bin/sh
 # Build the Vauban FreeBSD package from release binaries.
 #
+# Package version is taken from [workspace.package] version in Cargo.toml
+# (e.g. 0.5.0). It is substituted into +MANIFEST and +POST_INSTALL at build time.
+#
 # Usage:  ./build-pkg.sh
 #
 # Prerequisites:
