@@ -11,15 +11,26 @@ create_group_if_missing() {
     fi
 }
 
+# _service is the Vauban binary name (e.g. vauban-audit), used in passwd GECOS.
 create_user_if_missing() {
     _name=$1
     _uid=$2
     _gid=$3
+    _service=$4
     if ! pw usershow "$_name" >/dev/null 2>&1; then
         pw useradd -n "$_name" -u "$_uid" -g "$_gid" \
             -d /nonexistent -s /usr/sbin/nologin \
-            -c "Vauban ${_name} service"
+            -c "Vauban ${_service} service"
         echo "  Created user ${_name} (UID ${_uid}, GID ${_gid})"
+    fi
+}
+
+# Set GECOS to match vauban-* service names (fixes legacy renames and upgrades).
+set_user_gecos() {
+    _login=$1
+    _service=$2
+    if pw usershow "${_login}" >/dev/null 2>&1; then
+        pw usermod "${_login}" -c "Vauban ${_service} service"
     fi
 }
 
@@ -52,10 +63,19 @@ create_group_if_missing vb-ssh 905
 create_group_if_missing vb-rdp 906
 create_group_if_missing vb-web 907
 
-create_user_if_missing vb-audit 901 901
-create_user_if_missing vb-vault 902 902
-create_user_if_missing vb-access 903 903
-create_user_if_missing vb-auth 904 904
-create_user_if_missing vb-ssh 905 905
-create_user_if_missing vb-rdp 906 906
-create_user_if_missing vb-web 907 907
+create_user_if_missing vb-audit 901 901 vauban-audit
+create_user_if_missing vb-vault 902 902 vauban-vault
+create_user_if_missing vb-access 903 903 vauban-access
+create_user_if_missing vb-auth 904 904 vauban-auth
+create_user_if_missing vb-ssh 905 905 vauban-proxy-ssh
+create_user_if_missing vb-rdp 906 906 vauban-proxy-rdp
+create_user_if_missing vb-web 907 907 vauban-web
+
+echo "==> Setting service account descriptions (GECOS)..."
+set_user_gecos vb-audit vauban-audit
+set_user_gecos vb-vault vauban-vault
+set_user_gecos vb-access vauban-access
+set_user_gecos vb-auth vauban-auth
+set_user_gecos vb-ssh vauban-proxy-ssh
+set_user_gecos vb-rdp vauban-proxy-rdp
+set_user_gecos vb-web vauban-web
