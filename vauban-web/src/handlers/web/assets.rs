@@ -1,6 +1,6 @@
 /// Asset management page handlers.
 use super::*;
-use crate::models::asset::AssetType;
+use crate::models::asset::{Asset, AssetType};
 
 /// Asset create form page.
 pub async fn asset_create_form(
@@ -527,54 +527,14 @@ pub async fn asset_detail(
         }
     };
 
-    // Query asset details with optional group info - migrated to Diesel DSL
+    use crate::schema::asset_asset_groups::dsl as aag;
     use crate::schema::asset_groups::dsl as ag;
     use crate::schema::assets::dsl as a;
 
-    // First get the asset
-    #[allow(clippy::type_complexity)]
-    let asset_row: (
-        ::uuid::Uuid,
-        String,
-        String,
-        Option<ipnetwork::IpNetwork>,
-        i32,
-        AssetType,
-        String,
-        Option<i32>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        bool,
-        bool,
-        i32,
-        Option<chrono::DateTime<chrono::Utc>>,
-        chrono::DateTime<chrono::Utc>,
-        chrono::DateTime<chrono::Utc>,
-        serde_json::Value,
-    ) = match a::assets
+    let asset_model: Asset = match a::assets
         .filter(a::uuid.eq(asset_uuid))
         .filter(a::is_deleted.eq(false))
-        .select((
-            a::uuid,
-            a::name,
-            a::hostname,
-            a::ip_address,
-            a::port,
-            a::asset_type,
-            a::status,
-            a::group_id,
-            a::description,
-            a::os_type,
-            a::os_version,
-            a::require_mfa,
-            a::require_justification,
-            a::max_session_duration,
-            a::last_seen,
-            a::created_at,
-            a::updated_at,
-            a::connection_config,
-        ))
+        .select(Asset::as_select())
         .first(&mut conn)
         .await
     {
@@ -587,26 +547,7 @@ pub async fn asset_detail(
         }
     };
 
-    let (
-        asset_uuid,
-        asset_name,
-        asset_hostname,
-        asset_ip,
-        asset_port,
-        asset_type_val,
-        asset_status,
-        asset_group_id,
-        asset_description,
-        asset_os_type,
-        asset_os_version,
-        asset_require_mfa,
-        asset_require_justification,
-        asset_max_session_duration,
-        asset_last_seen,
-        asset_created_at,
-        asset_updated_at,
-        asset_connection_config,
-    ) = asset_row;
+    let asset_name = asset_model.name.clone();
 
     // Instance-level access control: non-admin users must have an access rule
     if !auth_user.is_superuser && !auth_user.is_staff {
@@ -623,15 +564,7 @@ pub async fn asset_detail(
             Err(_) => return flash_redirect(flash.error("Access denied"), "/assets"),
         };
 
-        let asset_internal_id: i32 = match a::assets
-            .filter(a::uuid.eq(asset_uuid))
-            .select(a::id)
-            .first(&mut conn)
-            .await
-        {
-            Ok(id) => id,
-            Err(_) => return flash_redirect(flash.error("Asset not found"), "/assets"),
-        };
+        let asset_internal_id = asset_model.id;
 
         let accessible_ids = crate::services::access::list_accessible_asset_ids(
             state.access_client.as_ref(),
@@ -647,6 +580,7 @@ pub async fn asset_detail(
     }
 
     // Extract SSH host key fingerprint and mismatch status from connection_config (H-9)
+    let asset_connection_config = &asset_model.connection_config;
     let ssh_host_key_fingerprint = asset_connection_config
         .get("ssh_host_key_fingerprint")
         .and_then(|v| v.as_str())
@@ -656,42 +590,56 @@ pub async fn asset_detail(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    // Get group info if group_id is set
-    let (group_name, group_uuid): (Option<String>, Option<String>) =
-        if let Some(gid) = asset_group_id {
-            match ag::asset_groups
-                .filter(ag::id.eq(gid))
-                .select((ag::name, ag::uuid))
-                .first::<(String, ::uuid::Uuid)>(&mut conn)
-                .await
-                .optional()
-            {
-                Ok(Some((n, u))) => (Some(n), Some(u.to_string())),
-                _ => (None, None),
-            }
-        } else {
-            (None, None)
-        };
+    let group_rows: Vec<(String, ::uuid::Uuid)> = aag::asset_asset_groups
+        .inner_join(ag::asset_groups.on(aag::asset_group_id.eq(ag::id)))
+        .filter(aag::asset_id.eq(asset_model.id))
+        .filter(ag::is_deleted.eq(false))
+        .select((ag::name, ag::uuid))
+        .load(&mut conn)
+        .await
+        .unwrap_or_default();
+
+    let (group_name, group_uuid): (Option<String>, Option<String>) = if group_rows.is_empty() {
+        (None, None)
+    } else {
+        let names = group_rows
+            .iter()
+            .map(|(n, _)| n.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        (
+            Some(names),
+            group_rows.as_slice().first().map(|(_, u)| u.to_string()),
+        )
+    };
 
     let asset = crate::templates::assets::asset_detail::AssetDetail {
-        uuid: asset_uuid.to_string(),
+        uuid: asset_model.uuid.to_string(),
         name: asset_name.clone(),
-        hostname: asset_hostname,
-        ip_address: asset_ip.map(|ip| ip.to_string()),
-        port: asset_port,
-        asset_type: asset_type_val.to_string(),
-        status: asset_status,
+        hostname: asset_model.hostname.clone(),
+        ip_address: asset_model.ip_address.map(|ip| ip.to_string()),
+        port: asset_model.port,
+        asset_type: asset_model.asset_type.to_string(),
+        status: asset_model.status.clone(),
         group_name,
         group_uuid,
-        description: asset_description,
-        os_type: asset_os_type,
-        os_version: asset_os_version,
-        require_mfa: asset_require_mfa,
-        require_justification: asset_require_justification,
-        max_session_duration: asset_max_session_duration,
-        last_seen: asset_last_seen.map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
-        created_at: asset_created_at.format("%b %d, %Y %H:%M").to_string(),
-        updated_at: asset_updated_at.format("%b %d, %Y %H:%M").to_string(),
+        description: asset_model.description.clone(),
+        os_type: asset_model.os_type.clone(),
+        os_version: asset_model.os_version.clone(),
+        require_mfa: asset_model.require_mfa,
+        require_justification: asset_model.require_justification,
+        max_session_duration: asset_model.max_session_duration,
+        last_seen: asset_model
+            .last_seen
+            .map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
+        created_at: asset_model
+            .created_at
+            .format("%b %d, %Y %H:%M")
+            .to_string(),
+        updated_at: asset_model
+            .updated_at
+            .format("%b %d, %Y %H:%M")
+            .to_string(),
         ssh_host_key_fingerprint,
         ssh_host_key_mismatch,
     };

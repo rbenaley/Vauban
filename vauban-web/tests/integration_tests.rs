@@ -14,8 +14,9 @@
 /// Run with: cargo test --test integration_tests
 ///
 /// Requirements:
-/// - PostgreSQL test database at DATABASE_URL
-/// - Run migrations: diesel migration run
+/// - PostgreSQL test database at DATABASE_URL (see `config/testing.toml`)
+/// - Schema up to date: `diesel migration run` from `vauban-web/` (DDL is not run by tests;
+///   runtime DB users are expected to have DML-only privileges).
 // Test modules organized by category
 mod api; // REST API tests (/api/v1/*)
 mod ipc;

@@ -182,7 +182,7 @@ fn test_build_sessions_html_current_session_detection() {
     };
 
     // When client token_hash matches, should show "Current session"
-    let html = build_sessions_html(&[session.clone()], "matching-hash");
+    let html = build_sessions_html(std::slice::from_ref(&session), "matching-hash");
     assert!(html.contains("Current session"));
     assert!(html.contains("This device"));
 
@@ -479,8 +479,7 @@ fn test_user_context_from_auth_email_format_username() {
 #[test]
 fn test_build_sessions_html_no_sessions() {
     let html = build_sessions_html(&[], "any-hash");
-    // Empty list should still produce valid HTML structure
-    assert!(html.contains("auth-sessions") || html.is_empty() || html.len() > 0);
+    assert!(html.contains("No active sessions"));
 }
 
 #[test]

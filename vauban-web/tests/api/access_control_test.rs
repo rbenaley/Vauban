@@ -337,7 +337,7 @@ async fn test_staff_sees_all_assets() {
     test_db::cleanup(&mut conn).await;
 }
 
-/// An asset with no group_id is not reachable via access rules but superusers can see it.
+/// An asset with no asset group membership is not reachable via access rules but superusers can see it.
 #[tokio::test]
 #[serial]
 async fn test_asset_without_group_not_visible_via_access_rules() {
@@ -347,8 +347,9 @@ async fn test_asset_without_group_not_visible_via_access_rules() {
     let username = unique_name("test_ac_nogrp_u");
     let user = create_test_user(&mut conn, &app.auth_service, &username).await;
 
-    // Create asset with no group (create_simple_ssh_asset sets group_id = None)
-    create_simple_ssh_asset(&mut conn, &unique_name("test-nogrp-asset"), user.user.id).await;
+    // Create asset with no group membership (no row in asset_asset_groups)
+    let nogrp_name = unique_name("test-nogrp-asset");
+    create_simple_ssh_asset(&mut conn, &nogrp_name, user.user.id).await;
 
     // Give user some access rule to a different group
     let ug = create_test_vauban_group(&mut conn, "test-ug-nogrp").await;
@@ -365,12 +366,14 @@ async fn test_asset_without_group_not_visible_via_access_rules() {
 
     assert_status(&response, 200);
     let user_assets: Vec<serde_json::Value> = response.json();
-    let has_ungrouped = user_assets
-        .iter()
-        .any(|a| a.get("group_id").map_or(true, |v| v.is_null()));
+    let sees_ungrouped_by_name = user_assets.iter().any(|a| {
+        a.get("name")
+            .and_then(|v| v.as_str())
+            .is_some_and(|n| n == nogrp_name.as_str())
+    });
     assert!(
-        !has_ungrouped,
-        "Regular user should NOT see assets without group_id"
+        !sees_ungrouped_by_name,
+        "Regular user should NOT see assets without any asset group"
     );
 
     // Superuser SHOULD see the ungrouped asset

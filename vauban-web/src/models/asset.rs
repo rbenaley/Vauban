@@ -7,7 +7,7 @@ use ipnetwork::IpNetwork;
 use serde::{Deserialize, Deserializer, Serialize};
 use uuid::Uuid;
 
-use crate::schema::{asset_groups, assets};
+use crate::schema::{asset_asset_groups, asset_groups, assets};
 
 // ==================== Flexible Deserialization Helpers ====================
 
@@ -179,9 +179,8 @@ impl AssetStatus {
 }
 
 /// Asset database model.
-#[derive(Debug, Clone, Queryable, Selectable, Identifiable, Associations, Serialize)]
+#[derive(Debug, Clone, Queryable, Selectable, Identifiable, Serialize)]
 #[diesel(table_name = assets)]
-#[diesel(belongs_to(AssetGroup, foreign_key = group_id))]
 #[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct Asset {
     pub id: i32,
@@ -193,7 +192,6 @@ pub struct Asset {
     pub port: i32,
     pub asset_type: AssetType,
     pub status: String,
-    pub group_id: Option<i32>,
     pub description: Option<String>,
     pub os_type: Option<String>,
     pub os_version: Option<String>,
@@ -222,7 +220,6 @@ pub struct NewAsset {
     pub port: i32,
     pub asset_type: AssetType,
     pub status: String,
-    pub group_id: Option<i32>,
     pub description: Option<String>,
     pub os_type: Option<String>,
     pub os_version: Option<String>,
@@ -232,6 +229,22 @@ pub struct NewAsset {
     pub require_justification: bool,
     pub max_session_duration: i32,
     pub created_by_id: Option<i32>,
+}
+
+/// Row in `asset_asset_groups` (many-to-many).
+#[derive(Debug, Clone, Queryable, Selectable)]
+#[diesel(table_name = asset_asset_groups)]
+#[diesel(check_for_backend(diesel::pg::Pg))]
+pub struct AssetAssetGroup {
+    pub asset_id: i32,
+    pub asset_group_id: i32,
+}
+
+#[derive(Debug, Clone, Insertable)]
+#[diesel(table_name = asset_asset_groups)]
+pub struct NewAssetAssetGroup {
+    pub asset_id: i32,
+    pub asset_group_id: i32,
 }
 
 /// Asset group database model.
@@ -278,7 +291,12 @@ pub struct CreateAssetRequest {
     #[validate(range(min = 1, max = 65535))]
     pub port: Option<i32>,
     pub asset_type: AssetType,
+    /// Legacy single group (use `group_ids` when assigning multiple).
+    #[serde(default)]
     pub group_id: Option<i32>,
+    /// Asset group IDs to link after creation.
+    #[serde(default)]
+    pub group_ids: Vec<i32>,
     pub description: Option<String>,
     pub require_mfa: Option<bool>,
     pub require_justification: Option<bool>,
@@ -321,7 +339,6 @@ mod tests {
             port: 22,
             asset_type: AssetType::Ssh,
             status: "online".to_string(),
-            group_id: None,
             description: Some("A test server".to_string()),
             os_type: Some("Linux".to_string()),
             os_version: Some("Ubuntu 22.04".to_string()),
@@ -483,6 +500,7 @@ mod tests {
             port: Some(22),
             asset_type: AssetType::Ssh,
             group_id: None,
+            group_ids: vec![],
             description: None,
             require_mfa: None,
             require_justification: None,
@@ -502,6 +520,7 @@ mod tests {
             port: None,
             asset_type: AssetType::Ssh,
             group_id: None,
+            group_ids: vec![],
             description: None,
             require_mfa: None,
             require_justification: None,
@@ -521,6 +540,7 @@ mod tests {
             port: Some(70000), // Invalid port (max 65535)
             asset_type: AssetType::Ssh,
             group_id: None,
+            group_ids: vec![],
             description: None,
             require_mfa: None,
             require_justification: None,
@@ -540,6 +560,7 @@ mod tests {
             port: Some(0), // Invalid port (min 1)
             asset_type: AssetType::Ssh,
             group_id: None,
+            group_ids: vec![],
             description: None,
             require_mfa: None,
             require_justification: None,
@@ -560,7 +581,7 @@ mod tests {
     #[test]
     fn test_asset_type_clone() {
         let asset_type = AssetType::Rdp;
-        let cloned = asset_type.clone();
+        let cloned = asset_type;
         assert_eq!(asset_type, cloned);
     }
 
@@ -604,7 +625,7 @@ mod tests {
     #[test]
     fn test_asset_status_clone() {
         let status = AssetStatus::Offline;
-        let cloned = status.clone();
+        let cloned = status;
         assert_eq!(status, cloned);
     }
 
@@ -689,7 +710,6 @@ mod tests {
             port: 22,
             asset_type: AssetType::Ssh,
             status: "unknown".to_string(),
-            group_id: None,
             description: None,
             os_type: None,
             os_version: None,
@@ -715,7 +735,6 @@ mod tests {
             port: 3389,
             asset_type: AssetType::Rdp,
             status: "online".to_string(),
-            group_id: Some(1),
             description: Some("A cloned asset".to_string()),
             os_type: Some("Windows".to_string()),
             os_version: Some("Server 2022".to_string()),
@@ -813,6 +832,7 @@ mod tests {
             port: None,
             asset_type: AssetType::Ssh,
             group_id: None,
+            group_ids: vec![],
             description: None,
             require_mfa: None,
             require_justification: None,
@@ -831,6 +851,7 @@ mod tests {
             port: Some(22),
             asset_type: AssetType::Ssh,
             group_id: Some(1),
+            group_ids: vec![],
             description: Some("Cloned".to_string()),
             require_mfa: Some(true),
             require_justification: Some(false),
@@ -851,6 +872,7 @@ mod tests {
             port: None,
             asset_type: AssetType::Ssh,
             group_id: None,
+            group_ids: vec![],
             description: None,
             require_mfa: None,
             require_justification: None,
@@ -870,6 +892,7 @@ mod tests {
             port: None,
             asset_type: AssetType::Ssh,
             group_id: None,
+            group_ids: vec![],
             description: None,
             require_mfa: None,
             require_justification: None,

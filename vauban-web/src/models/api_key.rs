@@ -380,7 +380,7 @@ mod tests {
     #[test]
     fn test_api_key_scope_clone() {
         let scope = ApiKeyScope::Write;
-        let cloned = scope.clone();
+        let cloned = scope;
         assert_eq!(scope, cloned);
     }
 

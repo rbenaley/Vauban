@@ -100,7 +100,7 @@ mod tests {
     fn test_client_addr_clone() {
         let addr: SocketAddr = unwrap_ok!("172.16.0.1:9000".parse());
         let client_addr = ClientAddr(addr);
-        let cloned = client_addr.clone();
+        let cloned = client_addr;
         assert_eq!(client_addr.addr(), cloned.addr());
     }
 

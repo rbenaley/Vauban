@@ -350,14 +350,12 @@ mod tests {
 
     #[test]
     fn test_stats_interval_is_reasonable() {
-        // Stats should update at least every minute
-        assert!(STATS_INTERVAL_SECS <= 60);
-        assert!(STATS_INTERVAL_SECS >= 5);
+        assert!((5..=60).contains(&STATS_INTERVAL_SECS));
     }
 
     #[test]
+    #[allow(clippy::assertions_on_constants)] // invariant: sessions poll (10s) faster than stats (30s)
     fn test_sessions_interval_is_faster_than_stats() {
-        // Active sessions should update more frequently than stats
         assert!(SESSIONS_INTERVAL_SECS < STATS_INTERVAL_SECS);
     }
 
@@ -388,8 +386,7 @@ mod tests {
         let mut ticker = interval(Duration::from_secs(STATS_INTERVAL_SECS));
         // First tick is immediate
         ticker.tick().await;
-        // Verify the interval was created successfully
-        assert!(true);
+        assert_eq!(ticker.period(), Duration::from_secs(STATS_INTERVAL_SECS));
     }
 
     #[test]
@@ -413,9 +410,9 @@ mod tests {
 
     #[test]
     fn test_all_intervals_nonzero() {
-        assert!(STATS_INTERVAL_SECS > 0);
-        assert!(SESSIONS_INTERVAL_SECS > 0);
-        assert!(ACTIVITY_INTERVAL_SECS > 0);
+        assert_ne!(STATS_INTERVAL_SECS, 0);
+        assert_ne!(SESSIONS_INTERVAL_SECS, 0);
+        assert_ne!(ACTIVITY_INTERVAL_SECS, 0);
     }
 
     #[test]

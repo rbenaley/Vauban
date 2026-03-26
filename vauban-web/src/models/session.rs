@@ -399,7 +399,7 @@ mod tests {
         assert!(duration.is_some());
         // Duration should be approximately 1 hour (3600 seconds), give or take
         let dur = unwrap_some!(duration);
-        assert!(dur >= 3590 && dur <= 3610);
+        assert!((3590..=3610).contains(&dur));
     }
 
     #[test]
@@ -421,7 +421,7 @@ mod tests {
 
         let duration = unwrap_some!(session.duration());
         // Should be approximately 1 hour (3600 seconds)
-        assert!(duration >= 3590 && duration <= 3610);
+        assert!((3590..=3610).contains(&duration));
     }
 
     // ==================== SessionType Additional Tests ====================
@@ -436,7 +436,7 @@ mod tests {
     #[test]
     fn test_session_type_clone() {
         let session_type = SessionType::Rdp;
-        let cloned = session_type.clone();
+        let cloned = session_type;
         assert_eq!(session_type, cloned);
     }
 
@@ -480,7 +480,7 @@ mod tests {
     #[test]
     fn test_session_status_clone() {
         let status = SessionStatus::Pending;
-        let cloned = status.clone();
+        let cloned = status;
         assert_eq!(status, cloned);
     }
 

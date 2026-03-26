@@ -11,7 +11,9 @@ use crate::fixtures::{
     create_test_vauban_group, get_asset_uuid, unique_name,
 };
 use axum::http::header::COOKIE;
-use diesel::{ExpressionMethods, OptionalExtension, QueryDsl, TextExpressionMethods};
+use diesel::{
+    BoolExpressionMethods, ExpressionMethods, OptionalExtension, QueryDsl, TextExpressionMethods,
+};
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use uuid::Uuid;
 use vauban_web::models::asset::AssetType;
@@ -25,6 +27,34 @@ async fn get_user_uuid(conn: &mut AsyncPgConnection, user_id: i32) -> Uuid {
             .filter(users::id.eq(user_id))
             .select(users::uuid)
             .first(conn)
+            .await
+    )
+}
+
+/// Count rows in `asset_asset_groups` for a given asset and group.
+async fn count_asset_in_group(
+    conn: &mut AsyncPgConnection,
+    asset_id: i32,
+    group_id: i32,
+) -> i64 {
+    use vauban_web::schema::asset_asset_groups::dsl as aag;
+    unwrap_ok!(
+        aag::asset_asset_groups
+            .filter(aag::asset_id.eq(asset_id).and(aag::asset_group_id.eq(group_id)))
+            .count()
+            .get_result::<i64>(conn)
+            .await
+    )
+}
+
+/// Count all group memberships for an asset (junction table rows).
+async fn count_asset_group_memberships(conn: &mut AsyncPgConnection, asset_id: i32) -> i64 {
+    use vauban_web::schema::asset_asset_groups::dsl as aag;
+    unwrap_ok!(
+        aag::asset_asset_groups
+            .filter(aag::asset_id.eq(asset_id))
+            .count()
+            .get_result::<i64>(conn)
             .await
     )
 }
@@ -2646,7 +2676,7 @@ async fn test_asset_group_delete_with_assets() {
 
     // Create a group with an asset
     let group_uuid = create_test_asset_group(&mut conn, &unique_name("del-with-assets")).await;
-    let _asset_id = create_test_asset_in_group(
+    let asset_id = create_test_asset_in_group(
         &mut conn,
         &unique_name("asset-in-grp"),
         admin_id,
@@ -2686,22 +2716,12 @@ async fn test_asset_group_delete_with_assets() {
         "Asset group should be deleted even with assets"
     );
 
-    // Verify assets are unlinked (group_id set to NULL)
-    use vauban_web::schema::assets;
-    let asset_group_id: Option<Option<i32>> = assets::table
-        .filter(assets::name.like(format!("%asset-in-grp%")))
-        .select(assets::group_id)
-        .first(&mut conn)
-        .await
-        .optional()
-        .unwrap();
-
-    if let Some(group_id) = asset_group_id {
-        assert!(
-            group_id.is_none(),
-            "Asset should have NULL group_id after group deletion"
-        );
-    }
+    // CASCADE removes junction rows; asset remains without group membership
+    assert_eq!(
+        count_asset_group_memberships(&mut conn, asset_id).await,
+        0,
+        "Asset should have no asset_group memberships after group deletion"
+    );
 }
 
 // =============================================================================
@@ -2830,17 +2850,10 @@ async fn test_asset_group_add_asset_success() {
         .await
         .unwrap();
 
-    let asset_group_id: Option<i32> = assets::table
-        .filter(assets::id.eq(asset_id))
-        .select(assets::group_id)
-        .first(&mut conn)
-        .await
-        .unwrap();
-
     assert_eq!(
-        asset_group_id,
-        Some(group_id),
-        "Asset should be assigned to the group"
+        count_asset_in_group(&mut conn, asset_id, group_id).await,
+        1,
+        "Asset should be linked to the group via asset_asset_groups"
     );
 }
 
@@ -2923,19 +2936,12 @@ async fn test_asset_group_add_multiple_assets_success() {
         .await
         .unwrap();
 
-    for asset_id in [asset1_id, asset2_id, asset3_id] {
-        let asset_group_id: Option<i32> = assets::table
-            .filter(assets::id.eq(asset_id))
-            .select(assets::group_id)
-            .first(&mut conn)
-            .await
-            .unwrap();
-
+    for aid in [asset1_id, asset2_id, asset3_id] {
         assert_eq!(
-            asset_group_id,
-            Some(group_id),
-            "Asset {} should be assigned to the group",
-            asset_id
+            count_asset_in_group(&mut conn, aid, group_id).await,
+            1,
+            "Asset {} should be linked to the group",
+            aid
         );
     }
 }
@@ -2988,16 +2994,9 @@ async fn test_asset_group_add_asset_normal_user_forbidden() {
         status
     );
 
-    // Verify asset was NOT added to group
-    let asset_group_id: Option<i32> = assets::table
-        .filter(assets::id.eq(asset_id))
-        .select(assets::group_id)
-        .first(&mut conn)
-        .await
-        .unwrap();
-
-    assert!(
-        asset_group_id.is_none(),
+    assert_eq!(
+        count_asset_group_memberships(&mut conn, asset_id).await,
+        0,
         "Normal user should not add asset to group"
     );
 }
@@ -3067,17 +3066,22 @@ async fn test_asset_group_add_asset_already_in_group() {
         .await
         .unwrap();
 
-    let asset_group_id: Option<i32> = assets::table
-        .filter(assets::id.eq(asset_id))
-        .select(assets::group_id)
+    let group2_id: i32 = asset_groups::table
+        .filter(asset_groups::uuid.eq(group2_uuid))
+        .select(asset_groups::id)
         .first(&mut conn)
         .await
         .unwrap();
 
     assert_eq!(
-        asset_group_id,
-        Some(group1_id),
+        count_asset_in_group(&mut conn, asset_id, group1_id).await,
+        1,
         "Asset should still be in original group"
+    );
+    assert_eq!(
+        count_asset_in_group(&mut conn, asset_id, group2_id).await,
+        0,
+        "Asset should not be added to second group when single membership is enforced"
     );
 }
 
@@ -3133,16 +3137,17 @@ async fn test_asset_group_remove_asset_success() {
         status
     );
 
-    // Verify asset was removed from group
-    let asset_group_id: Option<i32> = assets::table
-        .filter(assets::id.eq(asset_id))
-        .select(assets::group_id)
+    use vauban_web::schema::asset_groups;
+    let group_id: i32 = asset_groups::table
+        .filter(asset_groups::uuid.eq(group_uuid))
+        .select(asset_groups::id)
         .first(&mut conn)
         .await
         .unwrap();
 
-    assert!(
-        asset_group_id.is_none(),
+    assert_eq!(
+        count_asset_in_group(&mut conn, asset_id, group_id).await,
+        0,
         "Asset should be removed from group"
     );
 }
@@ -3209,16 +3214,9 @@ async fn test_asset_group_remove_asset_normal_user_forbidden() {
         .await
         .unwrap();
 
-    let asset_group_id: Option<i32> = assets::table
-        .filter(assets::id.eq(asset_id))
-        .select(assets::group_id)
-        .first(&mut conn)
-        .await
-        .unwrap();
-
     assert_eq!(
-        asset_group_id,
-        Some(group_id),
+        count_asset_in_group(&mut conn, asset_id, group_id).await,
+        1,
         "Normal user should not remove asset from group"
     );
 }
@@ -3449,7 +3447,7 @@ async fn test_asset_group_icons_rendered_correctly() {
                 body.contains("M3 7v10a2 2 0 002 2h14"),
                 "Folder icon should have folder SVG path"
             ),
-            "server" | _ => assert!(
+            _ => assert!(
                 body.contains("M5 12h14M5 12a2 2 0"),
                 "Server icon should have server SVG path"
             ),
@@ -4659,10 +4657,8 @@ async fn test_user_create_delete_create_cycle_works_multiple_times() {
             .select((users::id, users::uuid))
             .first(&mut conn)
             .await
-            .expect(&format!(
-                "Iteration {}: active user should exist",
-                iteration
-            ));
+            .unwrap_or_else(|_| panic!("Iteration {}: active user should exist",
+                iteration));
 
         // Soft-delete
         let del_resp = app

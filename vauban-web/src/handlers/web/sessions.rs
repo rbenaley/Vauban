@@ -1810,7 +1810,7 @@ mod tests {
             duration_ticks,
             init_size,
             file_size,
-            codec_string: format!("avc1.42c01e"),
+            codec_string: "avc1.42c01e".to_string(),
         }
     }
 

@@ -45,6 +45,13 @@ diesel::table! {
 }
 
 diesel::table! {
+    asset_asset_groups (asset_id, asset_group_id) {
+        asset_id -> Int4,
+        asset_group_id -> Int4,
+    }
+}
+
+diesel::table! {
     asset_groups (id) {
         id -> Int4,
         uuid -> Uuid,
@@ -81,7 +88,6 @@ diesel::table! {
         asset_type -> Varchar,
         #[max_length = 15]
         status -> Varchar,
-        group_id -> Nullable<Int4>,
         description -> Nullable<Text>,
         #[max_length = 50]
         os_type -> Nullable<Varchar>,
@@ -222,7 +228,8 @@ diesel::table! {
 diesel::joinable!(access_rules -> asset_groups (asset_group_id));
 diesel::joinable!(access_rules -> vauban_groups (user_group_id));
 diesel::joinable!(api_keys -> users (user_id));
-diesel::joinable!(assets -> asset_groups (group_id));
+diesel::joinable!(asset_asset_groups -> asset_groups (asset_group_id));
+diesel::joinable!(asset_asset_groups -> assets (asset_id));
 diesel::joinable!(auth_sessions -> users (user_id));
 diesel::joinable!(proxy_sessions -> assets (asset_id));
 diesel::joinable!(proxy_sessions -> users (user_id));
@@ -232,6 +239,7 @@ diesel::joinable!(user_groups -> vauban_groups (group_id));
 diesel::allow_tables_to_appear_in_same_query!(
     access_rules,
     api_keys,
+    asset_asset_groups,
     asset_groups,
     assets,
     auth_sessions,

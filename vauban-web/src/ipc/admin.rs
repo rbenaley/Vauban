@@ -371,7 +371,6 @@ async fn handle_seed_assets(pool: &DbPool, seed_assets: &[SeedAsset]) -> AdminRe
             hostname: &'a str,
             port: i32,
             asset_type: &'a str,
-            group_id: Option<i32>,
             description: Option<&'a str>,
             status: &'a str,
             connection_config: serde_json::Value,
@@ -380,13 +379,13 @@ async fn handle_seed_assets(pool: &DbPool, seed_assets: &[SeedAsset]) -> AdminRe
             require_justification: bool,
         }
 
+        let asset_uuid = Uuid::new_v4();
         let new_asset = NewSeedAsset {
-            uuid: Uuid::new_v4(),
+            uuid: asset_uuid,
             name: &sa.name,
             hostname: &sa.hostname,
             port: sa.port,
             asset_type: &sa.asset_type,
-            group_id: sa.group_id,
             description: sa.description.as_deref(),
             status: "online",
             connection_config: serde_json::json!({}),
@@ -402,7 +401,27 @@ async fn handle_seed_assets(pool: &DbPool, seed_assets: &[SeedAsset]) -> AdminRe
             .execute(&mut conn)
             .await
         {
-            Ok(1) => created += 1,
+            Ok(1) => {
+                created += 1;
+                if let Some(gid) = sa.group_id {
+                    use crate::models::asset::NewAssetAssetGroup;
+                    use crate::schema::asset_asset_groups::dsl as aag;
+                    if let Ok(aid) = assets::table
+                        .filter(assets::uuid.eq(asset_uuid))
+                        .select(assets::id)
+                        .first::<i32>(&mut conn)
+                        .await
+                    {
+                        let _ = diesel::insert_into(aag::asset_asset_groups)
+                            .values(NewAssetAssetGroup {
+                                asset_id: aid,
+                                asset_group_id: gid,
+                            })
+                            .execute(&mut conn)
+                            .await;
+                    }
+                }
+            }
             Ok(_) => {}
             Err(e) => {
                 error!(name = sa.name, error = %e, "Failed to seed asset");

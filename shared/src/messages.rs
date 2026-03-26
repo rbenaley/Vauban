@@ -236,6 +236,26 @@ pub struct GroupOption {
     pub name: String,
 }
 
+/// Default page size for IPC list requests when `limit` is 0.
+pub const DEFAULT_IPC_PAGE_LIMIT: u32 = 256;
+
+/// Hard maximum rows per IPC list page (handlers clamp to this).
+pub const MAX_IPC_PAGE_LIMIT: u32 = 1024;
+
+/// Pagination parameters for IPC list requests (`limit` 0 means [`DEFAULT_IPC_PAGE_LIMIT`]).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IpcPageParams {
+    pub limit: u32,
+    pub offset: u32,
+}
+
+/// One page of list results from vauban-access.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IpcPage<T> {
+    pub items: Vec<T>,
+    pub has_more: bool,
+}
+
 /// Access control request sent to vauban-access.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AccessRequest {
@@ -246,6 +266,7 @@ pub enum AccessRequest {
     },
     ListAccessibleGroups {
         user_id: i32,
+        page: IpcPageParams,
     },
 
     CreateAccessRule {
@@ -254,7 +275,9 @@ pub enum AccessRequest {
     GetAccessRule {
         uuid: String,
     },
-    ListAccessRules,
+    ListAccessRules {
+        page: IpcPageParams,
+    },
     UpdateAccessRule {
         uuid: String,
         data: AccessRuleData,
@@ -273,7 +296,9 @@ pub enum AccessRequest {
     GetVaubanGroupById {
         id: i32,
     },
-    ListVaubanGroups,
+    ListVaubanGroups {
+        page: IpcPageParams,
+    },
     UpdateVaubanGroup {
         uuid: String,
         name: String,
@@ -293,9 +318,11 @@ pub enum AccessRequest {
     },
     ListGroupMembers {
         group_id: i32,
+        page: IpcPageParams,
     },
     ListUserGroups {
         user_id: i32,
+        page: IpcPageParams,
     },
 
     CreateAssetGroup {
@@ -308,7 +335,9 @@ pub enum AccessRequest {
     GetAssetGroup {
         uuid: String,
     },
-    ListAssetGroups,
+    ListAssetGroups {
+        page: IpcPageParams,
+    },
     UpdateAssetGroup {
         uuid: String,
         name: String,
@@ -321,31 +350,34 @@ pub enum AccessRequest {
         uuid: String,
     },
 
-    GetGroupOptions,
+    ListUserGroupOptions {
+        page: IpcPageParams,
+    },
+    ListAssetGroupOptions {
+        page: IpcPageParams,
+    },
 }
 
 /// Access control response from vauban-access.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AccessResponse {
     AccessChecked(AccessCheckResult),
-    AccessibleGroups(Vec<AccessibleGroupEntry>),
+    AccessibleGroupsPage(IpcPage<AccessibleGroupEntry>),
 
     AccessRule(Result<AccessRuleInfo, String>),
-    AccessRuleList(Vec<AccessRuleInfo>),
+    AccessRulePage(IpcPage<AccessRuleInfo>),
 
     VaubanGroup(Result<VaubanGroupInfo, String>),
-    VaubanGroupList(Vec<VaubanGroupInfo>),
+    VaubanGroupPage(IpcPage<VaubanGroupInfo>),
 
-    MemberList(Vec<i32>),
-    UserGroupList(Vec<VaubanGroupInfo>),
+    MemberListPage(IpcPage<i32>),
+    UserGroupPage(IpcPage<VaubanGroupInfo>),
 
     AssetGroup(Result<AssetGroupInfo, String>),
-    AssetGroupList(Vec<AssetGroupInfo>),
+    AssetGroupPage(IpcPage<AssetGroupInfo>),
 
-    GroupOptions {
-        user_groups: Vec<GroupOption>,
-        asset_groups: Vec<GroupOption>,
-    },
+    UserGroupOptionsPage(IpcPage<GroupOption>),
+    AssetGroupOptionsPage(IpcPage<GroupOption>),
 
     Ok,
     Deleted(Result<(), String>),
@@ -3534,11 +3566,24 @@ mod tests {
 
     #[test]
     fn test_access_request_list_accessible_groups() {
-        let req = AccessRequest::ListAccessibleGroups { user_id: 42 };
+        let page = IpcPageParams {
+            limit: 10,
+            offset: 0,
+        };
+        let req = AccessRequest::ListAccessibleGroups {
+            user_id: 42,
+            page,
+        };
         let serialized = serialize(&req);
         let deserialized: AccessRequest = deserialize(&serialized);
-        if let AccessRequest::ListAccessibleGroups { user_id } = deserialized {
+        if let AccessRequest::ListAccessibleGroups {
+            user_id,
+            page: p,
+        } = deserialized
+        {
             assert_eq!(user_id, 42);
+            assert_eq!(p.limit, 10);
+            assert_eq!(p.offset, 0);
         } else {
             panic!("Wrong variant");
         }
@@ -3574,13 +3619,20 @@ mod tests {
 
     #[test]
     fn test_access_request_all_variants_serialize() {
+        let p = IpcPageParams {
+            limit: 10,
+            offset: 0,
+        };
         let requests: Vec<AccessRequest> = vec![
             AccessRequest::CheckAccess {
                 user_id: 1,
                 asset_group_id: 1,
                 protocol: "ssh".to_string(),
             },
-            AccessRequest::ListAccessibleGroups { user_id: 1 },
+            AccessRequest::ListAccessibleGroups {
+                user_id: 1,
+                page: p,
+            },
             AccessRequest::CreateAccessRule {
                 data: AccessRuleData {
                     name: "r".to_string(),
@@ -3600,7 +3652,7 @@ mod tests {
             AccessRequest::GetAccessRule {
                 uuid: "u".to_string(),
             },
-            AccessRequest::ListAccessRules,
+            AccessRequest::ListAccessRules { page: p },
             AccessRequest::UpdateAccessRule {
                 uuid: "u".to_string(),
                 data: AccessRuleData {
@@ -3629,7 +3681,7 @@ mod tests {
                 uuid: "u".to_string(),
             },
             AccessRequest::GetVaubanGroupById { id: 1 },
-            AccessRequest::ListVaubanGroups,
+            AccessRequest::ListVaubanGroups { page: p },
             AccessRequest::UpdateVaubanGroup {
                 uuid: "u".to_string(),
                 name: "g".to_string(),
@@ -3646,8 +3698,14 @@ mod tests {
                 group_id: 1,
                 user_id: 1,
             },
-            AccessRequest::ListGroupMembers { group_id: 1 },
-            AccessRequest::ListUserGroups { user_id: 1 },
+            AccessRequest::ListGroupMembers {
+                group_id: 1,
+                page: p,
+            },
+            AccessRequest::ListUserGroups {
+                user_id: 1,
+                page: p,
+            },
             AccessRequest::CreateAssetGroup {
                 name: "ag".to_string(),
                 slug: "ag".to_string(),
@@ -3658,7 +3716,7 @@ mod tests {
             AccessRequest::GetAssetGroup {
                 uuid: "u".to_string(),
             },
-            AccessRequest::ListAssetGroups,
+            AccessRequest::ListAssetGroups { page: p },
             AccessRequest::UpdateAssetGroup {
                 uuid: "u".to_string(),
                 name: "ag".to_string(),
@@ -3670,9 +3728,10 @@ mod tests {
             AccessRequest::DeleteAssetGroup {
                 uuid: "u".to_string(),
             },
-            AccessRequest::GetGroupOptions,
+            AccessRequest::ListUserGroupOptions { page: p },
+            AccessRequest::ListAssetGroupOptions { page: p },
         ];
-        assert_eq!(requests.len(), 23);
+        assert_eq!(requests.len(), 24);
         for req in requests {
             let serialized = serialize(&req);
             let _: AccessRequest = deserialize(&serialized);
@@ -3688,10 +3747,13 @@ mod tests {
                 require_justification: false,
                 max_session_duration: None,
             }),
-            AccessResponse::AccessibleGroups(vec![AccessibleGroupEntry {
-                asset_group_id: 1,
-                protocols: vec!["ssh".to_string()],
-            }]),
+            AccessResponse::AccessibleGroupsPage(IpcPage {
+                items: vec![AccessibleGroupEntry {
+                    asset_group_id: 1,
+                    protocols: vec!["ssh".to_string()],
+                }],
+                has_more: false,
+            }),
             AccessResponse::AccessRule(Ok(AccessRuleInfo {
                 uuid: "u".to_string(),
                 name: "r".to_string(),
@@ -3713,7 +3775,10 @@ mod tests {
                 created_at: "now".to_string(),
                 updated_at: "now".to_string(),
             })),
-            AccessResponse::AccessRuleList(vec![]),
+            AccessResponse::AccessRulePage(IpcPage {
+                items: vec![],
+                has_more: false,
+            }),
             AccessResponse::VaubanGroup(Ok(VaubanGroupInfo {
                 id: 1,
                 uuid: "u".to_string(),
@@ -3726,9 +3791,18 @@ mod tests {
                 last_synced: None,
                 member_count: 5,
             })),
-            AccessResponse::VaubanGroupList(vec![]),
-            AccessResponse::MemberList(vec![1, 2, 3]),
-            AccessResponse::UserGroupList(vec![]),
+            AccessResponse::VaubanGroupPage(IpcPage {
+                items: vec![],
+                has_more: false,
+            }),
+            AccessResponse::MemberListPage(IpcPage {
+                items: vec![1, 2, 3],
+                has_more: false,
+            }),
+            AccessResponse::UserGroupPage(IpcPage {
+                items: vec![],
+                has_more: false,
+            }),
             AccessResponse::AssetGroup(Ok(AssetGroupInfo {
                 id: 1,
                 uuid: "u".to_string(),
@@ -3740,16 +3814,23 @@ mod tests {
                 created_at: "now".to_string(),
                 updated_at: "now".to_string(),
             })),
-            AccessResponse::AssetGroupList(vec![]),
-            AccessResponse::GroupOptions {
-                user_groups: vec![],
-                asset_groups: vec![],
-            },
+            AccessResponse::AssetGroupPage(IpcPage {
+                items: vec![],
+                has_more: false,
+            }),
+            AccessResponse::UserGroupOptionsPage(IpcPage {
+                items: vec![],
+                has_more: false,
+            }),
+            AccessResponse::AssetGroupOptionsPage(IpcPage {
+                items: vec![],
+                has_more: false,
+            }),
             AccessResponse::Ok,
             AccessResponse::Deleted(Ok(())),
             AccessResponse::Error("err".to_string()),
         ];
-        assert_eq!(responses.len(), 14);
+        assert_eq!(responses.len(), 15);
         for resp in responses {
             let serialized = serialize(&resp);
             let _: AccessResponse = deserialize(&serialized);

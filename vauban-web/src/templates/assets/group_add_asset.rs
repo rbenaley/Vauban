@@ -10,15 +10,28 @@ pub struct AvailableAsset {
     pub hostname: String,
     pub asset_type: String,
     pub status: String,
-    /// If the asset is already assigned to a group, this contains the group name.
-    /// Assets with Some(group_name) are displayed as grayed out and non-selectable.
-    pub current_group_name: Option<String>,
+    /// True if the asset is already linked to the target group (cannot add twice).
+    pub in_target_group: bool,
+    /// Group names for memberships other than the target group (for labels / multi-dot).
+    pub other_group_names: Vec<String>,
+    pub allow_multiple_groups_per_asset: bool,
 }
 
 impl AvailableAsset {
-    /// Returns true if this asset can be selected (not already assigned to a group).
+    /// Selectable when not already in the target group, and when single-group mode allows it.
     pub fn is_available(&self) -> bool {
-        self.current_group_name.is_none()
+        if self.in_target_group {
+            return false;
+        }
+        if !self.allow_multiple_groups_per_asset {
+            return self.other_group_names.is_empty();
+        }
+        true
+    }
+
+    /// Show amber indicator: asset already in another group while multi-membership is allowed.
+    pub fn show_multi_membership_dot(&self) -> bool {
+        self.allow_multiple_groups_per_asset && !self.other_group_names.is_empty()
     }
 
     /// Returns CSS classes for the asset status badge.
@@ -54,8 +67,9 @@ pub struct AssetGroupAddAssetTemplate {
     pub header_user: Option<crate::templates::base::UserContext>,
     pub group: GroupSummary,
     pub available_assets: Vec<AvailableAsset>,
-    /// Count of assets that are available (not assigned to any group)
+    /// Count of assets that are selectable on this form.
     pub available_count: usize,
+    pub allow_multiple_groups_per_asset: bool,
     pub csrf_token: String,
 }
 
@@ -70,7 +84,9 @@ mod tests {
             hostname: "test.example.com".to_string(),
             asset_type: "ssh".to_string(),
             status: status.to_string(),
-            current_group_name: None,
+            in_target_group: false,
+            other_group_names: Vec::new(),
+            allow_multiple_groups_per_asset: false,
         }
     }
 
@@ -81,7 +97,9 @@ mod tests {
             hostname: "assigned.example.com".to_string(),
             asset_type: "rdp".to_string(),
             status: "online".to_string(),
-            current_group_name: Some("Production Servers".to_string()),
+            in_target_group: false,
+            other_group_names: vec!["Production Servers".to_string()],
+            allow_multiple_groups_per_asset: false,
         }
     }
 
@@ -175,6 +193,7 @@ mod tests {
             group: create_test_group_summary(),
             available_assets: assets,
             available_count,
+            allow_multiple_groups_per_asset: false,
             csrf_token: "test_csrf".to_string(),
         };
 
@@ -210,6 +229,7 @@ mod tests {
             group: create_test_group_summary(),
             available_assets: Vec::new(),
             available_count: 0,
+            allow_multiple_groups_per_asset: false,
             csrf_token: "test_csrf".to_string(),
         };
 
@@ -252,6 +272,7 @@ mod tests {
             group: create_test_group_summary(),
             available_assets: assets,
             available_count,
+            allow_multiple_groups_per_asset: false,
             csrf_token: "test_csrf".to_string(),
         };
 
@@ -276,7 +297,9 @@ mod tests {
             hostname: "ssh.example.com".to_string(),
             asset_type: "ssh".to_string(),
             status: "online".to_string(),
-            current_group_name: None,
+            in_target_group: false,
+            other_group_names: Vec::new(),
+            allow_multiple_groups_per_asset: false,
         };
         let rdp = AvailableAsset {
             uuid: "2".to_string(),
@@ -284,7 +307,9 @@ mod tests {
             hostname: "rdp.example.com".to_string(),
             asset_type: "rdp".to_string(),
             status: "online".to_string(),
-            current_group_name: None,
+            in_target_group: false,
+            other_group_names: Vec::new(),
+            allow_multiple_groups_per_asset: false,
         };
 
         assert_eq!(ssh.asset_type, "ssh");
@@ -296,16 +321,16 @@ mod tests {
     fn test_available_asset_is_available_true() {
         let asset = create_test_available_asset("online");
         assert!(asset.is_available());
-        assert!(asset.current_group_name.is_none());
+        assert!(asset.other_group_names.is_empty());
     }
 
     #[test]
     fn test_available_asset_is_available_false_when_assigned() {
         let asset = create_test_assigned_asset();
         assert!(!asset.is_available());
-        assert!(asset.current_group_name.is_some());
+        assert_eq!(asset.other_group_names.len(), 1);
         assert_eq!(
-            unwrap_some!(asset.current_group_name.as_ref()),
+            unwrap_some!(asset.other_group_names.first()),
             "Production Servers"
         );
     }
@@ -315,7 +340,7 @@ mod tests {
         let asset = create_test_assigned_asset();
         assert_eq!(asset.name, "Assigned Asset");
         assert_eq!(asset.hostname, "assigned.example.com");
-        assert!(asset.current_group_name.is_some());
+        assert!(!asset.other_group_names.is_empty());
     }
 
     #[test]
@@ -323,5 +348,57 @@ mod tests {
         let asset = create_test_assigned_asset();
         // Even assigned assets should have correct status class
         assert!(asset.status_class().contains("green"));
+    }
+
+    #[test]
+    fn test_show_multi_membership_dot_when_multi_and_other_groups() {
+        let mut a = create_test_assigned_asset();
+        a.allow_multiple_groups_per_asset = true;
+        assert!(a.show_multi_membership_dot());
+        assert!(a.is_available());
+    }
+
+    #[test]
+    fn test_asset_group_add_asset_template_renders_multi_pastille() {
+        use crate::templates::base::{UserContext, VaubanConfig};
+
+        let mut multi = create_test_assigned_asset();
+        multi.allow_multiple_groups_per_asset = true;
+
+        let assets = vec![multi];
+        let available_count = assets.iter().filter(|a| a.is_available()).count();
+        assert_eq!(available_count, 1);
+
+        let template = AssetGroupAddAssetTemplate {
+            title: "Add Asset".to_string(),
+            user: Some(UserContext {
+                uuid: "test".to_string(),
+                username: "testuser".to_string(),
+                display_name: "Test User".to_string(),
+                is_superuser: true,
+                is_staff: true,
+            }),
+            vauban: VaubanConfig {
+                brand_name: "VAUBAN".to_string(),
+                brand_logo: None,
+                theme: "dark".to_string(),
+            },
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            group: create_test_group_summary(),
+            available_assets: assets,
+            available_count,
+            allow_multiple_groups_per_asset: true,
+            csrf_token: "test_csrf".to_string(),
+        };
+
+        let html = unwrap_ok!(template.render());
+        assert!(
+            html.contains("bg-amber-500"),
+            "Multi-group indicator should render amber pastille"
+        );
+        assert!(html.contains("Also belongs to another asset group"));
     }
 }

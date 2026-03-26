@@ -598,7 +598,7 @@ mod tests {
     #[test]
     fn test_auth_source_clone() {
         let source = AuthSource::Ldap;
-        let cloned = source.clone();
+        let cloned = source;
         assert_eq!(source, cloned);
     }
 

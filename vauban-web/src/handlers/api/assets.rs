@@ -15,7 +15,10 @@ use serde::Deserialize;
 use crate::AppState;
 use crate::error::{AppError, AppResult};
 use crate::middleware::auth::AuthUser;
-use crate::models::asset::{Asset, AssetType, CreateAssetRequest, NewAsset, UpdateAssetRequest};
+use crate::models::asset::{
+    Asset, AssetType, CreateAssetRequest, NewAsset, NewAssetAssetGroup, UpdateAssetRequest,
+};
+use crate::schema::asset_asset_groups::dsl as aag;
 use crate::schema::assets::dsl::*;
 
 /// Query parameters for list assets.
@@ -73,7 +76,10 @@ pub async fn list_assets(
     }
 
     if let Some(group_id_val) = params.group_id {
-        query = query.filter(group_id.eq(Some(group_id_val)));
+        let sub = aag::asset_asset_groups
+            .filter(aag::asset_group_id.eq(group_id_val))
+            .select(aag::asset_id);
+        query = query.filter(crate::schema::assets::id.eq_any(sub));
     }
 
     let assets_list = query
@@ -152,6 +158,19 @@ pub async fn create_asset(
     let sanitized_name = strip(&request.name);
     let sanitized_description = request.description.map(|d| strip(&d));
 
+    let mut group_ids: Vec<i32> = request.group_ids.clone();
+    if let Some(single) = request.group_id
+        && group_ids.is_empty()
+    {
+        group_ids.push(single);
+    }
+    if !state.config.assets.allow_multiple_groups_per_asset && group_ids.len() > 1 {
+        return Err(AppError::Validation(
+            "Only one asset group is allowed when allow_multiple_groups_per_asset is false"
+                .to_string(),
+        ));
+    }
+
     let new_asset = NewAsset {
         uuid: Uuid::new_v4(),
         name: sanitized_name,
@@ -160,7 +179,6 @@ pub async fn create_asset(
         port: default_port,
         asset_type: request.asset_type,
         status: "unknown".to_string(),
-        group_id: request.group_id,
         description: sanitized_description,
         os_type: None,
         os_version: None,
@@ -176,6 +194,17 @@ pub async fn create_asset(
         .values(&new_asset)
         .get_result(&mut conn)
         .await?;
+
+    for gid in group_ids {
+        diesel::insert_into(aag::asset_asset_groups)
+            .values(NewAssetAssetGroup {
+                asset_id: asset.id,
+                asset_group_id: gid,
+            })
+            .execute(&mut conn)
+            .await
+            .map_err(AppError::Database)?;
+    }
 
     Ok(Json(asset))
 }
@@ -352,6 +381,7 @@ pub async fn list_asset_groups(
     _user: AuthUser,
     Query(params): Query<ListAssetGroupsParams>,
 ) -> AppResult<Json<Vec<AssetGroupResponse>>> {
+    use crate::schema::asset_asset_groups::dsl as aag;
     use crate::schema::asset_groups::dsl as ag;
     use crate::schema::assets::dsl as a;
 
@@ -373,8 +403,9 @@ pub async fn list_asset_groups(
     // Build response with asset counts
     let mut response: Vec<AssetGroupResponse> = Vec::with_capacity(groups.len());
     for group in groups {
-        let asset_count: i64 = a::assets
-            .filter(a::group_id.eq(group.id))
+        let asset_count: i64 = aag::asset_asset_groups
+            .inner_join(a::assets.on(aag::asset_id.eq(a::id)))
+            .filter(aag::asset_group_id.eq(group.id))
             .filter(a::is_deleted.eq(false))
             .count()
             .get_result(&mut conn)
@@ -420,6 +451,7 @@ pub async fn list_group_assets(
     Path(group_uuid_str): Path<String>,
     Query(params): Query<ListAssetsParams>,
 ) -> AppResult<Json<Vec<GroupAssetResponse>>> {
+    use crate::schema::asset_asset_groups::dsl as aag;
     use crate::schema::asset_groups::dsl as ag;
     use crate::schema::assets::dsl as a;
 
@@ -448,9 +480,11 @@ pub async fn list_group_assets(
 
     // Get assets in this group
     let group_assets: Vec<Asset> = a::assets
-        .filter(a::group_id.eq(group.id))
+        .inner_join(aag::asset_asset_groups.on(a::id.eq(aag::asset_id)))
+        .filter(aag::asset_group_id.eq(group.id))
         .filter(a::is_deleted.eq(false))
         .order(a::name.asc())
+        .select(Asset::as_select())
         .limit(params.limit.unwrap_or(100))
         .offset(params.offset.unwrap_or(0))
         .load(&mut conn)

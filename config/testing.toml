@@ -29,6 +29,10 @@ format = "text"
 [cache]
 enabled = false
 
+# Match legacy integration tests: single membership enforced at app level.
+[assets]
+allow_multiple_groups_per_asset = false
+
 # Testing TLS certificates (use dev certs for tests)
 [server.tls]
 cert_path = "vauban-web/certs/dev-server.crt"

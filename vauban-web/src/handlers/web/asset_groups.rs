@@ -43,7 +43,10 @@ pub async fn asset_group_list(
             .await
             .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
         let count_rows: Vec<GroupCountRow> = diesel::sql_query(
-                "SELECT group_id, COUNT(*)::bigint as cnt FROM assets WHERE is_deleted = false AND group_id IS NOT NULL GROUP BY group_id",
+                "SELECT aag.asset_group_id AS group_id, COUNT(*)::bigint AS cnt \
+                 FROM asset_asset_groups aag \
+                 INNER JOIN assets a ON a.id = aag.asset_id AND a.is_deleted = false \
+                 GROUP BY aag.asset_group_id",
             )
             .load(&mut conn)
             .await
@@ -82,13 +85,18 @@ pub async fn asset_group_list(
             .await
             .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
         use crate::db::like_contains;
+        use crate::schema::asset_asset_groups;
         use crate::schema::asset_groups;
         use diesel::dsl::count;
 
         let mut query = asset_groups::table
             .left_join(
-                schema_assets::table.on(schema_assets::group_id
-                    .eq(asset_groups::id.nullable())
+                asset_asset_groups::table
+                    .on(asset_asset_groups::asset_group_id.eq(asset_groups::id)),
+            )
+            .left_join(
+                schema_assets::table.on(schema_assets::id
+                    .eq(asset_asset_groups::asset_id)
                     .and(schema_assets::is_deleted.eq(false))),
             )
             .filter(asset_groups::is_deleted.eq(false))
@@ -229,8 +237,9 @@ pub async fn asset_group_detail(
             }
         };
         let assets_data: Vec<GroupAssetResult> = match diesel::sql_query(
-            "SELECT uuid, name, hostname, asset_type, status FROM assets
-             WHERE group_id = $1 AND is_deleted = false ORDER BY name ASC",
+            "SELECT a.uuid, a.name, a.hostname, a.asset_type, a.status FROM assets a \
+             INNER JOIN asset_asset_groups aag ON aag.asset_id = a.id \
+             WHERE aag.asset_group_id = $1 AND a.is_deleted = false ORDER BY a.name ASC",
         )
         .bind::<diesel::sql_types::Integer, _>(group_info.id)
         .load(&mut conn)
@@ -303,7 +312,8 @@ pub async fn asset_group_detail(
         let assets_data: Vec<GroupAssetResult> = match diesel::sql_query(
             "SELECT a.uuid, a.name, a.hostname, a.asset_type, a.status
              FROM assets a
-             INNER JOIN asset_groups g ON g.id = a.group_id
+             INNER JOIN asset_asset_groups aag ON aag.asset_id = a.id
+             INNER JOIN asset_groups g ON g.id = aag.asset_group_id
              WHERE g.uuid = $1 AND a.is_deleted = false
              ORDER BY a.name ASC",
         )
@@ -441,87 +451,117 @@ pub async fn asset_group_add_asset_form(
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
-    let (group, group_names): (GroupSummary, std::collections::HashMap<i32, String>) =
-        if let Some(ref client) = state.access_client {
-            // IPC path: get group + list all groups for names
-            let group_info = client
-                .get_asset_group(&uuid_str)
-                .await
-                .map_err(|_| AppError::NotFound("Asset group not found".to_string()))?;
-            let all_groups = client.list_asset_groups().await?;
-            let group_names: std::collections::HashMap<i32, String> =
-                all_groups.into_iter().map(|g| (g.id, g.name)).collect();
-            let group = GroupSummary {
-                uuid: group_info.uuid,
-                name: group_info.name,
-            };
-            (group, group_names)
-        } else {
-            // SQL fallback
-            let group_uuid = ::uuid::Uuid::parse_str(&uuid_str)
-                .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
-            use crate::schema::asset_groups::dsl as ag;
-            let group_row: (::uuid::Uuid, String) = ag::asset_groups
-                .filter(ag::uuid.eq(group_uuid))
-                .filter(ag::is_deleted.eq(false))
-                .select((ag::uuid, ag::name))
-                .first(&mut conn)
-                .await
-                .map_err(|e| match e {
-                    diesel::result::Error::NotFound => {
-                        AppError::NotFound("Asset group not found".to_string())
-                    }
-                    _ => AppError::Database(e),
-                })?;
-            let group = GroupSummary {
-                uuid: group_row.0.to_string(),
-                name: group_row.1,
-            };
-            let group_names: std::collections::HashMap<i32, String> = ag::asset_groups
-                .filter(ag::is_deleted.eq(false))
-                .select((ag::id, ag::name))
-                .load::<(i32, String)>(&mut conn)
-                .await
-                .map_err(AppError::Database)?
-                .into_iter()
-                .collect();
-            (group, group_names)
+    let (group, target_group_id): (GroupSummary, i32) = if let Some(ref client) = state.access_client
+    {
+        let group_info = client
+            .get_asset_group(&uuid_str)
+            .await
+            .map_err(|_| AppError::NotFound("Asset group not found".to_string()))?;
+        let group = GroupSummary {
+            uuid: group_info.uuid,
+            name: group_info.name,
         };
+        (group, group_info.id)
+    } else {
+        let group_uuid = ::uuid::Uuid::parse_str(&uuid_str)
+            .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
+        use crate::schema::asset_groups::dsl as ag;
+        let group_row: (i32, ::uuid::Uuid, String) = ag::asset_groups
+            .filter(ag::uuid.eq(group_uuid))
+            .filter(ag::is_deleted.eq(false))
+            .select((ag::id, ag::uuid, ag::name))
+            .first(&mut conn)
+            .await
+            .map_err(|e| match e {
+                diesel::result::Error::NotFound => {
+                    AppError::NotFound("Asset group not found".to_string())
+                }
+                _ => AppError::Database(e),
+            })?;
+        let group = GroupSummary {
+            uuid: group_row.1.to_string(),
+            name: group_row.2,
+        };
+        (group, group_row.0)
+    };
 
-    // Get ALL assets (not deleted) with their current group name if assigned (local SQL)
+    let allow_multiple = state.config.assets.allow_multiple_groups_per_asset;
+
+    // Get ALL assets (not deleted) with ids for membership lookup
+    use crate::models::asset::AssetType as DbAssetType;
+    use crate::schema::asset_asset_groups::dsl as aag;
+    use crate::schema::asset_groups::dsl as ag;
     use crate::schema::assets::dsl as a;
-    let available_asset_rows: Vec<(::uuid::Uuid, String, String, String, String, Option<i32>)> =
-        a::assets
-            .filter(a::is_deleted.eq(false))
-            .select((
-                a::uuid,
-                a::name,
-                a::hostname,
-                a::asset_type,
-                a::status,
-                a::group_id,
-            ))
-            .order(a::name.asc())
+
+    let available_asset_rows: Vec<(
+        i32,
+        ::uuid::Uuid,
+        String,
+        String,
+        DbAssetType,
+        String,
+    )> = a::assets
+        .filter(a::is_deleted.eq(false))
+        .select((
+            a::id,
+            a::uuid,
+            a::name,
+            a::hostname,
+            a::asset_type,
+            a::status,
+        ))
+        .order(a::name.asc())
+        .load(&mut conn)
+        .await
+        .map_err(AppError::Database)?;
+
+    let asset_ids: Vec<i32> = available_asset_rows.iter().map(|r| r.0).collect();
+
+    let membership_rows: Vec<(i32, i32, String)> = if asset_ids.is_empty() {
+        Vec::new()
+    } else {
+        aag::asset_asset_groups
+            .inner_join(ag::asset_groups.on(aag::asset_group_id.eq(ag::id)))
+            .filter(aag::asset_id.eq_any(asset_ids))
+            .filter(ag::is_deleted.eq(false))
+            .select((aag::asset_id, ag::id, ag::name))
             .load(&mut conn)
             .await
-            .map_err(AppError::Database)?;
+            .map_err(AppError::Database)?
+    };
+
+    let mut by_asset: std::collections::HashMap<i32, Vec<(i32, String)>> =
+        std::collections::HashMap::new();
+    for (aid, gid, gname) in membership_rows {
+        by_asset.entry(aid).or_default().push((gid, gname));
+    }
 
     let available_assets: Vec<AvailableAsset> = available_asset_rows
         .into_iter()
-        .map(|(uuid, name, hostname, asset_type, status, group_id)| {
-            let current_group_name = group_id.and_then(|gid| group_names.get(&gid).cloned());
-            AvailableAsset {
-                uuid: uuid.to_string(),
-                name,
-                hostname,
-                asset_type,
-                status,
-                current_group_name,
-            }
-        })
+        .map(
+            |(asset_pk, uuid, name, hostname, asset_type, status)| {
+                let mems = by_asset.get(&asset_pk).cloned().unwrap_or_default();
+                let in_target_group = mems.iter().any(|(id, _)| *id == target_group_id);
+                let other_group_names: Vec<String> = mems
+                    .into_iter()
+                    .filter(|(id, _)| *id != target_group_id)
+                    .map(|(_, n)| n)
+                    .collect();
+                AvailableAsset {
+                    uuid: uuid.to_string(),
+                    name,
+                    hostname,
+                    asset_type: asset_type.to_string(),
+                    status,
+                    in_target_group,
+                    other_group_names,
+                    allow_multiple_groups_per_asset: allow_multiple,
+                }
+            },
+        )
         .collect();
 
-    // Count assets that are available (not assigned to any group)
+    // Count selectable assets for this form
     let available_count = available_assets.iter().filter(|a| a.is_available()).count();
 
     let csrf_token = jar
@@ -551,6 +591,7 @@ pub async fn asset_group_add_asset_form(
         group,
         available_assets,
         available_count,
+        allow_multiple_groups_per_asset: allow_multiple,
         csrf_token,
     };
 
@@ -705,41 +746,110 @@ pub async fn asset_group_add_asset(
         }
     };
 
-    // Update all selected assets to set their group_id (local SQL)
+    use crate::models::asset::NewAssetAssetGroup;
+    use crate::schema::asset_asset_groups::dsl as aag;
     use crate::schema::assets::dsl as a;
-    let updated = diesel::update(a::assets)
+
+    let allow_multiple = state.config.assets.allow_multiple_groups_per_asset;
+
+    let asset_ids: Vec<i32> = match a::assets
         .filter(a::uuid.eq_any(&asset_uuids))
         .filter(a::is_deleted.eq(false))
-        .filter(a::group_id.is_null()) // Only update if not already in a group
-        .set((
-            a::group_id.eq(Some(group_id)),
-            a::updated_at.eq(chrono::Utc::now()),
-        ))
-        .execute(&mut conn)
-        .await;
-
-    match updated {
-        Ok(0) => {
-            // No rows updated - either assets not found or already in groups
-            flash_redirect(
-                flash.error("No assets were added. They may already be assigned to groups."),
+        .select(a::id)
+        .load(&mut conn)
+        .await
+    {
+        Ok(ids) => ids,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Database error. Please try again."),
                 &format!("/assets/groups/{}/add-asset", uuid_str),
-            )
+            );
         }
-        Ok(count) => {
-            let message = if count == 1 {
-                "1 asset added to group successfully".to_string()
-            } else {
-                format!("{} assets added to group successfully", count)
+    };
+
+    let now = chrono::Utc::now();
+    let mut added: usize = 0;
+
+    for aid in asset_ids {
+        if !allow_multiple {
+            let has_any = match aag::asset_asset_groups
+                .filter(aag::asset_id.eq(aid))
+                .select(aag::asset_id)
+                .first::<i32>(&mut conn)
+                .await
+                .optional()
+            {
+                Ok(o) => o.is_some(),
+                Err(_) => {
+                    return flash_redirect(
+                        flash.error("Database error. Please try again."),
+                        &format!("/assets/groups/{}/add-asset", uuid_str),
+                    );
+                }
             };
-            flash_redirect(
-                flash.success(&message),
-                &format!("/assets/groups/{}", uuid_str),
-            )
+            if has_any {
+                continue;
+            }
+        } else {
+            let in_target = match aag::asset_asset_groups
+                .filter(aag::asset_id.eq(aid))
+                .filter(aag::asset_group_id.eq(group_id))
+                .select(aag::asset_id)
+                .first::<i32>(&mut conn)
+                .await
+                .optional()
+            {
+                Ok(o) => o.is_some(),
+                Err(_) => {
+                    return flash_redirect(
+                        flash.error("Database error. Please try again."),
+                        &format!("/assets/groups/{}/add-asset", uuid_str),
+                    );
+                }
+            };
+            if in_target {
+                continue;
+            }
         }
-        Err(_) => flash_redirect(
-            flash.error("Failed to add assets to group. Please try again."),
+
+        match diesel::insert_into(aag::asset_asset_groups)
+            .values(NewAssetAssetGroup {
+                asset_id: aid,
+                asset_group_id: group_id,
+            })
+            .execute(&mut conn)
+            .await
+        {
+            Ok(1) => {
+                let _ = diesel::update(a::assets.filter(a::id.eq(aid)))
+                    .set(a::updated_at.eq(now))
+                    .execute(&mut conn)
+                    .await;
+                added += 1;
+            }
+            Ok(_) => {}
+            Err(_) => {
+                return flash_redirect(
+                    flash.error("Failed to add assets to group. Please try again."),
+                    &format!("/assets/groups/{}/add-asset", uuid_str),
+                );
+            }
+        }
+    }
+
+    match added {
+        0 => flash_redirect(
+            flash.error("No assets were added. They may already be assigned to groups."),
             &format!("/assets/groups/{}/add-asset", uuid_str),
+        ),
+        1 => flash_redirect(
+            flash.success("1 asset added to group successfully"),
+            &format!("/assets/groups/{}", uuid_str),
+        ),
+        n => flash_redirect(
+            flash.success(format!("{} assets added to group successfully", n)),
+            &format!("/assets/groups/{}", uuid_str),
         ),
     }
 }
@@ -811,27 +921,74 @@ pub async fn asset_group_remove_asset(
         }
     };
 
-    // Update the asset to remove its group_id
+    use crate::schema::asset_asset_groups::dsl as aag;
+    use crate::schema::asset_groups::dsl as ag;
     use crate::schema::assets::dsl as a;
-    let updated = diesel::update(a::assets)
+
+    let group_pk: i32 = match ag::asset_groups
+        .filter(ag::uuid.eq(group_uuid))
+        .filter(ag::is_deleted.eq(false))
+        .select(ag::id)
+        .first(&mut conn)
+        .await
+    {
+        Ok(id) => id,
+        Err(diesel::result::Error::NotFound) => {
+            return flash_redirect(flash.error("Asset group not found"), "/assets/groups");
+        }
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Database error. Please try again."),
+                &format!("/assets/groups/{}", group_uuid),
+            );
+        }
+    };
+
+    let asset_pk: i32 = match a::assets
         .filter(a::uuid.eq(asset_uuid))
         .filter(a::is_deleted.eq(false))
-        .set((
-            a::group_id.eq(None::<i32>),
-            a::updated_at.eq(chrono::Utc::now()),
-        ))
-        .execute(&mut conn)
-        .await;
+        .select(a::id)
+        .first(&mut conn)
+        .await
+    {
+        Ok(id) => id,
+        Err(diesel::result::Error::NotFound) => {
+            return flash_redirect(
+                flash.error("Asset not found"),
+                &format!("/assets/groups/{}", group_uuid),
+            );
+        }
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Database error. Please try again."),
+                &format!("/assets/groups/{}", group_uuid),
+            );
+        }
+    };
 
-    match updated {
+    let deleted = diesel::delete(
+        aag::asset_asset_groups
+            .filter(aag::asset_id.eq(asset_pk))
+            .filter(aag::asset_group_id.eq(group_pk)),
+    )
+    .execute(&mut conn)
+    .await;
+
+    match deleted {
         Ok(0) => flash_redirect(
-            flash.error("Asset not found"),
+            flash.error("Asset was not a member of this group"),
             &format!("/assets/groups/{}", group_uuid),
         ),
-        Ok(_) => flash_redirect(
-            flash.success("Asset removed from group successfully"),
-            &format!("/assets/groups/{}", group_uuid),
-        ),
+        Ok(_) => {
+            let _ = diesel::update(a::assets.filter(a::id.eq(asset_pk)))
+                .set(a::updated_at.eq(chrono::Utc::now()))
+                .execute(&mut conn)
+                .await;
+            flash_redirect(
+                flash.success("Asset removed from group successfully"),
+                &format!("/assets/groups/{}", group_uuid),
+            )
+        }
         Err(_) => flash_redirect(
             flash.error("Failed to remove asset from group. Please try again."),
             &format!("/assets/groups/{}", group_uuid),
@@ -1381,11 +1538,12 @@ pub async fn delete_asset_group_web(
                 );
             }
         };
-        use crate::schema::assets::dsl as a;
-        let _ = diesel::update(a::assets.filter(a::group_id.eq(group_info.id)))
-            .set(a::group_id.eq(None::<i32>))
-            .execute(&mut conn)
-            .await;
+        use crate::schema::asset_asset_groups::dsl as aag;
+        let _ = diesel::delete(
+            aag::asset_asset_groups.filter(aag::asset_group_id.eq(group_info.id)),
+        )
+        .execute(&mut conn)
+        .await;
         client
             .delete_asset_group(&uuid_str)
             .await
@@ -1420,9 +1578,8 @@ pub async fn delete_asset_group_web(
             }
         };
 
-        use crate::schema::assets::dsl as a;
-        let _ = diesel::update(a::assets.filter(a::group_id.eq(group_id)))
-            .set(a::group_id.eq(None::<i32>))
+        use crate::schema::asset_asset_groups::dsl as aag;
+        let _ = diesel::delete(aag::asset_asset_groups.filter(aag::asset_group_id.eq(group_id)))
             .execute(&mut conn)
             .await;
 

@@ -116,10 +116,7 @@ mod tests {
 
     #[test]
     fn test_cleanup_interval_is_reasonable() {
-        // Cleanup should happen at least every 5 minutes
-        assert!(CLEANUP_INTERVAL_SECS <= 300);
-        // But not too frequently (at least 10 seconds)
-        assert!(CLEANUP_INTERVAL_SECS >= 10);
+        assert!((10..=300).contains(&CLEANUP_INTERVAL_SECS));
     }
 
     #[test]
@@ -136,7 +133,7 @@ mod tests {
         let now = Utc::now();
         let year = now.year();
         // Should be a reasonable year
-        assert!(year >= 2024 && year <= 2100);
+        assert!((2024..=2100).contains(&year));
     }
 
     // ==================== Result Type Tests ====================
@@ -178,7 +175,7 @@ mod tests {
 
     #[test]
     fn test_interval_not_zero() {
-        assert!(CLEANUP_INTERVAL_SECS > 0);
+        assert_ne!(CLEANUP_INTERVAL_SECS, 0);
     }
 
     // ==================== Error Message Tests ====================
@@ -269,8 +266,7 @@ mod tests {
         // First tick is immediate
         ticker.tick().await;
 
-        // Interval was created successfully
-        assert!(true);
+        assert_eq!(ticker.period(), Duration::from_secs(CLEANUP_INTERVAL_SECS));
     }
 
     #[test]
@@ -309,7 +305,7 @@ mod tests {
     #[test]
     fn test_result_map_err() {
         fn operation() -> Result<(), std::io::Error> {
-            Err(std::io::Error::new(std::io::ErrorKind::Other, "test error"))
+            Err(std::io::Error::other("test error"))
         }
 
         let result: Result<(), String> = operation().map_err(|e| e.to_string());
@@ -351,13 +347,7 @@ mod tests {
     #[test]
     fn test_deleted_count_comparison() {
         let count: usize = 5;
-
-        // Pattern used in cleanup task
-        if count > 0 {
-            assert!(true); // Would log info
-        } else {
-            panic!("Should not reach here");
-        }
+        assert_eq!(count, 5);
     }
 
     // ==================== Tracing Level Tests ====================

@@ -1577,8 +1577,7 @@ mod tests {
     #[test]
     fn test_ping_interval_reasonable() {
         // Should be between 10 seconds and 2 minutes
-        assert!(PING_INTERVAL_SECS >= 10);
-        assert!(PING_INTERVAL_SECS <= 120);
+        assert!((10..=120).contains(&PING_INTERVAL_SECS));
     }
 
     // ==================== WsChannel Additional Tests ====================

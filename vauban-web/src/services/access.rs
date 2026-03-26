@@ -59,7 +59,7 @@ async fn list_accessible_asset_ids_ipc(
     conn: &mut AsyncPgConnection,
     user_id: i32,
 ) -> Result<Vec<i32>, AppError> {
-    use crate::schema::assets;
+    use crate::schema::{asset_asset_groups, assets};
 
     let entries = match client.list_accessible_groups(user_id).await {
         Ok(e) => e,
@@ -72,7 +72,10 @@ async fn list_accessible_asset_ids_ipc(
             continue;
         }
         let ids: Vec<i32> = assets::table
-            .filter(assets::group_id.eq(entry.asset_group_id))
+            .inner_join(
+                asset_asset_groups::table.on(assets::id.eq(asset_asset_groups::asset_id)),
+            )
+            .filter(asset_asset_groups::asset_group_id.eq(entry.asset_group_id))
             .filter(assets::is_deleted.eq(false))
             .filter(assets::asset_type.eq_any(&entry.protocols))
             .select(assets::id)
@@ -90,13 +93,18 @@ async fn list_accessible_asset_ids_sql(
     conn: &mut AsyncPgConnection,
     user_id: i32,
 ) -> Result<Vec<i32>, AppError> {
-    use crate::schema::{access_rules, asset_groups, assets, user_groups};
+    use crate::schema::{access_rules, asset_asset_groups, asset_groups, assets, user_groups};
 
     let now = Utc::now();
 
     #[allow(deprecated)]
     let ids: Vec<i32> = assets::table
-        .inner_join(asset_groups::table.on(assets::group_id.eq(asset_groups::id.nullable())))
+        .inner_join(
+            asset_asset_groups::table.on(assets::id.eq(asset_asset_groups::asset_id)),
+        )
+        .inner_join(
+            asset_groups::table.on(asset_asset_groups::asset_group_id.eq(asset_groups::id)),
+        )
         .inner_join(access_rules::table.on(access_rules::asset_group_id.eq(asset_groups::id)))
         .inner_join(user_groups::table.on(user_groups::group_id.eq(access_rules::user_group_id)))
         .filter(user_groups::user_id.eq(user_id))
@@ -160,12 +168,12 @@ async fn can_access_asset_ipc(
     asset_id: i32,
     protocol: &str,
 ) -> Result<AccessCheckResult, AppError> {
-    use crate::schema::assets;
+    use crate::schema::{asset_asset_groups, assets};
 
-    let group_id: Option<i32> = assets::table
+    let _: i32 = assets::table
         .filter(assets::id.eq(asset_id))
         .filter(assets::is_deleted.eq(false))
-        .select(assets::group_id)
+        .select(assets::id)
         .first(conn)
         .await
         .map_err(|e| match e {
@@ -173,21 +181,53 @@ async fn can_access_asset_ipc(
             _ => AppError::Database(e),
         })?;
 
-    let group_id = match group_id {
-        Some(gid) => gid,
-        None => return Ok(AccessCheckResult::denied()),
-    };
+    let asset_group_ids: Vec<i32> = asset_asset_groups::table
+        .filter(asset_asset_groups::asset_id.eq(asset_id))
+        .select(asset_asset_groups::asset_group_id)
+        .load(conn)
+        .await
+        .map_err(AppError::Database)?;
 
-    let ipc_result = match client.check_access(user_id, group_id, protocol).await {
-        Ok(r) => r,
-        Err(_) => return Ok(AccessCheckResult::denied()), // fail-closed
-    };
+    if asset_group_ids.is_empty() {
+        return Ok(AccessCheckResult::denied());
+    }
+
+    let mut allowed = false;
+    let mut require_mfa = false;
+    let mut require_justification = false;
+    let mut max_session_duration: Option<i32> = None;
+
+    for gid in asset_group_ids {
+        let ipc_result = match client.check_access(user_id, gid, protocol).await {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        if ipc_result.allowed {
+            allowed = true;
+            if ipc_result.require_mfa {
+                require_mfa = true;
+            }
+            if ipc_result.require_justification {
+                require_justification = true;
+            }
+            if let Some(d) = ipc_result.max_session_duration {
+                max_session_duration = Some(match max_session_duration {
+                    None => d,
+                    Some(cur) => cur.min(d),
+                });
+            }
+        }
+    }
+
+    if !allowed {
+        return Ok(AccessCheckResult::denied());
+    }
 
     Ok(AccessCheckResult {
-        allowed: ipc_result.allowed,
-        require_mfa: ipc_result.require_mfa,
-        require_justification: ipc_result.require_justification,
-        max_session_duration: ipc_result.max_session_duration,
+        allowed: true,
+        require_mfa,
+        require_justification,
+        max_session_duration,
     })
 }
 
@@ -197,14 +237,14 @@ async fn can_access_asset_sql(
     asset_id: i32,
     protocol: &str,
 ) -> Result<AccessCheckResult, AppError> {
-    use crate::schema::{access_rules, assets, user_groups};
+    use crate::schema::{access_rules, asset_asset_groups, assets, user_groups};
 
     let now = Utc::now();
 
-    let group_id: Option<i32> = assets::table
+    let _: i32 = assets::table
         .filter(assets::id.eq(asset_id))
         .filter(assets::is_deleted.eq(false))
-        .select(assets::group_id)
+        .select(assets::id)
         .first(conn)
         .await
         .map_err(|e| match e {
@@ -212,16 +252,22 @@ async fn can_access_asset_sql(
             _ => AppError::Database(e),
         })?;
 
-    let group_id = match group_id {
-        Some(gid) => gid,
-        None => return Ok(AccessCheckResult::denied()),
-    };
+    let asset_group_ids: Vec<i32> = asset_asset_groups::table
+        .filter(asset_asset_groups::asset_id.eq(asset_id))
+        .select(asset_asset_groups::asset_group_id)
+        .load(conn)
+        .await
+        .map_err(AppError::Database)?;
+
+    if asset_group_ids.is_empty() {
+        return Ok(AccessCheckResult::denied());
+    }
 
     #[allow(clippy::type_complexity)]
     let matching_rules: Vec<(bool, bool, Option<i32>)> = access_rules::table
         .inner_join(user_groups::table.on(user_groups::group_id.eq(access_rules::user_group_id)))
         .filter(user_groups::user_id.eq(user_id))
-        .filter(access_rules::asset_group_id.eq(group_id))
+        .filter(access_rules::asset_group_id.eq_any(asset_group_ids))
         .filter(access_rules::is_active.eq(true))
         .filter(
             access_rules::valid_from

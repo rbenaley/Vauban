@@ -642,8 +642,8 @@ pub mod ipc_test_service {
     use std::sync::Arc;
     use std::thread::JoinHandle;
 
-    use shared::ipc::IpcChannel;
-    use shared::messages::{Message, RbacResult};
+    use shared::ipc::{IpcChannel, IpcError};
+    use shared::messages::{AccessResponse, Message, RbacResult};
     use vauban_web::ipc::AccessIpcClient;
 
     pub struct InProcessAccessService {
@@ -698,7 +698,10 @@ pub mod ipc_test_service {
         use diesel_async::pooled_connection::AsyncDieselConnectionManager;
         use diesel_async::pooled_connection::deadpool::Pool;
 
-        let rt = tokio::runtime::Builder::new_current_thread()
+        // Multi-thread runtime: deadpool + block_on on current_thread can deadlock
+        // when connection setup needs other tasks to run on the same runtime.
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
             .enable_all()
             .build()
             .expect("tokio runtime for access service");
@@ -721,8 +724,20 @@ pub mod ipc_test_service {
                         request_id,
                         response,
                     };
-                    if channel.send(&msg).is_err() {
-                        break;
+                    match channel.send(&msg) {
+                        Ok(()) => {}
+                        Err(IpcError::MessageTooLarge { .. }) => {
+                            let fallback = Message::AccessResponse {
+                                request_id,
+                                response: AccessResponse::Error(
+                                    "IPC response exceeds maximum message size".to_string(),
+                                ),
+                            };
+                            if channel.send(&fallback).is_err() {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
                     }
                 }
                 Ok(Message::RbacCheck {

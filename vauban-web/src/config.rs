@@ -237,12 +237,39 @@ pub struct Config {
     /// Session recording configuration.
     #[serde(default)]
     pub recording: RecordingConfig,
+    /// Asset / asset-group membership behavior.
+    #[serde(default)]
+    pub assets: AssetsConfig,
 }
 
 debug_redacted_struct!(
     Config,
     redact: [secret_key]
 );
+
+/// Asset and asset-group configuration.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AssetsConfig {
+    /// When `true`, an asset may belong to several asset groups. When `false`, at most one
+    /// group per asset is enforced by the application (see also startup warning if data
+    /// already contains multi-group rows).
+    #[serde(default = "AssetsConfig::default_allow_multiple_groups_per_asset")]
+    pub allow_multiple_groups_per_asset: bool,
+}
+
+impl Default for AssetsConfig {
+    fn default() -> Self {
+        Self {
+            allow_multiple_groups_per_asset: true,
+        }
+    }
+}
+
+impl AssetsConfig {
+    const fn default_allow_multiple_groups_per_asset() -> bool {
+        true
+    }
+}
 
 /// Database configuration.
 #[derive(Clone, Deserialize)]
@@ -1033,7 +1060,7 @@ mod tests {
     #[test]
     fn test_environment_clone() {
         let env = Environment::Production;
-        let cloned = env.clone();
+        let cloned = env;
         assert_eq!(env, cloned);
     }
 
@@ -1069,7 +1096,7 @@ mod tests {
     #[test]
     fn test_log_format_clone() {
         let format = LogFormat::Text;
-        let cloned = format.clone();
+        let cloned = format;
         assert_eq!(format, cloned);
     }
 

@@ -8,7 +8,7 @@ use sha3::{Digest, Sha3_256};
 use uuid::Uuid;
 
 use vauban_web::models::access_rule::NewAccessRule;
-use vauban_web::models::asset::{Asset, AssetType, NewAsset};
+use vauban_web::models::asset::{Asset, AssetType, NewAsset, NewAssetAssetGroup};
 use vauban_web::models::auth_session::NewAuthSession;
 use vauban_web::models::session::SessionType;
 use vauban_web::models::user::{AuthSource, NewUser, User};
@@ -235,7 +235,6 @@ pub async fn create_test_ssh_asset(conn: &mut AsyncPgConnection, name: &str) -> 
         port: 22,
         asset_type: AssetType::Ssh,
         status: "online".to_string(),
-        group_id: None,
         description: Some("Test SSH asset".to_string()),
         os_type: Some("Linux".to_string()),
         os_version: Some("Ubuntu 22.04".to_string()),
@@ -270,7 +269,6 @@ pub async fn create_test_rdp_asset(conn: &mut AsyncPgConnection, name: &str) -> 
         port: 3389,
         asset_type: AssetType::Rdp,
         status: "online".to_string(),
-        group_id: None,
         description: Some("Test RDP asset".to_string()),
         os_type: Some("Windows".to_string()),
         os_version: Some("Server 2022".to_string()),
@@ -421,7 +419,6 @@ pub async fn create_simple_ssh_asset(
         port: 22,
         asset_type: AssetType::Ssh,
         status: "online".to_string(),
-        group_id: None,
         description: None,
         os_type: None,
         os_version: None,
@@ -460,7 +457,6 @@ pub async fn create_simple_rdp_asset(
         port: 3389,
         asset_type: AssetType::Rdp,
         status: "online".to_string(),
-        group_id: None,
         description: None,
         os_type: Some("Windows".to_string()),
         os_version: None,
@@ -782,7 +778,6 @@ pub async fn create_test_asset_in_group(
         port: 22,
         asset_type: AssetType::Ssh,
         status: "online".to_string(),
-        group_id: Some(group_id),
         description: None,
         os_type: None,
         os_version: None,
@@ -798,6 +793,17 @@ pub async fn create_test_asset_in_group(
         diesel::insert_into(assets::table)
             .values(&new_asset)
             .get_result(conn)
+            .await
+    );
+
+    use vauban_web::schema::asset_asset_groups::dsl as aag;
+    unwrap_ok!(
+        diesel::insert_into(aag::asset_asset_groups)
+            .values(NewAssetAssetGroup {
+                asset_id: asset.id,
+                asset_group_id: group_id,
+            })
+            .execute(conn)
             .await
     );
 
@@ -838,7 +844,6 @@ pub async fn create_test_asset_in_group_with_type(
         port,
         asset_type,
         status: "online".to_string(),
-        group_id: Some(group_id),
         description: None,
         os_type: None,
         os_version: None,
@@ -854,6 +859,17 @@ pub async fn create_test_asset_in_group_with_type(
         diesel::insert_into(assets::table)
             .values(&new_asset)
             .get_result(conn)
+            .await
+    );
+
+    use vauban_web::schema::asset_asset_groups::dsl as aag;
+    unwrap_ok!(
+        diesel::insert_into(aag::asset_asset_groups)
+            .values(NewAssetAssetGroup {
+                asset_id: asset.id,
+                asset_group_id: group_id,
+            })
+            .execute(conn)
             .await
     );
 

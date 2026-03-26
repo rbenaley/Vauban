@@ -7,9 +7,10 @@ use std::io;
 use std::os::unix::io::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use thiserror::Error;
 
-/// Maximum message size (256 KB). Sized for H.264 I-frames which can exceed
-/// 128 KB at very high resolutions (5K+) with complex graphical content,
-/// while remaining a reasonable DoS guard for local IPC.
+/// Maximum message size (256 KiB). Sized for H.264 I-frames which can exceed
+/// 128 KiB at very high resolutions (5K+) with complex graphical content.
+/// Access service list payloads use IPC pagination so they stay under this cap.
+/// Remains a reasonable DoS guard for local IPC.
 pub const MAX_MESSAGE_SIZE: usize = 256 * 1024;
 
 /// IPC error types.
@@ -370,8 +371,191 @@ pub fn poll_readable(fds: &[RawFd], timeout_ms: i32) -> Result<Vec<usize>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::messages::{ControlMessage, Message, ServiceStats};
+    use crate::messages::{
+        AccessResponse, AssetGroupInfo, ControlMessage, IpcPage, Message, ServiceStats,
+        DEFAULT_IPC_PAGE_LIMIT, MAX_IPC_PAGE_LIMIT,
+    };
+    use crate::messages::AccessRuleInfo;
     use std::os::fd::AsRawFd;
+
+    fn pad(n: usize) -> String {
+        "x".repeat(n)
+    }
+
+    /// Upper-bound style row (varchar-like lengths, many protocols) to stress bincode size.
+    fn worst_case_access_rule_info() -> AccessRuleInfo {
+        let rfc = "2025-01-01T12:00:00.000000000+00:00".to_string();
+        AccessRuleInfo {
+            uuid: pad(36),
+            name: pad(100),
+            description: Some(pad(2000)),
+            user_group_id: i32::MAX,
+            user_group_uuid: pad(36),
+            user_group_name: pad(100),
+            asset_group_id: i32::MAX,
+            asset_group_uuid: pad(36),
+            asset_group_name: pad(100),
+            allowed_protocols: (0..24)
+                .map(|i| format!("protocol-{i}-{}", pad(16)))
+                .collect(),
+            valid_from: Some(rfc.clone()),
+            valid_until: Some(rfc.clone()),
+            require_mfa: true,
+            require_justification: true,
+            max_session_duration: Some(i32::MAX),
+            is_active: true,
+            priority: i32::MAX,
+            created_at: rfc.clone(),
+            updated_at: rfc,
+        }
+    }
+
+    /// Typical DB varchar limits (no huge `Text`), similar to `AccessRuleInfo` from queries.
+    fn access_rule_info_schema_bounded() -> AccessRuleInfo {
+        let rfc = "2025-01-01T12:00:00.000000000+00:00".to_string();
+        AccessRuleInfo {
+            uuid: pad(36),
+            name: pad(100),
+            description: Some(pad(100)),
+            user_group_id: 1,
+            user_group_uuid: pad(36),
+            user_group_name: pad(100),
+            asset_group_id: 2,
+            asset_group_uuid: pad(36),
+            asset_group_name: pad(100),
+            allowed_protocols: (0..8)
+                .map(|i| format!("proto{i}-{}", pad(12)))
+                .collect(),
+            valid_from: Some(rfc.clone()),
+            valid_until: Some(rfc.clone()),
+            require_mfa: false,
+            require_justification: false,
+            max_session_duration: Some(3600),
+            is_active: true,
+            priority: 0,
+            created_at: rfc.clone(),
+            updated_at: rfc,
+        }
+    }
+
+    fn asset_group_info_schema_bounded() -> AssetGroupInfo {
+        let rfc = "2025-01-01T12:00:00.000000000+00:00".to_string();
+        AssetGroupInfo {
+            id: 1,
+            uuid: pad(36),
+            name: pad(100),
+            slug: pad(100),
+            description: Some(pad(100)),
+            color: "#112233".to_string(),
+            icon: pad(50),
+            created_at: rfc.clone(),
+            updated_at: rfc,
+        }
+    }
+
+    fn encode_message(msg: &Message) -> Vec<u8> {
+        bincode::serde::encode_to_vec(msg, bincode::config::standard()).unwrap()
+    }
+
+    fn access_rule_page_size_bytes(count: usize) -> usize {
+        let row = access_rule_info_schema_bounded();
+        let msg = Message::AccessResponse {
+            request_id: 1,
+            response: AccessResponse::AccessRulePage(IpcPage {
+                items: vec![row; count],
+                has_more: false,
+            }),
+        };
+        encode_message(&msg).len()
+    }
+
+    fn asset_group_page_size_bytes(count: usize) -> usize {
+        let row = asset_group_info_schema_bounded();
+        let msg = Message::AccessResponse {
+            request_id: 1,
+            response: AccessResponse::AssetGroupPage(IpcPage {
+                items: vec![row; count],
+                has_more: false,
+            }),
+        };
+        encode_message(&msg).len()
+    }
+
+    /// Full default page of schema-sized `AccessRuleInfo` rows must fit in one IPC frame.
+    #[test]
+    fn test_access_rule_page_schema_bounded_default_limit_fits_max_message_size() {
+        let n = DEFAULT_IPC_PAGE_LIMIT as usize;
+        let len = access_rule_page_size_bytes(n);
+        assert!(
+            len <= MAX_MESSAGE_SIZE,
+            "AccessRulePage x DEFAULT_IPC_PAGE_LIMIT (schema-bounded rows): {} bytes > MAX_MESSAGE_SIZE {}",
+            len,
+            MAX_MESSAGE_SIZE
+        );
+    }
+
+    /// Full default page of schema-sized `AssetGroupInfo` rows must fit in one IPC frame.
+    #[test]
+    fn test_asset_group_page_schema_bounded_default_limit_fits_max_message_size() {
+        let n = DEFAULT_IPC_PAGE_LIMIT as usize;
+        let len = asset_group_page_size_bytes(n);
+        assert!(
+            len <= MAX_MESSAGE_SIZE,
+            "AssetGroupPage x DEFAULT_IPC_PAGE_LIMIT (schema-bounded rows): {} bytes > MAX_MESSAGE_SIZE {}",
+            len,
+            MAX_MESSAGE_SIZE
+        );
+    }
+
+    /// Binary search: max rows (schema-bounded asset groups) that still fit in a single frame.
+    #[test]
+    fn test_asset_group_max_rows_per_ipc_frame_gte_default_page_limit() {
+        let mut lo = 1usize;
+        let mut hi = MAX_IPC_PAGE_LIMIT as usize;
+        while lo < hi {
+            let mid = (lo + hi + 1) / 2;
+            if asset_group_page_size_bytes(mid) <= MAX_MESSAGE_SIZE {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        assert!(
+            lo >= DEFAULT_IPC_PAGE_LIMIT as usize,
+            "schema-bounded asset group rows fitting in one IPC frame ({lo}) should be >= DEFAULT_IPC_PAGE_LIMIT ({DEFAULT_IPC_PAGE_LIMIT})"
+        );
+    }
+
+    /// Very large `Text` fields per row cannot fill a full page; cap is bounded by `MAX_MESSAGE_SIZE`.
+    #[test]
+    fn test_bincode_max_rows_heavy_access_rule_under_cap() {
+        let row = worst_case_access_rule_info();
+        let mut lo = 1usize;
+        let mut hi = MAX_IPC_PAGE_LIMIT as usize;
+        while lo < hi {
+            let mid = (lo + hi + 1) / 2;
+            let msg = Message::AccessResponse {
+                request_id: 1,
+                response: AccessResponse::AccessRulePage(IpcPage {
+                    items: vec![row.clone(); mid],
+                    has_more: false,
+                }),
+            };
+            if encode_message(&msg).len() <= MAX_MESSAGE_SIZE {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        assert!(
+            lo >= 1,
+            "expected at least one heavy AccessRuleInfo row to fit in MAX_MESSAGE_SIZE"
+        );
+        assert!(
+            lo < DEFAULT_IPC_PAGE_LIMIT as usize,
+            "sanity: heavy rows should not fit a full DEFAULT_IPC_PAGE_LIMIT page ({lo} < {DEFAULT_IPC_PAGE_LIMIT})"
+        );
+    }
 
     // ==================== IpcChannel Tests ====================
 

@@ -14,8 +14,8 @@
 /// Run with: cargo test --test integration_tests
 ///
 /// Requirements:
-/// - PostgreSQL test database at DATABASE_URL
-/// - Run migrations: diesel migration run
+/// - PostgreSQL test database at DATABASE_URL (see `config/testing.toml`)
+/// - Run migrations: `diesel migration run` from `vauban-web/`
 // Test modules organized by category
 mod api; // REST API tests (/api/v1/*)
 mod middleware; // Middleware tests

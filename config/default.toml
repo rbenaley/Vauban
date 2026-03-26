@@ -133,6 +133,11 @@ parallelism = 1
 level = "info"
 format = "text"
 
+[assets]
+# When false, at most one asset group per asset is enforced by the app.
+# If the database still has assets in multiple groups, a WARN is logged at startup.
+allow_multiple_groups_per_asset = true
+
 [api]
 # Enable or disable the M2M API endpoints (/api/v1/*)
 # When disabled, only web routes are available

@@ -504,6 +504,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         e
     })?;
 
+    vauban_web::services::asset_membership::warn_if_single_group_mode_inconsistent_with_data(
+        &db_pool,
+        config.assets.allow_multiple_groups_per_asset,
+    )
+    .await;
+
     // Register DB pool and Tokio handle with supervisor for admin command processing.
     // The supervisor IPC thread (sync) uses block_on(handle) to run async DB ops.
     if let Some(ref sup) = supervisor_client {

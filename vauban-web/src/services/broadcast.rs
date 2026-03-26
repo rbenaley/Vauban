@@ -676,8 +676,7 @@ mod tests {
 
     #[test]
     fn test_default_channel_capacity_is_reasonable() {
-        assert!(DEFAULT_CHANNEL_CAPACITY >= 10);
-        assert!(DEFAULT_CHANNEL_CAPACITY <= 10000);
+        assert!((10..=10000).contains(&DEFAULT_CHANNEL_CAPACITY));
     }
 
     // ==================== Complete WsChannel from_str Coverage ====================

@@ -3352,20 +3352,20 @@ async fn test_terminal_ws_forbidden_for_non_owner() {
     let mut conn = app.get_conn().await;
 
     // Create two regular users
-    let owner = create_test_user(&mut *conn, &app.auth_service, &unique_name("ws_owner")).await;
+    let owner = create_test_user(&mut conn, &app.auth_service, &unique_name("ws_owner")).await;
     let attacker =
-        create_test_user(&mut *conn, &app.auth_service, &unique_name("ws_attacker")).await;
+        create_test_user(&mut conn, &app.auth_service, &unique_name("ws_attacker")).await;
 
     // Create an asset and a session owned by `owner`
     let asset_id =
-        create_simple_ssh_asset(&mut *conn, &unique_name("ws_asset"), owner.user.id).await;
+        create_simple_ssh_asset(&mut conn, &unique_name("ws_asset"), owner.user.id).await;
     let (_session_id, session_uuid) =
-        create_test_session_with_uuid(&mut *conn, owner.user.id, asset_id, "ssh", "active").await;
+        create_test_session_with_uuid(&mut conn, owner.user.id, asset_id, "ssh", "active").await;
 
     drop(conn);
 
     // Attacker tries to access owner's terminal session -> must be 403
-    let response = ws_terminal_request(&app, &session_uuid.to_string(), &attacker.token).await;
+    let response = ws_terminal_request(app, &session_uuid.to_string(), &attacker.token).await;
     let status = response.status_code().as_u16();
     assert_eq!(
         status, 403,
@@ -3381,17 +3381,17 @@ async fn test_session_ws_forbidden_for_non_owner() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let owner = create_test_user(&mut *conn, &app.auth_service, &unique_name("ws_own2")).await;
-    let attacker = create_test_user(&mut *conn, &app.auth_service, &unique_name("ws_atk2")).await;
+    let owner = create_test_user(&mut conn, &app.auth_service, &unique_name("ws_own2")).await;
+    let attacker = create_test_user(&mut conn, &app.auth_service, &unique_name("ws_atk2")).await;
 
     let asset_id =
-        create_simple_ssh_asset(&mut *conn, &unique_name("ws_asset2"), owner.user.id).await;
+        create_simple_ssh_asset(&mut conn, &unique_name("ws_asset2"), owner.user.id).await;
     let (_session_id, session_uuid) =
-        create_test_session_with_uuid(&mut *conn, owner.user.id, asset_id, "ssh", "active").await;
+        create_test_session_with_uuid(&mut conn, owner.user.id, asset_id, "ssh", "active").await;
 
     drop(conn);
 
-    let response = ws_session_request(&app, &session_uuid.to_string(), &attacker.token).await;
+    let response = ws_session_request(app, &session_uuid.to_string(), &attacker.token).await;
     let status = response.status_code().as_u16();
     assert_eq!(
         status, 403,
@@ -3409,17 +3409,17 @@ async fn test_terminal_ws_allowed_for_owner() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let owner = create_test_user(&mut *conn, &app.auth_service, &unique_name("ws_own3")).await;
+    let owner = create_test_user(&mut conn, &app.auth_service, &unique_name("ws_own3")).await;
     let asset_id =
-        create_simple_ssh_asset(&mut *conn, &unique_name("ws_asset3"), owner.user.id).await;
+        create_simple_ssh_asset(&mut conn, &unique_name("ws_asset3"), owner.user.id).await;
     let (_session_id, session_uuid) =
-        create_test_session_with_uuid(&mut *conn, owner.user.id, asset_id, "ssh", "active").await;
+        create_test_session_with_uuid(&mut conn, owner.user.id, asset_id, "ssh", "active").await;
 
     drop(conn);
 
     // Owner accesses their own terminal -> middleware passes, handler returns 400
     // (no WebSocket upgrade headers) instead of 403/404 (rejected by guard).
-    let response = ws_terminal_request(&app, &session_uuid.to_string(), &owner.token).await;
+    let response = ws_terminal_request(app, &session_uuid.to_string(), &owner.token).await;
     let status = response.status_code().as_u16();
     assert!(
         status != 403 && status != 404,
@@ -3435,15 +3435,15 @@ async fn test_session_ws_allowed_for_owner() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let owner = create_test_user(&mut *conn, &app.auth_service, &unique_name("ws_own4")).await;
+    let owner = create_test_user(&mut conn, &app.auth_service, &unique_name("ws_own4")).await;
     let asset_id =
-        create_simple_ssh_asset(&mut *conn, &unique_name("ws_asset4"), owner.user.id).await;
+        create_simple_ssh_asset(&mut conn, &unique_name("ws_asset4"), owner.user.id).await;
     let (_session_id, session_uuid) =
-        create_test_session_with_uuid(&mut *conn, owner.user.id, asset_id, "ssh", "active").await;
+        create_test_session_with_uuid(&mut conn, owner.user.id, asset_id, "ssh", "active").await;
 
     drop(conn);
 
-    let response = ws_session_request(&app, &session_uuid.to_string(), &owner.token).await;
+    let response = ws_session_request(app, &session_uuid.to_string(), &owner.token).await;
     let status = response.status_code().as_u16();
     assert!(
         status != 403 && status != 404,
@@ -3459,18 +3459,18 @@ async fn test_terminal_ws_allowed_for_admin() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let owner = create_test_user(&mut *conn, &app.auth_service, &unique_name("ws_own5")).await;
-    let admin = create_admin_user(&mut *conn, &app.auth_service, &unique_name("ws_admin5")).await;
+    let owner = create_test_user(&mut conn, &app.auth_service, &unique_name("ws_own5")).await;
+    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("ws_admin5")).await;
     let asset_id =
-        create_simple_ssh_asset(&mut *conn, &unique_name("ws_asset5"), owner.user.id).await;
+        create_simple_ssh_asset(&mut conn, &unique_name("ws_asset5"), owner.user.id).await;
     let (_session_id, session_uuid) =
-        create_test_session_with_uuid(&mut *conn, owner.user.id, asset_id, "ssh", "active").await;
+        create_test_session_with_uuid(&mut conn, owner.user.id, asset_id, "ssh", "active").await;
 
     drop(conn);
 
     // Admin accesses another user's terminal -> middleware passes, handler returns 400
     // (no WebSocket upgrade headers) instead of 403/404 (rejected by guard).
-    let response = ws_terminal_request(&app, &session_uuid.to_string(), &admin.token).await;
+    let response = ws_terminal_request(app, &session_uuid.to_string(), &admin.token).await;
     let status = response.status_code().as_u16();
     assert!(
         status != 403 && status != 404,
@@ -3486,16 +3486,16 @@ async fn test_session_ws_allowed_for_admin() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let owner = create_test_user(&mut *conn, &app.auth_service, &unique_name("ws_own6")).await;
-    let admin = create_admin_user(&mut *conn, &app.auth_service, &unique_name("ws_admin6")).await;
+    let owner = create_test_user(&mut conn, &app.auth_service, &unique_name("ws_own6")).await;
+    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("ws_admin6")).await;
     let asset_id =
-        create_simple_ssh_asset(&mut *conn, &unique_name("ws_asset6"), owner.user.id).await;
+        create_simple_ssh_asset(&mut conn, &unique_name("ws_asset6"), owner.user.id).await;
     let (_session_id, session_uuid) =
-        create_test_session_with_uuid(&mut *conn, owner.user.id, asset_id, "ssh", "active").await;
+        create_test_session_with_uuid(&mut conn, owner.user.id, asset_id, "ssh", "active").await;
 
     drop(conn);
 
-    let response = ws_session_request(&app, &session_uuid.to_string(), &admin.token).await;
+    let response = ws_session_request(app, &session_uuid.to_string(), &admin.token).await;
     let status = response.status_code().as_u16();
     assert!(
         status != 403 && status != 404,
@@ -3511,11 +3511,11 @@ async fn test_terminal_ws_nonexistent_session_returns_404() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let user = create_test_user(&mut *conn, &app.auth_service, &unique_name("ws_user7")).await;
+    let user = create_test_user(&mut conn, &app.auth_service, &unique_name("ws_user7")).await;
     drop(conn);
 
     let fake_uuid = uuid::Uuid::new_v4();
-    let response = ws_terminal_request(&app, &fake_uuid.to_string(), &user.token).await;
+    let response = ws_terminal_request(app, &fake_uuid.to_string(), &user.token).await;
     let status = response.status_code().as_u16();
     assert_eq!(
         status, 404,
@@ -3531,10 +3531,10 @@ async fn test_terminal_ws_invalid_session_id_returns_400() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let user = create_test_user(&mut *conn, &app.auth_service, &unique_name("ws_user8")).await;
+    let user = create_test_user(&mut conn, &app.auth_service, &unique_name("ws_user8")).await;
     drop(conn);
 
-    let response = ws_terminal_request(&app, "not-a-valid-uuid", &user.token).await;
+    let response = ws_terminal_request(app, "not-a-valid-uuid", &user.token).await;
     let status = response.status_code().as_u16();
     assert_eq!(
         status, 400,
