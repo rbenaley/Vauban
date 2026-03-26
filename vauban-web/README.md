@@ -22,7 +22,7 @@ Web interface and API for the VAUBAN security bastion platform, built with Rust 
 
 ## Prerequisites
 
-- Rust 1.92+ (edition 2024)
+- Rust 1.89+ (edition 2024)
 - PostgreSQL 18+
 - Valkey/Redis (optional - for caching, can be disabled for development)
 
