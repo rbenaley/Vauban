@@ -39,6 +39,42 @@ docs/                 # Technical architecture documentation
 - **IPC**: Unix pipes for inter-service communication
 - **Authentication**: JWT, Argon2id, TOTP
 
+## Security
+
+This application follows strict security practices:
+
+- No `unwrap()` in production code paths
+- All user input validated with `validator` crate
+- Secrets managed with `secrecy` and `zeroize`
+- Post-quantum cryptography ready
+- Privilege separation via Unix pipes IPC
+- Comprehensive audit logging
+
+## Documentation
+
+Detailed technical architecture documents are available in [`docs/technical/`](docs/technical/):
+
+| Document | Description |
+|----------|-------------|
+| [Privilege Separation Architecture](docs/technical/Vauban_Privsep_Architecture_EN(1.2).md) | Process model, IPC protocol, Capsicum sandboxing, supervisor design |
+| [Vault Architecture](docs/technical/Vauban_Vault_Architecture_EN(1.0).md) | Cryptographic design, key management, threat model |
+| [RDP Session Architecture](docs/technical/Vauban_RDP_Architecture_EN(1.0).md) | H.264 encoding, WebCodecs decoding, dynamic resolution, input pipeline |
+| [OpenH264 AVX2 Optimizations](docs/technical/Vauban_OpenH264_AVX2_Optimizations_EN(1.0).md) | Custom AVX2 assembly for SAD and intra prediction (~50% CPU reduction) |
+| [ACME TLS Certificate Architecture](docs/technical/Vauban_ACME_TLS_Architecture_EN(1.0).md) | Automatic certificate renewal, TLS-ALPN-01, zero-downtime rotation |
+| [Session Recording Architecture](docs/technical/Vauban_Recording_Architecture_EN(1.2).md) | RDP segmented fMP4 + SSH asciicast v2 recording, input redaction, DASH/asciinema playback |
+| [IAM Architecture](docs/technical/Vauban_IAM_Architecture_EN(1.0).md) | Two-layer authorization (Casbin RBAC + instance-level access rules), Argon2id auth service |
+
+## Security Model
+
+Vauban's security is built on defense in depth:
+
+1. **Process isolation**: Each service runs under a dedicated UID with no shared memory
+2. **Capsicum confinement**: After initialization, processes cannot open files, create sockets, or access the filesystem
+3. **Credential isolation**: Encryption keys are confined to `vauban-vault`; secrets are encrypted at rest in PostgreSQL and only decrypted transiently for session establishment, wrapped in zeroize-on-drop memory
+4. **Network brokering**: Sandboxed proxies cannot establish TCP connections directly; the supervisor brokers all outbound connections via `SCM_RIGHTS` file descriptor passing
+5. **Memory safety**: Rust's ownership model prevents buffer overflows, use-after-free, and data races
+6. **Secret hygiene**: Environment variables destroyed after reading, `SensitiveString` zeroized on drop
+
 ## Building
 
 ### Prerequisites
@@ -390,42 +426,6 @@ just test --test security_test
 - **Unit Tests**: Services (auth, hash, JWT, TOTP), Models, Config, Error handling
 - **Integration Tests**: All API handlers, Database operations
 - **Security Tests**: Brute force protection, SQL injection, XSS prevention, Input validation
-
-## Security
-
-This application follows strict security practices:
-
-- No `unwrap()` in production code paths
-- All user input validated with `validator` crate
-- Secrets managed with `secrecy` and `zeroize`
-- Post-quantum cryptography ready
-- Privilege separation via Unix pipes IPC
-- Comprehensive audit logging
-
-## Documentation
-
-Detailed technical architecture documents are available in [`docs/technical/`](docs/technical/):
-
-| Document | Description |
-|----------|-------------|
-| [Privilege Separation Architecture](docs/technical/Vauban_Privsep_Architecture_EN(1.2).md) | Process model, IPC protocol, Capsicum sandboxing, supervisor design |
-| [Vault Architecture](docs/technical/Vauban_Vault_Architecture_EN(1.0).md) | Cryptographic design, key management, threat model |
-| [RDP Session Architecture](docs/technical/Vauban_RDP_Architecture_EN(1.0).md) | H.264 encoding, WebCodecs decoding, dynamic resolution, input pipeline |
-| [OpenH264 AVX2 Optimizations](docs/technical/Vauban_OpenH264_AVX2_Optimizations_EN(1.0).md) | Custom AVX2 assembly for SAD and intra prediction (~50% CPU reduction) |
-| [ACME TLS Certificate Architecture](docs/technical/Vauban_ACME_TLS_Architecture_EN(1.0).md) | Automatic certificate renewal, TLS-ALPN-01, zero-downtime rotation |
-| [Session Recording Architecture](docs/technical/Vauban_Recording_Architecture_EN(1.2).md) | RDP segmented fMP4 + SSH asciicast v2 recording, input redaction, DASH/asciinema playback |
-| [IAM Architecture](docs/technical/Vauban_IAM_Architecture_EN(1.0).md) | Two-layer authorization (Casbin RBAC + instance-level access rules), Argon2id auth service |
-
-## Security Model
-
-Vauban's security is built on defense in depth:
-
-1. **Process isolation**: Each service runs under a dedicated UID with no shared memory
-2. **Capsicum confinement**: After initialization, processes cannot open files, create sockets, or access the filesystem
-3. **Credential isolation**: Encryption keys are confined to `vauban-vault`; secrets are encrypted at rest in PostgreSQL and only decrypted transiently for session establishment, wrapped in zeroize-on-drop memory
-4. **Network brokering**: Sandboxed proxies cannot establish TCP connections directly; the supervisor brokers all outbound connections via `SCM_RIGHTS` file descriptor passing
-5. **Memory safety**: Rust's ownership model prevents buffer overflows, use-after-free, and data races
-6. **Secret hygiene**: Environment variables destroyed after reading, `SensitiveString` zeroized on drop
 
 ## License
 
