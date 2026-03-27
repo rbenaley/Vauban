@@ -192,25 +192,25 @@ async fn can_access_asset_ipc(
         return Ok(AccessCheckResult::denied());
     }
 
+    let entries = client
+        .check_access_multi(user_id, &asset_group_ids, protocol)
+        .await?;
+
     let mut allowed = false;
     let mut require_mfa = false;
     let mut require_justification = false;
     let mut max_session_duration: Option<i32> = None;
 
-    for gid in asset_group_ids {
-        let ipc_result = match client.check_access(user_id, gid, protocol).await {
-            Ok(r) => r,
-            Err(_) => continue,
-        };
-        if ipc_result.allowed {
+    for entry in entries {
+        if entry.result.allowed {
             allowed = true;
-            if ipc_result.require_mfa {
+            if entry.result.require_mfa {
                 require_mfa = true;
             }
-            if ipc_result.require_justification {
+            if entry.result.require_justification {
                 require_justification = true;
             }
-            if let Some(d) = ipc_result.max_session_duration {
+            if let Some(d) = entry.result.max_session_duration {
                 max_session_duration = Some(match max_session_duration {
                     None => d,
                     Some(cur) => cur.min(d),

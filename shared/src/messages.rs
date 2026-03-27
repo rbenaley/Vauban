@@ -151,6 +151,13 @@ pub struct AccessCheckResult {
     pub max_session_duration: Option<i32>,
 }
 
+/// Single entry in a batch access check result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccessCheckResultEntry {
+    pub asset_group_id: i32,
+    pub result: AccessCheckResult,
+}
+
 /// Entry describing which asset groups a user can access and with which protocols.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccessibleGroupEntry {
@@ -356,6 +363,12 @@ pub enum AccessRequest {
     ListAssetGroupOptions {
         page: IpcPageParams,
     },
+
+    CheckAccessMulti {
+        user_id: i32,
+        asset_group_ids: Vec<i32>,
+        protocol: String,
+    },
 }
 
 /// Access control response from vauban-access.
@@ -382,6 +395,8 @@ pub enum AccessResponse {
     Ok,
     Deleted(Result<(), String>),
     Error(String),
+
+    AccessCheckedMulti(Vec<AccessCheckResultEntry>),
 }
 
 /// Seed user data for admin commands.
@@ -3629,6 +3644,11 @@ mod tests {
                 asset_group_id: 1,
                 protocol: "ssh".to_string(),
             },
+            AccessRequest::CheckAccessMulti {
+                user_id: 1,
+                asset_group_ids: vec![1, 2],
+                protocol: "ssh".to_string(),
+            },
             AccessRequest::ListAccessibleGroups {
                 user_id: 1,
                 page: p,
@@ -3731,7 +3751,7 @@ mod tests {
             AccessRequest::ListUserGroupOptions { page: p },
             AccessRequest::ListAssetGroupOptions { page: p },
         ];
-        assert_eq!(requests.len(), 24);
+        assert_eq!(requests.len(), 25);
         for req in requests {
             let serialized = serialize(&req);
             let _: AccessRequest = deserialize(&serialized);
@@ -3747,6 +3767,15 @@ mod tests {
                 require_justification: false,
                 max_session_duration: None,
             }),
+            AccessResponse::AccessCheckedMulti(vec![AccessCheckResultEntry {
+                asset_group_id: 1,
+                result: AccessCheckResult {
+                    allowed: true,
+                    require_mfa: false,
+                    require_justification: false,
+                    max_session_duration: None,
+                },
+            }]),
             AccessResponse::AccessibleGroupsPage(IpcPage {
                 items: vec![AccessibleGroupEntry {
                     asset_group_id: 1,
@@ -3830,10 +3859,158 @@ mod tests {
             AccessResponse::Deleted(Ok(())),
             AccessResponse::Error("err".to_string()),
         ];
-        assert_eq!(responses.len(), 15);
+        assert_eq!(responses.len(), 16);
         for resp in responses {
             let serialized = serialize(&resp);
             let _: AccessResponse = deserialize(&serialized);
+        }
+    }
+
+    /// Extract the bincode variant discriminant (first byte for indices < 251).
+    fn bincode_variant_index(bytes: &[u8]) -> u8 {
+        bytes[0]
+    }
+
+    /// Bincode encodes enum variants by ordinal index.
+    /// Inserting a variant in the middle shifts all subsequent indices,
+    /// breaking wire compatibility between different builds.
+    /// New variants MUST be appended at the END of the enum.
+    #[test]
+    fn test_access_request_bincode_variant_indices_stable() {
+        let p = IpcPageParams {
+            limit: 10,
+            offset: 0,
+        };
+        let dummy_data = AccessRuleData {
+            name: "r".into(),
+            description: None,
+            user_group_id: 1,
+            asset_group_id: 1,
+            allowed_protocols: vec![],
+            valid_from: None,
+            valid_until: None,
+            require_mfa: false,
+            require_justification: false,
+            max_session_duration: None,
+            is_active: true,
+            priority: 0,
+        };
+        let expected: Vec<(&str, u8, AccessRequest)> = vec![
+            ("CheckAccess", 0, AccessRequest::CheckAccess {
+                user_id: 1, asset_group_id: 1, protocol: "ssh".into(),
+            }),
+            ("ListAccessibleGroups", 1, AccessRequest::ListAccessibleGroups {
+                user_id: 1, page: p,
+            }),
+            ("CreateAccessRule", 2, AccessRequest::CreateAccessRule {
+                data: dummy_data.clone(),
+            }),
+            ("GetAccessRule", 3, AccessRequest::GetAccessRule {
+                uuid: "u".into(),
+            }),
+            ("ListAccessRules", 4, AccessRequest::ListAccessRules { page: p }),
+            ("UpdateAccessRule", 5, AccessRequest::UpdateAccessRule {
+                uuid: "u".into(), data: dummy_data,
+            }),
+            ("DeleteAccessRule", 6, AccessRequest::DeleteAccessRule {
+                uuid: "u".into(),
+            }),
+            ("CreateVaubanGroup", 7, AccessRequest::CreateVaubanGroup {
+                name: "g".into(), description: None,
+            }),
+            ("GetVaubanGroup", 8, AccessRequest::GetVaubanGroup {
+                uuid: "u".into(),
+            }),
+            ("GetVaubanGroupById", 9, AccessRequest::GetVaubanGroupById { id: 1 }),
+            ("ListVaubanGroups", 10, AccessRequest::ListVaubanGroups { page: p }),
+            ("UpdateVaubanGroup", 11, AccessRequest::UpdateVaubanGroup {
+                uuid: "u".into(), name: "g".into(), description: None,
+            }),
+            ("DeleteVaubanGroup", 12, AccessRequest::DeleteVaubanGroup {
+                uuid: "u".into(),
+            }),
+            ("AddGroupMember", 13, AccessRequest::AddGroupMember {
+                group_id: 1, user_id: 1,
+            }),
+            ("RemoveGroupMember", 14, AccessRequest::RemoveGroupMember {
+                group_id: 1, user_id: 1,
+            }),
+            ("ListGroupMembers", 15, AccessRequest::ListGroupMembers {
+                group_id: 1, page: p,
+            }),
+            ("ListUserGroups", 16, AccessRequest::ListUserGroups {
+                user_id: 1, page: p,
+            }),
+            ("CreateAssetGroup", 17, AccessRequest::CreateAssetGroup {
+                name: "ag".into(), slug: "ag".into(), description: None,
+                color: "#000".into(), icon: "server".into(),
+            }),
+            ("GetAssetGroup", 18, AccessRequest::GetAssetGroup {
+                uuid: "u".into(),
+            }),
+            ("ListAssetGroups", 19, AccessRequest::ListAssetGroups { page: p }),
+            ("UpdateAssetGroup", 20, AccessRequest::UpdateAssetGroup {
+                uuid: "u".into(), name: "ag".into(), slug: "ag".into(),
+                description: None, color: "#000".into(), icon: "server".into(),
+            }),
+            ("DeleteAssetGroup", 21, AccessRequest::DeleteAssetGroup {
+                uuid: "u".into(),
+            }),
+            ("ListUserGroupOptions", 22, AccessRequest::ListUserGroupOptions { page: p }),
+            ("ListAssetGroupOptions", 23, AccessRequest::ListAssetGroupOptions { page: p }),
+            ("CheckAccessMulti", 24, AccessRequest::CheckAccessMulti {
+                user_id: 1, asset_group_ids: vec![1], protocol: "ssh".into(),
+            }),
+        ];
+        for (name, idx, variant) in &expected {
+            let bytes = serialize(variant);
+            let actual = bincode_variant_index(&bytes);
+            assert_eq!(
+                actual, *idx,
+                "AccessRequest::{name} has bincode index {actual} but expected {idx}. \
+                 New variants MUST be appended at the END of the enum to preserve wire compatibility."
+            );
+        }
+    }
+
+    #[test]
+    fn test_access_response_bincode_variant_indices_stable() {
+        let empty_page_i32: IpcPage<i32> = IpcPage { items: vec![], has_more: false };
+        let empty_page_vg: IpcPage<VaubanGroupInfo> = IpcPage { items: vec![], has_more: false };
+        let empty_page_ag: IpcPage<AssetGroupInfo> = IpcPage { items: vec![], has_more: false };
+        let empty_page_ri: IpcPage<AccessRuleInfo> = IpcPage { items: vec![], has_more: false };
+        let empty_page_go: IpcPage<GroupOption> = IpcPage { items: vec![], has_more: false };
+        let empty_page_ae: IpcPage<AccessibleGroupEntry> = IpcPage { items: vec![], has_more: false };
+
+        let expected: Vec<(&str, u8, AccessResponse)> = vec![
+            ("AccessChecked", 0, AccessResponse::AccessChecked(AccessCheckResult {
+                allowed: false, require_mfa: false, require_justification: false,
+                max_session_duration: None,
+            })),
+            ("AccessibleGroupsPage", 1, AccessResponse::AccessibleGroupsPage(empty_page_ae)),
+            ("AccessRule", 2, AccessResponse::AccessRule(Err("e".into()))),
+            ("AccessRulePage", 3, AccessResponse::AccessRulePage(empty_page_ri)),
+            ("VaubanGroup", 4, AccessResponse::VaubanGroup(Err("e".into()))),
+            ("VaubanGroupPage", 5, AccessResponse::VaubanGroupPage(empty_page_vg)),
+            ("MemberListPage", 6, AccessResponse::MemberListPage(empty_page_i32)),
+            ("UserGroupPage", 7, AccessResponse::UserGroupPage(IpcPage { items: vec![], has_more: false })),
+            ("AssetGroup", 8, AccessResponse::AssetGroup(Err("e".into()))),
+            ("AssetGroupPage", 9, AccessResponse::AssetGroupPage(empty_page_ag)),
+            ("UserGroupOptionsPage", 10, AccessResponse::UserGroupOptionsPage(empty_page_go.clone())),
+            ("AssetGroupOptionsPage", 11, AccessResponse::AssetGroupOptionsPage(empty_page_go)),
+            ("Ok", 12, AccessResponse::Ok),
+            ("Deleted", 13, AccessResponse::Deleted(Ok(()))),
+            ("Error", 14, AccessResponse::Error("e".into())),
+            ("AccessCheckedMulti", 15, AccessResponse::AccessCheckedMulti(vec![])),
+        ];
+        for (name, idx, variant) in &expected {
+            let bytes = serialize(variant);
+            let actual = bincode_variant_index(&bytes);
+            assert_eq!(
+                actual, *idx,
+                "AccessResponse::{name} has bincode index {actual} but expected {idx}. \
+                 New variants MUST be appended at the END of the enum to preserve wire compatibility."
+            );
         }
     }
 

@@ -8,9 +8,9 @@
 use crate::error::{AppError, AppResult};
 use shared::ipc::IpcChannel;
 use shared::messages::{
-    AccessCheckResult, AccessRequest as AccessReq, AccessResponse as AccessResp, AccessRuleData,
-    AccessRuleInfo, AccessibleGroupEntry, AssetGroupInfo, GroupOption, IpcPageParams, Message,
-    RbacResult, VaubanGroupInfo,
+    AccessCheckResult, AccessCheckResultEntry, AccessRequest as AccessReq,
+    AccessResponse as AccessResp, AccessRuleData, AccessRuleInfo, AccessibleGroupEntry,
+    AssetGroupInfo, GroupOption, IpcPage, IpcPageParams, Message, RbacResult, VaubanGroupInfo,
 };
 use std::collections::HashMap;
 use std::io;
@@ -108,6 +108,34 @@ impl AccessIpcClient {
             .map_err(|_| AppError::Ipc("access response channel dropped".to_string()))
     }
 
+    /// Drain all pages from a paginated IPC list endpoint into a single Vec.
+    async fn drain_pages<T>(
+        &self,
+        mut make_request: impl FnMut(u32) -> AccessReq,
+        extract_page: impl Fn(AccessResp) -> Result<IpcPage<T>, AppError>,
+    ) -> AppResult<Vec<T>> {
+        const MAX_DRAIN_ITEMS: usize = 50_000;
+        let mut all = Vec::new();
+        let mut offset = 0u32;
+        loop {
+            let resp = self.send_access_request(make_request(offset)).await?;
+            let page = extract_page(resp)?;
+            let n = page.items.len() as u32;
+            all.extend(page.items);
+            if !page.has_more || n == 0 {
+                break;
+            }
+            if all.len() > MAX_DRAIN_ITEMS {
+                return Err(AppError::Ipc(format!(
+                    "IPC pagination drained {} items, exceeding safety limit {MAX_DRAIN_ITEMS}",
+                    all.len()
+                )));
+            }
+            offset = offset.saturating_add(n);
+        }
+        Ok(all)
+    }
+
     // === Evaluation ===
 
     pub async fn check_access(
@@ -132,37 +160,44 @@ impl AccessIpcClient {
         }
     }
 
+    pub async fn check_access_multi(
+        &self,
+        user_id: i32,
+        asset_group_ids: &[i32],
+        protocol: &str,
+    ) -> AppResult<Vec<AccessCheckResultEntry>> {
+        let resp = self
+            .send_access_request(AccessReq::CheckAccessMulti {
+                user_id,
+                asset_group_ids: asset_group_ids.to_vec(),
+                protocol: protocol.to_string(),
+            })
+            .await?;
+        match resp {
+            AccessResp::AccessCheckedMulti(entries) => Ok(entries),
+            AccessResp::Error(e) => Err(AppError::Ipc(e)),
+            _ => Err(AppError::Ipc(
+                "unexpected response for CheckAccessMulti".into(),
+            )),
+        }
+    }
+
     pub async fn list_accessible_groups(
         &self,
         user_id: i32,
     ) -> AppResult<Vec<AccessibleGroupEntry>> {
-        let mut all = Vec::new();
-        let mut offset = 0u32;
-        loop {
-            let resp = self
-                .send_access_request(AccessReq::ListAccessibleGroups {
-                    user_id,
-                    page: ipc_page(offset),
-                })
-                .await?;
-            match resp {
-                AccessResp::AccessibleGroupsPage(page) => {
-                    let n = page.items.len() as u32;
-                    all.extend(page.items);
-                    if !page.has_more {
-                        break;
-                    }
-                    offset = offset.saturating_add(n);
-                }
-                AccessResp::Error(e) => return Err(AppError::Ipc(e)),
-                _ => {
-                    return Err(AppError::Ipc(
-                        "unexpected response for ListAccessibleGroups".to_string(),
-                    ));
-                }
-            }
-        }
-        Ok(all)
+        self.drain_pages(
+            |offset| AccessReq::ListAccessibleGroups {
+                user_id,
+                page: ipc_page(offset),
+            },
+            |resp| match resp {
+                AccessResp::AccessibleGroupsPage(p) => Ok(p),
+                AccessResp::Error(e) => Err(AppError::Ipc(e)),
+                _ => Err(AppError::Ipc("unexpected response".into())),
+            },
+        )
+        .await
     }
 
     // === Access Rules CRUD ===
@@ -194,28 +229,17 @@ impl AccessIpcClient {
     }
 
     pub async fn list_access_rules(&self) -> AppResult<Vec<AccessRuleInfo>> {
-        let mut all = Vec::new();
-        let mut offset = 0u32;
-        loop {
-            let resp = self
-                .send_access_request(AccessReq::ListAccessRules {
-                    page: ipc_page(offset),
-                })
-                .await?;
-            match resp {
-                AccessResp::AccessRulePage(page) => {
-                    let n = page.items.len() as u32;
-                    all.extend(page.items);
-                    if !page.has_more {
-                        break;
-                    }
-                    offset = offset.saturating_add(n);
-                }
-                AccessResp::Error(e) => return Err(AppError::Ipc(e)),
-                _ => return Err(AppError::Ipc("unexpected response".to_string())),
-            }
-        }
-        Ok(all)
+        self.drain_pages(
+            |offset| AccessReq::ListAccessRules {
+                page: ipc_page(offset),
+            },
+            |resp| match resp {
+                AccessResp::AccessRulePage(p) => Ok(p),
+                AccessResp::Error(e) => Err(AppError::Ipc(e)),
+                _ => Err(AppError::Ipc("unexpected response".into())),
+            },
+        )
+        .await
     }
 
     pub async fn update_access_rule(
@@ -299,28 +323,17 @@ impl AccessIpcClient {
     }
 
     pub async fn list_vauban_groups(&self) -> AppResult<Vec<VaubanGroupInfo>> {
-        let mut all = Vec::new();
-        let mut offset = 0u32;
-        loop {
-            let resp = self
-                .send_access_request(AccessReq::ListVaubanGroups {
-                    page: ipc_page(offset),
-                })
-                .await?;
-            match resp {
-                AccessResp::VaubanGroupPage(page) => {
-                    let n = page.items.len() as u32;
-                    all.extend(page.items);
-                    if !page.has_more {
-                        break;
-                    }
-                    offset = offset.saturating_add(n);
-                }
-                AccessResp::Error(e) => return Err(AppError::Ipc(e)),
-                _ => return Err(AppError::Ipc("unexpected response".to_string())),
-            }
-        }
-        Ok(all)
+        self.drain_pages(
+            |offset| AccessReq::ListVaubanGroups {
+                page: ipc_page(offset),
+            },
+            |resp| match resp {
+                AccessResp::VaubanGroupPage(p) => Ok(p),
+                AccessResp::Error(e) => Err(AppError::Ipc(e)),
+                _ => Err(AppError::Ipc("unexpected response".into())),
+            },
+        )
+        .await
     }
 
     pub async fn update_vauban_group(
@@ -383,55 +396,33 @@ impl AccessIpcClient {
     }
 
     pub async fn list_group_members(&self, group_id: i32) -> AppResult<Vec<i32>> {
-        let mut all = Vec::new();
-        let mut offset = 0u32;
-        loop {
-            let resp = self
-                .send_access_request(AccessReq::ListGroupMembers {
-                    group_id,
-                    page: ipc_page(offset),
-                })
-                .await?;
-            match resp {
-                AccessResp::MemberListPage(page) => {
-                    let n = page.items.len() as u32;
-                    all.extend(page.items);
-                    if !page.has_more {
-                        break;
-                    }
-                    offset = offset.saturating_add(n);
-                }
-                AccessResp::Error(e) => return Err(AppError::Ipc(e)),
-                _ => return Err(AppError::Ipc("unexpected response".to_string())),
-            }
-        }
-        Ok(all)
+        self.drain_pages(
+            |offset| AccessReq::ListGroupMembers {
+                group_id,
+                page: ipc_page(offset),
+            },
+            |resp| match resp {
+                AccessResp::MemberListPage(p) => Ok(p),
+                AccessResp::Error(e) => Err(AppError::Ipc(e)),
+                _ => Err(AppError::Ipc("unexpected response".into())),
+            },
+        )
+        .await
     }
 
     pub async fn list_user_groups(&self, user_id: i32) -> AppResult<Vec<VaubanGroupInfo>> {
-        let mut all = Vec::new();
-        let mut offset = 0u32;
-        loop {
-            let resp = self
-                .send_access_request(AccessReq::ListUserGroups {
-                    user_id,
-                    page: ipc_page(offset),
-                })
-                .await?;
-            match resp {
-                AccessResp::UserGroupPage(page) => {
-                    let n = page.items.len() as u32;
-                    all.extend(page.items);
-                    if !page.has_more {
-                        break;
-                    }
-                    offset = offset.saturating_add(n);
-                }
-                AccessResp::Error(e) => return Err(AppError::Ipc(e)),
-                _ => return Err(AppError::Ipc("unexpected response".to_string())),
-            }
-        }
-        Ok(all)
+        self.drain_pages(
+            |offset| AccessReq::ListUserGroups {
+                user_id,
+                page: ipc_page(offset),
+            },
+            |resp| match resp {
+                AccessResp::UserGroupPage(p) => Ok(p),
+                AccessResp::Error(e) => Err(AppError::Ipc(e)),
+                _ => Err(AppError::Ipc("unexpected response".into())),
+            },
+        )
+        .await
     }
 
     // === Asset Groups CRUD ===
@@ -476,28 +467,17 @@ impl AccessIpcClient {
     }
 
     pub async fn list_asset_groups(&self) -> AppResult<Vec<AssetGroupInfo>> {
-        let mut all = Vec::new();
-        let mut offset = 0u32;
-        loop {
-            let resp = self
-                .send_access_request(AccessReq::ListAssetGroups {
-                    page: ipc_page(offset),
-                })
-                .await?;
-            match resp {
-                AccessResp::AssetGroupPage(page) => {
-                    let n = page.items.len() as u32;
-                    all.extend(page.items);
-                    if !page.has_more {
-                        break;
-                    }
-                    offset = offset.saturating_add(n);
-                }
-                AccessResp::Error(e) => return Err(AppError::Ipc(e)),
-                _ => return Err(AppError::Ipc("unexpected response".to_string())),
-            }
-        }
-        Ok(all)
+        self.drain_pages(
+            |offset| AccessReq::ListAssetGroups {
+                page: ipc_page(offset),
+            },
+            |resp| match resp {
+                AccessResp::AssetGroupPage(p) => Ok(p),
+                AccessResp::Error(e) => Err(AppError::Ipc(e)),
+                _ => Err(AppError::Ipc("unexpected response".into())),
+            },
+        )
+        .await
     }
 
     pub async fn update_asset_group(
@@ -544,48 +524,30 @@ impl AccessIpcClient {
     // === Support ===
 
     pub async fn get_group_options(&self) -> AppResult<(Vec<GroupOption>, Vec<GroupOption>)> {
-        let mut user_groups = Vec::new();
-        let mut offset = 0u32;
-        loop {
-            let resp = self
-                .send_access_request(AccessReq::ListUserGroupOptions {
+        let user_groups = self
+            .drain_pages(
+                |offset| AccessReq::ListUserGroupOptions {
                     page: ipc_page(offset),
-                })
-                .await?;
-            match resp {
-                AccessResp::UserGroupOptionsPage(page) => {
-                    let n = page.items.len() as u32;
-                    user_groups.extend(page.items);
-                    if !page.has_more {
-                        break;
-                    }
-                    offset = offset.saturating_add(n);
-                }
-                AccessResp::Error(e) => return Err(AppError::Ipc(e)),
-                _ => return Err(AppError::Ipc("unexpected response".to_string())),
-            }
-        }
-        let mut asset_groups = Vec::new();
-        offset = 0;
-        loop {
-            let resp = self
-                .send_access_request(AccessReq::ListAssetGroupOptions {
+                },
+                |resp| match resp {
+                    AccessResp::UserGroupOptionsPage(p) => Ok(p),
+                    AccessResp::Error(e) => Err(AppError::Ipc(e)),
+                    _ => Err(AppError::Ipc("unexpected response".into())),
+                },
+            )
+            .await?;
+        let asset_groups = self
+            .drain_pages(
+                |offset| AccessReq::ListAssetGroupOptions {
                     page: ipc_page(offset),
-                })
-                .await?;
-            match resp {
-                AccessResp::AssetGroupOptionsPage(page) => {
-                    let n = page.items.len() as u32;
-                    asset_groups.extend(page.items);
-                    if !page.has_more {
-                        break;
-                    }
-                    offset = offset.saturating_add(n);
-                }
-                AccessResp::Error(e) => return Err(AppError::Ipc(e)),
-                _ => return Err(AppError::Ipc("unexpected response".to_string())),
-            }
-        }
+                },
+                |resp| match resp {
+                    AccessResp::AssetGroupOptionsPage(p) => Ok(p),
+                    AccessResp::Error(e) => Err(AppError::Ipc(e)),
+                    _ => Err(AppError::Ipc("unexpected response".into())),
+                },
+            )
+            .await?;
         Ok((user_groups, asset_groups))
     }
 
