@@ -235,18 +235,24 @@ Messages are serialized using **bincode** for efficiency:
 
 ```rust
 pub enum Message {
-    // Control messages (supervisor <-> services)
+    // Control messages (Supervisor <-> Services)
     Control(ControlMessage),
 
     // Authentication (Web -> Auth)
     AuthRequest { request_id, username, credential, source_ip },
-    AuthResponse { request_id, result },
+    AuthResponse { request_id, result: AuthResult },
     MfaVerify { request_id, challenge_id, code },
     MfaVerifyResponse { request_id, success, session_id },
 
+    // Password hashing (Web -> Auth)
+    AuthVerifyPassword { request_id, password_hash, password: SensitiveString },
+    AuthVerifyPasswordResponse { request_id, valid },
+    AuthHashPassword { request_id, password: SensitiveString },
+    AuthHashPasswordResponse { request_id, hash, error },
+
     // RBAC (Web/Auth/Proxy -> Access)
-    AccessCheck { request_id, subject, object, action },
-    AccessResponse { request_id, result },
+    RbacCheck { request_id, subject, object, action },
+    RbacResponse { request_id, result: RbacResult },
 
     // Vault (Auth/Proxy -> Vault)
     VaultGetSecret { request_id, path },
@@ -254,44 +260,81 @@ pub enum Message {
     VaultGetCredential { request_id, asset_id, credential_type },
     VaultCredentialResponse { request_id, credential },
 
-    // Vault Crypto (Web -> Vault)
-    VaultEncrypt { request_id, domain, plaintext },
-    VaultEncryptResponse { request_id, ciphertext },
+    // Vault Crypto (Any Service -> Vault)
+    VaultEncrypt { request_id, domain, plaintext: SensitiveString },
+    VaultEncryptResponse { request_id, ciphertext, error },
     VaultDecrypt { request_id, domain, ciphertext },
-    VaultDecryptResponse { request_id, plaintext },
+    VaultDecryptResponse { request_id, plaintext: Option<SensitiveString>, error },
+
+    // Vault MFA (Web -> Vault)
     VaultMfaGenerate { request_id, username, issuer },
-    VaultMfaGenerateResponse { request_id, encrypted_secret, plaintext_secret: SensitiveString },
+    VaultMfaGenerateResponse { request_id, encrypted_secret, plaintext_secret: Option<SensitiveString>, error },
     VaultMfaVerify { request_id, encrypted_secret, code },
-    VaultMfaVerifyResponse { request_id, valid },
+    VaultMfaVerifyResponse { request_id, valid, error },
     VaultMfaGetSecret { request_id, encrypted_secret },
-    VaultMfaGetSecretResponse { request_id, plaintext_secret: SensitiveString },
+    VaultMfaGetSecretResponse { request_id, plaintext_secret: Option<SensitiveString>, error },
 
     // Audit (Web/Proxy -> Audit)
-    AuditEvent { timestamp, event_type, user_id, session_id, ... },
+    AuditEvent { timestamp, event_type, user_id, session_id, source_ip, details },
     AuditAck { timestamp },
     SessionRecordingChunk { session_id, sequence, data },
 
-    // SSH Proxy (Web <-> ProxySsh)
+    // SSH Session (Web <-> ProxySsh)
     SshSessionOpen { request_id, session_id, user_id, asset_id, asset_host, ... },
     SshSessionOpened { request_id, session_id, success, error },
     SshData { session_id, data },
     SshSessionClose { session_id },
     SshResize { session_id, cols, rows },
 
-    // RDP Proxy (Web <-> ProxyRdp)
+    // SSH Host Key (Web <-> ProxySsh)
+    SshFetchHostKey { request_id, asset_host, asset_port },
+    SshHostKeyResult { request_id, success, host_key, key_fingerprint, error },
+
+    // RDP Session (Web <-> ProxyRdp)
     RdpSessionOpen { request_id, session_id, user_id, asset_id, asset_host, ... },
     RdpSessionOpened { request_id, session_id, success, desktop_width, desktop_height, error },
     RdpDisplayUpdate { session_id, x, y, width, height, png_data },
-    RdpVideoFrame { session_id, timestamp_us, is_key_frame, width, height, data },
+    RdpVideoFrame { session_id, timestamp_us, is_keyframe, width, height, data },
     RdpInput { session_id, input: RdpInputEvent },
     RdpResize { session_id, width, height },
     RdpDesktopResize { session_id, width, height },
     RdpSetVideoMode { session_id, enabled },
     RdpSessionClose { session_id },
 
+    // RDP Recording (ProxyRdp -> Audit)
+    RdpRecordingStart { session_id, width, height },
+    RdpRecordingEnd { session_id },
+
+    // SSH Recording (ProxySsh -> Audit)
+    SshRecordingStart { session_id, width, height, asset_name, username },
+    SshRecordingData { session_id, timestamp_us, event_type: SshRecordingEvent, data },
+    SshRecordingEnd { session_id },
+
+    // Recording File Brokering (Service -> Supervisor)
+    RecordingFileRequest { request_id, session_id, relative_path, read_only },
+    RecordingFileResponse { request_id, session_id, success, error },
+
+    // ACME Certificate Management (Web <-> Supervisor)
+    AcmeRenewRequest { request_id, directory_url, domains, email, ... },
+    AcmeRenewResponse { request_id, success, error, cert_pem, key_pem: Option<SensitiveString> },
+    AcmeChallengeInstall { request_id, domain, challenge_cert_der, challenge_key_der },
+    AcmeChallengeRemove { request_id, domain },
+    AcmeCertActivate { request_id, cert_pem, key_pem: SensitiveString },
+
+    // TLS Certificate Provisioning (Supervisor -> Web)
+    TlsCertProvision { cert_pem, key_pem: SensitiveString },
+
     // TCP Connection Brokering (Web -> Supervisor -> Proxy)
     TcpConnectRequest { request_id, session_id, host, port, target_service },
     TcpConnectResponse { request_id, session_id, success, error },
+
+    // Access Control (Web <-> Access)
+    AccessRequest { request_id, request: AccessRequest },
+    AccessResponse { request_id, response: AccessResponse },
+
+    // Admin Commands (Supervisor -> Services)
+    AdminCommand { request_id, command: AdminCommand },
+    AdminResponse { request_id, response: AdminResponse },
 }
 ```
 
@@ -461,11 +504,11 @@ pub fn get_connection_or_exit(pool: &DbPool) -> DbConnection {
 | Service | Sandboxed | Notes |
 |---------|-----------|-------|
 | `vauban-supervisor` | No | Needs to spawn/manage children |
-| `vauban-web` | **Yes** | Fixed pool, multiplexed cache, pre-bound socket |
-| `vauban-auth` | Yes | IPC + optional DB |
-| `vauban-access` | Yes | IPC only |
-| `vauban-vault` | Yes | IPC + HSM |
-| `vauban-audit` | Yes | IPC + audit storage |
+| `vauban-web` | **Yes** | Fixed pool, multiplexed cache, pre-bound socket, FD passing |
+| `vauban-auth` | Yes | IPC only |
+| `vauban-access` | Yes | IPC + optional DB |
+| `vauban-vault` | Yes | IPC only (no DB, no network) |
+| `vauban-audit` | Yes | IPC + FD passing for recording files |
 | `vauban-proxy-ssh` | Yes | IPC + pre-established connections via FD passing |
 | `vauban-proxy-rdp` | Yes | IPC + pre-established connections via FD passing |
 
@@ -690,17 +733,20 @@ let stream = if let Some(fd) = config.preconnected_fd {
 
 ## 6. Database Connections
 
-### 6.1 Separate Connections per Service
+### 6.1 Database Access per Service
 
-Each service opens its own database connection with a dedicated PostgreSQL user:
+Only two services maintain direct database connections. All other services operate exclusively via IPC.
 
-| Service | PostgreSQL User | Schema Access |
-|---------|-----------------|---------------|
-| `vauban-web` | `vauban_web` | `web.*`, read `auth.sessions` |
-| `vauban-auth` | `vauban_auth` | `auth.*` |
-| `vauban-access` | `vauban_access` | `access.*` |
-| `vauban-vault` | `vauban_vault` | `vault.*` |
-| `vauban-audit` | `vauban_audit` | `audit.*` |
+| Service | Database Access | Method |
+|---------|----------------|--------|
+| `vauban-web` | **Direct** (Diesel, connection pool) | Manages users, assets, sessions, groups |
+| `vauban-access` | **Direct** (Diesel, optional) | Manages access rules, groups, asset groups |
+| `vauban-supervisor` | **Direct** (Diesel, admin commands only) | CLI operations: create-superuser, seed-data, migrate-secrets |
+| `vauban-auth` | None | Password hashing and MFA via IPC (Web -> Auth) |
+| `vauban-vault` | None | Key management in memory, no DB, no network |
+| `vauban-audit` | None | Recording files via FD passing from supervisor |
+
+All services share a single PostgreSQL user (`vauban`) and the `public` schema. A single `[database]` section in the configuration provides the connection URL.
 
 ### 6.2 Connection Resilience
 
@@ -712,15 +758,12 @@ After `cap_enter()`, new connections cannot be opened. If a database connection 
 4. The new service opens a fresh connection
 
 ```rust
-async fn main_loop(db: PgPool) -> Result<()> {
-    loop {
-        match db.acquire().await {
-            Ok(conn) => handle_requests(conn).await?,
-            Err(e) if e.is_connection_error() => {
-                error!("DB connection lost, exiting for respawn");
-                std::process::exit(100);
-            }
-            Err(e) => return Err(e.into()),
+pub fn get_connection_or_exit(pool: &DbPool) -> DbConnection {
+    match pool.get() {
+        Ok(conn) => conn,
+        Err(e) => {
+            tracing::error!("DB connection lost in sandbox mode: {}", e);
+            std::process::exit(100);  // Trigger supervisor respawn
         }
     }
 }
@@ -833,35 +876,34 @@ sequenceDiagram
 
 The supervisor is configured via TOML files, supporting two modes:
 
-| Mode | Description | UID/GID |
-|------|-------------|---------|
-| Development | All services run as current user | Uses current user |
-| Production | Each service has dedicated credentials | Dedicated per service |
+| Mode | Description | Privilege Separation |
+|------|-------------|---------------------|
+| Development | All services run as current user | `privsep = false` |
+| Production | Each service has dedicated UID/GID | `privsep = true` (default) |
 
-Configuration file locations (in order of priority):
-1. `VAUBAN_CONFIG` environment variable
-2. `./config/development.toml` (local development)
-3. `/usr/local/etc/vauban/supervisor.toml` (production)
+Configuration directory lookup order:
+1. `VAUBAN_CONFIG_DIR` environment variable (if set)
+2. Workspace root `config/` directory (via `CARGO_MANIFEST_DIR`)
+3. `/usr/local/etc/vauban/` (FreeBSD system path)
+
+In development, files are layered: `default.toml` + `development.toml` (overrides). In production, `vauban.conf` is a single self-contained file.
 
 ### 8.2 Development Configuration
 
+Top-level fields (`environment`, `bin_path`) are at the TOML root. Watchdog settings are directly in `[supervisor]` (no sub-section).
+
 ```toml
-# config/development.toml
-[supervisor]
+# config/default.toml (base values)
 environment = "development"
 bin_path = "./target/debug"
-log_level = "debug"
 
-[supervisor.watchdog]
+[supervisor]
+privsep = false
 heartbeat_interval_secs = 5
 heartbeat_timeout_secs = 2
 max_missed_heartbeats = 3
 max_respawns_per_hour = 10
-
-# UID/GID = 0 means "don't change, use current user"
-[defaults]
-uid = 0
-gid = 0
+drain_timeout_secs = 30
 
 [services.audit]
 name = "vauban-audit"
@@ -871,76 +913,81 @@ binary = "vauban-audit"
 name = "vauban-vault"
 binary = "vauban-vault"
 
-# ... other services
+# ... other services (access, auth, proxy_ssh, proxy_rdp, web)
+
+[logging]
+level = "info"
+format = "text"
+```
+
+The `development.toml` overlay overrides only what differs:
+
+```toml
+# config/development.toml
+environment = "development"
+bin_path = "./target/debug"
+
+[supervisor]
+privsep = false
+
+[logging]
+level = "debug"
 ```
 
 ### 8.3 Production Configuration
 
 ```toml
-# /usr/local/etc/vauban/supervisor.toml
-[supervisor]
-environment = "production"
+# /usr/local/etc/vauban/vauban.conf (self-contained)
 bin_path = "/usr/local/libexec/vauban"
-log_level = "info"
 
-[supervisor.watchdog]
+[supervisor]
 heartbeat_interval_secs = 5
 heartbeat_timeout_secs = 2
 max_missed_heartbeats = 3
 max_respawns_per_hour = 10
-
-[defaults]
-uid = 0
-gid = 0
+drain_timeout_secs = 30
 
 [services.audit]
 name = "vauban-audit"
 binary = "vauban-audit"
 uid = 901
 gid = 901
-workdir = "/var/vauban/audit"
 
 [services.vault]
 name = "vauban-vault"
 binary = "vauban-vault"
 uid = 902
 gid = 902
-workdir = "/var/vauban/vault"
 
 [services.access]
 name = "vauban-access"
 binary = "vauban-access"
 uid = 903
 gid = 903
-workdir = "/var/vauban/access"
 
 [services.auth]
 name = "vauban-auth"
 binary = "vauban-auth"
 uid = 904
 gid = 904
-workdir = "/var/vauban/auth"
 
 [services.proxy_ssh]
 name = "vauban-proxy-ssh"
 binary = "vauban-proxy-ssh"
 uid = 905
 gid = 905
-workdir = "/var/vauban/proxy-ssh"
 
 [services.proxy_rdp]
 name = "vauban-proxy-rdp"
 binary = "vauban-proxy-rdp"
 uid = 906
 gid = 906
-workdir = "/var/vauban/proxy-rdp"
 
 [services.web]
 name = "vauban-web"
 binary = "vauban-web"
 uid = 907
 gid = 907
-workdir = "/var/vauban/web"
 ```
 
 ### 8.4 FreeBSD User/Group Setup
@@ -1127,20 +1174,32 @@ run_rc_command "$1"
 │       ├── messages.rs           # IPC message types
 │       ├── ipc.rs                # Pipe utilities, SCM_RIGHTS
 │       └── capsicum.rs           # Capsicum wrappers
+├── vauban-db/                    # Shared Diesel schema, migrations
+│   ├── Cargo.toml
+│   ├── diesel.toml
+│   ├── migrations/
+│   └── src/
+│       ├── lib.rs
+│       └── schema.rs             # Diesel table! macros (single source of truth)
 ├── vauban-supervisor/            # Process manager
 │   ├── Cargo.toml
 │   └── src/
-│       └── main.rs
+│       ├── main.rs               # Supervisor, watchdog, signal handling
+│       ├── config.rs             # Configuration loading and structs
+│       ├── admin.rs              # CLI admin commands (create-superuser, seed-data, etc.)
+│       └── acme.rs               # ACME certificate renewal logic
 ├── vauban-web/                   # Web interface (Tokio)
 │   ├── Cargo.toml
-│   └── src/
-│       └── main.rs
-├── vauban-auth/                  # Authentication
-├── vauban-access/                  # RBAC (Casbin)
-├── vauban-vault/                 # Secrets management
-├── vauban-audit/                 # Audit logging
-├── vauban-proxy-ssh/             # SSH proxy
-└── vauban-proxy-rdp/             # RDP proxy
+│   └── src/                      # ~125 source files (handlers, IPC, middleware, models, etc.)
+│       ├── main.rs
+│       └── lib.rs
+├── vauban-auth/                  # Authentication (Argon2id hashing)
+├── vauban-access/                # RBAC (Casbin) + instance-level access rules
+├── vauban-vault/                 # Secrets management (in-memory keys, no DB)
+├── vauban-audit/                 # Audit logging, session recording
+├── vauban-proxy-ssh/             # SSH proxy (russh)
+├── vauban-proxy-rdp/             # RDP proxy (IronRDP, H.264)
+└── config/                       # TOML configuration files
 ```
 
 ---
@@ -1159,8 +1218,8 @@ sequenceDiagram
 
     U->>W: POST /login (username, password)
     W->>A: AuthRequest
-    A->>R: AccessCheck (user roles)
-    R->>A: AccessResponse (roles)
+    A->>R: RbacCheck (user roles)
+    R->>A: RbacResponse (roles)
     A->>W: AuthResponse (success)
     W->>Au: AuditEvent (AuthSuccess)
     Au->>W: AuditAck
