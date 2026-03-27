@@ -15,6 +15,7 @@ vauban-vault/         # Secrets management, encryption/decryption service
 vauban-audit/         # Audit logging, session recording
 vauban-proxy-ssh/     # SSH protocol proxy (russh)
 vauban-proxy-rdp/     # RDP protocol proxy (IronRDP, H.264 encoding)
+vauban-db/            # Shared Diesel schema, migrations, table relationships
 shared/               # IPC protocol, message types, common utilities
 config/               # TOML configuration files
 docs/                 # Technical architecture documentation
@@ -280,16 +281,15 @@ The `--dry-run` flag is recommended before any production migration.
 ### Authentication
 - `POST /api/v1/auth/login` - Login
 - `POST /api/v1/auth/logout` - Logout
-- `POST /api/v1/auth/mfa/setup` - Setup MFA
 
 ### Accounts
 - `GET /api/v1/accounts` - List users
 - `POST /api/v1/accounts` - Create user
 - `GET /api/v1/accounts/:uuid` - Get user
 - `PUT /api/v1/accounts/:uuid` - Update user
+- `DELETE /api/v1/accounts/:uuid` - Delete user (501 Not Implemented)
 
 ### Groups (Read-Only)
-
 - `GET /api/v1/groups/:uuid/members` - List group members
 
 ### Assets
@@ -297,6 +297,7 @@ The `--dry-run` flag is recommended before any production migration.
 - `POST /api/v1/assets` - Create asset
 - `GET /api/v1/assets/:uuid` - Get asset
 - `PUT /api/v1/assets/:uuid` - Update asset
+- `DELETE /api/v1/assets/:uuid` - Delete asset (501 Not Implemented)
 
 ### SSH Host Key Verification (SSH assets only)
 - `GET /api/v1/assets/:uuid/ssh-host-key` - Get host key status (`verified`, `mismatch`, or `no_key`)
@@ -307,11 +308,19 @@ The `--dry-run` flag is recommended before any production migration.
 - `GET /api/v1/assets/groups` - List asset groups
 - `GET /api/v1/assets/groups/:uuid/assets` - List assets in a group
 
+### Access Rules
+- `GET /api/v1/access-rules` - List access rules
+- `POST /api/v1/access-rules` - Create access rule
+- `GET /api/v1/access-rules/:uuid` - Get access rule
+- `PUT /api/v1/access-rules/:uuid` - Update access rule
+- `DELETE /api/v1/access-rules/:uuid` - Delete access rule
+
 ### Sessions
 - `GET /api/v1/sessions` - List sessions
 - `POST /api/v1/sessions` - Create session
 - `GET /api/v1/sessions/:uuid` - Get session
 - `POST /api/v1/sessions/:id/terminate` - Terminate session
+- `DELETE /api/v1/sessions/:uuid` - Delete session (501 Not Implemented)
 
 ## Testing
 
