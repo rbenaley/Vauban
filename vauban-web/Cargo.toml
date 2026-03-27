@@ -13,6 +13,9 @@ license.workspace = true
 # Shared IPC library
 shared.workspace = true
 
+# Shared Diesel schema
+vauban-db.workspace = true
+
 # Vault crypto library (keyring reuse for migrate_secrets binary)
 vauban-vault = { path = "../vauban-vault" }
 

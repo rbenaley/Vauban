@@ -1,0 +1,14 @@
+[package]
+name = "vauban-db"
+description = "Vauban - Shared Diesel schema and migrations"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+diesel = { version = "2.3", features = ["postgres", "uuid", "chrono", "serde_json", "network-address"] }

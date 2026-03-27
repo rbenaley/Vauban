@@ -28,7 +28,7 @@ pub mod handlers;
 pub mod ipc;
 pub mod middleware;
 pub mod models;
-pub mod schema;
+pub use vauban_db::schema;
 pub mod services;
 pub mod tasks;
 pub mod templates;

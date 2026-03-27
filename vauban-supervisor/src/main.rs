@@ -23,7 +23,6 @@
 mod acme;
 mod admin;
 mod config;
-mod schema;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};

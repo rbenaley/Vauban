@@ -12,7 +12,7 @@
 
 use crate::AdminSubcommand;
 use crate::config::SupervisorConfig;
-use crate::schema::{asset_groups, assets, users, vauban_groups};
+use vauban_db::schema::{asset_groups, assets, users, vauban_groups};
 use anyhow::{Context, Result, anyhow, bail};
 use argon2::{Algorithm, Argon2, Params, PasswordHasher, Version, password_hash::SaltString};
 use diesel::dsl::exists;

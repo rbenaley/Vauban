@@ -30,6 +30,7 @@ argon2 = "0.5"
 rpassword = "7"
 rand = "0.8"
 diesel = { version = "2", features = ["postgres", "uuid", "serde_json"] }
+vauban-db.workspace = true
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 ipnetwork = "0.21"
