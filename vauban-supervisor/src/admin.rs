@@ -12,11 +12,12 @@
 
 use crate::AdminSubcommand;
 use crate::config::SupervisorConfig;
+use crate::schema::{asset_groups, assets, users, vauban_groups};
 use anyhow::{Context, Result, anyhow, bail};
 use argon2::{Algorithm, Argon2, Params, PasswordHasher, Version, password_hash::SaltString};
+use diesel::dsl::exists;
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
-use diesel::sql_types::{Bool, Int4, Nullable, Text};
 use rand::rngs::OsRng;
 use std::io::{self, Write};
 
@@ -42,12 +43,10 @@ fn cmd_create_superuser() -> Result<()> {
 
     let mut conn = load_db_connection()?;
 
-    // Check existing superusers
-    let has_superuser: bool = diesel::sql_query(
-        "SELECT EXISTS(SELECT 1 FROM users WHERE is_superuser = true AND is_deleted = false) AS exists",
-    )
-    .get_result::<ExistsBool>(&mut conn)
-    .map(|r| r.exists)
+    let has_superuser: bool = diesel::select(exists(
+        users::table.filter(users::is_superuser.eq(true).and(users::is_deleted.eq(false))),
+    ))
+    .get_result(&mut conn)
     .unwrap_or(false);
 
     if has_superuser {
@@ -66,12 +65,10 @@ fn cmd_create_superuser() -> Result<()> {
             eprintln!("{e}");
             continue;
         }
-        let exists: bool = diesel::sql_query(
-            "SELECT EXISTS(SELECT 1 FROM users WHERE username = $1 AND is_deleted = false) AS exists",
-        )
-        .bind::<Text, _>(&input)
-        .get_result::<ExistsBool>(&mut conn)
-        .map(|r| r.exists)
+        let exists: bool = diesel::select(exists(
+            users::table.filter(users::username.eq(&input).and(users::is_deleted.eq(false))),
+        ))
+        .get_result(&mut conn)
         .unwrap_or(false);
 
         if exists {
@@ -87,12 +84,10 @@ fn cmd_create_superuser() -> Result<()> {
             eprintln!("{e}");
             continue;
         }
-        let exists: bool = diesel::sql_query(
-            "SELECT EXISTS(SELECT 1 FROM users WHERE email = $1 AND is_deleted = false) AS exists",
-        )
-        .bind::<Text, _>(&input)
-        .get_result::<ExistsBool>(&mut conn)
-        .map(|r| r.exists)
+        let exists: bool = diesel::select(exists(
+            users::table.filter(users::email.eq(&input).and(users::is_deleted.eq(false))),
+        ))
+        .get_result(&mut conn)
         .unwrap_or(false);
 
         if exists {
@@ -133,22 +128,25 @@ fn cmd_create_superuser() -> Result<()> {
         Some(last_name.as_str())
     };
 
-    diesel::sql_query(
-        "INSERT INTO users (uuid, username, email, password_hash, first_name, last_name, \
-         is_active, is_staff, is_superuser, is_service_account, \
-         mfa_enabled, mfa_enforced, preferences, auth_source) \
-         VALUES ($1::uuid, $2, $3, $4, $5, $6, \
-         true, true, true, false, \
-         false, false, '{}', 'local')",
-    )
-    .bind::<Text, _>(user_uuid.to_string())
-    .bind::<Text, _>(&username)
-    .bind::<Text, _>(&email)
-    .bind::<Text, _>(&hash)
-    .bind::<Nullable<Text>, _>(first_name_opt)
-    .bind::<Nullable<Text>, _>(last_name_opt)
-    .execute(&mut conn)
-    .context("Failed to create superuser")?;
+    diesel::insert_into(users::table)
+        .values((
+            users::uuid.eq(user_uuid),
+            users::username.eq(&username),
+            users::email.eq(&email),
+            users::password_hash.eq(&hash),
+            users::first_name.eq(first_name_opt),
+            users::last_name.eq(last_name_opt),
+            users::is_active.eq(true),
+            users::is_staff.eq(true),
+            users::is_superuser.eq(true),
+            users::is_service_account.eq(false),
+            users::mfa_enabled.eq(false),
+            users::mfa_enforced.eq(false),
+            users::preferences.eq(serde_json::json!({})),
+            users::auth_source.eq("local"),
+        ))
+        .execute(&mut conn)
+        .context("Failed to create superuser")?;
 
     println!("\nSuperuser created successfully!");
     println!("  Username: {username}");
@@ -168,12 +166,10 @@ fn cmd_reset_password(username: &str) -> Result<()> {
 
     let mut conn = load_db_connection()?;
 
-    let user_exists: bool = diesel::sql_query(
-        "SELECT EXISTS(SELECT 1 FROM users WHERE username = $1 AND is_deleted = false) AS exists",
-    )
-    .bind::<Text, _>(username)
-    .get_result::<ExistsBool>(&mut conn)
-    .map(|r| r.exists)
+    let user_exists: bool = diesel::select(exists(
+        users::table.filter(users::username.eq(username).and(users::is_deleted.eq(false))),
+    ))
+    .get_result(&mut conn)
     .unwrap_or(false);
 
     if !user_exists {
@@ -196,12 +192,13 @@ fn cmd_reset_password(username: &str) -> Result<()> {
 
     let hash = hash_password(&password)?;
 
-    let rows = diesel::sql_query(
-        "UPDATE users SET password_hash = $1, updated_at = NOW() \
-         WHERE username = $2 AND is_deleted = false",
+    let rows = diesel::update(
+        users::table.filter(users::username.eq(username).and(users::is_deleted.eq(false))),
     )
-    .bind::<Text, _>(&hash)
-    .bind::<Text, _>(username)
+    .set((
+        users::password_hash.eq(&hash),
+        users::updated_at.eq(diesel::dsl::now),
+    ))
     .execute(&mut conn)
     .context("Failed to update password")?;
 
@@ -224,13 +221,12 @@ fn cmd_reset_2fa(username: &str) -> Result<()> {
 
     let mut conn = load_db_connection()?;
 
-    let mfa_status: Option<MfaStatus> = diesel::sql_query(
-        "SELECT id, mfa_enabled FROM users WHERE username = $1 AND is_deleted = false",
-    )
-    .bind::<Text, _>(username)
-    .get_result::<MfaStatus>(&mut conn)
-    .optional()
-    .context("Database error")?;
+    let mfa_status: Option<MfaStatus> = users::table
+        .filter(users::username.eq(username).and(users::is_deleted.eq(false)))
+        .select(MfaStatus::as_select())
+        .first(&mut conn)
+        .optional()
+        .context("Database error")?;
 
     match mfa_status {
         None => bail!("User '{username}' not found"),
@@ -250,11 +246,14 @@ fn cmd_reset_2fa(username: &str) -> Result<()> {
         return Ok(());
     }
 
-    diesel::sql_query(
-        "UPDATE users SET mfa_enabled = false, mfa_secret = NULL, updated_at = NOW() \
-         WHERE username = $1 AND is_deleted = false",
+    diesel::update(
+        users::table.filter(users::username.eq(username).and(users::is_deleted.eq(false))),
     )
-    .bind::<Text, _>(username)
+    .set((
+        users::mfa_enabled.eq(false),
+        users::mfa_secret.eq(None::<String>),
+        users::updated_at.eq(diesel::dsl::now),
+    ))
     .execute(&mut conn)
     .context("Failed to disable MFA")?;
 
@@ -367,12 +366,11 @@ fn cmd_seed_data() -> Result<()> {
 
     let mut user_count = 0u32;
     for (uname, mail, fname, lname, staff, superuser) in &users_data {
-        let exists: bool =
-            diesel::sql_query("SELECT EXISTS(SELECT 1 FROM users WHERE username = $1) AS exists")
-                .bind::<Text, _>(uname)
-                .get_result::<ExistsBool>(&mut conn)
-                .map(|r| r.exists)
-                .unwrap_or(false);
+        let exists: bool = diesel::select(exists(
+            users::table.filter(users::username.eq(uname)),
+        ))
+        .get_result(&mut conn)
+        .unwrap_or(false);
 
         if exists {
             println!("  - {uname} already exists");
@@ -381,21 +379,24 @@ fn cmd_seed_data() -> Result<()> {
         }
 
         let uid = uuid::Uuid::new_v4();
-        let result = diesel::sql_query(
-            "INSERT INTO users (uuid, username, email, password_hash, first_name, last_name, \
-             is_active, is_staff, is_superuser, is_service_account, \
-             mfa_enabled, mfa_enforced, preferences, auth_source) \
-             VALUES ($1::uuid, $2, $3, $4, $5, $6, true, $7, $8, false, false, false, '{}', 'local')",
-        )
-        .bind::<Text, _>(uid.to_string())
-        .bind::<Text, _>(uname)
-        .bind::<Text, _>(mail)
-        .bind::<Text, _>(&default_hash)
-        .bind::<Text, _>(fname)
-        .bind::<Text, _>(lname)
-        .bind::<Bool, _>(staff)
-        .bind::<Bool, _>(superuser)
-        .execute(&mut conn);
+        let result = diesel::insert_into(users::table)
+            .values((
+                users::uuid.eq(uid),
+                users::username.eq(uname),
+                users::email.eq(mail),
+                users::password_hash.eq(&default_hash),
+                users::first_name.eq(Some(fname)),
+                users::last_name.eq(Some(lname)),
+                users::is_active.eq(true),
+                users::is_staff.eq(staff),
+                users::is_superuser.eq(superuser),
+                users::is_service_account.eq(false),
+                users::mfa_enabled.eq(false),
+                users::mfa_enforced.eq(false),
+                users::preferences.eq(serde_json::json!({})),
+                users::auth_source.eq("local"),
+            ))
+            .execute(&mut conn);
 
         match result {
             Ok(_) => {
@@ -418,23 +419,22 @@ fn cmd_seed_data() -> Result<()> {
 
     let mut group_count = 0u32;
     for (name, desc) in &groups {
-        let exists: bool = diesel::sql_query(
-            "SELECT EXISTS(SELECT 1 FROM vauban_groups WHERE name = $1) AS exists",
-        )
-        .bind::<Text, _>(name)
-        .get_result::<ExistsBool>(&mut conn)
-        .map(|r| r.exists)
+        let exists: bool = diesel::select(exists(
+            vauban_groups::table.filter(vauban_groups::name.eq(name)),
+        ))
+        .get_result(&mut conn)
         .unwrap_or(false);
 
         if !exists {
             let uid = uuid::Uuid::new_v4();
-            let _ = diesel::sql_query(
-                "INSERT INTO vauban_groups (uuid, name, description, source) VALUES ($1::uuid, $2, $3, 'local')",
-            )
-            .bind::<Text, _>(uid.to_string())
-            .bind::<Text, _>(name)
-            .bind::<Text, _>(desc)
-            .execute(&mut conn);
+            let _ = diesel::insert_into(vauban_groups::table)
+                .values((
+                    vauban_groups::uuid.eq(uid),
+                    vauban_groups::name.eq(name),
+                    vauban_groups::description.eq(desc),
+                    vauban_groups::source.eq("local"),
+                ))
+                .execute(&mut conn);
             println!("  - {name} created");
         } else {
             println!("  - {name} already exists");
@@ -454,27 +454,25 @@ fn cmd_seed_data() -> Result<()> {
 
     let mut ag_count = 0u32;
     for (name, slug, color, icon) in &asset_groups {
-        let exists: bool = diesel::sql_query(
-            "SELECT EXISTS(SELECT 1 FROM asset_groups WHERE slug = $1 AND is_deleted = false) AS exists",
-        )
-        .bind::<Text, _>(slug)
-        .get_result::<ExistsBool>(&mut conn)
-        .map(|r| r.exists)
+        let exists: bool = diesel::select(exists(
+            asset_groups::table
+                .filter(asset_groups::slug.eq(slug).and(asset_groups::is_deleted.eq(false))),
+        ))
+        .get_result(&mut conn)
         .unwrap_or(false);
 
         if !exists {
             let uid = uuid::Uuid::new_v4();
-            let _ = diesel::sql_query(
-                "INSERT INTO asset_groups (uuid, name, slug, description, color, icon) \
-                 VALUES ($1::uuid, $2, $3, $4, $5, $6)",
-            )
-            .bind::<Text, _>(uid.to_string())
-            .bind::<Text, _>(name)
-            .bind::<Text, _>(slug)
-            .bind::<Text, _>(format!("{name} environment"))
-            .bind::<Text, _>(color)
-            .bind::<Text, _>(icon)
-            .execute(&mut conn);
+            let _ = diesel::insert_into(asset_groups::table)
+                .values((
+                    asset_groups::uuid.eq(uid),
+                    asset_groups::name.eq(name),
+                    asset_groups::slug.eq(slug),
+                    asset_groups::description.eq(format!("{name} environment")),
+                    asset_groups::color.eq(color),
+                    asset_groups::icon.eq(icon),
+                ))
+                .execute(&mut conn);
             println!("  - {name} created");
         } else {
             println!("  - {name} already exists");
@@ -533,13 +531,11 @@ fn is_encrypted(value: &str) -> bool {
     colon_pos >= 2 && value[1..colon_pos].chars().all(|c| c.is_ascii_digit())
 }
 
-#[derive(QueryableByName)]
+#[derive(Queryable, Selectable)]
+#[diesel(table_name = users)]
 struct MfaRow {
-    #[diesel(sql_type = Int4)]
     id: i32,
-    #[diesel(sql_type = Text)]
     username: String,
-    #[diesel(sql_type = Nullable<Text>)]
     mfa_secret: Option<String>,
 }
 
@@ -550,11 +546,11 @@ fn migrate_mfa_secrets(
 ) -> Result<usize> {
     println!("Scanning MFA secrets...");
 
-    let rows: Vec<MfaRow> = diesel::sql_query(
-        "SELECT id, username, mfa_secret FROM users WHERE mfa_secret IS NOT NULL AND is_deleted = false",
-    )
-    .load(conn)
-    .context("Failed to query users")?;
+    let rows: Vec<MfaRow> = users::table
+        .filter(users::mfa_secret.is_not_null().and(users::is_deleted.eq(false)))
+        .select(MfaRow::as_select())
+        .load(conn)
+        .context("Failed to query users")?;
 
     let mut migrated = 0;
     for row in &rows {
@@ -570,9 +566,8 @@ fn migrate_mfa_secrets(
                             row.username, row.id
                         );
                     } else {
-                        diesel::sql_query("UPDATE users SET mfa_secret = $1 WHERE id = $2")
-                            .bind::<Text, _>(&encrypted)
-                            .bind::<Int4, _>(row.id)
+                        diesel::update(users::table.filter(users::id.eq(row.id)))
+                            .set(users::mfa_secret.eq(&encrypted))
                             .execute(conn)
                             .context(format!("Failed to update MFA for '{}'", row.username))?;
                         println!("  Migrated MFA for '{}' (id={})", row.username, row.id);
@@ -590,14 +585,12 @@ fn migrate_mfa_secrets(
     Ok(migrated)
 }
 
-#[derive(QueryableByName)]
+#[derive(Queryable, Selectable)]
+#[diesel(table_name = assets)]
 struct AssetCredRow {
-    #[diesel(sql_type = Int4)]
     id: i32,
-    #[diesel(sql_type = Text)]
     name: String,
-    #[diesel(sql_type = Text)]
-    connection_config: String,
+    connection_config: serde_json::Value,
 }
 
 fn migrate_credential_secrets(
@@ -609,18 +602,14 @@ fn migrate_credential_secrets(
 
     let credential_fields = ["password", "private_key", "passphrase"];
 
-    let rows: Vec<AssetCredRow> = diesel::sql_query(
-        "SELECT id, name, connection_config::text AS connection_config FROM assets WHERE connection_config IS NOT NULL",
-    )
-    .load(conn)
-    .context("Failed to query assets")?;
+    let rows: Vec<AssetCredRow> = assets::table
+        .select(AssetCredRow::as_select())
+        .load(conn)
+        .context("Failed to query assets")?;
 
     let mut migrated = 0;
     for row in &rows {
-        let mut config: serde_json::Value = match serde_json::from_str(&row.connection_config) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
+        let mut config = row.connection_config.clone();
         let mut changed = false;
 
         if let Some(obj) = config.as_object_mut() {
@@ -650,10 +639,8 @@ fn migrate_credential_secrets(
                     row.name, row.id
                 );
             } else {
-                let config_str = serde_json::to_string(&config).context("JSON serialize")?;
-                diesel::sql_query("UPDATE assets SET connection_config = $1::jsonb WHERE id = $2")
-                    .bind::<Text, _>(&config_str)
-                    .bind::<Int4, _>(row.id)
+                diesel::update(assets::table.filter(assets::id.eq(row.id)))
+                    .set(assets::connection_config.eq(&config))
                     .execute(conn)
                     .context(format!("Failed to update '{}' credentials", row.name))?;
                 println!("  Encrypted credentials for '{}' (id={})", row.name, row.id);
@@ -666,20 +653,11 @@ fn migrate_credential_secrets(
     Ok(migrated)
 }
 
-// ==================== Query result structs ====================
-
-#[derive(QueryableByName)]
-struct ExistsBool {
-    #[diesel(sql_type = Bool)]
-    exists: bool,
-}
-
-#[derive(QueryableByName)]
+#[derive(Queryable, Selectable)]
+#[diesel(table_name = users)]
 struct MfaStatus {
-    #[diesel(sql_type = Int4)]
     #[allow(dead_code)]
     id: i32,
-    #[diesel(sql_type = Bool)]
     mfa_enabled: bool,
 }
 
@@ -940,7 +918,7 @@ mod tests {
             "seed data must hash passwords via hash_password(), not store plaintext"
         );
         assert!(
-            !source.contains("INSERT INTO users") || source.contains("default_hash"),
+            !source.contains("insert_into(users::table)") || source.contains("default_hash"),
             "seed INSERT must use hashed password variable, not inline plaintext"
         );
     }
@@ -965,8 +943,8 @@ mod tests {
     #[test]
     fn test_seed_data_creates_all_entity_types() {
         let source = include_str!("admin.rs");
-        assert!(source.contains("INSERT INTO users"));
-        assert!(source.contains("INSERT INTO vauban_groups"));
-        assert!(source.contains("INSERT INTO asset_groups"));
+        assert!(source.contains("insert_into(users::table)"));
+        assert!(source.contains("insert_into(vauban_groups::table)"));
+        assert!(source.contains("insert_into(asset_groups::table)"));
     }
 }
