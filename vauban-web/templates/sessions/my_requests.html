@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+
+{% block title %}My Requests - {{ vauban.brand_name }}{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <!-- Header -->
+    <div class="md:flex md:items-center md:justify-between">
+        <div class="min-w-0 flex-1">
+            <h2 class="text-2xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-3xl sm:tracking-tight">
+                My Access Requests
+            </h2>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                Track the status of your access requests
+            </p>
+        </div>
+    </div>
+
+    <!-- Requests list -->
+    <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+        {% if !requests.is_empty() %}
+        <ul role="list" class="divide-y divide-gray-200 dark:divide-gray-700">
+            {% for req in requests %}
+            <li class="px-6 py-4">
+                <div class="flex items-center justify-between">
+                    <div class="flex items-center space-x-4">
+                        <div class="flex-shrink-0">
+                            <span class="inline-flex h-10 w-10 items-center justify-center rounded-full
+                                {% if req.asset_type == "ssh" %}bg-green-100 dark:bg-green-900/50
+                                {% else if req.asset_type == "rdp" %}bg-blue-100 dark:bg-blue-900/50
+                                {% else %}bg-purple-100 dark:bg-purple-900/50{% endif %}">
+                                <span class="text-xs font-bold
+                                    {% if req.asset_type == "ssh" %}text-green-600 dark:text-green-400
+                                    {% else if req.asset_type == "rdp" %}text-blue-600 dark:text-blue-400
+                                    {% else %}text-purple-600 dark:text-purple-400{% endif %}">
+                                    {{ req.session_type|upper }}
+                                </span>
+                            </span>
+                        </div>
+                        <div class="flex-1 min-w-0">
+                            <div class="flex items-center space-x-2">
+                                <p class="text-sm font-medium text-gray-900 dark:text-white truncate">
+                                    {{ req.asset_name }}
+                                </p>
+                                <span class="text-gray-400 dark:text-gray-500 text-xs">({{ req.asset_hostname }})</span>
+                                <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {{ req.status_class() }}">
+                                    {{ req.status|capitalize }}
+                                </span>
+                            </div>
+                            <div class="mt-1 flex items-center text-sm text-gray-500 dark:text-gray-400">
+                                <span>Requested {{ req.created_at }}</span>
+                                {% if let Some(at) = req.approved_at.as_ref() %}
+                                <span class="mx-2">&middot;</span>
+                                <span>
+                                    {% if req.status == "approved" %}Approved{% else if req.status == "rejected" %}Rejected{% else %}Processed{% endif %}
+                                    {{ at }}
+                                    {% if let Some(by) = req.approved_by.as_ref() %}
+                                    by {{ by }}
+                                    {% endif %}
+                                </span>
+                                {% endif %}
+                            </div>
+                            {% if let Some(just) = req.justification.as_ref() %}
+                            <p class="mt-1 text-sm text-gray-600 dark:text-gray-300 line-clamp-1">
+                                {{ just }}
+                            </p>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                        {% if req.is_approved() %}
+                        <a href="/assets/{{ req.uuid }}"
+                           class="inline-flex items-center rounded-md bg-vauban-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500">
+                            <svg class="-ml-0.5 mr-1 h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd"/>
+                            </svg>
+                            Connect
+                        </a>
+                        {% endif %}
+                        {% if req.is_pending() %}
+                        <form method="post" action="/sessions/my-requests/{{ req.uuid }}/cancel" x-data="csrf">
+                            <input type="hidden" name="csrf_token" x-model="token" />
+                            <button type="submit"
+                                    class="inline-flex items-center rounded-md bg-gray-100 dark:bg-gray-700 px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600">
+                                Cancel
+                            </button>
+                        </form>
+                        {% endif %}
+                    </div>
+                </div>
+            </li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <div class="px-6 py-12 text-center">
+            <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+            </svg>
+            <h3 class="mt-2 text-sm font-semibold text-gray-900 dark:text-white">No access requests</h3>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                You haven't submitted any access requests yet.
+            </p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

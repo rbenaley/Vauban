@@ -537,45 +537,40 @@ async fn test_update_asset_with_string_port() {
     test_db::cleanup(&mut conn).await;
 }
 
-/// Test update asset with boolean as string "on" (checkbox behavior).
+/// Test update asset with simple field change.
 #[tokio::test]
 #[serial]
-async fn test_update_asset_with_checkbox_on() {
+async fn test_update_asset_simple_field() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    // Setup: create admin and asset
     let admin_name = unique_name("test_admin_checkbox");
     let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
     let asset = create_test_ssh_asset(&mut conn, &unique_name("test-checkbox-asset")).await;
 
-    // Execute: PUT with require_mfa as "on" (like HTML checkboxes)
     let response = app
         .server
         .put(&format!("/api/v1/assets/{}", asset.asset.uuid))
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .json(&serde_json::json!({
-            "require_mfa": "on"
+            "status": "maintenance"
         }))
         .await;
 
-    // Assert: 200 OK
     assert_status(&response, 200);
 
-    // Verify require_mfa was updated in database
-    use vauban_web::schema::assets::dsl::{assets, require_mfa, uuid};
-    let db_mfa: bool = unwrap_ok!(
+    use vauban_web::schema::assets::dsl::{assets, status, uuid};
+    let db_status: String = unwrap_ok!(
         assets
             .filter(uuid.eq(asset.asset.uuid))
-            .select(require_mfa)
+            .select(status)
             .first(&mut conn)
             .await
     );
 
-    assert!(db_mfa, "Database should have require_mfa set to true");
+    assert_eq!(db_status, "maintenance");
 
-    // Cleanup
     test_db::cleanup(&mut conn).await;
 }
 
@@ -607,35 +602,17 @@ async fn test_update_asset_full_form_submission() {
             "ip_address": "10.0.0.50",
             "port": "8022",
             "status": "maintenance",
-            "description": "Updated via form",
-            "require_mfa": "on",
-            "require_justification": "on"
+            "description": "Updated via form"
         }))
         .await;
 
-    // Assert: 200 OK
     assert_status(&response, 200);
 
-    // Verify all fields were updated in database
     use vauban_web::schema::assets::dsl::*;
-    let (db_name, db_hostname, db_port, db_status, db_mfa, db_justification): (
-        String,
-        String,
-        i32,
-        String,
-        bool,
-        bool,
-    ) = unwrap_ok!(
+    let (db_name, db_hostname, db_port, db_status): (String, String, i32, String) = unwrap_ok!(
         assets
             .filter(uuid.eq(asset.asset.uuid))
-            .select((
-                name,
-                hostname,
-                port,
-                status,
-                require_mfa,
-                require_justification
-            ))
+            .select((name, hostname, port, status))
             .first(&mut conn)
             .await
     );
@@ -650,8 +627,6 @@ async fn test_update_asset_full_form_submission() {
     );
     assert_eq!(db_port, 8022);
     assert_eq!(db_status, "maintenance");
-    assert!(db_mfa);
-    assert!(db_justification);
 
     // Cleanup
     test_db::cleanup(&mut conn).await;

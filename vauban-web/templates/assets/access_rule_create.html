@@ -141,9 +141,9 @@
                             <span class="ml-2 text-sm text-gray-700 dark:text-gray-300">Require MFA before connection</span>
                         </label>
                         <label class="flex items-center">
-                            <input type="checkbox" name="require_justification" value="true" {% if form.require_justification %}checked{% endif %}
+                            <input type="checkbox" name="require_approval" value="true" {% if form.require_approval %}checked{% endif %}
                                    class="rounded border-gray-300 text-vauban-600 focus:ring-vauban-500 dark:border-gray-600 dark:bg-gray-700">
-                            <span class="ml-2 text-sm text-gray-700 dark:text-gray-300">Require justification before connection</span>
+                            <span class="ml-2 text-sm text-gray-700 dark:text-gray-300">Require approval before connection</span>
                         </label>
                         <label class="flex items-center">
                             <input type="checkbox" name="is_active" value="true" {% if form.is_active %}checked{% endif %}

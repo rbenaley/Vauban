@@ -38,31 +38,6 @@ where
     }
 }
 
-/// Deserialize an optional bool from either a boolean, string ("true"/"false"/"on"), or presence.
-/// HTML checkboxes send "on" when checked, or are absent when unchecked.
-fn deserialize_optional_bool<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum StringOrBool {
-        Bool(bool),
-        String(String),
-    }
-
-    let opt: Option<StringOrBool> = Option::deserialize(deserializer)?;
-    match opt {
-        None => Ok(None),
-        Some(StringOrBool::Bool(b)) => Ok(Some(b)),
-        Some(StringOrBool::String(s)) => match s.to_lowercase().as_str() {
-            "true" | "on" | "1" | "yes" => Ok(Some(true)),
-            "false" | "off" | "0" | "no" | "" => Ok(Some(false)),
-            _ => Ok(Some(false)),
-        },
-    }
-}
-
 /// Asset type (protocol) (L-7: Diesel enum instead of String).
 #[derive(
     Debug,
@@ -197,9 +172,6 @@ pub struct Asset {
     pub os_version: Option<String>,
     pub connection_config: serde_json::Value,
     pub default_credential_id: Option<String>,
-    pub require_mfa: bool,
-    pub require_justification: bool,
-    pub max_session_duration: i32,
     pub last_seen: Option<DateTime<Utc>>,
     pub created_by_id: Option<i32>,
     pub updated_by_id: Option<i32>,
@@ -225,9 +197,6 @@ pub struct NewAsset {
     pub os_version: Option<String>,
     pub connection_config: serde_json::Value,
     pub default_credential_id: Option<String>,
-    pub require_mfa: bool,
-    pub require_justification: bool,
-    pub max_session_duration: i32,
     pub created_by_id: Option<i32>,
 }
 
@@ -298,8 +267,6 @@ pub struct CreateAssetRequest {
     #[serde(default)]
     pub group_ids: Vec<i32>,
     pub description: Option<String>,
-    pub require_mfa: Option<bool>,
-    pub require_justification: Option<bool>,
 }
 
 /// Asset update request.
@@ -318,10 +285,6 @@ pub struct UpdateAssetRequest {
     pub port: Option<i32>,
     pub status: Option<String>,
     pub description: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_optional_bool")]
-    pub require_mfa: Option<bool>,
-    #[serde(default, deserialize_with = "deserialize_optional_bool")]
-    pub require_justification: Option<bool>,
 }
 
 #[cfg(test)]
@@ -344,9 +307,6 @@ mod tests {
             os_version: Some("Ubuntu 22.04".to_string()),
             connection_config: serde_json::json!({}),
             default_credential_id: None,
-            require_mfa: false,
-            require_justification: false,
-            max_session_duration: 28800,
             last_seen: None,
             created_by_id: None,
             updated_by_id: None,
@@ -502,8 +462,6 @@ mod tests {
             group_id: None,
             group_ids: vec![],
             description: None,
-            require_mfa: None,
-            require_justification: None,
         };
 
         assert!(request.validate().is_ok());
@@ -522,8 +480,6 @@ mod tests {
             group_id: None,
             group_ids: vec![],
             description: None,
-            require_mfa: None,
-            require_justification: None,
         };
 
         assert!(request.validate().is_err());
@@ -542,8 +498,6 @@ mod tests {
             group_id: None,
             group_ids: vec![],
             description: None,
-            require_mfa: None,
-            require_justification: None,
         };
 
         assert!(request.validate().is_err());
@@ -562,8 +516,6 @@ mod tests {
             group_id: None,
             group_ids: vec![],
             description: None,
-            require_mfa: None,
-            require_justification: None,
         };
 
         assert!(request.validate().is_err());
@@ -715,9 +667,6 @@ mod tests {
             os_version: None,
             connection_config: serde_json::json!({}),
             default_credential_id: None,
-            require_mfa: false,
-            require_justification: false,
-            max_session_duration: 28800,
             created_by_id: None,
         };
 
@@ -740,9 +689,6 @@ mod tests {
             os_version: Some("Server 2022".to_string()),
             connection_config: serde_json::json!({"key": "value"}),
             default_credential_id: Some("cred-1".to_string()),
-            require_mfa: true,
-            require_justification: true,
-            max_session_duration: 3600,
             created_by_id: Some(1),
         };
 
@@ -834,8 +780,6 @@ mod tests {
             group_id: None,
             group_ids: vec![],
             description: None,
-            require_mfa: None,
-            require_justification: None,
         };
 
         let debug_str = format!("{:?}", request);
@@ -853,8 +797,6 @@ mod tests {
             group_id: Some(1),
             group_ids: vec![],
             description: Some("Cloned".to_string()),
-            require_mfa: Some(true),
-            require_justification: Some(false),
         };
 
         let cloned = request.clone();
@@ -874,8 +816,6 @@ mod tests {
             group_id: None,
             group_ids: vec![],
             description: None,
-            require_mfa: None,
-            require_justification: None,
         };
 
         assert!(request.validate().is_err());
@@ -894,8 +834,6 @@ mod tests {
             group_id: None,
             group_ids: vec![],
             description: None,
-            require_mfa: None,
-            require_justification: None,
         };
 
         assert!(request.validate().is_err());
@@ -912,8 +850,6 @@ mod tests {
             port: None,
             status: None,
             description: None,
-            require_mfa: None,
-            require_justification: None,
         };
 
         let debug_str = format!("{:?}", request);
@@ -929,8 +865,6 @@ mod tests {
             port: Some(2222),
             status: Some("maintenance".to_string()),
             description: Some("Updated description".to_string()),
-            require_mfa: Some(true),
-            require_justification: Some(true),
         };
 
         let cloned = request.clone();
@@ -968,65 +902,17 @@ mod tests {
     }
 
     #[test]
-    fn test_update_asset_request_bool_as_string_true() {
-        let json = r#"{"require_mfa": "true"}"#;
-        let request: UpdateAssetRequest = unwrap_ok!(serde_json::from_str(json));
-        assert_eq!(request.require_mfa, Some(true));
-    }
-
-    #[test]
-    fn test_update_asset_request_bool_as_string_on() {
-        let json = r#"{"require_mfa": "on"}"#;
-        let request: UpdateAssetRequest = unwrap_ok!(serde_json::from_str(json));
-        assert_eq!(request.require_mfa, Some(true));
-    }
-
-    #[test]
-    fn test_update_asset_request_bool_as_boolean() {
-        let json = r#"{"require_mfa": true}"#;
-        let request: UpdateAssetRequest = unwrap_ok!(serde_json::from_str(json));
-        assert_eq!(request.require_mfa, Some(true));
-    }
-
-    #[test]
-    fn test_update_asset_request_bool_as_string_false() {
-        let json = r#"{"require_justification": "false"}"#;
-        let request: UpdateAssetRequest = unwrap_ok!(serde_json::from_str(json));
-        assert_eq!(request.require_justification, Some(false));
-    }
-
-    #[test]
     fn test_update_asset_request_form_like_json() {
-        // Simulates what HTMX json-enc extension sends
         let json = r#"{
             "name": "test-server",
             "hostname": "test.example.com",
             "ip_address": "192.168.1.100",
             "port": "22",
             "status": "online",
-            "description": "Test server",
-            "require_mfa": "on",
-            "require_justification": "on"
+            "description": "Test server"
         }"#;
         let request: UpdateAssetRequest = unwrap_ok!(serde_json::from_str(json));
         assert_eq!(request.name, Some("test-server".to_string()));
         assert_eq!(request.port, Some(22));
-        assert_eq!(request.require_mfa, Some(true));
-        assert_eq!(request.require_justification, Some(true));
-    }
-
-    #[test]
-    fn test_update_asset_request_form_without_checkboxes() {
-        // When checkboxes are unchecked, they are not sent at all
-        let json = r#"{
-            "name": "test-server",
-            "hostname": "test.example.com",
-            "port": "22",
-            "status": "online"
-        }"#;
-        let request: UpdateAssetRequest = unwrap_ok!(serde_json::from_str(json));
-        assert_eq!(request.port, Some(22));
-        assert_eq!(request.require_mfa, None);
-        assert_eq!(request.require_justification, None);
     }
 }

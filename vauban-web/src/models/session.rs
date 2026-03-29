@@ -97,6 +97,9 @@ impl diesel::deserialize::FromSql<diesel::sql_types::Varchar, diesel::pg::Pg> fo
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionStatus {
     Pending,
+    Approved,
+    Rejected,
+    Expired,
     Connecting,
     Active,
     Disconnected,
@@ -108,6 +111,9 @@ impl SessionStatus {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Pending => "pending",
+            Self::Approved => "approved",
+            Self::Rejected => "rejected",
+            Self::Expired => "expired",
             Self::Connecting => "connecting",
             Self::Active => "active",
             Self::Disconnected => "disconnected",
@@ -118,6 +124,9 @@ impl SessionStatus {
 
     pub fn parse(s: &str) -> Self {
         match s {
+            "approved" => Self::Approved,
+            "rejected" => Self::Rejected,
+            "expired" => Self::Expired,
             "connecting" => Self::Connecting,
             "active" => Self::Active,
             "disconnected" => Self::Disconnected,
@@ -158,6 +167,10 @@ pub struct ProxySession {
     pub metadata: serde_json::Value,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub approved_by_id: Option<i32>,
+    pub approved_at: Option<DateTime<Utc>>,
+    pub max_session_duration: Option<i32>,
+    pub expires_at: Option<DateTime<Utc>>,
 }
 
 /// New session for insertion.
@@ -177,6 +190,7 @@ pub struct NewProxySession {
     pub justification: Option<String>,
     pub is_recorded: bool,
     pub metadata: serde_json::Value,
+    pub max_session_duration: Option<i32>,
 }
 
 impl ProxySession {
@@ -240,6 +254,10 @@ mod tests {
             metadata: serde_json::json!({}),
             created_at: Utc::now() - Duration::hours(1),
             updated_at: Utc::now(),
+            approved_by_id: None,
+            approved_at: None,
+            max_session_duration: None,
+            expires_at: None,
         }
     }
 
@@ -324,6 +342,21 @@ mod tests {
     }
 
     #[test]
+    fn test_session_status_from_str_approved() {
+        assert_eq!(SessionStatus::parse("approved"), SessionStatus::Approved);
+    }
+
+    #[test]
+    fn test_session_status_from_str_rejected() {
+        assert_eq!(SessionStatus::parse("rejected"), SessionStatus::Rejected);
+    }
+
+    #[test]
+    fn test_session_status_from_str_expired() {
+        assert_eq!(SessionStatus::parse("expired"), SessionStatus::Expired);
+    }
+
+    #[test]
     fn test_session_status_from_str_unknown() {
         assert_eq!(SessionStatus::parse("unknown"), SessionStatus::Pending);
         assert_eq!(SessionStatus::parse(""), SessionStatus::Pending);
@@ -332,6 +365,9 @@ mod tests {
     #[test]
     fn test_session_status_as_str() {
         assert_eq!(SessionStatus::Pending.as_str(), "pending");
+        assert_eq!(SessionStatus::Approved.as_str(), "approved");
+        assert_eq!(SessionStatus::Rejected.as_str(), "rejected");
+        assert_eq!(SessionStatus::Expired.as_str(), "expired");
         assert_eq!(SessionStatus::Connecting.as_str(), "connecting");
         assert_eq!(SessionStatus::Active.as_str(), "active");
         assert_eq!(SessionStatus::Disconnected.as_str(), "disconnected");
@@ -343,6 +379,9 @@ mod tests {
     fn test_session_status_roundtrip() {
         for status in [
             SessionStatus::Pending,
+            SessionStatus::Approved,
+            SessionStatus::Rejected,
+            SessionStatus::Expired,
             SessionStatus::Connecting,
             SessionStatus::Active,
             SessionStatus::Disconnected,
@@ -542,6 +581,9 @@ mod tests {
     fn test_status_enum_all_values() {
         let statuses = [
             ("pending", SessionStatus::Pending),
+            ("approved", SessionStatus::Approved),
+            ("rejected", SessionStatus::Rejected),
+            ("expired", SessionStatus::Expired),
             ("connecting", SessionStatus::Connecting),
             ("active", SessionStatus::Active),
             ("disconnected", SessionStatus::Disconnected),
@@ -574,6 +616,7 @@ mod tests {
             justification: Some("Maintenance".to_string()),
             is_recorded: true,
             metadata: serde_json::json!({}),
+            max_session_duration: None,
         };
 
         let debug_str = format!("{:?}", new_session);
@@ -596,6 +639,7 @@ mod tests {
             justification: None,
             is_recorded: false,
             metadata: serde_json::json!({"key": "value"}),
+            max_session_duration: Some(3600),
         };
 
         let cloned = new_session.clone();

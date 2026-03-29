@@ -240,9 +240,6 @@ pub async fn create_test_ssh_asset(conn: &mut AsyncPgConnection, name: &str) -> 
         os_version: Some("Ubuntu 22.04".to_string()),
         connection_config: serde_json::json!({}),
         default_credential_id: None,
-        require_mfa: false,
-        require_justification: false,
-        max_session_duration: 3600,
         created_by_id: None,
     };
 
@@ -274,9 +271,6 @@ pub async fn create_test_rdp_asset(conn: &mut AsyncPgConnection, name: &str) -> 
         os_version: Some("Server 2022".to_string()),
         connection_config: serde_json::json!({}),
         default_credential_id: None,
-        require_mfa: false,
-        require_justification: false,
-        max_session_duration: 3600,
         created_by_id: None,
     };
 
@@ -424,9 +418,6 @@ pub async fn create_simple_ssh_asset(
         os_version: None,
         connection_config: serde_json::json!({}),
         default_credential_id: None,
-        require_mfa: false,
-        require_justification: false,
-        max_session_duration: 3600,
         created_by_id: Some(created_by),
     };
 
@@ -462,9 +453,6 @@ pub async fn create_simple_rdp_asset(
         os_version: None,
         connection_config: serde_json::json!({}),
         default_credential_id: None,
-        require_mfa: false,
-        require_justification: false,
-        max_session_duration: 3600,
         created_by_id: Some(created_by),
     };
 
@@ -783,9 +771,6 @@ pub async fn create_test_asset_in_group(
         os_version: None,
         connection_config: serde_json::json!({}),
         default_credential_id: None,
-        require_mfa: false,
-        require_justification: false,
-        max_session_duration: 3600,
         created_by_id: Some(created_by),
     };
 
@@ -849,9 +834,6 @@ pub async fn create_test_asset_in_group_with_type(
         os_version: None,
         connection_config: serde_json::json!({}),
         default_credential_id: None,
-        require_mfa: false,
-        require_justification: false,
-        max_session_duration: 3600,
         created_by_id: Some(created_by),
     };
 
@@ -1104,7 +1086,7 @@ pub async fn create_test_access_rule(
         valid_from: None,
         valid_until: None,
         require_mfa: false,
-        require_justification: false,
+        require_approval: false,
         max_session_duration: None,
         is_active: true,
         priority: 0,
@@ -1128,7 +1110,7 @@ pub async fn create_test_access_rule_with_constraints(
     asset_group_uuid: &Uuid,
     protocols: &[&str],
     require_mfa: bool,
-    require_justification: bool,
+    require_approval: bool,
     max_duration: Option<i32>,
 ) -> Uuid {
     use vauban_web::schema::{asset_groups, vauban_groups};
@@ -1163,7 +1145,7 @@ pub async fn create_test_access_rule_with_constraints(
         valid_from: None,
         valid_until: None,
         require_mfa,
-        require_justification,
+        require_approval,
         max_session_duration: max_duration,
         is_active: true,
         priority: 0,
@@ -1217,7 +1199,7 @@ pub async fn create_expired_access_rule(
         valid_from: Some(Utc::now() - Duration::days(30)),
         valid_until: Some(Utc::now() - Duration::hours(1)),
         require_mfa: false,
-        require_justification: false,
+        require_approval: false,
         max_session_duration: None,
         is_active: true,
         priority: 0,
@@ -1271,7 +1253,7 @@ pub async fn create_future_access_rule(
         valid_from: Some(Utc::now() + Duration::hours(24)),
         valid_until: None,
         require_mfa: false,
-        require_justification: false,
+        require_approval: false,
         max_session_duration: None,
         is_active: true,
         priority: 0,
@@ -1325,7 +1307,7 @@ pub async fn create_inactive_access_rule(
         valid_from: None,
         valid_until: None,
         require_mfa: false,
-        require_justification: false,
+        require_approval: false,
         max_session_duration: None,
         is_active: false,
         priority: 0,

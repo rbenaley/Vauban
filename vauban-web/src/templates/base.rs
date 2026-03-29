@@ -64,10 +64,11 @@ impl BaseTemplate {
                 is_groups: false,
                 is_approvals: false,
                 is_access_rules: false,
-                // Superusers and staff can view all sections
+                is_my_requests: false,
                 can_view_groups: is_admin,
                 can_view_access_rules: is_admin,
                 can_view_admin: is_admin,
+                pending_approval_count: 0,
             }
         });
 
@@ -101,16 +102,18 @@ impl BaseTemplate {
                 is_assets: path.starts_with("/assets") && !path.contains("/access"),
                 is_sessions: path.contains("/sessions")
                     && !path.contains("/recordings")
-                    && !path.contains("/approvals"),
+                    && !path.contains("/approvals")
+                    && !path.contains("/my-requests"),
                 is_recordings: path.contains("/recordings"),
                 is_users: path.contains("/users") && !path.contains("/groups"),
                 is_groups: path.contains("/groups"),
                 is_approvals: path.contains("/approvals"),
                 is_access_rules: path.contains("/access"),
-                // Superusers and staff can view all sections
+                is_my_requests: path.contains("/my-requests"),
                 can_view_groups: is_admin,
                 can_view_access_rules: is_admin,
                 can_view_admin: is_admin,
+                pending_approval_count: 0,
             });
         }
         self
@@ -127,6 +130,14 @@ impl BaseTemplate {
             sidebar.can_view_groups = can_view_groups;
             sidebar.can_view_access_rules = can_view_access_rules;
             sidebar.can_view_admin = can_view_admin;
+        }
+        self
+    }
+
+    /// Set the count of pending approval requests (displayed as badge in sidebar).
+    pub fn with_pending_approval_count(mut self, count: i64) -> Self {
+        if let Some(ref mut sidebar) = self.sidebar_content {
+            sidebar.pending_approval_count = count;
         }
         self
     }

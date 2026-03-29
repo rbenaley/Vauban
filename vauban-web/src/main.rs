@@ -1206,6 +1206,26 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             "/sessions/approvals/{uuid}",
             get(handlers::web::approval_detail),
         )
+        .route(
+            "/sessions/approvals/{uuid}/approve",
+            post(handlers::web::approve_access_request),
+        )
+        .route(
+            "/sessions/approvals/{uuid}/reject",
+            post(handlers::web::reject_access_request),
+        )
+        .route(
+            "/sessions/request",
+            post(handlers::web::submit_access_request),
+        )
+        .route(
+            "/sessions/my-requests",
+            get(handlers::web::my_requests),
+        )
+        .route(
+            "/sessions/my-requests/{uuid}/cancel",
+            post(handlers::web::cancel_access_request),
+        )
         .route("/sessions/active", get(handlers::web::active_sessions))
         // SSH connection endpoints
         .route("/assets/{uuid}/connect", post(handlers::web::connect_ssh))

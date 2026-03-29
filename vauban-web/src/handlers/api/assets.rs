@@ -184,10 +184,7 @@ pub async fn create_asset(
         os_version: None,
         connection_config: serde_json::json!({}),
         default_credential_id: None,
-        require_mfa: request.require_mfa.unwrap_or(false),
-        require_justification: request.require_justification.unwrap_or(false),
-        max_session_duration: 28800, // 8 hours
-        created_by_id: None,         // TODO: Get from user
+        created_by_id: None, // TODO: Get from user
     };
 
     let asset: Asset = diesel::insert_into(assets)
@@ -265,9 +262,8 @@ pub async fn update_asset(
 
     use crate::schema::assets::dsl::{
         assets, description as description_col, hostname as hostname_col,
-        ip_address as ip_address_col, name as name_col, port as port_col,
-        require_justification as require_justification_col, require_mfa as require_mfa_col,
-        status as status_col, updated_at, uuid,
+        ip_address as ip_address_col, name as name_col, port as port_col, status as status_col,
+        updated_at, uuid,
     };
     use chrono::Utc;
 
@@ -313,10 +309,6 @@ pub async fn update_asset(
             port_col.eq(request.port.unwrap_or(existing.port)),
             status_col.eq(request.status.unwrap_or(existing.status)),
             description_col.eq(sanitized_description),
-            require_mfa_col.eq(request.require_mfa.unwrap_or(existing.require_mfa)),
-            require_justification_col.eq(request
-                .require_justification
-                .unwrap_or(existing.require_justification)),
             updated_at.eq(Utc::now()),
         ))
         .get_result(&mut conn)
@@ -438,8 +430,6 @@ pub struct GroupAssetResponse {
     pub asset_type: String,
     pub status: String,
     pub description: Option<String>,
-    pub require_mfa: bool,
-    pub require_justification: bool,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -501,8 +491,6 @@ pub async fn list_group_assets(
             asset_type: asset.asset_type.to_string(),
             status: asset.status,
             description: asset.description,
-            require_mfa: asset.require_mfa,
-            require_justification: asset.require_justification,
             created_at: asset.created_at,
             updated_at: asset.updated_at,
         })

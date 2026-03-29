@@ -160,7 +160,7 @@ pub async fn create_session(
             ));
         }
 
-        if access_result.require_justification && request.justification.is_none() {
+        if access_result.require_approval && request.justification.is_none() {
             return Err(AppError::Validation(
                 "Justification is required for this asset".to_string(),
             ));
@@ -189,6 +189,7 @@ pub async fn create_session(
         justification: request.justification,
         is_recorded: true,
         metadata: serde_json::json!({}),
+        max_session_duration: None,
     };
 
     let session: ProxySession = diesel::insert_into(proxy_sessions)

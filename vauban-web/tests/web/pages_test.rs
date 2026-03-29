@@ -6620,8 +6620,6 @@ async fn test_asset_create_with_checkboxes() {
             ("port", "22"),
             ("asset_type", "ssh"),
             ("status", "online"),
-            ("require_mfa", "on"),
-            ("require_justification", "on"),
         ])
         .await;
 
@@ -6632,26 +6630,16 @@ async fn test_asset_create_with_checkboxes() {
         status
     );
 
-    // Verify asset was created with correct checkbox values
     use vauban_web::schema::assets;
-    let created: Option<(bool, bool)> = assets::table
+    let created: Option<i32> = assets::table
         .filter(assets::name.eq(&asset_name))
-        .select((assets::require_mfa, assets::require_justification))
+        .select(assets::id)
         .first(&mut conn)
         .await
         .optional()
         .unwrap();
 
     assert!(created.is_some(), "Asset should be created in database");
-    let (require_mfa, require_justification) = created.unwrap();
-    assert!(
-        require_mfa,
-        "require_mfa should be true when checkbox is 'on'"
-    );
-    assert!(
-        require_justification,
-        "require_justification should be true when checkbox is 'on'"
-    );
 }
 
 #[tokio::test]
@@ -6696,26 +6684,16 @@ async fn test_asset_create_without_checkboxes() {
         status
     );
 
-    // Verify asset was created with false checkbox values
     use vauban_web::schema::assets;
-    let created: Option<(bool, bool)> = assets::table
+    let created: Option<i32> = assets::table
         .filter(assets::name.eq(&asset_name))
-        .select((assets::require_mfa, assets::require_justification))
+        .select(assets::id)
         .first(&mut conn)
         .await
         .optional()
         .unwrap();
 
     assert!(created.is_some(), "Asset should be created in database");
-    let (require_mfa, require_justification) = created.unwrap();
-    assert!(
-        !require_mfa,
-        "require_mfa should be false when checkbox is absent"
-    );
-    assert!(
-        !require_justification,
-        "require_justification should be false when checkbox is absent"
-    );
 }
 
 #[tokio::test]
@@ -6778,7 +6756,6 @@ async fn test_asset_create_reactivates_soft_deleted() {
             ("port", "22"),
             ("asset_type", "ssh"),
             ("status", "online"),
-            ("require_justification", "on"),
         ])
         .await;
 
@@ -6789,29 +6766,19 @@ async fn test_asset_create_reactivates_soft_deleted() {
         status
     );
 
-    // Verify the asset was reactivated (same UUID, updated values, not deleted)
-    let reactivated: Option<(String, String, bool, bool)> = assets::table
+    let reactivated: Option<(String, String, bool)> = assets::table
         .filter(assets::uuid.eq(original_uuid))
-        .select((
-            assets::name,
-            assets::status,
-            assets::is_deleted,
-            assets::require_justification,
-        ))
+        .select((assets::name, assets::status, assets::is_deleted))
         .first(&mut conn)
         .await
         .optional()
         .unwrap();
 
     assert!(reactivated.is_some(), "Asset should exist");
-    let (name, status, is_deleted, require_justification) = reactivated.unwrap();
+    let (name, status, is_deleted) = reactivated.unwrap();
     assert_eq!(name, new_asset_name, "Asset name should be updated");
     assert_eq!(status, "online", "Asset status should be updated");
     assert!(!is_deleted, "Asset should no longer be soft-deleted");
-    assert!(
-        require_justification,
-        "Asset require_justification should be updated"
-    );
 
     // Verify there's only one asset with this hostname+port (reactivated, not a new one)
     let count: i64 = assets::table

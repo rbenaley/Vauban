@@ -54,7 +54,17 @@
                 </span>
             </div>
         </div>
-        <div class="mt-4 flex md:ml-4 md:mt-0 space-x-3" x-data="csrf">
+        <div class="mt-4 flex md:ml-4 md:mt-0 space-x-3">
+            {% if asset.require_approval %}
+            <button type="button"
+                    @click="$store.accessModal.show = true"
+                    class="inline-flex items-center rounded-md bg-vauban-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-600">
+                <svg class="-ml-0.5 mr-1.5 h-5 w-5" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z"/>
+                </svg>
+                Request Access
+            </button>
+            {% else %}
             <button type="button"
                     hx-post="/assets/{{ asset.uuid }}/{%- if asset.asset_type == "rdp" -%}connect-rdp{%- else -%}connect{%- endif -%}"
                     hx-vals="js:{csrf_token: document.cookie.match(/(?:^|;\s*)__vauban_csrf=([^;]*)/)?.[1] || ''}"
@@ -71,6 +81,7 @@
                 <span class="[.htmx-request_&]:hidden">Connect</span>
                 <span class="hidden [.htmx-request_&]:inline">Connecting...</span>
             </button>
+            {% endif %}
             <a href="/assets/{{ asset.uuid }}/edit"
                class="inline-flex items-center rounded-md bg-white dark:bg-gray-700 px-3 py-2 text-sm font-semibold text-gray-900 dark:text-white shadow-sm ring-1 ring-inset ring-gray-300 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600">
                 <svg class="-ml-0.5 mr-1.5 h-5 w-5 text-gray-400" viewBox="0 0 20 20" fill="currentColor">
@@ -263,61 +274,6 @@
         </div>
     </div>
 
-    <!-- Security Settings -->
-    <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
-        <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
-            <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Security Settings</h3>
-        </div>
-        <div class="px-4 py-5 sm:p-6">
-            <dl class="grid grid-cols-1 gap-x-4 gap-y-6 sm:grid-cols-3">
-                <div>
-                    <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Require MFA</dt>
-                    <dd class="mt-1">
-                        {% if asset.require_mfa %}
-                        <span class="inline-flex items-center text-green-600 dark:text-green-400">
-                            <svg class="mr-1.5 h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                                <path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/>
-                            </svg>
-                            Yes
-                        </span>
-                        {% else %}
-                        <span class="inline-flex items-center text-gray-500 dark:text-gray-400">
-                            <svg class="mr-1.5 h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                                <path fill-rule="evenodd" d="M4.28 4.28a.75.75 0 011.06 0L10 8.94l4.66-4.66a.75.75 0 111.06 1.06L11.06 10l4.66 4.66a.75.75 0 11-1.06 1.06L10 11.06l-4.66 4.66a.75.75 0 01-1.06-1.06L8.94 10 4.28 5.34a.75.75 0 010-1.06z" clip-rule="evenodd"/>
-                            </svg>
-                            No
-                        </span>
-                        {% endif %}
-                    </dd>
-                </div>
-                <div>
-                    <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Require Justification</dt>
-                    <dd class="mt-1">
-                        {% if asset.require_justification %}
-                        <span class="inline-flex items-center text-green-600 dark:text-green-400">
-                            <svg class="mr-1.5 h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                                <path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/>
-                            </svg>
-                            Yes
-                        </span>
-                        {% else %}
-                        <span class="inline-flex items-center text-gray-500 dark:text-gray-400">
-                            <svg class="mr-1.5 h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                                <path fill-rule="evenodd" d="M4.28 4.28a.75.75 0 011.06 0L10 8.94l4.66-4.66a.75.75 0 111.06 1.06L11.06 10l4.66 4.66a.75.75 0 11-1.06 1.06L10 11.06l-4.66 4.66a.75.75 0 01-1.06-1.06L8.94 10 4.28 5.34a.75.75 0 010-1.06z" clip-rule="evenodd"/>
-                            </svg>
-                            No
-                        </span>
-                        {% endif %}
-                    </dd>
-                </div>
-                <div>
-                    <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Max Session Duration</dt>
-                    <dd class="mt-1 text-sm text-gray-900 dark:text-white">{{ asset.max_session_display() }}</dd>
-                </div>
-            </dl>
-        </div>
-    </div>
-
     <!-- Metadata -->
     <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
         <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
@@ -351,5 +307,7 @@
             Back to Assets
         </a>
     </div>
+
+    {% include "sessions/access_request_modal.html" %}
 </div>
 {% endblock %}

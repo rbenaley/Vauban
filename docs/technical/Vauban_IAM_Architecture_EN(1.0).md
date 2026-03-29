@@ -463,7 +463,7 @@ flowchart LR
 | `valid_from` | timestamptz | Start of validity window (NULL = no start constraint) |
 | `valid_until` | timestamptz | End of validity window (NULL = no end constraint) |
 | `require_mfa` | bool | Whether MFA is required for connections |
-| `require_justification` | bool | Whether a justification must be provided |
+| `require_approval` | bool | Whether admin approval (JIT) is required before connection |
 | `max_session_duration` | int | Maximum session duration in minutes (NULL = unlimited) |
 | `is_active` | bool | Whether the rule is currently active |
 | `priority` | int | Priority for conflict resolution (higher = more important) |
@@ -481,7 +481,7 @@ When a user attempts to connect to an asset, `vauban-access` evaluates access by
    - The requested protocol is in `allowed_protocols`
 3. **Aggregate constraints**: If any matching rules exist, access is granted with the most restrictive constraints:
    - `require_mfa` = true if **any** matching rule requires MFA
-   - `require_justification` = true if **any** matching rule requires justification
+   - `require_approval` = true if **any** matching rule requires approval
    - `max_session_duration` = **minimum** across all matching rules
 
 ```mermaid
@@ -490,7 +490,7 @@ flowchart TB
 
     FindRules --> Empty{Rules found?}
     Empty -->|No| Deny["AccessChecked<br/>allowed: false"]
-    Empty -->|Yes| Aggregate["Aggregate constraints:<br/>any(require_mfa)<br/>any(require_justification)<br/>min(max_session_duration)"]
+    Empty -->|Yes| Aggregate["Aggregate constraints:<br/>any(require_mfa)<br/>any(require_approval)<br/>min(max_session_duration)"]
     Aggregate --> Allow["AccessChecked<br/>allowed: true<br/>+ constraints"]
 ```
 
@@ -499,7 +499,7 @@ flowchart TB
 The core evaluation query (simplified):
 
 ```sql
-SELECT require_mfa, require_justification, max_session_duration
+SELECT require_mfa, require_approval, max_session_duration
 FROM access_rules
 INNER JOIN user_groups ON user_groups.group_id = access_rules.user_group_id
 WHERE user_groups.user_id = $1          -- the connecting user
@@ -585,7 +585,7 @@ erDiagram
         timestamptz valid_from
         timestamptz valid_until
         bool require_mfa
-        bool require_justification
+        bool require_approval
         int max_session_duration
         bool is_active
         int priority
@@ -762,7 +762,7 @@ The `AccessRequest` enum contains **24 variants** and `AccessResponse` contains 
 pub struct AccessCheckResult {
     pub allowed: bool,
     pub require_mfa: bool,
-    pub require_justification: bool,
+    pub require_approval: bool,
     pub max_session_duration: Option<i32>,
 }
 
@@ -781,7 +781,7 @@ pub struct AccessRuleInfo {
     pub valid_from: Option<String>,
     pub valid_until: Option<String>,
     pub require_mfa: bool,
-    pub require_justification: bool,
+    pub require_approval: bool,
     pub max_session_duration: Option<i32>,
     pub is_active: bool,
     pub priority: i32,

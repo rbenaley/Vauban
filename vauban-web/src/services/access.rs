@@ -18,7 +18,7 @@ use crate::ipc::AccessIpcClient;
 pub struct AccessCheckResult {
     pub allowed: bool,
     pub require_mfa: bool,
-    pub require_justification: bool,
+    pub require_approval: bool,
     pub max_session_duration: Option<i32>,
 }
 
@@ -27,7 +27,7 @@ impl AccessCheckResult {
         Self {
             allowed: false,
             require_mfa: false,
-            require_justification: false,
+            require_approval: false,
             max_session_duration: None,
         }
     }
@@ -198,7 +198,7 @@ async fn can_access_asset_ipc(
 
     let mut allowed = false;
     let mut require_mfa = false;
-    let mut require_justification = false;
+    let mut require_approval = false;
     let mut max_session_duration: Option<i32> = None;
 
     for entry in entries {
@@ -207,8 +207,8 @@ async fn can_access_asset_ipc(
             if entry.result.require_mfa {
                 require_mfa = true;
             }
-            if entry.result.require_justification {
-                require_justification = true;
+            if entry.result.require_approval {
+                require_approval = true;
             }
             if let Some(d) = entry.result.max_session_duration {
                 max_session_duration = Some(match max_session_duration {
@@ -226,7 +226,7 @@ async fn can_access_asset_ipc(
     Ok(AccessCheckResult {
         allowed: true,
         require_mfa,
-        require_justification,
+        require_approval,
         max_session_duration,
     })
 }
@@ -281,7 +281,7 @@ async fn can_access_asset_sql(
         )
         .select((
             access_rules::require_mfa,
-            access_rules::require_justification,
+            access_rules::require_approval,
             access_rules::max_session_duration,
         ))
         .filter(access_rules::allowed_protocols.contains(vec![Some(protocol.to_string())]))
@@ -294,13 +294,13 @@ async fn can_access_asset_sql(
     }
 
     let require_mfa = matching_rules.iter().any(|(mfa, _, _)| *mfa);
-    let require_justification = matching_rules.iter().any(|(_, just, _)| *just);
+    let require_approval = matching_rules.iter().any(|(_, just, _)| *just);
     let max_session_duration = matching_rules.iter().filter_map(|(_, _, dur)| *dur).min();
 
     Ok(AccessCheckResult {
         allowed: true,
         require_mfa,
-        require_justification,
+        require_approval,
         max_session_duration,
     })
 }
@@ -314,7 +314,7 @@ mod tests {
         let result = AccessCheckResult::denied();
         assert!(!result.allowed);
         assert!(!result.require_mfa);
-        assert!(!result.require_justification);
+        assert!(!result.require_approval);
         assert!(result.max_session_duration.is_none());
     }
 
@@ -323,7 +323,7 @@ mod tests {
         let result = AccessCheckResult {
             allowed: true,
             require_mfa: true,
-            require_justification: false,
+            require_approval: false,
             max_session_duration: Some(3600),
         };
         let debug = format!("{:?}", result);
@@ -337,13 +337,13 @@ mod tests {
         let result = AccessCheckResult {
             allowed: true,
             require_mfa: true,
-            require_justification: true,
+            require_approval: true,
             max_session_duration: Some(7200),
         };
         let cloned = result.clone();
         assert_eq!(cloned.allowed, result.allowed);
         assert_eq!(cloned.require_mfa, result.require_mfa);
-        assert_eq!(cloned.require_justification, result.require_justification);
+        assert_eq!(cloned.require_approval, result.require_approval);
         assert_eq!(cloned.max_session_duration, result.max_session_duration);
     }
 }

@@ -22,7 +22,7 @@ pub struct AccessRuleCreateForm {
     pub valid_from: String,
     pub valid_until: String,
     pub require_mfa: bool,
-    pub require_justification: bool,
+    pub require_approval: bool,
     pub max_session_duration: String,
     pub is_active: bool,
     pub priority: String,

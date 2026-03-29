@@ -17,9 +17,8 @@ pub struct AssetDetail {
     pub description: Option<String>,
     pub os_type: Option<String>,
     pub os_version: Option<String>,
+    pub require_approval: bool,
     pub require_mfa: bool,
-    pub require_justification: bool,
-    pub max_session_duration: i32,
     pub last_seen: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -52,16 +51,6 @@ impl AssetDetail {
         }
     }
 
-    /// Format max session duration.
-    pub fn max_session_display(&self) -> String {
-        let hours = self.max_session_duration / 3600;
-        let minutes = (self.max_session_duration % 3600) / 60;
-        if hours > 0 {
-            format!("{}h {}m", hours, minutes)
-        } else {
-            format!("{}m", minutes)
-        }
-    }
 }
 
 #[derive(Template)]
@@ -96,9 +85,8 @@ mod tests {
             description: Some("Test server description".to_string()),
             os_type: Some("Linux".to_string()),
             os_version: Some("Ubuntu 22.04".to_string()),
+            require_approval: false,
             require_mfa: true,
-            require_justification: false,
-            max_session_duration: 7200,
             last_seen: Some("2026-01-03 10:00:00".to_string()),
             created_at: "2026-01-01 00:00:00".to_string(),
             updated_at: "2026-01-02 00:00:00".to_string(),
@@ -155,27 +143,6 @@ mod tests {
     fn test_type_class_unknown() {
         let asset = create_test_asset_detail("online", "telnet");
         assert!(asset.type_class().contains("gray"));
-    }
-
-    // Tests for max_session_display()
-    #[test]
-    fn test_max_session_display_hours() {
-        let asset = create_test_asset_detail("online", "ssh");
-        assert_eq!(asset.max_session_display(), "2h 0m");
-    }
-
-    #[test]
-    fn test_max_session_display_minutes_only() {
-        let mut asset = create_test_asset_detail("online", "ssh");
-        asset.max_session_duration = 1800; // 30 minutes
-        assert_eq!(asset.max_session_display(), "30m");
-    }
-
-    #[test]
-    fn test_max_session_display_hours_and_minutes() {
-        let mut asset = create_test_asset_detail("online", "ssh");
-        asset.max_session_duration = 5400; // 1h 30m
-        assert_eq!(asset.max_session_display(), "1h 30m");
     }
 
     // Tests for AssetDetail struct

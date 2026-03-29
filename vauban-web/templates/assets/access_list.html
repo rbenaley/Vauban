@@ -83,10 +83,10 @@
                         {% if rule.require_mfa %}
                         <span class="inline-flex items-center rounded-full bg-blue-100 dark:bg-blue-900/50 px-2 py-0.5 text-xs font-medium text-blue-800 dark:text-blue-300 mr-1">MFA</span>
                         {% endif %}
-                        {% if rule.require_justification %}
-                        <span class="inline-flex items-center rounded-full bg-purple-100 dark:bg-purple-900/50 px-2 py-0.5 text-xs font-medium text-purple-800 dark:text-purple-300">Justification</span>
+                        {% if rule.require_approval %}
+                        <span class="inline-flex items-center rounded-full bg-purple-100 dark:bg-purple-900/50 px-2 py-0.5 text-xs font-medium text-purple-800 dark:text-purple-300">Approval</span>
                         {% endif %}
-                        {% if !rule.require_mfa && !rule.require_justification %}
+                        {% if !rule.require_mfa && !rule.require_approval %}
                         <span class="text-gray-400">None</span>
                         {% endif %}
                     </td>

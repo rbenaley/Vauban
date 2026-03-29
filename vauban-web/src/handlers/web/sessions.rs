@@ -1026,6 +1026,655 @@ struct ApprovalDetailResult {
     is_recorded: bool,
 }
 
+/// Form for access request submission.
+#[derive(Debug, serde::Deserialize)]
+pub struct AccessRequestForm {
+    pub csrf_token: String,
+    pub asset_uuid: String,
+    pub session_type: String,
+    pub justification: Option<String>,
+    pub totp_code: Option<String>,
+}
+
+/// Submit an access request (JIT flow).
+///
+/// POST /sessions/request
+///
+/// Creates a pending proxy_session and notifies admins.
+pub async fn submit_access_request(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    auth_user: WebAuthUser,
+    jar: CookieJar,
+    Form(form): Form<AccessRequestForm>,
+) -> Response {
+    let is_htmx = headers.get("HX-Request").is_some();
+
+    let secret = state.config.secret_key.expose_secret().as_bytes();
+    let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
+    if !crate::middleware::csrf::validate_double_submit(
+        secret,
+        csrf_cookie.map(|c| c.value()),
+        &form.csrf_token,
+    ) {
+        return htmx_or_redirect(is_htmx, "Invalid CSRF token", "/assets");
+    }
+
+    let asset_uuid = match ::uuid::Uuid::parse_str(&form.asset_uuid) {
+        Ok(uuid) => uuid,
+        Err(_) => return htmx_or_redirect(is_htmx, "Invalid asset identifier", "/assets"),
+    };
+
+    let mut conn = match state.db_pool.get().await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("DB error: {}", e);
+            return htmx_or_redirect(is_htmx, "Database connection failed", "/assets");
+        }
+    };
+
+    use crate::models::asset::Asset;
+    use crate::schema::assets::dsl as a;
+
+    let asset: Asset = match a::assets
+        .filter(a::uuid.eq(asset_uuid))
+        .filter(a::is_deleted.eq(false))
+        .first(&mut conn)
+        .await
+    {
+        Ok(asset) => asset,
+        Err(_) => return htmx_or_redirect(is_htmx, "Asset not found", "/assets"),
+    };
+
+    let user_uuid = match ::uuid::Uuid::parse_str(&auth_user.uuid) {
+        Ok(u) => u,
+        Err(_) => return htmx_or_redirect(is_htmx, "Invalid user identifier", "/assets"),
+    };
+
+    let user_id: i32 = match crate::schema::users::table
+        .filter(crate::schema::users::uuid.eq(user_uuid))
+        .select(crate::schema::users::id)
+        .first(&mut conn)
+        .await
+    {
+        Ok(id) => id,
+        Err(_) => return htmx_or_redirect(is_htmx, "User not found", "/assets"),
+    };
+
+    // Justification is always required for JIT access requests
+    let justification = match form.justification.as_deref() {
+        Some(j) if j.trim().len() >= 10 => Some(sanitize(j.trim())),
+        _ => {
+            return htmx_or_redirect(
+                is_htmx,
+                "Justification is required (minimum 10 characters)",
+                &format!("/assets/{}", form.asset_uuid),
+            );
+        }
+    };
+
+    // Access rule check
+    let access_result = if !auth_user.is_superuser && !auth_user.is_staff {
+        let result = crate::services::access::can_access_asset(
+            state.access_client.as_ref(),
+            &mut conn,
+            user_id,
+            asset.id,
+            &form.session_type,
+        )
+        .await
+        .unwrap_or_else(|_| crate::services::access::AccessCheckResult::denied());
+
+        if !result.allowed {
+            return htmx_or_redirect(
+                is_htmx,
+                "No access rule grants you access to this asset",
+                "/assets",
+            );
+        }
+        result
+    } else {
+        crate::services::access::AccessCheckResult {
+            allowed: true,
+            require_mfa: true,
+            require_approval: true,
+            max_session_duration: None,
+        }
+    };
+
+    // MFA verification (if required)
+    if access_result.require_mfa {
+        match form.totp_code.as_deref() {
+            Some(code) if code.len() == 6 && code.chars().all(|c| c.is_ascii_digit()) => {
+                let user_uuid_parsed = match uuid::Uuid::parse_str(&auth_user.uuid) {
+                    Ok(u) => u,
+                    Err(_) => {
+                        return htmx_or_redirect(
+                            is_htmx,
+                            "Invalid user session",
+                            &format!("/assets/{}", form.asset_uuid),
+                        );
+                    }
+                };
+                let mfa_secret_opt: Option<String> = crate::schema::users::table
+                    .filter(crate::schema::users::uuid.eq(user_uuid_parsed))
+                    .select(crate::schema::users::mfa_secret)
+                    .first::<Option<String>>(&mut conn)
+                    .await
+                    .unwrap_or(None);
+
+                match mfa_secret_opt {
+                    Some(secret) => {
+                        let valid = if let Some(ref vault) = state.vault_client
+                            && is_encrypted(&secret)
+                        {
+                            vault.mfa_verify(&secret, code).await.unwrap_or(false)
+                        } else {
+                            crate::services::auth::AuthService::verify_totp(&secret, code)
+                        };
+                        if !valid {
+                            return htmx_or_redirect(
+                                is_htmx,
+                                "Invalid MFA code",
+                                &format!("/assets/{}", form.asset_uuid),
+                            );
+                        }
+                    }
+                    None => {
+                        return htmx_or_redirect(
+                            is_htmx,
+                            "MFA is not configured for your account",
+                            &format!("/assets/{}", form.asset_uuid),
+                        );
+                    }
+                }
+            }
+            _ => {
+                return htmx_or_redirect(
+                    is_htmx,
+                    "MFA code is required (6 digits)",
+                    &format!("/assets/{}", form.asset_uuid),
+                );
+            }
+        }
+    }
+
+    // Create pending session
+    let session_uuid = ::uuid::Uuid::new_v4();
+    let client_ip: ipnetwork::IpNetwork = "0.0.0.0/0".parse().unwrap_or_else(|_| {
+        ipnetwork::IpNetwork::V4(ipnetwork::Ipv4Network::from(
+            std::net::Ipv4Addr::UNSPECIFIED,
+        ))
+    });
+
+    use crate::models::session::{NewProxySession, SessionType};
+
+    let new_session = NewProxySession {
+        uuid: session_uuid,
+        user_id,
+        asset_id: asset.id,
+        credential_id: "pending".to_string(),
+        credential_username: "pending".to_string(),
+        session_type: SessionType::parse(&form.session_type),
+        status: "pending".to_string(),
+        client_ip,
+        client_user_agent: headers
+            .get(axum::http::header::USER_AGENT)
+            .and_then(|v| v.to_str().ok())
+            .map(String::from),
+        proxy_instance: None,
+        justification,
+        is_recorded: true,
+        metadata: serde_json::json!({}),
+        max_session_duration: access_result.max_session_duration,
+    };
+
+    if let Err(e) = diesel::insert_into(proxy_sessions::table)
+        .values(&new_session)
+        .execute(&mut conn)
+        .await
+    {
+        tracing::error!(error = %e, "Failed to create pending session");
+        return htmx_or_redirect(is_htmx, "Failed to submit access request", "/assets");
+    }
+
+    tracing::info!(
+        session_uuid = %session_uuid,
+        user = %auth_user.username,
+        asset = %asset.name,
+        "JIT access request submitted"
+    );
+
+    // Notify admins via BroadcastService
+    let _ = state.broadcast.send(
+        &crate::services::broadcast::WsChannel::Notifications,
+        crate::services::broadcast::WsMessage::new(
+            "jit-notification",
+            format!(
+                r#"{{"type":"access_request","user":"{}","asset":"{}","uuid":"{}"}}"#,
+                auth_user.username, asset.name, session_uuid
+            ),
+        ),
+    ).await;
+
+    if is_htmx {
+        let trigger_json = r#"{"showToast": {"message": "Access request submitted. An administrator will review your request.", "type": "success"}}"#.to_string();
+        (
+            axum::http::StatusCode::OK,
+            [
+                ("HX-Trigger", trigger_json),
+                ("Content-Type", "text/html".to_string()),
+            ],
+            "",
+        )
+            .into_response()
+    } else {
+        Redirect::to("/sessions/my-requests").into_response()
+    }
+}
+
+/// Approve an access request.
+///
+/// POST /sessions/approvals/{uuid}/approve
+pub async fn approve_access_request(
+    State(state): State<AppState>,
+    auth_user: WebAuthUser,
+    jar: CookieJar,
+    axum::extract::Path(uuid_str): axum::extract::Path<String>,
+    Form(form): Form<CsrfOnlyForm>,
+) -> AppResult<Response> {
+    let secret = state.config.secret_key.expose_secret().as_bytes();
+    let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
+    if !crate::middleware::csrf::validate_double_submit(
+        secret,
+        csrf_cookie.map(|c| c.value()),
+        &form.csrf_token,
+    ) {
+        return Ok((axum::http::StatusCode::BAD_REQUEST, "Invalid CSRF token").into_response());
+    }
+
+    if !check_rbac(&state, &auth_user, "admin", "view").await {
+        return Err(AppError::Authorization(
+            "Only administrators can approve requests".to_string(),
+        ));
+    }
+
+    let session_uuid = ::uuid::Uuid::parse_str(&uuid_str)
+        .map_err(|_| AppError::Validation("Invalid request identifier".to_string()))?;
+
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+
+    let admin_uuid = ::uuid::Uuid::parse_str(&auth_user.uuid)
+        .map_err(|_| AppError::Validation("Invalid admin identifier".to_string()))?;
+
+    let admin_id: i32 = crate::schema::users::table
+        .filter(crate::schema::users::uuid.eq(admin_uuid))
+        .select(crate::schema::users::id)
+        .first(&mut conn)
+        .await
+        .map_err(|_| AppError::NotFound("Admin user not found".to_string()))?;
+
+    let updated = diesel::update(
+        proxy_sessions::table
+            .filter(proxy_sessions::uuid.eq(session_uuid))
+            .filter(proxy_sessions::status.eq("pending")),
+    )
+    .set((
+        proxy_sessions::status.eq("approved"),
+        proxy_sessions::approved_by_id.eq(Some(admin_id)),
+        proxy_sessions::approved_at.eq(Some(chrono::Utc::now())),
+        proxy_sessions::updated_at.eq(chrono::Utc::now()),
+    ))
+    .execute(&mut conn)
+    .await
+    .map_err(AppError::Database)?;
+
+    if updated == 0 {
+        return Err(AppError::NotFound(
+            "Request not found or already processed".to_string(),
+        ));
+    }
+
+    tracing::info!(
+        session_uuid = %session_uuid,
+        approved_by = %auth_user.username,
+        "JIT access request approved"
+    );
+
+    // Notify the requester
+    let requester_id: Option<i32> = proxy_sessions::table
+        .filter(proxy_sessions::uuid.eq(session_uuid))
+        .select(proxy_sessions::user_id)
+        .first(&mut conn)
+        .await
+        .ok();
+
+    if let Some(uid) = requester_id {
+        let user_uuid_str: Option<String> = crate::schema::users::table
+            .filter(crate::schema::users::id.eq(uid))
+            .select(crate::schema::users::uuid)
+            .first::<::uuid::Uuid>(&mut conn)
+            .await
+            .ok()
+            .map(|u| u.to_string());
+
+        if let Some(ref uuid_s) = user_uuid_str {
+            let _ = state.broadcast.send(
+                &crate::services::broadcast::WsChannel::Notifications,
+                crate::services::broadcast::WsMessage::new(
+                    "jit-notification",
+                    format!(
+                        r#"{{"type":"request_approved","session_uuid":"{}","user_uuid":"{}"}}"#,
+                        session_uuid, uuid_s
+                    ),
+                ),
+            ).await;
+        }
+    }
+
+    Ok(Redirect::to(&format!("/sessions/approvals/{}", uuid_str)).into_response())
+}
+
+/// Reject an access request.
+///
+/// POST /sessions/approvals/{uuid}/reject
+pub async fn reject_access_request(
+    State(state): State<AppState>,
+    auth_user: WebAuthUser,
+    jar: CookieJar,
+    axum::extract::Path(uuid_str): axum::extract::Path<String>,
+    Form(form): Form<CsrfOnlyForm>,
+) -> AppResult<Response> {
+    let secret = state.config.secret_key.expose_secret().as_bytes();
+    let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
+    if !crate::middleware::csrf::validate_double_submit(
+        secret,
+        csrf_cookie.map(|c| c.value()),
+        &form.csrf_token,
+    ) {
+        return Ok((axum::http::StatusCode::BAD_REQUEST, "Invalid CSRF token").into_response());
+    }
+
+    if !check_rbac(&state, &auth_user, "admin", "view").await {
+        return Err(AppError::Authorization(
+            "Only administrators can reject requests".to_string(),
+        ));
+    }
+
+    let session_uuid = ::uuid::Uuid::parse_str(&uuid_str)
+        .map_err(|_| AppError::Validation("Invalid request identifier".to_string()))?;
+
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+
+    let updated = diesel::update(
+        proxy_sessions::table
+            .filter(proxy_sessions::uuid.eq(session_uuid))
+            .filter(proxy_sessions::status.eq("pending")),
+    )
+    .set((
+        proxy_sessions::status.eq("rejected"),
+        proxy_sessions::updated_at.eq(chrono::Utc::now()),
+    ))
+    .execute(&mut conn)
+    .await
+    .map_err(AppError::Database)?;
+
+    if updated == 0 {
+        return Err(AppError::NotFound(
+            "Request not found or already processed".to_string(),
+        ));
+    }
+
+    tracing::info!(
+        session_uuid = %session_uuid,
+        rejected_by = %auth_user.username,
+        "JIT access request rejected"
+    );
+
+    // Notify the requester
+    let requester_id: Option<i32> = proxy_sessions::table
+        .filter(proxy_sessions::uuid.eq(session_uuid))
+        .select(proxy_sessions::user_id)
+        .first(&mut conn)
+        .await
+        .ok();
+
+    if let Some(uid) = requester_id {
+        let user_uuid_str: Option<String> = crate::schema::users::table
+            .filter(crate::schema::users::id.eq(uid))
+            .select(crate::schema::users::uuid)
+            .first::<::uuid::Uuid>(&mut conn)
+            .await
+            .ok()
+            .map(|u| u.to_string());
+
+        if let Some(ref uuid_s) = user_uuid_str {
+            let _ = state.broadcast.send(
+                &crate::services::broadcast::WsChannel::Notifications,
+                crate::services::broadcast::WsMessage::new(
+                    "jit-notification",
+                    format!(
+                        r#"{{"type":"request_rejected","session_uuid":"{}","user_uuid":"{}"}}"#,
+                        session_uuid, uuid_s
+                    ),
+                ),
+            ).await;
+        }
+    }
+
+    Ok(Redirect::to(&format!("/sessions/approvals/{}", uuid_str)).into_response())
+}
+
+/// Helper to return HTMX toast or redirect depending on request type.
+fn htmx_or_redirect(is_htmx: bool, message: &str, redirect_to: &str) -> Response {
+    if is_htmx {
+        let escaped = message.replace('\\', r"\\").replace('"', r#"\""#);
+        let trigger_json = format!(
+            r#"{{"showToast": {{"message": "{}", "type": "error"}}}}"#,
+            escaped
+        );
+        (
+            axum::http::StatusCode::OK,
+            [
+                ("HX-Trigger", trigger_json),
+                ("Content-Type", "text/html".to_string()),
+            ],
+            "",
+        )
+            .into_response()
+    } else {
+        Redirect::to(redirect_to).into_response()
+    }
+}
+
+/// Cancel a pending access request (user self-service).
+///
+/// POST /sessions/my-requests/{uuid}/cancel
+pub async fn cancel_access_request(
+    State(state): State<AppState>,
+    auth_user: WebAuthUser,
+    jar: CookieJar,
+    axum::extract::Path(uuid_str): axum::extract::Path<String>,
+    Form(form): Form<CsrfOnlyForm>,
+) -> AppResult<Response> {
+    let secret = state.config.secret_key.expose_secret().as_bytes();
+    let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
+    if !crate::middleware::csrf::validate_double_submit(
+        secret,
+        csrf_cookie.map(|c| c.value()),
+        &form.csrf_token,
+    ) {
+        return Ok((axum::http::StatusCode::BAD_REQUEST, "Invalid CSRF token").into_response());
+    }
+
+    let session_uuid = ::uuid::Uuid::parse_str(&uuid_str)
+        .map_err(|_| AppError::Validation("Invalid request identifier".to_string()))?;
+
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+
+    let user_uuid = ::uuid::Uuid::parse_str(&auth_user.uuid)
+        .map_err(|_| AppError::Validation("Invalid user identifier".to_string()))?;
+
+    let user_id: i32 = crate::schema::users::table
+        .filter(crate::schema::users::uuid.eq(user_uuid))
+        .select(crate::schema::users::id)
+        .first(&mut conn)
+        .await
+        .map_err(|_| AppError::NotFound("User not found".to_string()))?;
+
+    let updated = diesel::update(
+        proxy_sessions::table
+            .filter(proxy_sessions::uuid.eq(session_uuid))
+            .filter(proxy_sessions::user_id.eq(user_id))
+            .filter(proxy_sessions::status.eq("pending")),
+    )
+    .set((
+        proxy_sessions::status.eq("expired"),
+        proxy_sessions::updated_at.eq(chrono::Utc::now()),
+    ))
+    .execute(&mut conn)
+    .await
+    .map_err(AppError::Database)?;
+
+    if updated == 0 {
+        return Err(AppError::NotFound(
+            "Request not found or cannot be cancelled".to_string(),
+        ));
+    }
+
+    tracing::info!(
+        session_uuid = %session_uuid,
+        user = %auth_user.username,
+        "JIT access request cancelled by user"
+    );
+
+    Ok(Redirect::to("/sessions/my-requests").into_response())
+}
+
+/// My access requests page (user self-service).
+///
+/// GET /sessions/my-requests
+pub async fn my_requests(
+    State(state): State<AppState>,
+    auth_user: WebAuthUser,
+) -> Result<impl IntoResponse, AppError> {
+    let user = Some(user_context_from_auth(&auth_user));
+    let base = BaseTemplate::new("My Requests".to_string(), user.clone())
+        .with_current_path("/sessions/my-requests");
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        apply_sidebar_rbac(&state, &auth_user, base)
+            .await
+            .into_fields();
+
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+
+    let user_uuid = ::uuid::Uuid::parse_str(&auth_user.uuid)
+        .map_err(|e| AppError::Validation(format!("Invalid user UUID: {}", e)))?;
+
+    let user_id: i32 = crate::schema::users::table
+        .filter(crate::schema::users::uuid.eq(user_uuid))
+        .select(crate::schema::users::id)
+        .first(&mut conn)
+        .await
+        .map_err(|_| AppError::NotFound("User not found".to_string()))?;
+
+    // NOTE: Raw SQL required - JOIN + inet::text cast
+    let requests_data: Vec<MyRequestQueryResult> = diesel::sql_query(
+        "SELECT ps.uuid, a.name as asset_name, a.hostname as asset_hostname,
+                a.asset_type, ps.session_type, ps.status, ps.justification,
+                ps.created_at, ps.approved_at,
+                COALESCE(approver.username, '') as approved_by
+         FROM proxy_sessions ps
+         INNER JOIN assets a ON a.id = ps.asset_id
+         LEFT JOIN users approver ON approver.id = ps.approved_by_id
+         WHERE ps.user_id = $1
+           AND ps.status IN ('pending', 'approved', 'rejected', 'expired')
+         ORDER BY ps.created_at DESC
+         LIMIT 50",
+    )
+    .bind::<Integer, _>(user_id)
+    .load(&mut conn)
+    .await
+    .map_err(AppError::Database)?;
+
+    let requests: Vec<crate::templates::sessions::my_requests::MyRequestItem> = requests_data
+        .into_iter()
+        .map(|r| crate::templates::sessions::my_requests::MyRequestItem {
+            uuid: r.uuid.to_string(),
+            asset_name: r.asset_name,
+            asset_hostname: r.asset_hostname,
+            asset_type: r.asset_type,
+            session_type: r.session_type,
+            status: r.status,
+            justification: r.justification,
+            created_at: r.created_at.format("%b %d, %Y %H:%M").to_string(),
+            approved_at: r.approved_at.map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
+            approved_by: if r.approved_by.is_empty() {
+                None
+            } else {
+                Some(r.approved_by)
+            },
+        })
+        .collect();
+
+    let template = crate::templates::sessions::my_requests::MyRequestsTemplate {
+        title,
+        user: user_ctx,
+        vauban,
+        messages,
+        language_code,
+        sidebar_content,
+        header_user,
+        requests,
+    };
+
+    let html = template
+        .render()
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
+    Ok(Html(html))
+}
+
+/// Helper struct for my-requests query.
+#[derive(diesel::QueryableByName)]
+struct MyRequestQueryResult {
+    #[diesel(sql_type = diesel::sql_types::Uuid)]
+    uuid: ::uuid::Uuid,
+    #[diesel(sql_type = diesel::sql_types::Varchar)]
+    asset_name: String,
+    #[diesel(sql_type = diesel::sql_types::Varchar)]
+    asset_hostname: String,
+    #[diesel(sql_type = diesel::sql_types::Varchar)]
+    asset_type: String,
+    #[diesel(sql_type = diesel::sql_types::Varchar)]
+    session_type: String,
+    #[diesel(sql_type = diesel::sql_types::Varchar)]
+    status: String,
+    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
+    justification: Option<String>,
+    #[diesel(sql_type = diesel::sql_types::Timestamptz)]
+    created_at: chrono::DateTime<chrono::Utc>,
+    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Timestamptz>)]
+    approved_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[diesel(sql_type = diesel::sql_types::Varchar)]
+    approved_by: String,
+}
+
 /// Active sessions page.
 pub async fn active_sessions(
     State(state): State<AppState>,

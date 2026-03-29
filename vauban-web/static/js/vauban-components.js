@@ -4,6 +4,9 @@
 // Alpine.js components are registered via Alpine.data() before Alpine initializes.
 
 document.addEventListener('alpine:init', function () {
+    // Global store for JIT access request modal (avoids nested x-data scope issues)
+    Alpine.store('accessModal', { show: false });
+
     // CSRF helper: reads token from cookie and keeps inputs synced
     Alpine.data('csrf', function () {
         return {
@@ -571,4 +574,24 @@ document.addEventListener('DOMContentLoaded', function () {
             window.location.href = detail.url;
         }
     });
+
+    // JIT access modal trigger from SSH/RDP handlers (HX-Trigger: show-access-request-modal)
+    document.body.addEventListener('show-access-request-modal', function () {
+        if (typeof Alpine !== 'undefined' && Alpine.store('accessModal')) {
+            Alpine.store('accessModal').show = true;
+        }
+    });
+
+    // Auto-open JIT modal when landing on asset detail with #request-access hash
+    // (set by SSH/RDP handlers via HX-Redirect when approval is required)
+    if (window.location.hash === '#request-access') {
+        history.replaceState(null, '', window.location.pathname + window.location.search);
+        var waitForAlpine = setInterval(function () {
+            if (typeof Alpine !== 'undefined' && Alpine.store('accessModal')) {
+                Alpine.store('accessModal').show = true;
+                clearInterval(waitForAlpine);
+            }
+        }, 50);
+        setTimeout(function () { clearInterval(waitForAlpine); }, 3000);
+    }
 });

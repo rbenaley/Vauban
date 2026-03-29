@@ -17,8 +17,6 @@ pub struct AssetCreateForm {
     pub asset_type: String,
     pub status: String,
     pub description: Option<String>,
-    pub require_mfa: bool,
-    pub require_justification: bool,
     pub csrf_token: String,
     // SSH credentials
     pub ssh_username: Option<String>,
@@ -65,8 +63,6 @@ mod tests {
             asset_type: "ssh".to_string(),
             status: "online".to_string(),
             description: None,
-            require_mfa: false,
-            require_justification: false,
             csrf_token: "test_token".to_string(),
             ssh_username: None,
             ssh_auth_type: None,

@@ -212,35 +212,6 @@
             </div>
         </div>
 
-        <!-- Security Settings -->
-        <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
-            <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
-                <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Security Settings</h3>
-            </div>
-            <div class="px-4 py-5 sm:p-6 space-y-4">
-                <div class="flex items-start">
-                    <div class="flex h-6 items-center">
-                        <input type="checkbox" name="require_mfa" id="require_mfa" {% if asset.require_mfa %}checked{% endif %}
-                               class="h-4 w-4 rounded border-gray-300 text-vauban-600 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600">
-                    </div>
-                    <div class="ml-3">
-                        <label for="require_mfa" class="text-sm font-medium text-gray-700 dark:text-gray-300">Require MFA</label>
-                        <p class="text-xs text-gray-500 dark:text-gray-400">Users must complete multi-factor authentication to connect</p>
-                    </div>
-                </div>
-                <div class="flex items-start">
-                    <div class="flex h-6 items-center">
-                        <input type="checkbox" name="require_justification" id="require_justification" {% if asset.require_justification %}checked{% endif %}
-                               class="h-4 w-4 rounded border-gray-300 text-vauban-600 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600">
-                    </div>
-                    <div class="ml-3">
-                        <label for="require_justification" class="text-sm font-medium text-gray-700 dark:text-gray-300">Require Justification</label>
-                        <p class="text-xs text-gray-500 dark:text-gray-400">Users must provide a reason before connecting</p>
-                    </div>
-                </div>
-            </div>
-        </div>
-
         <!-- Actions -->
         <div class="flex justify-end space-x-3">
             <a href="/assets/{{ asset.uuid }}"

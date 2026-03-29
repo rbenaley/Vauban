@@ -1,6 +1,7 @@
 /// VAUBAN Web - Cleanup tasks.
 ///
-/// Background tasks for cleaning up expired sessions and API keys.
+/// Background tasks for cleaning up expired sessions, API keys,
+/// and JIT access requests.
 use chrono::Utc;
 use diesel::{BoolExpressionMethods, ExpressionMethods, QueryDsl};
 use std::sync::Arc;
@@ -9,10 +10,13 @@ use tokio::time::interval;
 use tracing::{debug, error, info};
 
 use crate::db::DbPool;
-use crate::schema::{api_keys, auth_sessions};
+use crate::schema::{api_keys, auth_sessions, proxy_sessions};
 
 /// Interval for cleanup tasks (30 seconds).
 const CLEANUP_INTERVAL_SECS: u64 = 30;
+
+/// Pending access requests older than this are expired automatically.
+const PENDING_REQUEST_TTL_HOURS: i64 = 24;
 
 /// Start all cleanup tasks.
 pub async fn start_cleanup_tasks(db_pool: DbPool) {
@@ -60,6 +64,26 @@ async fn session_cleanup_task(db_pool: Arc<DbPool>) {
             }
             Err(e) => error!(error = %e, "Failed to clean up expired API keys"),
         }
+
+        // Terminate proxy sessions past their max_session_duration
+        match terminate_expired_proxy_sessions(&db_pool).await {
+            Ok(count) => {
+                if count > 0 {
+                    info!(terminated = count, "Terminated expired proxy sessions (max_session_duration)");
+                }
+            }
+            Err(e) => error!(error = %e, "Failed to terminate expired proxy sessions"),
+        }
+
+        // Expire stale pending access requests
+        match expire_stale_pending_requests(&db_pool).await {
+            Ok(count) => {
+                if count > 0 {
+                    info!(expired = count, "Expired stale pending access requests");
+                }
+            }
+            Err(e) => error!(error = %e, "Failed to expire stale pending requests"),
+        }
     }
 }
 
@@ -101,6 +125,56 @@ async fn cleanup_expired_api_keys(db_pool: &DbPool) -> Result<usize, String> {
     .map_err(|e| e.to_string())?;
 
     Ok(deleted)
+}
+
+/// Terminate active proxy sessions that have exceeded their max_session_duration.
+///
+/// Finds sessions where `expires_at` is set and has passed, then moves them
+/// to "terminated" status.
+async fn terminate_expired_proxy_sessions(db_pool: &DbPool) -> Result<usize, String> {
+    use diesel_async::RunQueryDsl;
+
+    let mut conn = db_pool.get().await.map_err(|e| e.to_string())?;
+    let now = Utc::now();
+
+    let terminated = diesel::update(
+        proxy_sessions::table
+            .filter(proxy_sessions::status.eq("active"))
+            .filter(proxy_sessions::expires_at.le(now)),
+    )
+    .set((
+        proxy_sessions::status.eq("terminated"),
+        proxy_sessions::disconnected_at.eq(Some(now)),
+        proxy_sessions::updated_at.eq(now),
+    ))
+    .execute(&mut conn)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(terminated)
+}
+
+/// Expire pending access requests that are older than PENDING_REQUEST_TTL_HOURS.
+async fn expire_stale_pending_requests(db_pool: &DbPool) -> Result<usize, String> {
+    use diesel_async::RunQueryDsl;
+
+    let mut conn = db_pool.get().await.map_err(|e| e.to_string())?;
+    let cutoff = Utc::now() - chrono::Duration::hours(PENDING_REQUEST_TTL_HOURS);
+
+    let expired = diesel::update(
+        proxy_sessions::table
+            .filter(proxy_sessions::status.eq("pending"))
+            .filter(proxy_sessions::created_at.lt(cutoff)),
+    )
+    .set((
+        proxy_sessions::status.eq("expired"),
+        proxy_sessions::updated_at.eq(Utc::now()),
+    ))
+    .execute(&mut conn)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(expired)
 }
 
 #[cfg(test)]

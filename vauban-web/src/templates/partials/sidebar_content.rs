@@ -13,10 +13,13 @@ pub struct SidebarContentTemplate {
     pub is_groups: bool,
     pub is_approvals: bool,
     pub is_access_rules: bool,
+    pub is_my_requests: bool,
     pub can_view_groups: bool,
     pub can_view_access_rules: bool,
     /// Whether the user can view the Administration section (superuser or staff).
     pub can_view_admin: bool,
+    /// Number of pending approval requests (shown as badge for admins).
+    pub pending_approval_count: i64,
 }
 
 #[cfg(test)]
@@ -65,9 +68,11 @@ mod tests {
             is_groups: false,
             is_approvals: false,
             is_access_rules: false,
+            is_my_requests: false,
             can_view_groups: false,
             can_view_access_rules: false,
             can_view_admin: false,
+            pending_approval_count: 0,
         };
 
         assert!(sidebar.is_dashboard);
@@ -86,9 +91,11 @@ mod tests {
             is_groups: false,
             is_approvals: false,
             is_access_rules: false,
+            is_my_requests: false,
             can_view_groups: false,
             can_view_access_rules: false,
             can_view_admin: false,
+            pending_approval_count: 0,
         };
 
         assert!(!sidebar.is_dashboard);
@@ -107,9 +114,11 @@ mod tests {
             is_groups: true,
             is_approvals: false,
             is_access_rules: false,
+            is_my_requests: false,
             can_view_groups: true,
             can_view_access_rules: true,
             can_view_admin: true,
+            pending_approval_count: 0,
         };
 
         assert!(sidebar.can_view_groups);
@@ -130,9 +139,11 @@ mod tests {
             is_groups: false,
             is_approvals: false,
             is_access_rules: false,
+            is_my_requests: false,
             can_view_groups: false,
             can_view_access_rules: false,
             can_view_admin: false,
+            pending_approval_count: 0,
         };
 
         assert!(!sidebar.can_view_groups);
@@ -152,9 +163,11 @@ mod tests {
             is_groups: false,
             is_approvals: false,
             is_access_rules: false,
+            is_my_requests: false,
             can_view_groups: false,
             can_view_access_rules: false,
             can_view_admin: false,
+            pending_approval_count: 0,
         };
         let cloned = sidebar.clone();
 
@@ -175,9 +188,11 @@ mod tests {
             is_groups: false,
             is_approvals: false,
             is_access_rules: false,
+            is_my_requests: false,
             can_view_groups: false,
             can_view_access_rules: false,
             can_view_admin: false,
+            pending_approval_count: 0,
         };
         let debug_str = format!("{:?}", sidebar);
 
@@ -198,9 +213,11 @@ mod tests {
             is_groups: false,
             is_approvals: false,
             is_access_rules: false,
+            is_my_requests: false,
             can_view_groups: true,
             can_view_access_rules: true,
             can_view_admin: true,
+            pending_approval_count: 0,
         };
 
         assert!(sidebar.can_view_admin);
@@ -219,9 +236,11 @@ mod tests {
             is_groups: false,
             is_approvals: false,
             is_access_rules: false,
+            is_my_requests: false,
             can_view_groups: true,
             can_view_access_rules: true,
             can_view_admin: true,
+            pending_approval_count: 0,
         };
 
         assert!(sidebar.can_view_admin);
@@ -241,9 +260,11 @@ mod tests {
             is_groups: false,
             is_approvals: false,
             is_access_rules: false,
+            is_my_requests: false,
             can_view_groups: false,
             can_view_access_rules: false,
             can_view_admin: false,
+            pending_approval_count: 0,
         };
 
         assert!(!sidebar.can_view_admin);

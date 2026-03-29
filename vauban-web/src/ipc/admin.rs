@@ -374,9 +374,6 @@ async fn handle_seed_assets(pool: &DbPool, seed_assets: &[SeedAsset]) -> AdminRe
             description: Option<&'a str>,
             status: &'a str,
             connection_config: serde_json::Value,
-            max_session_duration: i32,
-            require_mfa: bool,
-            require_justification: bool,
         }
 
         let asset_uuid = Uuid::new_v4();
@@ -389,9 +386,6 @@ async fn handle_seed_assets(pool: &DbPool, seed_assets: &[SeedAsset]) -> AdminRe
             description: sa.description.as_deref(),
             status: "online",
             connection_config: serde_json::json!({}),
-            max_session_duration: 28800,
-            require_mfa: false,
-            require_justification: false,
         };
 
         match diesel::insert_into(assets::table)

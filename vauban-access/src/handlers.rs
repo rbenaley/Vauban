@@ -53,7 +53,7 @@ macro_rules! access_rule_columns {
             access_rules::valid_from,
             access_rules::valid_until,
             access_rules::require_mfa,
-            access_rules::require_justification,
+            access_rules::require_approval,
             access_rules::max_session_duration,
             access_rules::is_active,
             access_rules::priority,
@@ -222,7 +222,7 @@ fn to_access_rule_info(row: AccessRuleRow) -> AccessRuleInfo {
         valid_from: row.10.map(|dt| dt.to_rfc3339()),
         valid_until: row.11.map(|dt| dt.to_rfc3339()),
         require_mfa: row.12,
-        require_justification: row.13,
+        require_approval: row.13,
         max_session_duration: row.14,
         is_active: row.15,
         priority: row.16,
@@ -306,7 +306,7 @@ async fn handle_check_access(
         .filter(access_rules::allowed_protocols.contains(vec![Some(protocol.to_string())]))
         .select((
             access_rules::require_mfa,
-            access_rules::require_justification,
+            access_rules::require_approval,
             access_rules::max_session_duration,
         ))
         .load::<(bool, bool, Option<i32>)>(conn)
@@ -321,13 +321,13 @@ async fn handle_check_access(
             AccessResponse::AccessChecked(AccessCheckResult {
                 allowed: false,
                 require_mfa: false,
-                require_justification: false,
+                require_approval: false,
                 max_session_duration: None,
             })
         }
         Ok(rules) => {
             let require_mfa = rules.iter().any(|(mfa, _, _)| *mfa);
-            let require_justification = rules.iter().any(|(_, just, _)| *just);
+            let require_approval = rules.iter().any(|(_, just, _)| *just);
             let max_session_duration = rules.iter().filter_map(|(_, _, dur)| *dur).min();
 
             info!(
@@ -336,14 +336,14 @@ async fn handle_check_access(
                 protocol,
                 rule_count = rules.len(),
                 require_mfa,
-                require_justification,
+                require_approval,
                 "Access granted"
             );
 
             AccessResponse::AccessChecked(AccessCheckResult {
                 allowed: true,
                 require_mfa,
-                require_justification,
+                require_approval,
                 max_session_duration,
             })
         }
@@ -372,7 +372,7 @@ async fn handle_check_access_multi(
         .select((
             access_rules::asset_group_id,
             access_rules::require_mfa,
-            access_rules::require_justification,
+            access_rules::require_approval,
             access_rules::max_session_duration,
         ))
         .load::<(i32, bool, bool, Option<i32>)>(conn)
@@ -392,7 +392,7 @@ async fn handle_check_access_multi(
                         Some(rules) if !rules.is_empty() => AccessCheckResult {
                             allowed: true,
                             require_mfa: rules.iter().any(|(mfa, _, _)| *mfa),
-                            require_justification: rules.iter().any(|(_, just, _)| *just),
+                            require_approval: rules.iter().any(|(_, just, _)| *just),
                             max_session_duration: rules
                                 .iter()
                                 .filter_map(|(_, _, dur)| *dur)
@@ -401,7 +401,7 @@ async fn handle_check_access_multi(
                         _ => AccessCheckResult {
                             allowed: false,
                             require_mfa: false,
-                            require_justification: false,
+                            require_approval: false,
                             max_session_duration: None,
                         },
                     };
@@ -545,7 +545,7 @@ async fn handle_create_access_rule(
             access_rules::valid_from.eq(valid_from),
             access_rules::valid_until.eq(valid_until),
             access_rules::require_mfa.eq(data.require_mfa),
-            access_rules::require_justification.eq(data.require_justification),
+            access_rules::require_approval.eq(data.require_approval),
             access_rules::max_session_duration.eq(data.max_session_duration),
             access_rules::is_active.eq(data.is_active),
             access_rules::priority.eq(data.priority),
@@ -638,7 +638,7 @@ async fn handle_update_access_rule(
             access_rules::valid_from.eq(valid_from),
             access_rules::valid_until.eq(valid_until),
             access_rules::require_mfa.eq(data.require_mfa),
-            access_rules::require_justification.eq(data.require_justification),
+            access_rules::require_approval.eq(data.require_approval),
             access_rules::max_session_duration.eq(data.max_session_duration),
             access_rules::is_active.eq(data.is_active),
             access_rules::priority.eq(data.priority),
@@ -1753,7 +1753,7 @@ mod tests {
             valid_from: None,
             valid_until: None,
             require_mfa: false,
-            require_justification: false,
+            require_approval: false,
             max_session_duration: None,
             is_active: true,
             priority: 0,
@@ -2612,7 +2612,7 @@ mod tests {
                     valid_from: None,
                     valid_until: None,
                     require_mfa: true,
-                    require_justification: false,
+                    require_approval: false,
                     max_session_duration: Some(3600),
                     is_active: true,
                     priority: 0,
@@ -2637,7 +2637,7 @@ mod tests {
                     valid_from: None,
                     valid_until: None,
                     require_mfa: false,
-                    require_justification: true,
+                    require_approval: true,
                     max_session_duration: Some(7200),
                     is_active: true,
                     priority: 0,
@@ -2667,13 +2667,13 @@ mod tests {
         let e1 = entries.iter().find(|e| e.asset_group_id == ag1.id).unwrap();
         assert!(e1.result.allowed);
         assert!(e1.result.require_mfa);
-        assert!(!e1.result.require_justification);
+        assert!(!e1.result.require_approval);
         assert_eq!(e1.result.max_session_duration, Some(3600));
 
         let e2 = entries.iter().find(|e| e.asset_group_id == ag2.id).unwrap();
         assert!(e2.result.allowed);
         assert!(!e2.result.require_mfa);
-        assert!(e2.result.require_justification);
+        assert!(e2.result.require_approval);
         assert_eq!(e2.result.max_session_duration, Some(7200));
 
         let e3 = entries

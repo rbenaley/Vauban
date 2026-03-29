@@ -140,7 +140,34 @@ pub(crate) async fn check_rbac(
             .await
             .unwrap_or(false)
     } else {
-        auth_user.is_superuser || auth_user.is_staff
+        // Fallback when IPC is unavailable: mirror default_policy.csv
+        if auth_user.is_superuser {
+            return true;
+        }
+        if auth_user.is_staff {
+            return matches!(
+                (resource, action),
+                ("users", "read")
+                    | ("users", "write")
+                    | ("assets", "read")
+                    | ("assets", "write")
+                    | ("sessions", "read")
+                    | ("sessions", "write")
+                    | ("groups", "read")
+                    | ("groups", "write")
+                    | ("access_rules", "read")
+                    | ("access_rules", "write")
+                    | ("admin", "view")
+            );
+        }
+        matches!(
+            (resource, action),
+            ("assets", "read")
+                | ("sessions", "read")
+                | ("sessions", "create")
+                | ("profile", "read")
+                | ("profile", "write")
+        )
     }
 }
 
@@ -158,7 +185,21 @@ pub(crate) async fn apply_sidebar_rbac(
         check_rbac(state, auth_user, "access_rules", "read"),
         check_rbac(state, auth_user, "admin", "view"),
     );
-    base.with_sidebar_permissions(groups, access_rules, admin)
+    let mut base = base.with_sidebar_permissions(groups, access_rules, admin);
+
+    if admin
+        && let Ok(mut conn) = state.db_pool.get().await
+    {
+        let count: i64 = proxy_sessions::table
+            .filter(proxy_sessions::status.eq("pending"))
+            .count()
+            .get_result(&mut conn)
+            .await
+            .unwrap_or(0);
+        base = base.with_pending_approval_count(count);
+    }
+
+    base
 }
 
 /// Strip ALL HTML tags from a string to prevent stored XSS.

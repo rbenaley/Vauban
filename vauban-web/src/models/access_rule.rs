@@ -25,7 +25,7 @@ pub struct AccessRule {
     pub valid_from: Option<DateTime<Utc>>,
     pub valid_until: Option<DateTime<Utc>>,
     pub require_mfa: bool,
-    pub require_justification: bool,
+    pub require_approval: bool,
     pub max_session_duration: Option<i32>,
     pub is_active: bool,
     pub priority: i32,
@@ -83,7 +83,7 @@ pub struct NewAccessRule {
     pub valid_from: Option<DateTime<Utc>>,
     pub valid_until: Option<DateTime<Utc>>,
     pub require_mfa: bool,
-    pub require_justification: bool,
+    pub require_approval: bool,
     pub max_session_duration: Option<i32>,
     pub is_active: bool,
     pub priority: i32,
@@ -104,7 +104,7 @@ pub struct CreateAccessRuleRequest {
     #[serde(default)]
     pub require_mfa: bool,
     #[serde(default)]
-    pub require_justification: bool,
+    pub require_approval: bool,
     pub max_session_duration: Option<i32>,
     #[serde(default = "default_priority")]
     pub priority: i32,
@@ -120,7 +120,7 @@ pub struct UpdateAccessRuleRequest {
     pub valid_from: Option<DateTime<Utc>>,
     pub valid_until: Option<DateTime<Utc>>,
     pub require_mfa: Option<bool>,
-    pub require_justification: Option<bool>,
+    pub require_approval: Option<bool>,
     pub max_session_duration: Option<i32>,
     pub is_active: Option<bool>,
     pub priority: Option<i32>,
@@ -144,7 +144,7 @@ pub struct AccessRuleResponse {
     pub valid_from: Option<DateTime<Utc>>,
     pub valid_until: Option<DateTime<Utc>>,
     pub require_mfa: bool,
-    pub require_justification: bool,
+    pub require_approval: bool,
     pub max_session_duration: Option<i32>,
     pub is_active: bool,
     pub priority: i32,
@@ -168,7 +168,7 @@ mod tests {
             valid_from: None,
             valid_until: None,
             require_mfa: true,
-            require_justification: false,
+            require_approval: false,
             max_session_duration: Some(3600),
             is_active: true,
             priority: 0,
@@ -204,7 +204,7 @@ mod tests {
             valid_from: None,
             valid_until: None,
             require_mfa: false,
-            require_justification: false,
+            require_approval: false,
             max_session_duration: None,
             is_active: true,
             priority: 0,
@@ -338,7 +338,7 @@ mod tests {
             valid_from: None,
             valid_until: None,
             require_mfa: false,
-            require_justification: false,
+            require_approval: false,
             max_session_duration: None,
             priority: 0,
         };
@@ -356,7 +356,7 @@ mod tests {
             valid_from: None,
             valid_until: None,
             require_mfa: false,
-            require_justification: false,
+            require_approval: false,
             max_session_duration: None,
             priority: 0,
         };
@@ -374,7 +374,7 @@ mod tests {
             valid_from: None,
             valid_until: None,
             require_mfa: false,
-            require_justification: false,
+            require_approval: false,
             max_session_duration: None,
             priority: 0,
         };
@@ -393,7 +393,7 @@ mod tests {
         let req: CreateAccessRuleRequest = unwrap_ok!(serde_json::from_str(json));
         assert_eq!(req.name, "test-rule");
         assert!(req.require_mfa);
-        assert!(!req.require_justification);
+        assert!(!req.require_approval);
         assert_eq!(req.priority, 0);
         assert_eq!(
             req.allowed_protocols,
@@ -410,7 +410,7 @@ mod tests {
         }"#;
         let req: CreateAccessRuleRequest = unwrap_ok!(serde_json::from_str(json));
         assert!(!req.require_mfa);
-        assert!(!req.require_justification);
+        assert!(!req.require_approval);
         assert_eq!(req.priority, 0);
         assert!(req.allowed_protocols.is_none());
     }
@@ -434,7 +434,7 @@ mod tests {
             valid_from: None,
             valid_until: None,
             require_mfa: None,
-            require_justification: None,
+            require_approval: None,
             max_session_duration: None,
             is_active: None,
             priority: None,

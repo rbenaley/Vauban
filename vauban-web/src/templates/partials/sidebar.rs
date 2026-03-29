@@ -33,9 +33,11 @@ mod tests {
             is_groups: false,
             is_approvals: false,
             is_access_rules: false,
+            is_my_requests: false,
             can_view_groups: false,
             can_view_access_rules: false,
             can_view_admin: false,
+            pending_approval_count: 0,
         }
     }
 

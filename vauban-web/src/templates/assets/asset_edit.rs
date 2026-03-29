@@ -14,8 +14,6 @@ pub struct AssetEdit {
     pub asset_type: String,
     pub status: String,
     pub description: Option<String>,
-    pub require_mfa: bool,
-    pub require_justification: bool,
     // SSH credentials extracted from connection_config
     pub ssh_username: String,
     pub ssh_auth_type: String,
@@ -54,8 +52,6 @@ mod tests {
             asset_type: "ssh".to_string(),
             status: "online".to_string(),
             description: Some("Main production server".to_string()),
-            require_mfa: true,
-            require_justification: false,
             ssh_username: "root".to_string(),
             ssh_auth_type: "password".to_string(),
             ssh_password: String::new(),
@@ -79,7 +75,6 @@ mod tests {
         assert_eq!(asset.name, "Production Server");
         assert_eq!(asset.hostname, "prod-01.example.com");
         assert_eq!(asset.port, 22);
-        assert!(asset.require_mfa);
     }
 
     #[test]

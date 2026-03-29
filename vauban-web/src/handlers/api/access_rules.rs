@@ -50,7 +50,7 @@ fn info_to_response(info: AccessRuleInfo) -> AccessRuleResponse {
                 .map(|d| d.with_timezone(&chrono::Utc))
         }),
         require_mfa: info.require_mfa,
-        require_justification: info.require_justification,
+        require_approval: info.require_approval,
         max_session_duration: info.max_session_duration,
         is_active: info.is_active,
         priority: info.priority,
@@ -113,7 +113,7 @@ pub async fn list_access_rules(
                 valid_from: rule.valid_from,
                 valid_until: rule.valid_until,
                 require_mfa: rule.require_mfa,
-                require_justification: rule.require_justification,
+                require_approval: rule.require_approval,
                 max_session_duration: rule.max_session_duration,
                 is_active: rule.is_active,
                 priority: rule.priority,
@@ -189,7 +189,7 @@ pub async fn get_access_rule(
         valid_from: rule.valid_from,
         valid_until: rule.valid_until,
         require_mfa: rule.require_mfa,
-        require_justification: rule.require_justification,
+        require_approval: rule.require_approval,
         max_session_duration: rule.max_session_duration,
         is_active: rule.is_active,
         priority: rule.priority,
@@ -251,7 +251,7 @@ pub async fn create_access_rule(
             valid_from: request.valid_from.map(|d| d.to_rfc3339()),
             valid_until: request.valid_until.map(|d| d.to_rfc3339()),
             require_mfa: request.require_mfa,
-            require_justification: request.require_justification,
+            require_approval: request.require_approval,
             max_session_duration: request.max_session_duration,
             is_active: true,
             priority: request.priority,
@@ -328,7 +328,7 @@ pub async fn create_access_rule(
         valid_from: request.valid_from,
         valid_until: request.valid_until,
         require_mfa: request.require_mfa,
-        require_justification: request.require_justification,
+        require_approval: request.require_approval,
         max_session_duration: request.max_session_duration,
         is_active: true,
         priority: request.priority,
@@ -361,7 +361,7 @@ pub async fn create_access_rule(
         valid_from: rule.valid_from,
         valid_until: rule.valid_until,
         require_mfa: rule.require_mfa,
-        require_justification: rule.require_justification,
+        require_approval: rule.require_approval,
         max_session_duration: rule.max_session_duration,
         is_active: rule.is_active,
         priority: rule.priority,
@@ -417,9 +417,9 @@ pub async fn update_access_rule(
                 .map(|d| d.to_rfc3339())
                 .or(info.valid_until),
             require_mfa: request.require_mfa.unwrap_or(info.require_mfa),
-            require_justification: request
-                .require_justification
-                .unwrap_or(info.require_justification),
+            require_approval: request
+                .require_approval
+                .unwrap_or(info.require_approval),
             max_session_duration: request.max_session_duration.or(info.max_session_duration),
             is_active: request.is_active.unwrap_or(info.is_active),
             priority: request.priority.unwrap_or(info.priority),
@@ -487,9 +487,9 @@ pub async fn update_access_rule(
             .await
             .map_err(AppError::Database)?;
     }
-    if let Some(just) = request.require_justification {
+    if let Some(just) = request.require_approval {
         diesel::update(access_rules::table.filter(access_rules::id.eq(existing.id)))
-            .set(access_rules::require_justification.eq(just))
+            .set(access_rules::require_approval.eq(just))
             .execute(&mut conn)
             .await
             .map_err(AppError::Database)?;
@@ -566,7 +566,7 @@ pub async fn update_access_rule(
         valid_from: rule.valid_from,
         valid_until: rule.valid_until,
         require_mfa: rule.require_mfa,
-        require_justification: rule.require_justification,
+        require_approval: rule.require_approval,
         max_session_duration: rule.max_session_duration,
         is_active: rule.is_active,
         priority: rule.priority,

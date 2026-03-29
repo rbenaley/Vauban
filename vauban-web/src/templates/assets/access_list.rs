@@ -12,7 +12,7 @@ pub struct AccessRuleListItem {
     pub allowed_protocols: Vec<String>,
     pub is_active: bool,
     pub require_mfa: bool,
-    pub require_justification: bool,
+    pub require_approval: bool,
 }
 
 impl AccessRuleListItem {
@@ -100,7 +100,7 @@ mod tests {
             allowed_protocols: vec!["ssh".to_string()],
             is_active: true,
             require_mfa: false,
-            require_justification: false,
+            require_approval: false,
         };
         assert!(active.status_class().contains("green"));
 
@@ -121,7 +121,7 @@ mod tests {
             allowed_protocols: vec!["ssh".to_string(), "rdp".to_string()],
             is_active: true,
             require_mfa: false,
-            require_justification: false,
+            require_approval: false,
         };
         assert_eq!(item.protocols_display(), "SSH, RDP");
     }

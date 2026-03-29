@@ -16,6 +16,7 @@ pub mod access_rules_crud_web_test;
 pub mod account_pages_test;
 pub mod asset_pages_test;
 pub mod dashboard_pages_test;
+pub mod jit_access_test;
 pub mod mfa_test;
 pub mod pages_test;
 pub mod routing_test;

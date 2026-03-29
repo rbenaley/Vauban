@@ -24,7 +24,7 @@ pub struct CreateAccessRuleWebForm {
     pub valid_from: Option<String>,
     pub valid_until: Option<String>,
     pub require_mfa: Option<String>,
-    pub require_justification: Option<String>,
+    pub require_approval: Option<String>,
     pub max_session_duration: Option<String>,
     pub is_active: Option<String>,
     pub priority: Option<String>,
@@ -42,7 +42,7 @@ pub struct UpdateAccessRuleWebForm {
     pub valid_from: Option<String>,
     pub valid_until: Option<String>,
     pub require_mfa: Option<String>,
-    pub require_justification: Option<String>,
+    pub require_approval: Option<String>,
     pub max_session_duration: Option<String>,
     pub is_active: Option<String>,
     pub priority: Option<String>,
@@ -173,7 +173,7 @@ pub async fn access_rules_list(
                 allowed_protocols: info.allowed_protocols,
                 is_active: info.is_active,
                 require_mfa: info.require_mfa,
-                require_justification: info.require_justification,
+                require_approval: info.require_approval,
             })
             .collect()
     } else {
@@ -204,7 +204,7 @@ pub async fn access_rules_list(
                 access_rules::allowed_protocols,
                 access_rules::is_active,
                 access_rules::require_mfa,
-                access_rules::require_justification,
+                access_rules::require_approval,
             ))
             .order(access_rules::priority.desc())
             .load(&mut conn)
@@ -237,7 +237,7 @@ pub async fn access_rules_list(
                     protocols,
                     is_active,
                     require_mfa,
-                    require_justification,
+                    require_approval,
                 )| {
                     let allowed_protocols = protocols.into_iter().flatten().collect();
                     AccessRuleListItem {
@@ -254,7 +254,7 @@ pub async fn access_rules_list(
                         allowed_protocols,
                         is_active,
                         require_mfa,
-                        require_justification,
+                        require_approval,
                     }
                 },
             )
@@ -313,7 +313,7 @@ pub async fn access_rule_detail(
                 valid_from: format_rfc3339_to_display(&info.valid_from),
                 valid_until: format_rfc3339_to_display(&info.valid_until),
                 require_mfa: info.require_mfa,
-                require_justification: info.require_justification,
+                require_approval: info.require_approval,
                 max_session_duration: info.max_session_duration,
                 is_active: info.is_active,
                 priority: info.priority,
@@ -377,7 +377,7 @@ pub async fn access_rule_detail(
             valid_from: format_datetime_display(&rule.valid_from),
             valid_until: format_datetime_display(&rule.valid_until),
             require_mfa: rule.require_mfa,
-            require_justification: rule.require_justification,
+            require_approval: rule.require_approval,
             max_session_duration: rule.max_session_duration,
             is_active: rule.is_active,
             priority: rule.priority,
@@ -567,7 +567,7 @@ pub async fn create_access_rule_web(
             valid_from: to_rfc3339_opt(&valid_from),
             valid_until: to_rfc3339_opt(&valid_until),
             require_mfa: form.require_mfa.is_some(),
-            require_justification: form.require_justification.is_some(),
+            require_approval: form.require_approval.is_some(),
             max_session_duration: max_dur,
             is_active: form.is_active.is_some(),
             priority,
@@ -621,7 +621,7 @@ pub async fn create_access_rule_web(
                 ar::valid_from.eq(valid_from),
                 ar::valid_until.eq(valid_until),
                 ar::require_mfa.eq(form.require_mfa.is_some()),
-                ar::require_justification.eq(form.require_justification.is_some()),
+                ar::require_approval.eq(form.require_approval.is_some()),
                 ar::max_session_duration.eq(max_dur),
                 ar::is_active.eq(form.is_active.is_some()),
                 ar::priority.eq(priority),
@@ -729,7 +729,7 @@ pub async fn access_rule_edit(
             valid_from: format_rfc3339_to_local(&info.valid_from),
             valid_until: format_rfc3339_to_local(&info.valid_until),
             require_mfa: info.require_mfa,
-            require_justification: info.require_justification,
+            require_approval: info.require_approval,
             max_session_duration: info
                 .max_session_duration
                 .map(|d| d.to_string())
@@ -782,7 +782,7 @@ pub async fn access_rule_edit(
             valid_from: format_datetime_local(&rule.valid_from),
             valid_until: format_datetime_local(&rule.valid_until),
             require_mfa: rule.require_mfa,
-            require_justification: rule.require_justification,
+            require_approval: rule.require_approval,
             max_session_duration: rule
                 .max_session_duration
                 .map(|d| d.to_string())
@@ -902,7 +902,7 @@ pub async fn update_access_rule_web(
             valid_from: to_rfc3339_opt(&valid_from),
             valid_until: to_rfc3339_opt(&valid_until),
             require_mfa: form.require_mfa.is_some(),
-            require_justification: form.require_justification.is_some(),
+            require_approval: form.require_approval.is_some(),
             max_session_duration: max_dur,
             is_active: form.is_active.is_some(),
             priority,
@@ -957,7 +957,7 @@ pub async fn update_access_rule_web(
                 ar::valid_from.eq(valid_from),
                 ar::valid_until.eq(valid_until),
                 ar::require_mfa.eq(form.require_mfa.is_some()),
-                ar::require_justification.eq(form.require_justification.is_some()),
+                ar::require_approval.eq(form.require_approval.is_some()),
                 ar::max_session_duration.eq(max_dur),
                 ar::is_active.eq(form.is_active.is_some()),
                 ar::priority.eq(priority),

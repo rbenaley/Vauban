@@ -226,6 +226,8 @@ pub async fn connect_ssh(
     };
 
     // Access rule enforcement: non-admin users must have a matching access rule
+    let mut jit_justification: Option<String> = None;
+    let mut jit_max_duration: Option<i32> = None;
     if !auth_user.is_superuser && !auth_user.is_staff {
         let access_result = crate::services::access::can_access_asset(
             state.access_client.as_ref(),
@@ -248,6 +250,47 @@ pub async fn connect_ssh(
                 error: Some(msg.to_string()),
             })
             .into_response();
+        }
+
+        if access_result.require_approval {
+            let approved_session: Option<(Option<String>, Option<i32>)> = proxy_sessions::table
+                .filter(proxy_sessions::user_id.eq(user_id))
+                .filter(proxy_sessions::asset_id.eq(asset.id))
+                .filter(proxy_sessions::status.eq("approved"))
+                .select((proxy_sessions::justification, proxy_sessions::max_session_duration))
+                .first(&mut conn)
+                .await
+                .ok();
+
+            match approved_session {
+                Some((justification, max_dur)) => {
+                    jit_justification = justification;
+                    jit_max_duration = max_dur.or(access_result.max_session_duration);
+                }
+                None => {
+                    let detail_url =
+                        format!("/assets/{}#request-access", asset_uuid_str);
+                    if is_htmx {
+                        return ([(
+                            axum::http::header::HeaderName::from_static("hx-redirect"),
+                            axum::http::header::HeaderValue::from_str(&detail_url)
+                                .unwrap_or_else(|_| {
+                                    axum::http::header::HeaderValue::from_static("/assets")
+                                }),
+                        )])
+                        .into_response();
+                    }
+                    return Json(ConnectSshResponse {
+                        success: false,
+                        session_id: None,
+                        redirect_url: Some(detail_url),
+                        error: Some("Access requires approval. Please submit an access request first.".to_string()),
+                    })
+                    .into_response();
+                }
+            }
+        } else {
+            jit_max_duration = access_result.max_session_duration;
         }
     }
 
@@ -426,9 +469,10 @@ pub async fn connect_ssh(
                 .and_then(|v| v.to_str().ok())
                 .map(String::from),
             proxy_instance: None,
-            justification: None,
+            justification: jit_justification.clone(),
             is_recorded: true,
             metadata: serde_json::json!({}),
+            max_session_duration: jit_max_duration,
         };
 
         if let Err(e) = diesel::insert_into(proxy_sessions::table)

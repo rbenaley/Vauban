@@ -13,7 +13,7 @@ diesel::table! {
         valid_from -> Nullable<Timestamptz>,
         valid_until -> Nullable<Timestamptz>,
         require_mfa -> Bool,
-        require_justification -> Bool,
+        require_approval -> Bool,
         max_session_duration -> Nullable<Int4>,
         is_active -> Bool,
         priority -> Int4,
@@ -96,9 +96,6 @@ diesel::table! {
         connection_config -> Jsonb,
         #[max_length = 36]
         default_credential_id -> Nullable<Varchar>,
-        require_mfa -> Bool,
-        require_justification -> Bool,
-        max_session_duration -> Int4,
         last_seen -> Nullable<Timestamptz>,
         created_by_id -> Nullable<Int4>,
         updated_by_id -> Nullable<Int4>,
@@ -157,6 +154,10 @@ diesel::table! {
         metadata -> Jsonb,
         created_at -> Timestamptz,
         updated_at -> Timestamptz,
+        approved_by_id -> Nullable<Int4>,
+        approved_at -> Nullable<Timestamptz>,
+        max_session_duration -> Nullable<Int4>,
+        expires_at -> Nullable<Timestamptz>,
     }
 }
 
@@ -232,7 +233,6 @@ diesel::joinable!(asset_asset_groups -> asset_groups (asset_group_id));
 diesel::joinable!(asset_asset_groups -> assets (asset_id));
 diesel::joinable!(auth_sessions -> users (user_id));
 diesel::joinable!(proxy_sessions -> assets (asset_id));
-diesel::joinable!(proxy_sessions -> users (user_id));
 diesel::joinable!(user_groups -> users (user_id));
 diesel::joinable!(user_groups -> vauban_groups (group_id));
 

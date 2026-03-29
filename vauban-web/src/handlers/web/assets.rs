@@ -59,19 +59,6 @@ pub async fn asset_create_form(
     Ok(Html(html))
 }
 
-/// Deserialize HTML checkbox value ("on" or absent) to bool.
-fn deserialize_checkbox<'de, D>(deserializer: D) -> Result<bool, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    use serde::Deserialize;
-    let opt: Option<String> = Option::deserialize(deserializer)?;
-    match opt.as_deref() {
-        Some("on") | Some("true") | Some("1") => Ok(true),
-        _ => Ok(false),
-    }
-}
-
 /// Form data for creating an asset via web form.
 #[derive(Debug, serde::Deserialize)]
 pub struct CreateAssetWebForm {
@@ -82,12 +69,7 @@ pub struct CreateAssetWebForm {
     pub asset_type: String,
     pub status: String,
     pub description: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_checkbox")]
-    pub require_mfa: bool,
-    #[serde(default, deserialize_with = "deserialize_checkbox")]
-    pub require_justification: bool,
     pub csrf_token: String,
-    // SSH credentials (stored in connection_config)
     /// SSH username for authentication
     pub ssh_username: Option<String>,
     /// Authentication type: "password" or "private_key"
@@ -195,8 +177,6 @@ pub async fn create_asset_web(
                 a::asset_type.eq(parsed_asset_type),
                 a::status.eq(&form.status),
                 a::description.eq(&sanitized_description),
-                a::require_mfa.eq(form.require_mfa),
-                a::require_justification.eq(form.require_justification),
                 a::is_deleted.eq(false),
                 a::deleted_at.eq(None::<chrono::DateTime<chrono::Utc>>),
                 a::updated_at.eq(now),
@@ -260,8 +240,6 @@ pub async fn create_asset_web(
             a::status.eq(&form.status),
             a::description.eq(&sanitized_description),
             a::connection_config.eq(connection_config),
-            a::require_mfa.eq(form.require_mfa),
-            a::require_justification.eq(form.require_justification),
             a::is_deleted.eq(false),
             a::created_at.eq(now),
             a::updated_at.eq(now),
@@ -579,6 +557,33 @@ pub async fn asset_detail(
         }
     }
 
+    // Determine JIT flags from access rules for the current user
+    let (require_approval, require_mfa_from_rule) = if !auth_user.is_superuser && !auth_user.is_staff
+    {
+        let user_internal_id: i32 = crate::schema::users::table
+            .filter(
+                crate::schema::users::uuid
+                    .eq(::uuid::Uuid::parse_str(&auth_user.uuid).unwrap_or_default()),
+            )
+            .select(crate::schema::users::id)
+            .first(&mut conn)
+            .await
+            .unwrap_or(0);
+
+        let access_result = crate::services::access::can_access_asset(
+            state.access_client.as_ref(),
+            &mut conn,
+            user_internal_id,
+            asset_model.id,
+            asset_model.asset_type.as_str(),
+        )
+        .await
+        .unwrap_or_else(|_| crate::services::access::AccessCheckResult::denied());
+        (access_result.require_approval, access_result.require_mfa)
+    } else {
+        (false, false)
+    };
+
     // Extract SSH host key fingerprint and mismatch status from connection_config (H-9)
     let asset_connection_config = &asset_model.connection_config;
     let ssh_host_key_fingerprint = asset_connection_config
@@ -626,9 +631,8 @@ pub async fn asset_detail(
         description: asset_model.description.clone(),
         os_type: asset_model.os_type.clone(),
         os_version: asset_model.os_version.clone(),
-        require_mfa: asset_model.require_mfa,
-        require_justification: asset_model.require_justification,
-        max_session_duration: asset_model.max_session_duration,
+        require_approval,
+        require_mfa: require_mfa_from_rule,
         last_seen: asset_model
             .last_seen
             .map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
@@ -729,8 +733,6 @@ pub async fn asset_edit(
         String,
         Option<String>,
         serde_json::Value,
-        bool,
-        bool,
     ) = match a::assets
         .filter(a::uuid.eq(asset_uuid))
         .filter(a::is_deleted.eq(false))
@@ -744,8 +746,6 @@ pub async fn asset_edit(
             a::status,
             a::description,
             a::connection_config,
-            a::require_mfa,
-            a::require_justification,
         ))
         .first(&mut conn)
         .await
@@ -769,8 +769,6 @@ pub async fn asset_edit(
         asset_status,
         asset_description,
         asset_connection_config,
-        asset_require_mfa,
-        asset_require_justification,
     ) = asset_row;
 
     // Extract SSH credentials from connection_config
@@ -813,8 +811,6 @@ pub async fn asset_edit(
         asset_type: asset_type_val.to_string(),
         status: asset_status,
         description: asset_description,
-        require_mfa: asset_require_mfa,
-        require_justification: asset_require_justification,
         ssh_username,
         ssh_auth_type,
         ssh_password,
@@ -986,12 +982,7 @@ pub struct UpdateAssetForm {
     pub port: i32,
     pub status: String,
     pub description: Option<String>,
-    #[serde(default)]
-    pub require_mfa: Option<String>,
-    #[serde(default)]
-    pub require_justification: Option<String>,
     pub csrf_token: String,
-    // SSH credentials (stored in connection_config)
     /// SSH username for authentication
     pub ssh_username: Option<String>,
     /// Authentication type: "password" or "private_key"
@@ -1113,18 +1104,6 @@ pub async fn update_asset_web(
         }
     };
 
-    // Parse boolean fields from checkbox values
-    let require_mfa = form
-        .require_mfa
-        .as_ref()
-        .map(|v| v == "on" || v == "true")
-        .unwrap_or(false);
-    let require_justification = form
-        .require_justification
-        .as_ref()
-        .map(|v| v == "on" || v == "true")
-        .unwrap_or(false);
-
     use crate::schema::assets::dsl as a;
     use chrono::Utc;
 
@@ -1176,8 +1155,6 @@ pub async fn update_asset_web(
             a::status.eq(&form.status),
             a::description.eq(sanitized_description.as_deref()),
             a::connection_config.eq(connection_config),
-            a::require_mfa.eq(require_mfa),
-            a::require_justification.eq(require_justification),
             a::updated_at.eq(Utc::now()),
         ))
         .execute(&mut conn)
