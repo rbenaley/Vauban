@@ -35,3 +35,8 @@ Thumbs.db
 # Session recordings (local development data)
 recordings/
 
+# FreeBSD package build artifacts
+pkg/staging/
+pkg/plist
+pkg/*.pkg
+
