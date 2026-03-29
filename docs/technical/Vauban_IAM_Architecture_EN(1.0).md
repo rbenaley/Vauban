@@ -22,6 +22,7 @@
 12. [Security Analysis](#12-security-analysis)
 13. [Testing Strategy](#13-testing-strategy)
 14. [Architecture Decisions](#14-architecture-decisions)
+15. [Just-In-Time (JIT) Access Approval](#15-just-in-time-jit-access-approval)
 
 ---
 
@@ -52,6 +53,7 @@ The migration was driven by three goals:
 | 0.2.x | Inline auth and role checks | All in `vauban-web` |
 | 0.3.0 | Dedicated `vauban-auth` and `vauban-rbac` services | Privsep for auth + Casbin RBAC |
 | 0.4.0 | Rename `vauban-rbac` to `vauban-access`, add instance-level rules, DB isolation | Full IAM architecture |
+| 0.6.0 | Just-In-Time access approval, session duration enforcement | JIT workflow with `expires_at` |
 
 ### 1.4 Related Documents
 
@@ -1185,6 +1187,158 @@ Password hashing is isolated in `vauban-auth` rather than inline in `vauban-web`
 2. The `current_thread` runtime has minimal overhead (no thread pool, no work stealing)
 3. Casbin's `DefaultModel::from_file()` is also async (uses tokio::fs)
 4. The runtime is used exclusively via `block_on()` in the synchronous main loop, maintaining the sequential request processing guarantee
+
+---
+
+## 15. Just-In-Time (JIT) Access Approval
+
+### 15.1 Overview
+
+JIT access adds an approval workflow to the instance-level access control described in Section 6. When an access rule has `require_approval = true`, users must submit a justified request that an administrator approves before they can connect. Approved sessions can be time-limited via `max_session_duration`, which is enforced at runtime by an automatic cleanup task.
+
+### 15.2 Session Lifecycle
+
+| Step | Trigger | Status | `connected_at` | `expires_at` |
+|------|---------|--------|----------------|--------------|
+| 1. Access request | User submits justification on asset detail page | `pending` | NULL | NULL |
+| 2. Admin approval | Staff/superuser approves via sessions UI | `approved` | NULL | NULL |
+| 3. Connection initiation | User clicks "Connect SSH/RDP" | `connecting` | NULL | NULL |
+| 4. WebSocket established | Terminal/RDP WebSocket opens | `active` | `now()` | `now() + max_session_duration` (or NULL) |
+| 5a. Voluntary disconnect | User closes terminal or RDP tab | `disconnected` | preserved | preserved |
+| 5b. Duration exceeded | Cleanup task detects `expires_at <= now()` | `terminated` | preserved | preserved |
+| 5c. Admin termination | Staff terminates session via UI | `terminated` | preserved | preserved |
+| 6. Request expired | Pending request older than 24h (TTL) | `expired` | NULL | NULL |
+
+### 15.3 Duration Source and Resolution
+
+The `max_session_duration` (in seconds) is defined on the `access_rules` table and configured by administrators when creating or editing an access rule. When multiple rules match a given user/asset/protocol combination, the **shortest** duration wins:
+
+```
+max_session_duration = matching_rules.filter_map(|r| r.max_session_duration).min()
+```
+
+This value flows through the system as follows:
+
+1. **Access rule** (`access_rules.max_session_duration`) -- source of truth
+2. **Access check result** (`AccessCheckResult.max_session_duration`) -- resolved minimum
+3. **Pending session** (`proxy_sessions.max_session_duration`) -- stored at request time
+4. **Active session** (`proxy_sessions.expires_at`) -- computed at activation as `connected_at + max_session_duration`
+
+If no rule specifies a duration (all values are NULL), the session has no time limit.
+
+### 15.4 Session Activation
+
+When a WebSocket connection is established for an SSH terminal or RDP desktop, the `activate_proxy_session` function in `websocket.rs`:
+
+1. Reads `max_session_duration` from the proxy session record
+2. Sets `status = 'active'` and `connected_at = now()`
+3. Computes `expires_at = now() + max_session_duration` (if duration is set)
+4. Writes all three fields in a single `UPDATE`
+
+This is the only point in the code that transitions a session to `active` status.
+
+### 15.5 Enforcement
+
+The `terminate_expired_proxy_sessions` cleanup task in `tasks/cleanup.rs` runs every 30 seconds and enforces session duration limits:
+
+```sql
+UPDATE proxy_sessions
+SET status = 'terminated', disconnected_at = now(), updated_at = now()
+WHERE status = 'active' AND expires_at <= now()
+```
+
+Stale pending requests (older than 24 hours) are also expired automatically by `expire_stale_pending_requests` in the same cleanup loop.
+
+### 15.6 Database Columns
+
+The JIT workflow uses four columns added to `proxy_sessions` by migrations `20260328000000_jit_access_columns` and `20260329000000_refactor_jit_columns`:
+
+| Column | Type | Purpose |
+|--------|------|---------|
+| `approved_by_id` | `INTEGER` (FK -> users) | Administrator who approved the request |
+| `approved_at` | `TIMESTAMPTZ` | Timestamp of approval |
+| `max_session_duration` | `INTEGER` | Maximum session duration in seconds (from access rule, overridable at approval) |
+| `expires_at` | `TIMESTAMPTZ` | Computed deadline (`connected_at + max_session_duration`) |
+
+An index on `(expires_at) WHERE expires_at IS NOT NULL AND status = 'active'` ensures the cleanup query remains efficient as the sessions table grows.
+
+### 15.7 Approval Flow Sequence
+
+```mermaid
+sequenceDiagram
+    participant U as User Browser
+    participant W as vauban-web
+    participant AC as vauban-access
+    participant DB as PostgreSQL
+    participant CL as Cleanup Task
+
+    U->>W: POST /sessions/request-access (asset_uuid, justification)
+    W->>AC: CheckAccess(user_id, asset_id, protocol)
+    AC->>W: AccessChecked(allowed, require_approval: true, max_session_duration: 3600)
+
+    W->>DB: INSERT proxy_sessions (status='pending', max_session_duration=3600)
+    W->>U: "Request submitted, awaiting approval"
+
+    Note over W: Admin reviews pending requests
+    U->>W: POST /sessions/{uuid}/approve (admin)
+    W->>DB: UPDATE proxy_sessions SET status='approved', approved_by_id, approved_at
+
+    Note over U: User connects to the asset
+    U->>W: POST /connect/ssh (asset_uuid)
+    W->>DB: SELECT FROM proxy_sessions WHERE status='approved'
+    W->>DB: INSERT proxy_sessions (status='connecting', max_session_duration=3600)
+
+    Note over U,W: WebSocket upgrade
+    U->>W: WS /ws/terminal/{session_id}
+    W->>DB: UPDATE proxy_sessions SET status='active', connected_at=now(), expires_at=now()+3600
+
+    Note over CL: Every 30 seconds
+    CL->>DB: UPDATE proxy_sessions SET status='terminated' WHERE active AND expires_at <= now()
+```
+
+### 15.8 Duration Override at Approval
+
+When approving a JIT access request, administrators can override the default `max_session_duration` that was copied from the access rule at request time. This allows case-by-case adjustments without modifying the underlying access rule.
+
+#### Mechanism
+
+The approval form (`/sessions/approvals` and `/sessions/approvals/{uuid}`) includes optional duration fields:
+
+- **duration_value**: numeric input (minimum 1)
+- **duration_unit**: "minutes" or "hours"
+
+When submitted:
+
+1. If both fields are empty, the existing `max_session_duration` is preserved unchanged.
+2. If a value is provided, it is converted to seconds and written to `proxy_sessions.max_session_duration`, replacing the original value from the access rule.
+
+#### Priority Chain
+
+```
+admin override at approval > access_rule default > unlimited (NULL)
+```
+
+#### Validation Constraints
+
+| Constraint | Value |
+|------------|-------|
+| Minimum duration | 60 seconds (1 minute) |
+| Maximum duration | 86,400 seconds (24 hours) |
+| Integer overflow | Prevented via `checked_mul` |
+| Invalid unit | Rejected with flash error |
+| Zero or negative value | Rejected with flash error |
+
+Invalid values cause the approval to fail with a flash error message (PRG pattern redirect), leaving the session in `pending` status so the administrator can retry with a valid duration.
+
+#### Data Flow
+
+```
+access_rules.max_session_duration
+  -> proxy_sessions.max_session_duration (copied at request time)
+  -> [optional] admin override at approval (updates proxy_sessions.max_session_duration)
+  -> proxy_sessions.expires_at (computed at WebSocket activation as connected_at + max_session_duration)
+  -> cleanup task enforces expires_at
+```
 
 ---
 

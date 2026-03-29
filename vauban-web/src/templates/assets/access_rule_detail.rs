@@ -39,6 +39,11 @@ impl AccessRuleDetailData {
             .collect::<Vec<_>>()
             .join(", ")
     }
+
+    /// Human-readable duration (e.g. "2h", "30min", "Unlimited").
+    pub fn duration_display(&self) -> String {
+        crate::utils::duration_display(self.max_session_duration)
+    }
 }
 
 #[derive(Template)]
@@ -96,6 +101,26 @@ mod tests {
     fn test_protocols_display() {
         let rule = create_test_rule();
         assert_eq!(rule.protocols_display(), "SSH, RDP");
+    }
+
+    #[test]
+    fn test_duration_display_unlimited() {
+        let rule = create_test_rule();
+        assert_eq!(rule.duration_display(), "Unlimited");
+    }
+
+    #[test]
+    fn test_duration_display_hours() {
+        let mut rule = create_test_rule();
+        rule.max_session_duration = Some(7200);
+        assert_eq!(rule.duration_display(), "2h");
+    }
+
+    #[test]
+    fn test_duration_display_minutes() {
+        let mut rule = create_test_rule();
+        rule.max_session_duration = Some(1800);
+        assert_eq!(rule.duration_display(), "30min");
     }
 
     #[test]

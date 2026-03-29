@@ -649,6 +649,41 @@ pub async fn create_approval_request(
     session_uuid
 }
 
+/// Create an approval request with a specific max_session_duration.
+pub async fn create_approval_request_with_duration(
+    conn: &mut AsyncPgConnection,
+    user_id: i32,
+    asset_id: i32,
+    max_duration: Option<i32>,
+) -> Uuid {
+    use vauban_web::schema::proxy_sessions;
+
+    let session_uuid = Uuid::new_v4();
+    let ip: ipnetwork::IpNetwork = unwrap_ok!("127.0.0.1".parse());
+
+    unwrap_ok!(
+        diesel::insert_into(proxy_sessions::table)
+            .values((
+                proxy_sessions::uuid.eq(session_uuid),
+                proxy_sessions::user_id.eq(user_id),
+                proxy_sessions::asset_id.eq(asset_id),
+                proxy_sessions::credential_id.eq("cred-123"),
+                proxy_sessions::credential_username.eq("testuser"),
+                proxy_sessions::session_type.eq(SessionType::Ssh),
+                proxy_sessions::status.eq("pending"),
+                proxy_sessions::client_ip.eq(ip),
+                proxy_sessions::is_recorded.eq(true),
+                proxy_sessions::justification.eq("Need access for maintenance"),
+                proxy_sessions::metadata.eq(serde_json::json!({"approval_required": true})),
+                proxy_sessions::max_session_duration.eq(max_duration),
+            ))
+            .execute(conn)
+            .await
+    );
+
+    session_uuid
+}
+
 /// Create a test vauban group (user group) and return group_uuid.
 /// Uses a unique name with UUID suffix to avoid conflicts.
 pub async fn create_test_vauban_group(conn: &mut AsyncPgConnection, name: &str) -> Uuid {

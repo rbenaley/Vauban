@@ -956,6 +956,62 @@ async fn fetch_active_sessions_list(
         .collect())
 }
 
+/// Transition a proxy session from `connecting` to `active`.
+///
+/// Sets `connected_at` to now and computes `expires_at` from `max_session_duration`
+/// when present, enabling the cleanup task to enforce session time limits.
+async fn activate_proxy_session(state: &AppState, session_id: &str) {
+    use diesel::prelude::*;
+    use diesel_async::RunQueryDsl;
+
+    let session_uuid = match ::uuid::Uuid::parse_str(session_id) {
+        Ok(u) => u,
+        Err(_) => return,
+    };
+
+    let mut conn = match state.db_pool.get().await {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(session_id = %session_id, error = %e, "Failed to get DB connection for session activation");
+            return;
+        }
+    };
+
+    use crate::schema::proxy_sessions::dsl;
+    let now = chrono::Utc::now();
+
+    let max_dur: Option<i32> = dsl::proxy_sessions
+        .filter(dsl::uuid.eq(session_uuid))
+        .select(dsl::max_session_duration)
+        .first(&mut conn)
+        .await
+        .ok()
+        .flatten();
+
+    let expires = max_dur.map(|secs| now + chrono::Duration::seconds(secs as i64));
+
+    match diesel::update(dsl::proxy_sessions.filter(dsl::uuid.eq(session_uuid)))
+        .set((
+            dsl::status.eq("active"),
+            dsl::connected_at.eq(now),
+            dsl::expires_at.eq(expires),
+            dsl::updated_at.eq(now),
+        ))
+        .execute(&mut conn)
+        .await
+    {
+        Ok(1) => {
+            if let Some(exp) = expires {
+                info!(session_id = %session_id, expires_at = %exp, "Session activated with expiry");
+            } else {
+                info!(session_id = %session_id, "Session activated (no duration limit)");
+            }
+        }
+        Ok(_) => warn!(session_id = %session_id, "Session not found during activation"),
+        Err(e) => warn!(session_id = %session_id, error = %e, "Failed to activate session"),
+    }
+}
+
 /// Terminal WebSocket handler for SSH sessions.
 ///
 /// Establishes a bidirectional WebSocket connection for interactive SSH terminal.
@@ -1015,6 +1071,9 @@ async fn handle_terminal_socket(
 
     // Subscribe to SSH data for this specific session
     let mut data_rx = proxy_client.subscribe_session(&session_id).await;
+
+    // Activate session: transition connecting -> active, set connected_at and expires_at
+    activate_proxy_session(&state, &session_id).await;
 
     // Create ping interval
     let mut ping_interval = interval(Duration::from_secs(PING_INTERVAL_SECS));
@@ -1293,6 +1352,10 @@ async fn handle_rdp_socket(
     };
 
     let mut display_rx = proxy_client.subscribe_session(&session_id).await;
+
+    // Activate session: transition connecting -> active, set connected_at and expires_at
+    activate_proxy_session(&state, &session_id).await;
+
     let mut ping_interval = interval(Duration::from_secs(PING_INTERVAL_SECS));
     let mut should_close = false;
     let mut _video_mode = false;

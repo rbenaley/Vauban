@@ -120,9 +120,7 @@
                 </div>
                 <div>
                     <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Max Session Duration</dt>
-                    <dd class="mt-1 text-sm text-gray-900 dark:text-white">
-                        {% if let Some(dur) = rule.max_session_duration %}{{ dur }}s{% else %}Unlimited{% endif %}
-                    </dd>
+                    <dd class="mt-1 text-sm text-gray-900 dark:text-white">{{ rule.duration_display() }}</dd>
                 </div>
             </dl>
         </div>

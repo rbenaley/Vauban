@@ -4,8 +4,8 @@
 
 use crate::common::{TestApp, assertions::assert_status, unwrap_ok};
 use crate::fixtures::{
-    create_approval_request, create_simple_admin_user, create_simple_ssh_asset, create_simple_user,
-    unique_name,
+    create_approval_request, create_approval_request_with_duration, create_simple_admin_user,
+    create_simple_ssh_asset, create_simple_user, unique_name,
 };
 use axum::http::header::COOKIE;
 use diesel::{ExpressionMethods, QueryDsl};
@@ -237,6 +237,109 @@ async fn test_my_requests_page_shows_user_requests() {
 }
 
 #[tokio::test]
+async fn test_my_requests_page_shows_duration() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let user_name = unique_name("jit_mr_dur");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+
+    let admin_name = unique_name("jit_mr_dur_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+
+    let asset_name = unique_name("jit_mr_dur_asset");
+    let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
+    create_approval_request_with_duration(&mut conn, user_id, asset_id, Some(7200)).await;
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
+        .await;
+
+    let response = app
+        .server
+        .get("/sessions/my-requests")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains("2h"),
+        "my-requests should display duration '2h' for 7200s"
+    );
+}
+
+#[tokio::test]
+async fn test_my_requests_page_shows_unlimited_when_no_duration() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let user_name = unique_name("jit_mr_unlim");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+
+    let admin_name = unique_name("jit_mr_unlim_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+
+    let asset_name = unique_name("jit_mr_unlim_asset");
+    let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
+    create_approval_request_with_duration(&mut conn, user_id, asset_id, None).await;
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
+        .await;
+
+    let response = app
+        .server
+        .get("/sessions/my-requests")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains("Unlimited"),
+        "my-requests should display 'Unlimited' when no max_session_duration"
+    );
+}
+
+#[tokio::test]
+async fn test_my_requests_page_has_websocket_connection() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let user_name = unique_name("jit_mr_ws");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
+        .await;
+
+    let response = app
+        .server
+        .get("/sessions/my-requests")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains("ws-connect=\"/ws/notifications\""),
+        "my-requests page should connect to /ws/notifications"
+    );
+    assert!(
+        body.contains("id=\"jit-notification\""),
+        "my-requests page should have jit-notification OOB target"
+    );
+    assert!(
+        body.contains("request_approved"),
+        "jit-notification trigger should filter on request_approved"
+    );
+}
+
+#[tokio::test]
 async fn test_cancel_own_pending_request() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
@@ -368,5 +471,249 @@ async fn test_sidebar_shows_approval_badge_for_admin() {
         badge_text,
         expected_pending.to_string(),
         "sidebar badge should match pending session count in DB"
+    );
+}
+
+#[tokio::test]
+async fn test_approve_with_duration_override_updates_max_session_duration() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("jit_adm_dur_ovr");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let user_name = unique_name("jit_usr_dur_ovr");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+
+    let asset_name = unique_name("jit_ast_dur_ovr");
+    let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
+    let session_uuid =
+        create_approval_request_with_duration(&mut conn, user_id, asset_id, Some(3600)).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+    let csrf_token = app.generate_csrf_token();
+
+    let response = app
+        .server
+        .post(&format!("/sessions/approvals/{}/approve", session_uuid))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[
+            ("csrf_token", csrf_token.as_str()),
+            ("duration_value", "2"),
+            ("duration_unit", "hours"),
+        ])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 302 || status == 303,
+        "approve with override should redirect, got {}",
+        status
+    );
+
+    let db_duration: Option<i32> = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::uuid.eq(session_uuid))
+            .select(proxy_sessions::max_session_duration)
+            .first(&mut conn)
+            .await
+    );
+    assert_eq!(
+        db_duration,
+        Some(7200),
+        "max_session_duration should be overridden to 7200"
+    );
+}
+
+#[tokio::test]
+async fn test_approve_without_duration_keeps_default() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("jit_adm_dur_keep");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let user_name = unique_name("jit_usr_dur_keep");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+
+    let asset_name = unique_name("jit_ast_dur_keep");
+    let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
+    let session_uuid =
+        create_approval_request_with_duration(&mut conn, user_id, asset_id, Some(3600)).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+    let csrf_token = app.generate_csrf_token();
+
+    let response = app
+        .server
+        .post(&format!("/sessions/approvals/{}/approve", session_uuid))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[("csrf_token", csrf_token.as_str())])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 302 || status == 303,
+        "approve without override should redirect, got {}",
+        status
+    );
+
+    let db_duration: Option<i32> = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::uuid.eq(session_uuid))
+            .select(proxy_sessions::max_session_duration)
+            .first(&mut conn)
+            .await
+    );
+    assert_eq!(
+        db_duration,
+        Some(3600),
+        "max_session_duration should remain unchanged at 3600"
+    );
+}
+
+#[tokio::test]
+async fn test_approve_with_invalid_duration_rejected() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("jit_adm_dur_inv");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let user_name = unique_name("jit_usr_dur_inv");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+
+    let asset_name = unique_name("jit_ast_dur_inv");
+    let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
+    let session_uuid =
+        create_approval_request_with_duration(&mut conn, user_id, asset_id, Some(3600)).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+    let csrf_token = app.generate_csrf_token();
+
+    let response = app
+        .server
+        .post(&format!("/sessions/approvals/{}/approve", session_uuid))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[
+            ("csrf_token", csrf_token.as_str()),
+            ("duration_value", "0"),
+            ("duration_unit", "minutes"),
+        ])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 302 || status == 303,
+        "invalid duration should redirect with flash error, got {}",
+        status
+    );
+
+    let db_status: String = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::uuid.eq(session_uuid))
+            .select(proxy_sessions::status)
+            .first(&mut conn)
+            .await
+    );
+    assert_eq!(
+        db_status, "pending",
+        "session should remain pending after invalid duration"
+    );
+}
+
+#[tokio::test]
+async fn test_approval_detail_shows_duration() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("jit_adm_dur_det");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let user_name = unique_name("jit_usr_dur_det");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+
+    let asset_name = unique_name("jit_ast_dur_det");
+    let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
+    let _session_uuid =
+        create_approval_request_with_duration(&mut conn, user_id, asset_id, Some(7200)).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get(&format!("/sessions/approvals/{}", _session_uuid))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains("Session Duration"),
+        "detail page should show Session Duration label"
+    );
+    assert!(
+        body.contains("2h"),
+        "detail page should show '2h' for 7200s duration"
+    );
+}
+
+#[tokio::test]
+async fn test_approval_list_shows_duration_field_for_pending() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("jit_adm_dur_fld");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let user_name = unique_name("jit_usr_dur_fld");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+
+    let asset_name = unique_name("jit_ast_dur_fld");
+    let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
+    let _session_uuid =
+        create_approval_request_with_duration(&mut conn, user_id, asset_id, Some(3600)).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/sessions/approvals")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains("duration_value"),
+        "approval list should contain duration_value input for pending requests"
+    );
+    assert!(
+        body.contains("duration_unit"),
+        "approval list should contain duration_unit select for pending requests"
     );
 }

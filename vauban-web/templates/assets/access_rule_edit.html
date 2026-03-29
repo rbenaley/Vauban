@@ -118,10 +118,19 @@
                 </div>
 
                 <div>
-                    <label for="max_session_duration" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Max Session Duration (seconds)</label>
-                    <input type="number" name="max_session_duration" id="max_session_duration" value="{{ rule.max_session_duration }}"
-                           class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
-                           min="60">
+                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">Max Session Duration</label>
+                    <div class="mt-1 flex items-center gap-2">
+                        <input type="number" name="duration_value" id="duration_value" min="1"
+                               {% if let Some(val) = rule.duration_value %}value="{{ val }}"{% endif %}
+                               class="block w-24 rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
+                               placeholder="e.g. 2">
+                        <select name="duration_unit" id="duration_unit"
+                                class="rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
+                            <option value="minutes" {% if rule.duration_unit == "minutes" %}selected{% endif %}>minutes</option>
+                            <option value="hours" {% if rule.duration_unit == "hours" %}selected{% endif %}>hours</option>
+                        </select>
+                    </div>
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Leave empty for unlimited (max 24h)</p>
                 </div>
 
                 <fieldset>

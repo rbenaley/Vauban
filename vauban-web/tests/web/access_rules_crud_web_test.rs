@@ -217,6 +217,259 @@ async fn test_web_create_access_rule_validation_error() {
     test_db::cleanup(&mut conn).await;
 }
 
+/// Create an access rule with duration_value + duration_unit (2 hours).
+#[tokio::test]
+#[serial]
+async fn test_web_create_access_rule_with_duration() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("w_ar_dur_adm");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+
+    let ug = create_test_vauban_group(&mut conn, &unique_name("w-ar-dur-ug")).await;
+    let ag = create_test_asset_group(&mut conn, &unique_name("w-ar-dur-ag")).await;
+
+    use diesel::prelude::*;
+    use diesel_async::RunQueryDsl;
+    let ug_id: i32 = vauban_web::schema::vauban_groups::table
+        .filter(vauban_web::schema::vauban_groups::uuid.eq(ug))
+        .select(vauban_web::schema::vauban_groups::id)
+        .first(&mut conn)
+        .await
+        .unwrap();
+    let ag_id: i32 = vauban_web::schema::asset_groups::table
+        .filter(vauban_web::schema::asset_groups::uuid.eq(ag))
+        .select(vauban_web::schema::asset_groups::id)
+        .first(&mut conn)
+        .await
+        .unwrap();
+
+    let csrf_token = app.generate_csrf_token();
+    let response = app
+        .server
+        .post("/assets/access")
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", admin.token, csrf_token),
+        )
+        .form(&serde_json::json!({
+            "csrf_token": csrf_token,
+            "name": "Duration Rule 2h",
+            "user_group_id": ug_id,
+            "asset_group_id": ag_id,
+            "allowed_ssh": "true",
+            "is_active": "true",
+            "duration_value": 2,
+            "duration_unit": "hours",
+        }))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 303 || status == 302,
+        "Successful creation should redirect (PRG), got {}",
+        status
+    );
+
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        location.starts_with("/assets/access/"),
+        "Should redirect to the new rule detail, got: {}",
+        location
+    );
+
+    let detail = app
+        .server
+        .get(location)
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .await;
+    assert_status(&detail, 200);
+    let body = detail.text();
+    assert!(body.contains("2h"), "Detail page should display duration as '2h'");
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Create an access rule with 30 minutes duration.
+#[tokio::test]
+#[serial]
+async fn test_web_create_access_rule_with_minutes_duration() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("w_ar_min_adm");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+
+    let ug = create_test_vauban_group(&mut conn, &unique_name("w-ar-min-ug")).await;
+    let ag = create_test_asset_group(&mut conn, &unique_name("w-ar-min-ag")).await;
+
+    use diesel::prelude::*;
+    use diesel_async::RunQueryDsl;
+    let ug_id: i32 = vauban_web::schema::vauban_groups::table
+        .filter(vauban_web::schema::vauban_groups::uuid.eq(ug))
+        .select(vauban_web::schema::vauban_groups::id)
+        .first(&mut conn)
+        .await
+        .unwrap();
+    let ag_id: i32 = vauban_web::schema::asset_groups::table
+        .filter(vauban_web::schema::asset_groups::uuid.eq(ag))
+        .select(vauban_web::schema::asset_groups::id)
+        .first(&mut conn)
+        .await
+        .unwrap();
+
+    let csrf_token = app.generate_csrf_token();
+    let response = app
+        .server
+        .post("/assets/access")
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", admin.token, csrf_token),
+        )
+        .form(&serde_json::json!({
+            "csrf_token": csrf_token,
+            "name": "Duration Rule 30min",
+            "user_group_id": ug_id,
+            "asset_group_id": ag_id,
+            "allowed_ssh": "true",
+            "is_active": "true",
+            "duration_value": 30,
+            "duration_unit": "minutes",
+        }))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 303 || status == 302,
+        "Successful creation should redirect (PRG), got {}",
+        status
+    );
+
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    let detail = app
+        .server
+        .get(location)
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .await;
+    assert_status(&detail, 200);
+    let body = detail.text();
+    assert!(body.contains("30min"), "Detail page should display duration as '30min'");
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Create form defaults to 2 hours duration.
+#[tokio::test]
+#[serial]
+async fn test_web_access_rule_create_form_defaults_to_2h() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("w_ar_def_adm");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+
+    let response = app
+        .server
+        .get("/assets/access/new")
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains("duration_value"),
+        "Create form should have duration_value field"
+    );
+    assert!(
+        body.contains("duration_unit"),
+        "Create form should have duration_unit select"
+    );
+    assert!(
+        body.contains("value=\"2\""),
+        "Default duration_value should be 2"
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Detail page shows 'Unlimited' when no duration set.
+#[tokio::test]
+#[serial]
+async fn test_web_access_rule_detail_shows_unlimited() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("w_ar_unlim_adm");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+
+    let ug = create_test_vauban_group(&mut conn, &unique_name("w-ar-unlim-ug")).await;
+    let ag = create_test_asset_group(&mut conn, &unique_name("w-ar-unlim-ag")).await;
+    let rule_uuid = create_test_access_rule(&mut conn, &ug, &ag, &["ssh"]).await;
+
+    let response = app
+        .server
+        .get(&format!("/assets/access/{}", rule_uuid))
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains("Unlimited"),
+        "Detail page should show 'Unlimited' when no duration set"
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Edit form shows duration_value/duration_unit fields.
+#[tokio::test]
+#[serial]
+async fn test_web_access_rule_edit_form_shows_duration_fields() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("w_ar_edit_dur_adm");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+
+    let ug = create_test_vauban_group(&mut conn, &unique_name("w-ar-edit-dur-ug")).await;
+    let ag = create_test_asset_group(&mut conn, &unique_name("w-ar-edit-dur-ag")).await;
+
+    use crate::fixtures::create_test_access_rule_with_constraints;
+    let rule_uuid =
+        create_test_access_rule_with_constraints(&mut conn, &ug, &ag, &["ssh"], false, false, Some(7200))
+            .await;
+
+    let response = app
+        .server
+        .get(&format!("/assets/access/{}/edit", rule_uuid))
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains("duration_value"),
+        "Edit form should have duration_value field"
+    );
+    assert!(
+        body.contains("value=\"2\""),
+        "Edit form should pre-fill 2 for 7200s"
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
 // =============================================================================
 // Detail Page
 // =============================================================================

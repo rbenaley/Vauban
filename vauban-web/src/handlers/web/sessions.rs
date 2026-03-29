@@ -244,25 +244,48 @@ pub async fn session_detail(
     };
     let user_is_admin = check_rbac(&state, &auth_user, "admin", "view").await;
 
-    // NOTE: Raw SQL required - complex triple JOIN with PostgreSQL ::text casts
-    // Cannot be migrated to Diesel DSL due to:
-    // 1. uuid::text casts for string representation
-    // 2. inet::text cast for client_ip
-    // 3. Triple JOIN (proxy_sessions -> users -> assets)
-    let session_data: SessionQueryDetailResult = match diesel::sql_query(
-        "SELECT ps.id, ps.uuid, u.username, u.uuid::text as user_uuid,
-                a.name as asset_name, a.hostname as asset_hostname, a.uuid::text as asset_uuid, a.asset_type,
-                ps.session_type, ps.status, ps.credential_username, ps.client_ip::text as client_ip,
-                ps.client_user_agent, ps.proxy_instance, ps.connected_at, ps.disconnected_at,
-                ps.justification, ps.is_recorded, ps.recording_path, ps.bytes_sent, ps.bytes_received,
-                ps.commands_count, ps.created_at
-         FROM proxy_sessions ps
-         INNER JOIN users u ON u.id = ps.user_id
-         INNER JOIN assets a ON a.id = ps.asset_id
-         WHERE ps.id = $1",
-    )
-    .bind::<Integer, _>(id)
-    .get_result(&mut conn).await
+    use crate::schema::users;
+
+    #[allow(clippy::type_complexity)]
+    let session_row: (
+        i32, uuid::Uuid, String, uuid::Uuid,
+        String, String, uuid::Uuid, String,
+        String, String, String, ipnetwork::IpNetwork,
+        Option<String>, Option<String>,
+        Option<chrono::DateTime<chrono::Utc>>, Option<chrono::DateTime<chrono::Utc>>,
+        Option<String>, bool, Option<String>,
+        i64, i64, i32, chrono::DateTime<chrono::Utc>,
+    ) = match proxy_sessions::table
+        .inner_join(schema_assets::table)
+        .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
+        .filter(proxy_sessions::id.eq(id))
+        .select((
+            proxy_sessions::id,
+            proxy_sessions::uuid,
+            users::username,
+            users::uuid,
+            schema_assets::name,
+            schema_assets::hostname,
+            schema_assets::uuid,
+            schema_assets::asset_type,
+            proxy_sessions::session_type,
+            proxy_sessions::status,
+            proxy_sessions::credential_username,
+            proxy_sessions::client_ip,
+            proxy_sessions::client_user_agent,
+            proxy_sessions::proxy_instance,
+            proxy_sessions::connected_at,
+            proxy_sessions::disconnected_at,
+            proxy_sessions::justification,
+            proxy_sessions::is_recorded,
+            proxy_sessions::recording_path,
+            proxy_sessions::bytes_sent,
+            proxy_sessions::bytes_received,
+            proxy_sessions::commands_count,
+            proxy_sessions::created_at,
+        ))
+        .first(&mut conn)
+        .await
     {
         Ok(data) => data,
         Err(diesel::result::Error::NotFound) => {
@@ -273,8 +296,20 @@ pub async fn session_detail(
         }
     };
 
+    let (
+        s_id, s_uuid, s_username, s_user_uuid,
+        s_asset_name, s_asset_hostname, s_asset_uuid, s_asset_type,
+        s_session_type, s_status, s_credential_username, s_client_ip,
+        s_client_user_agent, s_proxy_instance,
+        s_connected_at, s_disconnected_at,
+        s_justification, s_is_recorded, s_recording_path,
+        s_bytes_sent, s_bytes_received, s_commands_count, s_created_at,
+    ) = session_row;
+
+    let user_uuid_str = s_user_uuid.to_string();
+
     // For non-admin users, check if they own this session
-    if !user_is_admin && session_data.user_uuid != auth_user.uuid {
+    if !user_is_admin && user_uuid_str != auth_user.uuid {
         return flash_redirect(
             flash.error("You can only view your own sessions"),
             "/sessions",
@@ -282,7 +317,7 @@ pub async fn session_detail(
     }
 
     // Calculate duration if connected_at and disconnected_at are present
-    let duration = match (session_data.connected_at, session_data.disconnected_at) {
+    let duration = match (s_connected_at, s_disconnected_at) {
         (Some(start), Some(end)) => {
             let duration_secs = (end - start).num_seconds();
             let hours = duration_secs / 3600;
@@ -296,7 +331,7 @@ pub async fn session_detail(
                 Some(format!("{}s", secs))
             }
         }
-        (Some(start), None) if session_data.status == "active" => {
+        (Some(start), None) if s_status == "active" => {
             let duration_secs = (chrono::Utc::now() - start).num_seconds();
             let hours = duration_secs / 3600;
             let minutes = (duration_secs % 3600) / 60;
@@ -313,35 +348,32 @@ pub async fn session_detail(
     };
 
     let session = SessionDetail {
-        id: session_data.id,
-        uuid: session_data.uuid.to_string(),
-        username: session_data.username,
-        user_uuid: session_data.user_uuid,
-        asset_name: session_data.asset_name,
-        asset_hostname: session_data.asset_hostname,
-        asset_uuid: session_data.asset_uuid,
-        asset_type: session_data.asset_type,
-        session_type: session_data.session_type,
-        status: session_data.status.clone(),
-        credential_username: session_data.credential_username,
-        client_ip: session_data.client_ip,
-        client_user_agent: session_data.client_user_agent,
-        proxy_instance: session_data.proxy_instance,
-        connected_at: session_data
-            .connected_at
+        id: s_id,
+        uuid: s_uuid.to_string(),
+        username: s_username,
+        user_uuid: user_uuid_str,
+        asset_name: s_asset_name,
+        asset_hostname: s_asset_hostname,
+        asset_uuid: s_asset_uuid.to_string(),
+        asset_type: s_asset_type,
+        session_type: s_session_type,
+        status: s_status.clone(),
+        credential_username: s_credential_username,
+        client_ip: s_client_ip.ip().to_string(),
+        client_user_agent: s_client_user_agent,
+        proxy_instance: s_proxy_instance,
+        connected_at: s_connected_at
             .map(|dt| dt.format("%b %d, %Y %H:%M:%S").to_string()),
-        disconnected_at: session_data
-            .disconnected_at
+        disconnected_at: s_disconnected_at
             .map(|dt| dt.format("%b %d, %Y %H:%M:%S").to_string()),
         duration,
-        justification: session_data.justification,
-        is_recorded: session_data.is_recorded,
-        recording_path: session_data.recording_path,
-        bytes_sent: session_data.bytes_sent,
-        bytes_received: session_data.bytes_received,
-        commands_count: session_data.commands_count,
-        created_at: session_data
-            .created_at
+        justification: s_justification,
+        is_recorded: s_is_recorded,
+        recording_path: s_recording_path,
+        bytes_sent: s_bytes_sent,
+        bytes_received: s_bytes_received,
+        commands_count: s_commands_count,
+        created_at: s_created_at
             .format("%b %d, %Y %H:%M:%S")
             .to_string(),
     };
@@ -371,56 +403,6 @@ pub async fn session_detail(
     }
 }
 
-/// Helper struct for session detail query.
-#[derive(diesel::QueryableByName)]
-struct SessionQueryDetailResult {
-    #[diesel(sql_type = diesel::sql_types::Int4)]
-    id: i32,
-    #[diesel(sql_type = diesel::sql_types::Uuid)]
-    uuid: ::uuid::Uuid,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    username: String,
-    #[diesel(sql_type = diesel::sql_types::Text)]
-    user_uuid: String,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    asset_name: String,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    asset_hostname: String,
-    #[diesel(sql_type = diesel::sql_types::Text)]
-    asset_uuid: String,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    asset_type: String,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    session_type: String,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    status: String,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    credential_username: String,
-    #[diesel(sql_type = diesel::sql_types::Text)]
-    client_ip: String,
-    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
-    client_user_agent: Option<String>,
-    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Varchar>)]
-    proxy_instance: Option<String>,
-    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Timestamptz>)]
-    connected_at: Option<chrono::DateTime<chrono::Utc>>,
-    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Timestamptz>)]
-    disconnected_at: Option<chrono::DateTime<chrono::Utc>>,
-    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
-    justification: Option<String>,
-    #[diesel(sql_type = diesel::sql_types::Bool)]
-    is_recorded: bool,
-    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Varchar>)]
-    recording_path: Option<String>,
-    #[diesel(sql_type = diesel::sql_types::Int8)]
-    bytes_sent: i64,
-    #[diesel(sql_type = diesel::sql_types::Int8)]
-    bytes_received: i64,
-    #[diesel(sql_type = diesel::sql_types::Int4)]
-    commands_count: i32,
-    #[diesel(sql_type = diesel::sql_types::Timestamptz)]
-    created_at: chrono::DateTime<chrono::Utc>,
-}
 
 /// Recording list page.
 pub async fn recording_list(
@@ -596,19 +578,35 @@ pub async fn recording_play(
         }
     };
 
-    // NOTE: Raw SQL required - triple JOIN with PostgreSQL-specific features
-    let recording_data: RecordingQueryResult = match diesel::sql_query(
-        "SELECT ps.id, ps.uuid, u.username, a.name as asset_name, a.hostname as asset_hostname,
-                ps.session_type, ps.connected_at, ps.disconnected_at, ps.recording_path,
-                ps.bytes_sent, ps.bytes_received, ps.commands_count
-         FROM proxy_sessions ps
-         INNER JOIN users u ON u.id = ps.user_id
-         INNER JOIN assets a ON a.id = ps.asset_id
-         WHERE ps.id = $1 AND ps.is_recorded = true",
-    )
-    .bind::<Integer, _>(id)
-    .get_result(&mut conn)
-    .await
+    use crate::schema::users;
+
+    #[allow(clippy::type_complexity)]
+    let recording_row: (
+        i32, uuid::Uuid, String, String, String,
+        String, Option<chrono::DateTime<chrono::Utc>>,
+        Option<chrono::DateTime<chrono::Utc>>, Option<String>,
+        i64, i64, i32,
+    ) = match proxy_sessions::table
+        .inner_join(schema_assets::table)
+        .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
+        .filter(proxy_sessions::id.eq(id))
+        .filter(proxy_sessions::is_recorded.eq(true))
+        .select((
+            proxy_sessions::id,
+            proxy_sessions::uuid,
+            users::username,
+            schema_assets::name,
+            schema_assets::hostname,
+            proxy_sessions::session_type,
+            proxy_sessions::connected_at,
+            proxy_sessions::disconnected_at,
+            proxy_sessions::recording_path,
+            proxy_sessions::bytes_sent,
+            proxy_sessions::bytes_received,
+            proxy_sessions::commands_count,
+        ))
+        .first(&mut conn)
+        .await
     {
         Ok(data) => data,
         Err(diesel::result::Error::NotFound) => {
@@ -622,8 +620,14 @@ pub async fn recording_play(
         }
     };
 
+    let (
+        r_id, r_uuid, r_username, r_asset_name, r_asset_hostname,
+        r_session_type, r_connected_at, r_disconnected_at, r_recording_path,
+        r_bytes_sent, r_bytes_received, r_commands_count,
+    ) = recording_row;
+
     // Calculate duration
-    let duration = match (recording_data.connected_at, recording_data.disconnected_at) {
+    let duration = match (r_connected_at, r_disconnected_at) {
         (Some(start), Some(end)) => {
             let duration_secs = (end - start).num_seconds();
             let hours = duration_secs / 3600;
@@ -639,23 +643,21 @@ pub async fn recording_play(
     };
 
     let recording = RecordingData {
-        session_id: recording_data.id,
-        session_uuid: recording_data.uuid.to_string(),
-        username: recording_data.username,
-        asset_name: recording_data.asset_name,
-        asset_hostname: recording_data.asset_hostname,
-        session_type: recording_data.session_type,
-        connected_at: recording_data
-            .connected_at
+        session_id: r_id,
+        session_uuid: r_uuid.to_string(),
+        username: r_username,
+        asset_name: r_asset_name,
+        asset_hostname: r_asset_hostname,
+        session_type: r_session_type,
+        connected_at: r_connected_at
             .map(|dt| dt.format("%b %d, %Y %H:%M:%S").to_string()),
-        disconnected_at: recording_data
-            .disconnected_at
+        disconnected_at: r_disconnected_at
             .map(|dt| dt.format("%b %d, %Y %H:%M:%S").to_string()),
         duration,
-        recording_path: recording_data.recording_path,
-        bytes_sent: recording_data.bytes_sent,
-        bytes_received: recording_data.bytes_received,
-        commands_count: recording_data.commands_count,
+        recording_path: r_recording_path,
+        bytes_sent: r_bytes_sent,
+        bytes_received: r_bytes_received,
+        commands_count: r_commands_count,
     };
 
     let base = BaseTemplate::new(
@@ -685,34 +687,6 @@ pub async fn recording_play(
     }
 }
 
-/// Helper struct for recording query.
-#[derive(diesel::QueryableByName)]
-struct RecordingQueryResult {
-    #[diesel(sql_type = diesel::sql_types::Int4)]
-    id: i32,
-    #[diesel(sql_type = diesel::sql_types::Uuid)]
-    uuid: ::uuid::Uuid,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    username: String,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    asset_name: String,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    asset_hostname: String,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    session_type: String,
-    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Timestamptz>)]
-    connected_at: Option<chrono::DateTime<chrono::Utc>>,
-    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Timestamptz>)]
-    disconnected_at: Option<chrono::DateTime<chrono::Utc>>,
-    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Varchar>)]
-    recording_path: Option<String>,
-    #[diesel(sql_type = diesel::sql_types::Int8)]
-    bytes_sent: i64,
-    #[diesel(sql_type = diesel::sql_types::Int8)]
-    bytes_received: i64,
-    #[diesel(sql_type = diesel::sql_types::Int4)]
-    commands_count: i32,
-}
 
 /// Approval list page.
 pub async fn approval_list(
@@ -748,78 +722,78 @@ pub async fn approval_list(
         .unwrap_or(1);
     let items_per_page = 20;
 
-    // NOTE: Raw SQL with parameterized queries for security
-    let total_items: i64 = if let Some(ref status) = status_filter {
-        diesel::sql_query(
-            "SELECT COUNT(*) as count FROM proxy_sessions ps WHERE ps.justification IS NOT NULL AND ps.status = $1"
-        )
-        .bind::<Text, _>(status)
-        .get_result::<ApprovalCountResult>(&mut conn)
+    use crate::schema::users;
+
+    let mut count_query = proxy_sessions::table
+        .filter(proxy_sessions::justification.is_not_null())
+        .into_boxed();
+
+    if let Some(ref status) = status_filter {
+        count_query = count_query.filter(proxy_sessions::status.eq(status));
+    }
+
+    let total_items: i64 = count_query
+        .count()
+        .get_result(&mut conn)
         .await
-        .map(|r| r.count)
-        .unwrap_or(0)
-    } else {
-        diesel::sql_query(
-            "SELECT COUNT(*) as count FROM proxy_sessions ps WHERE ps.justification IS NOT NULL",
-        )
-        .get_result::<ApprovalCountResult>(&mut conn)
-        .await
-        .map(|r| r.count)
-        .unwrap_or(0)
-    };
+        .unwrap_or(0);
 
     let total_pages = ((total_items as f64) / (items_per_page as f64)).ceil() as i32;
     let offset = ((page - 1) * items_per_page) as i64;
 
-    // NOTE: Raw SQL required - triple JOIN with inet::text cast, using parameterized queries
-    let approvals_data: Vec<ApprovalQueryResult> =
-        if let Some(ref status) = status_filter {
-            diesel::sql_query(
-            "SELECT ps.uuid, u.username, a.hostname as asset_name, a.asset_type, ps.session_type,
-                    ps.justification, ps.client_ip::text as client_ip, ps.created_at, ps.status
-             FROM proxy_sessions ps
-             INNER JOIN users u ON u.id = ps.user_id
-             INNER JOIN assets a ON a.id = ps.asset_id
-             WHERE ps.justification IS NOT NULL AND ps.status = $1
-             ORDER BY ps.created_at DESC
-             LIMIT $2 OFFSET $3",
-        )
-        .bind::<Text, _>(status)
-        .bind::<Integer, _>(items_per_page)
-        .bind::<BigInt, _>(offset)
-        .load(&mut conn).await
-        .map_err(AppError::Database)?
-        } else {
-            diesel::sql_query(
-            "SELECT ps.uuid, u.username, a.hostname as asset_name, a.asset_type, ps.session_type,
-                    ps.justification, ps.client_ip::text as client_ip, ps.created_at, ps.status
-             FROM proxy_sessions ps
-             INNER JOIN users u ON u.id = ps.user_id
-             INNER JOIN assets a ON a.id = ps.asset_id
-             WHERE ps.justification IS NOT NULL
-             ORDER BY ps.created_at DESC
-             LIMIT $1 OFFSET $2",
-        )
-        .bind::<Integer, _>(items_per_page)
-        .bind::<BigInt, _>(offset)
-        .load(&mut conn).await
-        .map_err(AppError::Database)?
-        };
+    let mut list_query = proxy_sessions::table
+        .inner_join(schema_assets::table)
+        .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
+        .filter(proxy_sessions::justification.is_not_null())
+        .into_boxed();
+
+    if let Some(ref status) = status_filter {
+        list_query = list_query.filter(proxy_sessions::status.eq(status));
+    }
+
+    #[allow(clippy::type_complexity)]
+    let approvals_data: Vec<(
+        uuid::Uuid, String, String, String, String,
+        Option<String>, ipnetwork::IpNetwork,
+        chrono::DateTime<chrono::Utc>, String, Option<i32>,
+    )> = list_query
+        .select((
+            proxy_sessions::uuid,
+            users::username,
+            schema_assets::hostname,
+            schema_assets::asset_type,
+            proxy_sessions::session_type,
+            proxy_sessions::justification,
+            proxy_sessions::client_ip,
+            proxy_sessions::created_at,
+            proxy_sessions::status,
+            proxy_sessions::max_session_duration,
+        ))
+        .order(proxy_sessions::created_at.desc())
+        .limit(items_per_page as i64)
+        .offset(offset)
+        .load(&mut conn)
+        .await
+        .map_err(AppError::Database)?;
 
     let approvals: Vec<crate::templates::sessions::approval_list::ApprovalListItem> =
         approvals_data
             .into_iter()
             .map(
-                |a| crate::templates::sessions::approval_list::ApprovalListItem {
-                    uuid: a.uuid.to_string(),
-                    username: a.username,
-                    asset_name: a.asset_name,
-                    asset_type: a.asset_type,
-                    session_type: a.session_type,
-                    justification: a.justification,
-                    client_ip: a.client_ip,
-                    created_at: a.created_at.format("%b %d, %Y %H:%M").to_string(),
-                    status: a.status,
+                |(uuid, username, asset_name, asset_type, session_type,
+                  justification, client_ip, created_at, status, max_session_duration)| {
+                    crate::templates::sessions::approval_list::ApprovalListItem {
+                        uuid: uuid.to_string(),
+                        username,
+                        asset_name,
+                        asset_type,
+                        session_type,
+                        justification,
+                        client_ip: client_ip.ip().to_string(),
+                        created_at: created_at.format("%b %d, %Y %H:%M").to_string(),
+                        status,
+                        max_session_duration,
+                    }
                 },
             )
             .collect();
@@ -855,35 +829,6 @@ pub async fn approval_list(
     Ok(Html(html))
 }
 
-/// Helper struct for approval count result.
-#[derive(diesel::QueryableByName)]
-struct ApprovalCountResult {
-    #[diesel(sql_type = diesel::sql_types::Int8)]
-    count: i64,
-}
-
-/// Helper struct for approval query results.
-#[derive(diesel::QueryableByName)]
-struct ApprovalQueryResult {
-    #[diesel(sql_type = diesel::sql_types::Uuid)]
-    uuid: ::uuid::Uuid,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    username: String,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    asset_name: String,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    asset_type: String,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    session_type: String,
-    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
-    justification: Option<String>,
-    #[diesel(sql_type = diesel::sql_types::Text)]
-    client_ip: String,
-    #[diesel(sql_type = diesel::sql_types::Timestamptz)]
-    created_at: chrono::DateTime<chrono::Utc>,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    status: String,
-}
 
 /// Approval detail page.
 pub async fn approval_detail(
@@ -924,18 +869,35 @@ pub async fn approval_detail(
         }
     };
 
-    // NOTE: Raw SQL required - triple JOIN with inet::text cast
-    let approval_data: ApprovalDetailResult = match diesel::sql_query(
-        "SELECT ps.uuid, u.username, u.email as user_email, a.name as asset_name, a.asset_type,
-                a.hostname as asset_hostname, ps.session_type, ps.status, ps.justification,
-                ps.client_ip::text as client_ip, ps.credential_username, ps.created_at, ps.is_recorded
-         FROM proxy_sessions ps
-         INNER JOIN users u ON u.id = ps.user_id
-         INNER JOIN assets a ON a.id = ps.asset_id
-         WHERE ps.uuid = $1",
-    )
-    .bind::<DieselUuid, _>(approval_uuid)
-    .get_result(&mut conn).await
+    use crate::schema::users;
+
+    #[allow(clippy::type_complexity)]
+    let approval_row: (
+        uuid::Uuid, String, String, String, String, String,
+        String, String, Option<String>, ipnetwork::IpNetwork,
+        String, chrono::DateTime<chrono::Utc>, bool, Option<i32>,
+    ) = match proxy_sessions::table
+        .inner_join(schema_assets::table)
+        .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
+        .filter(proxy_sessions::uuid.eq(approval_uuid))
+        .select((
+            proxy_sessions::uuid,
+            users::username,
+            users::email,
+            schema_assets::name,
+            schema_assets::asset_type,
+            schema_assets::hostname,
+            proxy_sessions::session_type,
+            proxy_sessions::status,
+            proxy_sessions::justification,
+            proxy_sessions::client_ip,
+            proxy_sessions::credential_username,
+            proxy_sessions::created_at,
+            proxy_sessions::is_recorded,
+            proxy_sessions::max_session_duration,
+        ))
+        .first(&mut conn)
+        .await
     {
         Ok(data) => data,
         Err(diesel::result::Error::NotFound) => {
@@ -952,23 +914,27 @@ pub async fn approval_detail(
         }
     };
 
+    let (
+        a_uuid, username, user_email, asset_name, asset_type, asset_hostname,
+        session_type, status, justification, client_ip,
+        credential_username, created_at, is_recorded, max_session_duration,
+    ) = approval_row;
+
     let approval = crate::templates::sessions::approval_detail::ApprovalDetail {
-        uuid: approval_data.uuid.to_string(),
-        username: approval_data.username,
-        user_email: approval_data.user_email,
-        asset_name: approval_data.asset_name,
-        asset_type: approval_data.asset_type,
-        asset_hostname: approval_data.asset_hostname,
-        session_type: approval_data.session_type,
-        status: approval_data.status,
-        justification: approval_data.justification,
-        client_ip: approval_data.client_ip,
-        credential_username: approval_data.credential_username,
-        created_at: approval_data
-            .created_at
-            .format("%b %d, %Y %H:%M")
-            .to_string(),
-        is_recorded: approval_data.is_recorded,
+        uuid: a_uuid.to_string(),
+        username,
+        user_email,
+        asset_name,
+        asset_type,
+        asset_hostname,
+        session_type,
+        status,
+        justification,
+        client_ip: client_ip.ip().to_string(),
+        credential_username,
+        created_at: created_at.format("%b %d, %Y %H:%M").to_string(),
+        is_recorded,
+        max_session_duration,
     };
 
     let base = BaseTemplate::new("Approval Request".to_string(), user.clone())
@@ -995,35 +961,23 @@ pub async fn approval_detail(
     }
 }
 
-/// Helper struct for approval detail query results.
-#[derive(diesel::QueryableByName)]
-struct ApprovalDetailResult {
-    #[diesel(sql_type = diesel::sql_types::Uuid)]
-    uuid: ::uuid::Uuid,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    username: String,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    user_email: String,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    asset_name: String,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    asset_type: String,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    asset_hostname: String,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    session_type: String,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    status: String,
-    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
-    justification: Option<String>,
-    #[diesel(sql_type = diesel::sql_types::Text)]
-    client_ip: String,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    credential_username: String,
-    #[diesel(sql_type = diesel::sql_types::Timestamptz)]
-    created_at: chrono::DateTime<chrono::Utc>,
-    #[diesel(sql_type = diesel::sql_types::Bool)]
-    is_recorded: bool,
+
+/// Form for approval with optional duration override.
+#[derive(Debug, serde::Deserialize)]
+pub struct ApproveForm {
+    pub csrf_token: String,
+    pub duration_value: Option<i32>,
+    pub duration_unit: Option<String>,
+}
+
+impl ApproveForm {
+    /// Delegate to the shared resolver in `utils`.
+    pub fn resolve_duration_seconds(&self) -> Result<Option<i32>, &'static str> {
+        crate::utils::resolve_duration_seconds(
+            self.duration_value,
+            self.duration_unit.as_deref(),
+        )
+    }
 }
 
 /// Form for access request submission.
@@ -1278,11 +1232,14 @@ pub async fn submit_access_request(
 /// POST /sessions/approvals/{uuid}/approve
 pub async fn approve_access_request(
     State(state): State<AppState>,
+    incoming_flash: IncomingFlash,
     auth_user: WebAuthUser,
     jar: CookieJar,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
-    Form(form): Form<CsrfOnlyForm>,
+    Form(form): Form<ApproveForm>,
 ) -> AppResult<Response> {
+    let flash = incoming_flash.flash();
+
     let secret = state.config.secret_key.expose_secret().as_bytes();
     let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
     if !crate::middleware::csrf::validate_double_submit(
@@ -1298,6 +1255,16 @@ pub async fn approve_access_request(
             "Only administrators can approve requests".to_string(),
         ));
     }
+
+    let duration_override = match form.resolve_duration_seconds() {
+        Ok(d) => d,
+        Err(msg) => {
+            return Ok(flash_redirect(
+                flash.error(msg),
+                &format!("/sessions/approvals/{}", uuid_str),
+            ));
+        }
+    };
 
     let session_uuid = ::uuid::Uuid::parse_str(&uuid_str)
         .map_err(|_| AppError::Validation("Invalid request identifier".to_string()))?;
@@ -1318,20 +1285,40 @@ pub async fn approve_access_request(
         .await
         .map_err(|_| AppError::NotFound("Admin user not found".to_string()))?;
 
-    let updated = diesel::update(
-        proxy_sessions::table
-            .filter(proxy_sessions::uuid.eq(session_uuid))
-            .filter(proxy_sessions::status.eq("pending")),
-    )
-    .set((
-        proxy_sessions::status.eq("approved"),
-        proxy_sessions::approved_by_id.eq(Some(admin_id)),
-        proxy_sessions::approved_at.eq(Some(chrono::Utc::now())),
-        proxy_sessions::updated_at.eq(chrono::Utc::now()),
-    ))
-    .execute(&mut conn)
-    .await
-    .map_err(AppError::Database)?;
+    let now = chrono::Utc::now();
+
+    let updated = if let Some(seconds) = duration_override {
+        diesel::update(
+            proxy_sessions::table
+                .filter(proxy_sessions::uuid.eq(session_uuid))
+                .filter(proxy_sessions::status.eq("pending")),
+        )
+        .set((
+            proxy_sessions::status.eq("approved"),
+            proxy_sessions::approved_by_id.eq(Some(admin_id)),
+            proxy_sessions::approved_at.eq(Some(now)),
+            proxy_sessions::max_session_duration.eq(Some(seconds)),
+            proxy_sessions::updated_at.eq(now),
+        ))
+        .execute(&mut conn)
+        .await
+        .map_err(AppError::Database)?
+    } else {
+        diesel::update(
+            proxy_sessions::table
+                .filter(proxy_sessions::uuid.eq(session_uuid))
+                .filter(proxy_sessions::status.eq("pending")),
+        )
+        .set((
+            proxy_sessions::status.eq("approved"),
+            proxy_sessions::approved_by_id.eq(Some(admin_id)),
+            proxy_sessions::approved_at.eq(Some(now)),
+            proxy_sessions::updated_at.eq(now),
+        ))
+        .execute(&mut conn)
+        .await
+        .map_err(AppError::Database)?
+    };
 
     if updated == 0 {
         return Err(AppError::NotFound(
@@ -1339,11 +1326,20 @@ pub async fn approve_access_request(
         ));
     }
 
-    tracing::info!(
-        session_uuid = %session_uuid,
-        approved_by = %auth_user.username,
-        "JIT access request approved"
-    );
+    if let Some(secs) = duration_override {
+        tracing::info!(
+            session_uuid = %session_uuid,
+            approved_by = %auth_user.username,
+            duration_override_seconds = secs,
+            "JIT access request approved with duration override"
+        );
+    } else {
+        tracing::info!(
+            session_uuid = %session_uuid,
+            approved_by = %auth_user.username,
+            "JIT access request approved"
+        );
+    }
 
     // Notify the requester
     let requester_id: Option<i32> = proxy_sessions::table
@@ -1594,43 +1590,61 @@ pub async fn my_requests(
         .await
         .map_err(|_| AppError::NotFound("User not found".to_string()))?;
 
-    // NOTE: Raw SQL required - JOIN + inet::text cast
-    let requests_data: Vec<MyRequestQueryResult> = diesel::sql_query(
-        "SELECT ps.uuid, a.name as asset_name, a.hostname as asset_hostname,
-                a.asset_type, ps.session_type, ps.status, ps.justification,
-                ps.created_at, ps.approved_at,
-                COALESCE(approver.username, '') as approved_by
-         FROM proxy_sessions ps
-         INNER JOIN assets a ON a.id = ps.asset_id
-         LEFT JOIN users approver ON approver.id = ps.approved_by_id
-         WHERE ps.user_id = $1
-           AND ps.status IN ('pending', 'approved', 'rejected', 'expired')
-         ORDER BY ps.created_at DESC
-         LIMIT 50",
-    )
-    .bind::<Integer, _>(user_id)
-    .load(&mut conn)
-    .await
-    .map_err(AppError::Database)?;
+    use crate::schema::users;
+
+    #[allow(clippy::type_complexity)]
+    let requests_data: Vec<(
+        uuid::Uuid, String, String, String,
+        String, String, Option<String>,
+        chrono::DateTime<chrono::Utc>,
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<String>,
+        Option<i32>,
+    )> = proxy_sessions::table
+        .inner_join(schema_assets::table)
+        .left_join(users::table.on(users::id.nullable().eq(proxy_sessions::approved_by_id)))
+        .filter(proxy_sessions::user_id.eq(user_id))
+        .filter(proxy_sessions::status.eq_any(["pending", "approved", "rejected", "expired"]))
+        .select((
+            proxy_sessions::uuid,
+            schema_assets::name,
+            schema_assets::hostname,
+            schema_assets::asset_type,
+            proxy_sessions::session_type,
+            proxy_sessions::status,
+            proxy_sessions::justification,
+            proxy_sessions::created_at,
+            proxy_sessions::approved_at,
+            users::username.nullable(),
+            proxy_sessions::max_session_duration,
+        ))
+        .order(proxy_sessions::created_at.desc())
+        .limit(50)
+        .load(&mut conn)
+        .await
+        .map_err(AppError::Database)?;
 
     let requests: Vec<crate::templates::sessions::my_requests::MyRequestItem> = requests_data
         .into_iter()
-        .map(|r| crate::templates::sessions::my_requests::MyRequestItem {
-            uuid: r.uuid.to_string(),
-            asset_name: r.asset_name,
-            asset_hostname: r.asset_hostname,
-            asset_type: r.asset_type,
-            session_type: r.session_type,
-            status: r.status,
-            justification: r.justification,
-            created_at: r.created_at.format("%b %d, %Y %H:%M").to_string(),
-            approved_at: r.approved_at.map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
-            approved_by: if r.approved_by.is_empty() {
-                None
-            } else {
-                Some(r.approved_by)
+        .map(
+            |(uuid, asset_name, asset_hostname, asset_type,
+              session_type, status, justification,
+              created_at, approved_at, approved_by, max_session_duration)| {
+                crate::templates::sessions::my_requests::MyRequestItem {
+                    uuid: uuid.to_string(),
+                    asset_name,
+                    asset_hostname,
+                    asset_type,
+                    session_type,
+                    status,
+                    justification,
+                    created_at: created_at.format("%b %d, %Y %H:%M").to_string(),
+                    approved_at: approved_at.map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
+                    approved_by,
+                    max_session_duration,
+                }
             },
-        })
+        )
         .collect();
 
     let template = crate::templates::sessions::my_requests::MyRequestsTemplate {
@@ -1650,30 +1664,6 @@ pub async fn my_requests(
     Ok(Html(html))
 }
 
-/// Helper struct for my-requests query.
-#[derive(diesel::QueryableByName)]
-struct MyRequestQueryResult {
-    #[diesel(sql_type = diesel::sql_types::Uuid)]
-    uuid: ::uuid::Uuid,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    asset_name: String,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    asset_hostname: String,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    asset_type: String,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    session_type: String,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    status: String,
-    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
-    justification: Option<String>,
-    #[diesel(sql_type = diesel::sql_types::Timestamptz)]
-    created_at: chrono::DateTime<chrono::Utc>,
-    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Timestamptz>)]
-    approved_at: Option<chrono::DateTime<chrono::Utc>>,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    approved_by: String,
-}
 
 /// Active sessions page.
 pub async fn active_sessions(
@@ -1701,48 +1691,62 @@ pub async fn active_sessions(
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
-    // NOTE: Raw SQL required - triple JOIN with inet::text cast
-    let sessions_data: Vec<ActiveSessionQueryResult> = diesel::sql_query(
-        "SELECT ps.uuid, u.username, a.name as asset_name, a.hostname as asset_hostname,
-                ps.session_type, ps.client_ip::text as client_ip, ps.connected_at
-         FROM proxy_sessions ps
-         INNER JOIN users u ON u.id = ps.user_id
-         INNER JOIN assets a ON a.id = ps.asset_id
-         WHERE ps.status = 'active' AND ps.connected_at IS NOT NULL
-         ORDER BY ps.connected_at DESC",
-    )
-    .load(&mut conn)
-    .await
-    .map_err(AppError::Database)?;
+    use crate::schema::users;
+
+    #[allow(clippy::type_complexity)]
+    let sessions_data: Vec<(
+        uuid::Uuid, String, String, String,
+        String, ipnetwork::IpNetwork,
+        Option<chrono::DateTime<chrono::Utc>>,
+    )> = proxy_sessions::table
+        .inner_join(schema_assets::table)
+        .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
+        .filter(proxy_sessions::status.eq("active"))
+        .filter(proxy_sessions::connected_at.is_not_null())
+        .select((
+            proxy_sessions::uuid,
+            users::username,
+            schema_assets::name,
+            schema_assets::hostname,
+            proxy_sessions::session_type,
+            proxy_sessions::client_ip,
+            proxy_sessions::connected_at,
+        ))
+        .order(proxy_sessions::connected_at.desc())
+        .load(&mut conn)
+        .await
+        .map_err(AppError::Database)?;
 
     let sessions: Vec<crate::templates::sessions::active_list::ActiveSessionItem> = sessions_data
         .into_iter()
-        .map(|s| {
-            let connected = s.connected_at;
-            let duration = chrono::Utc::now().signed_duration_since(connected);
-            let duration_str = if duration.num_hours() > 0 {
-                format!("{}h {}m", duration.num_hours(), duration.num_minutes() % 60)
-            } else if duration.num_minutes() > 0 {
-                format!(
-                    "{}m {}s",
-                    duration.num_minutes(),
-                    duration.num_seconds() % 60
-                )
-            } else {
-                format!("{}s", duration.num_seconds())
-            };
+        .filter_map(
+            |(uuid, username, asset_name, asset_hostname, session_type, client_ip, connected_at)| {
+                let connected = connected_at?;
+                let duration = chrono::Utc::now().signed_duration_since(connected);
+                let duration_str = if duration.num_hours() > 0 {
+                    format!("{}h {}m", duration.num_hours(), duration.num_minutes() % 60)
+                } else if duration.num_minutes() > 0 {
+                    format!(
+                        "{}m {}s",
+                        duration.num_minutes(),
+                        duration.num_seconds() % 60
+                    )
+                } else {
+                    format!("{}s", duration.num_seconds())
+                };
 
-            crate::templates::sessions::active_list::ActiveSessionItem {
-                uuid: s.uuid.to_string(),
-                username: s.username,
-                asset_name: s.asset_name,
-                asset_hostname: s.asset_hostname,
-                session_type: s.session_type,
-                client_ip: s.client_ip,
-                connected_at: connected.format("%H:%M:%S").to_string(),
-                duration: duration_str,
-            }
-        })
+                Some(crate::templates::sessions::active_list::ActiveSessionItem {
+                    uuid: uuid.to_string(),
+                    username,
+                    asset_name,
+                    asset_hostname,
+                    session_type,
+                    client_ip: client_ip.ip().to_string(),
+                    connected_at: connected.format("%H:%M:%S").to_string(),
+                    duration: duration_str,
+                })
+            },
+        )
         .collect();
 
     let template = ActiveListTemplate {
@@ -1762,24 +1766,6 @@ pub async fn active_sessions(
     Ok(Html(html))
 }
 
-/// Helper struct for active session query results.
-#[derive(diesel::QueryableByName)]
-struct ActiveSessionQueryResult {
-    #[diesel(sql_type = diesel::sql_types::Uuid)]
-    uuid: ::uuid::Uuid,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    username: String,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    asset_name: String,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    asset_hostname: String,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    session_type: String,
-    #[diesel(sql_type = diesel::sql_types::Text)]
-    client_ip: String,
-    #[diesel(sql_type = diesel::sql_types::Timestamptz)]
-    connected_at: chrono::DateTime<chrono::Utc>,
-}
 
 /// Serve an MP4 recording file for a given session UUID.
 ///
@@ -2369,6 +2355,66 @@ pub async fn serve_ssh_recording(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- ApproveForm::resolve_duration_seconds tests ----
+
+    fn make_approve_form(value: Option<i32>, unit: Option<&str>) -> ApproveForm {
+        ApproveForm {
+            csrf_token: "token".to_string(),
+            duration_value: value,
+            duration_unit: unit.map(String::from),
+        }
+    }
+
+    #[test]
+    fn test_resolve_duration_none_returns_none() {
+        let form = make_approve_form(None, None);
+        assert_eq!(form.resolve_duration_seconds().unwrap(), None);
+    }
+
+    #[test]
+    fn test_resolve_duration_hours_converts() {
+        let form = make_approve_form(Some(2), Some("hours"));
+        assert_eq!(form.resolve_duration_seconds().unwrap(), Some(7200));
+    }
+
+    #[test]
+    fn test_resolve_duration_minutes_converts() {
+        let form = make_approve_form(Some(30), Some("minutes"));
+        assert_eq!(form.resolve_duration_seconds().unwrap(), Some(1800));
+    }
+
+    #[test]
+    fn test_resolve_duration_zero_rejected() {
+        let form = make_approve_form(Some(0), Some("minutes"));
+        assert!(form.resolve_duration_seconds().is_err());
+    }
+
+    #[test]
+    fn test_resolve_duration_negative_rejected() {
+        let form = make_approve_form(Some(-1), Some("hours"));
+        assert!(form.resolve_duration_seconds().is_err());
+    }
+
+    #[test]
+    fn test_resolve_duration_exceeds_max_rejected() {
+        let form = make_approve_form(Some(25), Some("hours"));
+        assert!(form.resolve_duration_seconds().is_err());
+    }
+
+    #[test]
+    fn test_resolve_duration_unknown_unit_rejected() {
+        let form = make_approve_form(Some(5), Some("days"));
+        assert!(form.resolve_duration_seconds().is_err());
+    }
+
+    #[test]
+    fn test_resolve_duration_overflow_rejected() {
+        let form = make_approve_form(Some(i32::MAX), Some("hours"));
+        assert!(form.resolve_duration_seconds().is_err());
+    }
+
+    // ---- Range parsing tests ----
 
     const FILE_SIZE: u64 = 10_000_000;
 

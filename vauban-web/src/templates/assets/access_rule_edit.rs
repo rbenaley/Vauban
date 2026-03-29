@@ -19,7 +19,8 @@ pub struct AccessRuleEdit {
     pub valid_until: String,
     pub require_mfa: bool,
     pub require_approval: bool,
-    pub max_session_duration: String,
+    pub duration_value: Option<i32>,
+    pub duration_unit: String,
     pub is_active: bool,
     pub priority: String,
 }
@@ -57,7 +58,8 @@ mod tests {
             valid_until: String::new(),
             require_mfa: false,
             require_approval: false,
-            max_session_duration: String::new(),
+            duration_value: Some(2),
+            duration_unit: "hours".to_string(),
             is_active: true,
             priority: "0".to_string(),
         }

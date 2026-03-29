@@ -14,6 +14,7 @@ pub struct ApprovalListItem {
     pub client_ip: String,
     pub created_at: String,
     pub status: String,
+    pub max_session_duration: Option<i32>,
 }
 
 impl ApprovalListItem {
@@ -27,6 +28,21 @@ impl ApprovalListItem {
             "orphaned" => "bg-gray-100 text-gray-800 dark:bg-gray-900/50 dark:text-gray-300",
             _ => "bg-gray-100 text-gray-800 dark:bg-gray-900/50 dark:text-gray-300",
         }
+    }
+
+    /// Human-readable duration display (e.g. "2h", "30min", "Unlimited").
+    pub fn duration_display(&self) -> String {
+        crate::utils::duration_display(self.max_session_duration)
+    }
+
+    /// Default value for the duration input field (in the natural unit).
+    pub fn duration_default_value(&self) -> Option<i32> {
+        crate::utils::duration_to_value_unit(self.max_session_duration).0
+    }
+
+    /// Default unit for the duration select ("hours" or "minutes").
+    pub fn duration_default_unit(&self) -> &str {
+        crate::utils::duration_to_value_unit(self.max_session_duration).1
     }
 
     /// Get session type icon.
@@ -89,6 +105,7 @@ mod tests {
             client_ip: "192.168.1.100".to_string(),
             created_at: "2026-01-03 10:00:00".to_string(),
             status: status.to_string(),
+            max_session_duration: Some(7200),
         }
     }
 
@@ -267,6 +284,68 @@ mod tests {
         let cloned = pagination.clone();
         assert_eq!(pagination.current_page, cloned.current_page);
         assert_eq!(pagination.total_pages, cloned.total_pages);
+    }
+
+    // ---- duration_display tests ----
+
+    #[test]
+    fn test_duration_display_hours() {
+        let mut item = create_test_approval_item("pending", "ssh");
+        item.max_session_duration = Some(7200);
+        assert_eq!(item.duration_display(), "2h");
+    }
+
+    #[test]
+    fn test_duration_display_minutes() {
+        let mut item = create_test_approval_item("pending", "ssh");
+        item.max_session_duration = Some(1800);
+        assert_eq!(item.duration_display(), "30min");
+    }
+
+    #[test]
+    fn test_duration_display_mixed() {
+        let mut item = create_test_approval_item("pending", "ssh");
+        item.max_session_duration = Some(5400);
+        assert_eq!(item.duration_display(), "90min");
+    }
+
+    #[test]
+    fn test_duration_display_unlimited() {
+        let mut item = create_test_approval_item("pending", "ssh");
+        item.max_session_duration = None;
+        assert_eq!(item.duration_display(), "Unlimited");
+    }
+
+    // ---- duration_default_value tests ----
+
+    #[test]
+    fn test_duration_default_value_hours() {
+        let mut item = create_test_approval_item("pending", "ssh");
+        item.max_session_duration = Some(7200);
+        assert_eq!(item.duration_default_value(), Some(2));
+    }
+
+    #[test]
+    fn test_duration_default_value_minutes() {
+        let mut item = create_test_approval_item("pending", "ssh");
+        item.max_session_duration = Some(1800);
+        assert_eq!(item.duration_default_value(), Some(30));
+    }
+
+    // ---- duration_default_unit tests ----
+
+    #[test]
+    fn test_duration_default_unit_hours() {
+        let mut item = create_test_approval_item("pending", "ssh");
+        item.max_session_duration = Some(7200);
+        assert_eq!(item.duration_default_unit(), "hours");
+    }
+
+    #[test]
+    fn test_duration_default_unit_minutes() {
+        let mut item = create_test_approval_item("pending", "ssh");
+        item.max_session_duration = Some(1800);
+        assert_eq!(item.duration_default_unit(), "minutes");
     }
 
     #[test]

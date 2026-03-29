@@ -11,7 +11,7 @@ pub struct GroupOption {
 }
 
 /// Form data for access rule creation (pre-populated on validation error).
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct AccessRuleCreateForm {
     pub name: String,
     pub description: String,
@@ -23,9 +23,33 @@ pub struct AccessRuleCreateForm {
     pub valid_until: String,
     pub require_mfa: bool,
     pub require_approval: bool,
-    pub max_session_duration: String,
+    pub duration_value: Option<i32>,
+    pub duration_unit: String,
     pub is_active: bool,
     pub priority: String,
+}
+
+impl Default for AccessRuleCreateForm {
+    fn default() -> Self {
+        let (val, unit) =
+            crate::utils::duration_to_value_unit(Some(crate::utils::DEFAULT_DURATION_SECONDS));
+        Self {
+            name: String::new(),
+            description: String::new(),
+            user_group_id: String::new(),
+            asset_group_id: String::new(),
+            allowed_ssh: false,
+            allowed_rdp: false,
+            valid_from: String::new(),
+            valid_until: String::new(),
+            require_mfa: false,
+            require_approval: false,
+            duration_value: val,
+            duration_unit: unit.to_string(),
+            is_active: false,
+            priority: String::new(),
+        }
+    }
 }
 
 #[derive(Template)]
@@ -53,6 +77,8 @@ mod tests {
         let form = AccessRuleCreateForm::default();
         assert!(form.name.is_empty());
         assert!(!form.allowed_ssh);
+        assert_eq!(form.duration_value, Some(2));
+        assert_eq!(form.duration_unit, "hours");
     }
 
     #[test]
@@ -95,7 +121,9 @@ mod tests {
                 name: "Servers".to_string(),
             }],
         };
-        let result = template.render();
-        assert!(result.is_ok(), "AccessRuleCreateTemplate should render");
+        let html = template.render().expect("AccessRuleCreateTemplate should render");
+        assert!(html.contains("duration_value"), "should have duration_value input");
+        assert!(html.contains("duration_unit"), "should have duration_unit select");
+        assert!(html.contains("value=\"2\""), "should default to 2 hours");
     }
 }

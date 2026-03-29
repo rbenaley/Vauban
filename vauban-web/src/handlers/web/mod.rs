@@ -4,28 +4,16 @@
 //!
 //! # SQL Query Guidelines
 //!
-//! This module primarily uses Diesel DSL for database operations. However, raw SQL
-//! queries (`diesel::sql_query`) are used in specific cases where Diesel DSL lacks
-//! support or would be overly complex:
+//! This module uses Diesel DSL for all database operations. Triple JOINs, inet/uuid
+//! type conversions and LEFT JOINs are all expressed via the DSL, with Rust-side
+//! `.to_string()` for `IpNetwork` and `Uuid` values. Explicit `.on()` clauses are
+//! used for `proxy_sessions -> users` joins since both `user_id` and `approved_by_id`
+//! reference the `users` table (no `joinable!` macro).
 //!
-//! ## Justified Uses of Raw SQL
-//!
-//! 1. **Triple JOINs with PostgreSQL-specific casts**: Queries involving multiple
-//!    table joins with PostgreSQL type casts like `inet::text` for IP addresses.
-//!    Example: Session detail pages joining `proxy_sessions`, `users`, and `assets`.
-//!
-//! 2. **Subqueries with COUNT(*)**: Aggregation subqueries in SELECT clauses, such
-//!    as counting assets per group. Diesel DSL supports simple aggregates but complex
-//!    correlated subqueries are clearer in raw SQL.
-//!
-//! 3. **PostgreSQL-native functions**: Functions like `NOW()`, `INTERVAL`, or
-//!    `uuid_generate_v4()` when needed in specific contexts not well-supported by
-//!    Diesel helpers.
-//!
-//! ## Best Practices
+//! Raw SQL (`diesel::sql_query`) may still exist in other sub-modules for correlated
+//! subqueries or PostgreSQL-native functions. When using raw SQL:
 //!
 //! - Always use parameterized queries (`$1`, `$2`) with `.bind()` to prevent SQL injection
-//! - Prefer Diesel DSL for simple CRUD operations (INSERT, UPDATE, DELETE, simple SELECT)
 //! - Document why raw SQL is necessary with a `// NOTE:` comment before each `sql_query`
 //! - Test all raw SQL queries thoroughly as they are not compile-time checked
 
@@ -39,7 +27,7 @@ pub(crate) use axum::{
 };
 pub(crate) use axum_extra::extract::CookieJar;
 pub(crate) use diesel::prelude::*;
-pub(crate) use diesel::sql_types::{BigInt, Integer, Nullable, Text, Uuid as DieselUuid};
+pub(crate) use diesel::sql_types::{Nullable, Text, Uuid as DieselUuid};
 pub(crate) use diesel_async::{AsyncConnection, RunQueryDsl};
 pub(crate) use secrecy::ExposeSecret;
 pub(crate) use std::collections::HashMap;

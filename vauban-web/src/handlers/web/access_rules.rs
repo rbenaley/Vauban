@@ -25,7 +25,8 @@ pub struct CreateAccessRuleWebForm {
     pub valid_until: Option<String>,
     pub require_mfa: Option<String>,
     pub require_approval: Option<String>,
-    pub max_session_duration: Option<String>,
+    pub duration_value: Option<i32>,
+    pub duration_unit: Option<String>,
     pub is_active: Option<String>,
     pub priority: Option<String>,
 }
@@ -43,7 +44,8 @@ pub struct UpdateAccessRuleWebForm {
     pub valid_until: Option<String>,
     pub require_mfa: Option<String>,
     pub require_approval: Option<String>,
-    pub max_session_duration: Option<String>,
+    pub duration_value: Option<i32>,
+    pub duration_unit: Option<String>,
     pub is_active: Option<String>,
     pub priority: Option<String>,
 }
@@ -546,11 +548,15 @@ pub async fn create_access_rule_web(
     let sanitized_desc = sanitize_opt(form.description.filter(|s| !s.trim().is_empty()));
     let valid_from = parse_datetime(&form.valid_from);
     let valid_until = parse_datetime(&form.valid_until);
-    let max_dur: Option<i32> = form
-        .max_session_duration
-        .as_deref()
-        .filter(|s| !s.is_empty())
-        .and_then(|s| s.parse().ok());
+    let max_dur: Option<i32> = match crate::utils::resolve_duration_seconds(
+        form.duration_value,
+        form.duration_unit.as_deref(),
+    ) {
+        Ok(d) => d,
+        Err(msg) => {
+            return flash_redirect(flash.error(msg), "/assets/access/new");
+        }
+    };
     let priority: i32 = form
         .priority
         .as_deref()
@@ -718,6 +724,7 @@ pub async fn access_rule_edit(
             }
         };
 
+        let (dur_val, dur_unit) = crate::utils::duration_to_value_unit(info.max_session_duration);
         let rule_edit = AccessRuleEdit {
             uuid: info.uuid.clone(),
             name: info.name.clone(),
@@ -730,10 +737,8 @@ pub async fn access_rule_edit(
             valid_until: format_rfc3339_to_local(&info.valid_until),
             require_mfa: info.require_mfa,
             require_approval: info.require_approval,
-            max_session_duration: info
-                .max_session_duration
-                .map(|d| d.to_string())
-                .unwrap_or_default(),
+            duration_value: dur_val,
+            duration_unit: dur_unit.to_string(),
             is_active: info.is_active,
             priority: info.priority.to_string(),
         };
@@ -771,6 +776,7 @@ pub async fn access_rule_edit(
         };
 
         let protocols = rule.protocols();
+        let (dur_val, dur_unit) = crate::utils::duration_to_value_unit(rule.max_session_duration);
         let rule_edit = AccessRuleEdit {
             uuid: rule.uuid.to_string(),
             name: rule.name.clone(),
@@ -783,10 +789,8 @@ pub async fn access_rule_edit(
             valid_until: format_datetime_local(&rule.valid_until),
             require_mfa: rule.require_mfa,
             require_approval: rule.require_approval,
-            max_session_duration: rule
-                .max_session_duration
-                .map(|d| d.to_string())
-                .unwrap_or_default(),
+            duration_value: dur_val,
+            duration_unit: dur_unit.to_string(),
             is_active: rule.is_active,
             priority: rule.priority.to_string(),
         };
@@ -879,18 +883,21 @@ pub async fn update_access_rule_web(
     let sanitized_desc = sanitize_opt(form.description.filter(|s| !s.trim().is_empty()));
     let valid_from = parse_datetime(&form.valid_from);
     let valid_until = parse_datetime(&form.valid_until);
-    let max_dur: Option<i32> = form
-        .max_session_duration
-        .as_deref()
-        .filter(|s| !s.is_empty())
-        .and_then(|s| s.parse().ok());
+    let edit_url = format!("/assets/access/{}/edit", uuid_str);
+    let max_dur: Option<i32> = match crate::utils::resolve_duration_seconds(
+        form.duration_value,
+        form.duration_unit.as_deref(),
+    ) {
+        Ok(d) => d,
+        Err(msg) => {
+            return flash_redirect(flash.error(msg), &edit_url);
+        }
+    };
     let priority: i32 = form
         .priority
         .as_deref()
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
-
-    let edit_url = format!("/assets/access/{}/edit", uuid_str);
 
     if let Some(ref client) = state.access_client {
         let data = AccessRuleData {

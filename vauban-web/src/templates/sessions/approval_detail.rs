@@ -18,6 +18,7 @@ pub struct ApprovalDetail {
     pub credential_username: String,
     pub created_at: String,
     pub is_recorded: bool,
+    pub max_session_duration: Option<i32>,
 }
 
 impl ApprovalDetail {
@@ -36,6 +37,21 @@ impl ApprovalDetail {
     /// Check if pending.
     pub fn is_pending(&self) -> bool {
         self.status == "pending"
+    }
+
+    /// Human-readable duration display (e.g. "2h", "30min", "Unlimited").
+    pub fn duration_display(&self) -> String {
+        crate::utils::duration_display(self.max_session_duration)
+    }
+
+    /// Default value for the duration input field (in the natural unit).
+    pub fn duration_default_value(&self) -> Option<i32> {
+        crate::utils::duration_to_value_unit(self.max_session_duration).0
+    }
+
+    /// Default unit for the duration select ("hours" or "minutes").
+    pub fn duration_default_unit(&self) -> &str {
+        crate::utils::duration_to_value_unit(self.max_session_duration).1
     }
 }
 
@@ -72,6 +88,7 @@ mod tests {
             credential_username: "admin".to_string(),
             created_at: "2026-01-03 10:00:00".to_string(),
             is_recorded: true,
+            max_session_duration: Some(7200),
         }
     }
 
@@ -145,6 +162,50 @@ mod tests {
         let detail = create_test_approval_detail("approved");
         let cloned = detail.clone();
         assert_eq!(detail.uuid, cloned.uuid);
+    }
+
+    // ---- duration helpers tests ----
+
+    #[test]
+    fn test_duration_display_hours() {
+        let mut detail = create_test_approval_detail("pending");
+        detail.max_session_duration = Some(7200);
+        assert_eq!(detail.duration_display(), "2h");
+    }
+
+    #[test]
+    fn test_duration_display_minutes() {
+        let mut detail = create_test_approval_detail("pending");
+        detail.max_session_duration = Some(1800);
+        assert_eq!(detail.duration_display(), "30min");
+    }
+
+    #[test]
+    fn test_duration_display_unlimited() {
+        let mut detail = create_test_approval_detail("pending");
+        detail.max_session_duration = None;
+        assert_eq!(detail.duration_display(), "Unlimited");
+    }
+
+    #[test]
+    fn test_duration_default_value_hours() {
+        let mut detail = create_test_approval_detail("pending");
+        detail.max_session_duration = Some(7200);
+        assert_eq!(detail.duration_default_value(), Some(2));
+    }
+
+    #[test]
+    fn test_duration_default_unit_hours() {
+        let mut detail = create_test_approval_detail("pending");
+        detail.max_session_duration = Some(7200);
+        assert_eq!(detail.duration_default_unit(), "hours");
+    }
+
+    #[test]
+    fn test_duration_default_unit_minutes() {
+        let mut detail = create_test_approval_detail("pending");
+        detail.max_session_duration = Some(1800);
+        assert_eq!(detail.duration_default_unit(), "minutes");
     }
 
     #[test]
