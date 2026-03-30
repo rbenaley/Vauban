@@ -185,6 +185,7 @@ pub async fn create_asset(
         connection_config: serde_json::json!({}),
         default_credential_id: None,
         created_by_id: None, // TODO: Get from user
+        connection_username: "root".to_string(),
     };
 
     let asset: Asset = diesel::insert_into(assets)

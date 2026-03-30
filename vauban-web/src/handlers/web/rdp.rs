@@ -75,6 +75,7 @@ pub async fn connect_rdp(
             schema_assets::port,
             schema_assets::asset_type,
             schema_assets::connection_config,
+            schema_assets::connection_username,
         ))
         .first::<(
             i32,
@@ -84,10 +85,11 @@ pub async fn connect_rdp(
             i32,
             String,
             serde_json::Value,
+            String,
         )>(&mut conn)
         .await;
 
-    let (asset_id, _asset_uuid, _asset_name, hostname, port, _asset_type, config) =
+    let (asset_id, _asset_uuid, _asset_name, hostname, port, _asset_type, config, stored_username) =
         match asset_result {
             Ok(a) => a,
             Err(diesel::NotFound) => return htmx_error_response("Asset not found"),
@@ -96,11 +98,6 @@ pub async fn connect_rdp(
                 return htmx_error_response("Database error");
             }
         };
-    let stored_username = config
-        .get("username")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
     let stored_password = config
         .get("password")
         .and_then(|v| v.as_str())
@@ -183,19 +180,44 @@ pub async fn connect_rdp(
         }
 
         if access_result.require_approval {
-            let approved_session: Option<(Option<String>, Option<i32>)> = proxy_sessions::table
-                .filter(proxy_sessions::user_id.eq(user_id))
-                .filter(proxy_sessions::asset_id.eq(asset_id))
-                .filter(proxy_sessions::status.eq("approved"))
-                .select((proxy_sessions::justification, proxy_sessions::max_session_duration))
-                .first(&mut conn)
-                .await
-                .ok();
+            // Find an approved session that has not expired.
+            let now = chrono::Utc::now();
+            let approved_session: Option<(::uuid::Uuid, Option<String>, Option<i32>)> =
+                proxy_sessions::table
+                    .filter(proxy_sessions::user_id.eq(user_id))
+                    .filter(proxy_sessions::asset_id.eq(asset_id))
+                    .filter(proxy_sessions::status.eq("approved"))
+                    .filter(
+                        proxy_sessions::expires_at
+                            .is_null()
+                            .or(proxy_sessions::expires_at.gt(now)),
+                    )
+                    .select((
+                        proxy_sessions::uuid,
+                        proxy_sessions::justification,
+                        proxy_sessions::max_session_duration,
+                    ))
+                    .first(&mut conn)
+                    .await
+                    .ok();
 
             match approved_session {
-                Some((justification, max_dur)) => {
+                Some((approved_uuid, justification, max_dur)) => {
                     jit_justification = justification;
                     jit_max_duration = max_dur.or(access_result.max_session_duration);
+
+                    // Consume the approval so it cannot be reused for another connection.
+                    let _ = diesel::update(
+                        proxy_sessions::table
+                            .filter(proxy_sessions::uuid.eq(approved_uuid))
+                            .filter(proxy_sessions::status.eq("approved")),
+                    )
+                    .set((
+                        proxy_sessions::status.eq("consumed"),
+                        proxy_sessions::updated_at.eq(now),
+                    ))
+                    .execute(&mut conn)
+                    .await;
                 }
                 None => {
                     let detail_url =

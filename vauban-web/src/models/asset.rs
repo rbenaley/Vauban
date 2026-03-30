@@ -179,6 +179,7 @@ pub struct Asset {
     pub updated_at: DateTime<Utc>,
     pub is_deleted: bool,
     pub deleted_at: Option<DateTime<Utc>>,
+    pub connection_username: String,
 }
 
 /// New asset for insertion.
@@ -198,6 +199,7 @@ pub struct NewAsset {
     pub connection_config: serde_json::Value,
     pub default_credential_id: Option<String>,
     pub created_by_id: Option<i32>,
+    pub connection_username: String,
 }
 
 /// Row in `asset_asset_groups` (many-to-many).
@@ -245,7 +247,7 @@ impl Asset {
 
     /// Get connection string.
     pub fn connection_string(&self) -> String {
-        format!("{}:{}", self.hostname, self.port)
+        format!("{}@{}:{}", self.connection_username, self.hostname, self.port)
     }
 }
 
@@ -314,6 +316,7 @@ mod tests {
             updated_at: Utc::now(),
             is_deleted: false,
             deleted_at: None,
+            connection_username: "root".to_string(),
         }
     }
 
@@ -436,7 +439,7 @@ mod tests {
     #[test]
     fn test_asset_connection_string() {
         let asset = create_test_asset();
-        assert_eq!(asset.connection_string(), "test.example.com:22");
+        assert_eq!(asset.connection_string(), "root@test.example.com:22");
     }
 
     #[test]
@@ -444,7 +447,8 @@ mod tests {
         let mut asset = create_test_asset();
         asset.port = 2222;
         asset.hostname = "server.local".to_string();
-        assert_eq!(asset.connection_string(), "server.local:2222");
+        asset.connection_username = "deploy".to_string();
+        assert_eq!(asset.connection_string(), "deploy@server.local:2222");
     }
 
     // ==================== Validation Tests ====================
@@ -668,6 +672,7 @@ mod tests {
             connection_config: serde_json::json!({}),
             default_credential_id: None,
             created_by_id: None,
+            connection_username: "root".to_string(),
         };
 
         let debug_str = format!("{:?}", new_asset);
@@ -690,6 +695,7 @@ mod tests {
             connection_config: serde_json::json!({"key": "value"}),
             default_credential_id: Some("cred-1".to_string()),
             created_by_id: Some(1),
+            connection_username: "Administrator".to_string(),
         };
 
         let cloned = new_asset.clone();

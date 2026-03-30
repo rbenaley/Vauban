@@ -241,6 +241,7 @@ pub async fn create_test_ssh_asset(conn: &mut AsyncPgConnection, name: &str) -> 
         connection_config: serde_json::json!({}),
         default_credential_id: None,
         created_by_id: None,
+        connection_username: "root".to_string(),
     };
 
     let asset: Asset = unwrap_ok!(
@@ -272,6 +273,7 @@ pub async fn create_test_rdp_asset(conn: &mut AsyncPgConnection, name: &str) -> 
         connection_config: serde_json::json!({}),
         default_credential_id: None,
         created_by_id: None,
+        connection_username: "Administrator".to_string(),
     };
 
     let asset: Asset = unwrap_ok!(
@@ -419,6 +421,7 @@ pub async fn create_simple_ssh_asset(
         connection_config: serde_json::json!({}),
         default_credential_id: None,
         created_by_id: Some(created_by),
+        connection_username: "root".to_string(),
     };
 
     let asset: Asset = unwrap_ok!(
@@ -454,6 +457,7 @@ pub async fn create_simple_rdp_asset(
         connection_config: serde_json::json!({}),
         default_credential_id: None,
         created_by_id: Some(created_by),
+        connection_username: "Administrator".to_string(),
     };
 
     let asset: Asset = unwrap_ok!(
@@ -684,6 +688,90 @@ pub async fn create_approval_request_with_duration(
     session_uuid
 }
 
+/// Create a pre-approved session (status = "approved") with expires_at set.
+/// Simulates what the approve handler does after admin approval.
+pub async fn create_approved_session(
+    conn: &mut AsyncPgConnection,
+    user_id: i32,
+    asset_id: i32,
+    max_duration: Option<i32>,
+) -> Uuid {
+    use chrono::Utc;
+    use vauban_web::schema::proxy_sessions;
+
+    let session_uuid = Uuid::new_v4();
+    let ip: ipnetwork::IpNetwork = unwrap_ok!("127.0.0.1".parse());
+    let now = Utc::now();
+    let expires_at =
+        max_duration.map(|secs| now + chrono::Duration::seconds(secs as i64));
+
+    unwrap_ok!(
+        diesel::insert_into(proxy_sessions::table)
+            .values((
+                proxy_sessions::uuid.eq(session_uuid),
+                proxy_sessions::user_id.eq(user_id),
+                proxy_sessions::asset_id.eq(asset_id),
+                proxy_sessions::credential_id.eq("cred-123"),
+                proxy_sessions::credential_username.eq("testuser"),
+                proxy_sessions::session_type.eq(SessionType::Ssh),
+                proxy_sessions::status.eq("approved"),
+                proxy_sessions::client_ip.eq(ip),
+                proxy_sessions::is_recorded.eq(true),
+                proxy_sessions::justification.eq("Approved access"),
+                proxy_sessions::metadata.eq(serde_json::json!({"approval_required": true})),
+                proxy_sessions::max_session_duration.eq(max_duration),
+                proxy_sessions::approved_by_id.eq(Some(user_id)),
+                proxy_sessions::approved_at.eq(Some(now)),
+                proxy_sessions::expires_at.eq(expires_at),
+            ))
+            .execute(conn)
+            .await
+    );
+
+    session_uuid
+}
+
+/// Create an already-expired approved session (expires_at in the past).
+/// Used to verify that expired approvals are not reused.
+pub async fn create_expired_approved_session(
+    conn: &mut AsyncPgConnection,
+    user_id: i32,
+    asset_id: i32,
+) -> Uuid {
+    use chrono::Utc;
+    use vauban_web::schema::proxy_sessions;
+
+    let session_uuid = Uuid::new_v4();
+    let ip: ipnetwork::IpNetwork = unwrap_ok!("127.0.0.1".parse());
+    let now = Utc::now();
+    let expired_at = now - Duration::hours(1);
+
+    unwrap_ok!(
+        diesel::insert_into(proxy_sessions::table)
+            .values((
+                proxy_sessions::uuid.eq(session_uuid),
+                proxy_sessions::user_id.eq(user_id),
+                proxy_sessions::asset_id.eq(asset_id),
+                proxy_sessions::credential_id.eq("cred-123"),
+                proxy_sessions::credential_username.eq("testuser"),
+                proxy_sessions::session_type.eq(SessionType::Ssh),
+                proxy_sessions::status.eq("approved"),
+                proxy_sessions::client_ip.eq(ip),
+                proxy_sessions::is_recorded.eq(true),
+                proxy_sessions::justification.eq("Expired approved access"),
+                proxy_sessions::metadata.eq(serde_json::json!({"approval_required": true})),
+                proxy_sessions::max_session_duration.eq(Some(900)),
+                proxy_sessions::approved_by_id.eq(Some(user_id)),
+                proxy_sessions::approved_at.eq(Some(now - Duration::hours(2))),
+                proxy_sessions::expires_at.eq(Some(expired_at)),
+            ))
+            .execute(conn)
+            .await
+    );
+
+    session_uuid
+}
+
 /// Create a test vauban group (user group) and return group_uuid.
 /// Uses a unique name with UUID suffix to avoid conflicts.
 pub async fn create_test_vauban_group(conn: &mut AsyncPgConnection, name: &str) -> Uuid {
@@ -807,6 +895,7 @@ pub async fn create_test_asset_in_group(
         connection_config: serde_json::json!({}),
         default_credential_id: None,
         created_by_id: Some(created_by),
+        connection_username: "root".to_string(),
     };
 
     let asset: Asset = unwrap_ok!(
@@ -856,6 +945,11 @@ pub async fn create_test_asset_in_group_with_type(
         AssetType::Vnc => 5900,
     };
 
+    let default_user = match asset_type {
+        AssetType::Rdp => "Administrator",
+        _ => "root",
+    };
+
     let new_asset = NewAsset {
         uuid: asset_uuid,
         name: name.to_string(),
@@ -870,6 +964,7 @@ pub async fn create_test_asset_in_group_with_type(
         connection_config: serde_json::json!({}),
         default_credential_id: None,
         created_by_id: Some(created_by),
+        connection_username: default_user.to_string(),
     };
 
     let asset: Asset = unwrap_ok!(

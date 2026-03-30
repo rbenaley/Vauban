@@ -253,19 +253,46 @@ pub async fn connect_ssh(
         }
 
         if access_result.require_approval {
-            let approved_session: Option<(Option<String>, Option<i32>)> = proxy_sessions::table
-                .filter(proxy_sessions::user_id.eq(user_id))
-                .filter(proxy_sessions::asset_id.eq(asset.id))
-                .filter(proxy_sessions::status.eq("approved"))
-                .select((proxy_sessions::justification, proxy_sessions::max_session_duration))
-                .first(&mut conn)
-                .await
-                .ok();
+            // Find an approved session that has not expired.
+            // Only consider approvals whose expires_at is still in the future
+            // (or has no expiry set, for legacy rows).
+            let now = chrono::Utc::now();
+            let approved_session: Option<(::uuid::Uuid, Option<String>, Option<i32>)> =
+                proxy_sessions::table
+                    .filter(proxy_sessions::user_id.eq(user_id))
+                    .filter(proxy_sessions::asset_id.eq(asset.id))
+                    .filter(proxy_sessions::status.eq("approved"))
+                    .filter(
+                        proxy_sessions::expires_at
+                            .is_null()
+                            .or(proxy_sessions::expires_at.gt(now)),
+                    )
+                    .select((
+                        proxy_sessions::uuid,
+                        proxy_sessions::justification,
+                        proxy_sessions::max_session_duration,
+                    ))
+                    .first(&mut conn)
+                    .await
+                    .ok();
 
             match approved_session {
-                Some((justification, max_dur)) => {
+                Some((approved_uuid, justification, max_dur)) => {
                     jit_justification = justification;
                     jit_max_duration = max_dur.or(access_result.max_session_duration);
+
+                    // Consume the approval so it cannot be reused for another connection.
+                    let _ = diesel::update(
+                        proxy_sessions::table
+                            .filter(proxy_sessions::uuid.eq(approved_uuid))
+                            .filter(proxy_sessions::status.eq("approved")),
+                    )
+                    .set((
+                        proxy_sessions::status.eq("consumed"),
+                        proxy_sessions::updated_at.eq(now),
+                    ))
+                    .execute(&mut conn)
+                    .await;
                 }
                 None => {
                     let detail_url =
@@ -317,18 +344,12 @@ pub async fn connect_ssh(
 
     // Determine username from:
     // 1. Form override
-    // 2. connection_config.username (if present in JSON)
+    // 2. connection_username column (dedicated DB column)
     // 3. Default "root"
-    let config_username = config
-        .get("username")
-        .and_then(|v| v.as_str())
-        .map(String::from);
-
     let username = form
         .username
         .filter(|u| !u.is_empty())
-        .or(config_username)
-        .unwrap_or_else(|| "root".to_string());
+        .unwrap_or(asset.connection_username.clone());
 
     // Extract authentication credentials from connection_config
     let auth_type = config

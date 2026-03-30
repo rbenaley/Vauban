@@ -131,11 +131,20 @@ pub async fn create_asset_web(
         }
     };
 
-    // Check if asset with same hostname+port already exists (active)
+    // Determine connection username (default to "root" if not provided)
+    let connection_username = form
+        .ssh_username
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("root");
+
+    // Check if asset with same hostname+port+username already exists (active)
     use crate::schema::assets::dsl as a;
     let existing_active: Option<i32> = a::assets
         .filter(a::hostname.eq(form.hostname.trim()))
         .filter(a::port.eq(form.port))
+        .filter(a::connection_username.eq(connection_username))
         .filter(a::is_deleted.eq(false))
         .select(a::id)
         .first(&mut conn)
@@ -145,15 +154,16 @@ pub async fn create_asset_web(
 
     if existing_active.is_some() {
         return flash_redirect(
-            flash.error("An asset with this hostname and port already exists"),
+            flash.error("An asset with this hostname, port and username already exists"),
             "/assets/new",
         );
     }
 
-    // Check if a soft-deleted asset with same hostname+port exists - reactivate it
+    // Check if a soft-deleted asset with same hostname+port+username exists - reactivate it
     let existing_deleted: Option<(i32, ::uuid::Uuid)> = a::assets
         .filter(a::hostname.eq(form.hostname.trim()))
         .filter(a::port.eq(form.port))
+        .filter(a::connection_username.eq(connection_username))
         .filter(a::is_deleted.eq(true))
         .select((a::id, a::uuid))
         .first(&mut conn)
@@ -177,6 +187,7 @@ pub async fn create_asset_web(
                 a::asset_type.eq(parsed_asset_type),
                 a::status.eq(&form.status),
                 a::description.eq(&sanitized_description),
+                a::connection_username.eq(connection_username),
                 a::is_deleted.eq(false),
                 a::deleted_at.eq(None::<chrono::DateTime<chrono::Utc>>),
                 a::updated_at.eq(now),
@@ -240,6 +251,7 @@ pub async fn create_asset_web(
             a::status.eq(&form.status),
             a::description.eq(&sanitized_description),
             a::connection_config.eq(connection_config),
+            a::connection_username.eq(connection_username),
             a::is_deleted.eq(false),
             a::created_at.eq(now),
             a::updated_at.eq(now),
@@ -733,6 +745,7 @@ pub async fn asset_edit(
         String,
         Option<String>,
         serde_json::Value,
+        String,
     ) = match a::assets
         .filter(a::uuid.eq(asset_uuid))
         .filter(a::is_deleted.eq(false))
@@ -746,6 +759,7 @@ pub async fn asset_edit(
             a::status,
             a::description,
             a::connection_config,
+            a::connection_username,
         ))
         .first(&mut conn)
         .await
@@ -769,14 +783,8 @@ pub async fn asset_edit(
         asset_status,
         asset_description,
         asset_connection_config,
+        ssh_username,
     ) = asset_row;
-
-    // Extract SSH credentials from connection_config
-    let ssh_username = asset_connection_config
-        .get("username")
-        .and_then(|v| v.as_str())
-        .unwrap_or("root")
-        .to_string();
     let ssh_auth_type = asset_connection_config
         .get("auth_type")
         .and_then(|v| v.as_str())
@@ -1145,6 +1153,14 @@ pub async fn update_asset_web(
     let sanitized_name = sanitize(&form.name);
     let sanitized_description = sanitize_opt(form.description.clone());
 
+    // Determine connection username
+    let updated_username = form
+        .ssh_username
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&existing.connection_username);
+
     // Update the asset
     let result = diesel::update(a::assets.filter(a::uuid.eq(asset_uuid)))
         .set((
@@ -1155,6 +1171,7 @@ pub async fn update_asset_web(
             a::status.eq(&form.status),
             a::description.eq(sanitized_description.as_deref()),
             a::connection_config.eq(connection_config),
+            a::connection_username.eq(updated_username),
             a::updated_at.eq(Utc::now()),
         ))
         .execute(&mut conn)

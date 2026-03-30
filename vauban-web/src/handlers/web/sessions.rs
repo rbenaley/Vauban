@@ -1287,6 +1287,26 @@ pub async fn approve_access_request(
 
     let now = chrono::Utc::now();
 
+    // Determine the effective max_session_duration: admin override takes priority,
+    // otherwise fall back to the value copied from access rules at request time.
+    let effective_duration: Option<i32> = if duration_override.is_some() {
+        duration_override
+    } else {
+        proxy_sessions::table
+            .filter(proxy_sessions::uuid.eq(session_uuid))
+            .select(proxy_sessions::max_session_duration)
+            .first::<Option<i32>>(&mut conn)
+            .await
+            .ok()
+            .flatten()
+    };
+
+    // Compute expires_at so the approval itself has a bounded validity window.
+    // The user must connect before this deadline; the cleanup task will expire
+    // stale approved sessions.
+    let approval_expires_at =
+        effective_duration.map(|secs| now + chrono::Duration::seconds(secs as i64));
+
     let updated = if let Some(seconds) = duration_override {
         diesel::update(
             proxy_sessions::table
@@ -1298,6 +1318,7 @@ pub async fn approve_access_request(
             proxy_sessions::approved_by_id.eq(Some(admin_id)),
             proxy_sessions::approved_at.eq(Some(now)),
             proxy_sessions::max_session_duration.eq(Some(seconds)),
+            proxy_sessions::expires_at.eq(approval_expires_at),
             proxy_sessions::updated_at.eq(now),
         ))
         .execute(&mut conn)
@@ -1313,6 +1334,7 @@ pub async fn approve_access_request(
             proxy_sessions::status.eq("approved"),
             proxy_sessions::approved_by_id.eq(Some(admin_id)),
             proxy_sessions::approved_at.eq(Some(now)),
+            proxy_sessions::expires_at.eq(approval_expires_at),
             proxy_sessions::updated_at.eq(now),
         ))
         .execute(&mut conn)

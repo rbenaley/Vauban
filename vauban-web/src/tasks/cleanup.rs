@@ -84,6 +84,16 @@ async fn session_cleanup_task(db_pool: Arc<DbPool>) {
             }
             Err(e) => error!(error = %e, "Failed to expire stale pending requests"),
         }
+
+        // Expire approved sessions past their expires_at deadline
+        match expire_stale_approved_sessions(&db_pool).await {
+            Ok(count) => {
+                if count > 0 {
+                    info!(expired = count, "Expired stale approved sessions");
+                }
+            }
+            Err(e) => error!(error = %e, "Failed to expire stale approved sessions"),
+        }
     }
 }
 
@@ -152,6 +162,32 @@ async fn terminate_expired_proxy_sessions(db_pool: &DbPool) -> Result<usize, Str
     .map_err(|e| e.to_string())?;
 
     Ok(terminated)
+}
+
+/// Expire approved sessions whose `expires_at` has passed without the user connecting.
+///
+/// This prevents stale approvals from being reused after their validity window
+/// (derived from `max_session_duration`) has elapsed.
+async fn expire_stale_approved_sessions(db_pool: &DbPool) -> Result<usize, String> {
+    use diesel_async::RunQueryDsl;
+
+    let mut conn = db_pool.get().await.map_err(|e| e.to_string())?;
+    let now = Utc::now();
+
+    let expired = diesel::update(
+        proxy_sessions::table
+            .filter(proxy_sessions::status.eq("approved"))
+            .filter(proxy_sessions::expires_at.le(now)),
+    )
+    .set((
+        proxy_sessions::status.eq("expired"),
+        proxy_sessions::updated_at.eq(now),
+    ))
+    .execute(&mut conn)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(expired)
 }
 
 /// Expire pending access requests that are older than PENDING_REQUEST_TTL_HOURS.
