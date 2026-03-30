@@ -44,7 +44,7 @@
                 <input type="hidden" name="csrf_token" x-model="token" />
                 <label class="text-sm text-gray-500 dark:text-gray-400">Duration</label>
                 <input type="number" name="duration_value" min="1"
-                       {% if let Some(val) = approval.duration_default_value() %}placeholder="{{ val }}"{% else %}placeholder="-"{% endif %}
+                       {% if let Some(val) = approval.duration_default_value() %}value="{{ val }}"{% endif %}
                        class="w-16 rounded-md border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white"
                        aria-label="Session duration">
                 <select name="duration_unit"

@@ -966,6 +966,10 @@ pub async fn approval_detail(
 #[derive(Debug, serde::Deserialize)]
 pub struct ApproveForm {
     pub csrf_token: String,
+    #[serde(
+        default,
+        deserialize_with = "crate::models::asset::deserialize_optional_i32"
+    )]
     pub duration_value: Option<i32>,
     pub duration_unit: Option<String>,
 }
@@ -2434,6 +2438,97 @@ mod tests {
     fn test_resolve_duration_overflow_rejected() {
         let form = make_approve_form(Some(i32::MAX), Some("hours"));
         assert!(form.resolve_duration_seconds().is_err());
+    }
+
+    // ---- ApproveForm deserialization tests ----
+    //
+    // HTML forms use application/x-www-form-urlencoded, which sends all
+    // values as strings. An empty <input type="number"> sends "".
+    // These tests verify the custom deserializer handles all edge cases.
+
+    #[test]
+    fn test_approve_form_deser_empty_duration_value_treated_as_none() {
+        let form = "csrf_token=tok&duration_value=&duration_unit=minutes";
+        let parsed: ApproveForm = serde_urlencoded::from_str(form).unwrap();
+        assert_eq!(parsed.duration_value, None);
+        assert_eq!(parsed.duration_unit.as_deref(), Some("minutes"));
+    }
+
+    #[test]
+    fn test_approve_form_deser_missing_duration_fields() {
+        let form = "csrf_token=tok";
+        let parsed: ApproveForm = serde_urlencoded::from_str(form).unwrap();
+        assert_eq!(parsed.duration_value, None);
+        assert_eq!(parsed.duration_unit, None);
+    }
+
+    #[test]
+    fn test_approve_form_deser_numeric_string_duration() {
+        let form = "csrf_token=tok&duration_value=15&duration_unit=minutes";
+        let parsed: ApproveForm = serde_urlencoded::from_str(form).unwrap();
+        assert_eq!(parsed.duration_value, Some(15));
+    }
+
+    #[test]
+    fn test_approve_form_deser_large_numeric_duration() {
+        let form = "csrf_token=tok&duration_value=24&duration_unit=hours";
+        let parsed: ApproveForm = serde_urlencoded::from_str(form).unwrap();
+        assert_eq!(parsed.duration_value, Some(24));
+        assert_eq!(
+            parsed.resolve_duration_seconds().unwrap(),
+            Some(86400),
+        );
+    }
+
+    #[test]
+    fn test_approve_form_deser_non_numeric_duration_fails() {
+        let form = "csrf_token=tok&duration_value=abc&duration_unit=minutes";
+        let result: Result<ApproveForm, _> = serde_urlencoded::from_str(form);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_approve_form_deser_duration_value_only_no_unit() {
+        let form = "csrf_token=tok&duration_value=10";
+        let parsed: ApproveForm = serde_urlencoded::from_str(form).unwrap();
+        assert_eq!(parsed.duration_value, Some(10));
+        assert_eq!(parsed.duration_unit, None);
+    }
+
+    #[test]
+    fn test_approve_form_deser_csrf_preserved() {
+        let form = "csrf_token=my-secure-token&duration_value=5&duration_unit=hours";
+        let parsed: ApproveForm = serde_urlencoded::from_str(form).unwrap();
+        assert_eq!(parsed.csrf_token, "my-secure-token");
+    }
+
+    #[test]
+    fn test_approve_form_deser_empty_unit_treated_as_some_empty() {
+        let form = "csrf_token=tok&duration_value=5&duration_unit=";
+        let parsed: ApproveForm = serde_urlencoded::from_str(form).unwrap();
+        assert_eq!(parsed.duration_value, Some(5));
+        assert_eq!(parsed.duration_unit.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn test_approve_form_roundtrip_resolve_empty_returns_none() {
+        let form = "csrf_token=tok&duration_value=&duration_unit=minutes";
+        let parsed: ApproveForm = serde_urlencoded::from_str(form).unwrap();
+        assert_eq!(parsed.resolve_duration_seconds().unwrap(), None);
+    }
+
+    #[test]
+    fn test_approve_form_roundtrip_resolve_valid_returns_seconds() {
+        let form = "csrf_token=tok&duration_value=30&duration_unit=minutes";
+        let parsed: ApproveForm = serde_urlencoded::from_str(form).unwrap();
+        assert_eq!(parsed.resolve_duration_seconds().unwrap(), Some(1800));
+    }
+
+    #[test]
+    fn test_approve_form_roundtrip_resolve_zero_rejected() {
+        let form = "csrf_token=tok&duration_value=0&duration_unit=minutes";
+        let parsed: ApproveForm = serde_urlencoded::from_str(form).unwrap();
+        assert!(parsed.resolve_duration_seconds().is_err());
     }
 
     // ---- Range parsing tests ----

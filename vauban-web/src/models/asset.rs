@@ -13,7 +13,7 @@ use crate::schema::{asset_asset_groups, asset_groups, assets};
 
 /// Deserialize an optional i32 from either a number or a string.
 /// This is needed because HTML forms send all values as strings.
-fn deserialize_optional_i32<'de, D>(deserializer: D) -> Result<Option<i32>, D::Error>
+pub(crate) fn deserialize_optional_i32<'de, D>(deserializer: D) -> Result<Option<i32>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -920,5 +920,111 @@ mod tests {
         let request: UpdateAssetRequest = unwrap_ok!(serde_json::from_str(json));
         assert_eq!(request.name, Some("test-server".to_string()));
         assert_eq!(request.port, Some(22));
+    }
+
+    // ==================== deserialize_optional_i32 Tests ====================
+
+    #[derive(Debug, serde::Deserialize, PartialEq)]
+    struct OptI32Wrapper {
+        #[serde(default, deserialize_with = "deserialize_optional_i32")]
+        value: Option<i32>,
+    }
+
+    #[test]
+    fn test_deserialize_optional_i32_from_integer() {
+        let json = r#"{"value": 42}"#;
+        let w: OptI32Wrapper = unwrap_ok!(serde_json::from_str(json));
+        assert_eq!(w.value, Some(42));
+    }
+
+    #[test]
+    fn test_deserialize_optional_i32_from_string_number() {
+        let json = r#"{"value": "99"}"#;
+        let w: OptI32Wrapper = unwrap_ok!(serde_json::from_str(json));
+        assert_eq!(w.value, Some(99));
+    }
+
+    #[test]
+    fn test_deserialize_optional_i32_from_empty_string() {
+        let json = r#"{"value": ""}"#;
+        let w: OptI32Wrapper = unwrap_ok!(serde_json::from_str(json));
+        assert_eq!(w.value, None);
+    }
+
+    #[test]
+    fn test_deserialize_optional_i32_from_null() {
+        let json = r#"{"value": null}"#;
+        let w: OptI32Wrapper = unwrap_ok!(serde_json::from_str(json));
+        assert_eq!(w.value, None);
+    }
+
+    #[test]
+    fn test_deserialize_optional_i32_missing_field() {
+        let json = r#"{}"#;
+        let w: OptI32Wrapper = unwrap_ok!(serde_json::from_str(json));
+        assert_eq!(w.value, None);
+    }
+
+    #[test]
+    fn test_deserialize_optional_i32_negative() {
+        let json = r#"{"value": -5}"#;
+        let w: OptI32Wrapper = unwrap_ok!(serde_json::from_str(json));
+        assert_eq!(w.value, Some(-5));
+    }
+
+    #[test]
+    fn test_deserialize_optional_i32_negative_string() {
+        let json = r#"{"value": "-10"}"#;
+        let w: OptI32Wrapper = unwrap_ok!(serde_json::from_str(json));
+        assert_eq!(w.value, Some(-10));
+    }
+
+    #[test]
+    fn test_deserialize_optional_i32_zero() {
+        let json = r#"{"value": 0}"#;
+        let w: OptI32Wrapper = unwrap_ok!(serde_json::from_str(json));
+        assert_eq!(w.value, Some(0));
+    }
+
+    #[test]
+    fn test_deserialize_optional_i32_zero_string() {
+        let json = r#"{"value": "0"}"#;
+        let w: OptI32Wrapper = unwrap_ok!(serde_json::from_str(json));
+        assert_eq!(w.value, Some(0));
+    }
+
+    #[test]
+    fn test_deserialize_optional_i32_invalid_string_fails() {
+        let json = r#"{"value": "abc"}"#;
+        let result: Result<OptI32Wrapper, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_deserialize_optional_i32_float_string_fails() {
+        let json = r#"{"value": "3.14"}"#;
+        let result: Result<OptI32Wrapper, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_deserialize_optional_i32_whitespace_only_fails() {
+        let json = r#"{"value": "  "}"#;
+        let result: Result<OptI32Wrapper, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_deserialize_optional_i32_max_value() {
+        let json = format!(r#"{{"value": {}}}"#, i32::MAX);
+        let w: OptI32Wrapper = unwrap_ok!(serde_json::from_str(&json));
+        assert_eq!(w.value, Some(i32::MAX));
+    }
+
+    #[test]
+    fn test_deserialize_optional_i32_min_value() {
+        let json = format!(r#"{{"value": {}}}"#, i32::MIN);
+        let w: OptI32Wrapper = unwrap_ok!(serde_json::from_str(&json));
+        assert_eq!(w.value, Some(i32::MIN));
     }
 }

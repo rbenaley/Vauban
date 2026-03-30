@@ -720,6 +720,313 @@ async fn test_approval_list_shows_duration_field_for_pending() {
 }
 
 // =============================================================================
+// Approval form deserialization tests (empty duration_value bugfix)
+// =============================================================================
+
+/// Submitting the approve form with an empty duration_value (HTML sends "")
+/// must succeed and keep the original max_session_duration from the access rule.
+/// This was the 422 bug on staging.
+#[tokio::test]
+async fn test_approve_with_empty_duration_value_succeeds() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("jit_adm_empty_dur");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let user_name = unique_name("jit_usr_empty_dur");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+
+    let asset_name = unique_name("jit_ast_empty_dur");
+    let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
+    let session_uuid =
+        create_approval_request_with_duration(&mut conn, user_id, asset_id, Some(900)).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+    let csrf_token = app.generate_csrf_token();
+
+    let response = app
+        .server
+        .post(&format!("/sessions/approvals/{}/approve", session_uuid))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[
+            ("csrf_token", csrf_token.as_str()),
+            ("duration_value", ""),
+            ("duration_unit", "minutes"),
+        ])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 302 || status == 303,
+        "approve with empty duration_value should redirect (not 422), got {}",
+        status
+    );
+
+    let (db_status, db_duration): (String, Option<i32>) = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::uuid.eq(session_uuid))
+            .select((proxy_sessions::status, proxy_sessions::max_session_duration))
+            .first(&mut conn)
+            .await
+    );
+    assert_eq!(db_status, "approved");
+    assert_eq!(
+        db_duration,
+        Some(900),
+        "original duration should be preserved when no override provided"
+    );
+}
+
+/// Submitting the approve form with only csrf_token (no duration fields at all)
+/// must succeed. This covers the case where JS is disabled or the fields are
+/// absent from the DOM.
+#[tokio::test]
+async fn test_approve_with_no_duration_fields_succeeds() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("jit_adm_no_dur_f");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let user_name = unique_name("jit_usr_no_dur_f");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+
+    let asset_name = unique_name("jit_ast_no_dur_f");
+    let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
+    let session_uuid =
+        create_approval_request_with_duration(&mut conn, user_id, asset_id, Some(1800)).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+    let csrf_token = app.generate_csrf_token();
+
+    let response = app
+        .server
+        .post(&format!("/sessions/approvals/{}/approve", session_uuid))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[("csrf_token", csrf_token.as_str())])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 302 || status == 303,
+        "approve with no duration fields should redirect, got {}",
+        status
+    );
+
+    let db_status: String = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::uuid.eq(session_uuid))
+            .select(proxy_sessions::status)
+            .first(&mut conn)
+            .await
+    );
+    assert_eq!(db_status, "approved");
+}
+
+/// Submitting the approve form for a request without max_session_duration
+/// (unlimited) and an empty duration_value must succeed.
+#[tokio::test]
+async fn test_approve_unlimited_with_empty_duration_value_succeeds() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("jit_adm_unlim_empty");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let user_name = unique_name("jit_usr_unlim_empty");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+
+    let asset_name = unique_name("jit_ast_unlim_empty");
+    let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
+    let session_uuid =
+        create_approval_request_with_duration(&mut conn, user_id, asset_id, None).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+    let csrf_token = app.generate_csrf_token();
+
+    let response = app
+        .server
+        .post(&format!("/sessions/approvals/{}/approve", session_uuid))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[
+            ("csrf_token", csrf_token.as_str()),
+            ("duration_value", ""),
+            ("duration_unit", "hours"),
+        ])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 302 || status == 303,
+        "approve unlimited with empty duration should redirect, got {}",
+        status
+    );
+
+    let (db_status, db_duration): (String, Option<i32>) = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::uuid.eq(session_uuid))
+            .select((proxy_sessions::status, proxy_sessions::max_session_duration))
+            .first(&mut conn)
+            .await
+    );
+    assert_eq!(db_status, "approved");
+    assert_eq!(db_duration, None, "unlimited duration should remain NULL");
+}
+
+/// The approval list template must render `value="..."` (not just placeholder)
+/// for the duration field when the request has a max_session_duration.
+#[tokio::test]
+async fn test_approval_list_prefills_duration_value() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("jit_adm_prefill");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let user_name = unique_name("jit_usr_prefill");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+
+    let asset_name = unique_name("jit_ast_prefill");
+    let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
+    create_approval_request_with_duration(&mut conn, user_id, asset_id, Some(1800)).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/sessions/approvals")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains(r#"value="30""#),
+        "approval list should pre-fill duration_value with value=\"30\" (30 min for 1800s)"
+    );
+    assert!(
+        !body.contains(r#"placeholder="30""#),
+        "approval list must NOT use placeholder for duration_value"
+    );
+}
+
+/// The approval detail template must render `value="..."` for the duration field.
+#[tokio::test]
+async fn test_approval_detail_prefills_duration_value() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("jit_adm_det_pref");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let user_name = unique_name("jit_usr_det_pref");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+
+    let asset_name = unique_name("jit_ast_det_pref");
+    let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
+    let session_uuid =
+        create_approval_request_with_duration(&mut conn, user_id, asset_id, Some(7200)).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get(&format!("/sessions/approvals/{}", session_uuid))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains(r#"value="2""#),
+        "approval detail should pre-fill duration_value with value=\"2\" (2 hrs for 7200s)"
+    );
+}
+
+/// Submitting the approve form with a non-numeric duration_value like "abc"
+/// must return a 422 (form deserialization failure).
+#[tokio::test]
+async fn test_approve_with_non_numeric_duration_returns_422() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("jit_adm_nan_dur");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let user_name = unique_name("jit_usr_nan_dur");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+
+    let asset_name = unique_name("jit_ast_nan_dur");
+    let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
+    let session_uuid =
+        create_approval_request_with_duration(&mut conn, user_id, asset_id, Some(900)).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+    let csrf_token = app.generate_csrf_token();
+
+    let response = app
+        .server
+        .post(&format!("/sessions/approvals/{}/approve", session_uuid))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[
+            ("csrf_token", csrf_token.as_str()),
+            ("duration_value", "abc"),
+            ("duration_unit", "minutes"),
+        ])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert_eq!(
+        status, 422,
+        "non-numeric duration_value should return 422, got {}",
+        status
+    );
+
+    let db_status: String = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::uuid.eq(session_uuid))
+            .select(proxy_sessions::status)
+            .first(&mut conn)
+            .await
+    );
+    assert_eq!(
+        db_status, "pending",
+        "session should remain pending after deserialization failure"
+    );
+}
+
+// =============================================================================
 // Approval expiration & consumption tests (bugfix validation)
 // =============================================================================
 

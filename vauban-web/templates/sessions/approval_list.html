@@ -88,7 +88,7 @@
                         <form method="post" action="/sessions/approvals/{{ approval.uuid }}/approve" class="flex items-center gap-1.5">
                             <input type="hidden" name="csrf_token" x-model="token" />
                             <input type="number" name="duration_value" min="1"
-                                   {% if let Some(val) = approval.duration_default_value() %}placeholder="{{ val }}"{% else %}placeholder="-"{% endif %}
+                                   {% if let Some(val) = approval.duration_default_value() %}value="{{ val }}"{% endif %}
                                    class="w-14 rounded-md border-gray-300 bg-white px-1.5 py-1 text-sm text-gray-900 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white"
                                    aria-label="Session duration">
                             <select name="duration_unit"
