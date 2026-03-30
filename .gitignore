@@ -25,6 +25,7 @@ Thumbs.db
 # Database
 *.db
 *.sqlite
+migrations
 
 # Logs
 *.log
