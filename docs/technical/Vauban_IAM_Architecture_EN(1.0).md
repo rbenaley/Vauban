@@ -1,7 +1,7 @@
 # Vauban IAM Architecture
 
 **Version:** 1.0  
-**Date:** 15 March 2026  
+**Date:** 1 April 2026  
 **Author:** Richard Ben Aleya
 
 ---
@@ -87,7 +87,7 @@ flowchart TB
 | Layer | Engine | Scope | Example |
 |-------|--------|-------|---------|
 | **RBAC** | Casbin (model.conf + policy.csv) | Feature access | "Can `role:staff` write `users`?" |
-| **Instance-Level** | SQL-based rules (access_rules table) | Asset access | "Can user 42 SSH to asset group 'Production'?" |
+| **Instance-Level** | Diesel DSL queries (access_rules table) | Asset access | "Can user 42 SSH to asset group 'Production'?" |
 
 Both layers are evaluated by a single service (`vauban-access`), which owns all authorization state and exposes it exclusively via IPC.
 
@@ -128,13 +128,15 @@ flowchart TB
 
 Both services participate in the supervisor's pipe topology:
 
-| Pipe | Direction | Purpose |
-|------|-----------|---------|
-| `web` <-> `auth` | Bidirectional | Password verify/hash requests |
-| `web` <-> `access` | Bidirectional | RBAC checks + access rule CRUD + access evaluation |
-| `auth` <-> `access` | Bidirectional | Role verification during authentication (future) |
-| `proxy-ssh` <-> `access` | Bidirectional | Session authorization before SSH connect |
-| `proxy-rdp` <-> `access` | Bidirectional | Session authorization before RDP connect |
+| Pipe | Direction | Status | Purpose |
+|------|-----------|--------|---------|
+| `web` <-> `auth` | Bidirectional | Implemented | Password verify/hash requests |
+| `web` <-> `access` | Bidirectional | Implemented | RBAC checks + access rule CRUD + access evaluation |
+| `auth` <-> `access` | Bidirectional | Future | Role verification during authentication |
+| `proxy-ssh` <-> `access` | Bidirectional | Future | Session authorization before SSH connect |
+| `proxy-rdp` <-> `access` | Bidirectional | Future | Session authorization before RDP connect |
+
+> **Note:** Currently, only the `web <-> auth` and `web <-> access` pipes are implemented. The proxy and cross-service pipes are planned for a future version. Proxy services currently rely on `vauban-web` to perform access checks before brokering connections.
 
 ---
 
@@ -240,7 +242,7 @@ The service follows the standard Vauban synchronous service pattern:
 `vauban-access` (formerly `vauban-rbac`) is the **centralized authorization service**. It handles two distinct concerns:
 
 1. **Feature-level RBAC** via the Casbin policy engine (role-based checks like "can this role manage users?")
-2. **Instance-level access rules** via SQL queries against its dedicated database (asset-level checks like "can this user SSH to this asset group?")
+2. **Instance-level access rules** via Diesel DSL queries against its dedicated database (asset-level checks like "can this user SSH to this asset group?")
 
 ### 4.2 Evolution from vauban-rbac
 
@@ -253,7 +255,7 @@ The service follows the standard Vauban synchronous service pattern:
 | Capabilities | Casbin RBAC only | Casbin RBAC + instance-level access rules |
 | Database | None | Dedicated pool (4 connections) |
 | Tables owned | None | `access_rules`, `vauban_groups`, `asset_groups`, `user_groups` |
-| IPC messages | `RbacCheck` / `RbacResponse` | `RbacCheck` + 24 `AccessRequest` + 15 `AccessResponse` variants |
+| IPC messages | `RbacCheck` / `RbacResponse` | `RbacCheck` + 25 `AccessRequest` + 17 `AccessResponse` variants |
 
 ### 4.3 Dual-Engine Architecture
 
@@ -268,7 +270,7 @@ flowchart TB
             E["Enforcer<br/>model.conf + policy.csv"]
         end
 
-        subgraph sql_engine [SQL Engine]
+        subgraph dsl_engine [Diesel DSL Engine]
             H["Handler Dispatch"]
             DB[(PostgreSQL Pool)]
         end
@@ -496,21 +498,31 @@ flowchart TB
     Aggregate --> Allow["AccessChecked<br/>allowed: true<br/>+ constraints"]
 ```
 
-### 6.4 Access Check SQL
+### 6.4 Access Check Query (Diesel DSL)
 
-The core evaluation query (simplified):
+The core evaluation query uses the Diesel DSL with small `sql::<SqlBool>` fragments for PostgreSQL-specific time window expressions:
 
-```sql
-SELECT require_mfa, require_approval, max_session_duration
-FROM access_rules
-INNER JOIN user_groups ON user_groups.group_id = access_rules.user_group_id
-WHERE user_groups.user_id = $1          -- the connecting user
-  AND access_rules.asset_group_id = $2  -- the target asset group
-  AND access_rules.is_active = true
-  AND (valid_from IS NULL OR valid_from <= NOW())
-  AND (valid_until IS NULL OR valid_until >= NOW())
-  AND access_rules.allowed_protocols @> ARRAY[$3]  -- protocol filter
+```rust
+let matching_rules = access_rules::table
+    .inner_join(user_groups::table.on(
+        user_groups::group_id.eq(access_rules::user_group_id),
+    ))
+    .filter(user_groups::user_id.eq(user_id))
+    .filter(access_rules::asset_group_id.eq(asset_group_id))
+    .filter(access_rules::is_active.eq(true))
+    .filter(sql::<SqlBool>("(valid_from IS NULL OR valid_from <= NOW())"))
+    .filter(sql::<SqlBool>("(valid_until IS NULL OR valid_until >= NOW())"))
+    .filter(access_rules::allowed_protocols.contains(vec![Some(protocol.to_string())]))
+    .select((
+        access_rules::require_mfa,
+        access_rules::require_approval,
+        access_rules::max_session_duration,
+    ))
+    .load::<(bool, bool, Option<i32>)>(conn)
+    .await;
 ```
+
+All CRUD operations in `vauban-access` use the Diesel DSL exclusively. The only raw SQL fragments are the `valid_from`/`valid_until` time window checks, which use `sql::<SqlBool>` because Diesel does not have a native DSL expression for `IS NULL OR column <= NOW()` in a single filter.
 
 ### 6.5 Accessible Groups Listing
 
@@ -521,11 +533,13 @@ sequenceDiagram
     participant W as vauban-web
     participant A as vauban-access
 
-    W->>A: AccessRequest::ListAccessibleGroups(user_id)
-    Note over A: Query all active rules<br/>for user's groups
+    W->>A: AccessRequest::ListAccessibleGroups(user_id, page)
+    Note over A: Query all active rules<br/>for user's groups (paginated)
     Note over A: Aggregate by asset_group_id<br/>with protocol union
-    A->>W: AccessResponse::AccessibleGroups([<br/>  {asset_group_id: 1, protocols: ["ssh", "rdp"]},<br/>  {asset_group_id: 3, protocols: ["ssh"]}<br/>])
+    A->>W: AccessResponse::AccessibleGroupsPage(IpcPage {<br/>  items: [{asset_group_id: 1, protocols: ["ssh", "rdp"]}, ...],<br/>  has_more: false<br/>})
 ```
+
+Results are paginated via `IpcPageParams`. The web client iterates pages until `has_more` is `false` to collect the full list of accessible groups.
 
 This enables the web UI to filter the asset list, showing only assets the user can actually connect to, with the appropriate protocol buttons.
 
@@ -571,7 +585,10 @@ erDiagram
         varchar color
         varchar icon
         int parent_id FK
+        int created_by_id FK
+        int updated_by_id FK
         bool is_deleted
+        timestamptz deleted_at
         timestamptz created_at
         timestamptz updated_at
     }
@@ -591,6 +608,8 @@ erDiagram
         int max_session_duration
         bool is_active
         int priority
+        int created_by_id FK
+        int updated_by_id FK
         timestamptz created_at
         timestamptz updated_at
     }
@@ -707,14 +726,15 @@ RbacResponse {
 
 ### 8.3 Access Control Messages
 
-The `AccessRequest` enum contains **24 variants** and `AccessResponse` contains **15 variants**, organized into five categories:
+The `AccessRequest` enum contains **25 variants** and `AccessResponse` contains **17 variants**, organized into six categories. Most list operations accept an `IpcPageParams { limit, offset }` parameter for cursor-based pagination and return `IpcPage<T> { items, has_more }` responses:
 
 #### Evaluation
 
 | Request | Response | Description |
 |---------|----------|-------------|
 | `CheckAccess { user_id, asset_group_id, protocol }` | `AccessChecked(AccessCheckResult)` | Evaluate if a user can access an asset group with a protocol |
-| `ListAccessibleGroups { user_id }` | `AccessibleGroups(Vec<AccessibleGroupEntry>)` | List all accessible asset groups for a user |
+| `CheckAccessMulti { user_id, asset_group_ids, protocol }` | `AccessCheckedMulti(Vec<AccessCheckResultEntry>)` | Batch-evaluate access for multiple asset groups in a single query |
+| `ListAccessibleGroups { user_id, page }` | `AccessibleGroupsPage(IpcPage<AccessibleGroupEntry>)` | List all accessible asset groups for a user (paginated) |
 
 #### Access Rule CRUD
 
@@ -722,7 +742,7 @@ The `AccessRequest` enum contains **24 variants** and `AccessResponse` contains 
 |---------|----------|-------------|
 | `CreateAccessRule { data }` | `AccessRule(Result<AccessRuleInfo, String>)` | Create a new access rule |
 | `GetAccessRule { uuid }` | `AccessRule(Result<AccessRuleInfo, String>)` | Get rule by UUID |
-| `ListAccessRules` | `AccessRuleList(Vec<AccessRuleInfo>)` | List all rules |
+| `ListAccessRules { page }` | `AccessRulePage(IpcPage<AccessRuleInfo>)` | List rules (paginated) |
 | `UpdateAccessRule { uuid, data }` | `AccessRule(Result<AccessRuleInfo, String>)` | Update existing rule |
 | `DeleteAccessRule { uuid }` | `Deleted(Result<(), String>)` | Delete rule |
 
@@ -733,7 +753,7 @@ The `AccessRequest` enum contains **24 variants** and `AccessResponse` contains 
 | `CreateVaubanGroup { name, description }` | `VaubanGroup(Result<VaubanGroupInfo, String>)` | Create user group |
 | `GetVaubanGroup { uuid }` | `VaubanGroup(Result<VaubanGroupInfo, String>)` | Get group by UUID |
 | `GetVaubanGroupById { id }` | `VaubanGroup(Result<VaubanGroupInfo, String>)` | Get group by integer ID |
-| `ListVaubanGroups` | `VaubanGroupList(Vec<VaubanGroupInfo>)` | List all user groups |
+| `ListVaubanGroups { page }` | `VaubanGroupPage(IpcPage<VaubanGroupInfo>)` | List user groups (paginated) |
 | `UpdateVaubanGroup { uuid, name, description }` | `VaubanGroup(Result<VaubanGroupInfo, String>)` | Update group |
 | `DeleteVaubanGroup { uuid }` | `Deleted(Result<(), String>)` | Delete group |
 
@@ -743,8 +763,8 @@ The `AccessRequest` enum contains **24 variants** and `AccessResponse` contains 
 |---------|----------|-------------|
 | `AddGroupMember { group_id, user_id }` | `Ok` | Add user to group |
 | `RemoveGroupMember { group_id, user_id }` | `Ok` | Remove user from group |
-| `ListGroupMembers { group_id }` | `MemberList(Vec<i32>)` | List member user IDs |
-| `ListUserGroups { user_id }` | `UserGroupList(Vec<VaubanGroupInfo>)` | List groups for a user |
+| `ListGroupMembers { group_id, page }` | `MemberListPage(IpcPage<i32>)` | List member user IDs (paginated) |
+| `ListUserGroups { user_id, page }` | `UserGroupPage(IpcPage<VaubanGroupInfo>)` | List groups for a user (paginated) |
 
 #### Asset Group CRUD
 
@@ -752,20 +772,44 @@ The `AccessRequest` enum contains **24 variants** and `AccessResponse` contains 
 |---------|----------|-------------|
 | `CreateAssetGroup { name, slug, description, color, icon }` | `AssetGroup(Result<AssetGroupInfo, String>)` | Create asset group |
 | `GetAssetGroup { uuid }` | `AssetGroup(Result<AssetGroupInfo, String>)` | Get asset group |
-| `ListAssetGroups` | `AssetGroupList(Vec<AssetGroupInfo>)` | List all asset groups |
+| `ListAssetGroups { page }` | `AssetGroupPage(IpcPage<AssetGroupInfo>)` | List asset groups (paginated) |
 | `UpdateAssetGroup { uuid, ... }` | `AssetGroup(Result<AssetGroupInfo, String>)` | Update asset group |
 | `DeleteAssetGroup { uuid }` | `Deleted(Result<(), String>)` | Delete asset group |
-| `GetGroupOptions` | `GroupOptions { user_groups, asset_groups }` | Minimal lists for form dropdowns |
+
+#### Group Options (Form Dropdowns)
+
+| Request | Response | Description |
+|---------|----------|-------------|
+| `ListUserGroupOptions { page }` | `UserGroupOptionsPage(IpcPage<GroupOption>)` | Minimal user group list for dropdowns (paginated) |
+| `ListAssetGroupOptions { page }` | `AssetGroupOptionsPage(IpcPage<GroupOption>)` | Minimal asset group list for dropdowns (paginated) |
 
 ### 8.4 Data Types
 
 ```rust
+/// Pagination parameters for IPC list requests.
+pub struct IpcPageParams {
+    pub limit: u32,   // 0 = use DEFAULT_IPC_PAGE_LIMIT (256)
+    pub offset: u32,
+}
+
+/// One page of list results from vauban-access.
+pub struct IpcPage<T> {
+    pub items: Vec<T>,
+    pub has_more: bool,
+}
+
 /// Result of an instance-level access check.
 pub struct AccessCheckResult {
     pub allowed: bool,
     pub require_mfa: bool,
     pub require_approval: bool,
     pub max_session_duration: Option<i32>,
+}
+
+/// Entry for batch access check (CheckAccessMulti).
+pub struct AccessCheckResultEntry {
+    pub asset_group_id: i32,
+    pub result: AccessCheckResult,
 }
 
 /// Full info about an access rule.
@@ -816,6 +860,13 @@ pub struct AssetGroupInfo {
     pub icon: String,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// Minimal group info for form dropdown options.
+pub struct GroupOption {
+    pub id: i32,
+    pub uuid: String,
+    pub name: String,
 }
 ```
 
@@ -902,8 +953,8 @@ When IPC clients are unavailable (dev/test mode without supervisor), `vauban-web
 | Password verify | `AuthIpcClient::verify_password()` | Local `argon2::verify_password()` |
 | Password hash | `AuthIpcClient::hash_password()` | Local `argon2::hash_password()` |
 | RBAC check | `AccessIpcClient::check_permission()` | Debug: allow all / Release: deny all |
-| Access check | `AccessIpcClient::check_access()` | Direct SQL query against local DB |
-| Access rule CRUD | `AccessIpcClient::create_access_rule()` etc. | Direct SQL via Diesel ORM |
+| Access check | `AccessIpcClient::check_access()` | Direct Diesel DSL query against local DB |
+| Access rule CRUD | `AccessIpcClient::create_access_rule()` etc. | Direct Diesel DSL queries |
 
 This dual-path design enables:
 - **Development** without running the full supervisor topology
@@ -922,8 +973,8 @@ sequenceDiagram
     participant DB as PostgreSQL (web)
 
     U->>W: GET /assets/
-    W->>A: AccessRequest::ListAccessibleGroups(user_id)
-    A->>W: AccessibleGroups([{group_id: 1, protocols: ["ssh"]}, ...])
+    W->>A: AccessRequest::ListAccessibleGroups(user_id, page)
+    A->>W: AccessibleGroupsPage({items: [{group_id: 1, protocols: ["ssh"]}, ...], has_more})
     W->>DB: SELECT * FROM assets WHERE group_id IN (1, ...)
     W->>U: Asset list (only accessible assets, with protocol buttons)
 ```
@@ -1014,15 +1065,26 @@ The supervisor injects configuration via environment variables at service spawn 
 
 ### 11.2 TOML Configuration
 
+Argon2 parameters are configured in two places:
+
+- **`[auth]`** in the supervisor config: read by `vauban-supervisor` and injected as env vars into `vauban-auth` at spawn time. Defaults in Rust code: `19456 KB`, `2 iterations`, `1 parallelism`.
+- **`[security.argon2]`** in `config/default.toml`: read by `vauban-web` for its local password hashing fallback (dev mode without supervisor). Production values: `65536 KB`, `3 iterations`, `1 parallelism`.
+
 ```toml
 # config/default.toml
 
 [access]
 model_path = "config/access/model.conf"
 policy_path = "config/access/default_policy.csv"
-# database_url = "postgresql://vauban_access:password@localhost/vauban_access"
+
+[auth]
+# Supervisor-side Argon2 parameters (injected into vauban-auth)
+# argon2_memory_kb = 19456    # Rust default if section absent
+# argon2_iterations = 2
+# argon2_parallelism = 1
 
 [security.argon2]
+# Web-side Argon2 parameters (local fallback in dev mode)
 memory_size_kb = 65536
 iterations = 3
 parallelism = 1
@@ -1099,9 +1161,11 @@ INFO vauban_access: Access denied: no matching rules user_id=99 asset_group_id=5
 |---------------|-------|-------------|
 | ServiceState | 3 | Default values, uptime tracking, Argon2 params |
 | Control messages | 2 | Ping/Pong, Drain/DrainComplete |
-| Auth request/response | 3 | AuthRequest, MfaVerify, unexpected messages |
-| Argon2id hashing | 4 | Hash + verify, wrong password, invalid hash format, multiple requests |
-| M-8/M-10 regression | 5 | No `process::exit()`, shutdown flag, main loop checks, env var cleanup |
+| Auth request/response | 4 | AuthRequest, MfaVerify, unexpected messages, message routing |
+| Argon2id hashing | 3 | Hash + verify, wrong password, invalid hash format |
+| Multiple requests | 1 | Sequential request processing |
+| ServiceStats | 1 | Statistics tracking |
+| M-8/M-10 regression | 7 | No `process::exit()`, shutdown flag, main loop checks, env var cleanup, structural patterns |
 
 ### 13.2 vauban-access Tests
 
@@ -1121,13 +1185,14 @@ Database integration tests in `vauban-access/src/handlers.rs`:
 
 | Test Category | Count | Description |
 |---------------|-------|-------------|
-| Vauban group CRUD | 5 | Create, get, get not found, list, delete |
-| Asset group CRUD | 2 | Create, list |
-| Access rule CRUD | 2 | Create, list |
-| Membership | 1 | Add, list, remove group members |
-| Access evaluation | 3 | Denied (no rule), allowed, wrong protocol denied |
-| Accessible groups | 1 | List accessible groups with protocol aggregation |
-| Group options | 1 | Dropdown data loading |
+| Vauban group CRUD | 6 | Create, get, get not found, list, delete, pagination equivalence |
+| Asset group CRUD | 5 | Create, list, pagination equivalence, offset beyond end, many pages volume test |
+| Access rule CRUD | 3 | Create, list, pagination equivalence |
+| Membership | 3 | Add/list/remove members, member pagination equivalence, user groups pagination equivalence |
+| Access evaluation | 4 | Denied (no rule), allowed, wrong protocol denied, CheckAccessMulti with constraint merging |
+| Accessible groups | 3 | List with protocol aggregation, pagination equivalence, multi-rule protocol merge |
+| Group options | 3 | User group options, asset group options, pagination equivalence |
+| Edge cases | 4 | Empty page has_more=false, limit zero uses default, max limit clamped, exact page boundary |
 
 ### 13.4 Web Integration Tests
 
@@ -1153,7 +1218,7 @@ Tests in `vauban-web/tests/`:
 | Separate auth service | Dedicated `vauban-auth` | Isolate cryptographic operations from web process |
 | Unified access service | `vauban-access` = RBAC + instance-level | Single source of truth for all authorization decisions |
 | Casbin for RBAC | File-based policy engine | Auditable, configurable without code changes, proven engine |
-| SQL for instance-level | Diesel-async + PostgreSQL | Complex queries (JOINs, time windows, array containment) |
+| Diesel DSL for instance-level | Diesel-async + PostgreSQL | Compile-time verified queries (JOINs, array containment); `sql::<SqlBool>` fragments for time window checks |
 | Async runtime in sync service | Single-threaded Tokio | Required by `diesel-async`; minimal overhead in current_thread mode |
 | SensitiveString | Custom zeroizing wrapper | Prevent credential leaks in logs and memory dumps |
 | Drop FK for DB separation | `ALTER TABLE assets DROP CONSTRAINT` | Enable separate PostgreSQL instances for web and access data |
@@ -1239,15 +1304,34 @@ This is the only point in the code that transitions a session to `active` status
 
 ### 15.5 Enforcement
 
-The `terminate_expired_proxy_sessions` cleanup task in `tasks/cleanup.rs` runs every 30 seconds and enforces session duration limits:
+The `terminate_expired_proxy_sessions` cleanup task in `tasks/cleanup.rs` runs every 30 seconds and enforces session duration limits using Diesel DSL:
 
-```sql
-UPDATE proxy_sessions
-SET status = 'terminated', disconnected_at = now(), updated_at = now()
-WHERE status = 'active' AND expires_at <= now()
+```rust
+diesel::update(proxy_sessions::table)
+    .filter(proxy_sessions::status.eq("active"))
+    .filter(proxy_sessions::expires_at.le(now))
+    .set((
+        proxy_sessions::status.eq("terminated"),
+        proxy_sessions::disconnected_at.eq(Some(now)),
+        proxy_sessions::updated_at.eq(now),
+    ))
+    .execute(&mut conn)
+    .await;
 ```
 
-Stale pending requests (older than 24 hours) are also expired automatically by `expire_stale_pending_requests` in the same cleanup loop.
+Stale pending requests (older than 24 hours) are also expired automatically by `expire_stale_pending_requests` in the same cleanup loop, using the same Diesel DSL pattern:
+
+```rust
+diesel::update(proxy_sessions::table)
+    .filter(proxy_sessions::status.eq("pending"))
+    .filter(proxy_sessions::created_at.lt(cutoff))
+    .set((
+        proxy_sessions::status.eq("expired"),
+        proxy_sessions::updated_at.eq(Utc::now()),
+    ))
+    .execute(&mut conn)
+    .await;
+```
 
 ### 15.6 Database Columns
 
@@ -1436,17 +1520,19 @@ sequenceDiagram
 │   └── src/
 │       ├── main.rs                 # Service entry (Casbin + message dispatch)
 │       ├── lib.rs                  # Library crate exports
-│       ├── handlers.rs             # 24 AccessRequest handlers
-│       ├── db.rs                   # Connection pool (sandbox-compatible)
-│       └── schema.rs               # Diesel schema (4 tables)
+│       ├── handlers.rs             # 25 AccessRequest handlers (Diesel DSL)
+│       └── db.rs                   # Connection pool (sandbox-compatible)
+│       # NOTE: Diesel schema is re-exported from vauban-db (pub use vauban_db::schema)
+├── vauban-db/src/
+│   └── schema.rs                   # Diesel schema (all tables, including access_rules, etc.)
 ├── vauban-web/
 │   ├── src/
 │   │   ├── ipc/
 │   │   │   ├── auth.rs             # AuthIpcClient (verify/hash)
 │   │   │   └── access.rs           # AccessIpcClient (RBAC + access rules)
 │   │   ├── services/
-│   │   │   ├── rbac.rs             # RbacService wrapper
-│   │   │   └── access.rs           # Access service (IPC or SQL fallback)
+│   │   │   ├── rbac.rs             # RbacService wrapper (debug=allow, release=deny)
+│   │   │   └── access.rs           # Access service (IPC or local Diesel DSL fallback)
 │   │   ├── handlers/
 │   │   │   ├── web/access_rules.rs # Web form handlers (CSRF + RBAC)
 │   │   │   └── api/access_rules.rs # REST API handlers
