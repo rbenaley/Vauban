@@ -8,8 +8,9 @@
 /// - Session permissions
 use crate::common::{TestApp, assertions::assert_status, unwrap_ok};
 use crate::fixtures::{
-    create_recorded_session, create_simple_admin_user, create_simple_rdp_asset,
-    create_simple_ssh_asset, create_simple_user, create_test_session, unique_name,
+    create_recorded_session, create_recorded_session_with_type, create_simple_admin_user,
+    create_simple_rdp_asset, create_simple_ssh_asset, create_simple_user, create_test_session,
+    unique_name,
 };
 use axum::http::header::COOKIE;
 use diesel::{ExpressionMethods, QueryDsl};
@@ -935,4 +936,336 @@ async fn test_session_filter_by_rdp_type() {
         .await;
 
     assert_status(&response, 200);
+}
+
+// =============================================================================
+// Recording List WebSocket Auto-Refresh Tests
+// =============================================================================
+
+#[tokio::test]
+async fn test_recording_list_page_has_ws_trigger() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("rec_ws_trigger");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/sessions/recordings")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains("recording-ws-trigger"),
+        "recording list page must contain recording-ws-trigger element"
+    );
+    assert!(
+        body.contains("recordings-list-container"),
+        "recording list page must contain recordings-list-container"
+    );
+    assert!(
+        body.contains("recording_ready"),
+        "recording list trigger must listen for recording_ready events"
+    );
+}
+
+#[tokio::test]
+async fn test_recording_list_page_has_ws_connect() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("rec_ws_conn");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/sessions/recordings")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains("ws-connect"),
+        "recording list page must have ws-connect (inherited from base.html)"
+    );
+    assert!(
+        body.contains("/ws/notifications"),
+        "recording list page must connect to /ws/notifications"
+    );
+}
+
+#[tokio::test]
+async fn test_recording_list_with_recordings_has_ws_elements() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("rec_ws_data");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let asset_name = unique_name("rec-ws-asset");
+    let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
+    let _session_id = create_recorded_session(&mut conn, admin_id, asset_id).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/sessions/recordings")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+
+    assert!(
+        body.contains(&asset_name),
+        "recording list should show the recorded session's asset"
+    );
+    assert!(
+        body.contains("recording-ws-trigger"),
+        "WS trigger must be present even with data"
+    );
+    assert!(
+        body.contains("recordings-list-container"),
+        "container must be present even with data"
+    );
+}
+
+#[tokio::test]
+async fn test_recording_list_format_filter_preserved_in_ws_trigger() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("rec_ws_fmt");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/sessions/recordings?format=ssh")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains("format=ssh"),
+        "WS trigger hx-get must preserve format=ssh filter in URL"
+    );
+}
+
+#[tokio::test]
+async fn test_recording_list_asset_filter_preserved_in_ws_trigger() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("rec_ws_ast");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/sessions/recordings?asset=myserver")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains("asset=myserver"),
+        "WS trigger hx-get must preserve asset=myserver filter in URL"
+    );
+}
+
+#[tokio::test]
+async fn test_recording_list_both_filters_preserved_in_ws_trigger() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("rec_ws_both");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/sessions/recordings?format=rdp&asset=prod")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains("format=rdp"),
+        "WS trigger must preserve format filter"
+    );
+    assert!(
+        body.contains("asset=prod"),
+        "WS trigger must preserve asset filter"
+    );
+}
+
+#[tokio::test]
+async fn test_recording_list_has_periodic_polling_fallback() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("rec_ws_poll");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/sessions/recordings")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains("every 30s"),
+        "recording list must have periodic polling fallback (every 30s)"
+    );
+}
+
+#[tokio::test]
+async fn test_recording_list_hx_trigger_uses_ws_after_message() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("rec_ws_htmx");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/sessions/recordings")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains("htmx:wsAfterMessage"),
+        "WS trigger must use htmx:wsAfterMessage event"
+    );
+    assert!(
+        body.contains("from:body"),
+        "WS trigger must listen from:body"
+    );
+}
+
+#[tokio::test]
+async fn test_recording_list_ws_elements_with_nonexistent_asset_filter() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("rec_ws_empty");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/sessions/recordings?asset=nonexistent_asset_xyz_42")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains("No recordings"),
+        "filtered list with no matches must show 'No recordings'"
+    );
+    assert!(
+        body.contains("recording-ws-trigger"),
+        "WS trigger must be present even with no matching recordings"
+    );
+    assert!(
+        body.contains("recordings-list-container"),
+        "container must be present even with no matching recordings"
+    );
+}
+
+#[tokio::test]
+async fn test_recording_list_multiple_types_have_ws_elements() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("rec_ws_multi");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let ssh_asset = unique_name("rec-ssh-ws");
+    let ssh_asset_id = create_simple_ssh_asset(&mut conn, &ssh_asset, admin_id).await;
+    let _ssh_rec = create_recorded_session(&mut conn, admin_id, ssh_asset_id).await;
+
+    let rdp_asset = unique_name("rec-rdp-ws");
+    let rdp_asset_id = create_simple_rdp_asset(&mut conn, &rdp_asset, admin_id).await;
+    let _rdp_rec =
+        create_recorded_session_with_type(&mut conn, admin_id, rdp_asset_id, "rdp").await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/sessions/recordings")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains(&ssh_asset),
+        "SSH recording asset must appear"
+    );
+    assert!(
+        body.contains(&rdp_asset),
+        "RDP recording asset must appear"
+    );
+    assert!(
+        body.contains("recording-ws-trigger"),
+        "WS trigger must be present with multiple recordings"
+    );
 }

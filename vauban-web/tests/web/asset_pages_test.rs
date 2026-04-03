@@ -4,13 +4,16 @@
 /// - Asset edit page
 /// - Asset detail page
 /// - Navigation flows
+/// - Asset list pagination
 use axum::http::header;
+use axum::http::header::COOKIE;
 use serial_test::serial;
 use uuid::Uuid;
 
 use crate::common::{TestApp, assertions::*, test_db};
 use crate::fixtures::{
-    create_admin_user, create_test_rdp_asset, create_test_ssh_asset, unique_name,
+    create_admin_user, create_simple_admin_user, create_simple_ssh_asset,
+    create_test_rdp_asset, create_test_ssh_asset, unique_name,
 };
 
 // =============================================================================
@@ -635,4 +638,255 @@ async fn test_rdp_connect_requires_auth() {
     );
 
     test_db::cleanup(&mut conn).await;
+}
+
+// =============================================================================
+// Asset List Pagination Tests
+// =============================================================================
+
+async fn get_admin_uuid(conn: &mut diesel_async::AsyncPgConnection, admin_id: i32) -> Uuid {
+    use diesel::ExpressionMethods;
+    use diesel::QueryDsl;
+    use diesel_async::RunQueryDsl;
+    use vauban_web::schema::users;
+    users::table
+        .filter(users::id.eq(admin_id))
+        .select(users::uuid)
+        .first(conn)
+        .await
+        .expect("admin uuid")
+}
+
+#[tokio::test]
+async fn test_asset_list_page_1_default() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("pg_admin_default");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_admin_uuid(&mut conn, admin_id).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/assets")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+}
+
+#[tokio::test]
+async fn test_asset_list_pagination_with_many_assets() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("pg_admin_many");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_admin_uuid(&mut conn, admin_id).await;
+
+    for i in 0..35 {
+        let name = unique_name(&format!("pg_asset_{:03}", i));
+        create_simple_ssh_asset(&mut conn, &name, admin_id).await;
+    }
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/assets")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(body.contains("Showing"), "page 1 should show pagination counter");
+    assert!(body.contains("title=\"Next page\""), "page 1 should have Next button");
+    assert!(body.contains("title=\"Last page\""), "page 1 should have Last button");
+    assert!(!body.contains("title=\"First page\""), "page 1 should not have First button");
+}
+
+#[tokio::test]
+async fn test_asset_list_page_2() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("pg_admin_p2");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_admin_uuid(&mut conn, admin_id).await;
+
+    for i in 0..35 {
+        let name = unique_name(&format!("pg2_asset_{:03}", i));
+        create_simple_ssh_asset(&mut conn, &name, admin_id).await;
+    }
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/assets?page=2")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(body.contains("title=\"First page\""), "page 2 should have First button");
+    assert!(body.contains("title=\"Previous page\""), "page 2 should have Previous button");
+}
+
+#[tokio::test]
+async fn test_asset_list_page_999_clamps_to_last() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("pg_admin_999");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_admin_uuid(&mut conn, admin_id).await;
+
+    for i in 0..5 {
+        let name = unique_name(&format!("pg999_asset_{}", i));
+        create_simple_ssh_asset(&mut conn, &name, admin_id).await;
+    }
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/assets?page=999")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+}
+
+#[tokio::test]
+async fn test_asset_list_page_negative_defaults_to_1() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("pg_admin_neg");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_admin_uuid(&mut conn, admin_id).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/assets?page=-1")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+}
+
+#[tokio::test]
+async fn test_asset_list_page_abc_defaults_to_1() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("pg_admin_abc");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_admin_uuid(&mut conn, admin_id).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/assets?page=abc")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+}
+
+#[tokio::test]
+async fn test_asset_list_pagination_preserves_filters() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("pg_admin_filt");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_admin_uuid(&mut conn, admin_id).await;
+
+    for i in 0..35 {
+        let name = unique_name(&format!("pgf_asset_{:03}", i));
+        create_simple_ssh_asset(&mut conn, &name, admin_id).await;
+    }
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/assets?search=pgf&type=ssh&status=online")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    if body.contains("Showing") {
+        assert!(
+            body.contains("search=pgf"),
+            "pagination links should preserve search filter"
+        );
+        assert!(
+            body.contains("type=ssh"),
+            "pagination links should preserve type filter"
+        );
+        assert!(
+            body.contains("status=online"),
+            "pagination links should preserve status filter"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_asset_list_showing_counter_accurate() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("pg_admin_cnt");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_admin_uuid(&mut conn, admin_id).await;
+
+    let search_tag = unique_name("pgcnt");
+    for i in 0..35 {
+        let name = format!("{}_asset_{:03}", search_tag, i);
+        create_simple_ssh_asset(&mut conn, &name, admin_id).await;
+    }
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get(&format!("/assets?search={}", search_tag))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains(">35</span>"),
+        "counter should show total of 35 items"
+    );
+    assert!(
+        body.contains(">1</span>") && body.contains(">30</span>"),
+        "first page should show 1 to 30"
+    );
 }

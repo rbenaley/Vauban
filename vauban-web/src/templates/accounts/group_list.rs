@@ -1,3 +1,4 @@
+use crate::templates::accounts::user_list::Pagination;
 use crate::templates::base::{FlashMessage, UserContext, VaubanConfig};
 /// VAUBAN Web - Group list template.
 use askama::Template;
@@ -38,6 +39,7 @@ pub struct GroupListTemplate {
     pub header_user: Option<crate::templates::base::UserContext>,
     pub groups: Vec<GroupListItem>,
     pub search: Option<String>,
+    pub pagination: Option<Pagination>,
 }
 
 #[cfg(test)]
@@ -127,6 +129,7 @@ mod tests {
             header_user: None,
             groups: vec![create_test_group_item("local")],
             search: None,
+            pagination: None,
         };
 
         let result = template.render();

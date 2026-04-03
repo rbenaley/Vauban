@@ -50,23 +50,39 @@ pub async fn session_list(
         None
     };
 
+    const SESSIONS_PER_PAGE: i64 = 30;
+
+    let page: i32 = params
+        .get("page")
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(1)
+        .max(1);
+
+    // Build base filters as a closure to apply to both count and data queries
     let mut query = proxy_sessions::table
+        .inner_join(schema_assets::table)
+        .into_boxed();
+    let mut count_query = proxy_sessions::table
         .inner_join(schema_assets::table)
         .into_boxed();
 
     // Exclude pending approval requests
     query = query.filter(proxy_sessions::status.ne("pending"));
     query = query.filter(proxy_sessions::status.ne("orphaned"));
+    count_query = count_query.filter(proxy_sessions::status.ne("pending"));
+    count_query = count_query.filter(proxy_sessions::status.ne("orphaned"));
 
     // For non-admin users, filter to only their own sessions
     if let Some(user_id) = current_user_id {
         query = query.filter(proxy_sessions::user_id.eq(user_id));
+        count_query = count_query.filter(proxy_sessions::user_id.eq(user_id));
     }
 
     if let Some(ref status) = status_filter
         && !status.is_empty()
     {
         query = query.filter(proxy_sessions::status.eq(status));
+        count_query = count_query.filter(proxy_sessions::status.eq(status));
     }
 
     if let Some(ref session_type) = type_filter
@@ -74,9 +90,10 @@ pub async fn session_list(
     {
         if let Some(parsed) = SessionType::try_parse(session_type) {
             query = query.filter(proxy_sessions::session_type.eq(parsed));
+            count_query = count_query.filter(proxy_sessions::session_type.eq(parsed));
         } else {
-            // Invalid session type filter: return no results
             query = query.filter(proxy_sessions::id.eq(-1));
+            count_query = count_query.filter(proxy_sessions::id.eq(-1));
         }
     }
 
@@ -84,8 +101,19 @@ pub async fn session_list(
         && !asset.is_empty()
     {
         let pattern = crate::db::like_contains(asset);
-        query = query.filter(schema_assets::name.ilike(pattern));
+        query = query.filter(schema_assets::name.ilike(pattern.clone()));
+        count_query = count_query.filter(schema_assets::name.ilike(pattern));
     }
+
+    let total_items: i64 = count_query
+        .count()
+        .get_result(&mut conn)
+        .await
+        .unwrap_or(0);
+
+    let total_pages = ((total_items as f64) / (SESSIONS_PER_PAGE as f64)).ceil().max(1.0) as i32;
+    let page = page.min(total_pages);
+    let offset = ((page - 1) as i64) * SESSIONS_PER_PAGE;
 
     #[allow(clippy::type_complexity)]
     let db_sessions: Vec<(
@@ -113,7 +141,8 @@ pub async fn session_list(
             proxy_sessions::is_recorded,
         ))
         .order(proxy_sessions::created_at.desc())
-        .limit(50)
+        .limit(SESSIONS_PER_PAGE)
+        .offset(offset)
         .load(&mut conn)
         .await?;
 
@@ -159,6 +188,26 @@ pub async fn session_list(
         )
         .collect();
 
+    use crate::templates::accounts::user_list::Pagination;
+
+    let start_index = if total_items > 0 { offset + 1 } else { 0 };
+    let end_index = (offset + SESSIONS_PER_PAGE).min(total_items);
+
+    let pagination = if total_items > 0 {
+        Some(Pagination {
+            current_page: page,
+            total_pages,
+            total_items: total_items as i32,
+            items_per_page: SESSIONS_PER_PAGE as i32,
+            has_previous: page > 1,
+            has_next: page < total_pages,
+            start_index: start_index as i32,
+            end_index: end_index as i32,
+        })
+    } else {
+        None
+    };
+
     let template = WebSessionListTemplate {
         title,
         user: user_ctx,
@@ -172,6 +221,7 @@ pub async fn session_list(
         type_filter,
         asset_filter,
         show_view_link: user_is_admin,
+        pagination,
     };
 
     let html = template
@@ -434,10 +484,23 @@ pub async fn recording_list(
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
+    const RECORDINGS_PER_PAGE: i64 = 30;
+
     let format_filter = params.get("format").cloned();
     let asset_filter = params.get("asset").cloned();
 
+    let page: i32 = params
+        .get("page")
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(1)
+        .max(1);
+
     let mut query = proxy_sessions::table
+        .inner_join(schema_assets::table)
+        .filter(proxy_sessions::is_recorded.eq(true))
+        .filter(proxy_sessions::recording_path.is_not_null())
+        .into_boxed();
+    let mut count_query = proxy_sessions::table
         .inner_join(schema_assets::table)
         .filter(proxy_sessions::is_recorded.eq(true))
         .filter(proxy_sessions::recording_path.is_not_null())
@@ -448,9 +511,10 @@ pub async fn recording_list(
     {
         if let Some(parsed) = SessionType::try_parse(session_type) {
             query = query.filter(proxy_sessions::session_type.eq(parsed));
+            count_query = count_query.filter(proxy_sessions::session_type.eq(parsed));
         } else {
-            // Invalid format filter: return no results
             query = query.filter(proxy_sessions::id.eq(-1));
+            count_query = count_query.filter(proxy_sessions::id.eq(-1));
         }
     }
 
@@ -458,8 +522,14 @@ pub async fn recording_list(
         && !asset.is_empty()
     {
         let pattern = crate::db::like_contains(asset);
-        query = query.filter(schema_assets::name.ilike(pattern));
+        query = query.filter(schema_assets::name.ilike(pattern.clone()));
+        count_query = count_query.filter(schema_assets::name.ilike(pattern));
     }
+
+    let total_items: i64 = count_query.count().get_result(&mut conn).await.unwrap_or(0);
+    let total_pages = ((total_items as f64) / (RECORDINGS_PER_PAGE as f64)).ceil().max(1.0) as i32;
+    let page = page.min(total_pages);
+    let offset = ((page - 1) as i64) * RECORDINGS_PER_PAGE;
 
     #[allow(clippy::type_complexity)]
     let db_recordings: Vec<(
@@ -481,7 +551,8 @@ pub async fn recording_list(
             proxy_sessions::recording_path,
         ))
         .order(proxy_sessions::created_at.desc())
-        .limit(50)
+        .limit(RECORDINGS_PER_PAGE)
+        .offset(offset)
         .load(&mut conn)
         .await?;
 
@@ -518,6 +589,26 @@ pub async fn recording_list(
         )
         .collect();
 
+    use crate::templates::accounts::user_list::Pagination as RecPagination;
+
+    let start_index = if total_items > 0 { offset + 1 } else { 0 };
+    let end_index = (offset + RECORDINGS_PER_PAGE).min(total_items);
+
+    let pagination = if total_items > 0 {
+        Some(RecPagination {
+            current_page: page,
+            total_pages,
+            total_items: total_items as i32,
+            items_per_page: RECORDINGS_PER_PAGE as i32,
+            has_previous: page > 1,
+            has_next: page < total_pages,
+            start_index: start_index as i32,
+            end_index: end_index as i32,
+        })
+    } else {
+        None
+    };
+
     let template = RecordingListTemplate {
         title,
         user: user_ctx,
@@ -529,6 +620,7 @@ pub async fn recording_list(
         recordings,
         format_filter,
         asset_filter,
+        pagination,
     };
 
     let html = template
@@ -720,7 +812,7 @@ pub async fn approval_list(
         .get("page")
         .and_then(|s| s.parse::<i32>().ok())
         .unwrap_or(1);
-    let items_per_page = 20;
+    let items_per_page = 30;
 
     use crate::schema::users;
 
@@ -1215,6 +1307,8 @@ pub async fn submit_access_request(
         ),
     ).await;
 
+    broadcast_approval_badge(&state).await;
+
     if is_htmx {
         let trigger_json = r#"{"showToast": {"message": "Access request submitted. An administrator will review your request.", "type": "success"}}"#.to_string();
         (
@@ -1398,6 +1492,8 @@ pub async fn approve_access_request(
         }
     }
 
+    broadcast_approval_badge(&state).await;
+
     Ok(Redirect::to(&format!("/sessions/approvals/{}", uuid_str)).into_response())
 }
 
@@ -1492,7 +1588,36 @@ pub async fn reject_access_request(
         }
     }
 
+    broadcast_approval_badge(&state).await;
+
     Ok(Redirect::to(&format!("/sessions/approvals/{}", uuid_str)).into_response())
+}
+
+/// Broadcast an OOB update for the sidebar approval badge.
+///
+/// Queries the current pending approval count and sends it as an HTMX
+/// out-of-band swap targeting `#sidebar-approval-badge`. Non-admin pages
+/// ignore this because the target element does not exist in their DOM.
+async fn broadcast_approval_badge(state: &AppState) {
+    if let Ok(mut conn) = state.db_pool.get().await {
+        let count: i64 = proxy_sessions::table
+            .filter(proxy_sessions::status.eq("pending"))
+            .count()
+            .get_result(&mut conn)
+            .await
+            .unwrap_or(0);
+
+        let badge_html = if count > 0 {
+            format!(
+                r#"<span id="sidebar-approval-badge" hx-swap-oob="outerHTML" class="ml-auto inline-flex items-center rounded-full bg-vauban-600 px-2 py-0.5 text-xs font-medium text-white">{}</span>"#,
+                count
+            )
+        } else {
+            r#"<span id="sidebar-approval-badge" hx-swap-oob="outerHTML"></span>"#.to_string()
+        };
+
+        let _ = state.broadcast.send_raw("notifications", badge_html).await;
+    }
 }
 
 /// Helper to return HTMX toast or redirect depending on request type.
@@ -1582,15 +1707,31 @@ pub async fn cancel_access_request(
         "JIT access request cancelled by user"
     );
 
+    let _ = state.broadcast.send(
+        &crate::services::broadcast::WsChannel::Notifications,
+        crate::services::broadcast::WsMessage::new(
+            "jit-notification",
+            format!(
+                r#"{{"type":"request_cancelled","session_uuid":"{}","user_uuid":"{}"}}"#,
+                session_uuid, auth_user.uuid
+            ),
+        ),
+    ).await;
+
+    broadcast_approval_badge(&state).await;
+
     Ok(Redirect::to("/sessions/my-requests").into_response())
 }
 
 /// My access requests page (user self-service).
 ///
 /// GET /sessions/my-requests
+const MY_REQUESTS_PER_PAGE: i64 = 30;
+
 pub async fn my_requests(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
     let base = BaseTemplate::new("My Requests".to_string(), user.clone())
@@ -1618,6 +1759,30 @@ pub async fn my_requests(
 
     use crate::schema::users;
 
+    let page: i32 = params
+        .get("page")
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(1)
+        .max(1);
+
+    let statuses = [
+        "pending", "approved", "rejected", "expired",
+        "consumed", "active", "disconnected", "terminated",
+    ];
+
+    let total_items: i64 = proxy_sessions::table
+        .filter(proxy_sessions::user_id.eq(user_id))
+        .filter(proxy_sessions::justification.is_not_null())
+        .filter(proxy_sessions::status.eq_any(&statuses))
+        .count()
+        .get_result(&mut conn)
+        .await
+        .unwrap_or(0);
+
+    let total_pages = ((total_items as f64) / (MY_REQUESTS_PER_PAGE as f64)).ceil().max(1.0) as i32;
+    let page = page.min(total_pages);
+    let offset = ((page - 1) as i64) * MY_REQUESTS_PER_PAGE;
+
     #[allow(clippy::type_complexity)]
     let requests_data: Vec<(
         uuid::Uuid, String, String, String,
@@ -1630,7 +1795,8 @@ pub async fn my_requests(
         .inner_join(schema_assets::table)
         .left_join(users::table.on(users::id.nullable().eq(proxy_sessions::approved_by_id)))
         .filter(proxy_sessions::user_id.eq(user_id))
-        .filter(proxy_sessions::status.eq_any(["pending", "approved", "rejected", "expired"]))
+        .filter(proxy_sessions::justification.is_not_null())
+        .filter(proxy_sessions::status.eq_any(&statuses))
         .select((
             proxy_sessions::uuid,
             schema_assets::name,
@@ -1645,7 +1811,8 @@ pub async fn my_requests(
             proxy_sessions::max_session_duration,
         ))
         .order(proxy_sessions::created_at.desc())
-        .limit(50)
+        .limit(MY_REQUESTS_PER_PAGE)
+        .offset(offset)
         .load(&mut conn)
         .await
         .map_err(AppError::Database)?;
@@ -1673,6 +1840,26 @@ pub async fn my_requests(
         )
         .collect();
 
+    use crate::templates::accounts::user_list::Pagination;
+
+    let start_index = if total_items > 0 { offset + 1 } else { 0 };
+    let end_index = (offset + MY_REQUESTS_PER_PAGE).min(total_items);
+
+    let pagination = if total_items > 0 {
+        Some(Pagination {
+            current_page: page,
+            total_pages,
+            total_items: total_items as i32,
+            items_per_page: MY_REQUESTS_PER_PAGE as i32,
+            has_previous: page > 1,
+            has_next: page < total_pages,
+            start_index: start_index as i32,
+            end_index: end_index as i32,
+        })
+    } else {
+        None
+    };
+
     let template = crate::templates::sessions::my_requests::MyRequestsTemplate {
         title,
         user: user_ctx,
@@ -1682,6 +1869,7 @@ pub async fn my_requests(
         sidebar_content,
         header_user,
         requests,
+        pagination,
     };
 
     let html = template
@@ -1695,6 +1883,7 @@ pub async fn my_requests(
 pub async fn active_sessions(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
     // Only admin users (superuser or staff) can view active sessions
     if !check_rbac(&state, &auth_user, "admin", "view").await {
@@ -1719,6 +1908,28 @@ pub async fn active_sessions(
 
     use crate::schema::users;
 
+    const ACTIVE_PER_PAGE: i64 = 30;
+
+    let page: i32 = params
+        .get("page")
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(1)
+        .max(1);
+
+    let total_items: i64 = proxy_sessions::table
+        .inner_join(schema_assets::table)
+        .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
+        .filter(proxy_sessions::status.eq("active"))
+        .filter(proxy_sessions::connected_at.is_not_null())
+        .count()
+        .get_result(&mut conn)
+        .await
+        .unwrap_or(0);
+
+    let total_pages = ((total_items as f64) / (ACTIVE_PER_PAGE as f64)).ceil().max(1.0) as i32;
+    let page = page.min(total_pages);
+    let offset = ((page - 1) as i64) * ACTIVE_PER_PAGE;
+
     #[allow(clippy::type_complexity)]
     let sessions_data: Vec<(
         uuid::Uuid, String, String, String,
@@ -1739,6 +1950,8 @@ pub async fn active_sessions(
             proxy_sessions::connected_at,
         ))
         .order(proxy_sessions::connected_at.desc())
+        .limit(ACTIVE_PER_PAGE)
+        .offset(offset)
         .load(&mut conn)
         .await
         .map_err(AppError::Database)?;
@@ -1775,6 +1988,26 @@ pub async fn active_sessions(
         )
         .collect();
 
+    use crate::templates::accounts::user_list::Pagination as ActPagination;
+
+    let start_index = if total_items > 0 { offset + 1 } else { 0 };
+    let end_index = (offset + ACTIVE_PER_PAGE).min(total_items);
+
+    let pagination = if total_items > 0 {
+        Some(ActPagination {
+            current_page: page,
+            total_pages,
+            total_items: total_items as i32,
+            items_per_page: ACTIVE_PER_PAGE as i32,
+            has_previous: page > 1,
+            has_next: page < total_pages,
+            start_index: start_index as i32,
+            end_index: end_index as i32,
+        })
+    } else {
+        None
+    };
+
     let template = ActiveListTemplate {
         title,
         user: user_ctx,
@@ -1784,6 +2017,7 @@ pub async fn active_sessions(
         sidebar_content,
         header_user,
         sessions,
+        pagination,
     };
 
     let html = template
@@ -2686,5 +2920,208 @@ mod tests {
 
         assert!(mpd.contains("Initialization range=\"0-1023\""));
         assert!(mpd.contains("mediaRange=\"1024-65535\""));
+    }
+
+    // ---- broadcast_approval_badge structural tests ----
+
+    #[test]
+    fn test_broadcast_approval_badge_handler_exists() {
+        let source = include_str!("sessions.rs");
+        assert!(
+            source.contains("async fn broadcast_approval_badge"),
+            "broadcast_approval_badge helper must exist"
+        );
+    }
+
+    #[test]
+    fn test_broadcast_approval_badge_called_after_submit() {
+        let source = include_str!("sessions.rs");
+        let submit_fn = source
+            .find("fn submit_access_request")
+            .expect("submit_access_request must exist");
+        let next_fn = source[submit_fn..]
+            .find("\npub async fn ")
+            .map(|p| submit_fn + p)
+            .unwrap_or(source.len());
+        let body = &source[submit_fn..next_fn];
+        assert!(
+            body.contains("broadcast_approval_badge"),
+            "submit_access_request must call broadcast_approval_badge"
+        );
+    }
+
+    #[test]
+    fn test_broadcast_approval_badge_called_after_approve() {
+        let source = include_str!("sessions.rs");
+        let approve_fn = source
+            .find("fn approve_access_request")
+            .expect("approve_access_request must exist");
+        let next_fn = source[approve_fn..]
+            .find("\npub async fn ")
+            .map(|p| approve_fn + p)
+            .unwrap_or(source.len());
+        let body = &source[approve_fn..next_fn];
+        assert!(
+            body.contains("broadcast_approval_badge"),
+            "approve_access_request must call broadcast_approval_badge"
+        );
+    }
+
+    #[test]
+    fn test_broadcast_approval_badge_called_after_reject() {
+        let source = include_str!("sessions.rs");
+        let reject_fn = source
+            .find("fn reject_access_request")
+            .expect("reject_access_request must exist");
+        let next_fn = source[reject_fn..]
+            .find("\npub async fn ")
+            .map(|p| reject_fn + p)
+            .unwrap_or(source.len());
+        let body = &source[reject_fn..next_fn];
+        assert!(
+            body.contains("broadcast_approval_badge"),
+            "reject_access_request must call broadcast_approval_badge"
+        );
+    }
+
+    #[test]
+    fn test_broadcast_approval_badge_called_after_cancel() {
+        let source = include_str!("sessions.rs");
+        let cancel_fn = source
+            .find("fn cancel_access_request")
+            .expect("cancel_access_request must exist");
+        let next_fn = source[cancel_fn..]
+            .find("\npub async fn ")
+            .map(|p| cancel_fn + p)
+            .unwrap_or(source.len());
+        let body = &source[cancel_fn..next_fn];
+        assert!(
+            body.contains("broadcast_approval_badge"),
+            "cancel_access_request must call broadcast_approval_badge"
+        );
+    }
+
+    #[test]
+    fn test_cancel_broadcasts_request_cancelled_event() {
+        let source = include_str!("sessions.rs");
+        let cancel_fn = source
+            .find("fn cancel_access_request")
+            .expect("cancel_access_request must exist");
+        let next_fn = source[cancel_fn..]
+            .find("\npub async fn ")
+            .map(|p| cancel_fn + p)
+            .unwrap_or(source.len());
+        let body = &source[cancel_fn..next_fn];
+        assert!(
+            body.contains("request_cancelled"),
+            "cancel_access_request must broadcast request_cancelled event"
+        );
+    }
+
+    #[test]
+    fn test_my_requests_includes_all_lifecycle_statuses() {
+        let source = include_str!("sessions.rs");
+        let my_req_fn = source
+            .find("fn my_requests")
+            .expect("my_requests handler must exist");
+        let next_fn = source[my_req_fn..]
+            .find("\npub async fn ")
+            .map(|p| my_req_fn + p)
+            .unwrap_or(source.len());
+        let body = &source[my_req_fn..next_fn];
+
+        for status in &[
+            "pending", "approved", "rejected", "expired",
+            "consumed", "active", "disconnected", "terminated",
+        ] {
+            assert!(
+                body.contains(&format!("\"{}\"", status)),
+                "my_requests handler must include status '{}'",
+                status
+            );
+        }
+    }
+
+    #[test]
+    fn test_my_requests_filters_by_justification_not_null() {
+        let source = include_str!("sessions.rs");
+        let my_req_fn = source
+            .find("fn my_requests")
+            .expect("my_requests handler must exist");
+        let next_fn = source[my_req_fn..]
+            .find("\npub async fn ")
+            .map(|p| my_req_fn + p)
+            .unwrap_or(source.len());
+        let body = &source[my_req_fn..next_fn];
+
+        assert!(
+            body.contains("justification.is_not_null()"),
+            "my_requests must filter on justification.is_not_null() to exclude direct connections"
+        );
+    }
+
+    #[test]
+    fn test_my_requests_per_page_is_30() {
+        assert_eq!(MY_REQUESTS_PER_PAGE, 30, "my_requests should paginate at 30 items");
+    }
+
+    #[test]
+    fn test_my_requests_handler_uses_pagination() {
+        let source = include_str!("sessions.rs");
+        let my_req_fn = source
+            .find("fn my_requests")
+            .expect("my_requests handler must exist");
+        let next_fn = source[my_req_fn..]
+            .find("\npub async fn ")
+            .or_else(|| source[my_req_fn..].find("\nconst "))
+            .map(|p| my_req_fn + p)
+            .unwrap_or(source.len());
+        let body = &source[my_req_fn..next_fn];
+
+        assert!(body.contains(".count()"), "must use COUNT query");
+        assert!(body.contains(".offset("), "must use OFFSET");
+        assert!(body.contains("MY_REQUESTS_PER_PAGE"), "must reference per-page constant");
+        assert!(body.contains("Pagination {"), "must construct Pagination struct");
+    }
+
+    #[test]
+    fn test_my_requests_handler_parses_page_param() {
+        let source = include_str!("sessions.rs");
+        let my_req_fn = source
+            .find("fn my_requests")
+            .expect("my_requests handler must exist");
+        let next_fn = source[my_req_fn..]
+            .find("\npub async fn ")
+            .or_else(|| source[my_req_fn..].find("\nconst "))
+            .map(|p| my_req_fn + p)
+            .unwrap_or(source.len());
+        let body = &source[my_req_fn..next_fn];
+
+        assert!(body.contains("\"page\""), "must extract page parameter");
+        assert!(body.contains(".max(1)"), "must clamp page to min 1");
+        assert!(body.contains(".min(total_pages)"), "must clamp page to max total_pages");
+    }
+
+    #[test]
+    fn test_broadcast_badge_targets_sidebar_approval_badge() {
+        let source = include_str!("sessions.rs");
+        let badge_fn = source
+            .find("fn broadcast_approval_badge")
+            .expect("broadcast_approval_badge must exist");
+        let next_fn = source[badge_fn..]
+            .find("\nfn ")
+            .or_else(|| source[badge_fn..].find("\npub "))
+            .or_else(|| source[badge_fn..].find("\nasync fn "))
+            .map(|p| badge_fn + p)
+            .unwrap_or(source.len());
+        let body = &source[badge_fn..next_fn];
+        assert!(
+            body.contains("sidebar-approval-badge"),
+            "broadcast_approval_badge must target sidebar-approval-badge"
+        );
+        assert!(
+            body.contains("hx-swap-oob"),
+            "broadcast_approval_badge must use hx-swap-oob"
+        );
     }
 }

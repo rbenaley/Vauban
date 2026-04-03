@@ -5,8 +5,8 @@
 use crate::common::{TestApp, assertions::assert_status, unwrap_ok};
 use crate::fixtures::{
     create_approval_request, create_approval_request_with_duration, create_approved_session,
-    create_expired_approved_session, create_simple_admin_user, create_simple_ssh_asset,
-    create_simple_user, unique_name,
+    create_expired_approved_session, create_jit_session, create_simple_admin_user,
+    create_simple_ssh_asset, create_simple_user, create_test_session, unique_name,
 };
 use axum::http::header::COOKIE;
 use diesel::{BoolExpressionMethods, ExpressionMethods, QueryDsl};
@@ -337,6 +337,231 @@ async fn test_my_requests_page_has_websocket_connection() {
     assert!(
         body.contains("request_approved"),
         "jit-notification trigger should filter on request_approved"
+    );
+}
+
+#[tokio::test]
+async fn test_my_requests_shows_consumed_jit_sessions() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let user_name = unique_name("jit_mr_consumed");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+
+    let admin_name = unique_name("jit_mr_cons_adm");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+
+    let asset_name = unique_name("jit_mr_cons_ast");
+    let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
+    let _session_id =
+        create_jit_session(&mut conn, user_id, asset_id, "ssh", "consumed").await;
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
+        .await;
+
+    let response = app
+        .server
+        .get("/sessions/my-requests")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains("Connected"),
+        "my-requests should show 'Connected' for consumed JIT sessions"
+    );
+    assert!(
+        body.contains(&asset_name),
+        "my-requests should show the asset name for consumed JIT sessions"
+    );
+}
+
+#[tokio::test]
+async fn test_my_requests_shows_disconnected_jit_sessions() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let user_name = unique_name("jit_mr_disconn");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+
+    let admin_name = unique_name("jit_mr_disc_adm");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+
+    let asset_name = unique_name("jit_mr_disc_ast");
+    let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
+    let _session_id =
+        create_jit_session(&mut conn, user_id, asset_id, "ssh", "disconnected").await;
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
+        .await;
+
+    let response = app
+        .server
+        .get("/sessions/my-requests")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains("Completed"),
+        "my-requests should show 'Completed' for disconnected JIT sessions"
+    );
+}
+
+#[tokio::test]
+async fn test_my_requests_shows_terminated_jit_sessions() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let user_name = unique_name("jit_mr_term");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+
+    let admin_name = unique_name("jit_mr_term_adm");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+
+    let asset_name = unique_name("jit_mr_term_ast");
+    let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
+    let _session_id =
+        create_jit_session(&mut conn, user_id, asset_id, "ssh", "terminated").await;
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
+        .await;
+
+    let response = app
+        .server
+        .get("/sessions/my-requests")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains("Terminated"),
+        "my-requests should show 'Terminated' for terminated JIT sessions"
+    );
+}
+
+#[tokio::test]
+async fn test_my_requests_shows_all_jit_lifecycle_statuses() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let user_name = unique_name("jit_mr_all");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+
+    let admin_name = unique_name("jit_mr_all_adm");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+
+    let asset_name = unique_name("jit_mr_all_ast");
+    let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
+
+    for status in &["pending", "approved", "consumed", "disconnected", "terminated"] {
+        let _id = create_jit_session(&mut conn, user_id, asset_id, "ssh", status).await;
+    }
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
+        .await;
+
+    let response = app
+        .server
+        .get("/sessions/my-requests")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+
+    assert!(body.contains("Pending"), "should show Pending");
+    assert!(body.contains("Approved"), "should show Approved");
+    assert!(body.contains("Connected"), "should show Connected (consumed)");
+    assert!(body.contains("Completed"), "should show Completed (disconnected)");
+    assert!(body.contains("Terminated"), "should show Terminated");
+}
+
+#[tokio::test]
+async fn test_my_requests_excludes_direct_connections() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let user_name = unique_name("jit_mr_excl");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+
+    let admin_name = unique_name("jit_mr_excl_adm");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+
+    let asset_name = unique_name("jit_mr_excl_ast");
+    let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
+
+    create_test_session(&mut conn, user_id, asset_id, "ssh", "disconnected").await;
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
+        .await;
+
+    let response = app
+        .server
+        .get("/sessions/my-requests")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        !body.contains(&asset_name),
+        "my-requests should NOT show direct connections (sessions without justification)"
+    );
+}
+
+#[tokio::test]
+async fn test_my_requests_shows_jit_but_not_direct() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let user_name = unique_name("jit_mr_mix");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+
+    let admin_name = unique_name("jit_mr_mix_adm");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+
+    let jit_asset_name = unique_name("jit_mr_mix_jit");
+    let jit_asset_id = create_simple_ssh_asset(&mut conn, &jit_asset_name, admin_id).await;
+    create_jit_session(&mut conn, user_id, jit_asset_id, "ssh", "pending").await;
+
+    let direct_asset_name = unique_name("jit_mr_mix_dir");
+    let direct_asset_id = create_simple_ssh_asset(&mut conn, &direct_asset_name, admin_id).await;
+    create_test_session(&mut conn, user_id, direct_asset_id, "ssh", "disconnected").await;
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
+        .await;
+
+    let response = app
+        .server
+        .get("/sessions/my-requests")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains(&jit_asset_name),
+        "my-requests should show JIT access requests"
+    );
+    assert!(
+        !body.contains(&direct_asset_name),
+        "my-requests should NOT show direct connections without justification"
     );
 }
 
@@ -1482,6 +1707,287 @@ async fn test_approved_session_without_expires_at_still_valid() {
     );
 }
 
+// =============================================================================
+// WebSocket realtime badge & template structure tests
+// =============================================================================
+
+/// base.html must include ws-connect="/ws/notifications" for authenticated users.
+#[tokio::test]
+async fn test_base_html_includes_ws_connect_for_authenticated_user() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("jit_ws_base");
+    let user_id = create_simple_user(&mut conn, &username).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, false, false)
+        .await;
+
+    let response = app
+        .server
+        .get("/")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains(r#"ws-connect="/ws/notifications""#),
+        "base.html must include ws-connect for authenticated users"
+    );
+}
+
+/// my_requests.html must NOT have its own ws-connect (inherited from base.html).
+#[tokio::test]
+async fn test_my_requests_no_duplicate_ws_connect() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("jit_ws_dedup");
+    let user_id = create_simple_user(&mut conn, &username).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, false, false)
+        .await;
+
+    let response = app
+        .server
+        .get("/sessions/my-requests")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    let count = body.matches(r#"ws-connect="/ws/notifications""#).count();
+    assert_eq!(
+        count, 1,
+        "my-requests should have exactly 1 ws-connect (from base.html), got {}",
+        count
+    );
+}
+
+/// The sidebar must contain a stable #sidebar-approval-badge element for admin.
+#[tokio::test]
+async fn test_sidebar_contains_approval_badge_element_for_admin() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("jit_badge_el");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains("sidebar-approval-badge"),
+        "sidebar must contain sidebar-approval-badge element for admin"
+    );
+}
+
+/// The approval list page must have the auto-refresh WS trigger.
+#[tokio::test]
+async fn test_approval_list_has_ws_trigger() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("jit_ws_trigger");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/sessions/approvals")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains("approval-ws-trigger"),
+        "approval list must contain approval-ws-trigger element"
+    );
+    assert!(
+        body.contains("approvals-list-container"),
+        "approval list must contain approvals-list-container"
+    );
+    assert!(
+        body.contains("access_request"),
+        "trigger must listen for access_request events"
+    );
+    assert!(
+        body.contains("request_cancelled"),
+        "trigger must listen for request_cancelled events"
+    );
+}
+
+/// Cancel access request should broadcast and update pending count.
+#[tokio::test]
+async fn test_cancel_request_updates_pending_count() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let user_name = unique_name("jit_cancel_bc");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+
+    let admin_name = unique_name("jit_cancel_bc_adm");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+
+    let asset_name = unique_name("jit_cancel_bc_ast");
+    let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
+    let session_uuid = create_approval_request(&mut conn, user_id, asset_id).await;
+
+    let count_before: i64 = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::status.eq("pending"))
+            .count()
+            .get_result(&mut conn)
+            .await
+    );
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
+        .await;
+    let csrf_token = app.generate_csrf_token();
+
+    let response = app
+        .server
+        .post(&format!("/sessions/my-requests/{}/cancel", session_uuid))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[("csrf_token", csrf_token.as_str())])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 302 || status == 303,
+        "cancel should redirect, got {}",
+        status
+    );
+
+    let db_status: String = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::uuid.eq(session_uuid))
+            .select(proxy_sessions::status)
+            .first(&mut conn)
+            .await
+    );
+    assert_eq!(db_status, "expired");
+
+    let count_after: i64 = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::status.eq("pending"))
+            .count()
+            .get_result(&mut conn)
+            .await
+    );
+    assert_eq!(
+        count_after,
+        count_before - 1,
+        "pending count should decrease by 1 after cancel"
+    );
+}
+
+/// The sidebar approval badge should show the correct count for admin pages.
+#[tokio::test]
+async fn test_sidebar_badge_shows_correct_count() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("jit_badge_cnt");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let user_name = unique_name("jit_badge_cnt_usr");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+
+    let asset_name = unique_name("jit_badge_cnt_ast");
+    let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
+    create_approval_request(&mut conn, user_id, asset_id).await;
+
+    let expected_pending: i64 = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::status.eq("pending"))
+            .count()
+            .get_result(&mut conn)
+            .await
+    );
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+
+    let badge_start = body
+        .find("sidebar-approval-badge")
+        .expect("sidebar-approval-badge must exist");
+    let after_badge = &body[badge_start..];
+    let span_end = after_badge.find("</span>").expect("badge span must close");
+    let badge_content = &after_badge[..span_end];
+
+    assert!(
+        badge_content.contains(&expected_pending.to_string()),
+        "badge should show {} pending requests, badge content: {}",
+        expected_pending,
+        badge_content
+    );
+}
+
+/// The approval list page must contain ws-connect (inherited from base.html).
+#[tokio::test]
+async fn test_approval_list_has_ws_connect() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("jit_ws_app_list");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/sessions/approvals")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains(r#"ws-connect="/ws/notifications""#),
+        "approval list page must have ws-connect from base.html"
+    );
+}
+
 /// The cleanup task must NOT expire approved sessions with NULL expires_at.
 #[tokio::test]
 async fn test_cleanup_does_not_expire_unlimited_approved_sessions() {
@@ -1527,5 +2033,194 @@ async fn test_cleanup_does_not_expire_unlimited_approved_sessions() {
     assert_eq!(
         db_status, "approved",
         "unlimited session (NULL expires_at) must NOT be expired by cleanup"
+    );
+}
+
+// ---- Pagination tests for /sessions/my-requests ----
+
+#[tokio::test]
+async fn test_my_requests_page_1_default() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let user_name = unique_name("mrpg1");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+    let admin_id = create_simple_admin_user(&mut conn, &unique_name("mrpg1adm")).await;
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("mrpg1a"), admin_id).await;
+    let token = app.generate_test_token(&user_uuid.to_string(), &user_name, false, false).await;
+
+    for _ in 0..5 {
+        create_jit_session(&mut conn, user_id, asset_id, "ssh", "pending").await;
+    }
+
+    let response = app
+        .server
+        .get("/sessions/my-requests")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(body.contains("Showing"), "page 1 should show pagination counter");
+    assert!(
+        body.contains("of <span class=\"font-medium\">5</span>"),
+        "should display total 5 items"
+    );
+}
+
+#[tokio::test]
+async fn test_my_requests_pagination_with_many_items() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let user_name = unique_name("mrpgmany");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+    let admin_id = create_simple_admin_user(&mut conn, &unique_name("mrpgmanyadm")).await;
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("mrpgmanya"), admin_id).await;
+    let token = app.generate_test_token(&user_uuid.to_string(), &user_name, false, false).await;
+
+    for _ in 0..35 {
+        create_jit_session(&mut conn, user_id, asset_id, "ssh", "pending").await;
+    }
+
+    let response = app
+        .server
+        .get("/sessions/my-requests")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(body.contains("Next page"), "should have Next link when more than 30 items");
+    assert!(body.contains("page=2"), "should link to page 2");
+}
+
+#[tokio::test]
+async fn test_my_requests_page_2() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let user_name = unique_name("mrpg2");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+    let admin_id = create_simple_admin_user(&mut conn, &unique_name("mrpg2adm")).await;
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("mrpg2a"), admin_id).await;
+    let token = app.generate_test_token(&user_uuid.to_string(), &user_name, false, false).await;
+
+    for _ in 0..35 {
+        create_jit_session(&mut conn, user_id, asset_id, "ssh", "pending").await;
+    }
+
+    let response = app
+        .server
+        .get("/sessions/my-requests?page=2")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(body.contains("Previous page"), "page 2 should have Previous link");
+    assert!(body.contains("First page"), "page 2 should have First link");
+}
+
+#[tokio::test]
+async fn test_my_requests_page_999_clamps_to_last() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let user_name = unique_name("mrpg999");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+    let admin_id = create_simple_admin_user(&mut conn, &unique_name("mrpg999adm")).await;
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("mrpg999a"), admin_id).await;
+    let token = app.generate_test_token(&user_uuid.to_string(), &user_name, false, false).await;
+
+    for _ in 0..5 {
+        create_jit_session(&mut conn, user_id, asset_id, "ssh", "pending").await;
+    }
+
+    let response = app
+        .server
+        .get("/sessions/my-requests?page=999")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(body.contains("Showing"), "clamped page should still show results");
+    assert!(!body.contains("Next page"), "clamped to last page should not have Next");
+}
+
+#[tokio::test]
+async fn test_my_requests_page_negative_defaults_to_1() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let user_name = unique_name("mrpgneg");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+    let admin_id = create_simple_admin_user(&mut conn, &unique_name("mrpgnegadm")).await;
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("mrpgnega"), admin_id).await;
+    let token = app.generate_test_token(&user_uuid.to_string(), &user_name, false, false).await;
+
+    for _ in 0..5 {
+        create_jit_session(&mut conn, user_id, asset_id, "ssh", "pending").await;
+    }
+
+    let response = app
+        .server
+        .get("/sessions/my-requests?page=-1")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(body.contains("Showing"), "negative page should default to 1 and show results");
+}
+
+#[tokio::test]
+async fn test_my_requests_page_abc_defaults_to_1() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let user_name = unique_name("mrpgabc");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+    let admin_id = create_simple_admin_user(&mut conn, &unique_name("mrpgabcadm")).await;
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("mrpgabca"), admin_id).await;
+    let token = app.generate_test_token(&user_uuid.to_string(), &user_name, false, false).await;
+
+    for _ in 0..5 {
+        create_jit_session(&mut conn, user_id, asset_id, "ssh", "pending").await;
+    }
+
+    let response = app
+        .server
+        .get("/sessions/my-requests?page=abc")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(body.contains("Showing"), "non-numeric page should default to 1");
+}
+
+#[tokio::test]
+async fn test_my_requests_showing_counter_accurate() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let user_name = unique_name("mrpgctr");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+    let admin_id = create_simple_admin_user(&mut conn, &unique_name("mrpgctradm")).await;
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("mrpgctra"), admin_id).await;
+    let token = app.generate_test_token(&user_uuid.to_string(), &user_name, false, false).await;
+
+    for _ in 0..35 {
+        create_jit_session(&mut conn, user_id, asset_id, "ssh", "pending").await;
+    }
+
+    let response = app
+        .server
+        .get("/sessions/my-requests?page=2")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(body.contains(">31</span>"), "page 2 start_index should be 31");
+    assert!(body.contains(">35</span>"), "page 2 end_index should be 35 (total is 35)");
+    assert!(
+        body.contains("of <span class=\"font-medium\">35</span>"),
+        "total should be 35"
     );
 }

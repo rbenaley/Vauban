@@ -105,11 +105,7 @@
                                 <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
                             </svg>
                             Approvals
-                            {% if sc.pending_approval_count > 0 %}
-                            <span class="ml-auto inline-flex items-center rounded-full bg-vauban-600 px-2 py-0.5 text-xs font-medium text-white">
-                                {{ sc.pending_approval_count }}
-                            </span>
-                            {% endif %}
+                            <span id="sidebar-approval-badge" {% if sc.pending_approval_count > 0 %}class="ml-auto inline-flex items-center rounded-full bg-vauban-600 px-2 py-0.5 text-xs font-medium text-white"{% endif %}>{% if sc.pending_approval_count > 0 %}{{ sc.pending_approval_count }}{% endif %}</span>
                         </a>
                     </li>
 

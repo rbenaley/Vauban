@@ -155,6 +155,7 @@ fn to_rfc3339_opt(dt: &Option<chrono::DateTime<chrono::Utc>>) -> Option<String> 
 pub async fn access_rules_list(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
     let base = BaseTemplate::new("Access Rules".to_string(), user.clone())
@@ -263,6 +264,40 @@ pub async fn access_rules_list(
             .collect()
     };
 
+    const RULES_PER_PAGE: usize = 30;
+
+    let page: usize = params
+        .get("page")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(1)
+        .max(1);
+
+    let total_items = rules.len();
+    let total_pages = ((total_items as f64) / (RULES_PER_PAGE as f64)).ceil().max(1.0) as usize;
+    let page = page.min(total_pages);
+    let offset = (page - 1) * RULES_PER_PAGE;
+    let paged_rules: Vec<_> = rules.into_iter().skip(offset).take(RULES_PER_PAGE).collect();
+
+    use crate::templates::accounts::user_list::Pagination;
+
+    let start_index = if total_items > 0 { offset + 1 } else { 0 };
+    let end_index = (offset + RULES_PER_PAGE).min(total_items);
+
+    let pagination = if total_items > 0 {
+        Some(Pagination {
+            current_page: page as i32,
+            total_pages: total_pages as i32,
+            total_items: total_items as i32,
+            items_per_page: RULES_PER_PAGE as i32,
+            has_previous: page > 1,
+            has_next: page < total_pages,
+            start_index: start_index as i32,
+            end_index: end_index as i32,
+        })
+    } else {
+        None
+    };
+
     let template = AccessListTemplate {
         title,
         user: user_ctx,
@@ -271,7 +306,8 @@ pub async fn access_rules_list(
         language_code,
         sidebar_content,
         header_user,
-        rules,
+        rules: paged_rules,
+        pagination,
     };
 
     let html = template

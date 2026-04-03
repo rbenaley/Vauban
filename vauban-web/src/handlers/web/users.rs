@@ -54,6 +54,49 @@ pub async fn user_list(
         }
     }
 
+    const USERS_PER_PAGE: i64 = 30;
+
+    let page: i32 = params
+        .get("page")
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(1)
+        .max(1);
+
+    let mut count_query = users::table
+        .filter(users::is_deleted.eq(false))
+        .into_boxed();
+
+    if let Some(ref search) = search_filter
+        && !search.is_empty()
+    {
+        let pattern = crate::db::like_contains(search);
+        count_query = count_query.filter(
+            users::username
+                .ilike(pattern.clone())
+                .or(users::email.ilike(pattern.clone()))
+                .or(users::first_name.ilike(pattern.clone()))
+                .or(users::last_name.ilike(pattern)),
+        );
+    }
+
+    if let Some(ref status) = status_filter {
+        match status.as_str() {
+            "active" => count_query = count_query.filter(users::is_active.eq(true)),
+            "inactive" => count_query = count_query.filter(users::is_active.eq(false)),
+            _ => {}
+        }
+    }
+
+    let total_items: i64 = count_query
+        .count()
+        .get_result(&mut conn)
+        .await
+        .unwrap_or(0);
+
+    let total_pages = ((total_items as f64) / (USERS_PER_PAGE as f64)).ceil().max(1.0) as i32;
+    let page = page.min(total_pages);
+    let offset = ((page - 1) as i64) * USERS_PER_PAGE;
+
     #[allow(clippy::type_complexity)]
     let db_users: Vec<(
         uuid::Uuid,
@@ -82,7 +125,8 @@ pub async fn user_list(
             users::last_login,
         ))
         .order(users::username.asc())
-        .limit(50)
+        .limit(USERS_PER_PAGE)
+        .offset(offset)
         .load(&mut conn)
         .await?;
 
@@ -124,6 +168,26 @@ pub async fn user_list(
         )
         .collect();
 
+    use crate::templates::accounts::user_list::Pagination;
+
+    let start_index = if total_items > 0 { offset + 1 } else { 0 };
+    let end_index = (offset + USERS_PER_PAGE).min(total_items);
+
+    let pagination = if total_items > 0 {
+        Some(Pagination {
+            current_page: page,
+            total_pages,
+            total_items: total_items as i32,
+            items_per_page: USERS_PER_PAGE as i32,
+            has_previous: page > 1,
+            has_next: page < total_pages,
+            start_index: start_index as i32,
+            end_index: end_index as i32,
+        })
+    } else {
+        None
+    };
+
     let template = UserListTemplate {
         title,
         user: user_ctx,
@@ -133,7 +197,7 @@ pub async fn user_list(
         sidebar_content,
         header_user,
         users: user_items,
-        pagination: None,
+        pagination,
         search: search_filter,
         status_filter,
     };

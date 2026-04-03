@@ -1,3 +1,4 @@
+use crate::templates::accounts::user_list::Pagination;
 use crate::templates::base::{FlashMessage, UserContext, VaubanConfig};
 /// VAUBAN Web - Active sessions list template.
 use askama::Template;
@@ -39,6 +40,7 @@ pub struct ActiveListTemplate {
         Option<crate::templates::partials::sidebar_content::SidebarContentTemplate>,
     pub header_user: Option<crate::templates::base::UserContext>,
     pub sessions: Vec<ActiveSessionItem>,
+    pub pagination: Option<Pagination>,
 }
 
 /// WebSocket widget for active sessions list content.
@@ -136,6 +138,7 @@ mod tests {
             sidebar_content: None,
             header_user: None,
             sessions: vec![create_test_active_session_item("ssh")],
+            pagination: None,
         };
 
         let result = template.render();

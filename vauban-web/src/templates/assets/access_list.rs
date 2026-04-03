@@ -1,3 +1,4 @@
+use crate::templates::accounts::user_list::Pagination;
 use crate::templates::base::{FlashMessage, UserContext, VaubanConfig};
 /// VAUBAN Web - Access list template.
 use askama::Template;
@@ -45,6 +46,7 @@ pub struct AccessListTemplate {
         Option<crate::templates::partials::sidebar_content::SidebarContentTemplate>,
     pub header_user: Option<crate::templates::base::UserContext>,
     pub rules: Vec<AccessRuleListItem>,
+    pub pagination: Option<Pagination>,
 }
 
 #[cfg(test)]
@@ -70,6 +72,7 @@ mod tests {
             sidebar_content: None,
             header_user: None,
             rules: Vec::new(),
+            pagination: None,
         };
         assert_eq!(template.title, "Access List");
     }
@@ -85,6 +88,7 @@ mod tests {
             sidebar_content: None,
             header_user: None,
             rules: Vec::new(),
+            pagination: None,
         };
         let result = template.render();
         assert!(result.is_ok());

@@ -1235,6 +1235,16 @@ async fn handle_terminal_socket(
                 match update_result {
                     Ok(count) if count > 0 => {
                         debug!(session_id = %session_id, "SSH session recording metadata saved");
+                        let _ = state.broadcast.send(
+                            &crate::services::broadcast::WsChannel::Notifications,
+                            crate::services::broadcast::WsMessage::new(
+                                "jit-notification",
+                                format!(
+                                    r#"{{"type":"recording_ready","session_uuid":"{}"}}"#,
+                                    session_id
+                                ),
+                            ),
+                        ).await;
                     }
                     Ok(_) => {
                         warn!(session_id = %session_id, "SSH session not found in database for recording update");
@@ -1550,6 +1560,16 @@ async fn handle_rdp_socket(
                 match update_result {
                     Ok(count) if count > 0 => {
                         debug!(session_id = %session_id, "Session recording metadata saved");
+                        let _ = state.broadcast.send(
+                            &crate::services::broadcast::WsChannel::Notifications,
+                            crate::services::broadcast::WsMessage::new(
+                                "jit-notification",
+                                format!(
+                                    r#"{{"type":"recording_ready","session_uuid":"{}"}}"#,
+                                    session_id
+                                ),
+                            ),
+                        ).await;
                     }
                     Ok(_) => {
                         warn!(session_id = %session_id, "Session not found in database for recording update");
@@ -2221,6 +2241,130 @@ mod tests {
         assert!(
             terminal_fn_source.contains("recording.ssh"),
             "handle_terminal_socket must check recording.ssh config"
+        );
+    }
+
+    // ==================== Recording Broadcast Tests ====================
+
+    #[test]
+    fn test_ssh_broadcasts_recording_ready_on_success() {
+        let source = include_str!("websocket.rs");
+        let terminal_fn_start = source
+            .find("fn handle_terminal_socket")
+            .expect("handle_terminal_socket must exist");
+        let rdp_fn_start = source
+            .find("fn handle_rdp_socket")
+            .expect("handle_rdp_socket must exist");
+        let terminal_body = &source[terminal_fn_start..rdp_fn_start];
+        assert!(
+            terminal_body.contains("recording_ready"),
+            "handle_terminal_socket must broadcast recording_ready after saving"
+        );
+        assert!(
+            terminal_body.contains("WsChannel::Notifications"),
+            "handle_terminal_socket must broadcast on Notifications channel"
+        );
+        assert!(
+            terminal_body.contains("WsMessage::new"),
+            "handle_terminal_socket must use WsMessage::new for the broadcast"
+        );
+    }
+
+    #[test]
+    fn test_rdp_broadcasts_recording_ready_on_success() {
+        let source = include_str!("websocket.rs");
+        let rdp_fn_start = source
+            .find("fn handle_rdp_socket")
+            .expect("handle_rdp_socket must exist");
+        let rdp_body = &source[rdp_fn_start..];
+        let tests_start = rdp_body
+            .find("#[cfg(test)]")
+            .unwrap_or(rdp_body.len());
+        let rdp_fn_body = &rdp_body[..tests_start];
+        assert!(
+            rdp_fn_body.contains("recording_ready"),
+            "handle_rdp_socket must broadcast recording_ready after saving"
+        );
+        assert!(
+            rdp_fn_body.contains("WsChannel::Notifications"),
+            "handle_rdp_socket must broadcast on Notifications channel"
+        );
+        assert!(
+            rdp_fn_body.contains("WsMessage::new"),
+            "handle_rdp_socket must use WsMessage::new for the broadcast"
+        );
+    }
+
+    #[test]
+    fn test_ssh_recording_broadcast_inside_success_branch() {
+        let source = include_str!("websocket.rs");
+        let terminal_fn_start = source
+            .find("fn handle_terminal_socket")
+            .expect("handle_terminal_socket must exist");
+        let rdp_fn_start = source
+            .find("fn handle_rdp_socket")
+            .expect("handle_rdp_socket must exist");
+        let terminal_body = &source[terminal_fn_start..rdp_fn_start];
+
+        let success_marker = "SSH session recording metadata saved";
+        let success_pos = terminal_body
+            .find(success_marker)
+            .expect("success log must exist in handle_terminal_socket");
+        let broadcast_pos = terminal_body
+            .find("recording_ready")
+            .expect("recording_ready broadcast must exist");
+        assert!(
+            broadcast_pos > success_pos,
+            "recording_ready broadcast must come after success log"
+        );
+    }
+
+    #[test]
+    fn test_rdp_recording_broadcast_inside_success_branch() {
+        let source = include_str!("websocket.rs");
+        let rdp_fn_start = source
+            .find("fn handle_rdp_socket")
+            .expect("handle_rdp_socket must exist");
+        let rdp_body = &source[rdp_fn_start..];
+
+        let success_marker = "Session recording metadata saved";
+        let success_pos = rdp_body
+            .find(success_marker)
+            .expect("success log must exist in handle_rdp_socket");
+        let broadcast_pos = rdp_body
+            .find("recording_ready")
+            .expect("recording_ready broadcast must exist");
+        assert!(
+            broadcast_pos > success_pos,
+            "recording_ready broadcast must come after success log"
+        );
+    }
+
+    #[test]
+    fn test_recording_broadcast_message_format() {
+        let source = include_str!("websocket.rs");
+        let occurrences: Vec<_> = source.match_indices("recording_ready").collect();
+        assert!(
+            occurrences.len() >= 2,
+            "recording_ready must appear at least twice (SSH + RDP), found {}",
+            occurrences.len()
+        );
+    }
+
+    #[test]
+    fn test_rdp_disconnect_updates_recording_metadata() {
+        let source = include_str!("websocket.rs");
+        let rdp_fn_start = source
+            .find("fn handle_rdp_socket")
+            .expect("handle_rdp_socket must exist");
+        let rdp_body = &source[rdp_fn_start..];
+        assert!(
+            rdp_body.contains("recording_path"),
+            "handle_rdp_socket must update recording_path on disconnect"
+        );
+        assert!(
+            rdp_body.contains("is_recorded.eq(true)"),
+            "handle_rdp_socket must set is_recorded = true"
         );
     }
 }

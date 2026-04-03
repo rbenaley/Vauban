@@ -2,6 +2,8 @@
 use super::*;
 use crate::models::asset::{Asset, AssetType};
 
+const ASSETS_PER_PAGE: i64 = 30;
+
 /// Asset create form page.
 pub async fn asset_create_form(
     State(state): State<AppState>,
@@ -297,13 +299,14 @@ pub async fn asset_list(
     let search_filter = params.get("search").filter(|s| !s.is_empty()).cloned();
     let type_filter = params.get("type").filter(|s| !s.is_empty()).cloned();
     let status_filter = params.get("status").filter(|s| !s.is_empty()).cloned();
+    let page: i32 = params
+        .get("page")
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(1)
+        .max(1);
 
-    let mut query = schema_assets::table
-        .filter(schema_assets::is_deleted.eq(false))
-        .into_boxed();
-
-    // Non-admin users: filter to only accessible assets via access rules
-    if !auth_user.is_superuser && !auth_user.is_staff {
+    // Resolve accessible asset IDs once for non-admin users
+    let accessible_ids: Option<Vec<i32>> = if !auth_user.is_superuser && !auth_user.is_staff {
         let user_internal_id: i32 = crate::schema::users::table
             .filter(
                 crate::schema::users::uuid
@@ -314,15 +317,63 @@ pub async fn asset_list(
             .await
             .map_err(|_| AppError::Authorization("User not found".to_string()))?;
 
-        let accessible_ids = crate::services::access::list_accessible_asset_ids(
+        let ids = crate::services::access::list_accessible_asset_ids(
             state.access_client.as_ref(),
             &mut conn,
             user_internal_id,
         )
         .await?;
-        query = query.filter(schema_assets::id.eq_any(accessible_ids));
+        Some(ids)
+    } else {
+        None
+    };
+
+    // Build count query with the same filters
+    let mut count_query = schema_assets::table
+        .filter(schema_assets::is_deleted.eq(false))
+        .into_boxed();
+
+    if let Some(ref ids) = accessible_ids {
+        count_query = count_query.filter(schema_assets::id.eq_any(ids.clone()));
+    }
+    if let Some(ref search) = search_filter
+        && !search.is_empty()
+    {
+        let pattern = crate::db::like_contains(search);
+        count_query = count_query.filter(
+            schema_assets::name
+                .ilike(pattern.clone())
+                .or(schema_assets::hostname.ilike(pattern)),
+        );
+    }
+    if let Some(ref asset_type) = type_filter
+        && !asset_type.is_empty()
+    {
+        if let Some(parsed) = AssetType::try_parse(asset_type) {
+            count_query = count_query.filter(schema_assets::asset_type.eq(parsed));
+        } else {
+            count_query = count_query.filter(schema_assets::id.eq(-1));
+        }
+    }
+    if let Some(ref status_val) = status_filter
+        && !status_val.is_empty()
+    {
+        count_query = count_query.filter(schema_assets::status.eq(status_val));
     }
 
+    let total_items: i64 = count_query.count().get_result(&mut conn).await.unwrap_or(0);
+    let total_pages = ((total_items as f64) / (ASSETS_PER_PAGE as f64)).ceil().max(1.0) as i32;
+    let page = page.min(total_pages);
+    let offset = ((page - 1) as i64) * ASSETS_PER_PAGE;
+
+    // Build data query with the same filters
+    let mut query = schema_assets::table
+        .filter(schema_assets::is_deleted.eq(false))
+        .into_boxed();
+
+    if let Some(ref ids) = accessible_ids {
+        query = query.filter(schema_assets::id.eq_any(ids.clone()));
+    }
     if let Some(ref search) = search_filter
         && !search.is_empty()
     {
@@ -333,22 +384,19 @@ pub async fn asset_list(
                 .or(schema_assets::hostname.ilike(pattern)),
         );
     }
-
     if let Some(ref asset_type) = type_filter
         && !asset_type.is_empty()
     {
         if let Some(parsed) = AssetType::try_parse(asset_type) {
             query = query.filter(schema_assets::asset_type.eq(parsed));
         } else {
-            // Invalid asset type filter: return no results
             query = query.filter(schema_assets::id.eq(-1));
         }
     }
-
-    if let Some(ref status) = status_filter
-        && !status.is_empty()
+    if let Some(ref status_val) = status_filter
+        && !status_val.is_empty()
     {
-        query = query.filter(schema_assets::status.eq(status));
+        query = query.filter(schema_assets::status.eq(status_val));
     }
 
     let db_assets: Vec<(i32, ::uuid::Uuid, String, String, i32, AssetType, String)> = query
@@ -362,7 +410,8 @@ pub async fn asset_list(
             schema_assets::status,
         ))
         .order(schema_assets::name.asc())
-        .limit(50)
+        .limit(ASSETS_PER_PAGE)
+        .offset(offset)
         .load(&mut conn)
         .await?;
 
@@ -382,6 +431,26 @@ pub async fn asset_list(
         )
         .collect();
 
+    use crate::templates::accounts::user_list::Pagination;
+
+    let start_index = if total_items > 0 { offset + 1 } else { 0 };
+    let end_index = (offset + ASSETS_PER_PAGE).min(total_items);
+
+    let pagination = if total_items > 0 {
+        Some(Pagination {
+            current_page: page,
+            total_pages,
+            total_items: total_items as i32,
+            items_per_page: ASSETS_PER_PAGE as i32,
+            has_previous: page > 1,
+            has_next: page < total_pages,
+            start_index: start_index as i32,
+            end_index: end_index as i32,
+        })
+    } else {
+        None
+    };
+
     let template = AssetListTemplate {
         title,
         user: user_ctx,
@@ -391,7 +460,7 @@ pub async fn asset_list(
         sidebar_content,
         header_user,
         assets: asset_items,
-        pagination: None,
+        pagination,
         search: search_filter,
         type_filter,
         status_filter,
@@ -1193,5 +1262,87 @@ pub async fn update_asset_web(
                 &format!("/assets/{}/edit", asset_uuid),
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_assets_per_page_is_30() {
+        assert_eq!(super::ASSETS_PER_PAGE, 30);
+    }
+
+    #[test]
+    fn test_asset_list_handler_uses_pagination() {
+        let source = include_str!("assets.rs");
+        let fn_start = source
+            .find("fn asset_list")
+            .expect("asset_list handler must exist");
+        let fn_end = source[fn_start..]
+            .find("\npub async fn ")
+            .map(|p| fn_start + p)
+            .unwrap_or(source.len());
+        let body = &source[fn_start..fn_end];
+
+        assert!(
+            body.contains("ASSETS_PER_PAGE"),
+            "asset_list must use ASSETS_PER_PAGE constant"
+        );
+        assert!(
+            body.contains(".count()"),
+            "asset_list must execute a COUNT query"
+        );
+        assert!(
+            body.contains(".offset("),
+            "asset_list must use .offset() for pagination"
+        );
+        assert!(
+            body.contains("Pagination {"),
+            "asset_list must construct a Pagination struct"
+        );
+        assert!(
+            !body.contains(".limit(50)"),
+            "asset_list must not hardcode .limit(50)"
+        );
+    }
+
+    #[test]
+    fn test_asset_list_handler_parses_page_param() {
+        let source = include_str!("assets.rs");
+        let fn_start = source
+            .find("fn asset_list")
+            .expect("asset_list handler must exist");
+        let fn_end = source[fn_start..]
+            .find("\npub async fn ")
+            .map(|p| fn_start + p)
+            .unwrap_or(source.len());
+        let body = &source[fn_start..fn_end];
+
+        assert!(
+            body.contains("\"page\""),
+            "asset_list must read the 'page' query parameter"
+        );
+        assert!(
+            body.contains(".max(1)"),
+            "asset_list must clamp page to minimum 1"
+        );
+    }
+
+    #[test]
+    fn test_asset_list_handler_clamps_page_to_total() {
+        let source = include_str!("assets.rs");
+        let fn_start = source
+            .find("fn asset_list")
+            .expect("asset_list handler must exist");
+        let fn_end = source[fn_start..]
+            .find("\npub async fn ")
+            .map(|p| fn_start + p)
+            .unwrap_or(source.len());
+        let body = &source[fn_start..fn_end];
+
+        assert!(
+            body.contains(".min(total_pages)"),
+            "asset_list must clamp page to total_pages so ?page=999 stays valid"
+        );
     }
 }

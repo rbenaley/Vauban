@@ -1,3 +1,4 @@
+use crate::templates::accounts::user_list::Pagination;
 use crate::templates::base::{FlashMessage, UserContext, VaubanConfig};
 /// VAUBAN Web - Recording list template.
 use askama::Template;
@@ -70,6 +71,7 @@ pub struct RecordingListTemplate {
     pub recordings: Vec<RecordingListItem>,
     pub format_filter: Option<String>,
     pub asset_filter: Option<String>,
+    pub pagination: Option<Pagination>,
 }
 
 #[cfg(test)]
@@ -240,9 +242,217 @@ mod tests {
             recordings: vec![create_test_recording_item("ssh", Some(100))],
             format_filter: None,
             asset_filter: None,
+            pagination: None,
         };
 
         let result = template.render();
         assert!(result.is_ok(), "RecordingListTemplate should render");
+    }
+
+    fn render_recording_list(
+        recordings: Vec<RecordingListItem>,
+        format_filter: Option<String>,
+        asset_filter: Option<String>,
+    ) -> String {
+        use crate::templates::base::{UserContext, VaubanConfig};
+
+        let template = RecordingListTemplate {
+            title: "Recordings".to_string(),
+            user: Some(UserContext {
+                uuid: "test".to_string(),
+                username: "testuser".to_string(),
+                display_name: "Test User".to_string(),
+                is_superuser: true,
+                is_staff: true,
+            }),
+            vauban: VaubanConfig {
+                brand_name: "VAUBAN".to_string(),
+                brand_logo: None,
+                theme: "dark".to_string(),
+            },
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            recordings,
+            format_filter,
+            asset_filter,
+            pagination: None,
+        };
+        template.render().expect("template should render")
+    }
+
+    #[test]
+    fn test_recording_list_has_ws_trigger_element() {
+        let html = render_recording_list(vec![], None, None);
+        assert!(
+            html.contains("recording-ws-trigger"),
+            "rendered recording list must contain recording-ws-trigger element"
+        );
+    }
+
+    #[test]
+    fn test_recording_list_has_container_id() {
+        let html = render_recording_list(vec![], None, None);
+        assert!(
+            html.contains("recordings-list-container"),
+            "rendered recording list must contain recordings-list-container"
+        );
+    }
+
+    #[test]
+    fn test_recording_list_trigger_listens_for_recording_ready() {
+        let html = render_recording_list(vec![], None, None);
+        assert!(
+            html.contains("recording_ready"),
+            "WS trigger must listen for recording_ready events"
+        );
+    }
+
+    #[test]
+    fn test_recording_list_trigger_targets_container() {
+        let html = render_recording_list(vec![], None, None);
+        assert!(
+            html.contains(r##"hx-target="#recordings-list-container""##),
+            "WS trigger must target recordings-list-container"
+        );
+    }
+
+    #[test]
+    fn test_recording_list_trigger_selects_container() {
+        let html = render_recording_list(vec![], None, None);
+        assert!(
+            html.contains(r##"hx-select="#recordings-list-container""##),
+            "WS trigger must select recordings-list-container"
+        );
+    }
+
+    #[test]
+    fn test_recording_list_trigger_has_throttle() {
+        let html = render_recording_list(vec![], None, None);
+        assert!(
+            html.contains("throttle:"),
+            "WS trigger must have a throttle to avoid excessive refreshes"
+        );
+    }
+
+    #[test]
+    fn test_recording_list_has_periodic_polling() {
+        let html = render_recording_list(vec![], None, None);
+        assert!(
+            html.contains("every 30s"),
+            "WS trigger must include periodic polling fallback (every 30s)"
+        );
+    }
+
+    #[test]
+    fn test_recording_list_trigger_uses_outer_html_swap() {
+        let html = render_recording_list(vec![], None, None);
+        assert!(
+            html.contains(r#"hx-swap="outerHTML""#),
+            "WS trigger must use outerHTML swap"
+        );
+    }
+
+    #[test]
+    fn test_recording_list_trigger_hidden() {
+        let html = render_recording_list(vec![], None, None);
+        let trigger_pos = html
+            .find("recording-ws-trigger")
+            .expect("trigger must exist");
+        let surrounding = &html[trigger_pos.saturating_sub(200)..std::cmp::min(trigger_pos + 200, html.len())];
+        assert!(
+            surrounding.contains("hidden"),
+            "WS trigger element must be hidden"
+        );
+    }
+
+    #[test]
+    fn test_recording_list_trigger_preserves_format_filter() {
+        let html = render_recording_list(
+            vec![],
+            Some("ssh".to_string()),
+            None,
+        );
+        assert!(
+            html.contains("format=ssh"),
+            "WS trigger hx-get must preserve format filter, got: {}",
+            html.lines()
+                .find(|l| l.contains("recording-ws-trigger"))
+                .unwrap_or("(not found)")
+        );
+    }
+
+    #[test]
+    fn test_recording_list_trigger_preserves_asset_filter() {
+        let html = render_recording_list(
+            vec![],
+            None,
+            Some("prod-server".to_string()),
+        );
+        assert!(
+            html.contains("asset=prod-server"),
+            "WS trigger hx-get must preserve asset filter"
+        );
+    }
+
+    #[test]
+    fn test_recording_list_trigger_preserves_both_filters() {
+        let html = render_recording_list(
+            vec![],
+            Some("rdp".to_string()),
+            Some("myasset".to_string()),
+        );
+        assert!(
+            html.contains("format=rdp") && html.contains("asset=myasset"),
+            "WS trigger hx-get must preserve both filters"
+        );
+    }
+
+    #[test]
+    fn test_recording_list_trigger_no_filters_clean_url() {
+        let html = render_recording_list(vec![], None, None);
+        let trigger_line = html
+            .lines()
+            .find(|l| l.contains("hx-get") && l.contains("recordings"))
+            .expect("hx-get line must exist");
+        assert!(
+            !trigger_line.contains("format=") && !trigger_line.contains("asset="),
+            "without filters, hx-get URL must not contain filter params"
+        );
+    }
+
+    #[test]
+    fn test_recording_list_with_data_shows_items() {
+        let items = vec![
+            create_test_recording_item("ssh", Some(120)),
+            create_test_recording_item("rdp", Some(300)),
+        ];
+        let html = render_recording_list(items, None, None);
+        assert!(
+            html.contains("Test Asset"),
+            "recording items must appear in rendered output"
+        );
+        assert!(
+            html.contains("recordings-list-container"),
+            "container must exist even with data"
+        );
+        assert!(
+            html.contains("recording-ws-trigger"),
+            "WS trigger must exist even with data"
+        );
+    }
+
+    #[test]
+    fn test_recording_list_empty_shows_no_recordings() {
+        let html = render_recording_list(vec![], None, None);
+        assert!(
+            html.contains("No recordings"),
+            "empty list must show 'No recordings' message"
+        );
+        assert!(
+            html.contains("recordings-list-container"),
+            "container must exist even when empty"
+        );
     }
 }

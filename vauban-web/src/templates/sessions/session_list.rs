@@ -1,3 +1,4 @@
+use crate::templates::accounts::user_list::Pagination;
 use crate::templates::base::{FlashMessage, UserContext, VaubanConfig};
 /// VAUBAN Web - Session list template.
 use askama::Template;
@@ -74,6 +75,7 @@ pub struct SessionListTemplate {
     pub asset_filter: Option<String>,
     /// Whether to show the "View" link (only for admin users).
     pub show_view_link: bool,
+    pub pagination: Option<Pagination>,
 }
 
 #[cfg(test)]
@@ -256,6 +258,7 @@ mod tests {
             type_filter: None,
             asset_filter: None,
             show_view_link: true,
+            pagination: None,
         };
 
         let result = template.render();
@@ -289,6 +292,7 @@ mod tests {
             type_filter: None,
             asset_filter: None,
             show_view_link: false,
+            pagination: None,
         };
 
         let result = template.render();
@@ -322,6 +326,7 @@ mod tests {
             type_filter: None,
             asset_filter: None,
             show_view_link: true,
+            pagination: None,
         };
 
         assert!(template.show_view_link);
@@ -356,6 +361,7 @@ mod tests {
             type_filter: None,
             asset_filter: None,
             show_view_link: false,
+            pagination: None,
         };
 
         assert!(!template.show_view_link);

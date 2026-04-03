@@ -1,3 +1,4 @@
+use crate::templates::accounts::user_list::Pagination;
 use crate::templates::base::{FlashMessage, UserContext, VaubanConfig};
 /// VAUBAN Web - My access requests template.
 use askama::Template;
@@ -25,7 +26,24 @@ impl MyRequestItem {
             "approved" => "bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300",
             "rejected" => "bg-red-100 text-red-800 dark:bg-red-900/50 dark:text-red-300",
             "expired" => "bg-gray-100 text-gray-800 dark:bg-gray-900/50 dark:text-gray-300",
+            "consumed" | "active" => "bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-300",
+            "disconnected" => "bg-indigo-100 text-indigo-800 dark:bg-indigo-900/50 dark:text-indigo-300",
+            "terminated" => "bg-orange-100 text-orange-800 dark:bg-orange-900/50 dark:text-orange-300",
             _ => "bg-gray-100 text-gray-800 dark:bg-gray-900/50 dark:text-gray-300",
+        }
+    }
+
+    /// User-friendly label for display (avoids raw DB statuses like "consumed").
+    pub fn status_label(&self) -> &str {
+        match self.status.as_str() {
+            "pending" => "Pending",
+            "approved" => "Approved",
+            "rejected" => "Rejected",
+            "expired" => "Expired",
+            "consumed" | "active" => "Connected",
+            "disconnected" => "Completed",
+            "terminated" => "Terminated",
+            _ => "Unknown",
         }
     }
 
@@ -86,8 +104,75 @@ mod tests {
     }
 
     #[test]
+    fn test_status_class_consumed() {
+        assert!(make_item("consumed", None).status_class().contains("blue"));
+    }
+
+    #[test]
+    fn test_status_class_active() {
+        assert!(make_item("active", None).status_class().contains("blue"));
+    }
+
+    #[test]
+    fn test_status_class_disconnected() {
+        assert!(make_item("disconnected", None).status_class().contains("indigo"));
+    }
+
+    #[test]
+    fn test_status_class_terminated() {
+        assert!(make_item("terminated", None).status_class().contains("orange"));
+    }
+
+    #[test]
     fn test_status_class_unknown_falls_back_to_gray() {
         assert!(make_item("whatever", None).status_class().contains("gray"));
+    }
+
+    // ---- status_label ----
+
+    #[test]
+    fn test_status_label_pending() {
+        assert_eq!(make_item("pending", None).status_label(), "Pending");
+    }
+
+    #[test]
+    fn test_status_label_approved() {
+        assert_eq!(make_item("approved", None).status_label(), "Approved");
+    }
+
+    #[test]
+    fn test_status_label_rejected() {
+        assert_eq!(make_item("rejected", None).status_label(), "Rejected");
+    }
+
+    #[test]
+    fn test_status_label_expired() {
+        assert_eq!(make_item("expired", None).status_label(), "Expired");
+    }
+
+    #[test]
+    fn test_status_label_consumed_shows_connected() {
+        assert_eq!(make_item("consumed", None).status_label(), "Connected");
+    }
+
+    #[test]
+    fn test_status_label_active_shows_connected() {
+        assert_eq!(make_item("active", None).status_label(), "Connected");
+    }
+
+    #[test]
+    fn test_status_label_disconnected_shows_completed() {
+        assert_eq!(make_item("disconnected", None).status_label(), "Completed");
+    }
+
+    #[test]
+    fn test_status_label_terminated() {
+        assert_eq!(make_item("terminated", None).status_label(), "Terminated");
+    }
+
+    #[test]
+    fn test_status_label_unknown() {
+        assert_eq!(make_item("xyz", None).status_label(), "Unknown");
     }
 
     // ---- is_pending / is_approved ----
@@ -201,6 +286,7 @@ mod tests {
                 make_item("pending", Some(3600)),
                 make_item("approved", None),
             ],
+            pagination: None,
         };
 
         let html = template.render().expect("template should render");
@@ -209,6 +295,55 @@ mod tests {
         assert!(html.contains("ws-connect=\"/ws/notifications\""), "should have ws-connect");
         assert!(html.contains("jit-notification"), "should have OOB target");
         assert!(html.contains("request_approved"), "should filter on request_approved");
+    }
+
+    #[test]
+    fn test_my_requests_template_renders_all_statuses() {
+        use crate::templates::base::{UserContext, VaubanConfig};
+
+        let statuses = [
+            ("pending", "Pending"),
+            ("approved", "Approved"),
+            ("rejected", "Rejected"),
+            ("expired", "Expired"),
+            ("consumed", "Connected"),
+            ("active", "Connected"),
+            ("disconnected", "Completed"),
+            ("terminated", "Terminated"),
+        ];
+
+        for (status, label) in &statuses {
+            let template = MyRequestsTemplate {
+                title: "My Requests".to_string(),
+                user: Some(UserContext {
+                    uuid: "u1".to_string(),
+                    username: "alice".to_string(),
+                    display_name: "Alice".to_string(),
+                    is_superuser: false,
+                    is_staff: false,
+                }),
+                vauban: VaubanConfig {
+                    brand_name: "VAUBAN".to_string(),
+                    brand_logo: None,
+                    theme: "dark".to_string(),
+                },
+                messages: Vec::new(),
+                language_code: "en".to_string(),
+                sidebar_content: None,
+                header_user: None,
+                requests: vec![make_item(status, Some(3600))],
+                pagination: None,
+            };
+
+            let html = template.render().unwrap_or_else(|_| {
+                panic!("template should render for status '{}'", status)
+            });
+            assert!(
+                html.contains(label),
+                "status '{}' should render label '{}' in template",
+                status, label
+            );
+        }
     }
 
     #[test]
@@ -234,10 +369,142 @@ mod tests {
             sidebar_content: None,
             header_user: None,
             requests: Vec::new(),
+            pagination: None,
         };
 
         let html = template.render().expect("template should render");
         assert!(html.contains("No access requests"), "should show empty state");
+    }
+
+    fn make_template(items: Vec<MyRequestItem>, pagination: Option<Pagination>) -> MyRequestsTemplate {
+        use crate::templates::base::{UserContext, VaubanConfig};
+        MyRequestsTemplate {
+            title: "My Requests".to_string(),
+            user: Some(UserContext {
+                uuid: "u1".to_string(),
+                username: "alice".to_string(),
+                display_name: "Alice".to_string(),
+                is_superuser: false,
+                is_staff: false,
+            }),
+            vauban: VaubanConfig {
+                brand_name: "VAUBAN".to_string(),
+                brand_logo: None,
+                theme: "dark".to_string(),
+            },
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            requests: items,
+            pagination,
+        }
+    }
+
+    fn make_pg(current_page: i32, total_pages: i32, total_items: i32) -> Pagination {
+        let has_previous = current_page > 1;
+        let has_next = current_page < total_pages;
+        let start = ((current_page - 1) * 30) + 1;
+        let end = (current_page * 30).min(total_items);
+        Pagination {
+            current_page,
+            total_pages,
+            total_items,
+            items_per_page: 30,
+            has_previous,
+            has_next,
+            start_index: start,
+            end_index: end,
+        }
+    }
+
+    // ---- pagination rendering ----
+
+    #[test]
+    fn test_pagination_renders_on_first_page() {
+        let pg = make_pg(1, 3, 75);
+        let items: Vec<MyRequestItem> = (0..30).map(|_| make_item("pending", Some(3600))).collect();
+        let template = make_template(items, Some(pg));
+        let html = template.render().expect("render");
+        assert!(html.contains("Showing"), "should show pagination counter");
+        assert!(html.contains("of <span class=\"font-medium\">75</span>"), "should show total");
+        assert!(!html.contains("First page"), "first page should not have First link (sr-only text)");
+        assert!(html.contains("Next page"), "should have Next link");
+        assert!(html.contains("Last page"), "should have Last link");
+    }
+
+    #[test]
+    fn test_pagination_renders_on_middle_page() {
+        let pg = make_pg(2, 3, 75);
+        let items: Vec<MyRequestItem> = (0..30).map(|_| make_item("approved", None)).collect();
+        let template = make_template(items, Some(pg));
+        let html = template.render().expect("render");
+        assert!(html.contains("First page"), "should have First link");
+        assert!(html.contains("Previous page"), "should have Previous link");
+        assert!(html.contains("Next page"), "should have Next link");
+        assert!(html.contains("Last page"), "should have Last link");
+        assert!(html.contains("page=1"), "should link to page 1");
+        assert!(html.contains("page=3"), "should link to page 3");
+    }
+
+    #[test]
+    fn test_pagination_renders_on_last_page() {
+        let pg = make_pg(3, 3, 75);
+        let items: Vec<MyRequestItem> = (0..15).map(|_| make_item("expired", Some(1800))).collect();
+        let template = make_template(items, Some(pg));
+        let html = template.render().expect("render");
+        assert!(html.contains("First page"), "should have First link");
+        assert!(html.contains("Previous page"), "should have Previous link");
+        assert!(!html.contains("Next page"), "last page should not have Next");
+        assert!(!html.contains("Last page"), "last page should not have Last");
+    }
+
+    #[test]
+    fn test_pagination_counter_accuracy() {
+        let pg = make_pg(2, 3, 75);
+        let items: Vec<MyRequestItem> = (0..30).map(|_| make_item("pending", None)).collect();
+        let template = make_template(items, Some(pg));
+        let html = template.render().expect("render");
+        assert!(html.contains(">31</span>"), "start should be 31");
+        assert!(html.contains(">60</span>"), "end should be 60");
+        assert!(html.contains(">75</span>"), "total should be 75");
+    }
+
+    #[test]
+    fn test_pagination_current_page_highlighted() {
+        let pg = make_pg(2, 4, 100);
+        let items: Vec<MyRequestItem> = (0..30).map(|_| make_item("pending", None)).collect();
+        let template = make_template(items, Some(pg));
+        let html = template.render().expect("render");
+        assert!(html.contains("aria-current=\"page\""), "current page should have aria-current");
+    }
+
+    #[test]
+    fn test_pagination_mobile_buttons() {
+        let pg = make_pg(2, 3, 75);
+        let items: Vec<MyRequestItem> = (0..30).map(|_| make_item("pending", None)).collect();
+        let template = make_template(items, Some(pg));
+        let html = template.render().expect("render");
+        assert!(html.contains("sm:hidden"), "should have mobile container");
+    }
+
+    #[test]
+    fn test_no_pagination_without_items() {
+        let template = make_template(Vec::new(), None);
+        let html = template.render().expect("render");
+        assert!(!html.contains("Showing"), "no pagination for empty list");
+        assert!(html.contains("No access requests"), "should show empty state");
+    }
+
+    #[test]
+    fn test_pagination_single_page_no_nav_buttons() {
+        let pg = make_pg(1, 1, 5);
+        let items: Vec<MyRequestItem> = (0..5).map(|_| make_item("pending", None)).collect();
+        let template = make_template(items, Some(pg));
+        let html = template.render().expect("render");
+        assert!(html.contains("Showing"), "should still show counter");
+        assert!(!html.contains("Next page"), "single page should not have Next");
+        assert!(!html.contains("Previous page"), "single page should not have Previous");
     }
 }
 
@@ -253,4 +520,5 @@ pub struct MyRequestsTemplate {
         Option<crate::templates::partials::sidebar_content::SidebarContentTemplate>,
     pub header_user: Option<crate::templates::base::UserContext>,
     pub requests: Vec<MyRequestItem>,
+    pub pagination: Option<Pagination>,
 }
