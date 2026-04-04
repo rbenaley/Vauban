@@ -996,6 +996,10 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             get(handlers::websocket::active_sessions_ws),
         )
         .route(
+            "/ws/sessions/list",
+            get(handlers::websocket::session_list_ws),
+        )
+        .route(
             "/ws/terminal/{session_id}",
             get(handlers::websocket::terminal_ws).layer(session_guard.clone()),
         )

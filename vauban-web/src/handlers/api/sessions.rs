@@ -255,6 +255,10 @@ pub async fn terminate_session(
         _ => {}
     }
 
+    // Push real-time updates to /sessions and /sessions/active page subscribers
+    crate::tasks::dashboard::push_session_list_update(&state.broadcast, &state.db_pool).await;
+    crate::tasks::dashboard::push_active_sessions_update(&state.broadcast, &state.db_pool).await;
+
     if htmx {
         // Return an updated HTML fragment for the session row
         let html = format!(
@@ -358,6 +362,24 @@ mod tests {
         assert!(
             body.contains("SessionType::Rdp") || body.contains("rdp_proxy"),
             "terminate_session must handle RDP sessions"
+        );
+    }
+
+    #[test]
+    fn test_terminate_session_pushes_session_list_update() {
+        let body = terminate_session_body();
+        assert!(
+            body.contains("push_session_list_update"),
+            "terminate_session must push real-time update to /sessions page subscribers"
+        );
+    }
+
+    #[test]
+    fn test_terminate_session_pushes_active_sessions_update() {
+        let body = terminate_session_body();
+        assert!(
+            body.contains("push_active_sessions_update"),
+            "terminate_session must push real-time update to /sessions/active page subscribers"
         );
     }
 }

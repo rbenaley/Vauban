@@ -426,3 +426,277 @@ async fn create_inactive_api_key(conn: &mut AsyncPgConnection, user_id: i32, nam
 
     key_uuid
 }
+
+// =============================================================================
+// Proxy Session Cleanup Tests
+// =============================================================================
+
+use crate::fixtures::create_simple_ssh_asset;
+use vauban_web::schema::proxy_sessions;
+
+/// Create a proxy session with a specific status and timestamps.
+async fn create_proxy_session_with_timestamps(
+    conn: &mut AsyncPgConnection,
+    user_id: i32,
+    asset_id: i32,
+    status: &str,
+    created_at: chrono::DateTime<Utc>,
+    updated_at: chrono::DateTime<Utc>,
+    connected_at: Option<chrono::DateTime<Utc>>,
+    expires_at: Option<chrono::DateTime<Utc>>,
+) -> (i32, Uuid) {
+    let session_uuid = Uuid::new_v4();
+    let ip: ipnetwork::IpNetwork = unwrap_ok!("127.0.0.1".parse());
+
+    let session_id: i32 = unwrap_ok!(
+        diesel::insert_into(proxy_sessions::table)
+            .values((
+                proxy_sessions::uuid.eq(session_uuid),
+                proxy_sessions::user_id.eq(user_id),
+                proxy_sessions::asset_id.eq(asset_id),
+                proxy_sessions::credential_id.eq("cred-cleanup"),
+                proxy_sessions::credential_username.eq("testuser"),
+                proxy_sessions::session_type.eq("ssh"),
+                proxy_sessions::status.eq(status),
+                proxy_sessions::client_ip.eq(ip),
+                proxy_sessions::created_at.eq(created_at),
+                proxy_sessions::updated_at.eq(updated_at),
+                proxy_sessions::connected_at.eq(connected_at),
+                proxy_sessions::expires_at.eq(expires_at),
+                proxy_sessions::is_recorded.eq(false),
+                proxy_sessions::metadata.eq(serde_json::json!({})),
+            ))
+            .returning(proxy_sessions::id)
+            .get_result(conn)
+            .await
+    );
+
+    (session_id, session_uuid)
+}
+
+/// Stale "connecting" sessions (older than 2 min) should be moved to "disconnected".
+#[tokio::test]
+#[serial]
+async fn test_cleanup_stale_connecting_sessions() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("cleanup_conn_user");
+    let user_id = create_simple_user(&mut conn, &username).await;
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("cleanup-conn"), user_id).await;
+
+    let stale_time = Utc::now() - Duration::minutes(5);
+
+    let (stale_id, _) = create_proxy_session_with_timestamps(
+        &mut conn, user_id, asset_id,
+        "connecting", stale_time, stale_time, None, None,
+    ).await;
+
+    let recent_time = Utc::now();
+    let (fresh_id, _) = create_proxy_session_with_timestamps(
+        &mut conn, user_id, asset_id,
+        "connecting", recent_time, recent_time, None, None,
+    ).await;
+
+    let cutoff = Utc::now() - Duration::minutes(2);
+    let expired: usize = unwrap_ok!(
+        diesel::update(
+            proxy_sessions::table
+                .filter(proxy_sessions::status.eq("connecting"))
+                .filter(proxy_sessions::created_at.lt(cutoff)),
+        )
+        .set((
+            proxy_sessions::status.eq("disconnected"),
+            proxy_sessions::disconnected_at.eq(Some(Utc::now())),
+            proxy_sessions::updated_at.eq(Utc::now()),
+        ))
+        .execute(&mut conn)
+        .await
+    );
+
+    assert!(expired >= 1, "Should disconnect at least 1 stale connecting session");
+
+    let stale_status: String = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::id.eq(stale_id))
+            .select(proxy_sessions::status)
+            .first(&mut conn)
+            .await
+    );
+    assert_eq!(stale_status, "disconnected", "Stale connecting session must be disconnected");
+
+    let fresh_status: String = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::id.eq(fresh_id))
+            .select(proxy_sessions::status)
+            .first(&mut conn)
+            .await
+    );
+    assert_eq!(fresh_status, "connecting", "Recent connecting session must remain connecting");
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Stale "active" sessions without expires_at and old updated_at should be disconnected.
+#[tokio::test]
+#[serial]
+async fn test_cleanup_stale_active_sessions_no_expiry() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("cleanup_stale_user");
+    let user_id = create_simple_user(&mut conn, &username).await;
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("cleanup-stale"), user_id).await;
+
+    let stale_time = Utc::now() - Duration::hours(25);
+
+    let (stale_id, _) = create_proxy_session_with_timestamps(
+        &mut conn, user_id, asset_id,
+        "active", stale_time, stale_time, Some(stale_time), None,
+    ).await;
+
+    let recent_time = Utc::now() - Duration::hours(1);
+    let (fresh_id, _) = create_proxy_session_with_timestamps(
+        &mut conn, user_id, asset_id,
+        "active", recent_time, recent_time, Some(recent_time), None,
+    ).await;
+
+    let now = Utc::now();
+    let cutoff = now - Duration::hours(24);
+    let disconnected: usize = unwrap_ok!(
+        diesel::update(
+            proxy_sessions::table
+                .filter(proxy_sessions::status.eq("active"))
+                .filter(proxy_sessions::expires_at.is_null())
+                .filter(proxy_sessions::updated_at.lt(cutoff)),
+        )
+        .set((
+            proxy_sessions::status.eq("disconnected"),
+            proxy_sessions::disconnected_at.eq(Some(now)),
+            proxy_sessions::updated_at.eq(now),
+        ))
+        .execute(&mut conn)
+        .await
+    );
+
+    assert!(disconnected >= 1, "Should disconnect at least 1 stale active session");
+
+    let stale_status: String = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::id.eq(stale_id))
+            .select(proxy_sessions::status)
+            .first(&mut conn)
+            .await
+    );
+    assert_eq!(stale_status, "disconnected", "Stale active session without expiry must be disconnected");
+
+    let fresh_status: String = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::id.eq(fresh_id))
+            .select(proxy_sessions::status)
+            .first(&mut conn)
+            .await
+    );
+    assert_eq!(fresh_status, "active", "Recent active session must remain active");
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Active sessions with expires_at should NOT be touched by the stale active cleanup.
+#[tokio::test]
+#[serial]
+async fn test_cleanup_stale_active_ignores_sessions_with_expiry() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("cleanup_expiry_user");
+    let user_id = create_simple_user(&mut conn, &username).await;
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("cleanup-exp"), user_id).await;
+
+    let stale_time = Utc::now() - Duration::hours(25);
+    let future_expiry = Utc::now() + Duration::hours(1);
+
+    let (session_id, _) = create_proxy_session_with_timestamps(
+        &mut conn, user_id, asset_id,
+        "active", stale_time, stale_time, Some(stale_time), Some(future_expiry),
+    ).await;
+
+    let now = Utc::now();
+    let cutoff = now - Duration::hours(24);
+    let disconnected: usize = unwrap_ok!(
+        diesel::update(
+            proxy_sessions::table
+                .filter(proxy_sessions::status.eq("active"))
+                .filter(proxy_sessions::expires_at.is_null())
+                .filter(proxy_sessions::updated_at.lt(cutoff)),
+        )
+        .set((
+            proxy_sessions::status.eq("disconnected"),
+            proxy_sessions::disconnected_at.eq(Some(now)),
+            proxy_sessions::updated_at.eq(now),
+        ))
+        .execute(&mut conn)
+        .await
+    );
+
+    assert_eq!(disconnected, 0, "Should NOT disconnect sessions with expires_at set");
+
+    let status: String = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::id.eq(session_id))
+            .select(proxy_sessions::status)
+            .first(&mut conn)
+            .await
+    );
+    assert_eq!(status, "active", "Session with expires_at must remain active");
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Only "connecting" sessions are affected by the connecting cleanup (not "active").
+#[tokio::test]
+#[serial]
+async fn test_cleanup_connecting_does_not_affect_active() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("cleanup_scope_user");
+    let user_id = create_simple_user(&mut conn, &username).await;
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("cleanup-scope"), user_id).await;
+
+    let stale_time = Utc::now() - Duration::minutes(10);
+
+    let (active_id, _) = create_proxy_session_with_timestamps(
+        &mut conn, user_id, asset_id,
+        "active", stale_time, stale_time, Some(stale_time), None,
+    ).await;
+
+    let cutoff = Utc::now() - Duration::minutes(2);
+    let expired: usize = unwrap_ok!(
+        diesel::update(
+            proxy_sessions::table
+                .filter(proxy_sessions::status.eq("connecting"))
+                .filter(proxy_sessions::created_at.lt(cutoff)),
+        )
+        .set((
+            proxy_sessions::status.eq("disconnected"),
+            proxy_sessions::disconnected_at.eq(Some(Utc::now())),
+            proxy_sessions::updated_at.eq(Utc::now()),
+        ))
+        .execute(&mut conn)
+        .await
+    );
+
+    assert_eq!(expired, 0, "Should not expire any active session");
+
+    let status: String = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::id.eq(active_id))
+            .select(proxy_sessions::status)
+            .first(&mut conn)
+            .await
+    );
+    assert_eq!(status, "active", "Active session must not be touched by connecting cleanup");
+
+    test_db::cleanup(&mut conn).await;
+}

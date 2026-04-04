@@ -699,8 +699,6 @@ mod tests {
 
         let allowed = [
             ("assets", "read"),
-            ("sessions", "read"),
-            ("sessions", "create"),
             ("profile", "read"),
             ("profile", "write"),
         ];
@@ -733,6 +731,8 @@ mod tests {
             ("users", "write"),
             ("groups", "write"),
             ("assets", "write"),
+            ("sessions", "read"),
+            ("sessions", "create"),
         ];
 
         for (obj, act) in denied {

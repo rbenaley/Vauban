@@ -30,15 +30,25 @@ impl SessionListItem {
     }
 
     /// Get display name for status.
-    pub fn status_display(&self) -> &str {
+    pub fn status_display(&self) -> String {
         match self.status.as_str() {
-            "active" => "Active",
-            "disconnected" => "Disconnected",
-            "completed" => "Completed",
-            "terminated" => "Terminated",
-            "pending" => "Pending",
-            "failed" => "Failed",
-            _ => &self.status,
+            "active" => "Active".to_string(),
+            "disconnected" => "Disconnected".to_string(),
+            "completed" => "Completed".to_string(),
+            "terminated" => "Terminated".to_string(),
+            "pending" => "Pending".to_string(),
+            "failed" => "Failed".to_string(),
+            "connecting" => "Connecting".to_string(),
+            "expired" => "Expired".to_string(),
+            "approved" => "Approved".to_string(),
+            "consumed" => "Consumed".to_string(),
+            other => {
+                let mut chars = other.chars();
+                match chars.next() {
+                    Some(c) => format!("{}{}", c.to_uppercase(), chars.as_str()),
+                    None => String::new(),
+                }
+            }
         }
     }
 
@@ -76,6 +86,16 @@ pub struct SessionListTemplate {
     /// Whether to show the "View" link (only for admin users).
     pub show_view_link: bool,
     pub pagination: Option<Pagination>,
+    /// Whether WebSocket real-time updates are enabled (admin-only, page 1, no filters).
+    pub ws_enabled: bool,
+}
+
+/// Partial widget for the session list content (used for WS pushes).
+#[derive(Template)]
+#[template(path = "sessions/session_list_content.html")]
+pub struct SessionListContentWidget {
+    pub sessions: Vec<SessionListItem>,
+    pub show_view_link: bool,
 }
 
 #[cfg(test)]
@@ -166,7 +186,31 @@ mod tests {
     #[test]
     fn test_status_display_unknown() {
         let item = create_test_session_item("ssh", "unknown_status", None);
-        assert_eq!(item.status_display(), "unknown_status");
+        assert_eq!(item.status_display(), "Unknown_status");
+    }
+
+    #[test]
+    fn test_status_display_connecting() {
+        let item = create_test_session_item("ssh", "connecting", None);
+        assert_eq!(item.status_display(), "Connecting");
+    }
+
+    #[test]
+    fn test_status_display_expired() {
+        let item = create_test_session_item("ssh", "expired", None);
+        assert_eq!(item.status_display(), "Expired");
+    }
+
+    #[test]
+    fn test_status_display_approved() {
+        let item = create_test_session_item("ssh", "approved", None);
+        assert_eq!(item.status_display(), "Approved");
+    }
+
+    #[test]
+    fn test_status_display_consumed() {
+        let item = create_test_session_item("ssh", "consumed", None);
+        assert_eq!(item.status_display(), "Consumed");
     }
 
     // Tests for is_active()
@@ -259,6 +303,7 @@ mod tests {
             asset_filter: None,
             show_view_link: true,
             pagination: None,
+            ws_enabled: false,
         };
 
         let result = template.render();
@@ -293,6 +338,7 @@ mod tests {
             asset_filter: None,
             show_view_link: false,
             pagination: None,
+            ws_enabled: false,
         };
 
         let result = template.render();
@@ -327,6 +373,7 @@ mod tests {
             asset_filter: None,
             show_view_link: true,
             pagination: None,
+            ws_enabled: true,
         };
 
         assert!(template.show_view_link);
@@ -362,10 +409,113 @@ mod tests {
             asset_filter: None,
             show_view_link: false,
             pagination: None,
+            ws_enabled: false,
         };
 
         assert!(!template.show_view_link);
         let result = template.render();
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_session_list_content_widget_renders() {
+        let widget = SessionListContentWidget {
+            sessions: vec![create_test_session_item("ssh", "active", Some(100))],
+            show_view_link: true,
+        };
+        let result = widget.render();
+        assert!(result.is_ok(), "SessionListContentWidget should render");
+        let html = result.unwrap();
+        assert!(html.contains("Test Asset"));
+        assert!(html.contains("Active"));
+    }
+
+    #[test]
+    fn test_session_list_content_widget_renders_empty() {
+        let widget = SessionListContentWidget {
+            sessions: Vec::new(),
+            show_view_link: false,
+        };
+        let result = widget.render();
+        assert!(result.is_ok());
+        let html = result.unwrap();
+        assert!(html.contains("No sessions"));
+    }
+
+    #[test]
+    fn test_session_list_ws_enabled_renders_ws_connect() {
+        use crate::templates::base::{UserContext, VaubanConfig};
+
+        let template = SessionListTemplate {
+            title: "Sessions".to_string(),
+            user: Some(UserContext {
+                uuid: "admin".to_string(),
+                username: "admin".to_string(),
+                display_name: "Admin".to_string(),
+                is_superuser: true,
+                is_staff: true,
+            }),
+            vauban: VaubanConfig {
+                brand_name: "VAUBAN".to_string(),
+                brand_logo: None,
+                theme: "dark".to_string(),
+            },
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            sessions: Vec::new(),
+            status_filter: None,
+            type_filter: None,
+            asset_filter: None,
+            show_view_link: true,
+            pagination: None,
+            ws_enabled: true,
+        };
+
+        let html = template.render().unwrap();
+        assert!(
+            html.contains("ws-connect=\"/ws/sessions/list\""),
+            "WS-enabled template must include ws-connect"
+        );
+        assert!(html.contains("Live"), "WS-enabled template must show Live badge");
+    }
+
+    #[test]
+    fn test_session_list_ws_disabled_no_ws_connect() {
+        use crate::templates::base::{UserContext, VaubanConfig};
+
+        let template = SessionListTemplate {
+            title: "Sessions".to_string(),
+            user: Some(UserContext {
+                uuid: "test".to_string(),
+                username: "testuser".to_string(),
+                display_name: "Test User".to_string(),
+                is_superuser: false,
+                is_staff: false,
+            }),
+            vauban: VaubanConfig {
+                brand_name: "VAUBAN".to_string(),
+                brand_logo: None,
+                theme: "dark".to_string(),
+            },
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            sessions: Vec::new(),
+            status_filter: None,
+            type_filter: None,
+            asset_filter: None,
+            show_view_link: false,
+            pagination: None,
+            ws_enabled: false,
+        };
+
+        let html = template.render().unwrap();
+        assert!(
+            !html.contains("ws-connect=\"/ws/sessions/list\""),
+            "WS-disabled template must NOT include session list ws-connect"
+        );
     }
 }

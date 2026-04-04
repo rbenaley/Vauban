@@ -18,5 +18,5 @@ pub use approval_list::ApprovalListTemplate;
 pub use my_requests::MyRequestsTemplate;
 pub use recording_list::RecordingListTemplate;
 pub use session_detail::SessionDetailTemplate;
-pub use session_list::SessionListTemplate;
+pub use session_list::{SessionListContentWidget, SessionListItem, SessionListTemplate};
 pub use terminal::TerminalTemplate;

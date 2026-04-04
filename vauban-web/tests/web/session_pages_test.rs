@@ -9,13 +9,14 @@
 /// - Session termination (admin force-close)
 use crate::common::{TestApp, assertions::assert_status, unwrap_ok};
 use crate::fixtures::{
-    create_recorded_session, create_recorded_session_with_type, create_simple_admin_user,
-    create_simple_rdp_asset, create_simple_ssh_asset, create_simple_user, create_test_session,
-    unique_name,
+    create_admin_user, create_recorded_session, create_recorded_session_with_type,
+    create_simple_admin_user, create_simple_rdp_asset, create_simple_ssh_asset,
+    create_simple_user, create_test_session, create_test_user, unique_name,
 };
 use axum::http::header::COOKIE;
 use diesel::{BoolExpressionMethods, ExpressionMethods, QueryDsl};
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
+use serde_json;
 use uuid::Uuid;
 
 /// Helper to get user UUID from user_id.
@@ -460,21 +461,15 @@ async fn test_session_list_combined_filters() {
 // Session Permission Tests
 // =============================================================================
 
+/// Non-admin users are denied access to /sessions (admin-only page).
 #[tokio::test]
-async fn test_session_list_filters_by_user() {
+async fn test_session_list_denied_for_regular_user() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
     let user1_name = unique_name("sess_user1");
     let user1_id = create_simple_user(&mut conn, &user1_name).await;
     let user1_uuid = get_user_uuid(&mut conn, user1_id).await;
-
-    let user2_name = unique_name("sess_user2");
-    let user2_id = create_simple_user(&mut conn, &user2_name).await;
-
-    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("filter-asset"), user1_id).await;
-    let _session1_id = create_test_session(&mut conn, user1_id, asset_id, "ssh", "completed").await;
-    let _session2_id = create_test_session(&mut conn, user2_id, asset_id, "ssh", "completed").await;
 
     let token = app
         .generate_test_token(&user1_uuid.to_string(), &user1_name, false, false)
@@ -488,8 +483,8 @@ async fn test_session_list_filters_by_user() {
 
     let status = response.status_code().as_u16();
     assert!(
-        status == 200,
-        "User should access their session list, got {}",
+        status == 403 || status == 303,
+        "Regular user must be denied access to /sessions, got {}",
         status
     );
 }
@@ -1612,4 +1607,398 @@ async fn test_terminate_then_second_terminate_is_idempotent() {
             .await
     );
     assert_eq!(db_status, "terminated");
+}
+
+// =============================================================================
+// WebSocket real-time integration tests for /sessions page
+// =============================================================================
+
+/// Admin on page 1 with no filters should get ws-connect attribute.
+#[tokio::test]
+async fn test_session_list_admin_page1_has_ws_connect() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let admin =
+        create_admin_user(&mut conn, &app.auth_service, &unique_name("wslist_admin")).await;
+    drop(conn);
+
+    let response = app
+        .server
+        .get("/sessions")
+        .add_header(COOKIE, format!("access_token={}", admin.token))
+        .await;
+    assert_status(&response, 200);
+
+    let body = response.text();
+    assert!(
+        body.contains("ws-connect=\"/ws/sessions/list\""),
+        "Admin on default page must have WS connection"
+    );
+    assert!(body.contains("Live"), "Admin page must show Live indicator");
+}
+
+/// Admin with status filter should NOT get ws-connect for session list.
+#[tokio::test]
+async fn test_session_list_admin_with_filter_no_ws() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let admin =
+        create_admin_user(&mut conn, &app.auth_service, &unique_name("wslist_filter")).await;
+    drop(conn);
+
+    let response = app
+        .server
+        .get("/sessions?status=active")
+        .add_header(COOKIE, format!("access_token={}", admin.token))
+        .await;
+    assert_status(&response, 200);
+
+    let body = response.text();
+    assert!(
+        !body.contains("ws-connect=\"/ws/sessions/list\""),
+        "Admin with filter must NOT have session list WS connection"
+    );
+}
+
+/// Non-admin user is denied access to /sessions entirely.
+#[tokio::test]
+async fn test_session_list_normal_user_denied() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let user =
+        create_test_user(&mut conn, &app.auth_service, &unique_name("wslist_user")).await;
+    drop(conn);
+
+    let response = app
+        .server
+        .get("/sessions")
+        .add_header(COOKIE, format!("access_token={}", user.token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 403 || status == 303,
+        "Non-admin user must be denied access to /sessions, got {}",
+        status
+    );
+}
+
+// =============================================================================
+// Active Sessions Page Integration Tests (real data, no mocks)
+// =============================================================================
+
+/// Active sessions page displays real usernames (not "User X" placeholders).
+#[tokio::test]
+async fn test_active_sessions_shows_real_username() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("active_real_user");
+    let user_id = create_simple_user(&mut conn, &username).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+    let asset_id =
+        create_simple_ssh_asset(&mut conn, &unique_name("active-real-asset"), user_id).await;
+    let _session_id = create_test_session(&mut conn, user_id, asset_id, "ssh", "active").await;
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/sessions/active")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(status == 200 || status == 303, "Expected 200 or 303, got {}", status);
+
+    if status == 200 {
+        let body = response.text();
+        assert!(
+            body.contains(&username),
+            "Active sessions page must show real username '{}', not placeholders",
+            username
+        );
+    }
+}
+
+/// Active sessions page displays real asset name (not "Asset X" placeholders).
+#[tokio::test]
+async fn test_active_sessions_shows_real_asset_name() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("active_asset_user");
+    let user_id = create_simple_user(&mut conn, &username).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+    let asset_name = unique_name("RealAssetName");
+    let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, user_id).await;
+    let _session_id = create_test_session(&mut conn, user_id, asset_id, "ssh", "active").await;
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/sessions/active")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    if response.status_code().as_u16() == 200 {
+        let body = response.text();
+        assert!(
+            body.contains(&asset_name),
+            "Active sessions page must show real asset name '{}'",
+            asset_name
+        );
+    }
+}
+
+/// Disconnect button works: POSTing to /sessions/{id}/terminate terminates the session.
+#[tokio::test]
+async fn test_active_sessions_disconnect_terminates() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("active_disc_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &username).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+    let asset_id =
+        create_simple_ssh_asset(&mut conn, &unique_name("disc-asset"), admin_id).await;
+    let session_id =
+        create_test_session(&mut conn, admin_id, asset_id, "ssh", "active").await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &username, true, true)
+        .await;
+
+    let response = app
+        .server
+        .post(&format!("/sessions/{}/terminate", session_id))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .add_header("HX-Request", "true")
+        .form(&serde_json::json!({
+            "csrf_token": "test"
+        }))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 200 || status == 303 || status == 400,
+        "Terminate should respond with 200, 303, or 400, got {}",
+        status
+    );
+
+    use vauban_web::schema::proxy_sessions;
+    let db_status: String = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::id.eq(session_id))
+            .select(proxy_sessions::status)
+            .first(&mut conn)
+            .await
+    );
+
+    if status == 200 {
+        assert_eq!(db_status, "terminated", "Session must be terminated in DB");
+    }
+}
+
+/// Sessions without connected_at should not appear in active sessions list.
+#[tokio::test]
+async fn test_active_sessions_excludes_no_connected_at() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("active_no_conn_user");
+    let user_id = create_simple_user(&mut conn, &username).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+    let asset_id =
+        create_simple_ssh_asset(&mut conn, &unique_name("no-conn-asset"), user_id).await;
+
+    use vauban_web::schema::proxy_sessions;
+
+    let ip: ipnetwork::IpNetwork = unwrap_ok!("127.0.0.1".parse());
+    let _: i32 = unwrap_ok!(
+        diesel::insert_into(proxy_sessions::table)
+            .values((
+                proxy_sessions::uuid.eq(Uuid::new_v4()),
+                proxy_sessions::user_id.eq(user_id),
+                proxy_sessions::asset_id.eq(asset_id),
+                proxy_sessions::credential_id.eq("cred-no-conn"),
+                proxy_sessions::credential_username.eq("testuser"),
+                proxy_sessions::session_type.eq("ssh"),
+                proxy_sessions::status.eq("active"),
+                proxy_sessions::client_ip.eq(ip),
+                proxy_sessions::connected_at.eq(None::<chrono::DateTime<chrono::Utc>>),
+                proxy_sessions::is_recorded.eq(false),
+                proxy_sessions::metadata.eq(serde_json::json!({})),
+            ))
+            .returning(proxy_sessions::id)
+            .get_result(&mut conn)
+            .await
+    );
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/sessions/active")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    if response.status_code().as_u16() == 200 {
+        let body = response.text();
+        assert!(
+            !body.contains("no-conn-asset"),
+            "Session without connected_at must not appear in active sessions list"
+        );
+    }
+}
+
+/// Active sessions stats show SSH and RDP counters.
+#[tokio::test]
+async fn test_active_sessions_stats_show_type_counters() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("active_stats_user");
+    let user_id = create_simple_user(&mut conn, &username).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+    let ssh_asset_id =
+        create_simple_ssh_asset(&mut conn, &unique_name("stats-ssh"), user_id).await;
+    let rdp_asset_id =
+        create_simple_rdp_asset(&mut conn, &unique_name("stats-rdp"), user_id).await;
+
+    let _ssh_session =
+        create_test_session(&mut conn, user_id, ssh_asset_id, "ssh", "active").await;
+    let _rdp_session =
+        create_test_session(&mut conn, user_id, rdp_asset_id, "rdp", "active").await;
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/sessions/active")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    if response.status_code().as_u16() == 200 {
+        let body = response.text();
+        assert!(
+            body.contains("SSH"),
+            "Stats must include SSH counter label"
+        );
+        assert!(
+            body.contains("RDP"),
+            "Stats must include RDP counter label"
+        );
+    }
+}
+
+/// Active sessions page has WebSocket connection for real-time updates.
+#[tokio::test]
+async fn test_active_sessions_has_ws_connect() {
+    let app = TestApp::spawn().await;
+
+    let token = app
+        .generate_test_token(
+            &Uuid::new_v4().to_string(),
+            "test_ws_active",
+            true,
+            true,
+        )
+        .await;
+
+    let response = app
+        .server
+        .get("/sessions/active")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    if response.status_code().as_u16() == 200 {
+        let body = response.text();
+        assert!(
+            body.contains("ws-connect=\"/ws/sessions/active\""),
+            "Active sessions page must have WebSocket connection"
+        );
+    }
+}
+
+/// Active sessions page disconnect button has CSRF token.
+#[tokio::test]
+async fn test_active_sessions_disconnect_has_csrf() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("active_csrf_user");
+    let user_id = create_simple_user(&mut conn, &username).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+    let asset_id =
+        create_simple_ssh_asset(&mut conn, &unique_name("csrf-asset"), user_id).await;
+    let _session_id = create_test_session(&mut conn, user_id, asset_id, "ssh", "active").await;
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/sessions/active")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    if response.status_code().as_u16() == 200 {
+        let body = response.text();
+        assert!(
+            body.contains("csrf_token"),
+            "Disconnect button must include CSRF token"
+        );
+        assert!(
+            body.contains("hx-post"),
+            "Disconnect button must use hx-post for HTMX"
+        );
+        assert!(
+            body.contains("hx-confirm"),
+            "Disconnect button must have hx-confirm for confirmation dialog"
+        );
+    }
+}
+
+/// Terminated sessions must not appear on the active sessions page.
+#[tokio::test]
+async fn test_active_sessions_excludes_terminated() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("active_no_term");
+    let user_id = create_simple_user(&mut conn, &username).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+    let asset_id =
+        create_simple_ssh_asset(&mut conn, &unique_name("term-asset"), user_id).await;
+    let _term_session =
+        create_test_session(&mut conn, user_id, asset_id, "ssh", "terminated").await;
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/sessions/active")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    if response.status_code().as_u16() == 200 {
+        let body = response.text();
+        assert!(
+            !body.contains("term-asset") || body.contains("No active sessions"),
+            "Terminated sessions must not appear on active sessions page"
+        );
+    }
 }

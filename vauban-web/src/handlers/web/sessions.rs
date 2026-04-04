@@ -2,12 +2,18 @@
 use super::*;
 use crate::models::session::SessionType;
 
-/// Session list page.
+/// Session list page (admin-only).
 pub async fn session_list(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
+    if !check_rbac(&state, &auth_user, "admin", "view").await {
+        return Err(AppError::Authorization(
+            "Only administrators can view all sessions".to_string(),
+        ));
+    }
+
     use crate::templates::sessions::session_list::SessionListItem;
 
     let user = Some(user_context_from_auth(&auth_user));
@@ -208,6 +214,10 @@ pub async fn session_list(
         None
     };
 
+    let has_filters =
+        status_filter.is_some() || type_filter.is_some() || asset_filter.is_some();
+    let ws_enabled = user_is_admin && !has_filters && page == 1;
+
     let template = WebSessionListTemplate {
         title,
         user: user_ctx,
@@ -222,6 +232,7 @@ pub async fn session_list(
         asset_filter,
         show_view_link: user_is_admin,
         pagination,
+        ws_enabled,
     };
 
     let html = template
@@ -1932,7 +1943,7 @@ pub async fn active_sessions(
 
     #[allow(clippy::type_complexity)]
     let sessions_data: Vec<(
-        uuid::Uuid, String, String, String,
+        i32, uuid::Uuid, String, String, String,
         String, ipnetwork::IpNetwork,
         Option<chrono::DateTime<chrono::Utc>>,
     )> = proxy_sessions::table
@@ -1941,6 +1952,7 @@ pub async fn active_sessions(
         .filter(proxy_sessions::status.eq("active"))
         .filter(proxy_sessions::connected_at.is_not_null())
         .select((
+            proxy_sessions::id,
             proxy_sessions::uuid,
             users::username,
             schema_assets::name,
@@ -1959,7 +1971,7 @@ pub async fn active_sessions(
     let sessions: Vec<crate::templates::sessions::active_list::ActiveSessionItem> = sessions_data
         .into_iter()
         .filter_map(
-            |(uuid, username, asset_name, asset_hostname, session_type, client_ip, connected_at)| {
+            |(session_id, uuid, username, asset_name, asset_hostname, session_type, client_ip, connected_at)| {
                 let connected = connected_at?;
                 let duration = chrono::Utc::now().signed_duration_since(connected);
                 let duration_str = if duration.num_hours() > 0 {
@@ -1975,6 +1987,7 @@ pub async fn active_sessions(
                 };
 
                 Some(crate::templates::sessions::active_list::ActiveSessionItem {
+                    id: session_id,
                     uuid: uuid.to_string(),
                     username,
                     asset_name,

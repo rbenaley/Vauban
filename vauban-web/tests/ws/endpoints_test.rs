@@ -720,3 +720,107 @@ async fn test_l8_ws_limit_per_user_independent() {
 
     drop(guards);
 }
+
+// ==================== Session List WebSocket Tests ====================
+
+/// Test session list WebSocket endpoint exists and accepts admin connections.
+#[tokio::test]
+#[serial]
+async fn test_session_list_ws_endpoint_exists() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let admin = create_admin_user(
+        &mut conn,
+        &app.auth_service,
+        &unique_name("wssessionlist"),
+    )
+    .await;
+    drop(conn);
+    {
+        let mut c = app.get_conn().await;
+        test_db::cleanup(&mut c).await;
+    }
+
+    let response = app
+        .server
+        .get("/ws/sessions/list")
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(header::UPGRADE, "websocket")
+        .add_header(header::CONNECTION, "Upgrade")
+        .add_header(header::SEC_WEBSOCKET_KEY, "dGhlIHNhbXBsZSBub25jZQ==")
+        .add_header(header::SEC_WEBSOCKET_VERSION, "13")
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 101 || status == 400 || status == 426,
+        "Expected 101, 400, or 426, got {}",
+        status
+    );
+}
+
+/// Test session list WebSocket requires authentication.
+#[tokio::test]
+#[serial]
+async fn test_session_list_ws_requires_auth() {
+    let app = TestApp::spawn().await;
+    {
+        let mut c = app.get_conn().await;
+        test_db::cleanup(&mut c).await;
+    }
+
+    let response = app
+        .server
+        .get("/ws/sessions/list")
+        .add_header(header::UPGRADE, "websocket")
+        .add_header(header::CONNECTION, "Upgrade")
+        .add_header(header::SEC_WEBSOCKET_KEY, "dGhlIHNhbXBsZSBub25jZQ==")
+        .add_header(header::SEC_WEBSOCKET_VERSION, "13")
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 401 || status == 303 || status == 400 || status == 426,
+        "Expected 401, 303, 400, or 426, got {}",
+        status
+    );
+}
+
+/// Test SessionsList broadcast channel works end-to-end.
+#[tokio::test]
+#[serial]
+async fn test_session_list_broadcast_channel() {
+    use vauban_web::services::broadcast::{BroadcastService, WsChannel, WsMessage};
+
+    let broadcast = BroadcastService::new();
+
+    let mut receiver = broadcast.subscribe(&WsChannel::SessionsList).await;
+
+    let msg = WsMessage::new("ws-session-list-content", "<ul>sessions</ul>".to_string());
+    let result = broadcast.send(&WsChannel::SessionsList, msg).await;
+
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap(), 1);
+
+    let received = receiver.recv().await;
+    assert!(received.is_ok());
+
+    let html = received.unwrap();
+    assert!(html.contains("ws-session-list-content"));
+    assert!(html.contains("<ul>sessions</ul>"));
+    assert!(html.contains("hx-swap-oob"));
+}
+
+/// Test SessionsList channel roundtrip (as_str -> parse).
+#[tokio::test]
+#[serial]
+async fn test_session_list_channel_roundtrip() {
+    use vauban_web::services::broadcast::WsChannel;
+
+    let channel = WsChannel::SessionsList;
+    let str_val = channel.as_str();
+    assert_eq!(str_val, "sessions:list");
+
+    let parsed = WsChannel::parse(&str_val);
+    assert_eq!(parsed, Some(WsChannel::SessionsList));
+}

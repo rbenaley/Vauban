@@ -293,6 +293,10 @@ fn build_test_router(state: AppState) -> Router {
             "/ws/sessions/active",
             get(handlers::websocket::active_sessions_ws),
         )
+        .route(
+            "/ws/sessions/list",
+            get(handlers::websocket::session_list_ws),
+        )
         .layer(ws_limit_layer);
 
     Router::new()

@@ -18,6 +18,13 @@ const CLEANUP_INTERVAL_SECS: u64 = 30;
 /// Pending access requests older than this are expired automatically.
 const PENDING_REQUEST_TTL_HOURS: i64 = 24;
 
+/// Sessions stuck in "connecting" longer than this are considered abandoned.
+const CONNECTING_TTL_MINUTES: i64 = 2;
+
+/// Active sessions without `expires_at` that have not been updated for this
+/// long are considered stale (server restart, network loss, etc.).
+const STALE_ACTIVE_TTL_HOURS: i64 = 24;
+
 /// Start all cleanup tasks.
 pub async fn start_cleanup_tasks(db_pool: DbPool) {
     let db_pool = Arc::new(db_pool);
@@ -93,6 +100,26 @@ async fn session_cleanup_task(db_pool: Arc<DbPool>) {
                 }
             }
             Err(e) => error!(error = %e, "Failed to expire stale approved sessions"),
+        }
+
+        // Expire sessions stuck in "connecting" for too long
+        match expire_stale_connecting_sessions(&db_pool).await {
+            Ok(count) => {
+                if count > 0 {
+                    info!(expired = count, "Expired stale connecting sessions");
+                }
+            }
+            Err(e) => error!(error = %e, "Failed to expire stale connecting sessions"),
+        }
+
+        // Disconnect stale active sessions without expires_at
+        match disconnect_stale_active_sessions(&db_pool).await {
+            Ok(count) => {
+                if count > 0 {
+                    info!(disconnected = count, "Disconnected stale active sessions (no expiry, no update for {}h)", STALE_ACTIVE_TTL_HOURS);
+                }
+            }
+            Err(e) => error!(error = %e, "Failed to disconnect stale active sessions"),
         }
     }
 }
@@ -211,6 +238,64 @@ async fn expire_stale_pending_requests(db_pool: &DbPool) -> Result<usize, String
     .map_err(|e| e.to_string())?;
 
     Ok(expired)
+}
+
+/// Expire sessions stuck in "connecting" for longer than CONNECTING_TTL_MINUTES.
+///
+/// This catches cases where the WebSocket was never established (browser closed,
+/// proxy failure, network loss before the connection completed).
+async fn expire_stale_connecting_sessions(db_pool: &DbPool) -> Result<usize, String> {
+    use diesel_async::RunQueryDsl;
+
+    let mut conn = db_pool.get().await.map_err(|e| e.to_string())?;
+    let cutoff = Utc::now() - chrono::Duration::minutes(CONNECTING_TTL_MINUTES);
+
+    let expired = diesel::update(
+        proxy_sessions::table
+            .filter(proxy_sessions::status.eq("connecting"))
+            .filter(proxy_sessions::created_at.lt(cutoff)),
+    )
+    .set((
+        proxy_sessions::status.eq("disconnected"),
+        proxy_sessions::disconnected_at.eq(Some(Utc::now())),
+        proxy_sessions::updated_at.eq(Utc::now()),
+    ))
+    .execute(&mut conn)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(expired)
+}
+
+/// Disconnect active sessions that have no `expires_at` and have not been
+/// updated for STALE_ACTIVE_TTL_HOURS.
+///
+/// Sessions with `expires_at` are handled by `terminate_expired_proxy_sessions`.
+/// This catches sessions orphaned by server restarts, network outages, or
+/// WebSocket closures that failed to update the database.
+async fn disconnect_stale_active_sessions(db_pool: &DbPool) -> Result<usize, String> {
+    use diesel_async::RunQueryDsl;
+
+    let mut conn = db_pool.get().await.map_err(|e| e.to_string())?;
+    let now = Utc::now();
+    let cutoff = now - chrono::Duration::hours(STALE_ACTIVE_TTL_HOURS);
+
+    let disconnected = diesel::update(
+        proxy_sessions::table
+            .filter(proxy_sessions::status.eq("active"))
+            .filter(proxy_sessions::expires_at.is_null())
+            .filter(proxy_sessions::updated_at.lt(cutoff)),
+    )
+    .set((
+        proxy_sessions::status.eq("disconnected"),
+        proxy_sessions::disconnected_at.eq(Some(now)),
+        proxy_sessions::updated_at.eq(now),
+    ))
+    .execute(&mut conn)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(disconnected)
 }
 
 #[cfg(test)]
@@ -536,5 +621,175 @@ mod tests {
 
         let should_delete = !is_active || is_expired;
         assert!(should_delete); // Expired keys get deleted
+    }
+
+    // ==================== Stale Connecting Sessions Tests ====================
+
+    #[test]
+    fn test_connecting_ttl_is_reasonable() {
+        assert!(
+            (1..=10).contains(&CONNECTING_TTL_MINUTES),
+            "CONNECTING_TTL_MINUTES should be between 1 and 10"
+        );
+    }
+
+    #[test]
+    fn test_expire_stale_connecting_sessions_exists() {
+        let source = include_str!("cleanup.rs");
+        assert!(
+            source.contains("fn expire_stale_connecting_sessions"),
+            "expire_stale_connecting_sessions function must exist"
+        );
+    }
+
+    #[test]
+    fn test_expire_stale_connecting_filters_status() {
+        let source = include_str!("cleanup.rs");
+        let fn_start = source
+            .find("fn expire_stale_connecting_sessions")
+            .expect("function must exist");
+        let fn_body = &source[fn_start..];
+        let fn_end = fn_body[1..]
+            .find("\nasync fn ")
+            .or_else(|| fn_body[1..].find("\n/// "))
+            .or_else(|| fn_body[1..].find("#[cfg(test)]"))
+            .unwrap_or(fn_body.len());
+        let fn_body = &fn_body[..fn_end];
+
+        assert!(
+            fn_body.contains("status.eq(\"connecting\")"),
+            "must filter on status = connecting"
+        );
+        assert!(
+            fn_body.contains("created_at.lt(cutoff)"),
+            "must filter on created_at < cutoff"
+        );
+    }
+
+    #[test]
+    fn test_expire_stale_connecting_sets_disconnected() {
+        let source = include_str!("cleanup.rs");
+        let fn_start = source
+            .find("fn expire_stale_connecting_sessions")
+            .expect("function must exist");
+        let fn_body = &source[fn_start..];
+        let fn_end = fn_body[1..]
+            .find("\nasync fn ")
+            .or_else(|| fn_body[1..].find("\n/// "))
+            .or_else(|| fn_body[1..].find("#[cfg(test)]"))
+            .unwrap_or(fn_body.len());
+        let fn_body = &fn_body[..fn_end];
+
+        assert!(
+            fn_body.contains("status.eq(\"disconnected\")"),
+            "must set status to disconnected"
+        );
+    }
+
+    // ==================== Stale Active Sessions Tests ====================
+
+    #[test]
+    fn test_stale_active_ttl_is_reasonable() {
+        assert!(
+            (1..=72).contains(&STALE_ACTIVE_TTL_HOURS),
+            "STALE_ACTIVE_TTL_HOURS should be between 1 and 72"
+        );
+    }
+
+    #[test]
+    fn test_disconnect_stale_active_sessions_exists() {
+        let source = include_str!("cleanup.rs");
+        assert!(
+            source.contains("fn disconnect_stale_active_sessions"),
+            "disconnect_stale_active_sessions function must exist"
+        );
+    }
+
+    #[test]
+    fn test_disconnect_stale_active_filters_correctly() {
+        let source = include_str!("cleanup.rs");
+        let fn_start = source
+            .find("fn disconnect_stale_active_sessions")
+            .expect("function must exist");
+        let fn_body = &source[fn_start..];
+        let fn_end = fn_body[1..]
+            .find("\nasync fn ")
+            .or_else(|| fn_body[1..].find("\n/// "))
+            .or_else(|| fn_body[1..].find("#[cfg(test)]"))
+            .unwrap_or(fn_body.len());
+        let fn_body = &fn_body[..fn_end];
+
+        assert!(
+            fn_body.contains("status.eq(\"active\")"),
+            "must filter on status = active"
+        );
+        assert!(
+            fn_body.contains("expires_at.is_null()"),
+            "must only target sessions without expires_at"
+        );
+        assert!(
+            fn_body.contains("updated_at.lt(cutoff)"),
+            "must filter on updated_at < cutoff"
+        );
+    }
+
+    #[test]
+    fn test_disconnect_stale_active_sets_disconnected() {
+        let source = include_str!("cleanup.rs");
+        let fn_start = source
+            .find("fn disconnect_stale_active_sessions")
+            .expect("function must exist");
+        let fn_body = &source[fn_start..];
+        let fn_end = fn_body[1..]
+            .find("\nasync fn ")
+            .or_else(|| fn_body[1..].find("\n/// "))
+            .or_else(|| fn_body[1..].find("#[cfg(test)]"))
+            .unwrap_or(fn_body.len());
+        let fn_body = &fn_body[..fn_end];
+
+        assert!(
+            fn_body.contains("status.eq(\"disconnected\")"),
+            "must set status to disconnected"
+        );
+    }
+
+    // ==================== Cleanup Task Calls All Functions ====================
+
+    #[test]
+    fn test_cleanup_task_calls_connecting_cleanup() {
+        let source = include_str!("cleanup.rs");
+        let fn_start = source
+            .find("fn session_cleanup_task")
+            .expect("session_cleanup_task must exist");
+        let fn_body = &source[fn_start..];
+        let fn_end = fn_body[1..]
+            .find("\nasync fn ")
+            .or_else(|| fn_body[1..].find("\n/// "))
+            .unwrap_or(fn_body.len());
+        let fn_body = &fn_body[..fn_end];
+
+        assert!(
+            fn_body.contains("expire_stale_connecting_sessions"),
+            "session_cleanup_task must call expire_stale_connecting_sessions"
+        );
+    }
+
+    #[test]
+    fn test_cleanup_task_calls_stale_active_cleanup() {
+        let source = include_str!("cleanup.rs");
+        let fn_start = source
+            .find("fn session_cleanup_task")
+            .expect("session_cleanup_task must exist");
+        let fn_body = &source[fn_start..];
+        let fn_end = fn_body[1..]
+            .find("\nasync fn ")
+            .or_else(|| fn_body[1..].find("\n/// "))
+            .unwrap_or(fn_body.len());
+        let fn_body = &fn_body[..fn_end];
+
+        assert!(
+            fn_body.contains("disconnect_stale_active_sessions"),
+            "session_cleanup_task must call disconnect_stale_active_sessions"
+        );
     }
 }

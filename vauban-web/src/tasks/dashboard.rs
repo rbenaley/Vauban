@@ -20,6 +20,7 @@ use crate::templates::dashboard::widgets::{
 };
 use crate::templates::sessions::{
     ActiveListContentWidget, ActiveListStatsWidget, ActiveSessionItem as FullActiveSessionItem,
+    SessionListContentWidget, SessionListItem,
 };
 
 /// Interval for stats updates (30 seconds).
@@ -55,6 +56,13 @@ pub async fn start_dashboard_tasks(broadcast: BroadcastService, db_pool: DbPool)
     let db_clone = Arc::clone(&db_pool);
     tokio::spawn(async move {
         activity_updater(broadcast_clone, db_clone).await;
+    });
+
+    // Spawn session list updater (for /sessions page real-time updates)
+    let broadcast_clone = Arc::clone(&broadcast);
+    let db_clone = Arc::clone(&db_pool);
+    tokio::spawn(async move {
+        session_list_updater(broadcast_clone, db_clone).await;
     });
 
     info!("Dashboard background tasks started");
@@ -182,6 +190,35 @@ async fn activity_updater(broadcast: Arc<BroadcastService>, db_pool: Arc<DbPool>
     }
 }
 
+/// Task that pushes session list updates (for /sessions page).
+async fn session_list_updater(broadcast: Arc<BroadcastService>, db_pool: Arc<DbPool>) {
+    let mut ticker = interval(Duration::from_secs(SESSIONS_INTERVAL_SECS));
+
+    loop {
+        ticker.tick().await;
+
+        match fetch_session_list(&db_pool).await {
+            Ok(sessions) => {
+                let widget = SessionListContentWidget {
+                    sessions,
+                    show_view_link: true,
+                };
+                if let Ok(html) = widget.render() {
+                    let msg = WsMessage::new("ws-session-list-content", html);
+                    if broadcast
+                        .send(&WsChannel::SessionsList, msg)
+                        .await
+                        .is_err()
+                    {
+                        trace!("No subscribers for session list channel");
+                    }
+                }
+            }
+            Err(e) => error!(error = %e, "Failed to fetch session list"),
+        }
+    }
+}
+
 /// Fetch dashboard statistics from database.
 async fn fetch_stats(db_pool: &DbPool) -> Result<StatsData, String> {
     let mut conn = db_pool.get().await.map_err(|e| e.to_string())?;
@@ -259,38 +296,69 @@ async fn fetch_active_sessions(db_pool: &DbPool) -> Result<Vec<ActiveSessionItem
 }
 
 /// Fetch active sessions with full details for the dedicated page.
+///
+/// Uses JOIN queries to resolve real usernames and asset names (not placeholders).
 async fn fetch_active_sessions_full(
     db_pool: &DbPool,
 ) -> Result<Vec<FullActiveSessionItem>, String> {
     let mut conn = db_pool.get().await.map_err(|e| e.to_string())?;
 
-    use crate::models::session::ProxySession;
-    use crate::schema::proxy_sessions::dsl::*;
+    use crate::schema::{assets as schema_assets, proxy_sessions, users};
+    use diesel::{ExpressionMethods, JoinOnDsl, QueryDsl};
+    use diesel_async::RunQueryDsl;
 
-    let sessions: Vec<ProxySession> = proxy_sessions
-        .filter(status.eq("active"))
-        .order(created_at.desc())
+    #[allow(clippy::type_complexity)]
+    let rows: Vec<(
+        i32,
+        uuid::Uuid,
+        String,
+        String,
+        String,
+        String,
+        ipnetwork::IpNetwork,
+        Option<chrono::DateTime<chrono::Utc>>,
+    )> = proxy_sessions::table
+        .inner_join(schema_assets::table)
+        .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
+        .filter(proxy_sessions::status.eq("active"))
+        .filter(proxy_sessions::connected_at.is_not_null())
+        .select((
+            proxy_sessions::id,
+            proxy_sessions::uuid,
+            users::username,
+            schema_assets::name,
+            schema_assets::hostname,
+            proxy_sessions::session_type,
+            proxy_sessions::client_ip,
+            proxy_sessions::connected_at,
+        ))
+        .order(proxy_sessions::connected_at.desc())
         .load(&mut conn)
         .await
         .unwrap_or_default();
 
     let now = Utc::now();
-    Ok(sessions
+    Ok(rows
         .into_iter()
-        .map(|s| {
-            let duration_secs = now.signed_duration_since(s.created_at).num_seconds();
-            let duration_str = format_duration(duration_secs);
-            FullActiveSessionItem {
-                uuid: s.uuid.to_string(),
-                username: format!("User {}", s.user_id),
-                asset_name: format!("Asset {}", s.asset_id),
-                asset_hostname: s.client_ip.to_string(),
-                session_type: s.session_type.to_string(),
-                client_ip: s.client_ip.to_string(),
-                connected_at: s.created_at.format("%Y-%m-%d %H:%M").to_string(),
-                duration: duration_str,
-            }
-        })
+        .filter_map(
+            |(session_id, uuid, username, asset_name, asset_hostname, session_type, client_ip, connected_at):
+             (i32, uuid::Uuid, String, String, String, String, ipnetwork::IpNetwork, Option<chrono::DateTime<chrono::Utc>>)| {
+                let connected = connected_at?;
+                let duration_secs = now.signed_duration_since(connected).num_seconds();
+                let duration_str = format_duration(duration_secs);
+                Some(FullActiveSessionItem {
+                    id: session_id,
+                    uuid: uuid.to_string(),
+                    username,
+                    asset_name,
+                    asset_hostname,
+                    session_type,
+                    client_ip: client_ip.ip().to_string(),
+                    connected_at: connected.format("%H:%M:%S").to_string(),
+                    duration: duration_str,
+                })
+            },
+        )
         .collect())
 }
 
@@ -325,6 +393,140 @@ async fn fetch_recent_activity(db_pool: &DbPool) -> Result<Vec<ActivityItem>, St
             }
         })
         .collect())
+}
+
+/// Fetch session list for the /sessions page (admin view, page 1, no filters).
+async fn fetch_session_list(db_pool: &DbPool) -> Result<Vec<SessionListItem>, String> {
+    use crate::schema::{assets as schema_assets, proxy_sessions};
+
+    let mut conn = db_pool.get().await.map_err(|e| e.to_string())?;
+
+    const SESSIONS_PER_PAGE: i64 = 30;
+
+    #[allow(clippy::type_complexity)]
+    let db_sessions: Vec<(
+        i32,
+        uuid::Uuid,
+        String,
+        String,
+        crate::models::session::SessionType,
+        String,
+        String,
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<chrono::DateTime<chrono::Utc>>,
+        bool,
+    )> = proxy_sessions::table
+        .inner_join(schema_assets::table)
+        .filter(proxy_sessions::status.ne("pending"))
+        .filter(proxy_sessions::status.ne("orphaned"))
+        .select((
+            proxy_sessions::id,
+            proxy_sessions::uuid,
+            schema_assets::name,
+            schema_assets::hostname,
+            proxy_sessions::session_type,
+            proxy_sessions::status,
+            proxy_sessions::credential_username,
+            proxy_sessions::connected_at,
+            proxy_sessions::disconnected_at,
+            proxy_sessions::is_recorded,
+        ))
+        .order(proxy_sessions::created_at.desc())
+        .limit(SESSIONS_PER_PAGE)
+        .load(&mut conn)
+        .await
+        .unwrap_or_default();
+
+    let now = Utc::now();
+    Ok(db_sessions
+        .into_iter()
+        .map(
+            |(
+                id,
+                uuid,
+                asset_name,
+                asset_hostname,
+                session_type,
+                status,
+                credential_username,
+                connected_at,
+                disconnected_at,
+                is_recorded,
+            )| {
+                let duration_seconds = match (connected_at, disconnected_at) {
+                    (Some(start), Some(end)) => {
+                        Some(end.signed_duration_since(start).num_seconds())
+                    }
+                    (Some(start), None) if status == "active" => {
+                        Some(now.signed_duration_since(start).num_seconds())
+                    }
+                    _ => None,
+                };
+                SessionListItem {
+                    id,
+                    uuid: uuid.to_string(),
+                    asset_name,
+                    asset_hostname,
+                    session_type: session_type.to_string(),
+                    status,
+                    credential_username,
+                    connected_at: connected_at
+                        .map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
+                    duration_seconds,
+                    is_recorded,
+                }
+            },
+        )
+        .collect())
+}
+
+/// Push an immediate session list update to all subscribers.
+///
+/// Called by handlers (e.g. terminate_session) to trigger an instant
+/// refresh of the /sessions page without waiting for the next polling cycle.
+pub async fn push_session_list_update(broadcast: &BroadcastService, db_pool: &DbPool) {
+    match fetch_session_list(db_pool).await {
+        Ok(sessions) => {
+            let widget = SessionListContentWidget {
+                sessions,
+                show_view_link: true,
+            };
+            if let Ok(html) = widget.render() {
+                let msg = WsMessage::new("ws-session-list-content", html);
+                let _ = broadcast.send(&WsChannel::SessionsList, msg).await;
+            }
+        }
+        Err(e) => error!(error = %e, "Failed to push session list update"),
+    }
+}
+
+/// Push an immediate active sessions update to all subscribers.
+///
+/// Called by handlers (e.g. terminate_session) to trigger an instant
+/// refresh of the /sessions/active page without waiting for the next polling cycle.
+pub async fn push_active_sessions_update(broadcast: &BroadcastService, db_pool: &DbPool) {
+    match fetch_active_sessions_full(db_pool).await {
+        Ok(sessions) => {
+            let stats_widget = ActiveListStatsWidget {
+                sessions: sessions.clone(),
+            };
+            if let Ok(html) = stats_widget.render() {
+                let msg = WsMessage::new("ws-sessions-stats", html);
+                let _ = broadcast
+                    .send(&WsChannel::ActiveSessionsList, msg)
+                    .await;
+            }
+
+            let content_widget = ActiveListContentWidget { sessions };
+            if let Ok(html) = content_widget.render() {
+                let msg = WsMessage::new("ws-sessions-list", html);
+                let _ = broadcast
+                    .send(&WsChannel::ActiveSessionsList, msg)
+                    .await;
+            }
+        }
+        Err(e) => error!(error = %e, "Failed to push active sessions update"),
+    }
 }
 
 #[cfg(test)]
@@ -442,5 +644,166 @@ mod tests {
         let secs = STATS_INTERVAL_SECS;
         let duration = Duration::from_secs(secs);
         assert_eq!(duration.as_secs(), secs);
+    }
+
+    // ==================== Session List Updater Structural Tests ====================
+
+    #[test]
+    fn test_session_list_updater_exists() {
+        let source = include_str!("dashboard.rs");
+        assert!(
+            source.contains("fn session_list_updater"),
+            "session_list_updater task must exist"
+        );
+    }
+
+    #[test]
+    fn test_session_list_updater_uses_sessions_list_channel() {
+        let source = include_str!("dashboard.rs");
+        assert!(
+            source.contains("WsChannel::SessionsList"),
+            "session_list_updater must broadcast to SessionsList channel"
+        );
+    }
+
+    #[test]
+    fn test_push_session_list_update_exists() {
+        let source = include_str!("dashboard.rs");
+        assert!(
+            source.contains("pub async fn push_session_list_update"),
+            "push_session_list_update must be public for use by handlers"
+        );
+    }
+
+    #[test]
+    fn test_session_list_updater_target_id() {
+        let source = include_str!("dashboard.rs");
+        assert!(
+            source.contains("ws-session-list-content"),
+            "session_list_updater must target ws-session-list-content div"
+        );
+    }
+
+    // ==================== Active Sessions Full Fetch Structural Tests ====================
+
+    #[test]
+    fn test_fetch_active_sessions_full_uses_join() {
+        let source = include_str!("dashboard.rs");
+        let fn_start = source
+            .find("fn fetch_active_sessions_full")
+            .expect("fetch_active_sessions_full must exist");
+        let fn_body = &source[fn_start..];
+        let next_fn = fn_body[1..]
+            .find("\nasync fn ")
+            .or_else(|| fn_body[1..].find("\nfn "))
+            .or_else(|| fn_body[1..].find("#[cfg(test)]"))
+            .unwrap_or(fn_body.len());
+        let fn_body = &fn_body[..next_fn];
+
+        assert!(
+            fn_body.contains("inner_join(schema_assets::table)"),
+            "fetch_active_sessions_full must join assets table"
+        );
+        assert!(
+            fn_body.contains("inner_join(users::table"),
+            "fetch_active_sessions_full must join users table"
+        );
+    }
+
+    #[test]
+    fn test_fetch_active_sessions_full_no_mock_data() {
+        let source = include_str!("dashboard.rs");
+        let fn_start = source
+            .find("fn fetch_active_sessions_full")
+            .expect("fetch_active_sessions_full must exist");
+        let fn_body = &source[fn_start..];
+        let next_fn = fn_body[1..]
+            .find("\nasync fn ")
+            .or_else(|| fn_body[1..].find("\nfn "))
+            .or_else(|| fn_body[1..].find("#[cfg(test)]"))
+            .unwrap_or(fn_body.len());
+        let fn_body = &fn_body[..next_fn];
+
+        assert!(
+            !fn_body.contains("format!(\"User"),
+            "fetch_active_sessions_full must not use mock User placeholders"
+        );
+        assert!(
+            !fn_body.contains("format!(\"Asset"),
+            "fetch_active_sessions_full must not use mock Asset placeholders"
+        );
+    }
+
+    #[test]
+    fn test_fetch_active_sessions_full_filters_connected_at() {
+        let source = include_str!("dashboard.rs");
+        let fn_start = source
+            .find("fn fetch_active_sessions_full")
+            .expect("fetch_active_sessions_full must exist");
+        let fn_body = &source[fn_start..];
+        let next_fn = fn_body[1..]
+            .find("\nasync fn ")
+            .or_else(|| fn_body[1..].find("\nfn "))
+            .or_else(|| fn_body[1..].find("#[cfg(test)]"))
+            .unwrap_or(fn_body.len());
+        let fn_body = &fn_body[..next_fn];
+
+        assert!(
+            fn_body.contains("connected_at.is_not_null()"),
+            "fetch_active_sessions_full must filter on connected_at IS NOT NULL"
+        );
+    }
+
+    #[test]
+    fn test_fetch_active_sessions_full_orders_by_connected_at() {
+        let source = include_str!("dashboard.rs");
+        let fn_start = source
+            .find("fn fetch_active_sessions_full")
+            .expect("fetch_active_sessions_full must exist");
+        let fn_body = &source[fn_start..];
+        let next_fn = fn_body[1..]
+            .find("\nasync fn ")
+            .or_else(|| fn_body[1..].find("\nfn "))
+            .or_else(|| fn_body[1..].find("#[cfg(test)]"))
+            .unwrap_or(fn_body.len());
+        let fn_body = &fn_body[..next_fn];
+
+        assert!(
+            fn_body.contains("connected_at.desc()"),
+            "fetch_active_sessions_full must order by connected_at desc"
+        );
+    }
+
+    #[test]
+    fn test_push_active_sessions_update_exists() {
+        let source = include_str!("dashboard.rs");
+        assert!(
+            source.contains("pub async fn push_active_sessions_update"),
+            "push_active_sessions_update must be public for use by handlers"
+        );
+    }
+
+    #[test]
+    fn test_push_active_sessions_update_uses_correct_target_ids() {
+        let source = include_str!("dashboard.rs");
+        let fn_start = source
+            .find("fn push_active_sessions_update")
+            .expect("push_active_sessions_update must exist");
+        let fn_body = &source[fn_start..];
+        let next_fn = fn_body[1..]
+            .find("\npub async fn ")
+            .or_else(|| fn_body[1..].find("\nasync fn "))
+            .or_else(|| fn_body[1..].find("#[cfg(test)]"))
+            .unwrap_or(fn_body.len());
+        let fn_body = &fn_body[..next_fn];
+
+        assert!(
+            fn_body.contains("ws-sessions-stats"),
+            "push_active_sessions_update must target ws-sessions-stats"
+        );
+        assert!(
+            fn_body.contains("ws-sessions-list"),
+            "push_active_sessions_update must target ws-sessions-list"
+        );
     }
 }

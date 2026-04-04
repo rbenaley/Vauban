@@ -925,43 +925,283 @@ async fn send_initial_active_sessions_data(
 }
 
 /// Fetch active sessions list for the dedicated page.
-async fn fetch_active_sessions_list(
+///
+/// Uses JOIN queries to resolve real usernames and asset names (not placeholders).
+pub(crate) async fn fetch_active_sessions_list(
     state: &AppState,
 ) -> Result<Vec<crate::templates::sessions::ActiveSessionItem>, String> {
-    use crate::models::session::ProxySession;
     use crate::templates::sessions::ActiveSessionItem;
+    use chrono::Utc;
+    use diesel::{ExpressionMethods, JoinOnDsl, QueryDsl};
+    use diesel_async::RunQueryDsl;
+
+    let mut conn = state.db_pool.get().await.map_err(|e| e.to_string())?;
+
+    use crate::schema::{assets as schema_assets, proxy_sessions, users};
+
+    #[allow(clippy::type_complexity)]
+    let rows: Vec<(
+        i32,
+        uuid::Uuid,
+        String,
+        String,
+        String,
+        String,
+        ipnetwork::IpNetwork,
+        Option<chrono::DateTime<chrono::Utc>>,
+    )> = proxy_sessions::table
+        .inner_join(schema_assets::table)
+        .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
+        .filter(proxy_sessions::status.eq("active"))
+        .filter(proxy_sessions::connected_at.is_not_null())
+        .select((
+            proxy_sessions::id,
+            proxy_sessions::uuid,
+            users::username,
+            schema_assets::name,
+            schema_assets::hostname,
+            proxy_sessions::session_type,
+            proxy_sessions::client_ip,
+            proxy_sessions::connected_at,
+        ))
+        .order(proxy_sessions::connected_at.desc())
+        .load(&mut conn)
+        .await
+        .unwrap_or_default();
+
+    let now = Utc::now();
+    Ok(rows
+        .into_iter()
+        .filter_map(
+            |(session_id, uuid, username, asset_name, asset_hostname, session_type, client_ip, connected_at):
+             (i32, uuid::Uuid, String, String, String, String, ipnetwork::IpNetwork, Option<chrono::DateTime<chrono::Utc>>)| {
+                let connected = connected_at?;
+                let duration_secs = now.signed_duration_since(connected).num_seconds();
+                let duration_str = format_duration(duration_secs);
+                Some(ActiveSessionItem {
+                    id: session_id,
+                    uuid: uuid.to_string(),
+                    username,
+                    asset_name,
+                    asset_hostname,
+                    session_type,
+                    client_ip: client_ip.ip().to_string(),
+                    connected_at: connected.format("%H:%M:%S").to_string(),
+                    duration: duration_str,
+                })
+            },
+        )
+        .collect())
+}
+
+/// Session list WebSocket handler.
+///
+/// Establishes a WebSocket connection for real-time session history updates.
+/// Used by the /sessions page (admin-only, page 1, no filters).
+pub async fn session_list_ws(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+    user: AuthUser,
+    ws_guard: WsGuard,
+) -> impl IntoResponse {
+    info!(user = %user.username, "Session list WebSocket connection requested");
+    ws.on_upgrade(move |socket| handle_session_list_socket(socket, state, user, ws_guard))
+}
+
+/// Handle session list WebSocket connection.
+async fn handle_session_list_socket(
+    socket: WebSocket,
+    state: AppState,
+    user: AuthUser,
+    _ws_guard: WsGuard,
+) {
+    let (mut sender, mut receiver) = socket.split();
+
+    info!(user = %user.username, "Session list WebSocket connected");
+
+    if let Err(e) = send_initial_session_list_data(&mut sender, &state).await {
+        error!(user = %user.username, error = %e, "Failed to send initial session list data");
+        return;
+    }
+    debug!(user = %user.username, "Initial session list data sent");
+
+    let mut sessions_rx = state
+        .broadcast
+        .subscribe(&WsChannel::SessionsList)
+        .await;
+
+    let mut ping_interval = interval(Duration::from_secs(PING_INTERVAL_SECS));
+    let mut should_close = false;
+
+    loop {
+        tokio::select! {
+            msg = receiver.next() => {
+                match msg {
+                    Some(Ok(Message::Text(text))) => {
+                        debug!(user = %user.username, message = %text, "Received WS text message");
+                    }
+                    Some(Ok(Message::Ping(_))) => {
+                        debug!(user = %user.username, "Received WS ping");
+                    }
+                    Some(Ok(Message::Pong(_))) => {
+                        debug!(user = %user.username, "Received WS pong");
+                    }
+                    Some(Ok(Message::Close(_))) => {
+                        info!(user = %user.username, "Client requested close");
+                        should_close = true;
+                    }
+                    Some(Err(e)) => {
+                        warn!(user = %user.username, error = %e, "WebSocket error");
+                        should_close = true;
+                    }
+                    None => {
+                        info!(user = %user.username, "WebSocket stream ended");
+                        should_close = true;
+                    }
+                    _ => {}
+                }
+            }
+
+            _ = ping_interval.tick() => {
+                if sender.send(Message::Ping(vec![].into())).await.is_err() {
+                    warn!(user = %user.username, "Failed to send ping, closing");
+                    should_close = true;
+                } else {
+                    debug!(user = %user.username, "Sent WS ping");
+                }
+            }
+
+            result = sessions_rx.recv() => {
+                if let Ok(html) = result
+                    && sender.send(Message::Text(html.into())).await.is_err()
+                {
+                    should_close = true;
+                }
+            }
+        }
+
+        if should_close {
+            break;
+        }
+    }
+
+    info!(user = %user.username, "Session list WebSocket disconnected");
+}
+
+/// Send initial session list data immediately on WebSocket connection.
+async fn send_initial_session_list_data(
+    sender: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    state: &AppState,
+) -> Result<(), String> {
+    use crate::services::broadcast::WsMessage;
+    use crate::templates::sessions::SessionListContentWidget;
+
+    let sessions = fetch_session_list_data(state).await?;
+
+    let widget = SessionListContentWidget {
+        sessions,
+        show_view_link: true,
+    };
+    if let Ok(html) = widget.render() {
+        let msg = WsMessage::new("ws-session-list-content", html);
+        sender
+            .send(Message::Text(msg.to_htmx_html().into()))
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+/// Fetch all sessions for the session list page (admin view, page 1, no filters).
+pub(crate) async fn fetch_session_list_data(
+    state: &AppState,
+) -> Result<Vec<crate::templates::sessions::SessionListItem>, String> {
+    use crate::templates::sessions::SessionListItem;
     use chrono::Utc;
     use diesel::{ExpressionMethods, QueryDsl};
     use diesel_async::RunQueryDsl;
 
     let mut conn = state.db_pool.get().await.map_err(|e| e.to_string())?;
 
-    use crate::schema::proxy_sessions::dsl::*;
+    use crate::schema::{assets as schema_assets, proxy_sessions};
 
-    let sessions: Vec<ProxySession> = proxy_sessions
-        .filter(status.eq("active"))
-        .order(created_at.desc())
+    const SESSIONS_PER_PAGE: i64 = 30;
+
+    #[allow(clippy::type_complexity)]
+    let db_sessions: Vec<(
+        i32,
+        uuid::Uuid,
+        String,
+        String,
+        crate::models::session::SessionType,
+        String,
+        String,
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<chrono::DateTime<chrono::Utc>>,
+        bool,
+    )> = proxy_sessions::table
+        .inner_join(schema_assets::table)
+        .filter(proxy_sessions::status.ne("pending"))
+        .filter(proxy_sessions::status.ne("orphaned"))
+        .select((
+            proxy_sessions::id,
+            proxy_sessions::uuid,
+            schema_assets::name,
+            schema_assets::hostname,
+            proxy_sessions::session_type,
+            proxy_sessions::status,
+            proxy_sessions::credential_username,
+            proxy_sessions::connected_at,
+            proxy_sessions::disconnected_at,
+            proxy_sessions::is_recorded,
+        ))
+        .order(proxy_sessions::created_at.desc())
+        .limit(SESSIONS_PER_PAGE)
         .load(&mut conn)
         .await
         .unwrap_or_default();
 
     let now = Utc::now();
-    Ok(sessions
+    Ok(db_sessions
         .into_iter()
-        .map(|s| {
-            let duration_secs = now.signed_duration_since(s.created_at).num_seconds();
-            let duration_str = format_duration(duration_secs);
-            ActiveSessionItem {
-                uuid: s.uuid.to_string(),
-                username: format!("User {}", s.user_id),
-                asset_name: format!("Asset {}", s.asset_id),
-                asset_hostname: s.client_ip.to_string(),
-                session_type: s.session_type.to_string(),
-                client_ip: s.client_ip.to_string(),
-                connected_at: s.created_at.format("%Y-%m-%d %H:%M").to_string(),
-                duration: duration_str,
-            }
-        })
+        .map(
+            |(
+                id,
+                uuid,
+                asset_name,
+                asset_hostname,
+                session_type,
+                status,
+                credential_username,
+                connected_at,
+                disconnected_at,
+                is_recorded,
+            )| {
+                let duration_seconds = match (connected_at, disconnected_at) {
+                    (Some(start), Some(end)) => {
+                        Some(end.signed_duration_since(start).num_seconds())
+                    }
+                    (Some(start), None) if status == "active" => {
+                        Some(now.signed_duration_since(start).num_seconds())
+                    }
+                    _ => None,
+                };
+                SessionListItem {
+                    id,
+                    uuid: uuid.to_string(),
+                    asset_name,
+                    asset_hostname,
+                    session_type: session_type.to_string(),
+                    status,
+                    credential_username,
+                    connected_at: connected_at
+                        .map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
+                    duration_seconds,
+                    is_recorded,
+                }
+            },
+        )
         .collect())
 }
 
@@ -1221,57 +1461,85 @@ async fn handle_terminal_socket(
     // Unsubscribe from session data
     proxy_client.unsubscribe_session(&session_id).await;
 
-    // Update session recording metadata in the database (same pattern as RDP).
-    // Only transition to "disconnected" if the session is still "active" or
-    // "connecting" -- never overwrite a terminal status like "terminated".
-    if state.config.recording.enabled && state.config.recording.ssh {
+    // Always mark the session as disconnected when the WebSocket closes.
+    // Only transition if the session is still "active" or "connecting" --
+    // never overwrite a terminal status like "terminated".
+    {
         use diesel::prelude::*;
         use diesel_async::RunQueryDsl;
 
         let now = chrono::Utc::now();
-        let recording_path = format!(
-            "{}/{}/{:02}/{}/",
-            state.config.recording.storage_path,
-            now.format("%Y"),
-            now.format("%m"),
-            session_id
-        );
+        let is_recording = state.config.recording.enabled && state.config.recording.ssh;
+
         if let Ok(mut conn) = state.db_pool.get().await {
             use crate::schema::proxy_sessions::dsl;
             if let Ok(session_uuid) = ::uuid::Uuid::parse_str(&session_id) {
-                let update_result = diesel::update(
-                    dsl::proxy_sessions
-                        .filter(dsl::uuid.eq(session_uuid))
-                        .filter(dsl::status.eq_any(["active", "connecting"])),
-                )
-                .set((
-                    dsl::is_recorded.eq(true),
-                    dsl::recording_path.eq(&recording_path),
-                    dsl::status.eq("disconnected"),
-                    dsl::disconnected_at.eq(chrono::Utc::now()),
-                ))
-                .execute(&mut conn)
-                .await;
+                if is_recording {
+                    let recording_path = format!(
+                        "{}/{}/{:02}/{}/",
+                        state.config.recording.storage_path,
+                        now.format("%Y"),
+                        now.format("%m"),
+                        session_id
+                    );
+                    let update_result = diesel::update(
+                        dsl::proxy_sessions
+                            .filter(dsl::uuid.eq(session_uuid))
+                            .filter(dsl::status.eq_any(["active", "connecting"])),
+                    )
+                    .set((
+                        dsl::is_recorded.eq(true),
+                        dsl::recording_path.eq(&recording_path),
+                        dsl::status.eq("disconnected"),
+                        dsl::disconnected_at.eq(now),
+                    ))
+                    .execute(&mut conn)
+                    .await;
 
-                match update_result {
-                    Ok(count) if count > 0 => {
-                        debug!(session_id = %session_id, "SSH session recording metadata saved");
-                        let _ = state.broadcast.send(
-                            &crate::services::broadcast::WsChannel::Notifications,
-                            crate::services::broadcast::WsMessage::new(
-                                "jit-notification",
-                                format!(
-                                    r#"{{"type":"recording_ready","session_uuid":"{}"}}"#,
-                                    session_id
+                    match update_result {
+                        Ok(count) if count > 0 => {
+                            debug!(session_id = %session_id, "SSH session recording metadata saved");
+                            let _ = state.broadcast.send(
+                                &crate::services::broadcast::WsChannel::Notifications,
+                                crate::services::broadcast::WsMessage::new(
+                                    "jit-notification",
+                                    format!(
+                                        r#"{{"type":"recording_ready","session_uuid":"{}"}}"#,
+                                        session_id
+                                    ),
                                 ),
-                            ),
-                        ).await;
+                            ).await;
+                        }
+                        Ok(_) => {
+                            debug!(session_id = %session_id, "SSH session already in terminal state");
+                        }
+                        Err(e) => {
+                            warn!(session_id = %session_id, error = %e, "Failed to update SSH session recording metadata");
+                        }
                     }
-                    Ok(_) => {
-                        warn!(session_id = %session_id, "SSH session not found in database for recording update");
-                    }
-                    Err(e) => {
-                        warn!(session_id = %session_id, error = %e, "Failed to update SSH session recording metadata");
+                } else {
+                    let update_result = diesel::update(
+                        dsl::proxy_sessions
+                            .filter(dsl::uuid.eq(session_uuid))
+                            .filter(dsl::status.eq_any(["active", "connecting"])),
+                    )
+                    .set((
+                        dsl::status.eq("disconnected"),
+                        dsl::disconnected_at.eq(now),
+                    ))
+                    .execute(&mut conn)
+                    .await;
+
+                    match update_result {
+                        Ok(count) if count > 0 => {
+                            debug!(session_id = %session_id, "SSH session marked disconnected");
+                        }
+                        Ok(_) => {
+                            debug!(session_id = %session_id, "SSH session already in terminal state");
+                        }
+                        Err(e) => {
+                            warn!(session_id = %session_id, error = %e, "Failed to mark SSH session disconnected");
+                        }
                     }
                 }
             }
@@ -1559,57 +1827,85 @@ async fn handle_rdp_socket(
 
     proxy_client.unsubscribe_session(&session_id).await;
 
-    // Update session recording metadata in the database.
-    // Only transition to "disconnected" if the session is still "active" or
-    // "connecting" -- never overwrite a terminal status like "terminated".
-    if state.config.recording.enabled {
+    // Always mark the session as disconnected when the WebSocket closes.
+    // Only transition if the session is still "active" or "connecting" --
+    // never overwrite a terminal status like "terminated".
+    {
         use diesel::prelude::*;
         use diesel_async::RunQueryDsl;
 
         let now = chrono::Utc::now();
-        let recording_path = format!(
-            "{}/{}/{:02}/{}/",
-            state.config.recording.storage_path,
-            now.format("%Y"),
-            now.format("%m"),
-            session_id
-        );
+        let is_recording = state.config.recording.enabled;
+
         if let Ok(mut conn) = state.db_pool.get().await {
             use crate::schema::proxy_sessions::dsl;
             if let Ok(session_uuid) = ::uuid::Uuid::parse_str(&session_id) {
-                let update_result = diesel::update(
-                    dsl::proxy_sessions
-                        .filter(dsl::uuid.eq(session_uuid))
-                        .filter(dsl::status.eq_any(["active", "connecting"])),
-                )
-                .set((
-                    dsl::is_recorded.eq(true),
-                    dsl::recording_path.eq(&recording_path),
-                    dsl::status.eq("disconnected"),
-                    dsl::disconnected_at.eq(chrono::Utc::now()),
-                ))
-                .execute(&mut conn)
-                .await;
+                if is_recording {
+                    let recording_path = format!(
+                        "{}/{}/{:02}/{}/",
+                        state.config.recording.storage_path,
+                        now.format("%Y"),
+                        now.format("%m"),
+                        session_id
+                    );
+                    let update_result = diesel::update(
+                        dsl::proxy_sessions
+                            .filter(dsl::uuid.eq(session_uuid))
+                            .filter(dsl::status.eq_any(["active", "connecting"])),
+                    )
+                    .set((
+                        dsl::is_recorded.eq(true),
+                        dsl::recording_path.eq(&recording_path),
+                        dsl::status.eq("disconnected"),
+                        dsl::disconnected_at.eq(now),
+                    ))
+                    .execute(&mut conn)
+                    .await;
 
-                match update_result {
-                    Ok(count) if count > 0 => {
-                        debug!(session_id = %session_id, "Session recording metadata saved");
-                        let _ = state.broadcast.send(
-                            &crate::services::broadcast::WsChannel::Notifications,
-                            crate::services::broadcast::WsMessage::new(
-                                "jit-notification",
-                                format!(
-                                    r#"{{"type":"recording_ready","session_uuid":"{}"}}"#,
-                                    session_id
+                    match update_result {
+                        Ok(count) if count > 0 => {
+                            debug!(session_id = %session_id, "RDP session recording metadata saved");
+                            let _ = state.broadcast.send(
+                                &crate::services::broadcast::WsChannel::Notifications,
+                                crate::services::broadcast::WsMessage::new(
+                                    "jit-notification",
+                                    format!(
+                                        r#"{{"type":"recording_ready","session_uuid":"{}"}}"#,
+                                        session_id
+                                    ),
                                 ),
-                            ),
-                        ).await;
+                            ).await;
+                        }
+                        Ok(_) => {
+                            debug!(session_id = %session_id, "RDP session already in terminal state");
+                        }
+                        Err(e) => {
+                            warn!(session_id = %session_id, error = %e, "Failed to update RDP session recording metadata");
+                        }
                     }
-                    Ok(_) => {
-                        warn!(session_id = %session_id, "Session not found in database for recording update");
-                    }
-                    Err(e) => {
-                        warn!(session_id = %session_id, error = %e, "Failed to update session recording metadata");
+                } else {
+                    let update_result = diesel::update(
+                        dsl::proxy_sessions
+                            .filter(dsl::uuid.eq(session_uuid))
+                            .filter(dsl::status.eq_any(["active", "connecting"])),
+                    )
+                    .set((
+                        dsl::status.eq("disconnected"),
+                        dsl::disconnected_at.eq(now),
+                    ))
+                    .execute(&mut conn)
+                    .await;
+
+                    match update_result {
+                        Ok(count) if count > 0 => {
+                            debug!(session_id = %session_id, "RDP session marked disconnected");
+                        }
+                        Ok(_) => {
+                            debug!(session_id = %session_id, "RDP session already in terminal state");
+                        }
+                        Err(e) => {
+                            warn!(session_id = %session_id, error = %e, "Failed to mark RDP session disconnected");
+                        }
                     }
                 }
             }
@@ -2361,7 +2657,7 @@ mod tests {
             .expect("handle_rdp_socket must exist");
         let rdp_body = &source[rdp_fn_start..];
 
-        let success_marker = "Session recording metadata saved";
+        let success_marker = "RDP session recording metadata saved";
         let success_pos = rdp_body
             .find(success_marker)
             .expect("success log must exist in handle_rdp_socket");
@@ -2555,6 +2851,203 @@ mod tests {
         assert!(
             fn_body.contains("CloseFrame") && fn_body.contains("code: 1000"),
             "RDP handler must send Close(1000) when display channel closes"
+        );
+    }
+
+    // ==================== Session List WebSocket Tests ====================
+
+    #[test]
+    fn test_session_list_ws_handler_exists() {
+        let source = include_str!("websocket.rs");
+        assert!(
+            source.contains("pub async fn session_list_ws"),
+            "session_list_ws handler must exist"
+        );
+    }
+
+    #[test]
+    fn test_session_list_ws_subscribes_to_sessions_list_channel() {
+        let source = include_str!("websocket.rs");
+        let fn_start = source
+            .find("fn handle_session_list_socket")
+            .expect("handle_session_list_socket must exist");
+        let fn_body = &source[fn_start..];
+        let cfg_test = fn_body.find("#[cfg(test)]").unwrap_or(fn_body.len());
+        let fn_body = &fn_body[..cfg_test];
+
+        assert!(
+            fn_body.contains("WsChannel::SessionsList"),
+            "session_list handler must subscribe to SessionsList channel"
+        );
+    }
+
+    #[test]
+    fn test_session_list_ws_sends_initial_data() {
+        let source = include_str!("websocket.rs");
+        let fn_start = source
+            .find("fn handle_session_list_socket")
+            .expect("handle_session_list_socket must exist");
+        let fn_body = &source[fn_start..];
+        let cfg_test = fn_body.find("#[cfg(test)]").unwrap_or(fn_body.len());
+        let fn_body = &fn_body[..cfg_test];
+
+        assert!(
+            fn_body.contains("send_initial_session_list_data"),
+            "session_list handler must send initial data on connect"
+        );
+    }
+
+    #[test]
+    fn test_fetch_session_list_data_exists() {
+        let source = include_str!("websocket.rs");
+        assert!(
+            source.contains("fn fetch_session_list_data"),
+            "fetch_session_list_data function must exist"
+        );
+    }
+
+    #[test]
+    fn test_session_list_content_widget_target_id() {
+        let source = include_str!("websocket.rs");
+        assert!(
+            source.contains("ws-session-list-content"),
+            "session list WS must target ws-session-list-content div"
+        );
+    }
+
+    // ==================== Active Sessions List Structural Tests ====================
+
+    #[test]
+    fn test_fetch_active_sessions_list_uses_join() {
+        let source = include_str!("websocket.rs");
+        let fn_start = source
+            .find("fn fetch_active_sessions_list")
+            .expect("fetch_active_sessions_list must exist");
+        let fn_body = &source[fn_start..];
+        let cfg_test = fn_body.find("#[cfg(test)]").unwrap_or(fn_body.len());
+        let fn_body = &fn_body[..cfg_test];
+
+        assert!(
+            fn_body.contains("inner_join(schema_assets::table)"),
+            "fetch_active_sessions_list must join assets table"
+        );
+        assert!(
+            fn_body.contains("inner_join(users::table"),
+            "fetch_active_sessions_list must join users table"
+        );
+    }
+
+    #[test]
+    fn test_fetch_active_sessions_list_no_mock_data() {
+        let source = include_str!("websocket.rs");
+        let fn_start = source
+            .find("fn fetch_active_sessions_list")
+            .expect("fetch_active_sessions_list must exist");
+        let fn_body = &source[fn_start..];
+        let cfg_test = fn_body.find("#[cfg(test)]").unwrap_or(fn_body.len());
+        let fn_body = &fn_body[..cfg_test];
+
+        assert!(
+            !fn_body.contains("format!(\"User"),
+            "fetch_active_sessions_list must not use mock User placeholders"
+        );
+        assert!(
+            !fn_body.contains("format!(\"Asset"),
+            "fetch_active_sessions_list must not use mock Asset placeholders"
+        );
+    }
+
+    #[test]
+    fn test_fetch_active_sessions_list_filters_connected_at() {
+        let source = include_str!("websocket.rs");
+        let fn_start = source
+            .find("fn fetch_active_sessions_list")
+            .expect("fetch_active_sessions_list must exist");
+        let fn_body = &source[fn_start..];
+        let cfg_test = fn_body.find("#[cfg(test)]").unwrap_or(fn_body.len());
+        let fn_body = &fn_body[..cfg_test];
+
+        assert!(
+            fn_body.contains("connected_at.is_not_null()"),
+            "fetch_active_sessions_list must filter on connected_at IS NOT NULL"
+        );
+    }
+
+    #[test]
+    fn test_fetch_active_sessions_list_orders_by_connected_at() {
+        let source = include_str!("websocket.rs");
+        let fn_start = source
+            .find("fn fetch_active_sessions_list")
+            .expect("fetch_active_sessions_list must exist");
+        let fn_body = &source[fn_start..];
+        let fn_end = fn_body[1..]
+            .find("\npub")
+            .or_else(|| fn_body[1..].find("\nasync fn "))
+            .or_else(|| fn_body[1..].find("\n/// "))
+            .unwrap_or(fn_body.len());
+        let fn_body = &fn_body[..fn_end];
+
+        assert!(
+            fn_body.contains("connected_at.desc()"),
+            "fetch_active_sessions_list must order by connected_at desc"
+        );
+        assert!(
+            !fn_body.contains("created_at.desc()"),
+            "fetch_active_sessions_list must not order by created_at"
+        );
+    }
+
+    #[test]
+    fn test_fetch_active_sessions_list_selects_id() {
+        let source = include_str!("websocket.rs");
+        let fn_start = source
+            .find("fn fetch_active_sessions_list")
+            .expect("fetch_active_sessions_list must exist");
+        let fn_body = &source[fn_start..];
+        let cfg_test = fn_body.find("#[cfg(test)]").unwrap_or(fn_body.len());
+        let fn_body = &fn_body[..cfg_test];
+
+        assert!(
+            fn_body.contains("proxy_sessions::id"),
+            "fetch_active_sessions_list must select proxy_sessions::id"
+        );
+    }
+
+    // ==================== Unconditional Disconnect Tests ====================
+
+    #[test]
+    fn test_ssh_always_marks_disconnected() {
+        let source = include_str!("websocket.rs");
+        let fn_start = source
+            .find("fn handle_terminal_socket")
+            .expect("handle_terminal_socket must exist");
+        let fn_body = &source[fn_start..];
+        let cfg_test = fn_body.find("#[cfg(test)]").unwrap_or(fn_body.len());
+        let fn_body = &fn_body[..cfg_test];
+
+        let has_else_branch = fn_body.contains("} else {")
+            && fn_body.contains("status.eq(\"disconnected\")");
+        assert!(
+            has_else_branch,
+            "SSH handler must always mark session as disconnected, even when recording is disabled"
+        );
+    }
+
+    #[test]
+    fn test_rdp_always_marks_disconnected() {
+        let source = include_str!("websocket.rs");
+        let fn_start = source
+            .find("fn handle_rdp_socket")
+            .expect("handle_rdp_socket must exist");
+        let fn_body = &source[fn_start..];
+        let cfg_test = fn_body.find("#[cfg(test)]").unwrap_or(fn_body.len());
+        let fn_body = &fn_body[..cfg_test];
+
+        let has_else_branch = fn_body.contains("} else {")
+            && fn_body.contains("status.eq(\"disconnected\")");
+        assert!(
+            has_else_branch,
+            "RDP handler must always mark session as disconnected, even when recording is disabled"
         );
     }
 }

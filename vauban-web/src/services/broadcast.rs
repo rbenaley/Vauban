@@ -28,6 +28,8 @@ pub enum WsChannel {
     UserAuthSessions(String),
     /// User API keys list updates (for /accounts/apikeys page).
     UserApiKeys(String),
+    /// Session history list updates (for /sessions page, admin-only).
+    SessionsList,
 }
 
 impl WsChannel {
@@ -42,6 +44,7 @@ impl WsChannel {
             WsChannel::SessionLive(id) => format!("session:{}", id),
             WsChannel::UserAuthSessions(user_id) => format!("user:{}:auth-sessions", user_id),
             WsChannel::UserApiKeys(user_id) => format!("user:{}:api-keys", user_id),
+            WsChannel::SessionsList => "sessions:list".to_string(),
         }
     }
 
@@ -51,6 +54,7 @@ impl WsChannel {
             "dashboard:stats" => Some(WsChannel::DashboardStats),
             "dashboard:active-sessions" => Some(WsChannel::ActiveSessions),
             "sessions:active-list" => Some(WsChannel::ActiveSessionsList),
+            "sessions:list" => Some(WsChannel::SessionsList),
             "dashboard:recent-activity" => Some(WsChannel::RecentActivity),
             "notifications" => Some(WsChannel::Notifications),
             s if s.starts_with("session:") => {
@@ -314,11 +318,26 @@ mod tests {
     }
 
     #[test]
+    fn test_ws_channel_sessions_list() {
+        let channel = WsChannel::SessionsList;
+        assert_eq!(channel.as_str(), "sessions:list");
+    }
+
+    #[test]
+    fn test_ws_channel_parse_sessions_list() {
+        assert_eq!(
+            WsChannel::parse("sessions:list"),
+            Some(WsChannel::SessionsList)
+        );
+    }
+
+    #[test]
     fn test_ws_channel_roundtrip() {
         let channels = vec![
             WsChannel::DashboardStats,
             WsChannel::ActiveSessions,
             WsChannel::ActiveSessionsList,
+            WsChannel::SessionsList,
             WsChannel::RecentActivity,
             WsChannel::Notifications,
             WsChannel::SessionLive("test-id".to_string()),

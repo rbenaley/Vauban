@@ -11,7 +11,5 @@ p, role:staff, access_rules, read
 p, role:staff, access_rules, write
 p, role:staff, admin, view
 p, role:user, assets, read
-p, role:user, sessions, read
-p, role:user, sessions, create
 p, role:user, profile, read
 p, role:user, profile, write

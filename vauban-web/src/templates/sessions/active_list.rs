@@ -6,6 +6,7 @@ use askama::Template;
 /// Active session item for list display.
 #[derive(Debug, Clone)]
 pub struct ActiveSessionItem {
+    pub id: i32,
     pub uuid: String,
     pub username: String,
     pub asset_name: String,
@@ -43,6 +44,16 @@ pub struct ActiveListTemplate {
     pub pagination: Option<Pagination>,
 }
 
+impl ActiveListTemplate {
+    pub fn ssh_count(&self) -> usize {
+        self.sessions.iter().filter(|s| s.session_type == "ssh").count()
+    }
+
+    pub fn rdp_count(&self) -> usize {
+        self.sessions.iter().filter(|s| s.session_type == "rdp").count()
+    }
+}
+
 /// WebSocket widget for active sessions list content.
 #[derive(Template)]
 #[template(path = "sessions/active_list_content.html")]
@@ -57,12 +68,23 @@ pub struct ActiveListStatsWidget {
     pub sessions: Vec<ActiveSessionItem>,
 }
 
+impl ActiveListStatsWidget {
+    pub fn ssh_count(&self) -> usize {
+        self.sessions.iter().filter(|s| s.session_type == "ssh").count()
+    }
+
+    pub fn rdp_count(&self) -> usize {
+        self.sessions.iter().filter(|s| s.session_type == "rdp").count()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn create_test_active_session_item(session_type: &str) -> ActiveSessionItem {
         ActiveSessionItem {
+            id: 1,
             uuid: "session-uuid".to_string(),
             username: "testuser".to_string(),
             asset_name: "Test Server".to_string(),
