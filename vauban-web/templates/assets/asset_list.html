@@ -79,7 +79,7 @@
     </div>
 
     <!-- Assets list -->
-    <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+    <div id="asset-list-container" class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
         {% if !assets.is_empty() %}
         <ul role="list" class="divide-y divide-gray-200 dark:divide-gray-700">
             {% for asset in assets %}
@@ -134,6 +134,12 @@
                             View
                         </a>
                         {% endif %}
+                        {% if asset.requires_request %}
+                        <a href="/assets/{{ asset.uuid }}#request-access"
+                           class="rounded-md bg-amber-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-amber-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600">
+                            Request
+                        </a>
+                        {% else %}
                         <button type="button"
                                 hx-post="/assets/{{ asset.uuid }}/{%- if asset.asset_type == "rdp" -%}connect-rdp{%- else -%}connect{%- endif -%}"
                                 hx-vals="js:{csrf_token: document.cookie.match(/(?:^|;\s*)__vauban_csrf=([^;]*)/)?.[1] || ''}"
@@ -148,6 +154,7 @@
                                 Connecting...
                             </span>
                         </button>
+                        {% endif %}
                     </div>
                 </div>
             </li>
@@ -246,6 +253,15 @@
             </p>
         </div>
         {% endif %}
+    </div>
+
+    <!-- WS auto-refresh: reload asset list on approval state changes -->
+    <div id="asset-ws-trigger" class="hidden"
+         hx-get="/assets?page={% if let Some(pg) = pagination.as_ref() %}{{ pg.current_page }}{% else %}1{% endif %}{% if search.is_some() %}&search={{ search.as_ref().unwrap() }}{% endif %}{% if type_filter.is_some() %}&type={{ type_filter.as_ref().unwrap() }}{% endif %}{% if status_filter.is_some() %}&status={{ status_filter.as_ref().unwrap() }}{% endif %}"
+         hx-trigger="htmx:wsAfterMessage[detail.message&&(detail.message.indexOf('request_approved')>-1||detail.message.indexOf('request_rejected')>-1||detail.message.indexOf('request_expired')>-1)] from:body throttle:500ms"
+         hx-select="#asset-list-container"
+         hx-target="#asset-list-container"
+         hx-swap="outerHTML">
     </div>
 </div>
 {% endblock %}

@@ -305,9 +305,9 @@ pub async fn asset_list(
         .unwrap_or(1)
         .max(1);
 
-    // Resolve accessible asset IDs once for non-admin users
-    let accessible_ids: Option<Vec<i32>> = if !auth_user.is_superuser && !auth_user.is_staff {
-        let user_internal_id: i32 = crate::schema::users::table
+    // Resolve user internal ID for non-admin users (used for access filtering + approval queries)
+    let user_internal_id: Option<i32> = if !auth_user.is_superuser && !auth_user.is_staff {
+        let uid: i32 = crate::schema::users::table
             .filter(
                 crate::schema::users::uuid
                     .eq(::uuid::Uuid::parse_str(&auth_user.uuid).unwrap_or_default()),
@@ -316,11 +316,17 @@ pub async fn asset_list(
             .first(&mut conn)
             .await
             .map_err(|_| AppError::Authorization("User not found".to_string()))?;
+        Some(uid)
+    } else {
+        None
+    };
 
+    // Resolve accessible asset IDs once for non-admin users
+    let accessible_ids: Option<Vec<i32>> = if let Some(uid) = user_internal_id {
         let ids = crate::services::access::list_accessible_asset_ids(
             state.access_client.as_ref(),
             &mut conn,
-            user_internal_id,
+            uid,
         )
         .await?;
         Some(ids)
@@ -415,10 +421,59 @@ pub async fn asset_list(
         .load(&mut conn)
         .await?;
 
+    let displayed_asset_ids: Vec<i32> = db_assets.iter().map(|(id, ..)| *id).collect();
+
+    let (approval_set, approved_set) = if let Some(uid) = user_internal_id {
+        use crate::schema::{access_rules, asset_asset_groups, user_groups};
+
+        let approval_ids: Vec<i32> = access_rules::table
+            .inner_join(
+                asset_asset_groups::table
+                    .on(asset_asset_groups::asset_group_id.eq(access_rules::asset_group_id)),
+            )
+            .inner_join(
+                user_groups::table.on(user_groups::group_id.eq(access_rules::user_group_id)),
+            )
+            .filter(user_groups::user_id.eq(uid))
+            .filter(access_rules::is_active.eq(true))
+            .filter(access_rules::require_approval.eq(true))
+            .filter(asset_asset_groups::asset_id.eq_any(&displayed_asset_ids))
+            .select(asset_asset_groups::asset_id)
+            .distinct()
+            .load(&mut conn)
+            .await
+            .unwrap_or_default();
+
+        let approved_ids: Vec<i32> = proxy_sessions::table
+            .filter(proxy_sessions::user_id.eq(uid))
+            .filter(proxy_sessions::status.eq("approved"))
+            .filter(
+                proxy_sessions::expires_at
+                    .is_null()
+                    .or(proxy_sessions::expires_at.gt(diesel::dsl::now)),
+            )
+            .filter(proxy_sessions::asset_id.eq_any(&displayed_asset_ids))
+            .select(proxy_sessions::asset_id)
+            .distinct()
+            .load(&mut conn)
+            .await
+            .unwrap_or_default();
+
+        let a_set: std::collections::HashSet<i32> = approval_ids.into_iter().collect();
+        let p_set: std::collections::HashSet<i32> = approved_ids.into_iter().collect();
+        (a_set, p_set)
+    } else {
+        (
+            std::collections::HashSet::new(),
+            std::collections::HashSet::new(),
+        )
+    };
+
     let asset_items: Vec<AssetListItem> = db_assets
         .into_iter()
         .map(
             |(id, uuid, name, hostname, port, asset_type, status)| AssetListItem {
+                requires_request: approval_set.contains(&id) && !approved_set.contains(&id),
                 id,
                 uuid,
                 name,
@@ -1343,6 +1398,72 @@ mod tests {
         assert!(
             body.contains(".min(total_pages)"),
             "asset_list must clamp page to total_pages so ?page=999 stays valid"
+        );
+    }
+
+    #[test]
+    fn test_asset_list_queries_approval_rules() {
+        let source = include_str!("assets.rs");
+        let fn_start = source
+            .find("fn asset_list")
+            .expect("asset_list handler must exist");
+        let fn_end = source[fn_start..]
+            .find("\npub async fn ")
+            .map(|p| fn_start + p)
+            .unwrap_or(source.len());
+        let body = &source[fn_start..fn_end];
+
+        assert!(
+            body.contains("require_approval"),
+            "asset_list must query access_rules.require_approval"
+        );
+        assert!(
+            body.contains("asset_asset_groups"),
+            "asset_list must join asset_asset_groups for approval check"
+        );
+    }
+
+    #[test]
+    fn test_asset_list_queries_approved_sessions() {
+        let source = include_str!("assets.rs");
+        let fn_start = source
+            .find("fn asset_list")
+            .expect("asset_list handler must exist");
+        let fn_end = source[fn_start..]
+            .find("\npub async fn ")
+            .map(|p| fn_start + p)
+            .unwrap_or(source.len());
+        let body = &source[fn_start..fn_end];
+
+        assert!(
+            body.contains("status.eq(\"approved\")"),
+            "asset_list must query approved sessions"
+        );
+        assert!(
+            body.contains("expires_at"),
+            "asset_list must check expires_at for approved sessions"
+        );
+    }
+
+    #[test]
+    fn test_asset_list_uses_hashset_for_lookup() {
+        let source = include_str!("assets.rs");
+        let fn_start = source
+            .find("fn asset_list")
+            .expect("asset_list handler must exist");
+        let fn_end = source[fn_start..]
+            .find("\npub async fn ")
+            .map(|p| fn_start + p)
+            .unwrap_or(source.len());
+        let body = &source[fn_start..fn_end];
+
+        assert!(
+            body.contains("HashSet"),
+            "asset_list must use HashSet for O(1) lookup"
+        );
+        assert!(
+            body.contains("approval_set.contains"),
+            "asset_list must use approval_set.contains for lookup"
         );
     }
 }

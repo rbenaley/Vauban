@@ -12,8 +12,10 @@ use uuid::Uuid;
 
 use crate::common::{TestApp, assertions::*, test_db};
 use crate::fixtures::{
-    create_admin_user, create_simple_admin_user, create_simple_ssh_asset,
-    create_test_rdp_asset, create_test_ssh_asset, unique_name,
+    add_user_to_vauban_group, create_admin_user, create_approved_session,
+    create_simple_admin_user, create_simple_ssh_asset, create_simple_user,
+    create_test_access_rule_with_constraints, create_test_asset_group, create_test_asset_in_group,
+    create_test_rdp_asset, create_test_ssh_asset, create_test_vauban_group, unique_name,
 };
 
 // =============================================================================
@@ -889,4 +891,317 @@ async fn test_asset_list_showing_counter_accurate() {
         body.contains(">1</span>") && body.contains(">30</span>"),
         "first page should show 1 to 30"
     );
+}
+
+// =============================================================================
+// Request / Connect Button Tests
+// =============================================================================
+
+/// Helper: get the internal user ID from UUID.
+async fn get_user_id(conn: &mut diesel_async::AsyncPgConnection, user_uuid: &Uuid) -> i32 {
+    use diesel::ExpressionMethods;
+    use diesel::QueryDsl;
+    use diesel_async::RunQueryDsl;
+    use vauban_web::schema::users;
+    users::table
+        .filter(users::uuid.eq(user_uuid))
+        .select(users::id)
+        .first(conn)
+        .await
+        .expect("user id")
+}
+
+/// Non-admin user with an approval-required rule should see "Request".
+#[tokio::test]
+#[serial]
+async fn test_asset_button_shows_request_when_approval_required() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("btn_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+
+    let user_name = unique_name("btn_user");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+    let user_uuid = get_admin_uuid(&mut conn, user_id).await;
+
+    let ug_uuid = create_test_vauban_group(&mut conn, "btn_ug").await;
+    add_user_to_vauban_group(&mut conn, user_id, &ug_uuid).await;
+
+    let ag_uuid = create_test_asset_group(&mut conn, &unique_name("btn_ag")).await;
+    let _asset_id = create_test_asset_in_group(&mut conn, &unique_name("btn_asset"), admin_id, &ag_uuid).await;
+
+    create_test_access_rule_with_constraints(
+        &mut conn,
+        &ug_uuid,
+        &ag_uuid,
+        &["ssh"],
+        false,
+        true, // require_approval = true
+        Some(900),
+    )
+    .await;
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
+        .await;
+
+    let response = app
+        .server
+        .get("/assets")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains("Request"),
+        "non-admin user with approval rule should see Request button"
+    );
+    assert!(
+        body.contains("#request-access"),
+        "Request button should link to #request-access"
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Non-admin user WITHOUT approval-required rule should see "Connect".
+#[tokio::test]
+#[serial]
+async fn test_asset_button_shows_connect_when_no_approval() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("btn_admin_na");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+
+    let user_name = unique_name("btn_user_na");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+    let user_uuid = get_admin_uuid(&mut conn, user_id).await;
+
+    let ug_uuid = create_test_vauban_group(&mut conn, "btn_ug_na").await;
+    add_user_to_vauban_group(&mut conn, user_id, &ug_uuid).await;
+
+    let ag_uuid = create_test_asset_group(&mut conn, &unique_name("btn_ag_na")).await;
+    let _asset_id = create_test_asset_in_group(&mut conn, &unique_name("btn_asset_na"), admin_id, &ag_uuid).await;
+
+    create_test_access_rule_with_constraints(
+        &mut conn,
+        &ug_uuid,
+        &ag_uuid,
+        &["ssh"],
+        false,
+        false, // require_approval = false
+        None,
+    )
+    .await;
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
+        .await;
+
+    let response = app
+        .server
+        .get("/assets")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains("Connect"),
+        "non-admin user without approval rule should see Connect button"
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Non-admin user with an approved session should see "Connect" even if approval is required.
+#[tokio::test]
+#[serial]
+async fn test_asset_button_shows_connect_after_approval() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("btn_admin_ap");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+
+    let user_name = unique_name("btn_user_ap");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+    let user_uuid = get_admin_uuid(&mut conn, user_id).await;
+
+    let ug_uuid = create_test_vauban_group(&mut conn, "btn_ug_ap").await;
+    add_user_to_vauban_group(&mut conn, user_id, &ug_uuid).await;
+
+    let ag_uuid = create_test_asset_group(&mut conn, &unique_name("btn_ag_ap")).await;
+    let asset_id = create_test_asset_in_group(&mut conn, &unique_name("btn_asset_ap"), admin_id, &ag_uuid).await;
+
+    create_test_access_rule_with_constraints(
+        &mut conn,
+        &ug_uuid,
+        &ag_uuid,
+        &["ssh"],
+        false,
+        true,
+        Some(3600),
+    )
+    .await;
+
+    create_approved_session(&mut conn, user_id, asset_id, Some(3600)).await;
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
+        .await;
+
+    let response = app
+        .server
+        .get("/assets")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains("Connect"),
+        "user with approved session should see Connect, not Request"
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Admin user should always see "Connect" even if approval rules exist.
+#[tokio::test]
+#[serial]
+async fn test_asset_button_shows_connect_for_admin() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("btn_admin_adm");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_admin_uuid(&mut conn, admin_id).await;
+
+    let ug_uuid = create_test_vauban_group(&mut conn, "btn_ug_adm").await;
+    let ag_uuid = create_test_asset_group(&mut conn, &unique_name("btn_ag_adm")).await;
+    let _asset_id = create_test_asset_in_group(&mut conn, &unique_name("btn_asset_adm"), admin_id, &ag_uuid).await;
+
+    create_test_access_rule_with_constraints(
+        &mut conn,
+        &ug_uuid,
+        &ag_uuid,
+        &["ssh"],
+        false,
+        true,
+        Some(900),
+    )
+    .await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/assets")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains("Connect"),
+        "admin should always see Connect button"
+    );
+    assert!(
+        !body.contains("#request-access"),
+        "admin should not see Request link"
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// The "Request" button should link to the asset detail page with #request-access.
+#[tokio::test]
+#[serial]
+async fn test_asset_button_request_links_to_detail() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("btn_admin_lnk");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+
+    let user_name = unique_name("btn_user_lnk");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+    let user_uuid = get_admin_uuid(&mut conn, user_id).await;
+
+    let ug_uuid = create_test_vauban_group(&mut conn, "btn_ug_lnk").await;
+    add_user_to_vauban_group(&mut conn, user_id, &ug_uuid).await;
+
+    let ag_uuid = create_test_asset_group(&mut conn, &unique_name("btn_ag_lnk")).await;
+    let _asset_id = create_test_asset_in_group(&mut conn, &unique_name("btn_asset_lnk"), admin_id, &ag_uuid).await;
+
+    create_test_access_rule_with_constraints(
+        &mut conn,
+        &ug_uuid,
+        &ag_uuid,
+        &["ssh"],
+        false,
+        true,
+        Some(900),
+    )
+    .await;
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
+        .await;
+
+    let response = app
+        .server
+        .get("/assets")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains("/assets/") && body.contains("#request-access"),
+        "Request button should have href to /assets/{{uuid}}#request-access"
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// The asset list page should contain the WS trigger element.
+#[tokio::test]
+#[serial]
+async fn test_asset_list_ws_trigger_present() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("btn_admin_ws");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_admin_uuid(&mut conn, admin_id).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/assets")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains("asset-ws-trigger"),
+        "asset list should contain #asset-ws-trigger element"
+    );
+    assert!(
+        body.contains("request_approved"),
+        "WS trigger should listen for request_approved event"
+    );
+
+    test_db::cleanup(&mut conn).await;
 }

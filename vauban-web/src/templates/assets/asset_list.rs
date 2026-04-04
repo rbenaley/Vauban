@@ -15,6 +15,7 @@ pub struct AssetListItem {
     pub asset_type: String, // "ssh", "rdp", "vnc"
     pub status: String,     // "online", "offline", "maintenance"
     pub group_name: Option<String>,
+    pub requires_request: bool,
 }
 
 #[derive(Template)]
@@ -53,6 +54,7 @@ mod tests {
             asset_type: "ssh".to_string(),
             status: "online".to_string(),
             group_name: Some("Production".to_string()),
+            requires_request: false,
         }
     }
 
@@ -395,6 +397,181 @@ mod tests {
         assert!(
             html.contains("bg-vauban-600"),
             "current page should be highlighted"
+        );
+    }
+
+    #[test]
+    fn test_asset_requires_request_shows_request_label() {
+        let mut item = create_test_asset_item();
+        item.requires_request = true;
+        let template = AssetListTemplate {
+            title: "Assets".to_string(),
+            user: Some(UserContext {
+                uuid: "u1".to_string(),
+                username: "user".to_string(),
+                display_name: "User".to_string(),
+                is_superuser: false,
+                is_staff: false,
+            }),
+            vauban: VaubanConfig {
+                brand_name: "VAUBAN".to_string(),
+                brand_logo: None,
+                theme: "dark".to_string(),
+            },
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            assets: vec![item],
+            pagination: None,
+            search: None,
+            type_filter: None,
+            status_filter: None,
+            asset_types: vec![],
+            statuses: vec![],
+            show_view_link: false,
+        };
+        let html = template.render().expect("should render");
+        assert!(html.contains("Request"), "should show Request label");
+        assert!(
+            html.contains("#request-access"),
+            "Request link should point to #request-access"
+        );
+        assert!(
+            !html.contains("hx-post"),
+            "Request asset should not have Connect hx-post button"
+        );
+    }
+
+    #[test]
+    fn test_asset_no_request_shows_connect_label() {
+        let item = create_test_asset_item();
+        let template = AssetListTemplate {
+            title: "Assets".to_string(),
+            user: Some(UserContext {
+                uuid: "u1".to_string(),
+                username: "user".to_string(),
+                display_name: "User".to_string(),
+                is_superuser: false,
+                is_staff: false,
+            }),
+            vauban: VaubanConfig {
+                brand_name: "VAUBAN".to_string(),
+                brand_logo: None,
+                theme: "dark".to_string(),
+            },
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            assets: vec![item],
+            pagination: None,
+            search: None,
+            type_filter: None,
+            status_filter: None,
+            asset_types: vec![],
+            statuses: vec![],
+            show_view_link: false,
+        };
+        let html = template.render().expect("should render");
+        assert!(html.contains("Connect"), "should show Connect label");
+        assert!(
+            html.contains("hx-post"),
+            "Connect asset should have hx-post button"
+        );
+    }
+
+    #[test]
+    fn test_mixed_assets_render_both_labels() {
+        let mut request_item = create_test_asset_item();
+        request_item.requires_request = true;
+        request_item.id = 2;
+        let connect_item = create_test_asset_item();
+
+        let template = AssetListTemplate {
+            title: "Assets".to_string(),
+            user: Some(UserContext {
+                uuid: "u1".to_string(),
+                username: "user".to_string(),
+                display_name: "User".to_string(),
+                is_superuser: false,
+                is_staff: false,
+            }),
+            vauban: VaubanConfig {
+                brand_name: "VAUBAN".to_string(),
+                brand_logo: None,
+                theme: "dark".to_string(),
+            },
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            assets: vec![request_item, connect_item],
+            pagination: None,
+            search: None,
+            type_filter: None,
+            status_filter: None,
+            asset_types: vec![],
+            statuses: vec![],
+            show_view_link: false,
+        };
+        let html = template.render().expect("should render");
+        assert!(html.contains("Request"), "should contain Request label");
+        assert!(html.contains("Connect"), "should contain Connect label");
+        assert!(
+            html.contains("#request-access"),
+            "should have request-access link"
+        );
+        assert!(html.contains("hx-post"), "should have hx-post button");
+    }
+
+    #[test]
+    fn test_ws_trigger_present_in_template() {
+        let template = make_template(None, None, None, None);
+        let html = template.render().expect("should render");
+        assert!(
+            html.contains("asset-ws-trigger"),
+            "template should contain #asset-ws-trigger element"
+        );
+        assert!(
+            html.contains("request_approved"),
+            "WS trigger should listen for request_approved"
+        );
+        assert!(
+            html.contains("htmx:wsAfterMessage"),
+            "WS trigger should use htmx:wsAfterMessage"
+        );
+    }
+
+    #[test]
+    fn test_ws_trigger_preserves_filters() {
+        let pg = make_pagination(2, 5, 150);
+        let template = make_template(
+            Some(pg),
+            Some("myfilter".to_string()),
+            Some("ssh".to_string()),
+            Some("online".to_string()),
+        );
+        let html = template.render().expect("should render");
+        let trigger_start = html
+            .find("asset-ws-trigger")
+            .expect("should contain trigger");
+        let trigger_section = &html[trigger_start..trigger_start + 500];
+        assert!(
+            trigger_section.contains("search=myfilter"),
+            "WS trigger hx-get should preserve search filter"
+        );
+        assert!(
+            trigger_section.contains("type=ssh"),
+            "WS trigger hx-get should preserve type filter"
+        );
+        assert!(
+            trigger_section.contains("status=online"),
+            "WS trigger hx-get should preserve status filter"
+        );
+        assert!(
+            trigger_section.contains("page=2"),
+            "WS trigger hx-get should preserve current page"
         );
     }
 }
