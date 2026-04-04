@@ -26,6 +26,8 @@ pub struct AssetDetail {
     pub ssh_host_key_fingerprint: Option<String>,
     /// True when the stored host key is known to mismatch the server's current key.
     pub ssh_host_key_mismatch: bool,
+    /// True when a valid (non-expired) approved JIT session exists for this user+asset.
+    pub has_approved_session: bool,
 }
 
 impl AssetDetail {
@@ -92,6 +94,7 @@ mod tests {
             updated_at: "2026-01-02 00:00:00".to_string(),
             ssh_host_key_fingerprint: None,
             ssh_host_key_mismatch: false,
+            has_approved_session: false,
         }
     }
 

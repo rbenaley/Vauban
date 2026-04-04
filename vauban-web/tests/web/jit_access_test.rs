@@ -4,9 +4,12 @@
 
 use crate::common::{TestApp, assertions::assert_status, unwrap_ok};
 use crate::fixtures::{
-    create_approval_request, create_approval_request_with_duration, create_approved_session,
-    create_expired_approved_session, create_jit_session, create_simple_admin_user,
-    create_simple_ssh_asset, create_simple_user, create_test_session, unique_name,
+    add_user_to_vauban_group, create_approval_request, create_approval_request_with_duration,
+    create_approved_session, create_expired_approved_session, create_jit_session,
+    create_simple_admin_user, create_simple_ssh_asset, create_simple_user,
+    create_test_access_rule_with_constraints, create_test_asset_group,
+    create_test_asset_in_group, create_test_session, create_test_vauban_group, get_asset_uuid,
+    unique_name,
 };
 use axum::http::header::COOKIE;
 use diesel::{BoolExpressionMethods, ExpressionMethods, QueryDsl};
@@ -1503,42 +1506,208 @@ async fn test_valid_approved_session_found_by_status_query() {
     );
 }
 
-/// After consuming an approved session (status -> consumed), it must not
-/// be found by subsequent queries. This proves one-time-use approval.
+/// After a connection uses an approved session, the approval must remain
+/// "approved" so that the user can reconnect within the expiry window.
 #[tokio::test]
-async fn test_consumed_approved_session_not_reusable() {
+async fn test_approved_session_survives_connection() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let user_name = unique_name("jit_usr_consume");
+    let user_name = unique_name("jit_usr_survive");
     let user_id = create_simple_user(&mut conn, &user_name).await;
 
-    let admin_name = unique_name("jit_adm_consume");
+    let admin_name = unique_name("jit_adm_survive");
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
 
-    let asset_name = unique_name("jit_ast_consume");
+    let asset_name = unique_name("jit_ast_survive");
     let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
 
     let approved_uuid =
         create_approved_session(&mut conn, user_id, asset_id, Some(900)).await;
 
-    // Simulate what the SSH/RDP handler does: consume the approval
+    // Simulate what the SSH/RDP handler now does: look up approval (no consume)
     let now = chrono::Utc::now();
+    let found_before: Option<Uuid> = proxy_sessions::table
+        .filter(proxy_sessions::user_id.eq(user_id))
+        .filter(proxy_sessions::asset_id.eq(asset_id))
+        .filter(proxy_sessions::status.eq("approved"))
+        .filter(
+            proxy_sessions::expires_at
+                .is_null()
+                .or(proxy_sessions::expires_at.gt(now)),
+        )
+        .select(proxy_sessions::uuid)
+        .first(&mut conn)
+        .await
+        .ok();
+
+    assert_eq!(
+        found_before,
+        Some(approved_uuid),
+        "approved session should be found before connection"
+    );
+
+    // Simulate creating a connecting session (what the handler does)
+    let connecting_uuid = Uuid::new_v4();
+    let ip: ipnetwork::IpNetwork = "127.0.0.1".parse().unwrap();
+    unwrap_ok!(
+        diesel::insert_into(proxy_sessions::table)
+            .values((
+                proxy_sessions::uuid.eq(connecting_uuid),
+                proxy_sessions::user_id.eq(user_id),
+                proxy_sessions::asset_id.eq(asset_id),
+                proxy_sessions::credential_id.eq("cred-123"),
+                proxy_sessions::credential_username.eq("testuser"),
+                proxy_sessions::session_type.eq("ssh"),
+                proxy_sessions::status.eq("connecting"),
+                proxy_sessions::client_ip.eq(ip),
+                proxy_sessions::is_recorded.eq(false),
+                proxy_sessions::metadata.eq(serde_json::json!({})),
+            ))
+            .execute(&mut conn)
+            .await
+    );
+
+    // The approval must still be found after creating a connecting session
+    let found_after: Option<Uuid> = proxy_sessions::table
+        .filter(proxy_sessions::user_id.eq(user_id))
+        .filter(proxy_sessions::asset_id.eq(asset_id))
+        .filter(proxy_sessions::status.eq("approved"))
+        .filter(
+            proxy_sessions::expires_at
+                .is_null()
+                .or(proxy_sessions::expires_at.gt(now)),
+        )
+        .select(proxy_sessions::uuid)
+        .first(&mut conn)
+        .await
+        .ok();
+
+    assert_eq!(
+        found_after,
+        Some(approved_uuid),
+        "approved session must survive after connection -- reconnection is allowed"
+    );
+
+    // Verify original approval status is unchanged
+    let db_status: String = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::uuid.eq(approved_uuid))
+            .select(proxy_sessions::status)
+            .first(&mut conn)
+            .await
+    );
+    assert_eq!(db_status, "approved");
+}
+
+/// An approved session must be reusable for multiple connections within the
+/// expiry window. Simulates: connect -> disconnect -> reconnect.
+#[tokio::test]
+async fn test_approved_session_reusable_within_expiry() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let user_name = unique_name("jit_usr_reuse");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+
+    let admin_name = unique_name("jit_adm_reuse");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+
+    let asset_name = unique_name("jit_ast_reuse");
+    let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
+
+    let approved_uuid =
+        create_approved_session(&mut conn, user_id, asset_id, Some(900)).await;
+
+    let now = chrono::Utc::now();
+    let ip: ipnetwork::IpNetwork = "127.0.0.1".parse().unwrap();
+
+    // --- Connection 1 ---
+    let conn1_uuid = Uuid::new_v4();
+    unwrap_ok!(
+        diesel::insert_into(proxy_sessions::table)
+            .values((
+                proxy_sessions::uuid.eq(conn1_uuid),
+                proxy_sessions::user_id.eq(user_id),
+                proxy_sessions::asset_id.eq(asset_id),
+                proxy_sessions::credential_id.eq("cred-123"),
+                proxy_sessions::credential_username.eq("testuser"),
+                proxy_sessions::session_type.eq("ssh"),
+                proxy_sessions::status.eq("connecting"),
+                proxy_sessions::client_ip.eq(ip),
+                proxy_sessions::is_recorded.eq(false),
+                proxy_sessions::metadata.eq(serde_json::json!({})),
+            ))
+            .execute(&mut conn)
+            .await
+    );
+
+    // Activate then disconnect connection 1
     unwrap_ok!(
         diesel::update(
-            proxy_sessions::table
-                .filter(proxy_sessions::uuid.eq(approved_uuid))
-                .filter(proxy_sessions::status.eq("approved")),
+            proxy_sessions::table.filter(proxy_sessions::uuid.eq(conn1_uuid)),
         )
         .set((
-            proxy_sessions::status.eq("consumed"),
-            proxy_sessions::updated_at.eq(now),
+            proxy_sessions::status.eq("active"),
+            proxy_sessions::connected_at.eq(now),
+        ))
+        .execute(&mut conn)
+        .await
+    );
+    unwrap_ok!(
+        diesel::update(
+            proxy_sessions::table.filter(proxy_sessions::uuid.eq(conn1_uuid)),
+        )
+        .set((
+            proxy_sessions::status.eq("disconnected"),
+            proxy_sessions::disconnected_at.eq(now),
         ))
         .execute(&mut conn)
         .await
     );
 
-    // Verify the consumed session is no longer found
+    // --- Connection 2 (reconnection) ---
+    let found: Option<Uuid> = proxy_sessions::table
+        .filter(proxy_sessions::user_id.eq(user_id))
+        .filter(proxy_sessions::asset_id.eq(asset_id))
+        .filter(proxy_sessions::status.eq("approved"))
+        .filter(
+            proxy_sessions::expires_at
+                .is_null()
+                .or(proxy_sessions::expires_at.gt(now)),
+        )
+        .select(proxy_sessions::uuid)
+        .first(&mut conn)
+        .await
+        .ok();
+
+    assert_eq!(
+        found,
+        Some(approved_uuid),
+        "approval must still be available for reconnection after disconnect"
+    );
+}
+
+/// Reconnection must fail when the approved session has expired.
+#[tokio::test]
+async fn test_reconnection_fails_after_expiry() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let user_name = unique_name("jit_usr_exp_recon");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+
+    let admin_name = unique_name("jit_adm_exp_recon");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+
+    let asset_name = unique_name("jit_ast_exp_recon");
+    let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
+
+    // Create an already-expired approved session
+    let _expired_uuid =
+        create_expired_approved_session(&mut conn, user_id, asset_id).await;
+
+    let now = chrono::Utc::now();
     let found: Option<Uuid> = proxy_sessions::table
         .filter(proxy_sessions::user_id.eq(user_id))
         .filter(proxy_sessions::asset_id.eq(asset_id))
@@ -1555,18 +1724,302 @@ async fn test_consumed_approved_session_not_reusable() {
 
     assert!(
         found.is_none(),
-        "consumed session must NOT be found - approval is single-use"
+        "expired approval must NOT be found -- reconnection denied"
+    );
+}
+
+/// Reconnection must also work for RDP assets, not just SSH.
+#[tokio::test]
+async fn test_reconnection_with_rdp_asset() {
+    use crate::fixtures::create_simple_rdp_asset;
+
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let user_name = unique_name("jit_usr_rdp_recon");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+
+    let admin_name = unique_name("jit_adm_rdp_recon");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+
+    let asset_name = unique_name("jit_ast_rdp_recon");
+    let asset_id = create_simple_rdp_asset(&mut conn, &asset_name, admin_id).await;
+
+    let approved_uuid =
+        create_approved_session(&mut conn, user_id, asset_id, Some(900)).await;
+
+    let now = chrono::Utc::now();
+    let ip: ipnetwork::IpNetwork = "127.0.0.1".parse().unwrap();
+
+    // Simulate first RDP connection + disconnect
+    let conn1_uuid = Uuid::new_v4();
+    unwrap_ok!(
+        diesel::insert_into(proxy_sessions::table)
+            .values((
+                proxy_sessions::uuid.eq(conn1_uuid),
+                proxy_sessions::user_id.eq(user_id),
+                proxy_sessions::asset_id.eq(asset_id),
+                proxy_sessions::credential_id.eq("cred-123"),
+                proxy_sessions::credential_username.eq("Administrator"),
+                proxy_sessions::session_type.eq("rdp"),
+                proxy_sessions::status.eq("disconnected"),
+                proxy_sessions::client_ip.eq(ip),
+                proxy_sessions::connected_at.eq(now),
+                proxy_sessions::disconnected_at.eq(now),
+                proxy_sessions::is_recorded.eq(false),
+                proxy_sessions::metadata.eq(serde_json::json!({})),
+            ))
+            .execute(&mut conn)
+            .await
     );
 
-    // Verify the original session is marked as consumed
-    let db_status: String = unwrap_ok!(
+    // Approval must still be available for RDP reconnection
+    let found: Option<Uuid> = proxy_sessions::table
+        .filter(proxy_sessions::user_id.eq(user_id))
+        .filter(proxy_sessions::asset_id.eq(asset_id))
+        .filter(proxy_sessions::status.eq("approved"))
+        .filter(
+            proxy_sessions::expires_at
+                .is_null()
+                .or(proxy_sessions::expires_at.gt(now)),
+        )
+        .select(proxy_sessions::uuid)
+        .first(&mut conn)
+        .await
+        .ok();
+
+    assert_eq!(
+        found,
+        Some(approved_uuid),
+        "RDP approval must survive connection for reconnection"
+    );
+}
+
+// =============================================================================
+// Security tests: isolation and concurrency
+// =============================================================================
+
+/// User B must NOT be able to find User A's approved session.
+#[tokio::test]
+async fn test_approval_not_shared_between_users() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let user_a_name = unique_name("jit_usr_iso_a");
+    let user_a_id = create_simple_user(&mut conn, &user_a_name).await;
+
+    let user_b_name = unique_name("jit_usr_iso_b");
+    let user_b_id = create_simple_user(&mut conn, &user_b_name).await;
+
+    let admin_name = unique_name("jit_adm_iso");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+
+    let asset_name = unique_name("jit_ast_iso");
+    let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
+
+    // Only User A has an approval
+    let _approved_uuid =
+        create_approved_session(&mut conn, user_a_id, asset_id, Some(900)).await;
+
+    // User B queries for approved sessions on the same asset
+    let now = chrono::Utc::now();
+    let found_by_b: Option<Uuid> = proxy_sessions::table
+        .filter(proxy_sessions::user_id.eq(user_b_id))
+        .filter(proxy_sessions::asset_id.eq(asset_id))
+        .filter(proxy_sessions::status.eq("approved"))
+        .filter(
+            proxy_sessions::expires_at
+                .is_null()
+                .or(proxy_sessions::expires_at.gt(now)),
+        )
+        .select(proxy_sessions::uuid)
+        .first(&mut conn)
+        .await
+        .ok();
+
+    assert!(
+        found_by_b.is_none(),
+        "User B must NOT see User A's approval"
+    );
+}
+
+/// An approval for Asset A must NOT grant access to Asset B.
+#[tokio::test]
+async fn test_approval_not_shared_between_assets() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let user_name = unique_name("jit_usr_ast_iso");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+
+    let admin_name = unique_name("jit_adm_ast_iso");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+
+    let asset_a_name = unique_name("jit_ast_a_iso");
+    let asset_a_id = create_simple_ssh_asset(&mut conn, &asset_a_name, admin_id).await;
+
+    let asset_b_name = unique_name("jit_ast_b_iso");
+    let asset_b_id = create_simple_ssh_asset(&mut conn, &asset_b_name, admin_id).await;
+
+    // Approval only for Asset A
+    let _approved_uuid =
+        create_approved_session(&mut conn, user_id, asset_a_id, Some(900)).await;
+
+    // Query for Asset B
+    let now = chrono::Utc::now();
+    let found_for_b: Option<Uuid> = proxy_sessions::table
+        .filter(proxy_sessions::user_id.eq(user_id))
+        .filter(proxy_sessions::asset_id.eq(asset_b_id))
+        .filter(proxy_sessions::status.eq("approved"))
+        .filter(
+            proxy_sessions::expires_at
+                .is_null()
+                .or(proxy_sessions::expires_at.gt(now)),
+        )
+        .select(proxy_sessions::uuid)
+        .first(&mut conn)
+        .await
+        .ok();
+
+    assert!(
+        found_for_b.is_none(),
+        "approval for Asset A must NOT be found when querying Asset B"
+    );
+}
+
+/// Multiple concurrent connecting sessions can coexist for the same
+/// user/asset under a single approval.
+#[tokio::test]
+async fn test_concurrent_connections_from_single_approval() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let user_name = unique_name("jit_usr_conc");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+
+    let admin_name = unique_name("jit_adm_conc");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+
+    let asset_name = unique_name("jit_ast_conc");
+    let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
+
+    let approved_uuid =
+        create_approved_session(&mut conn, user_id, asset_id, Some(900)).await;
+
+    let ip: ipnetwork::IpNetwork = "127.0.0.1".parse().unwrap();
+
+    // Create two concurrent connecting sessions
+    for _ in 0..2 {
+        let sess_uuid = Uuid::new_v4();
+        unwrap_ok!(
+            diesel::insert_into(proxy_sessions::table)
+                .values((
+                    proxy_sessions::uuid.eq(sess_uuid),
+                    proxy_sessions::user_id.eq(user_id),
+                    proxy_sessions::asset_id.eq(asset_id),
+                    proxy_sessions::credential_id.eq("cred-123"),
+                    proxy_sessions::credential_username.eq("testuser"),
+                    proxy_sessions::session_type.eq("ssh"),
+                    proxy_sessions::status.eq("connecting"),
+                    proxy_sessions::client_ip.eq(ip),
+                    proxy_sessions::is_recorded.eq(false),
+                    proxy_sessions::metadata.eq(serde_json::json!({})),
+                ))
+                .execute(&mut conn)
+                .await
+        );
+    }
+
+    // Both connecting sessions exist
+    let connecting_count: i64 = unwrap_ok!(
         proxy_sessions::table
-            .filter(proxy_sessions::uuid.eq(approved_uuid))
+            .filter(proxy_sessions::user_id.eq(user_id))
+            .filter(proxy_sessions::asset_id.eq(asset_id))
+            .filter(proxy_sessions::status.eq("connecting"))
+            .count()
+            .get_result(&mut conn)
+            .await
+    );
+    assert_eq!(connecting_count, 2, "two concurrent connections should coexist");
+
+    // Approval still valid
+    let now = chrono::Utc::now();
+    let found: Option<Uuid> = proxy_sessions::table
+        .filter(proxy_sessions::user_id.eq(user_id))
+        .filter(proxy_sessions::asset_id.eq(asset_id))
+        .filter(proxy_sessions::status.eq("approved"))
+        .filter(
+            proxy_sessions::expires_at
+                .is_null()
+                .or(proxy_sessions::expires_at.gt(now)),
+        )
+        .select(proxy_sessions::uuid)
+        .first(&mut conn)
+        .await
+        .ok();
+
+    assert_eq!(
+        found,
+        Some(approved_uuid),
+        "approval must survive concurrent connections"
+    );
+}
+
+/// Cleanup must expire stale approvals but leave valid ones untouched.
+#[tokio::test]
+async fn test_expired_approval_not_found_after_cleanup() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let user_name = unique_name("jit_usr_cl_mix");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+
+    let admin_name = unique_name("jit_adm_cl_mix");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+
+    let asset_name = unique_name("jit_ast_cl_mix");
+    let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
+
+    let expired_uuid =
+        create_expired_approved_session(&mut conn, user_id, asset_id).await;
+    let valid_uuid =
+        create_approved_session(&mut conn, user_id, asset_id, Some(3600)).await;
+
+    // Run cleanup logic
+    let now = chrono::Utc::now();
+    unwrap_ok!(
+        diesel::update(
+            proxy_sessions::table
+                .filter(proxy_sessions::status.eq("approved"))
+                .filter(proxy_sessions::expires_at.le(now)),
+        )
+        .set((
+            proxy_sessions::status.eq("expired"),
+            proxy_sessions::updated_at.eq(now),
+        ))
+        .execute(&mut conn)
+        .await
+    );
+
+    // Expired one should be gone
+    let expired_status: String = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::uuid.eq(expired_uuid))
             .select(proxy_sessions::status)
             .first(&mut conn)
             .await
     );
-    assert_eq!(db_status, "consumed");
+    assert_eq!(expired_status, "expired");
+
+    // Valid one should survive
+    let valid_status: String = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::uuid.eq(valid_uuid))
+            .select(proxy_sessions::status)
+            .first(&mut conn)
+            .await
+    );
+    assert_eq!(valid_status, "approved", "valid approval must survive cleanup");
 }
 
 /// The cleanup task must expire approved sessions whose expires_at has passed.
@@ -1704,6 +2157,194 @@ async fn test_approved_session_without_expires_at_still_valid() {
         found,
         Some(approved_uuid),
         "approved session with NULL expires_at should still be valid"
+    );
+}
+
+// =============================================================================
+// UI tests: asset_detail page shows Connect vs Request Access
+// =============================================================================
+
+/// When a valid approved session exists, the asset detail page must show
+/// the Connect button instead of Request Access.
+#[tokio::test]
+async fn test_asset_detail_shows_connect_when_approved() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    // Create user, group, asset, access rule with require_approval
+    let admin_name = unique_name("jit_ui_adm_conn");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+
+    let user_name = unique_name("jit_ui_usr_conn");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+
+    let ug_uuid = create_test_vauban_group(&mut conn, &unique_name("jit_ug_conn")).await;
+    add_user_to_vauban_group(&mut conn, user_id, &ug_uuid).await;
+
+    let ag_uuid = create_test_asset_group(&mut conn, &unique_name("jit_ag_conn")).await;
+    let asset_id = create_test_asset_in_group(
+        &mut conn,
+        &unique_name("jit_ast_ui_conn"),
+        admin_id,
+        &ag_uuid,
+    )
+    .await;
+    let asset_uuid = get_asset_uuid(&mut conn, asset_id).await;
+
+    create_test_access_rule_with_constraints(
+        &mut conn,
+        &ug_uuid,
+        &ag_uuid,
+        &["ssh"],
+        false,
+        true,
+        Some(600),
+    )
+    .await;
+
+    // Create an approved session for the user
+    create_approved_session(&mut conn, user_id, asset_id, Some(600)).await;
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
+        .await;
+
+    let response = app
+        .server
+        .get(&format!("/assets/{}", asset_uuid))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+
+    assert!(
+        body.contains("Connect"),
+        "page must show Connect button when approved session exists"
+    );
+    assert!(
+        !body.contains("Request Access"),
+        "page must NOT show Request Access when approved session exists"
+    );
+}
+
+/// When no approved session exists, the asset detail page must show
+/// Request Access (not Connect) for assets with require_approval.
+#[tokio::test]
+async fn test_asset_detail_shows_request_when_no_approval() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("jit_ui_adm_req");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+
+    let user_name = unique_name("jit_ui_usr_req");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+
+    let ug_uuid = create_test_vauban_group(&mut conn, &unique_name("jit_ug_req")).await;
+    add_user_to_vauban_group(&mut conn, user_id, &ug_uuid).await;
+
+    let ag_uuid = create_test_asset_group(&mut conn, &unique_name("jit_ag_req")).await;
+    let asset_id = create_test_asset_in_group(
+        &mut conn,
+        &unique_name("jit_ast_ui_req"),
+        admin_id,
+        &ag_uuid,
+    )
+    .await;
+    let asset_uuid = get_asset_uuid(&mut conn, asset_id).await;
+
+    create_test_access_rule_with_constraints(
+        &mut conn,
+        &ug_uuid,
+        &ag_uuid,
+        &["ssh"],
+        false,
+        true,
+        Some(600),
+    )
+    .await;
+
+    // No approved session -- user has not requested access yet
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
+        .await;
+
+    let response = app
+        .server
+        .get(&format!("/assets/{}", asset_uuid))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+
+    assert!(
+        body.contains("Request Access"),
+        "page must show Request Access when no approved session exists"
+    );
+}
+
+/// When an approved session has expired, the asset detail page must show
+/// Request Access even though the session record exists.
+#[tokio::test]
+async fn test_asset_detail_shows_request_when_approval_expired() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("jit_ui_adm_exp");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+
+    let user_name = unique_name("jit_ui_usr_exp");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+
+    let ug_uuid = create_test_vauban_group(&mut conn, &unique_name("jit_ug_exp")).await;
+    add_user_to_vauban_group(&mut conn, user_id, &ug_uuid).await;
+
+    let ag_uuid = create_test_asset_group(&mut conn, &unique_name("jit_ag_exp")).await;
+    let asset_id = create_test_asset_in_group(
+        &mut conn,
+        &unique_name("jit_ast_ui_exp"),
+        admin_id,
+        &ag_uuid,
+    )
+    .await;
+    let asset_uuid = get_asset_uuid(&mut conn, asset_id).await;
+
+    create_test_access_rule_with_constraints(
+        &mut conn,
+        &ug_uuid,
+        &ag_uuid,
+        &["ssh"],
+        false,
+        true,
+        Some(600),
+    )
+    .await;
+
+    // Create an EXPIRED approved session
+    create_expired_approved_session(&mut conn, user_id, asset_id).await;
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
+        .await;
+
+    let response = app
+        .server
+        .get(&format!("/assets/{}", asset_uuid))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+
+    assert!(
+        body.contains("Request Access"),
+        "page must show Request Access when approved session has expired"
     );
 }
 

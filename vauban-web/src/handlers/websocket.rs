@@ -120,6 +120,7 @@ pub async fn ws_connection_limit(
 ///
 /// Returns `Ok(())` if:
 /// - The session exists in the database with the given UUID
+/// - The session is in a connectable state (connecting or active)
 /// - The session's `user_id` matches the authenticated user's UUID
 /// - OR the user is staff/superuser (admin monitoring)
 ///
@@ -150,19 +151,18 @@ async fn verify_session_ownership(
         .await
         .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    // Query: join proxy_sessions with users to check ownership via UUID
-    let owner_uuid: Option<uuid::Uuid> = proxy_sessions::table
+    // Query: join proxy_sessions with users to check ownership and status
+    let result: Option<(uuid::Uuid, String)> = proxy_sessions::table
         .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
         .filter(proxy_sessions::uuid.eq(session_uuid))
-        .select(users::uuid)
+        .select((users::uuid, proxy_sessions::status))
         .first(&mut conn)
         .await
         .optional()
         .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    match owner_uuid {
+    match result {
         None => {
-            // Session not found
             warn!(
                 session_id = %session_uuid_str,
                 user = %user.username,
@@ -170,12 +170,21 @@ async fn verify_session_ownership(
             );
             Err(axum::http::StatusCode::NOT_FOUND)
         }
-        Some(owner) if owner == user_uuid || user.is_staff || user.is_superuser => {
-            // Session belongs to user, or user is admin
+        Some((_, ref status))
+            if status == "terminated" || status == "expired" || status == "disconnected" =>
+        {
+            warn!(
+                session_id = %session_uuid_str,
+                user = %user.username,
+                status = %status,
+                "WebSocket rejected: session is no longer active"
+            );
+            Err(axum::http::StatusCode::GONE)
+        }
+        Some((owner, _)) if owner == user_uuid || user.is_staff || user.is_superuser => {
             Ok(())
         }
         Some(_) => {
-            // Session belongs to another user and requester is not admin
             warn!(
                 session_id = %session_uuid_str,
                 user = %user.username,
@@ -1181,8 +1190,15 @@ async fn handle_terminal_socket(
                         }
                     }
                     None => {
-                        // Channel closed - IPC connection lost or session ended
+                        // Channel closed - session ended (admin termination or proxy exit).
+                        // Send Close(1000) so the browser does NOT auto-reconnect.
                         warn!(session_id = %session_id, "SSH data channel closed");
+                        let _ = sender.send(Message::Close(Some(
+                            axum::extract::ws::CloseFrame {
+                                code: 1000,
+                                reason: "Session ended".into(),
+                            },
+                        ))).await;
                         should_close = true;
                     }
                 }
@@ -1205,7 +1221,9 @@ async fn handle_terminal_socket(
     // Unsubscribe from session data
     proxy_client.unsubscribe_session(&session_id).await;
 
-    // Update session recording metadata in the database (same pattern as RDP)
+    // Update session recording metadata in the database (same pattern as RDP).
+    // Only transition to "disconnected" if the session is still "active" or
+    // "connecting" -- never overwrite a terminal status like "terminated".
     if state.config.recording.enabled && state.config.recording.ssh {
         use diesel::prelude::*;
         use diesel_async::RunQueryDsl;
@@ -1221,16 +1239,19 @@ async fn handle_terminal_socket(
         if let Ok(mut conn) = state.db_pool.get().await {
             use crate::schema::proxy_sessions::dsl;
             if let Ok(session_uuid) = ::uuid::Uuid::parse_str(&session_id) {
-                let update_result =
-                    diesel::update(dsl::proxy_sessions.filter(dsl::uuid.eq(session_uuid)))
-                        .set((
-                            dsl::is_recorded.eq(true),
-                            dsl::recording_path.eq(&recording_path),
-                            dsl::status.eq("disconnected"),
-                            dsl::disconnected_at.eq(chrono::Utc::now()),
-                        ))
-                        .execute(&mut conn)
-                        .await;
+                let update_result = diesel::update(
+                    dsl::proxy_sessions
+                        .filter(dsl::uuid.eq(session_uuid))
+                        .filter(dsl::status.eq_any(["active", "connecting"])),
+                )
+                .set((
+                    dsl::is_recorded.eq(true),
+                    dsl::recording_path.eq(&recording_path),
+                    dsl::status.eq("disconnected"),
+                    dsl::disconnected_at.eq(chrono::Utc::now()),
+                ))
+                .execute(&mut conn)
+                .await;
 
                 match update_result {
                     Ok(count) if count > 0 => {
@@ -1509,7 +1530,15 @@ async fn handle_rdp_socket(
                         }
                     }
                     None => {
+                        // Channel closed - session ended (admin termination or proxy exit).
+                        // Send Close(1000) so the browser does NOT auto-reconnect.
                         warn!(session_id = %session_id, "RDP display channel closed");
+                        let _ = sender.send(Message::Close(Some(
+                            axum::extract::ws::CloseFrame {
+                                code: 1000,
+                                reason: "Session ended".into(),
+                            },
+                        ))).await;
                         should_close = true;
                     }
                 }
@@ -1530,7 +1559,9 @@ async fn handle_rdp_socket(
 
     proxy_client.unsubscribe_session(&session_id).await;
 
-    // Update session recording metadata in the database
+    // Update session recording metadata in the database.
+    // Only transition to "disconnected" if the session is still "active" or
+    // "connecting" -- never overwrite a terminal status like "terminated".
     if state.config.recording.enabled {
         use diesel::prelude::*;
         use diesel_async::RunQueryDsl;
@@ -1546,16 +1577,19 @@ async fn handle_rdp_socket(
         if let Ok(mut conn) = state.db_pool.get().await {
             use crate::schema::proxy_sessions::dsl;
             if let Ok(session_uuid) = ::uuid::Uuid::parse_str(&session_id) {
-                let update_result =
-                    diesel::update(dsl::proxy_sessions.filter(dsl::uuid.eq(session_uuid)))
-                        .set((
-                            dsl::is_recorded.eq(true),
-                            dsl::recording_path.eq(&recording_path),
-                            dsl::status.eq("disconnected"),
-                            dsl::disconnected_at.eq(chrono::Utc::now()),
-                        ))
-                        .execute(&mut conn)
-                        .await;
+                let update_result = diesel::update(
+                    dsl::proxy_sessions
+                        .filter(dsl::uuid.eq(session_uuid))
+                        .filter(dsl::status.eq_any(["active", "connecting"])),
+                )
+                .set((
+                    dsl::is_recorded.eq(true),
+                    dsl::recording_path.eq(&recording_path),
+                    dsl::status.eq("disconnected"),
+                    dsl::disconnected_at.eq(chrono::Utc::now()),
+                ))
+                .execute(&mut conn)
+                .await;
 
                 match update_result {
                     Ok(count) if count > 0 => {
@@ -2365,6 +2399,162 @@ mod tests {
         assert!(
             rdp_body.contains("is_recorded.eq(true)"),
             "handle_rdp_socket must set is_recorded = true"
+        );
+    }
+
+    /// Dropping the mpsc::Sender must cause the Receiver to return None,
+    /// which is how `unsubscribe_session` breaks the WebSocket loop.
+    #[tokio::test]
+    async fn test_mpsc_sender_drop_closes_receiver() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
+
+        tx.send(b"hello".to_vec()).await.unwrap();
+        let msg = rx.recv().await;
+        assert!(msg.is_some(), "Should receive the message before drop");
+
+        drop(tx);
+
+        let after_drop = rx.recv().await;
+        assert!(
+            after_drop.is_none(),
+            "recv() must return None after all senders are dropped -- \
+             this is the mechanism that breaks the WebSocket loop on session termination"
+        );
+    }
+
+    /// Dropping sender inside a HashMap (same as unsubscribe_session) closes receiver
+    /// even when a select! loop is reading it -- simulates the real terminate flow.
+    #[tokio::test]
+    async fn test_hashmap_remove_sender_closes_receiver_in_select() {
+        use std::collections::HashMap;
+        use tokio::sync::Mutex;
+
+        let map: Arc<Mutex<HashMap<String, tokio::sync::mpsc::Sender<Vec<u8>>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
+        map.lock().await.insert("session-1".to_string(), tx);
+
+        let map_clone = Arc::clone(&map);
+        let reader = tokio::spawn(async move {
+            let mut ping = tokio::time::interval(Duration::from_millis(500));
+            loop {
+                tokio::select! {
+                    data = rx.recv() => {
+                        match data {
+                            Some(_) => {}
+                            None => return "closed",
+                        }
+                    }
+                    _ = ping.tick() => {}
+                }
+            }
+        });
+
+        // Simulate unsubscribe_session (remove sender from map -> drop -> channel closes)
+        map_clone.lock().await.remove("session-1");
+
+        let result = tokio::time::timeout(Duration::from_secs(2), reader)
+            .await
+            .expect("reader must finish within 2s")
+            .expect("reader must not panic");
+        assert_eq!(result, "closed", "select! loop must break when sender is dropped via HashMap::remove");
+    }
+
+    // ==================== verify_session_ownership Tests ====================
+
+    #[test]
+    fn test_verify_ownership_checks_session_status() {
+        let source = include_str!("websocket.rs");
+        let fn_start = source
+            .find("fn verify_session_ownership")
+            .expect("verify_session_ownership must exist");
+        let fn_body = &source[fn_start..];
+        let fn_end = fn_body
+            .find("\n/// ")
+            .or_else(|| fn_body.find("\npub async fn "))
+            .unwrap_or(fn_body.len());
+        let fn_body = &fn_body[..fn_end];
+
+        assert!(
+            fn_body.contains("terminated"),
+            "verify_session_ownership must reject terminated sessions"
+        );
+        assert!(
+            fn_body.contains("expired"),
+            "verify_session_ownership must reject expired sessions"
+        );
+        assert!(
+            fn_body.contains("GONE") || fn_body.contains("410"),
+            "verify_session_ownership must return 410 GONE for dead sessions"
+        );
+    }
+
+    // ==================== Status Overwrite Protection Tests ====================
+
+    #[test]
+    fn test_ssh_cleanup_does_not_overwrite_terminated() {
+        let source = include_str!("websocket.rs");
+        let fn_start = source
+            .find("fn handle_terminal_socket")
+            .expect("handle_terminal_socket must exist");
+        let fn_body = &source[fn_start..];
+        let cfg_test = fn_body.find("#[cfg(test)]").unwrap_or(fn_body.len());
+        let fn_body = &fn_body[..cfg_test];
+
+        assert!(
+            fn_body.contains("eq_any") && fn_body.contains(r#""active""#),
+            "SSH cleanup must use eq_any filter to avoid overwriting terminal statuses"
+        );
+    }
+
+    #[test]
+    fn test_rdp_cleanup_does_not_overwrite_terminated() {
+        let source = include_str!("websocket.rs");
+        let fn_start = source
+            .find("fn handle_rdp_socket")
+            .expect("handle_rdp_socket must exist");
+        let fn_body = &source[fn_start..];
+        let cfg_test = fn_body.find("#[cfg(test)]").unwrap_or(fn_body.len());
+        let fn_body = &fn_body[..cfg_test];
+
+        assert!(
+            fn_body.contains("eq_any") && fn_body.contains(r#""active""#),
+            "RDP cleanup must use eq_any filter to avoid overwriting terminal statuses"
+        );
+    }
+
+    // ==================== Close Frame Tests ====================
+
+    #[test]
+    fn test_ssh_sends_close_1000_on_channel_close() {
+        let source = include_str!("websocket.rs");
+        let fn_start = source
+            .find("fn handle_terminal_socket")
+            .expect("handle_terminal_socket must exist");
+        let fn_body = &source[fn_start..];
+        let cfg_test = fn_body.find("#[cfg(test)]").unwrap_or(fn_body.len());
+        let fn_body = &fn_body[..cfg_test];
+
+        assert!(
+            fn_body.contains("CloseFrame") && fn_body.contains("code: 1000"),
+            "SSH handler must send Close(1000) when data channel closes"
+        );
+    }
+
+    #[test]
+    fn test_rdp_sends_close_1000_on_channel_close() {
+        let source = include_str!("websocket.rs");
+        let fn_start = source
+            .find("fn handle_rdp_socket")
+            .expect("handle_rdp_socket must exist");
+        let fn_body = &source[fn_start..];
+        let cfg_test = fn_body.find("#[cfg(test)]").unwrap_or(fn_body.len());
+        let fn_body = &fn_body[..cfg_test];
+
+        assert!(
+            fn_body.contains("CloseFrame") && fn_body.contains("code: 1000"),
+            "RDP handler must send Close(1000) when display channel closes"
         );
     }
 }

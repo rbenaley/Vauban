@@ -6,6 +6,7 @@
 /// - Active sessions page
 /// - Session list with filters
 /// - Session permissions
+/// - Session termination (admin force-close)
 use crate::common::{TestApp, assertions::assert_status, unwrap_ok};
 use crate::fixtures::{
     create_recorded_session, create_recorded_session_with_type, create_simple_admin_user,
@@ -13,7 +14,7 @@ use crate::fixtures::{
     unique_name,
 };
 use axum::http::header::COOKIE;
-use diesel::{ExpressionMethods, QueryDsl};
+use diesel::{BoolExpressionMethods, ExpressionMethods, QueryDsl};
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use uuid::Uuid;
 
@@ -1268,4 +1269,347 @@ async fn test_recording_list_multiple_types_have_ws_elements() {
         body.contains("recording-ws-trigger"),
         "WS trigger must be present with multiple recordings"
     );
+}
+
+// =============================================================================
+// Session Termination Tests
+// =============================================================================
+
+#[tokio::test]
+async fn test_terminate_active_ssh_session() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("term_ssh_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("term_ssh_asset"), admin_id).await;
+    let session_id = create_test_session(&mut conn, admin_id, asset_id, "ssh", "active").await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+    let csrf_token = app.generate_csrf_token();
+
+    let response = app
+        .server
+        .post(&format!("/sessions/{}/terminate", session_id))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .add_header("HX-Request", "true")
+        .form(&[("csrf_token", csrf_token.as_str())])
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(body.contains("Terminated"), "Response must show Terminated badge");
+
+    use vauban_web::schema::proxy_sessions;
+    let (db_status, disc_at): (String, Option<chrono::DateTime<chrono::Utc>>) = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::id.eq(session_id))
+            .select((proxy_sessions::status, proxy_sessions::disconnected_at))
+            .first(&mut conn)
+            .await
+    );
+    assert_eq!(db_status, "terminated");
+    assert!(disc_at.is_some(), "disconnected_at must be set after termination");
+}
+
+#[tokio::test]
+async fn test_terminate_active_rdp_session() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("term_rdp_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+    let asset_id = create_simple_rdp_asset(&mut conn, &unique_name("term_rdp_asset"), admin_id).await;
+    let session_id = create_test_session(&mut conn, admin_id, asset_id, "rdp", "active").await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+    let csrf_token = app.generate_csrf_token();
+
+    let response = app
+        .server
+        .post(&format!("/sessions/{}/terminate", session_id))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[("csrf_token", csrf_token.as_str())])
+        .await;
+
+    assert_status(&response, 200);
+
+    use vauban_web::schema::proxy_sessions;
+    let db_status: String = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::id.eq(session_id))
+            .select(proxy_sessions::status)
+            .first(&mut conn)
+            .await
+    );
+    assert_eq!(db_status, "terminated");
+}
+
+#[tokio::test]
+async fn test_terminate_non_staff_rejected() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let user_name = unique_name("term_nostaff");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+
+    let admin_name = unique_name("term_nostaff_adm");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("term_nostaff_ast"), admin_id).await;
+    let session_id = create_test_session(&mut conn, admin_id, asset_id, "ssh", "active").await;
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
+        .await;
+    let csrf_token = app.generate_csrf_token();
+
+    let response = app
+        .server
+        .post(&format!("/sessions/{}/terminate", session_id))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[("csrf_token", csrf_token.as_str())])
+        .await;
+
+    let status_code = response.status_code().as_u16();
+    assert!(
+        status_code == 403 || status_code == 302,
+        "Non-staff user must be rejected (got {})",
+        status_code
+    );
+
+    use vauban_web::schema::proxy_sessions;
+    let db_status: String = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::id.eq(session_id))
+            .select(proxy_sessions::status)
+            .first(&mut conn)
+            .await
+    );
+    assert_eq!(db_status, "active", "Session must remain active when non-staff tries to terminate");
+}
+
+#[tokio::test]
+async fn test_terminate_already_terminated_session() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("term_already_adm");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("term_already_ast"), admin_id).await;
+    let session_id = create_test_session(&mut conn, admin_id, asset_id, "ssh", "terminated").await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+    let csrf_token = app.generate_csrf_token();
+
+    let response = app
+        .server
+        .post(&format!("/sessions/{}/terminate", session_id))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[("csrf_token", csrf_token.as_str())])
+        .await;
+
+    assert_status(&response, 200);
+}
+
+#[tokio::test]
+async fn test_terminate_nonexistent_session() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("term_noexist_adm");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+    let csrf_token = app.generate_csrf_token();
+
+    let response = app
+        .server
+        .post("/sessions/999999/terminate")
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[("csrf_token", csrf_token.as_str())])
+        .await;
+
+    let status_code = response.status_code().as_u16();
+    assert!(
+        status_code == 404 || status_code == 302 || status_code == 500,
+        "Nonexistent session must return error (got {})",
+        status_code
+    );
+}
+
+#[tokio::test]
+async fn test_terminate_invalid_id_format() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("term_badid_adm");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+    let csrf_token = app.generate_csrf_token();
+
+    let response = app
+        .server
+        .post("/sessions/not-a-number/terminate")
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[("csrf_token", csrf_token.as_str())])
+        .await;
+
+    let status_code = response.status_code().as_u16();
+    assert!(
+        status_code == 302 || status_code == 303 || status_code == 400,
+        "Invalid session ID must be handled gracefully (got {})",
+        status_code
+    );
+}
+
+#[tokio::test]
+async fn test_terminate_preserves_status_after_cleanup() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("term_preserve_adm");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("term_preserve_ast"), admin_id).await;
+    let session_id = create_test_session(&mut conn, admin_id, asset_id, "ssh", "active").await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+    let csrf_token = app.generate_csrf_token();
+
+    // Terminate via admin
+    let response = app
+        .server
+        .post(&format!("/sessions/{}/terminate", session_id))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .add_header("HX-Request", "true")
+        .form(&[("csrf_token", csrf_token.as_str())])
+        .await;
+    assert_status(&response, 200);
+
+    // Simulate WebSocket cleanup by running the same UPDATE the handler does
+    // but only for active/connecting sessions -- verify it does NOT overwrite terminated
+    use vauban_web::schema::proxy_sessions;
+    let cleanup_count: usize = unwrap_ok!(
+        diesel::update(
+            proxy_sessions::table
+                .filter(proxy_sessions::id.eq(session_id))
+                .filter(
+                    proxy_sessions::status
+                        .eq("active")
+                        .or(proxy_sessions::status.eq("connecting")),
+                ),
+        )
+        .set(proxy_sessions::status.eq("disconnected"))
+        .execute(&mut conn)
+        .await
+    );
+    assert_eq!(
+        cleanup_count, 0,
+        "WebSocket cleanup must NOT overwrite terminated status (0 rows updated)"
+    );
+
+    // Verify the status is still "terminated"
+    let db_status: String = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::id.eq(session_id))
+            .select(proxy_sessions::status)
+            .first(&mut conn)
+            .await
+    );
+    assert_eq!(db_status, "terminated", "Status must remain terminated after cleanup");
+}
+
+#[tokio::test]
+async fn test_terminate_then_second_terminate_is_idempotent() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("term_idempotent_adm");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+    let asset_id =
+        create_simple_ssh_asset(&mut conn, &unique_name("term_idempotent_ast"), admin_id).await;
+    let session_id = create_test_session(&mut conn, admin_id, asset_id, "ssh", "active").await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+    let csrf_token = app.generate_csrf_token();
+
+    // First terminate
+    let response = app
+        .server
+        .post(&format!("/sessions/{}/terminate", session_id))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .add_header("HX-Request", "true")
+        .form(&[("csrf_token", csrf_token.as_str())])
+        .await;
+    assert_status(&response, 200);
+
+    // Second terminate (should still succeed, not crash)
+    let csrf_token2 = app.generate_csrf_token();
+    let response2 = app
+        .server
+        .post(&format!("/sessions/{}/terminate", session_id))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token2),
+        )
+        .add_header("HX-Request", "true")
+        .form(&[("csrf_token", csrf_token2.as_str())])
+        .await;
+    assert_status(&response2, 200);
+
+    use vauban_web::schema::proxy_sessions;
+    let db_status: String = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::id.eq(session_id))
+            .select(proxy_sessions::status)
+            .first(&mut conn)
+            .await
+    );
+    assert_eq!(db_status, "terminated");
 }

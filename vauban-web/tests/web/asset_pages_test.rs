@@ -897,20 +897,6 @@ async fn test_asset_list_showing_counter_accurate() {
 // Request / Connect Button Tests
 // =============================================================================
 
-/// Helper: get the internal user ID from UUID.
-async fn get_user_id(conn: &mut diesel_async::AsyncPgConnection, user_uuid: &Uuid) -> i32 {
-    use diesel::ExpressionMethods;
-    use diesel::QueryDsl;
-    use diesel_async::RunQueryDsl;
-    use vauban_web::schema::users;
-    users::table
-        .filter(users::uuid.eq(user_uuid))
-        .select(users::id)
-        .first(conn)
-        .await
-        .expect("user id")
-}
-
 /// Non-admin user with an approval-required rule should see "Request".
 #[tokio::test]
 #[serial]

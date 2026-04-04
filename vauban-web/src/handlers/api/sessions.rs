@@ -15,7 +15,7 @@ use serde::Deserialize;
 use crate::AppState;
 use crate::error::{AppError, AppResult};
 use crate::middleware::auth::AuthUser;
-use crate::models::session::{CreateSessionRequest, NewProxySession, ProxySession};
+use crate::models::session::{CreateSessionRequest, NewProxySession, ProxySession, SessionType};
 use crate::schema::proxy_sessions::dsl::*;
 
 // L-6: is_htmx_request deduplicated - use crate::error::is_htmx_request
@@ -236,6 +236,25 @@ pub async fn terminate_session(
             _ => AppError::Database(e),
         })?;
 
+    // Force-close the proxy connection and data channel so the active
+    // WebSocket loop breaks (data_rx.recv() => None).
+    let session_uuid_str = updated_session.uuid.to_string();
+    match updated_session.session_type {
+        SessionType::Ssh => {
+            if let Some(ref proxy) = state.ssh_proxy {
+                let _ = proxy.close_session(&session_uuid_str);
+                proxy.unsubscribe_session(&session_uuid_str).await;
+            }
+        }
+        SessionType::Rdp => {
+            if let Some(ref proxy) = state.rdp_proxy {
+                let _ = proxy.close_session(&session_uuid_str);
+                proxy.unsubscribe_session(&session_uuid_str).await;
+            }
+        }
+        _ => {}
+    }
+
     if htmx {
         // Return an updated HTML fragment for the session row
         let html = format!(
@@ -290,5 +309,55 @@ mod tests {
 
         assert_eq!(params.limit.unwrap_or(50), 50);
         assert_eq!(params.offset.unwrap_or(0), 0);
+    }
+
+    fn terminate_session_body() -> &'static str {
+        let source = include_str!("sessions.rs");
+        let fn_start = source
+            .find("fn terminate_session")
+            .expect("terminate_session handler must exist");
+        let body = &source[fn_start..];
+        let fn_end = body
+            .find("\n#[cfg(test)]")
+            .or_else(|| body.find("\npub async fn ").map(|p| p + 1))
+            .unwrap_or(body.len());
+        // Leak is fine in tests -- runs once per process.
+        Box::leak(body[..fn_end].to_string().into_boxed_str())
+    }
+
+    #[test]
+    fn test_terminate_session_calls_close_session() {
+        let body = terminate_session_body();
+        assert!(
+            body.contains("close_session"),
+            "terminate_session must call close_session to send IPC close to the proxy"
+        );
+    }
+
+    #[test]
+    fn test_terminate_session_calls_unsubscribe() {
+        let body = terminate_session_body();
+        assert!(
+            body.contains("unsubscribe_session"),
+            "terminate_session must call unsubscribe_session to drop the data channel sender"
+        );
+    }
+
+    #[test]
+    fn test_terminate_session_handles_ssh() {
+        let body = terminate_session_body();
+        assert!(
+            body.contains("SessionType::Ssh") || body.contains("ssh_proxy"),
+            "terminate_session must handle SSH sessions"
+        );
+    }
+
+    #[test]
+    fn test_terminate_session_handles_rdp() {
+        let body = terminate_session_body();
+        assert!(
+            body.contains("SessionType::Rdp") || body.contains("rdp_proxy"),
+            "terminate_session must handle RDP sessions"
+        );
     }
 }

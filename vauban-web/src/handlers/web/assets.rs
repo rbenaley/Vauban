@@ -694,31 +694,55 @@ pub async fn asset_detail(
     }
 
     // Determine JIT flags from access rules for the current user
-    let (require_approval, require_mfa_from_rule) = if !auth_user.is_superuser && !auth_user.is_staff
-    {
-        let user_internal_id: i32 = crate::schema::users::table
-            .filter(
-                crate::schema::users::uuid
-                    .eq(::uuid::Uuid::parse_str(&auth_user.uuid).unwrap_or_default()),
-            )
-            .select(crate::schema::users::id)
-            .first(&mut conn)
-            .await
-            .unwrap_or(0);
+    let (require_approval, require_mfa_from_rule, has_approved_session) =
+        if !auth_user.is_superuser && !auth_user.is_staff {
+            let user_internal_id: i32 = crate::schema::users::table
+                .filter(
+                    crate::schema::users::uuid
+                        .eq(::uuid::Uuid::parse_str(&auth_user.uuid).unwrap_or_default()),
+                )
+                .select(crate::schema::users::id)
+                .first(&mut conn)
+                .await
+                .unwrap_or(0);
 
-        let access_result = crate::services::access::can_access_asset(
-            state.access_client.as_ref(),
-            &mut conn,
-            user_internal_id,
-            asset_model.id,
-            asset_model.asset_type.as_str(),
-        )
-        .await
-        .unwrap_or_else(|_| crate::services::access::AccessCheckResult::denied());
-        (access_result.require_approval, access_result.require_mfa)
-    } else {
-        (false, false)
-    };
+            let access_result = crate::services::access::can_access_asset(
+                state.access_client.as_ref(),
+                &mut conn,
+                user_internal_id,
+                asset_model.id,
+                asset_model.asset_type.as_str(),
+            )
+            .await
+            .unwrap_or_else(|_| crate::services::access::AccessCheckResult::denied());
+
+            let approved = if access_result.require_approval {
+                use crate::schema::proxy_sessions;
+                proxy_sessions::table
+                    .filter(proxy_sessions::user_id.eq(user_internal_id))
+                    .filter(proxy_sessions::asset_id.eq(asset_model.id))
+                    .filter(proxy_sessions::status.eq("approved"))
+                    .filter(
+                        proxy_sessions::expires_at
+                            .is_null()
+                            .or(proxy_sessions::expires_at.gt(diesel::dsl::now)),
+                    )
+                    .select(proxy_sessions::uuid)
+                    .first::<::uuid::Uuid>(&mut conn)
+                    .await
+                    .is_ok()
+            } else {
+                false
+            };
+
+            (
+                access_result.require_approval,
+                access_result.require_mfa,
+                approved,
+            )
+        } else {
+            (false, false, false)
+        };
 
     // Extract SSH host key fingerprint and mismatch status from connection_config (H-9)
     let asset_connection_config = &asset_model.connection_config;
@@ -782,6 +806,7 @@ pub async fn asset_detail(
             .to_string(),
         ssh_host_key_fingerprint,
         ssh_host_key_mismatch,
+        has_approved_session,
     };
 
     let base = BaseTemplate::new(format!("{} - Asset", asset_name), user.clone())

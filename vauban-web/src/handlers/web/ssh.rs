@@ -277,22 +277,9 @@ pub async fn connect_ssh(
                     .ok();
 
             match approved_session {
-                Some((approved_uuid, justification, max_dur)) => {
+                Some((_approved_uuid, justification, max_dur)) => {
                     jit_justification = justification;
                     jit_max_duration = max_dur.or(access_result.max_session_duration);
-
-                    // Consume the approval so it cannot be reused for another connection.
-                    let _ = diesel::update(
-                        proxy_sessions::table
-                            .filter(proxy_sessions::uuid.eq(approved_uuid))
-                            .filter(proxy_sessions::status.eq("approved")),
-                    )
-                    .set((
-                        proxy_sessions::status.eq("consumed"),
-                        proxy_sessions::updated_at.eq(now),
-                    ))
-                    .execute(&mut conn)
-                    .await;
                 }
                 None => {
                     let detail_url =
