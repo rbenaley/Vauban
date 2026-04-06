@@ -184,6 +184,33 @@ else
 fi
 
 # =========================================================================== #
+# 6b. Rotate insecure default DB password                                    #
+#     Detects "vauban" or "CHANGE-ME" as the DB password and replaces it     #
+#     with a random one (requires PostgreSQL running).                       #
+# =========================================================================== #
+CURRENT_DB_PASS=$(grep -m1 '^url' "${CONF}" 2>/dev/null \
+    | sed -n 's|.*://vauban:\([^@]*\)@.*|\1|p')
+
+if [ "${CURRENT_DB_PASS}" = "vauban" ] || [ "${CURRENT_DB_PASS}" = "CHANGE-ME" ]; then
+    if service postgresql status >/dev/null 2>&1; then
+        NEW_DB_PASS=$(openssl rand -base64 24 | tr -d '/+=' | head -c 32)
+
+        su -m postgres -c \
+            "psql -q -c \"ALTER USER vauban WITH PASSWORD '${NEW_DB_PASS}';\""
+
+        sed -i '' 's|^url = "postgresql://.*|url = "postgresql://vauban:'"${NEW_DB_PASS}"'@localhost/vauban"|' "${CONF}"
+
+        echo "  SECURITY: rotated insecure default database password."
+    else
+        echo "  WARNING: database password is the insecure default."
+        echo "  Start PostgreSQL and re-install the package to auto-rotate it,"
+        echo "  or change it manually with:"
+        echo "    psql -U postgres -c \"ALTER USER vauban WITH PASSWORD '<new>';\""
+        echo "    Then update url in ${CONF}"
+    fi
+fi
+
+# =========================================================================== #
 # 7. Final ACLs on vauban.conf                                               #
 #    Must run AFTER all sed -i operations (secret_key, database url)          #
 #    because sed -i replaces the file, destroying existing ACLs.             #
