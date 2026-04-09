@@ -34,13 +34,7 @@ pub struct SessionDetail {
 impl SessionDetail {
     /// Get status badge class.
     pub fn status_class(&self) -> &str {
-        match self.status.as_str() {
-            "active" => "bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300",
-            "completed" => "bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-300",
-            "failed" => "bg-red-100 text-red-800 dark:bg-red-900/50 dark:text-red-300",
-            "pending" => "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/50 dark:text-yellow-300",
-            _ => "bg-gray-100 text-gray-800 dark:bg-gray-900/50 dark:text-gray-300",
-        }
+        super::session_status_class(&self.status)
     }
 
     /// Get session type badge class.
@@ -132,27 +126,63 @@ mod tests {
 
     // Tests for status_class()
     #[test]
+    fn test_status_class_pending() {
+        let detail = create_test_session_detail("pending", "ssh");
+        assert!(detail.status_class().contains("yellow"));
+    }
+
+    #[test]
+    fn test_status_class_approved() {
+        let detail = create_test_session_detail("approved", "ssh");
+        assert!(detail.status_class().contains("green"));
+    }
+
+    #[test]
+    fn test_status_class_rejected() {
+        let detail = create_test_session_detail("rejected", "ssh");
+        assert!(detail.status_class().contains("red"));
+    }
+
+    #[test]
+    fn test_status_class_expired() {
+        let detail = create_test_session_detail("expired", "ssh");
+        assert!(detail.status_class().contains("gray"));
+    }
+
+    #[test]
     fn test_status_class_active() {
         let detail = create_test_session_detail("active", "ssh");
-        assert!(detail.status_class().contains("green"));
+        assert!(detail.status_class().contains("blue"));
+    }
+
+    #[test]
+    fn test_status_class_consumed() {
+        let detail = create_test_session_detail("consumed", "ssh");
+        assert!(detail.status_class().contains("blue"));
+    }
+
+    #[test]
+    fn test_status_class_connecting() {
+        let detail = create_test_session_detail("connecting", "ssh");
+        assert!(detail.status_class().contains("blue"));
+    }
+
+    #[test]
+    fn test_status_class_disconnected() {
+        let detail = create_test_session_detail("disconnected", "ssh");
+        assert!(detail.status_class().contains("indigo"));
     }
 
     #[test]
     fn test_status_class_completed() {
         let detail = create_test_session_detail("completed", "ssh");
-        assert!(detail.status_class().contains("blue"));
+        assert!(detail.status_class().contains("indigo"));
     }
 
     #[test]
-    fn test_status_class_failed() {
-        let detail = create_test_session_detail("failed", "ssh");
-        assert!(detail.status_class().contains("red"));
-    }
-
-    #[test]
-    fn test_status_class_pending() {
-        let detail = create_test_session_detail("pending", "ssh");
-        assert!(detail.status_class().contains("yellow"));
+    fn test_status_class_terminated() {
+        let detail = create_test_session_detail("terminated", "ssh");
+        assert!(detail.status_class().contains("orange"));
     }
 
     #[test]

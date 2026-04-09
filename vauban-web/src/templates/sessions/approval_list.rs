@@ -20,14 +20,7 @@ pub struct ApprovalListItem {
 impl ApprovalListItem {
     /// Get status badge class.
     pub fn status_class(&self) -> &str {
-        match self.status.as_str() {
-            "pending" => "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/50 dark:text-yellow-300",
-            "approved" => "bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300",
-            "rejected" => "bg-red-100 text-red-800 dark:bg-red-900/50 dark:text-red-300",
-            "expired" => "bg-gray-100 text-gray-800 dark:bg-gray-900/50 dark:text-gray-300",
-            "orphaned" => "bg-gray-100 text-gray-800 dark:bg-gray-900/50 dark:text-gray-300",
-            _ => "bg-gray-100 text-gray-800 dark:bg-gray-900/50 dark:text-gray-300",
-        }
+        super::session_status_class(&self.status)
     }
 
     /// Human-readable duration display (e.g. "2h", "30min", "Unlimited").

@@ -63,6 +63,43 @@ async fn test_session_detail_page_loads() {
     );
 }
 
+/// Session detail page must NOT show a Disconnect button (termination is only on /sessions/active).
+#[tokio::test]
+async fn test_session_detail_no_disconnect_button() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("detail_no_disc");
+    let user_id = create_simple_admin_user(&mut conn, &username).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+    let asset_id =
+        create_simple_ssh_asset(&mut conn, &unique_name("detail-nd-asset"), user_id).await;
+    let session_id = create_test_session(&mut conn, user_id, asset_id, "ssh", "active").await;
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get(&format!("/sessions/{}", session_id))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    if status == 200 {
+        let body = response.text();
+        assert!(
+            !body.contains(">Disconnect</"),
+            "Session detail page must NOT have a Disconnect button"
+        );
+        assert!(
+            !body.contains("/terminate"),
+            "Session detail page must NOT have a terminate action"
+        );
+    }
+}
+
 #[tokio::test]
 async fn test_session_detail_not_found() {
     let app = TestApp::spawn().await;
@@ -1968,6 +2005,89 @@ async fn test_active_sessions_disconnect_has_csrf() {
             "Disconnect button must have hx-confirm for confirmation dialog"
         );
     }
+}
+
+/// /sessions must NOT have a Terminate button even when active sessions exist.
+/// Termination is only available on /sessions/active.
+#[tokio::test]
+async fn test_session_list_no_terminate_button() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("no_term_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+    let asset_id =
+        create_simple_ssh_asset(&mut conn, &unique_name("no-term-asset"), admin_id).await;
+    let _session_id = create_test_session(&mut conn, admin_id, asset_id, "ssh", "active").await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/sessions")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        !body.contains("hx-post") || !body.contains("/terminate"),
+        "Session list page must NOT contain any terminate form/button"
+    );
+    assert!(
+        !body.contains(">Terminate</button>"),
+        "Session list page must NOT have a Terminate button"
+    );
+}
+
+/// /sessions/active MUST have a Disconnect button for active sessions.
+#[tokio::test]
+async fn test_active_sessions_has_disconnect_button() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("disc_btn_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+    let asset_id =
+        create_simple_ssh_asset(&mut conn, &unique_name("disc-btn-asset"), admin_id).await;
+    let session_id = create_test_session(&mut conn, admin_id, asset_id, "ssh", "active").await;
+
+    {
+        use vauban_web::schema::proxy_sessions;
+        diesel::update(proxy_sessions::table.filter(proxy_sessions::id.eq(session_id)))
+            .set((
+                proxy_sessions::connected_at.eq(chrono::Utc::now()),
+                proxy_sessions::client_ip.eq(ipnetwork::IpNetwork::V4("127.0.0.1".parse().unwrap())),
+            ))
+            .execute(&mut conn)
+            .await
+            .unwrap();
+    }
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/sessions/active")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains("Disconnect"),
+        "Active sessions page must have a Disconnect button for active sessions"
+    );
+    assert!(
+        body.contains("/terminate"),
+        "Active sessions page must have a terminate action endpoint"
+    );
 }
 
 /// Terminated sessions must not appear on the active sessions page.

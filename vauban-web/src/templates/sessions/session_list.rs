@@ -29,6 +29,11 @@ impl SessionListItem {
         }
     }
 
+    /// Get status badge CSS class.
+    pub fn status_class(&self) -> &str {
+        super::session_status_class(&self.status)
+    }
+
     /// Get display name for status.
     pub fn status_display(&self) -> String {
         match self.status.as_str() {
@@ -50,11 +55,6 @@ impl SessionListItem {
                 }
             }
         }
-    }
-
-    /// Check if session is active.
-    pub fn is_active(&self) -> bool {
-        self.status == "active"
     }
 
     /// Format duration for display.
@@ -211,19 +211,6 @@ mod tests {
     fn test_status_display_consumed() {
         let item = create_test_session_item("ssh", "consumed", None);
         assert_eq!(item.status_display(), "Consumed");
-    }
-
-    // Tests for is_active()
-    #[test]
-    fn test_is_active_true() {
-        let item = create_test_session_item("ssh", "active", None);
-        assert!(item.is_active());
-    }
-
-    #[test]
-    fn test_is_active_false() {
-        let item = create_test_session_item("ssh", "completed", None);
-        assert!(!item.is_active());
     }
 
     // Tests for duration_display()
@@ -428,6 +415,23 @@ mod tests {
         let html = result.unwrap();
         assert!(html.contains("Test Asset"));
         assert!(html.contains("Active"));
+    }
+
+    #[test]
+    fn test_session_list_content_no_terminate_button() {
+        let widget = SessionListContentWidget {
+            sessions: vec![create_test_session_item("ssh", "active", Some(100))],
+            show_view_link: true,
+        };
+        let html = widget.render().unwrap();
+        assert!(
+            !html.contains("Terminate"),
+            "Session list must NOT contain a Terminate button (use /sessions/active instead)"
+        );
+        assert!(
+            !html.contains("hx-post"),
+            "Session list must NOT contain any hx-post form for termination"
+        );
     }
 
     #[test]

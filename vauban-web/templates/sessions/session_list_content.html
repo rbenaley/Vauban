@@ -29,13 +29,7 @@
                         <p class="text-sm font-medium text-gray-900 dark:text-white truncate">
                             {{ session.asset_name }}
                         </p>
-                        <span class="ml-2 inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium
-                            {% if session.status == "active" %}bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300
-                            {% else if session.status == "disconnected" %}bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300
-                            {% else if session.status == "completed" %}bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-300
-                            {% else if session.status == "terminated" %}bg-red-100 text-red-800 dark:bg-red-900/50 dark:text-red-300
-                            {% else if session.status == "pending" %}bg-yellow-100 text-yellow-800 dark:bg-yellow-900/50 dark:text-yellow-300
-                            {% else %}bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300{% endif %}">
+                        <span class="ml-2 inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium {{ session.status_class() }}">
                             {{ session.status_display() }}
                         </span>
                         {% if session.is_recorded %}
@@ -67,19 +61,6 @@
                    class="text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">
                     View
                 </a>
-                {% endif %}
-                {% if session.is_active() %}
-                <form hx-post="/sessions/{{ session.id }}/terminate"
-                      hx-confirm="Are you sure you want to terminate this session?"
-                      hx-target="closest li"
-                      hx-swap="outerHTML"
-                      x-data="csrf">
-                    <input type="hidden" name="csrf_token" x-model="token" />
-                    <button type="submit"
-                            class="rounded-md bg-red-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-red-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-600">
-                        Terminate
-                    </button>
-                </form>
                 {% endif %}
             </div>
         </div>
