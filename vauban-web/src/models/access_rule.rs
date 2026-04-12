@@ -257,12 +257,6 @@ mod tests {
     }
 
     #[test]
-    fn test_allows_protocol_vnc_denied() {
-        let rule = make_rule();
-        assert!(!rule.allows_protocol("vnc"));
-    }
-
-    #[test]
     fn test_allows_protocol_empty_string() {
         let rule = make_rule();
         assert!(!rule.allows_protocol(""));

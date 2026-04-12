@@ -20,6 +20,8 @@ use axum::http::header;
 use serde_json::json;
 use serial_test::serial;
 
+use axum::http::header::COOKIE;
+
 use crate::common::{TestApp, assertions::*, test_db, unwrap_ok, unwrap_some};
 use crate::fixtures::{
     create_admin_user, create_simple_ssh_asset, create_test_session_with_uuid, create_test_user,
@@ -793,22 +795,6 @@ async fn test_input_validation_asset_creation() {
     let username = unique_name("test_asset");
     let test_user = create_admin_user(&mut conn, &app.auth_service, &username).await;
 
-    // Test invalid IP address
-    let response = app
-        .server
-        .post("/api/v1/assets")
-        .add_header(header::AUTHORIZATION, app.auth_header(&test_user.token))
-        .json(&json!({
-            "name": "Invalid Asset",
-            "hostname": "invalid-host",
-            "ip_address": "not.an.ip.address",
-            "port": 22,
-            "asset_type": "ssh"
-        }))
-        .await;
-
-    assert_status(&response, 400);
-
     // Test invalid port number
     let response = app
         .server
@@ -817,7 +803,6 @@ async fn test_input_validation_asset_creation() {
         .json(&json!({
             "name": "Invalid Asset",
             "hostname": "invalid-host",
-            "ip_address": "192.168.1.1",
             "port": 99999,
             "asset_type": "ssh"
         }))
@@ -833,7 +818,6 @@ async fn test_input_validation_asset_creation() {
         .json(&json!({
             "name": "",
             "hostname": "host",
-            "ip_address": "192.168.1.1",
             "port": 22,
             "asset_type": "ssh"
         }))
@@ -6276,4 +6260,191 @@ fn test_l8_all_handle_fns_receive_ws_guard() {
              Signature: {signature}"
         );
     }
+}
+
+// =============================================================================
+// MFA Bypass Prevention Tests
+// =============================================================================
+
+/// Verify that a pre-MFA JWT (mfa_verified=false) cannot access web pages
+/// protected by WebAuthUser. The server must redirect to /mfa/verify.
+#[tokio::test]
+#[serial]
+async fn test_mfa_bypass_pre_mfa_jwt_redirects_to_mfa_verify() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("mfa_bypass");
+    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
+
+    // Generate a JWT with mfa_verified=false (simulating post-login, pre-MFA state)
+    let pre_mfa_token = unwrap_ok!(app.auth_service.generate_access_token(
+        &test_user.user.uuid.to_string(),
+        &username,
+        false,
+        false,
+        false
+    ));
+    crate::fixtures::create_session_for_token_pub(&mut conn, test_user.user.id, &pre_mfa_token)
+        .await;
+
+    // Attempt to access /assets with the pre-MFA cookie (simulates URL manipulation)
+    let response = app
+        .server
+        .get("/assets")
+        .add_header(COOKIE, format!("access_token={}", pre_mfa_token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert_eq!(
+        status, 303,
+        "Pre-MFA JWT must be redirected (303), got {}",
+        status
+    );
+
+    let location = unwrap_some!(response.headers().get("location"))
+        .to_str()
+        .unwrap_or("");
+    assert_eq!(
+        location, "/mfa/verify",
+        "Pre-MFA JWT must redirect to /mfa/verify, got {}",
+        location
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Verify that a fully verified JWT (mfa_verified=true) can access web pages.
+#[tokio::test]
+#[serial]
+async fn test_mfa_verified_jwt_can_access_protected_pages() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("mfa_ok");
+    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
+
+    // The default token from create_test_user has mfa_verified=true
+    let response = app
+        .server
+        .get("/assets")
+        .add_header(COOKIE, format!("access_token={}", test_user.token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert_eq!(
+        status, 200,
+        "MFA-verified JWT must get 200, got {}",
+        status
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Verify that pre-MFA JWT can still access the MFA setup page.
+#[tokio::test]
+#[serial]
+async fn test_pre_mfa_jwt_can_access_mfa_setup() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("mfa_setup_access");
+    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
+
+    let pre_mfa_token = unwrap_ok!(app.auth_service.generate_access_token(
+        &test_user.user.uuid.to_string(),
+        &username,
+        false,
+        false,
+        false
+    ));
+    crate::fixtures::create_session_for_token_pub(&mut conn, test_user.user.id, &pre_mfa_token)
+        .await;
+
+    let response = app
+        .server
+        .get("/mfa/setup")
+        .add_header(COOKIE, format!("access_token={}", pre_mfa_token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert_eq!(
+        status, 200,
+        "Pre-MFA JWT must be able to access /mfa/setup (200), got {}",
+        status
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Verify that /mfa/verify redirects to /mfa/setup when MFA is not configured.
+#[tokio::test]
+#[serial]
+async fn test_mfa_verify_redirects_to_setup_when_mfa_not_configured() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("mfa_verify_access");
+    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
+
+    let pre_mfa_token = unwrap_ok!(app.auth_service.generate_access_token(
+        &test_user.user.uuid.to_string(),
+        &username,
+        false,
+        false,
+        false
+    ));
+    crate::fixtures::create_session_for_token_pub(&mut conn, test_user.user.id, &pre_mfa_token)
+        .await;
+
+    let response = app
+        .server
+        .get("/mfa/verify")
+        .add_header(COOKIE, format!("access_token={}", pre_mfa_token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert_eq!(
+        status, 303,
+        "User without MFA configured must be redirected from /mfa/verify (303), got {}",
+        status
+    );
+    let location = unwrap_some!(response.headers().get("location"))
+        .to_str()
+        .unwrap_or("");
+    assert_eq!(
+        location, "/mfa/setup",
+        "Must redirect to /mfa/setup, got {}",
+        location
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Verify that the API endpoints (using AuthUser, not WebAuthUser) are not
+/// affected by the MFA enforcement -- they handle MFA at the handler level.
+#[tokio::test]
+#[serial]
+async fn test_api_endpoints_unaffected_by_web_mfa_enforcement() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("mfa_api");
+    let test_user = create_admin_user(&mut conn, &app.auth_service, &username).await;
+
+    // API endpoints use Bearer auth, not cookies, and the AuthUser extractor
+    let response = app
+        .server
+        .get("/api/v1/accounts")
+        .add_header(header::AUTHORIZATION, app.auth_header(&test_user.token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert_eq!(
+        status, 200,
+        "API with MFA-verified JWT must work, got {}",
+        status
+    );
+
+    test_db::cleanup(&mut conn).await;
 }

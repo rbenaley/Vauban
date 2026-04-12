@@ -138,16 +138,6 @@ pub async fn create_asset(
 
     let default_port = request.port.unwrap_or(request.asset_type.default_port());
 
-    // Validate and convert IP address format if provided
-    let ip_addr_network = if let Some(ref ip_str) = request.ip_address {
-        let ip_addr: std::net::IpAddr = ip_str
-            .parse()
-            .map_err(|_| AppError::Validation("Invalid IP address format".to_string()))?;
-        Some(ipnetwork::IpNetwork::from(ip_addr))
-    } else {
-        None
-    };
-
     // Sanitize text fields to prevent XSS (strip ALL HTML tags)
     let strip = |s: &str| -> String {
         ammonia::Builder::new()
@@ -175,15 +165,11 @@ pub async fn create_asset(
         uuid: Uuid::new_v4(),
         name: sanitized_name,
         hostname: request.hostname,
-        ip_address: ip_addr_network,
         port: default_port,
         asset_type: request.asset_type,
         status: "unknown".to_string(),
         description: sanitized_description,
-        os_type: None,
-        os_version: None,
         connection_config: serde_json::json!({}),
-        default_credential_id: None,
         created_by_id: None, // TODO: Get from user
         connection_username: "root".to_string(),
     };
@@ -262,9 +248,8 @@ pub async fn update_asset(
     };
 
     use crate::schema::assets::dsl::{
-        assets, description as description_col, hostname as hostname_col,
-        ip_address as ip_address_col, name as name_col, port as port_col, status as status_col,
-        updated_at, uuid,
+        assets, description as description_col, hostname as hostname_col, name as name_col,
+        port as port_col, status as status_col, updated_at, uuid,
     };
     use chrono::Utc;
 
@@ -274,18 +259,6 @@ pub async fn update_asset(
         Err(_) => {
             handle_error!(StatusCode::NOT_FOUND, "Asset not found");
         }
-    };
-
-    // Parse ip_address if provided
-    let new_ip_address = if let Some(ip_str) = &request.ip_address {
-        match ip_str.parse() {
-            Ok(ip) => Some(ip),
-            Err(_) => {
-                handle_error!(StatusCode::BAD_REQUEST, "Invalid IP address format");
-            }
-        }
-    } else {
-        None
     };
 
     // Sanitize text fields to prevent XSS (strip ALL HTML tags)
@@ -306,7 +279,6 @@ pub async fn update_asset(
         .set((
             name_col.eq(sanitized_name),
             hostname_col.eq(request.hostname.unwrap_or(existing.hostname)),
-            ip_address_col.eq(new_ip_address.or(existing.ip_address)),
             port_col.eq(request.port.unwrap_or(existing.port)),
             status_col.eq(request.status.unwrap_or(existing.status)),
             description_col.eq(sanitized_description),
@@ -426,7 +398,6 @@ pub struct GroupAssetResponse {
     pub uuid: Uuid,
     pub name: String,
     pub hostname: String,
-    pub ip_address: Option<String>,
     pub port: i32,
     pub asset_type: String,
     pub status: String,
@@ -487,7 +458,6 @@ pub async fn list_group_assets(
             uuid: asset.uuid,
             name: asset.name,
             hostname: asset.hostname,
-            ip_address: asset.ip_address.map(|ip| ip.ip().to_string()),
             port: asset.port,
             asset_type: asset.asset_type.to_string(),
             status: asset.status,

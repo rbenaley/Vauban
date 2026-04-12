@@ -16,6 +16,22 @@ pub struct VaubanConfig {
     pub brand_name: String,
     pub brand_logo: Option<String>,
     pub theme: String, // "light" or "dark"
+    pub version: String,
+}
+
+impl Default for VaubanConfig {
+    fn default() -> Self {
+        Self {
+            brand_name: "VAUBAN".to_string(),
+            brand_logo: None,
+            theme: "dark".to_string(),
+            version: format!(
+                "v{} [{}]",
+                env!("CARGO_PKG_VERSION"),
+                env!("VAUBAN_GIT_HASH")
+            ),
+        }
+    }
 }
 
 use crate::templates::partials::SidebarContentTemplate;
@@ -75,11 +91,7 @@ impl BaseTemplate {
         Self {
             title,
             user,
-            vauban: VaubanConfig {
-                brand_name: "VAUBAN".to_string(),
-                brand_logo: None,
-                theme: "dark".to_string(),
-            },
+            vauban: VaubanConfig::default(),
             messages: Vec::new(),
             language_code: "en".to_string(),
             sidebar_content,
@@ -226,6 +238,7 @@ mod tests {
             brand_name: "VAUBAN".to_string(),
             brand_logo: None,
             theme: "dark".to_string(),
+            ..Default::default()
         };
 
         assert_eq!(config.brand_name, "VAUBAN");
@@ -239,6 +252,7 @@ mod tests {
             brand_name: "Custom Brand".to_string(),
             brand_logo: Some("/static/logo.png".to_string()),
             theme: "light".to_string(),
+            ..Default::default()
         };
 
         assert_eq!(config.brand_name, "Custom Brand");
@@ -252,6 +266,7 @@ mod tests {
             brand_name: "Test".to_string(),
             brand_logo: Some("logo.svg".to_string()),
             theme: "dark".to_string(),
+            ..Default::default()
         };
         let cloned = config.clone();
 

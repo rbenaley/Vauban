@@ -1,6 +1,6 @@
 /// VAUBAN Web - Session model.
 ///
-/// Proxy sessions for SSH/RDP/VNC connections.
+/// Proxy sessions for SSH/RDP connections.
 use chrono::{DateTime, Utc};
 use diesel::prelude::*;
 use ipnetwork::IpNetwork;
@@ -30,7 +30,6 @@ use crate::schema::proxy_sessions;
 pub enum SessionType {
     Ssh,
     Rdp,
-    Vnc,
 }
 
 impl SessionType {
@@ -38,14 +37,12 @@ impl SessionType {
         match self {
             Self::Ssh => "ssh",
             Self::Rdp => "rdp",
-            Self::Vnc => "vnc",
         }
     }
 
     pub fn parse(s: &str) -> Self {
         match s {
             "rdp" => Self::Rdp,
-            "vnc" => Self::Vnc,
             _ => Self::Ssh,
         }
     }
@@ -57,7 +54,6 @@ impl SessionType {
         match s {
             "ssh" => Some(Self::Ssh),
             "rdp" => Some(Self::Rdp),
-            "vnc" => Some(Self::Vnc),
             _ => None,
         }
     }
@@ -274,11 +270,6 @@ mod tests {
     }
 
     #[test]
-    fn test_session_type_from_str_vnc() {
-        assert_eq!(SessionType::parse("vnc"), SessionType::Vnc);
-    }
-
-    #[test]
     fn test_session_type_from_str_unknown() {
         assert_eq!(SessionType::parse("unknown"), SessionType::Ssh);
         assert_eq!(SessionType::parse(""), SessionType::Ssh);
@@ -288,12 +279,11 @@ mod tests {
     fn test_session_type_as_str() {
         assert_eq!(SessionType::Ssh.as_str(), "ssh");
         assert_eq!(SessionType::Rdp.as_str(), "rdp");
-        assert_eq!(SessionType::Vnc.as_str(), "vnc");
     }
 
     #[test]
     fn test_session_type_roundtrip() {
-        for session_type in [SessionType::Ssh, SessionType::Rdp, SessionType::Vnc] {
+        for session_type in [SessionType::Ssh, SessionType::Rdp] {
             let str_val = session_type.as_str();
             let parsed = SessionType::parse(str_val);
             assert_eq!(session_type, parsed);
@@ -481,7 +471,7 @@ mod tests {
 
     #[test]
     fn test_session_type_copy() {
-        let session_type = SessionType::Vnc;
+        let session_type = SessionType::Rdp;
         let copied = session_type;
         assert_eq!(session_type, copied);
     }
@@ -504,7 +494,6 @@ mod tests {
     fn test_session_type_display() {
         assert_eq!(SessionType::Ssh.to_string(), "ssh");
         assert_eq!(SessionType::Rdp.to_string(), "rdp");
-        assert_eq!(SessionType::Vnc.to_string(), "vnc");
     }
 
     // ==================== SessionStatus Additional Tests ====================
@@ -568,13 +557,6 @@ mod tests {
         let mut session = create_test_session();
         session.session_type = SessionType::Rdp;
         assert_eq!(session.session_type, SessionType::Rdp);
-    }
-
-    #[test]
-    fn test_session_type_field_vnc() {
-        let mut session = create_test_session();
-        session.session_type = SessionType::Vnc;
-        assert_eq!(session.session_type, SessionType::Vnc);
     }
 
     #[test]
@@ -666,7 +648,7 @@ mod tests {
         let request = CreateSessionRequest {
             asset_id: Uuid::new_v4(),
             credential_id: "cred-clone".to_string(),
-            session_type: SessionType::Vnc,
+            session_type: SessionType::Rdp,
             justification: None,
         };
 

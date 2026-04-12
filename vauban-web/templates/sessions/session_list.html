@@ -48,7 +48,6 @@
                     <option value="">All types</option>
                     <option value="ssh" {% if type_filter.as_deref() == Some("ssh") %}selected{% endif %}>SSH</option>
                     <option value="rdp" {% if type_filter.as_deref() == Some("rdp") %}selected{% endif %}>RDP</option>
-                    <option value="vnc" {% if type_filter.as_deref() == Some("vnc") %}selected{% endif %}>VNC</option>
                 </select>
             </div>
             <div>

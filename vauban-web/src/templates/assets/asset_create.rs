@@ -12,7 +12,6 @@ pub struct AssetCreateForm {
     pub name: String,
     #[validate(length(min = 1, max = 255))]
     pub hostname: String,
-    pub ip_address: Option<String>,
     pub port: i32,
     pub asset_type: String,
     pub status: String,
@@ -51,6 +50,7 @@ mod tests {
             brand_name: "VAUBAN".to_string(),
             brand_logo: None,
             theme: "dark".to_string(),
+            ..Default::default()
         }
     }
 
@@ -58,7 +58,6 @@ mod tests {
         AssetCreateForm {
             name: "".to_string(),
             hostname: "".to_string(),
-            ip_address: None,
             port: 22,
             asset_type: "ssh".to_string(),
             status: "online".to_string(),
@@ -94,7 +93,6 @@ mod tests {
             asset_types: vec![
                 ("ssh".to_string(), "SSH".to_string()),
                 ("rdp".to_string(), "RDP".to_string()),
-                ("vnc".to_string(), "VNC".to_string()),
             ],
         };
         assert_eq!(template.title, "New Asset");
@@ -156,5 +154,76 @@ mod tests {
             result.is_ok(),
             "AssetCreateTemplate should render successfully"
         );
+    }
+
+    #[test]
+    fn test_asset_create_template_uses_alpine_for_port_defaults() {
+        let template = AssetCreateTemplate {
+            title: "New Asset".to_string(),
+            user: Some(UserContext {
+                uuid: "test".to_string(),
+                username: "testuser".to_string(),
+                display_name: "Test User".to_string(),
+                is_superuser: true,
+                is_staff: true,
+            }),
+            vauban: create_test_vauban_config(),
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            form: create_test_form(),
+            csrf_token: "test".to_string(),
+            asset_types: vec![
+                ("ssh".to_string(), "SSH".to_string()),
+                ("rdp".to_string(), "RDP".to_string()),
+            ],
+        };
+
+        let html = template.render().expect("render should succeed");
+        assert!(
+            html.contains("x-data") && html.contains("ssh: 22") && html.contains("rdp: 3389"),
+            "Port defaults must be handled via Alpine.js x-data"
+        );
+        assert!(
+            html.contains("x-model"),
+            "Port input must use Alpine.js x-model binding"
+        );
+        assert!(
+            html.contains("x-on:change"),
+            "Asset type select must use Alpine.js x-on:change"
+        );
+    }
+
+    #[test]
+    fn test_asset_create_template_has_no_vnc_option() {
+        let template = AssetCreateTemplate {
+            title: "New Asset".to_string(),
+            user: None,
+            vauban: create_test_vauban_config(),
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            form: create_test_form(),
+            csrf_token: "test".to_string(),
+            asset_types: vec![
+                ("ssh".to_string(), "SSH".to_string()),
+                ("rdp".to_string(), "RDP".to_string()),
+            ],
+        };
+
+        let html = template.render().expect("render should succeed");
+        assert!(
+            !html.contains("VNC") && !html.contains("vnc"),
+            "Asset create page must not contain any VNC reference"
+        );
+    }
+
+    #[test]
+    fn test_asset_create_default_port_is_ssh() {
+        let form = create_test_form();
+        assert_eq!(form.port, 22, "Default port should be 22 (SSH)");
+        assert_eq!(form.asset_type, "ssh", "Default asset type should be SSH");
     }
 }

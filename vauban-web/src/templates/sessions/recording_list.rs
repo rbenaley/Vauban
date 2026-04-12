@@ -23,7 +23,6 @@ impl RecordingListItem {
         match self.session_type.as_str() {
             "ssh" => "SSH",
             "rdp" => "RDP",
-            "vnc" => "VNC",
             _ => &self.session_type,
         }
     }
@@ -32,7 +31,7 @@ impl RecordingListItem {
     pub fn format(&self) -> &str {
         match self.session_type.as_str() {
             "ssh" => "asciinema",
-            "rdp" | "vnc" => "h264-avc",
+            "rdp" => "h264-avc",
             _ => "raw",
         }
     }
@@ -41,7 +40,7 @@ impl RecordingListItem {
     pub fn format_display(&self) -> &str {
         match self.session_type.as_str() {
             "ssh" => "Asciinema",
-            "rdp" | "vnc" => "H.264/AVC",
+            "rdp" => "H.264/AVC",
             _ => "Raw",
         }
     }
@@ -106,12 +105,6 @@ mod tests {
     }
 
     #[test]
-    fn test_session_type_display_vnc() {
-        let item = create_test_recording_item("vnc", None);
-        assert_eq!(item.session_type_display(), "VNC");
-    }
-
-    #[test]
     fn test_session_type_display_unknown() {
         let item = create_test_recording_item("telnet", None);
         assert_eq!(item.session_type_display(), "telnet");
@@ -131,12 +124,6 @@ mod tests {
     }
 
     #[test]
-    fn test_format_vnc() {
-        let item = create_test_recording_item("vnc", None);
-        assert_eq!(item.format(), "h264-avc");
-    }
-
-    #[test]
     fn test_format_unknown() {
         let item = create_test_recording_item("telnet", None);
         assert_eq!(item.format(), "raw");
@@ -152,12 +139,6 @@ mod tests {
     #[test]
     fn test_format_display_rdp() {
         let item = create_test_recording_item("rdp", None);
-        assert_eq!(item.format_display(), "H.264/AVC");
-    }
-
-    #[test]
-    fn test_format_display_vnc() {
-        let item = create_test_recording_item("vnc", None);
         assert_eq!(item.format_display(), "H.264/AVC");
     }
 
@@ -234,6 +215,7 @@ mod tests {
                 brand_name: "VAUBAN".to_string(),
                 brand_logo: None,
                 theme: "dark".to_string(),
+                ..Default::default()
             },
             messages: Vec::new(),
             language_code: "en".to_string(),
@@ -269,6 +251,7 @@ mod tests {
                 brand_name: "VAUBAN".to_string(),
                 brand_logo: None,
                 theme: "dark".to_string(),
+                ..Default::default()
             },
             messages: Vec::new(),
             language_code: "en".to_string(),

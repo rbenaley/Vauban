@@ -8,18 +8,14 @@ pub struct AssetDetail {
     pub uuid: String,
     pub name: String,
     pub hostname: String,
-    pub ip_address: Option<String>,
     pub port: i32,
     pub asset_type: String,
     pub status: String,
     pub group_name: Option<String>,
     pub group_uuid: Option<String>,
     pub description: Option<String>,
-    pub os_type: Option<String>,
-    pub os_version: Option<String>,
     pub require_approval: bool,
     pub require_mfa: bool,
-    pub last_seen: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     /// SSH host key fingerprint (from connection_config JSONB).
@@ -48,7 +44,6 @@ impl AssetDetail {
         match self.asset_type.as_str() {
             "ssh" => "bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300",
             "rdp" => "bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-300",
-            "vnc" => "bg-purple-100 text-purple-800 dark:bg-purple-900/50 dark:text-purple-300",
             _ => "bg-gray-100 text-gray-800 dark:bg-gray-900/50 dark:text-gray-300",
         }
     }
@@ -78,18 +73,14 @@ mod tests {
             uuid: "asset-uuid".to_string(),
             name: "Test Server".to_string(),
             hostname: "test.example.com".to_string(),
-            ip_address: Some("192.168.1.100".to_string()),
             port: 22,
             asset_type: asset_type.to_string(),
             status: status.to_string(),
             group_name: Some("Production".to_string()),
             group_uuid: Some("group-uuid".to_string()),
             description: Some("Test server description".to_string()),
-            os_type: Some("Linux".to_string()),
-            os_version: Some("Ubuntu 22.04".to_string()),
             require_approval: false,
             require_mfa: true,
-            last_seen: Some("2026-01-03 10:00:00".to_string()),
             created_at: "2026-01-01 00:00:00".to_string(),
             updated_at: "2026-01-02 00:00:00".to_string(),
             ssh_host_key_fingerprint: None,
@@ -137,12 +128,6 @@ mod tests {
     }
 
     #[test]
-    fn test_type_class_vnc() {
-        let asset = create_test_asset_detail("online", "vnc");
-        assert!(asset.type_class().contains("purple"));
-    }
-
-    #[test]
     fn test_type_class_unknown() {
         let asset = create_test_asset_detail("online", "telnet");
         assert!(asset.type_class().contains("gray"));
@@ -180,6 +165,7 @@ mod tests {
                 brand_name: "VAUBAN".to_string(),
                 brand_logo: None,
                 theme: "dark".to_string(),
+                ..Default::default()
             },
             messages: Vec::new(),
             language_code: "en".to_string(),

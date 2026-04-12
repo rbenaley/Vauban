@@ -51,7 +51,6 @@ pub async fn asset_create_form(
         asset_types: vec![
             ("ssh".to_string(), "SSH".to_string()),
             ("rdp".to_string(), "RDP".to_string()),
-            ("vnc".to_string(), "VNC".to_string()),
         ],
     };
 
@@ -66,7 +65,6 @@ pub async fn asset_create_form(
 pub struct CreateAssetWebForm {
     pub name: String,
     pub hostname: String,
-    pub ip_address: Option<String>,
     pub port: i32,
     pub asset_type: String,
     pub status: String,
@@ -235,19 +233,11 @@ pub async fn create_asset_web(
         );
     }
 
-    // Parse IP address if provided
-    let ip_address: Option<ipnetwork::IpNetwork> = form
-        .ip_address
-        .as_deref()
-        .filter(|s| !s.trim().is_empty())
-        .and_then(|s| s.trim().parse().ok());
-
     let result = diesel::insert_into(a::assets)
         .values((
             a::uuid.eq(new_uuid),
             a::name.eq(&sanitized_name),
             a::hostname.eq(form.hostname.trim()),
-            a::ip_address.eq(ip_address),
             a::port.eq(form.port),
             a::asset_type.eq(parsed_asset_type),
             a::status.eq(&form.status),
@@ -522,7 +512,6 @@ pub async fn asset_list(
         asset_types: vec![
             ("ssh".to_string(), "SSH".to_string()),
             ("rdp".to_string(), "RDP".to_string()),
-            ("vnc".to_string(), "VNC".to_string()),
         ],
         statuses: vec![
             ("online".to_string(), "Online".to_string()),
@@ -782,20 +771,14 @@ pub async fn asset_detail(
         uuid: asset_model.uuid.to_string(),
         name: asset_name.clone(),
         hostname: asset_model.hostname.clone(),
-        ip_address: asset_model.ip_address.map(|ip| ip.to_string()),
         port: asset_model.port,
         asset_type: asset_model.asset_type.to_string(),
         status: asset_model.status.clone(),
         group_name,
         group_uuid,
         description: asset_model.description.clone(),
-        os_type: asset_model.os_type.clone(),
-        os_version: asset_model.os_version.clone(),
         require_approval,
         require_mfa: require_mfa_from_rule,
-        last_seen: asset_model
-            .last_seen
-            .map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
         created_at: asset_model
             .created_at
             .format("%b %d, %Y %H:%M")
@@ -888,7 +871,6 @@ pub async fn asset_edit(
         ::uuid::Uuid,
         String,
         String,
-        Option<ipnetwork::IpNetwork>,
         i32,
         AssetType,
         String,
@@ -902,7 +884,6 @@ pub async fn asset_edit(
             a::uuid,
             a::name,
             a::hostname,
-            a::ip_address,
             a::port,
             a::asset_type,
             a::status,
@@ -926,7 +907,6 @@ pub async fn asset_edit(
         asset_uuid_val,
         asset_name,
         asset_hostname,
-        asset_ip,
         asset_port,
         asset_type_val,
         asset_status,
@@ -963,7 +943,6 @@ pub async fn asset_edit(
         uuid: asset_uuid_val.to_string(),
         name: asset_name.clone(),
         hostname: asset_hostname,
-        ip_address: asset_ip.map(|ip| ip.ip().to_string()),
         port: asset_port,
         asset_type: asset_type_val.to_string(),
         status: asset_status,
@@ -1135,7 +1114,6 @@ pub async fn delete_asset_web(
 pub struct UpdateAssetForm {
     pub name: String,
     pub hostname: String,
-    pub ip_address: Option<String>,
     pub port: i32,
     pub status: String,
     pub description: Option<String>,
@@ -1229,27 +1207,6 @@ pub async fn update_asset_web(
         );
     }
 
-    // Parse and validate IP address if provided
-    let new_ip_address: Option<ipnetwork::IpNetwork> = if let Some(ref ip_str) = form.ip_address {
-        if ip_str.trim().is_empty() {
-            None
-        } else {
-            match ip_str.parse::<std::net::IpAddr>() {
-                Ok(ip) => Some(ipnetwork::IpNetwork::from(ip)),
-                Err(_) => {
-                    return flash_redirect(
-                        flash.error(
-                            "Invalid IP address format. Use format like 192.168.1.1 or 2001:db8::1",
-                        ),
-                        &format!("/assets/{}/edit", asset_uuid),
-                    );
-                }
-            }
-        }
-    } else {
-        None
-    };
-
     // Get database connection
     let mut conn = match state.db_pool.get().await {
         Ok(conn) => conn,
@@ -1315,7 +1272,6 @@ pub async fn update_asset_web(
         .set((
             a::name.eq(&sanitized_name),
             a::hostname.eq(&form.hostname),
-            a::ip_address.eq(new_ip_address.or(existing.ip_address)),
             a::port.eq(form.port),
             a::status.eq(&form.status),
             a::description.eq(sanitized_description.as_deref()),

@@ -96,6 +96,7 @@ mod tests {
             brand_name: "VAUBAN".to_string(),
             brand_logo: None,
             theme: "dark".to_string(),
+            ..Default::default()
         }
     }
 
@@ -304,5 +305,54 @@ mod tests {
         };
 
         assert_eq!(key.name.len(), 200);
+    }
+
+    #[test]
+    fn test_apikey_list_template_shows_version() {
+        let template = ApikeyListTemplate {
+            title: "API Keys".to_string(),
+            user: None,
+            vauban: create_test_vauban_config(),
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            api_keys: Vec::new(),
+        };
+
+        let html = template.render().expect("render should succeed");
+        let version = &template.vauban.version;
+        assert!(
+            html.contains(version),
+            "API keys page must display the Vauban version string"
+        );
+    }
+
+    #[test]
+    fn test_apikey_list_version_is_near_create_button() {
+        let template = ApikeyListTemplate {
+            title: "API Keys".to_string(),
+            user: None,
+            vauban: create_test_vauban_config(),
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            api_keys: Vec::new(),
+        };
+
+        let html = template.render().expect("render should succeed");
+        let btn_pos = html
+            .find("Create API Key")
+            .expect("Create API Key button must exist");
+        let version = &template.vauban.version;
+        let ver_pos = html[btn_pos..]
+            .find(version.as_str())
+            .expect("Version must appear after the Create API Key button");
+        assert!(
+            ver_pos < 500,
+            "Version must be close to the Create API Key button (within 500 chars), found at offset {}",
+            ver_pos
+        );
     }
 }

@@ -15,7 +15,7 @@ This document describes the functional specifications of the Vauban project.
 - **Description** : Record all connections, executed commands, and actions taken on servers for comprehensive auditing.
 
 ### Sec_Req 4 : Tunnel and Connection Encryption
-- **Description** : Use secure protocols like TLS to encrypt RDP, VNC, and SSH connections.
+- **Description** : Use secure protocols like TLS to encrypt RDP and SSH connections.
 
 ### Sec_Req 5 : Session Isolation
 - **Description** : Ensure user sessions are isolated from each other to prevent interference or information leakage.
@@ -43,7 +43,7 @@ This document describes the functional specifications of the Vauban project.
 - **Description** : Provide temporary, time-limited access to servers to reduce the risk of compromise.
 
 ### Mgt_Req 3 : Multi-Protocol Support
-- **Description** : Support RDP, VNC, and SSH connections with centralized management.
+- **Description** : Support RDP and SSH connections with centralized management.
 
 ### Mgt_Req 4 : Integration with Enterprise Directories
 - **Description** : Integrate with LDAPS, Active Directory, and other centralized authentication systems.

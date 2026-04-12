@@ -26,7 +26,6 @@ impl RecordingData {
         match self.session_type.as_str() {
             "ssh" => "bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300",
             "rdp" => "bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-300",
-            "vnc" => "bg-purple-100 text-purple-800 dark:bg-purple-900/50 dark:text-purple-300",
             _ => "bg-gray-100 text-gray-800 dark:bg-gray-900/50 dark:text-gray-300",
         }
     }
@@ -36,9 +35,9 @@ impl RecordingData {
         self.session_type == "ssh"
     }
 
-    /// Check if this is an RDP/VNC session (video replay).
+    /// Check if this is an RDP session (video replay).
     pub fn is_graphical(&self) -> bool {
-        self.session_type == "rdp" || self.session_type == "vnc"
+        self.session_type == "rdp"
     }
 
     /// Check if this recording uses segmented format (directory-based, DASH playback).
@@ -100,12 +99,6 @@ mod tests {
     }
 
     #[test]
-    fn test_type_class_vnc() {
-        let data = create_test_recording_data("vnc");
-        assert!(data.type_class().contains("purple"));
-    }
-
-    #[test]
     fn test_type_class_unknown() {
         let data = create_test_recording_data("telnet");
         assert!(data.type_class().contains("gray"));
@@ -128,12 +121,6 @@ mod tests {
     #[test]
     fn test_is_graphical_rdp() {
         let data = create_test_recording_data("rdp");
-        assert!(data.is_graphical());
-    }
-
-    #[test]
-    fn test_is_graphical_vnc() {
-        let data = create_test_recording_data("vnc");
         assert!(data.is_graphical());
     }
 
@@ -176,6 +163,7 @@ mod tests {
                 brand_name: "VAUBAN".to_string(),
                 brand_logo: None,
                 theme: "dark".to_string(),
+                ..Default::default()
             },
             messages: Vec::new(),
             language_code: "en".to_string(),
@@ -229,6 +217,7 @@ mod tests {
                 brand_name: "VAUBAN".to_string(),
                 brand_logo: None,
                 theme: "dark".to_string(),
+                ..Default::default()
             },
             messages: Vec::new(),
             language_code: "en".to_string(),
@@ -268,6 +257,7 @@ mod tests {
                 brand_name: "VAUBAN".to_string(),
                 brand_logo: None,
                 theme: "dark".to_string(),
+                ..Default::default()
             },
             messages: Vec::new(),
             language_code: "en".to_string(),
@@ -318,6 +308,7 @@ mod tests {
                 brand_name: "VAUBAN".to_string(),
                 brand_logo: None,
                 theme: "dark".to_string(),
+                ..Default::default()
             },
             messages: Vec::new(),
             language_code: "en".to_string(),
@@ -373,6 +364,7 @@ mod tests {
                 brand_name: "VAUBAN".to_string(),
                 brand_logo: None,
                 theme: "dark".to_string(),
+                ..Default::default()
             },
             messages: Vec::new(),
             language_code: "en".to_string(),

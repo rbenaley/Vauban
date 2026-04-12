@@ -463,7 +463,7 @@ flowchart LR
 | `description` | text | Optional description |
 | `user_group_id` | FK -> vauban_groups | Group of users this rule applies to |
 | `asset_group_id` | FK -> asset_groups | Group of assets this rule grants access to |
-| `allowed_protocols` | text[] | List of allowed protocols: `ssh`, `rdp`, `vnc` |
+| `allowed_protocols` | text[] | List of allowed protocols: `ssh`, `rdp` |
 | `valid_from` | timestamptz | Start of validity window (NULL = no start constraint) |
 | `valid_until` | timestamptz | End of validity window (NULL = no end constraint) |
 | `require_mfa` | bool | Whether MFA is required for connections |

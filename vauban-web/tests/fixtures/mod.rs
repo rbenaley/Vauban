@@ -18,6 +18,14 @@ use vauban_web::services::auth::AuthService;
 use crate::common::{unwrap_ok, unwrap_some};
 
 /// Helper to create an auth session for a token in the database.
+pub async fn create_session_for_token_pub(
+    conn: &mut AsyncPgConnection,
+    user_id: i32,
+    token: &str,
+) {
+    create_session_for_token(conn, user_id, token).await;
+}
+
 async fn create_session_for_token(conn: &mut AsyncPgConnection, user_id: i32, token: &str) {
     // Hash the token using SHA3-256
     let mut hasher = Sha3_256::new();
@@ -225,21 +233,16 @@ pub struct TestAsset {
 /// Create a test SSH asset.
 pub async fn create_test_ssh_asset(conn: &mut AsyncPgConnection, name: &str) -> TestAsset {
     let asset_uuid = Uuid::new_v4();
-    let ip: ipnetwork::IpNetwork = unwrap_ok!("192.168.1.100".parse());
 
     let new_asset = NewAsset {
         uuid: asset_uuid,
         name: name.to_string(),
         hostname: format!("{}.test.vauban.io", name.replace("test-", "")),
-        ip_address: Some(ip),
         port: 22,
         asset_type: AssetType::Ssh,
         status: "online".to_string(),
         description: Some("Test SSH asset".to_string()),
-        os_type: Some("Linux".to_string()),
-        os_version: Some("Ubuntu 22.04".to_string()),
         connection_config: serde_json::json!({}),
-        default_credential_id: None,
         created_by_id: None,
         connection_username: "root".to_string(),
     };
@@ -257,21 +260,16 @@ pub async fn create_test_ssh_asset(conn: &mut AsyncPgConnection, name: &str) -> 
 /// Create a test RDP asset.
 pub async fn create_test_rdp_asset(conn: &mut AsyncPgConnection, name: &str) -> TestAsset {
     let asset_uuid = Uuid::new_v4();
-    let ip: ipnetwork::IpNetwork = unwrap_ok!("192.168.1.101".parse());
 
     let new_asset = NewAsset {
         uuid: asset_uuid,
         name: name.to_string(),
         hostname: format!("{}.test.vauban.io", name.replace("test-", "")),
-        ip_address: Some(ip),
         port: 3389,
         asset_type: AssetType::Rdp,
         status: "online".to_string(),
         description: Some("Test RDP asset".to_string()),
-        os_type: Some("Windows".to_string()),
-        os_version: Some("Server 2022".to_string()),
         connection_config: serde_json::json!({}),
-        default_credential_id: None,
         created_by_id: None,
         connection_username: "Administrator".to_string(),
     };
@@ -411,15 +409,11 @@ pub async fn create_simple_ssh_asset(
         uuid: asset_uuid,
         name: name.to_string(),
         hostname: unique_hostname,
-        ip_address: None,
         port: 22,
         asset_type: AssetType::Ssh,
         status: "online".to_string(),
         description: None,
-        os_type: None,
-        os_version: None,
         connection_config: serde_json::json!({}),
-        default_credential_id: None,
         created_by_id: Some(created_by),
         connection_username: "root".to_string(),
     };
@@ -447,15 +441,11 @@ pub async fn create_simple_rdp_asset(
         uuid: asset_uuid,
         name: name.to_string(),
         hostname: unique_hostname,
-        ip_address: None,
         port: 3389,
         asset_type: AssetType::Rdp,
         status: "online".to_string(),
         description: None,
-        os_type: Some("Windows".to_string()),
-        os_version: None,
         connection_config: serde_json::json!({}),
-        default_credential_id: None,
         created_by_id: Some(created_by),
         connection_username: "Administrator".to_string(),
     };
@@ -635,7 +625,6 @@ pub async fn create_recorded_session_with_type(
     let recording_path = match session_type {
         "ssh" => "/recordings/test.cast",
         "rdp" => "/recordings/test.guac",
-        "vnc" => "/recordings/test.guac",
         _ => "/recordings/test.cast",
     };
 
@@ -929,15 +918,11 @@ pub async fn create_test_asset_in_group(
         uuid: asset_uuid,
         name: name.to_string(),
         hostname: unique_hostname,
-        ip_address: None,
         port: 22,
         asset_type: AssetType::Ssh,
         status: "online".to_string(),
         description: None,
-        os_type: None,
-        os_version: None,
         connection_config: serde_json::json!({}),
-        default_credential_id: None,
         created_by_id: Some(created_by),
         connection_username: "root".to_string(),
     };
@@ -986,7 +971,6 @@ pub async fn create_test_asset_in_group_with_type(
     let port = match asset_type {
         AssetType::Ssh => 22,
         AssetType::Rdp => 3389,
-        AssetType::Vnc => 5900,
     };
 
     let default_user = match asset_type {
@@ -998,15 +982,11 @@ pub async fn create_test_asset_in_group_with_type(
         uuid: asset_uuid,
         name: name.to_string(),
         hostname: unique_hostname,
-        ip_address: None,
         port,
         asset_type,
         status: "online".to_string(),
         description: None,
-        os_type: None,
-        os_version: None,
         connection_config: serde_json::json!({}),
-        default_credential_id: None,
         created_by_id: Some(created_by),
         connection_username: default_user.to_string(),
     };

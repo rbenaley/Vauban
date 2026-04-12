@@ -252,7 +252,6 @@ pub async fn terminate_session(
                 proxy.unsubscribe_session(&session_uuid_str).await;
             }
         }
-        _ => {}
     }
 
     // Push real-time updates to /sessions and /sessions/active page subscribers

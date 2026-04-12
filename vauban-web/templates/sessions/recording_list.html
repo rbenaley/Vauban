@@ -26,7 +26,6 @@
                     <option value="">All formats</option>
                     <option value="ssh" {% if format_filter.as_deref() == Some("ssh") %}selected{% endif %}>Asciinema (SSH)</option>
                     <option value="rdp" {% if format_filter.as_deref() == Some("rdp") %}selected{% endif %}>H.264/AVC (RDP)</option>
-                    <option value="vnc" {% if format_filter.as_deref() == Some("vnc") %}selected{% endif %}>H.264/AVC (VNC)</option>
                 </select>
             </div>
             <div>

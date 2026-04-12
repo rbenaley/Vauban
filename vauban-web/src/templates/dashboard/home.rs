@@ -9,7 +9,7 @@ pub struct FavoriteAsset {
     pub uuid: ::uuid::Uuid,
     pub name: String,
     pub hostname: String,
-    pub asset_type: String, // "ssh", "rdp", "vnc"
+    pub asset_type: String, // "ssh", "rdp"
 }
 
 #[derive(Template)]
@@ -84,12 +84,12 @@ mod tests {
             uuid: ::uuid::Uuid::new_v4(),
             name: "Test".to_string(),
             hostname: "test.local".to_string(),
-            asset_type: "vnc".to_string(),
+            asset_type: "rdp".to_string(),
         };
         let debug_str = format!("{:?}", asset);
 
         assert!(debug_str.contains("FavoriteAsset"));
-        assert!(debug_str.contains("vnc"));
+        assert!(debug_str.contains("rdp"));
     }
 
     // ==================== HomeTemplate Tests ====================
@@ -99,6 +99,7 @@ mod tests {
             brand_name: "VAUBAN".to_string(),
             brand_logo: None,
             theme: "dark".to_string(),
+            ..Default::default()
         }
     }
 

@@ -23,7 +23,6 @@ impl ActiveSessionItem {
         match self.session_type.as_str() {
             "ssh" => "bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300",
             "rdp" => "bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-300",
-            "vnc" => "bg-purple-100 text-purple-800 dark:bg-purple-900/50 dark:text-purple-300",
             _ => "bg-gray-100 text-gray-800 dark:bg-gray-900/50 dark:text-gray-300",
         }
     }
@@ -110,12 +109,6 @@ mod tests {
     }
 
     #[test]
-    fn test_session_type_class_vnc() {
-        let item = create_test_active_session_item("vnc");
-        assert!(item.session_type_class().contains("purple"));
-    }
-
-    #[test]
     fn test_session_type_class_unknown() {
         let item = create_test_active_session_item("telnet");
         assert!(item.session_type_class().contains("gray"));
@@ -154,6 +147,7 @@ mod tests {
                 brand_name: "VAUBAN".to_string(),
                 brand_logo: None,
                 theme: "dark".to_string(),
+                ..Default::default()
             },
             messages: Vec::new(),
             language_code: "en".to_string(),
@@ -202,7 +196,6 @@ mod tests {
             sessions: vec![
                 create_test_active_session_item("ssh"),
                 create_test_active_session_item("rdp"),
-                create_test_active_session_item("vnc"),
             ],
         };
         let result = widget.render();
@@ -211,7 +204,6 @@ mod tests {
         let html = unwrap_ok!(result);
         assert!(html.contains("SSH"));
         assert!(html.contains("RDP"));
-        assert!(html.contains("VNC"));
     }
 
     // Tests for ActiveListStatsWidget (WebSocket partial)
@@ -246,13 +238,12 @@ mod tests {
             sessions: vec![
                 create_test_active_session_item("ssh"),
                 create_test_active_session_item("rdp"),
-                create_test_active_session_item("vnc"),
             ],
         };
         let result = widget.render();
         assert!(result.is_ok());
 
         let html = unwrap_ok!(result);
-        assert!(html.contains("3")); // 3 sessions
+        assert!(html.contains("2")); // 2 sessions
     }
 }

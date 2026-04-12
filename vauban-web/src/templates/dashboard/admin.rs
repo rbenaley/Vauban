@@ -24,6 +24,7 @@ mod tests {
             brand_name: "VAUBAN".to_string(),
             brand_logo: None,
             theme: "dark".to_string(),
+            ..Default::default()
         }
     }
 

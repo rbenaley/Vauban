@@ -9,7 +9,6 @@ pub struct AssetEdit {
     pub uuid: String,
     pub name: String,
     pub hostname: String,
-    pub ip_address: Option<String>,
     pub port: i32,
     pub asset_type: String,
     pub status: String,
@@ -47,7 +46,6 @@ mod tests {
             uuid: "asset-uuid-123".to_string(),
             name: "Production Server".to_string(),
             hostname: "prod-01.example.com".to_string(),
-            ip_address: Some("192.168.1.100".to_string()),
             port: 22,
             asset_type: "ssh".to_string(),
             status: "online".to_string(),
@@ -66,6 +64,7 @@ mod tests {
             brand_name: "VAUBAN".to_string(),
             brand_logo: None,
             theme: "dark".to_string(),
+            ..Default::default()
         }
     }
 
@@ -75,13 +74,6 @@ mod tests {
         assert_eq!(asset.name, "Production Server");
         assert_eq!(asset.hostname, "prod-01.example.com");
         assert_eq!(asset.port, 22);
-    }
-
-    #[test]
-    fn test_asset_edit_without_ip_address() {
-        let mut asset = create_test_asset_edit();
-        asset.ip_address = None;
-        assert!(asset.ip_address.is_none());
     }
 
     #[test]
@@ -182,15 +174,6 @@ mod tests {
         asset.port = 3389;
         assert_eq!(asset.asset_type, "rdp");
         assert_eq!(asset.port, 3389);
-    }
-
-    #[test]
-    fn test_asset_edit_vnc_type() {
-        let mut asset = create_test_asset_edit();
-        asset.asset_type = "vnc".to_string();
-        asset.port = 5900;
-        assert_eq!(asset.asset_type, "vnc");
-        assert_eq!(asset.port, 5900);
     }
 
     #[test]

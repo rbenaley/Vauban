@@ -82,21 +82,13 @@ diesel::table! {
         name -> Varchar,
         #[max_length = 255]
         hostname -> Varchar,
-        ip_address -> Nullable<Inet>,
         port -> Int4,
         #[max_length = 10]
         asset_type -> Varchar,
         #[max_length = 15]
         status -> Varchar,
         description -> Nullable<Text>,
-        #[max_length = 50]
-        os_type -> Nullable<Varchar>,
-        #[max_length = 50]
-        os_version -> Nullable<Varchar>,
         connection_config -> Jsonb,
-        #[max_length = 36]
-        default_credential_id -> Nullable<Varchar>,
-        last_seen -> Nullable<Timestamptz>,
         created_by_id -> Nullable<Int4>,
         updated_by_id -> Nullable<Int4>,
         created_at -> Timestamptz,

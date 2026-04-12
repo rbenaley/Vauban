@@ -12,7 +12,7 @@ pub struct AssetListItem {
     pub name: String,
     pub hostname: String,
     pub port: i32,
-    pub asset_type: String, // "ssh", "rdp", "vnc"
+    pub asset_type: String, // "ssh", "rdp"
     pub status: String,     // "online", "offline", "maintenance"
     pub group_name: Option<String>,
     pub requires_request: bool,
@@ -90,14 +90,9 @@ mod tests {
             asset_type: "rdp".to_string(),
             ..create_test_asset_item()
         };
-        let vnc = AssetListItem {
-            asset_type: "vnc".to_string(),
-            ..create_test_asset_item()
-        };
 
         assert_eq!(ssh.asset_type, "ssh");
         assert_eq!(rdp.asset_type, "rdp");
-        assert_eq!(vnc.asset_type, "vnc");
     }
 
     #[test]
@@ -137,6 +132,7 @@ mod tests {
                 brand_name: "VAUBAN".to_string(),
                 brand_logo: None,
                 theme: "dark".to_string(),
+                ..Default::default()
             },
             messages: Vec::new(),
             language_code: "en".to_string(),
@@ -173,6 +169,7 @@ mod tests {
                 brand_name: "VAUBAN".to_string(),
                 brand_logo: None,
                 theme: "dark".to_string(),
+                ..Default::default()
             },
             messages: Vec::new(),
             language_code: "en".to_string(),
@@ -215,6 +212,7 @@ mod tests {
                 brand_name: "VAUBAN".to_string(),
                 brand_logo: None,
                 theme: "dark".to_string(),
+                ..Default::default()
             },
             messages: Vec::new(),
             language_code: "en".to_string(),
@@ -417,6 +415,7 @@ mod tests {
                 brand_name: "VAUBAN".to_string(),
                 brand_logo: None,
                 theme: "dark".to_string(),
+                ..Default::default()
             },
             messages: Vec::new(),
             language_code: "en".to_string(),
@@ -459,6 +458,7 @@ mod tests {
                 brand_name: "VAUBAN".to_string(),
                 brand_logo: None,
                 theme: "dark".to_string(),
+                ..Default::default()
             },
             messages: Vec::new(),
             language_code: "en".to_string(),
@@ -501,6 +501,7 @@ mod tests {
                 brand_name: "VAUBAN".to_string(),
                 brand_logo: None,
                 theme: "dark".to_string(),
+                ..Default::default()
             },
             messages: Vec::new(),
             language_code: "en".to_string(),

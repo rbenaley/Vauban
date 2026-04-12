@@ -193,6 +193,53 @@ async fn test_api_keys_page_contains_html() {
     );
 }
 
+#[tokio::test]
+#[serial]
+async fn test_api_keys_page_shows_version() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("apikeys_ver_user");
+    let user_id = create_simple_user(&mut conn, &username).await;
+
+    let user_uuid: Uuid = {
+        use diesel::{ExpressionMethods, QueryDsl};
+        use diesel_async::RunQueryDsl;
+        use vauban_web::schema::users;
+        users::table
+            .filter(users::id.eq(user_id))
+            .select(users::uuid)
+            .first(&mut conn)
+            .await
+            .expect("User should exist")
+    };
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/accounts/apikeys")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_status(&response, 200);
+
+    let body = response.text();
+    let pkg_version = env!("CARGO_PKG_VERSION");
+    assert!(
+        body.contains(&format!("v{}", pkg_version)),
+        "API keys page must display the Vauban version (v{}), body excerpt: {}",
+        pkg_version,
+        &body[..body.len().min(500)]
+    );
+    assert!(
+        body.contains("Create API Key"),
+        "API keys page must contain the Create API Key button"
+    );
+}
+
 // =============================================================================
 // Session List Page Tests
 // =============================================================================

@@ -2,19 +2,11 @@
 use super::*;
 use crate::models::session::SessionType;
 
-/// Dashboard home page - requires authentication.
+/// Dashboard home page - requires authentication and MFA verification.
 pub async fn dashboard_home(
     State(state): State<AppState>,
-    OptionalAuthUser(auth_user): OptionalAuthUser,
+    auth_user: WebAuthUser,
 ) -> Result<Response, AppError> {
-    use axum::response::Redirect;
-
-    // Redirect to login if not authenticated
-    let auth_user = match auth_user {
-        Some(user) => user,
-        None => return Ok(Redirect::to("/login").into_response()),
-    };
-
     let user = Some(user_context_from_auth(&auth_user));
     let base = BaseTemplate::new("Dashboard".to_string(), user.clone()).with_current_path("/");
 
@@ -71,7 +63,7 @@ pub async fn dashboard_admin(
 /// Dashboard stats widget.
 pub async fn dashboard_widget_stats(
     State(state): State<AppState>,
-    OptionalAuthUser(_auth_user): OptionalAuthUser,
+    _auth_user: WebAuthUser,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::templates::dashboard::widgets::StatsData;
     use chrono::{Duration, Utc};
@@ -124,7 +116,7 @@ pub async fn dashboard_widget_stats(
 /// Dashboard active sessions widget.
 pub async fn dashboard_widget_active_sessions(
     State(state): State<AppState>,
-    OptionalAuthUser(_auth_user): OptionalAuthUser,
+    _auth_user: WebAuthUser,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::templates::dashboard::widgets::ActiveSessionItem;
 
@@ -185,7 +177,7 @@ pub async fn dashboard_widget_active_sessions(
 /// Dashboard recent activity widget.
 pub async fn dashboard_widget_recent_activity(
     State(_state): State<AppState>,
-    OptionalAuthUser(_auth_user): OptionalAuthUser,
+    _auth_user: WebAuthUser,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::templates::dashboard::widgets::ActivityItem;
     let template = RecentActivityWidget {

@@ -5,7 +5,7 @@ use axum::{
     Json,
     extract::{Form, State},
     http::{HeaderValue, StatusCode, header::HeaderMap},
-    response::{Html, IntoResponse, Response},
+    response::{Html, IntoResponse, Redirect, Response},
 };
 use axum_extra::extract::CookieJar;
 use chrono::{Duration, Utc};
@@ -569,7 +569,6 @@ fn extract_client_ip(
 /// Logout handler.
 /// Invalidates the current session in the database and clears the cookie.
 pub async fn logout(State(state): State<AppState>, jar: CookieJar) -> Response {
-    use axum::response::Redirect;
     use axum_extra::extract::cookie::Cookie;
     use time::Duration as TimeDuration;
 
@@ -650,8 +649,6 @@ pub struct AuthCsrfForm {
 // =============================================================================
 // MFA Web Handlers (for human users)
 // =============================================================================
-
-use axum::response::Redirect;
 
 /// Form for MFA code submission.
 #[derive(Debug, Deserialize)]
@@ -969,7 +966,26 @@ pub async fn mfa_verify_page(
         .map(|c| c.value().to_string())
         .ok_or_else(|| AppError::Auth("Not authenticated".to_string()))?;
 
-    let _claims = state.auth_service.verify_token(&token)?;
+    let claims = state.auth_service.verify_token(&token)?;
+
+    // If the user hasn't set up MFA yet, redirect to /mfa/setup
+    let user_uuid_parsed = ::uuid::Uuid::parse_str(&claims.sub)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Invalid UUID in token: {}", e)))?;
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB pool error: {}", e)))?;
+    let user_mfa_enabled: bool = crate::schema::users::table
+        .filter(crate::schema::users::uuid.eq(user_uuid_parsed))
+        .select(crate::schema::users::mfa_enabled)
+        .first::<bool>(&mut conn)
+        .await
+        .map_err(|_| AppError::Auth("User not found".to_string()))?;
+
+    if !user_mfa_enabled {
+        return Ok(Redirect::to("/mfa/setup").into_response());
+    }
 
     // Build template without sidebar (user not fully authenticated yet)
     // Convert incoming flash messages to template FlashMessages

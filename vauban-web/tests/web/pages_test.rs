@@ -2001,72 +2001,6 @@ async fn test_web_form_post_requires_authentication() {
 // =============================================================================
 
 #[tokio::test]
-async fn test_invalid_ip_address_shows_flash_error() {
-    let app = TestApp::spawn().await;
-    let mut conn = app.get_conn().await;
-
-    // Create test data
-    let user_id = create_simple_user(&mut conn, "test_ip_error").await;
-    let user_uuid = get_user_uuid(&mut conn, user_id).await;
-    let asset_id = create_simple_ssh_asset(&mut conn, "test-ip-asset", user_id).await;
-    let asset_uuid = get_asset_uuid(&mut conn, asset_id).await;
-
-    let token = app
-        .generate_test_token(&user_uuid.to_string(), "test_ip_error", true, true)
-        .await;
-    let csrf_token = app.generate_csrf_token();
-
-    // Submit form with invalid IP address (192.168.1.400 is invalid)
-    let response = app
-        .server
-        .post(&format!("/assets/{}/edit", asset_uuid))
-        .add_header(
-            COOKIE,
-            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
-        )
-        .form(&[
-            ("name", "Test Asset"),
-            ("hostname", "test.example.com"),
-            ("ip_address", "192.168.1.400"), // Invalid IP address
-            ("port", "22"),
-            ("status", "online"),
-            ("csrf_token", csrf_token.as_str()),
-        ])
-        .await;
-
-    // Should redirect back to edit page (PRG pattern)
-    let status = response.status_code().as_u16();
-    assert!(
-        status == 302 || status == 303,
-        "Expected redirect (302 or 303), got {}",
-        status
-    );
-
-    // Check that redirect location is back to edit page
-    let location = response.headers().get("location");
-    assert!(
-        location.is_some(),
-        "Response should have Location header for redirect"
-    );
-    let location_str = location.unwrap().to_str().unwrap();
-    assert!(
-        location_str.contains(&format!("/assets/{}/edit", asset_uuid)),
-        "Should redirect back to edit page, got: {}",
-        location_str
-    );
-
-    // Check that flash cookie is set with error message
-    let cookies = response.headers().get_all("set-cookie");
-    let flash_cookie = cookies
-        .iter()
-        .find(|c| c.to_str().unwrap().contains("__vauban_flash"));
-    assert!(
-        flash_cookie.is_some(),
-        "Flash cookie should be set for error message"
-    );
-}
-
-#[tokio::test]
 async fn test_edit_page_displays_flash_messages() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
@@ -2082,7 +2016,7 @@ async fn test_edit_page_displays_flash_messages() {
         .await;
     let csrf_token = app.generate_csrf_token();
 
-    // First, submit form with invalid IP to set flash cookie
+    // Submit form with empty name to trigger validation error and set flash cookie
     let error_response = app
         .server
         .post(&format!("/assets/{}/edit", asset_uuid))
@@ -2091,9 +2025,8 @@ async fn test_edit_page_displays_flash_messages() {
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
         )
         .form(&[
-            ("name", "Test Asset"),
+            ("name", ""),
             ("hostname", "test.example.com"),
-            ("ip_address", "invalid-ip"), // Invalid IP address
             ("port", "22"),
             ("status", "online"),
             ("csrf_token", csrf_token.as_str()),
@@ -2108,7 +2041,6 @@ async fn test_edit_page_displays_flash_messages() {
         .find(|c| c.to_str().unwrap().contains("__vauban_flash"))
         .map(|c| {
             let cookie_str = c.to_str().unwrap();
-            // Extract just the cookie value part (before ;)
             cookie_str.split(';').next().unwrap().to_string()
         });
 
@@ -2130,7 +2062,7 @@ async fn test_edit_page_displays_flash_messages() {
     // Check that the response body contains error message
     let body = get_response.text();
     assert!(
-        body.contains("Invalid IP address") || body.contains("bg-red-50") || body.contains("error"),
+        body.contains("bg-red-50") || body.contains("error"),
         "Edit page should display error flash message. Body excerpt: {}...",
         &body[..std::cmp::min(500, body.len())]
     );
@@ -5408,7 +5340,7 @@ async fn test_recordings_page_accessible_to_staff() {
 #[tokio::test]
 async fn test_recordings_filter_by_all_formats() {
     // Test that filtering works correctly for all session format types:
-    // - ssh, rdp, vnc
+    // - ssh, rdp
     // - empty string (All formats) should behave like no filter
     use crate::fixtures::create_recorded_session_with_type;
 
@@ -5420,7 +5352,7 @@ async fn test_recordings_filter_by_all_formats() {
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
 
     // Create recordings with different session types
-    let formats = ["ssh", "rdp", "vnc"];
+    let formats = ["ssh", "rdp"];
 
     for (i, format) in formats.iter().enumerate() {
         let asset_id = create_simple_ssh_asset(
@@ -5645,11 +5577,11 @@ async fn test_recordings_combined_filters() {
     // Create diverse recordings
     let asset1 = create_simple_ssh_asset(&mut conn, "linux-server-ssh", user_id).await;
     let asset2 = create_simple_ssh_asset(&mut conn, "windows-server-rdp", user_id).await;
-    let asset3 = create_simple_ssh_asset(&mut conn, "linux-desktop-vnc", user_id).await;
+    let asset3 = create_simple_ssh_asset(&mut conn, "linux-desktop-rdp", user_id).await;
 
     create_recorded_session_with_type(&mut conn, user_id, asset1, "ssh").await;
     create_recorded_session_with_type(&mut conn, user_id, asset2, "rdp").await;
-    create_recorded_session_with_type(&mut conn, user_id, asset3, "vnc").await;
+    create_recorded_session_with_type(&mut conn, user_id, asset3, "rdp").await;
 
     let token = app
         .generate_test_token(&user_uuid.to_string(), &username, true, true)
@@ -5668,10 +5600,10 @@ async fn test_recordings_combined_filters() {
         body.contains("linux-server-ssh"),
         "Combined filter should find linux-server-ssh"
     );
-    // Should NOT show the VNC linux desktop (wrong format)
+    // Should NOT show the RDP linux desktop (wrong format)
     assert!(
-        !body.contains("linux-desktop-vnc") || body.contains("No recordings"),
-        "Combined filter should not show VNC recording when filtering SSH"
+        !body.contains("linux-desktop-rdp") || body.contains("No recordings"),
+        "Combined filter should not show RDP recording when filtering SSH"
     );
 
     // Test 2: Filter by format=rdp AND asset=windows
@@ -5905,16 +5837,7 @@ async fn test_asset_list_filter_by_all_types() {
 
     assert_eq!(response_rdp.status_code().as_u16(), 200);
 
-    // Test 5: Filter by VNC type
-    let response_vnc = app
-        .server
-        .get("/assets?type=vnc")
-        .add_header(COOKIE, format!("access_token={}", token))
-        .await;
-
-    assert_eq!(response_vnc.status_code().as_u16(), 200);
-
-    // Test 6: Invalid type filter - page should still load
+    // Test 5: Invalid type filter - page should still load
     let response_invalid = app
         .server
         .get("/assets?type=invalid_type")
@@ -6267,6 +6190,91 @@ async fn test_asset_create_form_loads_for_admin() {
         status == 200,
         "Admin should access asset creation form, got {}",
         status
+    );
+}
+
+#[tokio::test]
+async fn test_asset_create_form_uses_alpine_port_defaults() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("asset_js_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/assets/new")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert_eq!(status, 200, "Admin should access asset creation form");
+
+    let body = response.text();
+    assert!(
+        body.contains("x-data") && body.contains("ssh: 22") && body.contains("rdp: 3389"),
+        "Asset create page must use Alpine.js x-data for port defaults"
+    );
+    assert!(
+        body.contains("x-model"),
+        "Port input must use Alpine.js x-model binding"
+    );
+}
+
+#[tokio::test]
+async fn test_asset_create_form_default_port_is_22() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("asset_port_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/assets/new")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    let body = response.text();
+    assert!(
+        body.contains("port: 22"),
+        "Default port in Alpine.js x-data should be 22 (SSH)"
+    );
+}
+
+#[tokio::test]
+async fn test_asset_create_form_no_vnc_option() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("asset_novnc_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/assets/new")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    let body = response.text();
+    assert!(
+        !body.contains(r#"value="vnc""#) && !body.contains(">VNC<"),
+        "Asset create form must not contain VNC option"
     );
 }
 

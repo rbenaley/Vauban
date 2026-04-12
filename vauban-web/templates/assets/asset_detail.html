@@ -117,16 +117,6 @@
                     <dd class="mt-1 text-sm text-gray-900 dark:text-white font-mono">{{ asset.hostname }}</dd>
                 </div>
                 <div>
-                    <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">IP Address</dt>
-                    <dd class="mt-1 text-sm text-gray-900 dark:text-white font-mono">
-                        {% if let Some(ip) = asset.ip_address.as_ref() %}
-                        {{ ip }}
-                        {% else %}
-                        <span class="text-gray-400 dark:text-gray-500 italic">Not set</span>
-                        {% endif %}
-                    </dd>
-                </div>
-                <div>
                     <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Port</dt>
                     <dd class="mt-1 text-sm text-gray-900 dark:text-white font-mono">{{ asset.port }}</dd>
                 </div>
@@ -237,29 +227,6 @@
         </div>
         <div class="px-4 py-5 sm:p-6">
             <dl class="grid grid-cols-1 gap-x-4 gap-y-6 sm:grid-cols-2">
-                <div>
-                    <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Operating System</dt>
-                    <dd class="mt-1 text-sm text-gray-900 dark:text-white">
-                        {% if let Some(os) = asset.os_type.as_ref() %}
-                        {{ os }}
-                        {% if let Some(ver) = asset.os_version.as_ref() %}
-                        {{ ver }}
-                        {% endif %}
-                        {% else %}
-                        <span class="text-gray-400 dark:text-gray-500 italic">Unknown</span>
-                        {% endif %}
-                    </dd>
-                </div>
-                <div>
-                    <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Last Seen</dt>
-                    <dd class="mt-1 text-sm text-gray-900 dark:text-white">
-                        {% if asset.last_seen.is_some() %}
-                        {{ asset.last_seen.as_ref().unwrap() }}
-                        {% else %}
-                        <span class="text-gray-400 dark:text-gray-500 italic">Never</span>
-                        {% endif %}
-                    </dd>
-                </div>
                 <div class="sm:col-span-2">
                     <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Description</dt>
                     <dd class="mt-1 text-sm text-gray-900 dark:text-white">

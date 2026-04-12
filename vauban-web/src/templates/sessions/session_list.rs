@@ -24,7 +24,6 @@ impl SessionListItem {
         match self.session_type.as_str() {
             "ssh" => "SSH",
             "rdp" => "RDP",
-            "vnc" => "VNC",
             _ => &self.session_type,
         }
     }
@@ -132,12 +131,6 @@ mod tests {
     fn test_session_type_display_rdp() {
         let item = create_test_session_item("rdp", "active", None);
         assert_eq!(item.session_type_display(), "RDP");
-    }
-
-    #[test]
-    fn test_session_type_display_vnc() {
-        let item = create_test_session_item("vnc", "active", None);
-        assert_eq!(item.session_type_display(), "VNC");
     }
 
     #[test]
@@ -279,6 +272,7 @@ mod tests {
                 brand_name: "VAUBAN".to_string(),
                 brand_logo: None,
                 theme: "dark".to_string(),
+                ..Default::default()
             },
             messages: Vec::new(),
             language_code: "en".to_string(),
@@ -314,6 +308,7 @@ mod tests {
                 brand_name: "VAUBAN".to_string(),
                 brand_logo: None,
                 theme: "dark".to_string(),
+                ..Default::default()
             },
             messages: Vec::new(),
             language_code: "en".to_string(),
@@ -349,6 +344,7 @@ mod tests {
                 brand_name: "VAUBAN".to_string(),
                 brand_logo: None,
                 theme: "dark".to_string(),
+                ..Default::default()
             },
             messages: Vec::new(),
             language_code: "en".to_string(),
@@ -385,6 +381,7 @@ mod tests {
                 brand_name: "VAUBAN".to_string(),
                 brand_logo: None,
                 theme: "dark".to_string(),
+                ..Default::default()
             },
             messages: Vec::new(),
             language_code: "en".to_string(),
@@ -463,6 +460,7 @@ mod tests {
                 brand_name: "VAUBAN".to_string(),
                 brand_logo: None,
                 theme: "dark".to_string(),
+                ..Default::default()
             },
             messages: Vec::new(),
             language_code: "en".to_string(),
@@ -502,6 +500,7 @@ mod tests {
                 brand_name: "VAUBAN".to_string(),
                 brand_logo: None,
                 theme: "dark".to_string(),
+                ..Default::default()
             },
             messages: Vec::new(),
             language_code: "en".to_string(),

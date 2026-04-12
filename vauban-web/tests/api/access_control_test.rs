@@ -597,51 +597,6 @@ async fn test_dual_protocol_rule_shows_both_types() {
     test_db::cleanup(&mut conn).await;
 }
 
-/// VNC asset should be hidden when only SSH and RDP are allowed.
-#[tokio::test]
-#[serial]
-async fn test_vnc_asset_hidden_with_ssh_rdp_rule() {
-    let app = TestApp::spawn().await;
-    let mut conn = app.get_conn().await;
-
-    let admin_name = unique_name("test_vnc_flt_adm");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
-
-    let username = unique_name("test_vnc_flt_usr");
-    let user = create_test_user(&mut conn, &app.auth_service, &username).await;
-
-    let ug = create_test_vauban_group(&mut conn, "test-ug-vnc-flt").await;
-    let ag = create_test_asset_group(&mut conn, &unique_name("test-ag-vnc-flt")).await;
-    add_user_to_vauban_group(&mut conn, user.user.id, &ug).await;
-
-    create_test_asset_in_group_with_type(
-        &mut conn,
-        "vnc-flt-vnc",
-        admin.user.id,
-        &ag,
-        AssetType::Vnc,
-    )
-    .await;
-
-    create_test_access_rule(&mut conn, &ug, &ag, &["ssh", "rdp"]).await;
-
-    let response = app
-        .server
-        .get("/api/v1/assets")
-        .add_header(header::AUTHORIZATION, app.auth_header(&user.token))
-        .await;
-
-    assert_status(&response, 200);
-    let json: Vec<serde_json::Value> = response.json();
-    assert!(
-        json.is_empty(),
-        "VNC asset should NOT appear with SSH+RDP rule, got {} assets",
-        json.len()
-    );
-
-    test_db::cleanup(&mut conn).await;
-}
-
 // =============================================================================
 // Temporal Validity Tests
 // =============================================================================

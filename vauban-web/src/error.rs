@@ -21,6 +21,9 @@ pub enum AppError {
     #[error("Authentication required - redirect to login")]
     AuthRedirect,
 
+    #[error("MFA verification required - redirect to MFA")]
+    MfaRedirect,
+
     #[error("Authorization error: {0}")]
     Authorization(String),
 
@@ -50,6 +53,11 @@ impl IntoResponse for AppError {
             return Redirect::to("/login").into_response();
         }
 
+        // Special case: MfaRedirect returns a redirect to MFA verification page
+        if matches!(self, AppError::MfaRedirect) {
+            return Redirect::to("/mfa/verify").into_response();
+        }
+
         let (status, error_message) = match self {
             AppError::Database(e) => {
                 tracing::error!("Database error: {}", e);
@@ -60,6 +68,7 @@ impl IntoResponse for AppError {
             }
             AppError::Auth(msg) => (StatusCode::UNAUTHORIZED, msg),
             AppError::AuthRedirect => unreachable!(), // Handled above
+            AppError::MfaRedirect => unreachable!(),   // Handled above
             AppError::Authorization(msg) => (StatusCode::FORBIDDEN, msg),
             AppError::Validation(msg) => (StatusCode::BAD_REQUEST, msg),
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
@@ -112,9 +121,6 @@ pub type AppResult<T> = Result<T, AppError>;
 pub fn user_friendly_message(error: &str) -> &str {
     match error {
         // Validation errors
-        "Invalid IP address format" => {
-            "The IP address is not valid. Please use a format like 192.168.1.1 or 2001:db8::1"
-        }
         msg if msg == "Validation failed" || msg.starts_with("Validation failed:") => {
             "Please check the form fields and try again"
         }
@@ -263,6 +269,38 @@ mod tests {
     }
 
     #[test]
+    fn test_app_error_into_response_mfa_redirect_status() {
+        let error = AppError::MfaRedirect;
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    }
+
+    #[test]
+    fn test_app_error_into_response_mfa_redirect_has_location_header() {
+        let error = AppError::MfaRedirect;
+        let response = error.into_response();
+        let location = response.headers().get("location");
+        assert!(location.is_some());
+        assert_eq!(unwrap_ok!(unwrap_some!(location).to_str()), "/mfa/verify");
+    }
+
+    #[test]
+    fn test_app_error_display_mfa_redirect() {
+        let error = AppError::MfaRedirect;
+        assert_eq!(
+            error.to_string(),
+            "MFA verification required - redirect to MFA"
+        );
+    }
+
+    #[test]
+    fn test_app_error_debug_mfa_redirect() {
+        let error = AppError::MfaRedirect;
+        let debug_str = format!("{:?}", error);
+        assert!(debug_str.contains("MfaRedirect"));
+    }
+
+    #[test]
     fn test_app_error_into_response_authorization_status() {
         let error = AppError::Authorization("Forbidden".to_string());
         let response = error.into_response();
@@ -397,13 +435,6 @@ mod tests {
     // ==================== User-Friendly Message Tests ====================
 
     #[test]
-    fn test_user_friendly_message_ip_address() {
-        let msg = user_friendly_message("Invalid IP address format");
-        assert!(msg.contains("192.168.1.1"));
-        assert!(msg.contains("2001:db8::1"));
-    }
-
-    #[test]
     fn test_user_friendly_message_validation() {
         let msg = user_friendly_message("Validation failed");
         assert!(msg.contains("check the form fields"));
@@ -456,8 +487,8 @@ mod tests {
 
     #[test]
     fn test_html_error_fragment_contains_message() {
-        let html = html_error_fragment("Invalid IP address format");
-        assert!(html.contains("192.168.1.1"));
+        let html = html_error_fragment("Validation failed");
+        assert!(html.contains("check the form fields"));
         assert!(html.contains("text-red-"));
         assert!(html.contains("<svg"));
     }
@@ -494,8 +525,8 @@ mod tests {
     #[test]
     fn test_htmx_error_response_content() {
         let (_status, html) =
-            htmx_error_response(StatusCode::BAD_REQUEST, "Invalid IP address format");
+            htmx_error_response(StatusCode::BAD_REQUEST, "Validation failed");
         let body = html.0;
-        assert!(body.contains("192.168.1.1"));
+        assert!(body.contains("check the form fields"));
     }
 }

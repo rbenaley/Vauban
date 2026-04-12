@@ -35,7 +35,7 @@ pub(crate) use zeroize::Zeroize;
 
 pub(crate) use crate::AppState;
 pub(crate) use crate::error::{AppError, AppResult};
-pub(crate) use crate::middleware::auth::{AuthUser, OptionalAuthUser, WebAuthUser};
+pub(crate) use crate::middleware::auth::{AuthUser, WebAuthUser};
 pub(crate) use crate::middleware::flash::{IncomingFlash, flash_redirect};
 pub(crate) use crate::schema::{api_keys, assets as schema_assets, auth_sessions, proxy_sessions};
 pub(crate) use crate::templates::accounts::{

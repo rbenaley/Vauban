@@ -46,7 +46,8 @@ where
 }
 
 /// Web page authentication extractor.
-/// Same as AuthUser but redirects to login page instead of returning JSON 401.
+/// Requires both a valid session AND completed MFA verification.
+/// Redirects to login if not authenticated, or to MFA page if MFA is pending.
 /// Use this for web page handlers (HTML responses).
 #[derive(Debug, Clone)]
 pub struct WebAuthUser(pub AuthUser);
@@ -66,11 +67,40 @@ where
     type Rejection = AppError;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        match parts.extensions.get::<AuthUser>().cloned() {
+            Some(user) if user.mfa_verified => Ok(WebAuthUser(user)),
+            Some(_) => Err(AppError::MfaRedirect),
+            None => Err(AppError::AuthRedirect),
+        }
+    }
+}
+
+/// Pre-MFA web authentication extractor.
+/// Requires a valid session but does NOT require MFA verification.
+/// Use ONLY for MFA setup/verify pages and logout -- never for regular app pages.
+#[derive(Debug, Clone)]
+pub struct PreMfaAuthUser(pub AuthUser);
+
+impl std::ops::Deref for PreMfaAuthUser {
+    type Target = AuthUser;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<S> FromRequestParts<S> for PreMfaAuthUser
+where
+    S: Send + Sync,
+{
+    type Rejection = AppError;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
         parts
             .extensions
             .get::<AuthUser>()
             .cloned()
-            .map(WebAuthUser)
+            .map(PreMfaAuthUser)
             .ok_or(AppError::AuthRedirect)
     }
 }
@@ -294,7 +324,8 @@ pub async fn require_mfa(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::Request as HttpRequest;
+    use axum::http::{Request as HttpRequest, StatusCode};
+    use axum::response::IntoResponse;
 
     // ==================== AuthUser Tests ====================
 
@@ -681,5 +712,164 @@ mod tests {
         assert!(web_user.0.mfa_verified);
         assert!(!web_user.0.is_superuser);
         assert!(web_user.0.is_staff);
+    }
+
+    // ==================== WebAuthUser MFA Enforcement Tests ====================
+
+    #[tokio::test]
+    async fn test_web_auth_user_rejects_pre_mfa_session() {
+        let pre_mfa_user = AuthUser {
+            uuid: "uuid".to_string(),
+            username: "user".to_string(),
+            mfa_verified: false,
+            is_superuser: false,
+            is_staff: false,
+        };
+
+        let mut parts = unwrap_ok!(
+            HttpRequest::builder()
+                .body(axum::body::Body::empty())
+        )
+        .into_parts()
+        .0;
+        parts.extensions.insert(pre_mfa_user);
+
+        let result = WebAuthUser::from_request_parts(&mut parts, &()).await;
+        assert!(result.is_err(), "WebAuthUser must reject mfa_verified=false");
+        let err_response = result.unwrap_err().into_response();
+        assert_eq!(err_response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            unwrap_ok!(unwrap_some!(err_response.headers().get("location")).to_str()),
+            "/mfa/verify"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_web_auth_user_accepts_mfa_verified_session() {
+        let mfa_user = AuthUser {
+            uuid: "uuid".to_string(),
+            username: "user".to_string(),
+            mfa_verified: true,
+            is_superuser: false,
+            is_staff: false,
+        };
+
+        let mut parts = unwrap_ok!(
+            HttpRequest::builder()
+                .body(axum::body::Body::empty())
+        )
+        .into_parts()
+        .0;
+        parts.extensions.insert(mfa_user);
+
+        let result = WebAuthUser::from_request_parts(&mut parts, &()).await;
+        assert!(result.is_ok(), "WebAuthUser must accept mfa_verified=true");
+    }
+
+    #[tokio::test]
+    async fn test_web_auth_user_redirects_to_login_when_no_session() {
+        let mut parts = unwrap_ok!(
+            HttpRequest::builder()
+                .body(axum::body::Body::empty())
+        )
+        .into_parts()
+        .0;
+
+        let result = WebAuthUser::from_request_parts(&mut parts, &()).await;
+        assert!(result.is_err());
+        let err_response = result.unwrap_err().into_response();
+        assert_eq!(err_response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            unwrap_ok!(unwrap_some!(err_response.headers().get("location")).to_str()),
+            "/login"
+        );
+    }
+
+    // ==================== PreMfaAuthUser Tests ====================
+
+    #[test]
+    fn test_pre_mfa_auth_user_deref() {
+        let auth_user = create_test_user();
+        let pre_mfa = PreMfaAuthUser(auth_user.clone());
+        assert_eq!(pre_mfa.uuid, auth_user.uuid);
+        assert_eq!(pre_mfa.username, auth_user.username);
+    }
+
+    #[test]
+    fn test_pre_mfa_auth_user_clone() {
+        let auth_user = create_test_user();
+        let pre_mfa = PreMfaAuthUser(auth_user);
+        let cloned = pre_mfa.clone();
+        assert_eq!(pre_mfa.uuid, cloned.uuid);
+    }
+
+    #[test]
+    fn test_pre_mfa_auth_user_debug() {
+        let auth_user = create_test_user();
+        let pre_mfa = PreMfaAuthUser(auth_user);
+        let debug_str = format!("{:?}", pre_mfa);
+        assert!(debug_str.contains("PreMfaAuthUser"));
+    }
+
+    #[tokio::test]
+    async fn test_pre_mfa_auth_user_accepts_unverified_mfa() {
+        let pre_mfa_user = AuthUser {
+            uuid: "uuid".to_string(),
+            username: "user".to_string(),
+            mfa_verified: false,
+            is_superuser: false,
+            is_staff: false,
+        };
+
+        let mut parts = unwrap_ok!(
+            HttpRequest::builder()
+                .body(axum::body::Body::empty())
+        )
+        .into_parts()
+        .0;
+        parts.extensions.insert(pre_mfa_user);
+
+        let result = PreMfaAuthUser::from_request_parts(&mut parts, &()).await;
+        assert!(result.is_ok(), "PreMfaAuthUser must accept mfa_verified=false");
+    }
+
+    #[tokio::test]
+    async fn test_pre_mfa_auth_user_accepts_verified_mfa() {
+        let mfa_user = AuthUser {
+            uuid: "uuid".to_string(),
+            username: "user".to_string(),
+            mfa_verified: true,
+            is_superuser: false,
+            is_staff: false,
+        };
+
+        let mut parts = unwrap_ok!(
+            HttpRequest::builder()
+                .body(axum::body::Body::empty())
+        )
+        .into_parts()
+        .0;
+        parts.extensions.insert(mfa_user);
+
+        let result = PreMfaAuthUser::from_request_parts(&mut parts, &()).await;
+        assert!(result.is_ok(), "PreMfaAuthUser must also accept mfa_verified=true");
+    }
+
+    #[tokio::test]
+    async fn test_pre_mfa_auth_user_redirects_to_login_when_no_session() {
+        let mut parts = unwrap_ok!(
+            HttpRequest::builder()
+                .body(axum::body::Body::empty())
+        )
+        .into_parts()
+        .0;
+
+        let result = PreMfaAuthUser::from_request_parts(&mut parts, &()).await;
+        assert!(result.is_err());
+        let err_response = result.unwrap_err().into_response();
+        assert_eq!(
+            unwrap_ok!(unwrap_some!(err_response.headers().get("location")).to_str()),
+            "/login"
+        );
     }
 }

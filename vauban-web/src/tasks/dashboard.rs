@@ -382,7 +382,6 @@ async fn fetch_recent_activity(db_pool: &DbPool) -> Result<Vec<ActivityItem>, St
             let action_str = match s.session_type.as_str() {
                 "ssh" => "SSH session started",
                 "rdp" => "RDP session started",
-                "vnc" => "VNC session started",
                 _ => "Session started",
             };
             ActivityItem {

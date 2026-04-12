@@ -13,7 +13,7 @@
                 Manage API keys for programmatic access to VAUBAN
             </p>
         </div>
-        <div class="mt-4 flex md:ml-4 md:mt-0">
+        <div class="mt-4 flex flex-col items-end md:ml-4 md:mt-0">
             <button type="button"
                     hx-get="/accounts/apikeys/create"
                     hx-target="#create-key-modal"
@@ -24,6 +24,7 @@
                 </svg>
                 Create API Key
             </button>
+            <p class="mt-1.5 text-xs font-mono text-gray-400 dark:text-gray-500">{{ vauban.version }}</p>
         </div>
     </div>
 

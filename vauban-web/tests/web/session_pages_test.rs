@@ -366,7 +366,7 @@ async fn test_session_list_filter_by_all_types() {
     );
 
     // Test all valid types
-    let types = ["ssh", "rdp", "vnc"];
+    let types = ["ssh", "rdp"];
 
     for session_type in &types {
         let response = app

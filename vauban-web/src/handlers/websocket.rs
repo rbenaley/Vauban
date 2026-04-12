@@ -528,7 +528,6 @@ async fn fetch_initial_activity(
             let action_str = match s.session_type.as_str() {
                 "ssh" => "SSH session started",
                 "rdp" => "RDP session started",
-                "vnc" => "VNC session started",
                 _ => "Session started",
             };
             ActivityItem {

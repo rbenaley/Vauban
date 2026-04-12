@@ -1,9 +1,8 @@
 /// VAUBAN Web - Asset model.
 ///
-/// Assets represent servers/resources accessible via SSH, RDP, or VNC.
+/// Assets represent servers/resources accessible via SSH or RDP.
 use chrono::{DateTime, Utc};
 use diesel::prelude::*;
-use ipnetwork::IpNetwork;
 use serde::{Deserialize, Deserializer, Serialize};
 use uuid::Uuid;
 
@@ -55,7 +54,6 @@ where
 pub enum AssetType {
     Ssh,
     Rdp,
-    Vnc,
 }
 
 impl AssetType {
@@ -63,14 +61,12 @@ impl AssetType {
         match self {
             Self::Ssh => "ssh",
             Self::Rdp => "rdp",
-            Self::Vnc => "vnc",
         }
     }
 
     pub fn parse(s: &str) -> Self {
         match s {
             "rdp" => Self::Rdp,
-            "vnc" => Self::Vnc,
             _ => Self::Ssh,
         }
     }
@@ -80,7 +76,6 @@ impl AssetType {
         match s {
             "ssh" => Some(Self::Ssh),
             "rdp" => Some(Self::Rdp),
-            "vnc" => Some(Self::Vnc),
             _ => None,
         }
     }
@@ -89,7 +84,6 @@ impl AssetType {
         match self {
             Self::Ssh => 22,
             Self::Rdp => 3389,
-            Self::Vnc => 5900,
         }
     }
 }
@@ -162,17 +156,11 @@ pub struct Asset {
     pub uuid: Uuid,
     pub name: String,
     pub hostname: String,
-    #[serde(skip_serializing)]
-    pub ip_address: Option<IpNetwork>,
     pub port: i32,
     pub asset_type: AssetType,
     pub status: String,
     pub description: Option<String>,
-    pub os_type: Option<String>,
-    pub os_version: Option<String>,
     pub connection_config: serde_json::Value,
-    pub default_credential_id: Option<String>,
-    pub last_seen: Option<DateTime<Utc>>,
     pub created_by_id: Option<i32>,
     pub updated_by_id: Option<i32>,
     pub created_at: DateTime<Utc>,
@@ -189,15 +177,11 @@ pub struct NewAsset {
     pub uuid: Uuid,
     pub name: String,
     pub hostname: String,
-    pub ip_address: Option<IpNetwork>,
     pub port: i32,
     pub asset_type: AssetType,
     pub status: String,
     pub description: Option<String>,
-    pub os_type: Option<String>,
-    pub os_version: Option<String>,
     pub connection_config: serde_json::Value,
-    pub default_credential_id: Option<String>,
     pub created_by_id: Option<i32>,
     pub connection_username: String,
 }
@@ -258,7 +242,6 @@ pub struct CreateAssetRequest {
     pub name: String,
     #[validate(length(min = 1, max = 255))]
     pub hostname: String,
-    pub ip_address: Option<String>,
     #[validate(range(min = 1, max = 65535))]
     pub port: Option<i32>,
     pub asset_type: AssetType,
@@ -281,7 +264,6 @@ pub struct UpdateAssetRequest {
     pub name: Option<String>,
     #[validate(length(max = 255))]
     pub hostname: Option<String>,
-    pub ip_address: Option<String>,
     #[validate(range(min = 1, max = 65535))]
     #[serde(default, deserialize_with = "deserialize_optional_i32")]
     pub port: Option<i32>,
@@ -300,16 +282,11 @@ mod tests {
             uuid: Uuid::new_v4(),
             name: "Test Server".to_string(),
             hostname: "test.example.com".to_string(),
-            ip_address: Some(unwrap_ok!("192.168.1.100/32".parse())),
             port: 22,
             asset_type: AssetType::Ssh,
             status: "online".to_string(),
             description: Some("A test server".to_string()),
-            os_type: Some("Linux".to_string()),
-            os_version: Some("Ubuntu 22.04".to_string()),
             connection_config: serde_json::json!({}),
-            default_credential_id: None,
-            last_seen: None,
             created_by_id: None,
             updated_by_id: None,
             created_at: Utc::now(),
@@ -333,11 +310,6 @@ mod tests {
     }
 
     #[test]
-    fn test_asset_type_from_str_vnc() {
-        assert_eq!(AssetType::parse("vnc"), AssetType::Vnc);
-    }
-
-    #[test]
     fn test_asset_type_from_str_unknown() {
         // Unknown values default to SSH
         assert_eq!(AssetType::parse("unknown"), AssetType::Ssh);
@@ -349,7 +321,6 @@ mod tests {
     fn test_asset_type_as_str() {
         assert_eq!(AssetType::Ssh.as_str(), "ssh");
         assert_eq!(AssetType::Rdp.as_str(), "rdp");
-        assert_eq!(AssetType::Vnc.as_str(), "vnc");
     }
 
     #[test]
@@ -363,13 +334,8 @@ mod tests {
     }
 
     #[test]
-    fn test_asset_type_default_port_vnc() {
-        assert_eq!(AssetType::Vnc.default_port(), 5900);
-    }
-
-    #[test]
     fn test_asset_type_roundtrip() {
-        for asset_type in [AssetType::Ssh, AssetType::Rdp, AssetType::Vnc] {
+        for asset_type in [AssetType::Ssh, AssetType::Rdp] {
             let str_val = asset_type.as_str();
             let parsed = AssetType::parse(str_val);
             assert_eq!(asset_type, parsed);
@@ -460,7 +426,6 @@ mod tests {
         let request = CreateAssetRequest {
             name: "My Server".to_string(),
             hostname: "server.example.com".to_string(),
-            ip_address: Some("192.168.1.1".to_string()),
             port: Some(22),
             asset_type: AssetType::Ssh,
             group_id: None,
@@ -478,7 +443,6 @@ mod tests {
         let request = CreateAssetRequest {
             name: "".to_string(), // Empty name (min 1)
             hostname: "server.example.com".to_string(),
-            ip_address: None,
             port: None,
             asset_type: AssetType::Ssh,
             group_id: None,
@@ -496,7 +460,6 @@ mod tests {
         let request = CreateAssetRequest {
             name: "My Server".to_string(),
             hostname: "server.example.com".to_string(),
-            ip_address: None,
             port: Some(70000), // Invalid port (max 65535)
             asset_type: AssetType::Ssh,
             group_id: None,
@@ -514,7 +477,6 @@ mod tests {
         let request = CreateAssetRequest {
             name: "My Server".to_string(),
             hostname: "server.example.com".to_string(),
-            ip_address: None,
             port: Some(0), // Invalid port (min 1)
             asset_type: AssetType::Ssh,
             group_id: None,
@@ -543,7 +505,7 @@ mod tests {
 
     #[test]
     fn test_asset_type_copy() {
-        let asset_type = AssetType::Vnc;
+        let asset_type = AssetType::Rdp;
         let copied = asset_type;
         assert_eq!(asset_type, copied);
     }
@@ -566,7 +528,6 @@ mod tests {
     fn test_asset_type_display() {
         assert_eq!(AssetType::Ssh.to_string(), "ssh");
         assert_eq!(AssetType::Rdp.to_string(), "rdp");
-        assert_eq!(AssetType::Vnc.to_string(), "vnc");
     }
 
     // ==================== AssetStatus Additional Tests ====================
@@ -622,8 +583,6 @@ mod tests {
         let asset = create_test_asset();
         let json = unwrap_ok!(serde_json::to_string(&asset));
         assert!(json.contains("Test Server"));
-        // ip_address should be skipped
-        assert!(!json.contains("192.168.1.100"));
     }
 
     #[test]
@@ -631,13 +590,6 @@ mod tests {
         let mut asset = create_test_asset();
         asset.asset_type = AssetType::Rdp;
         assert_eq!(asset.asset_type, AssetType::Rdp);
-    }
-
-    #[test]
-    fn test_asset_type_field_vnc() {
-        let mut asset = create_test_asset();
-        asset.asset_type = AssetType::Vnc;
-        assert_eq!(asset.asset_type, AssetType::Vnc);
     }
 
     #[test]
@@ -662,15 +614,11 @@ mod tests {
             uuid: Uuid::new_v4(),
             name: "New Asset".to_string(),
             hostname: "new.example.com".to_string(),
-            ip_address: None,
             port: 22,
             asset_type: AssetType::Ssh,
             status: "unknown".to_string(),
             description: None,
-            os_type: None,
-            os_version: None,
             connection_config: serde_json::json!({}),
-            default_credential_id: None,
             created_by_id: None,
             connection_username: "root".to_string(),
         };
@@ -685,15 +633,11 @@ mod tests {
             uuid: Uuid::new_v4(),
             name: "Clone Asset".to_string(),
             hostname: "clone.example.com".to_string(),
-            ip_address: Some(unwrap_ok!("10.0.0.1".parse())),
             port: 3389,
             asset_type: AssetType::Rdp,
             status: "online".to_string(),
             description: Some("A cloned asset".to_string()),
-            os_type: Some("Windows".to_string()),
-            os_version: Some("Server 2022".to_string()),
             connection_config: serde_json::json!({"key": "value"}),
-            default_credential_id: Some("cred-1".to_string()),
             created_by_id: Some(1),
             connection_username: "Administrator".to_string(),
         };
@@ -780,7 +724,6 @@ mod tests {
         let request = CreateAssetRequest {
             name: "Debug Server".to_string(),
             hostname: "debug.example.com".to_string(),
-            ip_address: None,
             port: None,
             asset_type: AssetType::Ssh,
             group_id: None,
@@ -797,7 +740,6 @@ mod tests {
         let request = CreateAssetRequest {
             name: "Clone Server".to_string(),
             hostname: "clone.example.com".to_string(),
-            ip_address: Some("192.168.1.1".to_string()),
             port: Some(22),
             asset_type: AssetType::Ssh,
             group_id: Some(1),
@@ -816,7 +758,6 @@ mod tests {
         let request = CreateAssetRequest {
             name: "A".repeat(101), // Too long
             hostname: "server.example.com".to_string(),
-            ip_address: None,
             port: None,
             asset_type: AssetType::Ssh,
             group_id: None,
@@ -834,7 +775,6 @@ mod tests {
         let request = CreateAssetRequest {
             name: "Server".to_string(),
             hostname: "a".repeat(256), // Too long
-            ip_address: None,
             port: None,
             asset_type: AssetType::Ssh,
             group_id: None,
@@ -852,7 +792,6 @@ mod tests {
         let request = UpdateAssetRequest {
             name: Some("Updated".to_string()),
             hostname: None,
-            ip_address: None,
             port: None,
             status: None,
             description: None,
@@ -867,7 +806,6 @@ mod tests {
         let request = UpdateAssetRequest {
             name: Some("Clone".to_string()),
             hostname: Some("clone.example.com".to_string()),
-            ip_address: Some("10.0.0.1".to_string()),
             port: Some(2222),
             status: Some("maintenance".to_string()),
             description: Some("Updated description".to_string()),
@@ -912,7 +850,6 @@ mod tests {
         let json = r#"{
             "name": "test-server",
             "hostname": "test.example.com",
-            "ip_address": "192.168.1.100",
             "port": "22",
             "status": "online",
             "description": "Test server"
