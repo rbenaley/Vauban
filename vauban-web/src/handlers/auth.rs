@@ -125,12 +125,15 @@ pub async fn login(
             .into_response());
     }
 
-    // Validation
-    if let Err(e) = validator::Validate::validate(&request) {
+    // Validation -- return the same generic error as invalid credentials
+    // to prevent password policy enumeration (SEC-05).
+    if let Err(_e) = validator::Validate::validate(&request) {
         if htmx {
-            return Ok(Html(login_error_html(LoginErrorKind::ValidationError)).into_response());
+            return Ok(
+                Html(login_error_html(LoginErrorKind::InvalidCredentials)).into_response(),
+            );
         }
-        return Err(AppError::Validation(format!("Validation failed: {:?}", e)));
+        return Err(AppError::Auth("Invalid credentials".to_string()));
     }
 
     let mut conn = state
@@ -499,7 +502,6 @@ pub async fn login_web(
 enum LoginErrorKind {
     InvalidCredentials,
     AccountLocked,
-    ValidationError,
     InvalidCsrf,
     RateLimited,
 }
@@ -509,7 +511,6 @@ impl LoginErrorKind {
         match self {
             Self::InvalidCredentials => "Invalid credentials",
             Self::AccountLocked => "Account is locked",
-            Self::ValidationError => "Validation error",
             Self::InvalidCsrf => "Invalid CSRF token",
             Self::RateLimited => "Too many attempts. Please wait before trying again.",
         }
@@ -1567,10 +1568,14 @@ mod tests {
     }
 
     #[test]
-    fn test_login_error_html_validation_message() {
-        let html = login_error_html(LoginErrorKind::ValidationError);
+    fn test_login_error_html_validation_returns_invalid_credentials() {
+        // SEC-05: validation failures must return the same generic message
+        // as invalid credentials to prevent password policy enumeration.
+        // There is no longer a dedicated ValidationError variant.
+        let html = login_error_html(LoginErrorKind::InvalidCredentials);
 
-        assert!(html.contains("Validation error"));
+        assert!(html.contains("Invalid credentials"));
+        assert!(!html.contains("Validation"));
         assert!(html.contains("login-result"));
     }
 

@@ -1857,10 +1857,11 @@ async fn test_csrf_login_flow_end_to_end() {
         response_body
     );
 
-    // Should get invalid credentials error (not CSRF error)
+    // Should get invalid credentials error (not CSRF error).
+    // SEC-05: validation failures now also return "Invalid credentials".
     assert!(
-        response_body.contains("Invalid credentials") || response_body.contains("Validation error"),
-        "Expected 'Invalid credentials' or 'Validation error', got: {}",
+        response_body.contains("Invalid credentials"),
+        "Expected 'Invalid credentials', got: {}",
         response_body
     );
 }
