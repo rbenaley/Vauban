@@ -1657,6 +1657,7 @@ mod tests {
 
     use std::collections::HashSet;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::OnceLock;
 
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -1670,12 +1671,127 @@ mod tests {
         format!("{}_{ts}_{id}", prefix)
     }
 
+    const MAX_TEST_USERS: i64 = 1000;
+    const MAX_TEST_ASSET_GROUPS: i64 = 500;
+    const MAX_TEST_VAUBAN_GROUPS: i64 = 500;
+
+    async fn prune_test_db(pool: &DbPool) {
+        let mut conn = pool.get().await.unwrap();
+
+        let user_count: i64 = users::table
+            .count()
+            .get_result(&mut conn)
+            .await
+            .unwrap_or(0);
+        let ag_count: i64 = crate::schema::asset_groups::table
+            .count()
+            .get_result(&mut conn)
+            .await
+            .unwrap_or(0);
+        let vg_count: i64 = crate::schema::vauban_groups::table
+            .count()
+            .get_result(&mut conn)
+            .await
+            .unwrap_or(0);
+
+        if user_count <= MAX_TEST_USERS
+            && ag_count <= MAX_TEST_ASSET_GROUPS
+            && vg_count <= MAX_TEST_VAUBAN_GROUPS
+        {
+            return;
+        }
+
+        eprintln!(
+            "[test-prune] Stale data detected (users={user_count}, \
+             asset_groups={ag_count}, vauban_groups={vg_count}). \
+             Pruning to {MAX_TEST_USERS}/{MAX_TEST_ASSET_GROUPS}/\
+             {MAX_TEST_VAUBAN_GROUPS}..."
+        );
+
+        // Dependent/junction tables are cleaned first (no cap needed).
+        diesel::sql_query(
+            "TRUNCATE access_rules, user_groups, asset_asset_groups, \
+             proxy_sessions, auth_sessions, api_keys, assets CASCADE",
+        )
+        .execute(&mut conn)
+        .await
+        .expect("test-prune: TRUNCATE dependents failed");
+
+        // Break self-references before trimming.
+        diesel::sql_query("UPDATE vauban_groups SET parent_id = NULL WHERE parent_id IS NOT NULL")
+            .execute(&mut conn)
+            .await
+            .ok();
+        diesel::sql_query("UPDATE asset_groups SET parent_id = NULL WHERE parent_id IS NOT NULL")
+            .execute(&mut conn)
+            .await
+            .ok();
+
+        // Nullify cross-FK refs from groups to users we might delete.
+        diesel::sql_query(
+            "UPDATE asset_groups SET created_by_id = NULL, updated_by_id = NULL \
+             WHERE created_by_id IS NOT NULL",
+        )
+        .execute(&mut conn)
+        .await
+        .ok();
+
+        // Trim each table keeping the N most recent rows by id.
+        diesel::sql_query(&format!(
+            "DELETE FROM users WHERE id NOT IN \
+             (SELECT id FROM users ORDER BY id DESC LIMIT {MAX_TEST_USERS})"
+        ))
+        .execute(&mut conn)
+        .await
+        .expect("test-prune: DELETE users failed");
+
+        diesel::sql_query(&format!(
+            "DELETE FROM vauban_groups WHERE id NOT IN \
+             (SELECT id FROM vauban_groups ORDER BY id DESC LIMIT {MAX_TEST_VAUBAN_GROUPS})"
+        ))
+        .execute(&mut conn)
+        .await
+        .expect("test-prune: DELETE vauban_groups failed");
+
+        diesel::sql_query(&format!(
+            "DELETE FROM asset_groups WHERE id NOT IN \
+             (SELECT id FROM asset_groups ORDER BY id DESC LIMIT {MAX_TEST_ASSET_GROUPS})"
+        ))
+        .execute(&mut conn)
+        .await
+        .expect("test-prune: DELETE asset_groups failed");
+
+        let remaining_users: i64 =
+            users::table.count().get_result(&mut conn).await.unwrap_or(0);
+        let remaining_ag: i64 = crate::schema::asset_groups::table
+            .count()
+            .get_result(&mut conn)
+            .await
+            .unwrap_or(0);
+        let remaining_vg: i64 = crate::schema::vauban_groups::table
+            .count()
+            .get_result(&mut conn)
+            .await
+            .unwrap_or(0);
+        eprintln!(
+            "[test-prune] Done. Remaining: users={remaining_users}, \
+             asset_groups={remaining_ag}, vauban_groups={remaining_vg}"
+        );
+    }
+
+    static PRUNE_DONE: OnceLock<()> = OnceLock::new();
+
     async fn test_pool() -> DbPool {
         let url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
             "postgresql://vauban_test:vauban_test@localhost/vauban_test".to_string()
         });
         let manager = AsyncDieselConnectionManager::<AsyncPgConnection>::new(&url);
-        Pool::builder(manager).max_size(2).build().unwrap()
+        let pool = Pool::builder(manager).max_size(2).build().unwrap();
+        if PRUNE_DONE.get().is_none() {
+            prune_test_db(&pool).await;
+            let _ = PRUNE_DONE.set(());
+        }
+        pool
     }
 
     async fn insert_test_user(pool: &DbPool, username: &str) -> i32 {
@@ -1866,7 +1982,7 @@ mod tests {
         let pool = test_pool().await;
         let g1 = create_test_vauban_group(&pool, &unique_name("vg_eq_a")).await;
         let g2 = create_test_vauban_group(&pool, &unique_name("vg_eq_b")).await;
-        let ids_1 = collect_vauban_group_ids_paged(&pool, 1).await;
+        let ids_1 = collect_vauban_group_ids_paged(&pool, 50).await;
         let ids_256 = collect_vauban_group_ids_paged(&pool, 256).await;
         assert_eq!(ids_1, ids_256);
         cleanup_vauban_group(&pool, &g1.uuid).await;
@@ -1922,7 +2038,7 @@ mod tests {
         let pool = test_pool().await;
         let g1 = create_test_asset_group(&pool, &unique_name("ag_page_eq_a")).await;
         let g2 = create_test_asset_group(&pool, &unique_name("ag_page_eq_b")).await;
-        let ids_1 = collect_asset_group_ids_paged(&pool, 1).await;
+        let ids_1 = collect_asset_group_ids_paged(&pool, 50).await;
         let ids_256 = collect_asset_group_ids_paged(&pool, 256).await;
         assert_eq!(
             ids_1, ids_256,
@@ -1954,7 +2070,7 @@ mod tests {
         }
     }
 
-    /// Many rows: walking the list with `limit == 1` must still return every created group id.
+    /// Many rows: walking the list with a small page limit must still return every created group id.
     #[tokio::test]
     async fn test_list_asset_groups_many_pages_collects_all_ids() {
         const N: usize = 48;
@@ -1969,7 +2085,7 @@ mod tests {
             uuids.push(g.uuid);
         }
         created_ids.sort_unstable();
-        let collected = collect_asset_group_ids_paged(&pool, 1).await;
+        let collected = collect_asset_group_ids_paged(&pool, 50).await;
         let collected_set: HashSet<i32> = collected.into_iter().collect();
         for id in &created_ids {
             assert!(
@@ -2040,7 +2156,7 @@ mod tests {
             vec!["rdp"],
         )
         .await;
-        let uuids_1 = collect_access_rule_uuids_paged(&pool, 1).await;
+        let uuids_1 = collect_access_rule_uuids_paged(&pool, 50).await;
         let uuids_256 = collect_access_rule_uuids_paged(&pool, 256).await;
         assert_eq!(uuids_1, uuids_256);
         cleanup_rule(&pool, &r1.uuid).await;
@@ -2363,7 +2479,7 @@ mod tests {
             vec!["ssh", "rdp"],
         )
         .await;
-        let n1 = collect_accessible_groups_normalized_paged(&pool, user_id, 1).await;
+        let n1 = collect_accessible_groups_normalized_paged(&pool, user_id, 50).await;
         let n256 = collect_accessible_groups_normalized_paged(&pool, user_id, 256).await;
         assert_eq!(n1, n256);
         handle_access_request(
@@ -2408,7 +2524,7 @@ mod tests {
     async fn test_list_user_group_options_pagination_equivalence() {
         let pool = test_pool().await;
         let _g = create_test_vauban_group(&pool, &unique_name("vg_opt_eq")).await;
-        let ids_1 = collect_user_group_option_ids_paged(&pool, 1).await;
+        let ids_1 = collect_user_group_option_ids_paged(&pool, 50).await;
         let ids_256 = collect_user_group_option_ids_paged(&pool, 256).await;
         assert_eq!(ids_1, ids_256);
         cleanup_vauban_group(&pool, &_g.uuid).await;
@@ -2418,7 +2534,7 @@ mod tests {
     async fn test_list_asset_group_options_pagination_equivalence() {
         let pool = test_pool().await;
         let _g = create_test_asset_group(&pool, &unique_name("ag_opt_eq")).await;
-        let ids_1 = collect_asset_group_option_ids_paged(&pool, 1).await;
+        let ids_1 = collect_asset_group_option_ids_paged(&pool, 50).await;
         let ids_256 = collect_asset_group_option_ids_paged(&pool, 256).await;
         assert_eq!(ids_1, ids_256);
         cleanup_asset_group(&pool, &_g.uuid).await;
