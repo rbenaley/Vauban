@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 
 use shared::messages::{Message, SensitiveString};
+use shared::totp::{TOTP_DIGITS, TOTP_SKEW, TOTP_STEP};
 use totp_rs::{Algorithm as TotpAlgorithm, Secret as TotpSecret, TOTP};
 use zeroize::Zeroize;
 
@@ -173,9 +174,9 @@ pub fn handle_mfa_verify(
 
     let totp = match TOTP::new(
         TotpAlgorithm::SHA1,
-        6,
-        1, // 1 step tolerance
-        30,
+        TOTP_DIGITS,
+        TOTP_SKEW,
+        TOTP_STEP,
         totp_secret_bytes,
         None,
         String::new(),
@@ -411,9 +412,9 @@ mod tests {
         let secret_obj = TotpSecret::Encoded(base32_secret);
         let totp = TOTP::new(
             TotpAlgorithm::SHA1,
-            6,
-            1,
-            30,
+            TOTP_DIGITS,
+            TOTP_SKEW,
+            TOTP_STEP,
             secret_obj.to_bytes().unwrap(),
             None,
             String::new(),
@@ -593,9 +594,9 @@ mod tests {
         let secret_obj = TotpSecret::Encoded(plaintext_base32);
         let totp = TOTP::new(
             TotpAlgorithm::SHA1,
-            6,
-            1,
-            30,
+            TOTP_DIGITS,
+            TOTP_SKEW,
+            TOTP_STEP,
             secret_obj.to_bytes().unwrap(),
             None,
             String::new(),
@@ -615,6 +616,109 @@ mod tests {
                 "Expected valid=true after encrypt-on-read, got: {:?}",
                 other
             ),
+        }
+    }
+
+    // ==================== SEC-06 Regression Tests ====================
+
+    /// SEC-06 regression: with TOTP_SKEW=0, a code generated for the current
+    /// window must be rejected when verified against an adjacent window.
+    /// Uses fixed timestamps for full determinism (no system clock dependency).
+    #[test]
+    fn test_sec06_totp_rejects_adjacent_window_codes() {
+        let secret = TotpSecret::generate_secret();
+        let totp = TOTP::new(
+            TotpAlgorithm::SHA1,
+            TOTP_DIGITS,
+            TOTP_SKEW,
+            TOTP_STEP,
+            secret.to_bytes().unwrap(),
+            None,
+            String::new(),
+        )
+        .unwrap();
+
+        // Mid-window timestamp to avoid boundary effects
+        let reference_time = 1_700_000_015u64;
+        let code = totp.generate(reference_time);
+
+        assert!(
+            totp.check(&code, reference_time),
+            "Code must be valid at generation time"
+        );
+
+        let prev_window_time = reference_time - TOTP_STEP;
+        let next_window_time = reference_time + TOTP_STEP;
+
+        assert!(
+            !totp.check(&code, prev_window_time),
+            "SEC-06: code must be rejected in the previous 30s window"
+        );
+        assert!(
+            !totp.check(&code, next_window_time),
+            "SEC-06: code must be rejected in the next 30s window"
+        );
+    }
+
+    /// SEC-06 regression: verify that the vault handler rejects a TOTP code
+    /// generated for a past time window.
+    #[test]
+    fn test_sec06_mfa_verify_rejects_expired_code() {
+        let keyrings = test_keyrings();
+
+        let gen_resp = handle_mfa_generate(&keyrings, 1, "sec06", "VAUBAN");
+        let encrypted_secret = match gen_resp {
+            Message::VaultMfaGenerateResponse {
+                encrypted_secret: Some(s),
+                ..
+            } => s,
+            other => panic!("Expected MFA generate success, got: {:?}", other),
+        };
+
+        let dec_resp = handle_decrypt(&keyrings, 2, "mfa", &encrypted_secret);
+        let base32_secret = match dec_resp {
+            Message::VaultDecryptResponse {
+                plaintext: Some(pt),
+                ..
+            } => pt.as_str().to_string(),
+            other => panic!("Expected decrypt success, got: {:?}", other),
+        };
+
+        let secret_obj = TotpSecret::Encoded(base32_secret);
+        let totp = TOTP::new(
+            TotpAlgorithm::SHA1,
+            TOTP_DIGITS,
+            TOTP_SKEW,
+            TOTP_STEP,
+            secret_obj.to_bytes().unwrap(),
+            None,
+            String::new(),
+        )
+        .unwrap();
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let expired_code = totp.generate(now - 2 * TOTP_STEP);
+        let current_code = totp.generate(now);
+
+        // Guard: skip only if codes collide by chance (1 in 1,000,000)
+        if expired_code != current_code {
+            let verify_resp =
+                handle_mfa_verify(&keyrings, 3, &encrypted_secret, &expired_code);
+            match verify_resp {
+                Message::VaultMfaVerifyResponse {
+                    valid: false,
+                    error: None,
+                    ..
+                } => {}
+                other => panic!(
+                    "SEC-06: expired code must be rejected, got: {:?}",
+                    other
+                ),
+            }
         }
     }
 }

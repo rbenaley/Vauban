@@ -6448,3 +6448,45 @@ async fn test_api_endpoints_unaffected_by_web_mfa_enforcement() {
 
     test_db::cleanup(&mut conn).await;
 }
+
+// =============================================================================
+// SEC-06: TOTP Skew Regression (Structural Tests)
+// =============================================================================
+
+/// SEC-06: vault TOTP verification must use the shared TOTP_SKEW constant
+/// instead of a hardcoded literal, preventing silent drift.
+#[test]
+fn test_sec06_vault_uses_shared_totp_constants() {
+    let source = include_str!("../../../vauban-vault/src/transit.rs");
+    assert!(
+        source.contains("TOTP_SKEW"),
+        "SEC-06: vauban-vault/transit.rs must use shared::totp::TOTP_SKEW"
+    );
+    assert!(
+        source.contains("TOTP_DIGITS"),
+        "SEC-06: vauban-vault/transit.rs must use shared::totp::TOTP_DIGITS"
+    );
+    assert!(
+        source.contains("TOTP_STEP"),
+        "SEC-06: vauban-vault/transit.rs must use shared::totp::TOTP_STEP"
+    );
+}
+
+/// SEC-06: web TOTP verification must use the shared TOTP_SKEW constant
+/// instead of a hardcoded literal, preventing silent drift.
+#[test]
+fn test_sec06_web_auth_uses_shared_totp_constants() {
+    let source = include_str!("../../src/services/auth.rs");
+    assert!(
+        source.contains("TOTP_SKEW"),
+        "SEC-06: services/auth.rs must use shared::totp::TOTP_SKEW"
+    );
+    assert!(
+        source.contains("TOTP_DIGITS"),
+        "SEC-06: services/auth.rs must use shared::totp::TOTP_DIGITS"
+    );
+    assert!(
+        source.contains("TOTP_STEP"),
+        "SEC-06: services/auth.rs must use shared::totp::TOTP_STEP"
+    );
+}

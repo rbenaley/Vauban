@@ -20,5 +20,6 @@
 pub mod capsicum;
 pub mod ipc;
 pub mod messages;
+pub mod totp;
 
 pub use messages::{ControlMessage, Message, ServiceStats};

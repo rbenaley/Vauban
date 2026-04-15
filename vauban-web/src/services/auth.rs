@@ -10,6 +10,7 @@ use chrono::{Duration, Utc};
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
+use shared::totp::{TOTP_DIGITS, TOTP_SKEW, TOTP_STEP};
 use totp_rs::{Algorithm as TotpAlgorithm, Secret as TotpSecret, TOTP};
 
 use crate::config::Config;
@@ -144,9 +145,9 @@ impl AuthService {
 
         let totp = TOTP::new(
             TotpAlgorithm::SHA1,
-            6,  // 6 digits
-            1,  // 1 step tolerance (±30 seconds)
-            30, // 30 second step
+            TOTP_DIGITS,
+            TOTP_SKEW,
+            TOTP_STEP,
             secret_bytes,
             Some(issuer.to_string()),
             username.to_string(),
@@ -173,9 +174,9 @@ impl AuthService {
 
         let totp = TOTP::new(
             TotpAlgorithm::SHA1,
-            6,
-            1,
-            30,
+            TOTP_DIGITS,
+            TOTP_SKEW,
+            TOTP_STEP,
             secret_bytes,
             Some(issuer.to_string()),
             username.to_string(),
@@ -192,7 +193,7 @@ impl AuthService {
 
     /// Verify TOTP code.
     ///
-    /// Checks the code against current time with ±1 step tolerance (±30 seconds).
+    /// Checks the code against the current 30-second window only (no tolerance).
     pub fn verify_totp(secret: &str, code: &str) -> bool {
         let secret_obj = TotpSecret::Encoded(secret.to_string());
         let secret_bytes = match secret_obj.to_bytes() {
@@ -202,9 +203,9 @@ impl AuthService {
 
         let totp = match TOTP::new(
             TotpAlgorithm::SHA1,
-            6,
-            1, // 1 step tolerance
-            30,
+            TOTP_DIGITS,
+            TOTP_SKEW,
+            TOTP_STEP,
             secret_bytes,
             None,          // issuer not needed for verification
             String::new(), // account_name not needed for verification
@@ -224,9 +225,9 @@ impl AuthService {
 
         let totp = TOTP::new(
             TotpAlgorithm::SHA1,
-            6,
-            1,
-            30,
+            TOTP_DIGITS,
+            TOTP_SKEW,
+            TOTP_STEP,
             secret_bytes,
             None,
             String::new(),
@@ -807,6 +808,77 @@ mod tests {
         assert!(uri.starts_with("otpauth://totp/"));
         assert!(uri.contains("secret="));
         assert!(uri.contains("issuer="));
+    }
+
+    // ==================== SEC-06 Regression Tests ====================
+
+    /// SEC-06 regression: verify_totp must reject a code generated for a
+    /// past time window. Uses the TOTP library directly to generate an
+    /// expired code and verifies the service rejects it.
+    #[test]
+    fn test_sec06_verify_totp_rejects_expired_code() {
+        let (secret, _) = unwrap_ok!(AuthService::generate_totp_secret("sec06", "VAUBAN"));
+
+        let secret_obj = TotpSecret::Encoded(secret.clone());
+        let totp = TOTP::new(
+            TotpAlgorithm::SHA1,
+            TOTP_DIGITS,
+            TOTP_SKEW,
+            TOTP_STEP,
+            secret_obj.to_bytes().unwrap(),
+            None,
+            String::new(),
+        )
+        .unwrap();
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let expired_code = totp.generate(now - 2 * TOTP_STEP);
+        let current_code = totp.generate(now);
+
+        // Guard: skip only if codes collide by chance (1 in 1,000,000)
+        if expired_code != current_code {
+            assert!(
+                !AuthService::verify_totp(&secret, &expired_code),
+                "SEC-06: verify_totp must reject a code from a past window"
+            );
+        }
+    }
+
+    /// SEC-06 regression: deterministic proof that our TOTP configuration
+    /// rejects codes from adjacent windows. No system clock dependency.
+    #[test]
+    fn test_sec06_totp_config_rejects_adjacent_windows() {
+        let secret = TotpSecret::generate_secret();
+        let totp = TOTP::new(
+            TotpAlgorithm::SHA1,
+            TOTP_DIGITS,
+            TOTP_SKEW,
+            TOTP_STEP,
+            secret.to_bytes().unwrap(),
+            None,
+            String::new(),
+        )
+        .unwrap();
+
+        let reference_time = 1_700_000_015u64;
+        let code = totp.generate(reference_time);
+
+        assert!(
+            totp.check(&code, reference_time),
+            "Code must be valid at generation time"
+        );
+        assert!(
+            !totp.check(&code, reference_time - TOTP_STEP),
+            "SEC-06: code must be rejected in the previous window"
+        );
+        assert!(
+            !totp.check(&code, reference_time + TOTP_STEP),
+            "SEC-06: code must be rejected in the next window"
+        );
     }
 
     // ==================== Config Variations ====================
