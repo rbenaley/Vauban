@@ -170,6 +170,16 @@ pub async fn login(
         return Err(AppError::Auth("Account is locked".to_string()));
     }
 
+    // Check if account is deactivated (SEC-07)
+    if !user.is_active {
+        if htmx {
+            return Ok(
+                Html(login_error_html(LoginErrorKind::AccountDeactivated)).into_response(),
+            );
+        }
+        return Err(AppError::Auth("Account is deactivated".to_string()));
+    }
+
     let password_valid = if let Some(ref client) = state.auth_ipc_client {
         client
             .verify_password(&request.password, &user.password_hash)
@@ -502,6 +512,7 @@ pub async fn login_web(
 enum LoginErrorKind {
     InvalidCredentials,
     AccountLocked,
+    AccountDeactivated,
     InvalidCsrf,
     RateLimited,
 }
@@ -511,6 +522,9 @@ impl LoginErrorKind {
         match self {
             Self::InvalidCredentials => "Invalid credentials",
             Self::AccountLocked => "Account is locked",
+            Self::AccountDeactivated => {
+                "Your account has been deactivated. Contact your administrator."
+            }
             Self::InvalidCsrf => "Invalid CSRF token",
             Self::RateLimited => "Too many attempts. Please wait before trying again.",
         }

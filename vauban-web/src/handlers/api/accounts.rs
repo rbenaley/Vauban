@@ -177,21 +177,34 @@ pub async fn update_user(
     use crate::models::user::UserUpdate;
     use crate::schema::users::dsl::{users, uuid};
 
+    // Load old is_active to detect changes (SEC-07)
+    let (target_user_id, old_is_active): (i32, bool) = users
+        .filter(uuid.eq(user_uuid))
+        .select((crate::schema::users::id, crate::schema::users::is_active))
+        .first(&mut conn)
+        .await
+        .map_err(|e| match e {
+            diesel::result::Error::NotFound => AppError::NotFound("User not found".to_string()),
+            _ => AppError::Database(e),
+        })?;
+
     // Sanitize text fields to prevent XSS
     let sanitized_first_name = sanitize_text(request.first_name);
     let sanitized_last_name = sanitize_text(request.last_name);
+
+    let new_is_active = request.is_active;
 
     let update_data = UserUpdate {
         email: request.email,
         first_name: sanitized_first_name,
         last_name: sanitized_last_name,
         phone: request.phone,
-        is_active: request.is_active,
+        is_active: new_is_active,
         preferences: request.preferences,
         updated_at: chrono::Utc::now(),
     };
 
-    let user: User = diesel::update(users.filter(uuid.eq(user_uuid)))
+    let updated_user: User = diesel::update(users.filter(uuid.eq(user_uuid)))
         .set(&update_data)
         .get_result(&mut conn)
         .await
@@ -200,7 +213,16 @@ pub async fn update_user(
             _ => AppError::Database(e),
         })?;
 
-    Ok(Json(user.to_dto()))
+    // Trigger side effects on is_active change (SEC-07)
+    if let Some(new_active) = new_is_active {
+        if old_is_active && !new_active {
+            crate::handlers::web::deactivate_user(&state, target_user_id, &user_uuid_str).await;
+        } else if !old_is_active && new_active {
+            crate::handlers::web::reactivate_user(&state, target_user_id).await;
+        }
+    }
+
+    Ok(Json(updated_user.to_dto()))
 }
 
 #[cfg(test)]

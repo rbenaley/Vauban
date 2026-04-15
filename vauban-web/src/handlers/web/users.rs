@@ -773,17 +773,17 @@ pub async fn update_user_web(
         }
     };
 
-    // Get current user data to check permissions
-    let current_user: Option<(i32, bool)> = users::table
+    // Get current user data to check permissions and detect is_active changes
+    let current_user: Option<(i32, bool, bool)> = users::table
         .filter(users::uuid.eq(parsed_uuid))
         .filter(users::is_deleted.eq(false))
-        .select((users::id, users::is_superuser))
+        .select((users::id, users::is_superuser, users::is_active))
         .first(&mut conn)
         .await
         .optional()
         .unwrap_or(None);
 
-    let (user_id, target_is_superuser) = match current_user {
+    let (user_id, target_is_superuser, old_is_active) = match current_user {
         Some(u) => u,
         None => {
             return flash_redirect(flash.error("User not found"), "/accounts/users");
@@ -909,10 +909,18 @@ pub async fn update_user_web(
     };
 
     match result {
-        Ok(_) => flash_redirect(
-            flash.success("User updated successfully"),
-            &format!("/accounts/users/{}", user_uuid),
-        ),
+        Ok(_) => {
+            // Trigger side effects on is_active change (SEC-07)
+            if old_is_active && !is_active {
+                deactivate_user(&state, user_id, &user_uuid).await;
+            } else if !old_is_active && is_active {
+                reactivate_user(&state, user_id).await;
+            }
+            flash_redirect(
+                flash.success("User updated successfully"),
+                &format!("/accounts/users/{}", user_uuid),
+            )
+        }
         Err(_) => flash_redirect(
             flash.error("Failed to update user. Please try again."),
             &format!("/accounts/users/{}/edit", user_uuid),
@@ -1974,6 +1982,146 @@ pub async fn admin_user_sessions(
         .render()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
     Ok(Html(html))
+}
+
+/// Deactivate a user account (SEC-07).
+///
+/// Revokes all auth sessions, terminates active proxy sessions (SSH/RDP),
+/// disables API keys, force-logs out all browser sessions via WebSocket,
+/// and broadcasts updates to session pages.
+pub async fn deactivate_user(state: &AppState, user_id: i32, user_uuid: &str) {
+    use crate::models::session::{ProxySession, SessionType};
+
+    let mut conn = match state.db_pool.get().await {
+        Ok(conn) => conn,
+        Err(_) => return,
+    };
+
+    // 1. Delete all auth sessions
+    let _ = diesel::delete(auth_sessions::table.filter(auth_sessions::user_id.eq(user_id)))
+        .execute(&mut conn)
+        .await;
+
+    // 2. Terminate all active proxy sessions (SSH/RDP)
+    let active_sessions: Vec<ProxySession> = proxy_sessions::table
+        .filter(proxy_sessions::user_id.eq(user_id))
+        .filter(
+            proxy_sessions::status
+                .eq("connecting")
+                .or(proxy_sessions::status.eq("active")),
+        )
+        .load(&mut conn)
+        .await
+        .unwrap_or_default();
+
+    let now = chrono::Utc::now();
+    for session in &active_sessions {
+        let session_uuid_str = session.uuid.to_string();
+
+        // Check if recording is enabled for this session type
+        let is_recording = match session.session_type {
+            SessionType::Ssh => state.config.recording.enabled && state.config.recording.ssh,
+            SessionType::Rdp => state.config.recording.enabled,
+        };
+
+        // Set recording_path + is_recorded in the same UPDATE that sets "terminated",
+        // because the WebSocket cleanup handler filters on status IN ('active','connecting')
+        // and would skip sessions already marked "terminated".
+        if is_recording {
+            let recording_path = format!(
+                "{}/{}/{:02}/{}/",
+                state.config.recording.storage_path,
+                now.format("%Y"),
+                now.format("%m"),
+                session_uuid_str,
+            );
+            let _ = diesel::update(
+                proxy_sessions::table.filter(proxy_sessions::id.eq(session.id)),
+            )
+            .set((
+                proxy_sessions::status.eq("terminated"),
+                proxy_sessions::disconnected_at.eq(now),
+                proxy_sessions::is_recorded.eq(true),
+                proxy_sessions::recording_path.eq(&recording_path),
+            ))
+            .execute(&mut conn)
+            .await;
+        } else {
+            let _ = diesel::update(
+                proxy_sessions::table.filter(proxy_sessions::id.eq(session.id)),
+            )
+            .set((
+                proxy_sessions::status.eq("terminated"),
+                proxy_sessions::disconnected_at.eq(now),
+            ))
+            .execute(&mut conn)
+            .await;
+        }
+
+        match session.session_type {
+            SessionType::Ssh => {
+                if let Some(ref proxy) = state.ssh_proxy {
+                    let _ = proxy.close_session(&session_uuid_str);
+                    proxy.unsubscribe_session(&session_uuid_str).await;
+                }
+            }
+            SessionType::Rdp => {
+                if let Some(ref proxy) = state.rdp_proxy {
+                    let _ = proxy.close_session(&session_uuid_str);
+                    proxy.unsubscribe_session(&session_uuid_str).await;
+                }
+            }
+        }
+    }
+
+    // 3. Disable all active API keys
+    let _ = diesel::update(
+        api_keys::table
+            .filter(api_keys::user_id.eq(user_id))
+            .filter(api_keys::is_active.eq(true)),
+    )
+    .set(api_keys::is_active.eq(false))
+    .execute(&mut conn)
+    .await;
+
+    // 4. Force-logout all browser sessions via WebSocket
+    let force_logout_html = r#"<div id="force-logout" hx-swap-oob="innerHTML"><div x-data x-init="window.location.replace('/login?reason=account_deactivated')"></div></div>"#;
+    state
+        .user_connections
+        .send_personalized(user_uuid, |_token_hash| force_logout_html.to_string())
+        .await;
+
+    // 5. Broadcast session updates
+    if !active_sessions.is_empty() {
+        crate::tasks::dashboard::push_session_list_update(&state.broadcast, &state.db_pool).await;
+        crate::tasks::dashboard::push_active_sessions_update(&state.broadcast, &state.db_pool)
+            .await;
+    }
+    broadcast_sessions_update(state, user_uuid, user_id).await;
+    broadcast_admin_sessions_update(state).await;
+
+    tracing::info!(user_id = user_id, user_uuid = user_uuid, "User account deactivated: revoked all sessions and disabled API keys");
+}
+
+/// Reactivate a user account (SEC-07).
+///
+/// Re-enables all API keys that were disabled during deactivation.
+pub async fn reactivate_user(state: &AppState, user_id: i32) {
+    let mut conn = match state.db_pool.get().await {
+        Ok(conn) => conn,
+        Err(_) => return,
+    };
+
+    let _ = diesel::update(
+        api_keys::table
+            .filter(api_keys::user_id.eq(user_id))
+            .filter(api_keys::is_active.eq(false)),
+    )
+    .set(api_keys::is_active.eq(true))
+    .execute(&mut conn)
+    .await;
+
+    tracing::info!(user_id = user_id, "User account reactivated: re-enabled API keys");
 }
 
 /// Admin: revoke any user's auth session and force-logout their browser.

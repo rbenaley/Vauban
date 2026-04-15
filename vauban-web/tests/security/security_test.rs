@@ -22,11 +22,27 @@ use serial_test::serial;
 
 use axum::http::header::COOKIE;
 
+use diesel::{ExpressionMethods, QueryDsl};
+use diesel_async::RunQueryDsl;
+
 use crate::common::{TestApp, assertions::*, test_db, unwrap_ok, unwrap_some};
 use crate::fixtures::{
-    create_admin_user, create_simple_ssh_asset, create_test_rdp_asset, create_test_session_with_uuid,
-    create_test_ssh_asset, create_test_user, unique_name,
+    create_admin_user, create_simple_admin_user, create_simple_rdp_asset, create_simple_ssh_asset,
+    create_simple_user, create_test_api_key, create_test_auth_session, create_test_rdp_asset,
+    create_test_session_with_uuid, create_test_ssh_asset, create_test_user, unique_name,
 };
+
+/// Helper to get user UUID from user_id.
+async fn get_user_uuid(conn: &mut diesel_async::AsyncPgConnection, user_id: i32) -> uuid::Uuid {
+    use vauban_web::schema::users;
+    unwrap_ok!(
+        users::table
+            .filter(users::id.eq(user_id))
+            .select(users::uuid)
+            .first(conn)
+            .await
+    )
+}
 
 // =============================================================================
 // SQL Injection Prevention Tests
@@ -6722,6 +6738,710 @@ async fn test_sec03_rdp_connect_without_justification_when_disabled() {
         !body.contains("Justification is required"),
         "SEC-03: RDP connect should succeed without justification when disabled: {}",
         body
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+// =============================================================================
+// SEC-07: Account status enforcement (is_active)
+// =============================================================================
+
+/// Structural: auth.rs checks is_active before allowing password verification.
+#[test]
+fn test_sec07_login_checks_is_active() {
+    let auth_source = include_str!("../../src/handlers/auth.rs");
+    assert!(
+        auth_source.contains("user.is_active"),
+        "SEC-07: login handler must check user.is_active"
+    );
+    assert!(
+        auth_source.contains("AccountDeactivated"),
+        "SEC-07: LoginErrorKind must have AccountDeactivated variant"
+    );
+}
+
+/// Structural: SSH connect handler checks is_active.
+#[test]
+fn test_sec07_ssh_connect_checks_is_active() {
+    let ssh_source = include_str!("../../src/handlers/web/ssh.rs");
+    assert!(
+        ssh_source.contains("user_is_active"),
+        "SEC-07: SSH connect must verify user is_active"
+    );
+    assert!(
+        ssh_source.contains("Your account has been deactivated"),
+        "SEC-07: SSH connect must return deactivation message"
+    );
+}
+
+/// Structural: RDP connect handler checks is_active.
+#[test]
+fn test_sec07_rdp_connect_checks_is_active() {
+    let rdp_source = include_str!("../../src/handlers/web/rdp.rs");
+    assert!(
+        rdp_source.contains("user_is_active"),
+        "SEC-07: RDP connect must verify user is_active"
+    );
+    assert!(
+        rdp_source.contains("Your account has been deactivated"),
+        "SEC-07: RDP connect must return deactivation message"
+    );
+}
+
+/// Structural: deactivate_user revokes auth_sessions, terminates proxy sessions,
+/// disables API keys, and force-logs out browser sessions.
+#[test]
+fn test_sec07_deactivate_user_revokes_all() {
+    let users_source = include_str!("../../src/handlers/web/users.rs");
+    assert!(
+        users_source.contains("async fn deactivate_user"),
+        "SEC-07: deactivate_user function must exist"
+    );
+    assert!(
+        users_source.contains("async fn reactivate_user"),
+        "SEC-07: reactivate_user function must exist"
+    );
+    assert!(
+        users_source.contains("account_deactivated"),
+        "SEC-07: deactivate_user must redirect to login with account_deactivated reason"
+    );
+}
+
+/// Structural: login page template handles account_deactivated reason.
+#[test]
+fn test_sec07_login_page_shows_deactivation_reason() {
+    let template = include_str!("../../templates/accounts/login.html");
+    assert!(
+        template.contains("account_deactivated"),
+        "SEC-07: login template must handle account_deactivated reason"
+    );
+    assert!(
+        template.contains("Your account has been deactivated by an administrator"),
+        "SEC-07: login template must show deactivation message"
+    );
+}
+
+/// Integration: deactivated user cannot login via API.
+#[tokio::test]
+#[serial]
+async fn test_sec07_deactivated_user_cannot_login_api() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("sec07_deact_api");
+    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
+
+    // Deactivate the user
+    use vauban_web::schema::users;
+    unwrap_ok!(
+        diesel::update(users::table.filter(users::id.eq(test_user.user.id)))
+            .set(users::is_active.eq(false))
+            .execute(&mut conn)
+            .await
+    );
+
+    // Try to login via API
+    let response = app
+        .server
+        .post("/api/v1/auth/login")
+        .json(&json!({
+            "username": username,
+            "password": test_user.password
+        }))
+        .await;
+
+    assert_status(&response, 401);
+    let body = response.text();
+    assert!(
+        body.contains("deactivated"),
+        "SEC-07: API login should mention deactivation: {}",
+        body
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Integration: deactivated user cannot login via HTMX.
+#[tokio::test]
+#[serial]
+async fn test_sec07_deactivated_user_cannot_login_htmx() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("sec07_deact_htmx");
+    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
+
+    // Deactivate the user
+    use vauban_web::schema::users;
+    unwrap_ok!(
+        diesel::update(users::table.filter(users::id.eq(test_user.user.id)))
+            .set(users::is_active.eq(false))
+            .execute(&mut conn)
+            .await
+    );
+
+    let csrf_token = app.generate_csrf_token();
+
+    let response = app
+        .server
+        .post("/auth/login")
+        .add_header("HX-Request", "true")
+        .add_header(
+            header::COOKIE,
+            format!("__vauban_csrf={}", csrf_token),
+        )
+        .json(&json!({
+            "username": username,
+            "password": test_user.password,
+            "csrf_token": csrf_token
+        }))
+        .await;
+
+    let body = response.text();
+    assert!(
+        body.contains("deactivated"),
+        "SEC-07: HTMX login should show deactivation message: {}",
+        body
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Integration: deactivating a user via web form revokes their auth sessions.
+#[tokio::test]
+#[serial]
+async fn test_sec07_deactivation_revokes_auth_sessions() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    // Admin who will deactivate
+    let admin_username = unique_name("sec07_admin_rev");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+    let admin_token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
+        .await;
+    let csrf_token = app.generate_csrf_token();
+
+    // Target user
+    let target_username = unique_name("sec07_target_rev");
+    let target_id = create_simple_user(&mut conn, &target_username).await;
+    let target_uuid = get_user_uuid(&mut conn, target_id).await;
+
+    // Create auth sessions for the target user
+    create_test_auth_session(&mut conn, target_id, false).await;
+    create_test_auth_session(&mut conn, target_id, false).await;
+
+    // Verify sessions exist
+    use vauban_web::schema::auth_sessions;
+    let count_before: i64 = unwrap_ok!(
+        auth_sessions::table
+            .filter(auth_sessions::user_id.eq(target_id))
+            .count()
+            .get_result(&mut conn)
+            .await
+    );
+    assert!(count_before >= 2, "Should have at least 2 auth sessions");
+
+    // Deactivate the target user via web form (is_active not sent = unchecked = false)
+    let target_email = format!("{}@test.vauban.io", target_username);
+    let response = app
+        .server
+        .post(&format!("/accounts/users/{}", target_uuid))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", admin_token, csrf_token),
+        )
+        .form(&[
+            ("csrf_token", csrf_token.as_str()),
+            ("username", &target_username),
+            ("email", &target_email),
+        ])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(status == 303 || status == 302, "Expected redirect, got {}", status);
+
+    // Verify sessions are deleted
+    let count_after: i64 = unwrap_ok!(
+        auth_sessions::table
+            .filter(auth_sessions::user_id.eq(target_id))
+            .count()
+            .get_result(&mut conn)
+            .await
+    );
+    assert_eq!(count_after, 0, "All auth sessions should be revoked after deactivation");
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Integration: deactivating a user via web form disables their API keys.
+#[tokio::test]
+#[serial]
+async fn test_sec07_deactivation_disables_api_keys() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_username = unique_name("sec07_admin_key");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+    let admin_token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
+        .await;
+    let csrf_token = app.generate_csrf_token();
+
+    let target_username = unique_name("sec07_target_key");
+    let target_id = create_simple_user(&mut conn, &target_username).await;
+    let target_uuid = get_user_uuid(&mut conn, target_id).await;
+
+    // Create active API keys
+    create_test_api_key(&mut conn, target_id, "key1", true).await;
+    create_test_api_key(&mut conn, target_id, "key2", true).await;
+
+    // Verify keys are active
+    use vauban_web::schema::api_keys;
+    let active_before: i64 = unwrap_ok!(
+        api_keys::table
+            .filter(api_keys::user_id.eq(target_id))
+            .filter(api_keys::is_active.eq(true))
+            .count()
+            .get_result(&mut conn)
+            .await
+    );
+    assert_eq!(active_before, 2, "Should have 2 active API keys");
+
+    // Deactivate user (is_active not sent = unchecked)
+    let target_email = format!("{}@test.vauban.io", target_username);
+    let _response = app
+        .server
+        .post(&format!("/accounts/users/{}", target_uuid))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", admin_token, csrf_token),
+        )
+        .form(&[
+            ("csrf_token", csrf_token.as_str()),
+            ("username", &target_username),
+            ("email", &target_email),
+        ])
+        .await;
+
+    // Verify keys are disabled
+    let active_after: i64 = unwrap_ok!(
+        api_keys::table
+            .filter(api_keys::user_id.eq(target_id))
+            .filter(api_keys::is_active.eq(true))
+            .count()
+            .get_result(&mut conn)
+            .await
+    );
+    assert_eq!(active_after, 0, "All API keys should be disabled after deactivation");
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Integration: reactivating a user via web form re-enables their API keys.
+#[tokio::test]
+#[serial]
+async fn test_sec07_reactivation_restores_api_keys() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_username = unique_name("sec07_admin_react");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+    let admin_token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
+        .await;
+
+    let target_username = unique_name("sec07_target_react");
+    let target_id = create_simple_user(&mut conn, &target_username).await;
+    let target_uuid = get_user_uuid(&mut conn, target_id).await;
+
+    // Create active API keys
+    create_test_api_key(&mut conn, target_id, "key_r1", true).await;
+    create_test_api_key(&mut conn, target_id, "key_r2", true).await;
+
+    // Step 1: Deactivate (unchecked is_active)
+    let target_email = format!("{}@test.vauban.io", target_username);
+    let csrf_token = app.generate_csrf_token();
+    let _response = app
+        .server
+        .post(&format!("/accounts/users/{}", target_uuid))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", admin_token, csrf_token),
+        )
+        .form(&[
+            ("csrf_token", csrf_token.as_str()),
+            ("username", &target_username),
+            ("email", &target_email),
+        ])
+        .await;
+
+    // Step 2: Reactivate (is_active = "on")
+    let csrf_token2 = app.generate_csrf_token();
+    let _response = app
+        .server
+        .post(&format!("/accounts/users/{}", target_uuid))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", admin_token, csrf_token2),
+        )
+        .form(&[
+            ("csrf_token", csrf_token2.as_str()),
+            ("username", &target_username),
+            ("email", &target_email),
+            ("is_active", "on"),
+        ])
+        .await;
+
+    use vauban_web::schema::api_keys;
+    let active_after: i64 = unwrap_ok!(
+        api_keys::table
+            .filter(api_keys::user_id.eq(target_id))
+            .filter(api_keys::is_active.eq(true))
+            .count()
+            .get_result(&mut conn)
+            .await
+    );
+    assert_eq!(active_after, 2, "All API keys should be re-enabled after reactivation");
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Integration: deactivated user cannot connect to SSH asset.
+#[tokio::test]
+#[serial]
+async fn test_sec07_deactivated_user_cannot_ssh() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("sec07_ssh_deact");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+    let asset = create_test_ssh_asset(&mut conn, &unique_name("sec07-ssh")).await;
+
+    // Deactivate the admin user
+    use vauban_web::schema::users;
+    unwrap_ok!(
+        diesel::update(users::table.filter(users::id.eq(admin.user.id)))
+            .set(users::is_active.eq(false))
+            .execute(&mut conn)
+            .await
+    );
+
+    let csrf_token = app.generate_csrf_token();
+
+    let response = app
+        .server
+        .post(&format!("/assets/{}/connect", asset.asset.uuid))
+        .add_header(
+            header::COOKIE,
+            format!("access_token={}; __vauban_csrf={}", admin.token, csrf_token),
+        )
+        .form(&[("csrf_token", csrf_token.as_str())])
+        .await;
+
+    let body = response.text();
+    assert!(
+        body.contains("deactivated"),
+        "SEC-07: deactivated user should not be able to SSH: {}",
+        body
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Integration: deactivated user cannot connect to RDP asset.
+#[tokio::test]
+#[serial]
+async fn test_sec07_deactivated_user_cannot_rdp() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("sec07_rdp_deact");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+    let asset = create_test_rdp_asset(&mut conn, &unique_name("sec07-rdp")).await;
+
+    // Deactivate the admin user
+    use vauban_web::schema::users;
+    unwrap_ok!(
+        diesel::update(users::table.filter(users::id.eq(admin.user.id)))
+            .set(users::is_active.eq(false))
+            .execute(&mut conn)
+            .await
+    );
+
+    let csrf_token = app.generate_csrf_token();
+
+    let response = app
+        .server
+        .post(&format!("/assets/{}/connect-rdp", asset.asset.uuid))
+        .add_header(
+            header::COOKIE,
+            format!("access_token={}; __vauban_csrf={}", admin.token, csrf_token),
+        )
+        .form(&[("csrf_token", csrf_token.as_str())])
+        .await;
+
+    // RDP handler returns the error via HX-Trigger header (toast notification)
+    let trigger = response
+        .headers()
+        .get("HX-Trigger")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        trigger.contains("deactivated"),
+        "SEC-07: deactivated user should not be able to RDP. HX-Trigger: {}",
+        trigger
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Structural: deactivate_user sets recording_path in the same UPDATE as "terminated".
+#[test]
+fn test_sec07_deactivate_user_sets_recording_path() {
+    let users_source = include_str!("../../src/handlers/web/users.rs");
+    assert!(
+        users_source.contains("proxy_sessions::is_recorded.eq(true)"),
+        "SEC-07: deactivate_user must set is_recorded=true when terminating proxy sessions"
+    );
+    assert!(
+        users_source.contains("proxy_sessions::recording_path.eq("),
+        "SEC-07: deactivate_user must set recording_path when terminating proxy sessions"
+    );
+}
+
+/// Structural: terminate_session sets recording_path in the same UPDATE as "terminated".
+#[test]
+fn test_sec07_terminate_session_sets_recording_path() {
+    let sessions_source = include_str!("../../src/handlers/api/sessions.rs");
+    assert!(
+        sessions_source.contains("is_recorded.eq(true)"),
+        "SEC-07: terminate_session must set is_recorded=true"
+    );
+    assert!(
+        sessions_source.contains("recording_path.eq("),
+        "SEC-07: terminate_session must set recording_path"
+    );
+}
+
+/// Integration: deactivating a user sets is_recorded and recording_path on
+/// active proxy sessions (SSH).
+#[tokio::test]
+#[serial]
+async fn test_sec07_deactivation_sets_recording_metadata_ssh() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_username = unique_name("sec07_rec_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+    let admin_token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
+        .await;
+
+    let target_username = unique_name("sec07_rec_target");
+    let target_id = create_simple_user(&mut conn, &target_username).await;
+    let target_uuid = get_user_uuid(&mut conn, target_id).await;
+
+    // Create an active SSH proxy session for the target user
+    let asset_id =
+        create_simple_ssh_asset(&mut conn, &unique_name("sec07-rec-ssh"), target_id).await;
+    let (session_id, _session_uuid) =
+        create_test_session_with_uuid(&mut conn, target_id, asset_id, "ssh", "active").await;
+
+    // Verify recording metadata is not set yet
+    use vauban_web::schema::proxy_sessions;
+    let (is_rec_before, rec_path_before): (bool, Option<String>) = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::id.eq(session_id))
+            .select((
+                proxy_sessions::is_recorded,
+                proxy_sessions::recording_path,
+            ))
+            .first(&mut conn)
+            .await
+    );
+    assert!(!is_rec_before, "is_recorded should be false before deactivation");
+    assert!(
+        rec_path_before.is_none(),
+        "recording_path should be None before deactivation"
+    );
+
+    // Deactivate target user via web form (is_active not sent = unchecked)
+    let target_email = format!("{}@test.vauban.io", target_username);
+    let csrf_token = app.generate_csrf_token();
+    let _response = app
+        .server
+        .post(&format!("/accounts/users/{}", target_uuid))
+        .add_header(
+            COOKIE,
+            format!(
+                "access_token={}; __vauban_csrf={}",
+                admin_token, csrf_token
+            ),
+        )
+        .form(&[
+            ("csrf_token", csrf_token.as_str()),
+            ("username", &target_username),
+            ("email", &target_email),
+        ])
+        .await;
+
+    // Verify recording metadata is now set
+    let (is_rec_after, rec_path_after, db_status): (bool, Option<String>, String) = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::id.eq(session_id))
+            .select((
+                proxy_sessions::is_recorded,
+                proxy_sessions::recording_path,
+                proxy_sessions::status,
+            ))
+            .first(&mut conn)
+            .await
+    );
+    assert_eq!(db_status, "terminated", "Session should be terminated");
+    assert!(is_rec_after, "is_recorded should be true after deactivation");
+    assert!(
+        rec_path_after.is_some(),
+        "recording_path should be set after deactivation"
+    );
+    let path = rec_path_after.unwrap();
+    assert!(
+        path.contains("recordings/"),
+        "recording_path should contain the storage path: {}",
+        path
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Integration: admin terminate_session sets is_recorded and recording_path
+/// on the terminated proxy session.
+#[tokio::test]
+#[serial]
+async fn test_sec07_terminate_session_sets_recording_metadata() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("sec07_term_rec");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let asset_id =
+        create_simple_ssh_asset(&mut conn, &unique_name("sec07-term-rec-ssh"), admin_id).await;
+    let (session_id, session_uuid) =
+        create_test_session_with_uuid(&mut conn, admin_id, asset_id, "ssh", "active").await;
+
+    let csrf_token = app.generate_csrf_token();
+
+    let response = app
+        .server
+        .post(&format!("/sessions/{}/terminate", session_uuid))
+        .add_header(
+            COOKIE,
+            format!(
+                "access_token={}; __vauban_csrf={}",
+                token, csrf_token
+            ),
+        )
+        .add_header("HX-Request", "true")
+        .form(&[("csrf_token", csrf_token.as_str())])
+        .await;
+
+    assert_status(&response, 200);
+
+    use vauban_web::schema::proxy_sessions;
+    let (is_rec, rec_path, db_status): (bool, Option<String>, String) = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::id.eq(session_id))
+            .select((
+                proxy_sessions::is_recorded,
+                proxy_sessions::recording_path,
+                proxy_sessions::status,
+            ))
+            .first(&mut conn)
+            .await
+    );
+    assert_eq!(db_status, "terminated");
+    assert!(is_rec, "is_recorded should be true after admin termination");
+    assert!(
+        rec_path.is_some(),
+        "recording_path should be set after admin termination"
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Integration: deactivating a user sets recording metadata on active RDP sessions.
+#[tokio::test]
+#[serial]
+async fn test_sec07_deactivation_sets_recording_metadata_rdp() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_username = unique_name("sec07_rec_rdp_adm");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+    let admin_token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
+        .await;
+
+    let target_username = unique_name("sec07_rec_rdp_tgt");
+    let target_id = create_simple_user(&mut conn, &target_username).await;
+    let target_uuid = get_user_uuid(&mut conn, target_id).await;
+
+    let asset_id =
+        create_simple_rdp_asset(&mut conn, &unique_name("sec07-rec-rdp"), target_id).await;
+    let (session_id, _session_uuid) =
+        create_test_session_with_uuid(&mut conn, target_id, asset_id, "rdp", "active").await;
+
+    // Deactivate target user
+    let target_email = format!("{}@test.vauban.io", target_username);
+    let csrf_token = app.generate_csrf_token();
+    let _response = app
+        .server
+        .post(&format!("/accounts/users/{}", target_uuid))
+        .add_header(
+            COOKIE,
+            format!(
+                "access_token={}; __vauban_csrf={}",
+                admin_token, csrf_token
+            ),
+        )
+        .form(&[
+            ("csrf_token", csrf_token.as_str()),
+            ("username", &target_username),
+            ("email", &target_email),
+        ])
+        .await;
+
+    use vauban_web::schema::proxy_sessions;
+    let (is_rec, rec_path, db_status): (bool, Option<String>, String) = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::id.eq(session_id))
+            .select((
+                proxy_sessions::is_recorded,
+                proxy_sessions::recording_path,
+                proxy_sessions::status,
+            ))
+            .first(&mut conn)
+            .await
+    );
+    assert_eq!(db_status, "terminated");
+    assert!(
+        is_rec,
+        "is_recorded should be true for RDP session after deactivation"
+    );
+    assert!(
+        rec_path.is_some(),
+        "recording_path should be set for RDP session after deactivation"
     );
 
     test_db::cleanup(&mut conn).await;

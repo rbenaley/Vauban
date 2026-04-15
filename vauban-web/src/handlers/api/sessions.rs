@@ -211,17 +211,54 @@ pub async fn terminate_session(
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
-    let updated_session = diesel::update(proxy_sessions.filter(uuid.eq(session_uuid)))
-        .set((
-            status.eq("terminated"),
-            disconnected_at.eq(chrono::Utc::now()),
-        ))
-        .get_result::<ProxySession>(&mut conn)
+    // Check recording config before updating to decide if we need to set recording_path.
+    // This must happen in the same UPDATE that sets "terminated", because the WebSocket
+    // cleanup handler filters on status IN ('active','connecting') and would skip it.
+    let session_for_recording: ProxySession = proxy_sessions
+        .filter(uuid.eq(session_uuid))
+        .first(&mut conn)
         .await
         .map_err(|e| match e {
             diesel::result::Error::NotFound => AppError::NotFound("Session not found".to_string()),
             _ => AppError::Database(e),
         })?;
+
+    let now = chrono::Utc::now();
+    let is_recording = match session_for_recording.session_type {
+        SessionType::Ssh => state.config.recording.enabled && state.config.recording.ssh,
+        SessionType::Rdp => state.config.recording.enabled,
+    };
+
+    let updated_session = if is_recording {
+        let rec_path = format!(
+            "{}/{}/{:02}/{}/",
+            state.config.recording.storage_path,
+            now.format("%Y"),
+            now.format("%m"),
+            session_for_recording.uuid,
+        );
+        diesel::update(proxy_sessions.filter(uuid.eq(session_uuid)))
+            .set((
+                status.eq("terminated"),
+                disconnected_at.eq(now),
+                crate::schema::proxy_sessions::is_recorded.eq(true),
+                recording_path.eq(&rec_path),
+            ))
+            .get_result::<ProxySession>(&mut conn)
+            .await
+    } else {
+        diesel::update(proxy_sessions.filter(uuid.eq(session_uuid)))
+            .set((
+                status.eq("terminated"),
+                disconnected_at.eq(now),
+            ))
+            .get_result::<ProxySession>(&mut conn)
+            .await
+    }
+    .map_err(|e| match e {
+        diesel::result::Error::NotFound => AppError::NotFound("Session not found".to_string()),
+        _ => AppError::Database(e),
+    })?;
 
     // Force-close the proxy connection and data channel so the active
     // WebSocket loop breaks (data_rx.recv() => None).

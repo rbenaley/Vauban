@@ -162,17 +162,22 @@ pub async fn connect_rdp(
         return htmx_error_response("Invalid port configuration");
     }
 
-    // Resolve authenticated user's integer ID for database insertion
+    // Resolve authenticated user's integer ID and check account status (SEC-07)
     let user_id: i32 = {
         use crate::schema::users;
         match auth_user.uuid.parse::<uuid::Uuid>() {
             Ok(user_uuid) => match users::table
                 .filter(users::uuid.eq(user_uuid))
-                .select(users::id)
-                .first(&mut conn)
+                .select((users::id, users::is_active))
+                .first::<(i32, bool)>(&mut conn)
                 .await
             {
-                Ok(id) => id,
+                Ok((id, user_is_active)) => {
+                    if !user_is_active {
+                        return htmx_error_response("Your account has been deactivated");
+                    }
+                    id
+                }
                 Err(e) => {
                     tracing::error!("Failed to resolve user ID: {}", e);
                     return htmx_error_response("User not found");
