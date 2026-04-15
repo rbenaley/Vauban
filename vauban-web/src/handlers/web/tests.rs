@@ -684,6 +684,7 @@ fn test_connect_ssh_form_debug() {
     let form = ConnectSshForm {
         csrf_token: "token123".to_string(),
         username: Some("testuser".to_string()),
+        justification: None,
     };
 
     let debug_str = format!("{:?}", form);

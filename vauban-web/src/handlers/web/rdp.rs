@@ -6,6 +6,8 @@ use super::*;
 pub struct ConnectRdpForm {
     pub csrf_token: String,
     pub username: Option<String>,
+    /// Connection justification (SEC-03).
+    pub justification: Option<String>,
 }
 
 fn htmx_error_response(message: &str) -> Response {
@@ -51,6 +53,23 @@ pub async fn connect_rdp(
     ) {
         return htmx_error_response("Invalid CSRF token");
     }
+
+    // Validate justification when required (SEC-03)
+    let form_justification = if state.config.security.require_justification {
+        let j = form.justification.as_deref().unwrap_or("").trim();
+        if j.len() < 10 {
+            return htmx_error_response(
+                "Justification is required (minimum 10 characters)",
+            );
+        }
+        Some(j.to_string())
+    } else {
+        form.justification
+            .as_deref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+    };
 
     let asset_uuid = match Uuid::parse_str(&asset_uuid_str) {
         Ok(uuid) => uuid,
@@ -253,7 +272,7 @@ pub async fn connect_rdp(
                 .and_then(|v| v.to_str().ok())
                 .map(String::from),
             proxy_instance: None,
-            justification: jit_justification.clone(),
+            justification: jit_justification.clone().or(form_justification.clone()),
             is_recorded: true,
             metadata: serde_json::json!({}),
             max_session_duration: jit_max_duration,
@@ -429,6 +448,7 @@ mod tests {
         let form = ConnectRdpForm {
             csrf_token: "test-token".to_string(),
             username: Some("admin".to_string()),
+            justification: None,
         };
         let debug = format!("{:?}", form);
         assert!(debug.contains("ConnectRdpForm"));

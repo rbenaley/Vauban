@@ -38,6 +38,8 @@ pub struct AssetListTemplate {
     pub statuses: Vec<(String, String)>,
     /// Whether to show the "View" link (only for admin users).
     pub show_view_link: bool,
+    /// Whether to require justification before connecting (SEC-03).
+    pub require_justification: bool,
 }
 
 #[cfg(test)]
@@ -146,6 +148,7 @@ mod tests {
             asset_types: vec![],
             statuses: vec![],
             show_view_link: true,
+            require_justification: true,
         };
 
         let result = template.render();
@@ -183,6 +186,7 @@ mod tests {
             asset_types: vec![],
             statuses: vec![],
             show_view_link: false,
+            require_justification: true,
         };
 
         assert!(!template.show_view_link);
@@ -226,6 +230,7 @@ mod tests {
             asset_types: vec![],
             statuses: vec![],
             show_view_link: true,
+            require_justification: true,
         }
     }
 
@@ -429,6 +434,7 @@ mod tests {
             asset_types: vec![],
             statuses: vec![],
             show_view_link: false,
+            require_justification: true,
         };
         let html = template.render().expect("should render");
         assert!(html.contains("Request"), "should show Request label");
@@ -443,7 +449,7 @@ mod tests {
     }
 
     #[test]
-    fn test_asset_no_request_shows_connect_label() {
+    fn test_asset_no_request_shows_connect_direct() {
         let item = create_test_asset_item();
         let template = AssetListTemplate {
             title: "Assets".to_string(),
@@ -472,12 +478,57 @@ mod tests {
             asset_types: vec![],
             statuses: vec![],
             show_view_link: false,
+            require_justification: false,
         };
         let html = template.render().expect("should render");
         assert!(html.contains("Connect"), "should show Connect label");
         assert!(
             html.contains("hx-post"),
-            "Connect asset should have hx-post button"
+            "Connect asset should have hx-post button when justification is disabled"
+        );
+    }
+
+    #[test]
+    fn test_asset_no_request_shows_connect_with_justification() {
+        let item = create_test_asset_item();
+        let template = AssetListTemplate {
+            title: "Assets".to_string(),
+            user: Some(UserContext {
+                uuid: "u1".to_string(),
+                username: "user".to_string(),
+                display_name: "User".to_string(),
+                is_superuser: false,
+                is_staff: false,
+            }),
+            vauban: VaubanConfig {
+                brand_name: "VAUBAN".to_string(),
+                brand_logo: None,
+                theme: "dark".to_string(),
+                ..Default::default()
+            },
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            assets: vec![item],
+            pagination: None,
+            search: None,
+            type_filter: None,
+            status_filter: None,
+            asset_types: vec![],
+            statuses: vec![],
+            show_view_link: false,
+            require_justification: true,
+        };
+        let html = template.render().expect("should render");
+        assert!(html.contains("Connect"), "should show Connect label");
+        assert!(
+            html.contains("#justify"),
+            "Connect link should point to #justify when justification is required"
+        );
+        assert!(
+            !html.contains("hx-post"),
+            "Should not have direct hx-post when justification is required"
         );
     }
 
@@ -515,6 +566,7 @@ mod tests {
             asset_types: vec![],
             statuses: vec![],
             show_view_link: false,
+            require_justification: false,
         };
         let html = template.render().expect("should render");
         assert!(html.contains("Request"), "should contain Request label");

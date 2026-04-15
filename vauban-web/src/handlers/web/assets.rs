@@ -519,6 +519,7 @@ pub async fn asset_list(
             ("maintenance".to_string(), "Maintenance".to_string()),
         ],
         show_view_link: user_is_admin,
+        require_justification: state.config.security.require_justification,
     };
 
     let html = template
@@ -790,6 +791,7 @@ pub async fn asset_detail(
         ssh_host_key_fingerprint,
         ssh_host_key_mismatch,
         has_approved_session,
+        require_justification: state.config.security.require_justification,
     };
 
     let base = BaseTemplate::new(format!("{} - Asset", asset_name), user.clone())

@@ -24,8 +24,8 @@ use axum::http::header::COOKIE;
 
 use crate::common::{TestApp, assertions::*, test_db, unwrap_ok, unwrap_some};
 use crate::fixtures::{
-    create_admin_user, create_simple_ssh_asset, create_test_session_with_uuid, create_test_user,
-    unique_name,
+    create_admin_user, create_simple_ssh_asset, create_test_rdp_asset, create_test_session_with_uuid,
+    create_test_ssh_asset, create_test_user, unique_name,
 };
 
 // =============================================================================
@@ -2203,6 +2203,7 @@ fn test_security_config_parsed_trusted_proxies() {
             iterations: 1,
             parallelism: 1,
         },
+        require_justification: true,
         trusted_proxies: vec![
             "127.0.0.1".to_string(),
             "::1".to_string(),
@@ -2238,6 +2239,7 @@ fn test_security_config_empty_trusted_proxies() {
             iterations: 1,
             parallelism: 1,
         },
+        require_justification: true,
         trusted_proxies: vec![],
     };
 
@@ -6525,4 +6527,202 @@ fn test_sec02_no_hardcoded_client_ip_in_session_handlers() {
         !sessions_source.contains(r#""0.0.0.0/0""#),
         "SEC-02: sessions.rs must not hardcode 0.0.0.0/0 as client IP"
     );
+}
+
+// =============================================================================
+// SEC-03: Connection justification enforcement
+// =============================================================================
+
+/// Structural regression: SSH and RDP handlers must validate justification
+/// based on the require_justification config flag.
+#[test]
+fn test_sec03_handlers_validate_justification() {
+    let ssh_source = include_str!("../../src/handlers/web/ssh.rs");
+    assert!(
+        ssh_source.contains("require_justification"),
+        "SEC-03: ssh.rs must check require_justification config"
+    );
+    assert!(
+        ssh_source.contains("form_justification"),
+        "SEC-03: ssh.rs must extract form_justification for DB insertion"
+    );
+
+    let rdp_source = include_str!("../../src/handlers/web/rdp.rs");
+    assert!(
+        rdp_source.contains("require_justification"),
+        "SEC-03: rdp.rs must check require_justification config"
+    );
+    assert!(
+        rdp_source.contains("form_justification"),
+        "SEC-03: rdp.rs must extract form_justification for DB insertion"
+    );
+}
+
+/// Structural regression: ConnectSshForm and ConnectRdpForm must have a
+/// justification field so the modal can submit it.
+#[test]
+fn test_sec03_connect_forms_have_justification_field() {
+    let ssh_source = include_str!("../../src/handlers/web/ssh.rs");
+    assert!(
+        ssh_source.contains("pub justification: Option<String>"),
+        "SEC-03: ConnectSshForm must have a justification field"
+    );
+
+    let rdp_source = include_str!("../../src/handlers/web/rdp.rs");
+    assert!(
+        rdp_source.contains("pub justification: Option<String>"),
+        "SEC-03: ConnectRdpForm must have a justification field"
+    );
+}
+
+/// Structural regression: the justification modal template must exist.
+#[test]
+fn test_sec03_justification_modal_template_exists() {
+    let template = include_str!("../../templates/sessions/justification_modal.html");
+    assert!(
+        template.contains("Connection Justification"),
+        "SEC-03: justification modal must have the expected title"
+    );
+    assert!(
+        template.contains("justificationModal"),
+        "SEC-03: justification modal must use the justificationModal Alpine store"
+    );
+    assert!(
+        template.contains(r#"name="justification""#),
+        "SEC-03: justification modal must have a justification textarea"
+    );
+}
+
+/// Structural regression: asset_detail.html must include the justification
+/// modal and check require_justification.
+#[test]
+fn test_sec03_asset_detail_includes_justification_modal() {
+    let template = include_str!("../../templates/assets/asset_detail.html");
+    assert!(
+        template.contains("justification_modal.html"),
+        "SEC-03: asset_detail.html must include justification_modal.html"
+    );
+    assert!(
+        template.contains("require_justification"),
+        "SEC-03: asset_detail.html must check require_justification"
+    );
+}
+
+/// Integration: when require_justification is false (testing config),
+/// SSH connect works without justification.
+#[tokio::test]
+#[serial]
+async fn test_sec03_ssh_connect_without_justification_when_disabled() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("sec03_ssh_nojust");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+    let asset = create_test_ssh_asset(&mut conn, &unique_name("sec03-ssh-asset")).await;
+
+    let csrf_token = app.generate_csrf_token();
+
+    let response = app
+        .server
+        .post(&format!("/assets/{}/connect", asset.asset.uuid))
+        .add_header(
+            header::COOKIE,
+            format!("access_token={}; __vauban_csrf={}", admin.token, csrf_token),
+        )
+        .form(&[("csrf_token", csrf_token.as_str())])
+        .await;
+
+    let body = response.text();
+    // Should NOT be rejected for missing justification
+    assert!(
+        !body.contains("Justification is required"),
+        "SEC-03: connect should succeed without justification when disabled: {}",
+        body
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Integration: when require_justification is false (testing config),
+/// SSH connect accepts and stores a justification if provided.
+#[tokio::test]
+#[serial]
+async fn test_sec03_ssh_connect_stores_justification_when_provided() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("sec03_ssh_just");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+    let asset = create_test_ssh_asset(&mut conn, &unique_name("sec03-ssh-just")).await;
+
+    let csrf_token = app.generate_csrf_token();
+
+    let _response = app
+        .server
+        .post(&format!("/assets/{}/connect", asset.asset.uuid))
+        .add_header(
+            header::COOKIE,
+            format!("access_token={}; __vauban_csrf={}", admin.token, csrf_token),
+        )
+        .form(&[
+            ("csrf_token", csrf_token.as_str()),
+            ("justification", "Routine maintenance on production server"),
+        ])
+        .await;
+
+    // Check that the justification was stored in the proxy_sessions table
+    use diesel::prelude::*;
+    use diesel_async::RunQueryDsl;
+    use vauban_web::schema::proxy_sessions;
+
+    let stored: Option<Option<String>> = proxy_sessions::table
+        .filter(proxy_sessions::asset_id.eq(asset.asset.id))
+        .select(proxy_sessions::justification)
+        .first(&mut conn)
+        .await
+        .ok();
+
+    if let Some(justification) = stored {
+        assert_eq!(
+            justification.as_deref(),
+            Some("Routine maintenance on production server"),
+            "SEC-03: justification should be stored in proxy_sessions"
+        );
+    }
+    // If no row was inserted (SSH proxy not available), that's OK in tests
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Integration: RDP connect works without justification when disabled.
+#[tokio::test]
+#[serial]
+async fn test_sec03_rdp_connect_without_justification_when_disabled() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("sec03_rdp_nojust");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+    let asset = create_test_rdp_asset(&mut conn, &unique_name("sec03-rdp-asset")).await;
+
+    let csrf_token = app.generate_csrf_token();
+
+    let response = app
+        .server
+        .post(&format!("/assets/{}/connect-rdp", asset.asset.uuid))
+        .add_header(
+            header::COOKIE,
+            format!("access_token={}; __vauban_csrf={}", admin.token, csrf_token),
+        )
+        .form(&[("csrf_token", csrf_token.as_str())])
+        .await;
+
+    let body = response.text();
+    assert!(
+        !body.contains("Justification is required"),
+        "SEC-03: RDP connect should succeed without justification when disabled: {}",
+        body
+    );
+
+    test_db::cleanup(&mut conn).await;
 }

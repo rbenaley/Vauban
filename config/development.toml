@@ -31,6 +31,10 @@ enabled = false
 cert_path = "vauban-web/certs/dev-server.crt"
 key_path = "vauban-web/certs/dev-server.key"
 
+# Disable justification modal in development for faster iteration
+[security]
+require_justification = false
+
 # ACME disabled in development (self-signed certs used)
 [server.tls.acme]
 enabled = false

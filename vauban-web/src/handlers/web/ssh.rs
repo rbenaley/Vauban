@@ -12,6 +12,8 @@ pub struct ConnectSshForm {
     pub csrf_token: String,
     /// Optional username override.
     pub username: Option<String>,
+    /// Connection justification (SEC-03).
+    pub justification: Option<String>,
 }
 
 /// Response for SSH connection request.
@@ -89,6 +91,31 @@ pub async fn connect_ssh(
         })
         .into_response();
     }
+
+    // Validate justification when required (SEC-03)
+    let form_justification = if state.config.security.require_justification {
+        let j = form.justification.as_deref().unwrap_or("").trim();
+        if j.len() < 10 {
+            let msg = "Justification is required (minimum 10 characters)";
+            if is_htmx {
+                return htmx_error_response(msg);
+            }
+            return Json(ConnectSshResponse {
+                success: false,
+                session_id: None,
+                redirect_url: None,
+                error: Some(msg.to_string()),
+            })
+            .into_response();
+        }
+        Some(j.to_string())
+    } else {
+        form.justification
+            .as_deref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+    };
 
     // Parse asset UUID
     let asset_uuid = match Uuid::parse_str(&asset_uuid_str) {
@@ -475,7 +502,7 @@ pub async fn connect_ssh(
                 .and_then(|v| v.to_str().ok())
                 .map(String::from),
             proxy_instance: None,
-            justification: jit_justification.clone(),
+            justification: jit_justification.clone().or(form_justification.clone()),
             is_recorded: true,
             metadata: serde_json::json!({}),
             max_session_duration: jit_max_duration,

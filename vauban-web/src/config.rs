@@ -446,6 +446,9 @@ pub struct SecurityConfig {
     /// proxy headers are **never** trusted and the TCP peer address is always used.
     #[serde(default)]
     pub trusted_proxies: Vec<String>,
+    /// Require users to provide a justification before connecting to an asset.
+    #[serde(default = "default_require_justification")]
+    pub require_justification: bool,
 }
 
 impl SecurityConfig {
@@ -550,6 +553,10 @@ pub struct RecordingConfig {
     pub rdp: bool,
     #[serde(default = "default_recording_enabled")]
     pub ssh: bool,
+}
+
+fn default_require_justification() -> bool {
+    true
 }
 
 fn default_recording_enabled() -> bool {
@@ -1514,6 +1521,28 @@ mod tests {
         assert!(
             source.contains(r#"remove_var("VAUBAN_SECRET_KEY")"#),
             "config.rs must call remove_var(\"VAUBAN_SECRET_KEY\") after reading the env var"
+        );
+    }
+
+    // ==================== SecurityConfig Tests (SEC-03) ====================
+
+    #[test]
+    fn test_sec03_require_justification_defaults_to_true() {
+        assert!(
+            default_require_justification(),
+            "require_justification must default to true"
+        );
+    }
+
+    #[test]
+    fn test_sec03_require_justification_loaded_from_config() {
+        let config =
+            Config::load_with_environment(test_fixtures::config_dir(), Environment::Testing)
+                .expect("Config loading should succeed");
+        // testing.toml overrides to false so existing connect tests are not broken
+        assert!(
+            !config.security.require_justification,
+            "require_justification should be false from testing.toml"
         );
     }
 }

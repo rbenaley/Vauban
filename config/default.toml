@@ -123,6 +123,10 @@ rate_limit_per_minute = 10
 # honoured when the TCP connection originates from one of these addresses.
 # Empty list = proxy headers are never trusted (safe default).
 trusted_proxies = []
+# Require users to provide a justification before connecting to an asset.
+# When true, a modal prompts for a reason that is stored in the session record.
+# Set to false to allow direct connections without justification.
+require_justification = true
 
 [security.argon2]
 memory_size_kb = 65536

@@ -7,6 +7,9 @@ document.addEventListener('alpine:init', function () {
     // Global store for JIT access request modal (avoids nested x-data scope issues)
     Alpine.store('accessModal', { show: false });
 
+    // Global store for connection justification modal (SEC-03)
+    Alpine.store('justificationModal', { show: false });
+
     // CSRF helper: reads token from cookie and keeps inputs synced
     Alpine.data('csrf', function () {
         return {
@@ -593,5 +596,18 @@ document.addEventListener('DOMContentLoaded', function () {
             }
         }, 50);
         setTimeout(function () { clearInterval(waitForAlpine); }, 3000);
+    }
+
+    // Auto-open justification modal when landing on asset detail with #justify hash
+    // (SEC-03: triggered from asset list "Connect" button when justification is required)
+    if (window.location.hash === '#justify') {
+        history.replaceState(null, '', window.location.pathname + window.location.search);
+        var waitForJustify = setInterval(function () {
+            if (typeof Alpine !== 'undefined' && Alpine.store('justificationModal')) {
+                Alpine.store('justificationModal').show = true;
+                clearInterval(waitForJustify);
+            }
+        }, 50);
+        setTimeout(function () { clearInterval(waitForJustify); }, 3000);
     }
 });

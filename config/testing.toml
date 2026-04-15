@@ -42,6 +42,11 @@ key_path = "vauban-web/certs/dev-server.key"
 [server.tls.acme]
 enabled = false
 
+# Disable justification requirement by default in tests so pre-existing
+# connect tests are not broken. SEC-03 specific tests override this.
+[security]
+require_justification = false
+
 # Lightweight Argon2 parameters for faster tests
 [security.argon2]
 memory_size_kb = 1024

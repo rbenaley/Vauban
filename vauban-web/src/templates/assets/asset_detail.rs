@@ -24,6 +24,8 @@ pub struct AssetDetail {
     pub ssh_host_key_mismatch: bool,
     /// True when a valid (non-expired) approved JIT session exists for this user+asset.
     pub has_approved_session: bool,
+    /// True when the platform requires a justification before connecting (SEC-03).
+    pub require_justification: bool,
 }
 
 impl AssetDetail {
@@ -86,6 +88,7 @@ mod tests {
             ssh_host_key_fingerprint: None,
             ssh_host_key_mismatch: false,
             has_approved_session: false,
+            require_justification: true,
         }
     }
 
