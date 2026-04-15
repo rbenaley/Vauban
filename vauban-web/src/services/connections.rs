@@ -281,6 +281,35 @@ impl UserConnectionRegistry {
         );
     }
 
+    /// Send a message only to connections whose token_hash matches.
+    ///
+    /// Used for force-logout: only the browser that used the revoked session
+    /// (identified by its token_hash) receives the redirect command.
+    pub async fn send_to_matching(&self, user_uuid: &str, target_token_hash: &str, html: &str) {
+        let connections = self.get_user_connections(user_uuid).await;
+        let mut sent = 0;
+
+        for (conn_id, token_hash, sender) in connections {
+            if token_hash == target_token_hash {
+                if sender.send(html.to_string()).await.is_err() {
+                    warn!(
+                        user_uuid = %user_uuid,
+                        connection_id = %conn_id,
+                        "Failed to send targeted message, connection may be closed"
+                    );
+                }
+                sent += 1;
+            }
+        }
+
+        debug!(
+            user_uuid = %user_uuid,
+            target_token_hash = %target_token_hash,
+            matched = sent,
+            "Sent targeted message to matching connections"
+        );
+    }
+
     /// Get the number of active connections for a user.
     pub async fn connection_count(&self, user_uuid: &str) -> usize {
         let connections = self.connections.read().await;

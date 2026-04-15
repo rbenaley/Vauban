@@ -269,11 +269,21 @@ pub async fn login(
             is_current: true,
         };
 
-        diesel::insert_into(auth_sessions::table)
+        let session_created = diesel::insert_into(auth_sessions::table)
             .values(&new_session)
             .execute(&mut conn)
             .await
-            .ok();
+            .is_ok();
+
+        if session_created {
+            crate::handlers::web::broadcast_sessions_update(
+                &state,
+                &user.uuid.to_string(),
+                user.id,
+            )
+            .await;
+            crate::handlers::web::broadcast_admin_sessions_update(&state).await;
+        }
 
         // Set cookie with temporary token
         use axum_extra::extract::cookie::{Cookie, SameSite};
@@ -428,6 +438,7 @@ pub async fn login(
     if session_created {
         crate::handlers::web::broadcast_sessions_update(&state, &user.uuid.to_string(), user.id)
             .await;
+        crate::handlers::web::broadcast_admin_sessions_update(&state).await;
     }
 
     // Set cookie
@@ -588,6 +599,7 @@ pub async fn logout(State(state): State<AppState>, jar: CookieJar) -> Response {
                     user_id,
                 )
                 .await;
+                crate::handlers::web::broadcast_admin_sessions_update(&state).await;
             }
         }
     }

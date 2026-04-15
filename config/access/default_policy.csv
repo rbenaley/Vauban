@@ -9,6 +9,8 @@ p, role:staff, groups, read
 p, role:staff, groups, write
 p, role:staff, access_rules, read
 p, role:staff, access_rules, write
+p, role:staff, auth_sessions, read
+p, role:staff, auth_sessions, write
 p, role:staff, admin, view
 p, role:user, assets, read
 p, role:user, profile, read

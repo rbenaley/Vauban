@@ -4,12 +4,15 @@
 /// - /accounts/profile - User's profile page
 /// - /accounts/sessions - User's active login sessions
 /// - /accounts/sessions/{uuid}/revoke - Revoke a session
+/// - /admin/sessions - Admin: all users' web sessions
+/// - /admin/sessions/{uuid}/revoke - Admin: revoke any user's session
 /// - /accounts/apikeys - User's API keys
 /// - /accounts/apikeys/create - Create a new API key
 /// - /accounts/apikeys/{uuid}/revoke - Revoke an API key
 use crate::common::{TestApp, unwrap_ok};
 use crate::fixtures::{
-    create_expired_api_key, create_simple_user, create_test_api_key, create_test_auth_session,
+    create_auth_session_with_token, create_expired_api_key, create_expired_auth_session,
+    create_simple_admin_user, create_simple_user, create_test_api_key, create_test_auth_session,
     unique_name,
 };
 use axum::http::header::COOKIE;
@@ -1560,4 +1563,533 @@ async fn test_multiple_sessions_all_updated_on_revoke() {
 
     assert!(session1_exists, "Session 1 should still exist");
     assert!(session3_exists, "Session 3 should still exist");
+}
+
+// =============================================================================
+// Admin Users Sessions Page Tests (/admin/sessions)
+// =============================================================================
+
+#[tokio::test]
+async fn test_admin_sessions_page_loads_for_admin() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("admsess_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/admin/sessions")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 200,
+        "Admin should be able to view admin sessions page (got {})",
+        status
+    );
+    let body = response.text();
+    assert!(
+        body.contains("All Sessions"),
+        "Page should contain 'All Sessions' title"
+    );
+}
+
+#[tokio::test]
+async fn test_admin_sessions_page_loads_for_staff() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let staff_name = unique_name("admsess_staff");
+    let staff_id = create_simple_admin_user(&mut conn, &staff_name).await;
+    let staff_uuid = get_user_uuid(&mut conn, staff_id).await;
+
+    let token = app
+        .generate_test_token(&staff_uuid.to_string(), &staff_name, false, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/admin/sessions")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 200,
+        "Staff should be able to view admin sessions page (got {})",
+        status
+    );
+}
+
+#[tokio::test]
+async fn test_admin_sessions_page_rejected_for_regular_user() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let user_name = unique_name("admsess_user");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
+        .await;
+
+    let response = app
+        .server
+        .get("/admin/sessions")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 403 || status == 302,
+        "Regular user should be rejected (got {})",
+        status
+    );
+}
+
+#[tokio::test]
+async fn test_admin_sessions_shows_all_users_sessions() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("admsess_view_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let user_name = unique_name("admsess_view_user");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+
+    // Create sessions for both users
+    create_test_auth_session(&mut conn, admin_id, false).await;
+    create_test_auth_session(&mut conn, user_id, false).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/admin/sessions")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(response.status_code().as_u16(), 200);
+    let body = response.text();
+
+    // Both users' sessions should be visible (usernames have UUID suffixes)
+    assert!(
+        body.contains("admin-session-row-"),
+        "Page should contain session rows"
+    );
+}
+
+#[tokio::test]
+async fn test_admin_sessions_hides_expired() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("admsess_expired_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let user_name = unique_name("admsess_expired_user");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+
+    // Create an expired session for user
+    let expired_uuid =
+        create_expired_auth_session(&mut conn, user_id, "expired_token_value").await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/admin/sessions")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(response.status_code().as_u16(), 200);
+    let body = response.text();
+    assert!(
+        !body.contains(&expired_uuid.to_string()),
+        "Expired sessions should not be shown"
+    );
+}
+
+#[tokio::test]
+async fn test_admin_revoke_session_deletes_from_db() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("adm_revoke_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let user_name = unique_name("adm_revoke_target");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+
+    let session_uuid =
+        create_auth_session_with_token(&mut conn, user_id, "target_session_token", false).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+    let csrf_token = app.generate_csrf_token();
+
+    let response = app
+        .server
+        .post(&format!("/admin/sessions/{}/revoke", session_uuid))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[("csrf_token", csrf_token.as_str())])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 200,
+        "Admin revoke should succeed (got {})",
+        status
+    );
+
+    // Verify session is deleted from DB
+    use vauban_web::schema::auth_sessions;
+    let session_exists: bool = diesel::select(diesel::dsl::exists(
+        auth_sessions::table.filter(auth_sessions::uuid.eq(session_uuid)),
+    ))
+    .get_result(&mut conn)
+    .await
+    .unwrap();
+
+    assert!(
+        !session_exists,
+        "Session should be deleted from DB after admin revocation"
+    );
+}
+
+#[tokio::test]
+async fn test_admin_revoke_non_staff_rejected() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let user_name = unique_name("adm_revoke_nostaff");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+
+    let target_name = unique_name("adm_revoke_target2");
+    let target_id = create_simple_user(&mut conn, &target_name).await;
+    let session_uuid =
+        create_auth_session_with_token(&mut conn, target_id, "some_token", false).await;
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
+        .await;
+    let csrf_token = app.generate_csrf_token();
+
+    let response = app
+        .server
+        .post(&format!("/admin/sessions/{}/revoke", session_uuid))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[("csrf_token", csrf_token.as_str())])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 403 || status == 302,
+        "Non-staff should be rejected from admin revoke (got {})",
+        status
+    );
+
+    // Session should still exist
+    use vauban_web::schema::auth_sessions;
+    let session_exists: bool = diesel::select(diesel::dsl::exists(
+        auth_sessions::table.filter(auth_sessions::uuid.eq(session_uuid)),
+    ))
+    .get_result(&mut conn)
+    .await
+    .unwrap();
+    assert!(session_exists, "Session should remain after rejected revoke");
+}
+
+#[tokio::test]
+async fn test_admin_revoke_nonexistent_session() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("adm_revoke_noexist");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+    let csrf_token = app.generate_csrf_token();
+
+    let nonexistent = Uuid::new_v4();
+    let response = app
+        .server
+        .post(&format!("/admin/sessions/{}/revoke", nonexistent))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[("csrf_token", csrf_token.as_str())])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 404,
+        "Nonexistent session should return 404 (got {})",
+        status
+    );
+}
+
+#[tokio::test]
+async fn test_admin_revoke_invalid_uuid() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("adm_revoke_baduuid");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+    let csrf_token = app.generate_csrf_token();
+
+    let response = app
+        .server
+        .post("/admin/sessions/not-a-valid-uuid/revoke")
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[("csrf_token", csrf_token.as_str())])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 302 || status == 303,
+        "Invalid UUID should redirect (got {})",
+        status
+    );
+}
+
+#[tokio::test]
+async fn test_admin_revoke_invalid_csrf() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("adm_revoke_badcsrf");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let user_name = unique_name("adm_revoke_csrf_target");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+    let session_uuid =
+        create_auth_session_with_token(&mut conn, user_id, "csrf_test_token", false).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .post(&format!("/admin/sessions/{}/revoke", session_uuid))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf=invalid", token),
+        )
+        .form(&[("csrf_token", "totally_wrong")])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert_eq!(status, 400, "Invalid CSRF should return 400");
+
+    // Session should still exist
+    use vauban_web::schema::auth_sessions;
+    let session_exists: bool = diesel::select(diesel::dsl::exists(
+        auth_sessions::table.filter(auth_sessions::uuid.eq(session_uuid)),
+    ))
+    .get_result(&mut conn)
+    .await
+    .unwrap();
+    assert!(session_exists, "Session should remain after CSRF failure");
+}
+
+#[tokio::test]
+async fn test_admin_revoke_idempotent() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("adm_revoke_idemp");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let user_name = unique_name("adm_revoke_idemp_target");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+    let session_uuid =
+        create_auth_session_with_token(&mut conn, user_id, "idemp_token", false).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+    let csrf_token = app.generate_csrf_token();
+
+    // First revocation
+    let response = app
+        .server
+        .post(&format!("/admin/sessions/{}/revoke", session_uuid))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[("csrf_token", csrf_token.as_str())])
+        .await;
+    assert_eq!(response.status_code().as_u16(), 200);
+
+    // Second revocation of same session should return 404
+    let csrf_token2 = app.generate_csrf_token();
+    let response2 = app
+        .server
+        .post(&format!("/admin/sessions/{}/revoke", session_uuid))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token2),
+        )
+        .form(&[("csrf_token", csrf_token2.as_str())])
+        .await;
+
+    let status = response2.status_code().as_u16();
+    assert_eq!(
+        status, 404,
+        "Second revoke of same session should return 404"
+    );
+}
+
+#[tokio::test]
+async fn test_admin_revoke_no_crash_when_target_offline() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("adm_revoke_offline");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let user_name = unique_name("adm_revoke_offline_target");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+    let session_uuid =
+        create_auth_session_with_token(&mut conn, user_id, "offline_token", false).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+    let csrf_token = app.generate_csrf_token();
+
+    // Revoke while user has no WebSocket connection -- should not crash
+    let response = app
+        .server
+        .post(&format!("/admin/sessions/{}/revoke", session_uuid))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[("csrf_token", csrf_token.as_str())])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert_eq!(
+        status, 200,
+        "Revoke should succeed even when target has no WS (got {})",
+        status
+    );
+}
+
+#[tokio::test]
+async fn test_admin_revoke_last_session() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("adm_revoke_last");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let user_name = unique_name("adm_revoke_last_target");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+
+    // Create only one session
+    let session_uuid =
+        create_auth_session_with_token(&mut conn, user_id, "last_token", false).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+    let csrf_token = app.generate_csrf_token();
+
+    let response = app
+        .server
+        .post(&format!("/admin/sessions/{}/revoke", session_uuid))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .form(&[("csrf_token", csrf_token.as_str())])
+        .await;
+
+    assert_eq!(response.status_code().as_u16(), 200);
+
+    // Verify no sessions remain for user
+    use vauban_web::schema::auth_sessions;
+    let remaining: i64 = auth_sessions::table
+        .filter(auth_sessions::user_id.eq(user_id))
+        .count()
+        .get_result(&mut conn)
+        .await
+        .unwrap();
+    assert_eq!(remaining, 0, "No sessions should remain for target user");
+}
+
+#[tokio::test]
+async fn test_admin_sessions_page_has_correct_structure() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("admsess_struct");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/admin/sessions")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(response.status_code().as_u16(), 200);
+    let body = response.text();
+    assert!(
+        body.contains("All Sessions"),
+        "Page should contain the 'All Sessions' title"
+    );
+    assert!(
+        body.contains("All active login sessions across all users"),
+        "Page should contain the subtitle"
+    );
 }

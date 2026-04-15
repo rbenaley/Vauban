@@ -36,26 +36,6 @@ pub async fn session_list(
     let type_filter = params.get("type").filter(|s| !s.is_empty()).cloned();
     let asset_filter = params.get("asset").filter(|s| !s.is_empty()).cloned();
 
-    // Determine if user is admin
-    let user_is_admin = check_rbac(&state, &auth_user, "admin", "view").await;
-
-    // For non-admin users, we need to get their user ID to filter sessions
-    let current_user_id: Option<i32> = if !user_is_admin {
-        let user_uuid = ::uuid::Uuid::parse_str(&auth_user.uuid)
-            .map_err(|e| AppError::Validation(format!("Invalid user UUID: {}", e)))?;
-        use crate::schema::users::dsl as u;
-        Some(
-            u::users
-                .filter(u::uuid.eq(user_uuid))
-                .select(u::id)
-                .first::<i32>(&mut conn)
-                .await
-                .map_err(|_| AppError::NotFound("User not found".to_string()))?,
-        )
-    } else {
-        None
-    };
-
     const SESSIONS_PER_PAGE: i64 = 30;
 
     let page: i32 = params
@@ -77,12 +57,6 @@ pub async fn session_list(
     query = query.filter(proxy_sessions::status.ne("orphaned"));
     count_query = count_query.filter(proxy_sessions::status.ne("pending"));
     count_query = count_query.filter(proxy_sessions::status.ne("orphaned"));
-
-    // For non-admin users, filter to only their own sessions
-    if let Some(user_id) = current_user_id {
-        query = query.filter(proxy_sessions::user_id.eq(user_id));
-        count_query = count_query.filter(proxy_sessions::user_id.eq(user_id));
-    }
 
     if let Some(ref status) = status_filter
         && !status.is_empty()
@@ -216,7 +190,7 @@ pub async fn session_list(
 
     let has_filters =
         status_filter.is_some() || type_filter.is_some() || asset_filter.is_some();
-    let ws_enabled = user_is_admin && !has_filters && page == 1;
+    let ws_enabled = !has_filters && page == 1;
 
     let template = WebSessionListTemplate {
         title,
@@ -230,7 +204,7 @@ pub async fn session_list(
         status_filter,
         type_filter,
         asset_filter,
-        show_view_link: user_is_admin,
+        show_view_link: true,
         pagination,
         ws_enabled,
     };
@@ -247,7 +221,7 @@ pub async fn terminate_session_web(
     headers: axum::http::HeaderMap,
     auth_user: WebAuthUser,
     jar: CookieJar,
-    axum::extract::Path(session_id_str): axum::extract::Path<String>,
+    axum::extract::Path(session_uuid_str): axum::extract::Path<String>,
     Form(form): Form<CsrfOnlyForm>,
 ) -> AppResult<Response> {
     let secret = state.config.secret_key.expose_secret().as_bytes();
@@ -260,8 +234,7 @@ pub async fn terminate_session_web(
         return Ok((axum::http::StatusCode::BAD_REQUEST, "Invalid CSRF token").into_response());
     }
 
-    // Validate session ID format for graceful error handling
-    if session_id_str.parse::<i32>().is_err() {
+    if ::uuid::Uuid::parse_str(&session_uuid_str).is_err() {
         return Ok(Redirect::to("/sessions/active").into_response());
     }
 
@@ -269,7 +242,7 @@ pub async fn terminate_session_web(
         State(state),
         headers,
         auth_user.0,
-        axum::extract::Path(session_id_str),
+        axum::extract::Path(session_uuid_str),
     )
     .await
 }

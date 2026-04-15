@@ -39,7 +39,7 @@
                     <p class="text-sm font-medium text-gray-900 dark:text-white">{{ session.duration }}</p>
                     <p class="text-xs text-gray-500 dark:text-gray-400">Duration</p>
                 </div>
-                <form hx-post="/sessions/{{ session.id }}/terminate"
+                <form hx-post="/sessions/{{ session.uuid }}/terminate"
                       hx-confirm="Are you sure you want to disconnect this session?"
                       hx-target="closest li"
                       hx-swap="outerHTML"

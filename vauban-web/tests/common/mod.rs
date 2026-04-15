@@ -403,7 +403,7 @@ fn build_test_router(state: AppState) -> Router {
         )
         .route("/sessions/active", get(handlers::web::active_sessions))
         .route(
-            "/sessions/{id}/terminate",
+            "/sessions/{uuid}/terminate",
             post(handlers::web::terminate_session_web),
         )
         .route(
@@ -538,6 +538,12 @@ fn build_test_router(state: AppState) -> Router {
         .route(
             "/accounts/sessions/{uuid}/revoke",
             post(handlers::web::revoke_session),
+        )
+        // Admin: all users' web sessions
+        .route("/admin/sessions", get(handlers::web::admin_user_sessions))
+        .route(
+            "/admin/sessions/{uuid}/revoke",
+            post(handlers::web::admin_revoke_session),
         )
         .route("/accounts/apikeys", get(handlers::web::api_keys))
         .route(

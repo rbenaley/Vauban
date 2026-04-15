@@ -145,6 +145,8 @@ pub(crate) async fn check_rbac(
                     | ("groups", "write")
                     | ("access_rules", "read")
                     | ("access_rules", "write")
+                    | ("auth_sessions", "read")
+                    | ("auth_sessions", "write")
                     | ("admin", "view")
             );
         }

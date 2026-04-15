@@ -1064,6 +1064,12 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             "/accounts/sessions/{uuid}/revoke",
             post(handlers::web::revoke_session),
         )
+        // Admin: all users' web sessions
+        .route("/admin/sessions", get(handlers::web::admin_user_sessions))
+        .route(
+            "/admin/sessions/{uuid}/revoke",
+            post(handlers::web::admin_revoke_session),
+        )
         .route("/accounts/apikeys", get(handlers::web::api_keys))
         .route(
             "/accounts/apikeys/create",
@@ -1180,7 +1186,7 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
         // Sessions pages
         .route("/sessions", get(handlers::web::session_list))
         .route(
-            "/sessions/{id}/terminate",
+            "/sessions/{uuid}/terminate",
             post(handlers::web::terminate_session_web),
         )
         .route("/sessions/recordings", get(handlers::web::recording_list))
@@ -1316,7 +1322,7 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
                 }),
             )
             .route(
-                "/api/v1/sessions/{id}/terminate",
+                "/api/v1/sessions/{uuid}/terminate",
                 post(handlers::api::terminate_session),
             )
             // Groups API (read-only)

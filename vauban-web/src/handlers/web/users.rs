@@ -1883,6 +1883,354 @@ pub async fn create_api_key(
     Ok(Html(html))
 }
 
+/// Admin: list all users' auth sessions.
+pub async fn admin_user_sessions(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    auth_user: WebAuthUser,
+) -> Result<impl IntoResponse, AppError> {
+    if !check_rbac(&state, &auth_user, "auth_sessions", "read").await {
+        return Err(AppError::Authorization(
+            "Only administrators can view user sessions".to_string(),
+        ));
+    }
+
+    use crate::models::AuthSession;
+    use crate::templates::accounts::session_list::AdminAuthSessionItem;
+    use sha3::{Digest, Sha3_256};
+
+    let user = Some(user_context_from_auth(&auth_user));
+    let base = BaseTemplate::new("All Sessions".to_string(), user.clone())
+        .with_current_path("/admin/sessions");
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        apply_sidebar_rbac(&state, &auth_user, base)
+            .await
+            .into_fields();
+
+    let current_token_hash = jar.get("access_token").map(|cookie| {
+        let mut hasher = Sha3_256::new();
+        hasher.update(cookie.value().as_bytes());
+        format!("{:x}", hasher.finalize())
+    });
+
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+
+    use crate::schema::users;
+
+    let db_sessions: Vec<(AuthSession, String, uuid::Uuid)> = auth_sessions::table
+        .inner_join(users::table.on(users::id.eq(auth_sessions::user_id)))
+        .filter(auth_sessions::expires_at.gt(chrono::Utc::now()))
+        .order(auth_sessions::created_at.desc())
+        .select((
+            AuthSession::as_select(),
+            users::username,
+            users::uuid,
+        ))
+        .load(&mut conn)
+        .await
+        .unwrap_or_default();
+
+    let sessions: Vec<AdminAuthSessionItem> = db_sessions
+        .into_iter()
+        .map(|(s, username, user_uuid)| {
+            let device_info = s.device_info.clone().unwrap_or_else(|| {
+                AuthSession::parse_device_info(s.user_agent.as_deref().unwrap_or(""))
+            });
+            let is_current = current_token_hash
+                .as_deref()
+                .is_some_and(|h| h == s.token_hash);
+            AdminAuthSessionItem {
+                uuid: s.uuid,
+                username,
+                user_uuid: user_uuid.to_string(),
+                ip_address: s.ip_address.ip().to_string(),
+                device_info,
+                last_activity: s.last_activity,
+                created_at: s.created_at,
+                is_expired: s.is_expired(),
+                is_current,
+            }
+        })
+        .collect();
+
+    use crate::templates::accounts::AdminSessionListTemplate;
+
+    let template = AdminSessionListTemplate {
+        title,
+        user: user_ctx,
+        vauban,
+        messages,
+        language_code,
+        sidebar_content,
+        header_user,
+        sessions,
+    };
+
+    let html = template
+        .render()
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
+    Ok(Html(html))
+}
+
+/// Admin: revoke any user's auth session and force-logout their browser.
+pub async fn admin_revoke_session(
+    State(state): State<AppState>,
+    auth_user: WebAuthUser,
+    jar: CookieJar,
+    axum::extract::Path(session_uuid_str): axum::extract::Path<String>,
+    Form(form): Form<CsrfOnlyForm>,
+) -> AppResult<Response> {
+    if !check_rbac(&state, &auth_user, "auth_sessions", "write").await {
+        return Err(AppError::Authorization(
+            "Only administrators can revoke user sessions".to_string(),
+        ));
+    }
+
+    let secret = state.config.secret_key.expose_secret().as_bytes();
+    let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
+    if !crate::middleware::csrf::validate_double_submit(
+        secret,
+        csrf_cookie.map(|c| c.value()),
+        &form.csrf_token,
+    ) {
+        return Ok((axum::http::StatusCode::BAD_REQUEST, "Invalid CSRF token").into_response());
+    }
+
+    let session_uuid = match uuid::Uuid::parse_str(&session_uuid_str) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return Ok(Redirect::to("/admin/sessions").into_response());
+        }
+    };
+
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+
+    // Fetch the session BEFORE deleting to get user_id, user_uuid, and token_hash
+    use crate::models::AuthSession;
+    use crate::schema::users;
+
+    let session_info: Option<(AuthSession, uuid::Uuid)> = auth_sessions::table
+        .inner_join(users::table.on(users::id.eq(auth_sessions::user_id)))
+        .filter(auth_sessions::uuid.eq(session_uuid))
+        .select((AuthSession::as_select(), users::uuid))
+        .first(&mut conn)
+        .await
+        .ok();
+
+    let Some((target_session, target_user_uuid)) = session_info else {
+        return Ok((axum::http::StatusCode::NOT_FOUND, "Session not found").into_response());
+    };
+
+    let target_user_id = target_session.user_id;
+    let target_token_hash = target_session.token_hash.clone();
+
+    // Delete the session
+    diesel::delete(auth_sessions::table.filter(auth_sessions::uuid.eq(session_uuid)))
+        .execute(&mut conn)
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to revoke session: {}", e)))?;
+
+    let target_user_uuid_str = target_user_uuid.to_string();
+
+    // Update the target user's "My sessions" page
+    broadcast_sessions_update(&state, &target_user_uuid_str, target_user_id).await;
+
+    // Update all admins' "Users sessions" page
+    broadcast_admin_sessions_update(&state).await;
+
+    // Force-logout the target browser via WebSocket
+    // Uses data-redirect attribute detected by vauban-components.js after OOB swap
+    let force_logout_html = r#"<div id="force-logout" hx-swap-oob="innerHTML"><div x-data x-init="window.location.replace('/login?reason=session_revoked')"></div></div>"#;
+    state
+        .user_connections
+        .send_to_matching(&target_user_uuid_str, &target_token_hash, force_logout_html)
+        .await;
+
+    Ok(Html("").into_response())
+}
+
+/// Broadcast updated admin sessions list to all admin WebSocket clients.
+///
+/// Uses `send_personalized` (same pattern as My Sessions) so each admin sees
+/// their own session marked as "Current session".
+pub(crate) async fn broadcast_admin_sessions_update(state: &AppState) {
+    use crate::models::AuthSession;
+
+    let (db_sessions, admin_uuids) = match state.db_pool.get().await {
+        Ok(mut conn) => {
+            use crate::schema::users;
+
+            let db_sessions: Vec<(AuthSession, String, uuid::Uuid)> = auth_sessions::table
+                .inner_join(users::table.on(users::id.eq(auth_sessions::user_id)))
+                .filter(auth_sessions::expires_at.gt(chrono::Utc::now()))
+                .order(auth_sessions::created_at.desc())
+                .select((
+                    AuthSession::as_select(),
+                    users::username,
+                    users::uuid,
+                ))
+                .load(&mut conn)
+                .await
+                .unwrap_or_default();
+
+            let admin_uuids: Vec<String> = users::table
+                .filter(
+                    users::is_staff
+                        .eq(true)
+                        .or(users::is_superuser.eq(true)),
+                )
+                .filter(users::is_deleted.eq(false))
+                .select(users::uuid)
+                .load::<uuid::Uuid>(&mut conn)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|u| u.to_string())
+                .collect();
+
+            (db_sessions, admin_uuids)
+        }
+        Err(_) => return,
+    };
+
+    for admin_uuid in &admin_uuids {
+        state
+            .user_connections
+            .send_personalized(admin_uuid, |viewer_token_hash| {
+                let sessions_html =
+                    build_admin_sessions_html(&db_sessions, viewer_token_hash);
+                format!(
+                    r#"<ul id="admin-sessions-list" hx-swap-oob="innerHTML" role="list" class="divide-y divide-gray-200 dark:divide-gray-700">{}</ul>"#,
+                    sessions_html
+                )
+            })
+            .await;
+    }
+}
+
+/// Build HTML for the admin sessions list, personalized for the viewer.
+///
+/// When `viewer_token_hash` matches a session's token_hash, that session is
+/// marked as "Current session" with a green badge (same UX as My Sessions).
+fn build_admin_sessions_html(
+    sessions: &[(crate::models::AuthSession, String, uuid::Uuid)],
+    viewer_token_hash: &str,
+) -> String {
+    use crate::models::AuthSession;
+
+    if sessions.is_empty() {
+        return r#"<li class="px-6 py-8 text-center text-gray-500 dark:text-gray-400">No active sessions</li>"#.to_string();
+    }
+
+    let mut html = String::new();
+    for (s, username, _user_uuid) in sessions {
+        let is_current = !viewer_token_hash.is_empty() && s.token_hash == viewer_token_hash;
+        let device_info = s.device_info.clone().unwrap_or_else(|| {
+            AuthSession::parse_device_info(s.user_agent.as_deref().unwrap_or(""))
+        });
+        let ip = s.ip_address.ip().to_string();
+        let uuid = s.uuid;
+
+        let age = {
+            let duration = chrono::Utc::now().signed_duration_since(s.created_at);
+            if duration.num_days() > 0 {
+                format!("{} days ago", duration.num_days())
+            } else if duration.num_hours() > 0 {
+                format!("{} hours ago", duration.num_hours())
+            } else if duration.num_minutes() > 0 {
+                format!("{} minutes ago", duration.num_minutes())
+            } else {
+                "Just now".to_string()
+            }
+        };
+
+        let last_active = {
+            let duration = chrono::Utc::now().signed_duration_since(s.last_activity);
+            if duration.num_days() > 0 {
+                format!("{} days ago", duration.num_days())
+            } else if duration.num_hours() > 0 {
+                format!("{} hours ago", duration.num_hours())
+            } else if duration.num_minutes() > 0 {
+                format!("{} minutes ago", duration.num_minutes())
+            } else {
+                "Just now".to_string()
+            }
+        };
+
+        let (icon_bg, icon_color) = if is_current {
+            ("bg-green-100 dark:bg-green-900", "text-green-600 dark:text-green-400")
+        } else {
+            ("bg-gray-100 dark:bg-gray-700", "text-gray-600 dark:text-gray-400")
+        };
+
+        let current_badge = if is_current {
+            r#"<span class="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200">Current session</span>"#
+        } else {
+            ""
+        };
+
+        let action_html = if is_current {
+            r#"<span class="text-xs text-gray-400 dark:text-gray-500">This session</span>"#.to_string()
+        } else {
+            format!(
+                r#"<form hx-post="/admin/sessions/{uuid}/revoke" hx-confirm="Are you sure you want to revoke this session for {username}? They will be logged out immediately." hx-target="closest li" hx-swap="outerHTML" x-data="csrf">
+                            <input type="hidden" name="csrf_token" x-model="token" />
+                            <button type="submit" class="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded text-red-700 bg-red-100 hover:bg-red-200 dark:text-red-200 dark:bg-red-900 dark:hover:bg-red-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500">Revoke</button>
+                        </form>"#,
+                uuid = uuid,
+                username = username,
+            )
+        };
+
+        html.push_str(&format!(
+            r#"<li id="admin-session-row-{uuid}" class="px-6 py-4">
+                <div class="flex items-center justify-between">
+                    <div class="flex items-center min-w-0 gap-x-4">
+                        <div class="flex-shrink-0">
+                            <span class="inline-flex items-center justify-center h-10 w-10 rounded-full {icon_bg}">
+                                <svg class="h-5 w-5 {icon_color}" fill="currentColor" viewBox="0 0 20 20">
+                                    <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-6-3a2 2 0 11-4 0 2 2 0 014 0zm-2 4a5 5 0 00-4.546 2.916A5.986 5.986 0 0010 16a5.986 5.986 0 004.546-2.084A5 5 0 0010 11z" clip-rule="evenodd" />
+                                </svg>
+                            </span>
+                        </div>
+                        <div class="min-w-0 flex-1">
+                            <p class="text-sm font-medium text-gray-900 dark:text-white truncate">
+                                {username}{current_badge}
+                                <span class="ml-2 text-xs text-gray-500 dark:text-gray-400 font-normal">{device_info}</span>
+                            </p>
+                            <p class="text-sm text-gray-500 dark:text-gray-400">IP: {ip}</p>
+                            <p class="text-xs text-gray-400 dark:text-gray-500">Started {age} &middot; Last active {last_active}</p>
+                        </div>
+                    </div>
+                    <div class="flex-shrink-0">
+                        {action_html}
+                    </div>
+                </div>
+            </li>"#,
+            uuid = uuid,
+            username = username,
+            device_info = device_info,
+            ip = ip,
+            age = age,
+            last_active = last_active,
+            icon_bg = icon_bg,
+            icon_color = icon_color,
+            current_badge = current_badge,
+            action_html = action_html,
+        ));
+    }
+
+    html
+}
+
 /// Form data for creating an API key.
 #[derive(Debug, serde::Deserialize)]
 pub struct CreateApiKeyForm {

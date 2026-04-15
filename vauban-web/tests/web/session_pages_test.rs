@@ -11,7 +11,8 @@ use crate::common::{TestApp, assertions::assert_status, unwrap_ok};
 use crate::fixtures::{
     create_admin_user, create_recorded_session, create_recorded_session_with_type,
     create_simple_admin_user, create_simple_rdp_asset, create_simple_ssh_asset,
-    create_simple_user, create_test_session, create_test_user, unique_name,
+    create_simple_user, create_test_session, create_test_session_with_uuid, create_test_user,
+    unique_name,
 };
 use axum::http::header::COOKIE;
 use diesel::{BoolExpressionMethods, ExpressionMethods, QueryDsl};
@@ -1316,7 +1317,7 @@ async fn test_terminate_active_ssh_session() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
     let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("term_ssh_asset"), admin_id).await;
-    let session_id = create_test_session(&mut conn, admin_id, asset_id, "ssh", "active").await;
+    let (session_id, session_uuid) = create_test_session_with_uuid(&mut conn, admin_id, asset_id, "ssh", "active").await;
 
     let token = app
         .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
@@ -1325,7 +1326,7 @@ async fn test_terminate_active_ssh_session() {
 
     let response = app
         .server
-        .post(&format!("/sessions/{}/terminate", session_id))
+        .post(&format!("/sessions/{}/terminate", session_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -1359,7 +1360,7 @@ async fn test_terminate_active_rdp_session() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
     let asset_id = create_simple_rdp_asset(&mut conn, &unique_name("term_rdp_asset"), admin_id).await;
-    let session_id = create_test_session(&mut conn, admin_id, asset_id, "rdp", "active").await;
+    let (session_id, session_uuid) = create_test_session_with_uuid(&mut conn, admin_id, asset_id, "rdp", "active").await;
 
     let token = app
         .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
@@ -1368,7 +1369,7 @@ async fn test_terminate_active_rdp_session() {
 
     let response = app
         .server
-        .post(&format!("/sessions/{}/terminate", session_id))
+        .post(&format!("/sessions/{}/terminate", session_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -1401,7 +1402,7 @@ async fn test_terminate_non_staff_rejected() {
     let admin_name = unique_name("term_nostaff_adm");
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("term_nostaff_ast"), admin_id).await;
-    let session_id = create_test_session(&mut conn, admin_id, asset_id, "ssh", "active").await;
+    let (session_id, session_uuid) = create_test_session_with_uuid(&mut conn, admin_id, asset_id, "ssh", "active").await;
 
     let token = app
         .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
@@ -1410,7 +1411,7 @@ async fn test_terminate_non_staff_rejected() {
 
     let response = app
         .server
-        .post(&format!("/sessions/{}/terminate", session_id))
+        .post(&format!("/sessions/{}/terminate", session_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -1445,7 +1446,7 @@ async fn test_terminate_already_terminated_session() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
     let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("term_already_ast"), admin_id).await;
-    let session_id = create_test_session(&mut conn, admin_id, asset_id, "ssh", "terminated").await;
+    let (_session_id, session_uuid) = create_test_session_with_uuid(&mut conn, admin_id, asset_id, "ssh", "terminated").await;
 
     let token = app
         .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
@@ -1454,7 +1455,7 @@ async fn test_terminate_already_terminated_session() {
 
     let response = app
         .server
-        .post(&format!("/sessions/{}/terminate", session_id))
+        .post(&format!("/sessions/{}/terminate", session_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -1479,9 +1480,10 @@ async fn test_terminate_nonexistent_session() {
         .await;
     let csrf_token = app.generate_csrf_token();
 
+    let nonexistent_uuid = Uuid::new_v4();
     let response = app
         .server
-        .post("/sessions/999999/terminate")
+        .post(&format!("/sessions/{}/terminate", nonexistent_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -1498,7 +1500,7 @@ async fn test_terminate_nonexistent_session() {
 }
 
 #[tokio::test]
-async fn test_terminate_invalid_id_format() {
+async fn test_terminate_invalid_uuid_format() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
@@ -1513,7 +1515,7 @@ async fn test_terminate_invalid_id_format() {
 
     let response = app
         .server
-        .post("/sessions/not-a-number/terminate")
+        .post("/sessions/not-a-valid-uuid/terminate")
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -1524,7 +1526,7 @@ async fn test_terminate_invalid_id_format() {
     let status_code = response.status_code().as_u16();
     assert!(
         status_code == 302 || status_code == 303 || status_code == 400,
-        "Invalid session ID must be handled gracefully (got {})",
+        "Invalid session UUID must be handled gracefully (got {})",
         status_code
     );
 }
@@ -1538,7 +1540,7 @@ async fn test_terminate_preserves_status_after_cleanup() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
     let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("term_preserve_ast"), admin_id).await;
-    let session_id = create_test_session(&mut conn, admin_id, asset_id, "ssh", "active").await;
+    let (session_id, session_uuid) = create_test_session_with_uuid(&mut conn, admin_id, asset_id, "ssh", "active").await;
 
     let token = app
         .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
@@ -1548,7 +1550,7 @@ async fn test_terminate_preserves_status_after_cleanup() {
     // Terminate via admin
     let response = app
         .server
-        .post(&format!("/sessions/{}/terminate", session_id))
+        .post(&format!("/sessions/{}/terminate", session_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -1601,7 +1603,7 @@ async fn test_terminate_then_second_terminate_is_idempotent() {
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
     let asset_id =
         create_simple_ssh_asset(&mut conn, &unique_name("term_idempotent_ast"), admin_id).await;
-    let session_id = create_test_session(&mut conn, admin_id, asset_id, "ssh", "active").await;
+    let (session_id, session_uuid) = create_test_session_with_uuid(&mut conn, admin_id, asset_id, "ssh", "active").await;
 
     let token = app
         .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
@@ -1611,7 +1613,7 @@ async fn test_terminate_then_second_terminate_is_idempotent() {
     // First terminate
     let response = app
         .server
-        .post(&format!("/sessions/{}/terminate", session_id))
+        .post(&format!("/sessions/{}/terminate", session_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -1625,7 +1627,7 @@ async fn test_terminate_then_second_terminate_is_idempotent() {
     let csrf_token2 = app.generate_csrf_token();
     let response2 = app
         .server
-        .post(&format!("/sessions/{}/terminate", session_id))
+        .post(&format!("/sessions/{}/terminate", session_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token2),
@@ -1793,7 +1795,7 @@ async fn test_active_sessions_shows_real_asset_name() {
     }
 }
 
-/// Disconnect button works: POSTing to /sessions/{id}/terminate terminates the session.
+/// Disconnect button works: POSTing to /sessions/{uuid}/terminate terminates the session.
 #[tokio::test]
 async fn test_active_sessions_disconnect_terminates() {
     let app = TestApp::spawn().await;
@@ -1804,8 +1806,8 @@ async fn test_active_sessions_disconnect_terminates() {
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
     let asset_id =
         create_simple_ssh_asset(&mut conn, &unique_name("disc-asset"), admin_id).await;
-    let session_id =
-        create_test_session(&mut conn, admin_id, asset_id, "ssh", "active").await;
+    let (session_id, session_uuid) =
+        create_test_session_with_uuid(&mut conn, admin_id, asset_id, "ssh", "active").await;
 
     let token = app
         .generate_test_token(&admin_uuid.to_string(), &username, true, true)
@@ -1813,7 +1815,7 @@ async fn test_active_sessions_disconnect_terminates() {
 
     let response = app
         .server
-        .post(&format!("/sessions/{}/terminate", session_id))
+        .post(&format!("/sessions/{}/terminate", session_uuid))
         .add_header(COOKIE, format!("access_token={}", token))
         .add_header("HX-Request", "true")
         .form(&serde_json::json!({

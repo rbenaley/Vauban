@@ -159,6 +159,12 @@
                            class="block rounded-md py-2 pl-11 pr-2 text-sm leading-6 text-gray-400 hover:bg-gray-700 hover:text-white">
                             My sessions
                         </a>
+                        {% if sc.user.is_staff || sc.user.is_superuser %}
+                        <a href="/admin/sessions"
+                           class="block rounded-md py-2 pl-11 pr-2 text-sm leading-6 text-gray-400 hover:bg-gray-700 hover:text-white">
+                            All sessions
+                        </a>
+                        {% endif %}
                         <a href="/accounts/apikeys"
                            class="block rounded-md py-2 pl-11 pr-2 text-sm leading-6 text-gray-400 hover:bg-gray-700 hover:text-white">
                             API keys

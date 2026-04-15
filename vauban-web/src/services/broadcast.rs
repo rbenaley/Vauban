@@ -30,6 +30,8 @@ pub enum WsChannel {
     UserApiKeys(String),
     /// Session history list updates (for /sessions page, admin-only).
     SessionsList,
+    /// Admin auth sessions list updates (for /admin/sessions page).
+    AdminAuthSessions,
 }
 
 impl WsChannel {
@@ -45,6 +47,7 @@ impl WsChannel {
             WsChannel::UserAuthSessions(user_id) => format!("user:{}:auth-sessions", user_id),
             WsChannel::UserApiKeys(user_id) => format!("user:{}:api-keys", user_id),
             WsChannel::SessionsList => "sessions:list".to_string(),
+            WsChannel::AdminAuthSessions => "admin:auth-sessions".to_string(),
         }
     }
 
@@ -55,6 +58,7 @@ impl WsChannel {
             "dashboard:active-sessions" => Some(WsChannel::ActiveSessions),
             "sessions:active-list" => Some(WsChannel::ActiveSessionsList),
             "sessions:list" => Some(WsChannel::SessionsList),
+            "admin:auth-sessions" => Some(WsChannel::AdminAuthSessions),
             "dashboard:recent-activity" => Some(WsChannel::RecentActivity),
             "notifications" => Some(WsChannel::Notifications),
             s if s.starts_with("session:") => {

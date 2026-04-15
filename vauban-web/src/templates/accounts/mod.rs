@@ -29,7 +29,9 @@ pub use login::LoginTemplate;
 pub use mfa_setup::MfaSetupTemplate;
 pub use mfa_verify::MfaVerifyTemplate;
 pub use profile::{ProfileDetail, ProfileSession, ProfileTemplate};
-pub use session_list::{AuthSessionItem, SessionListTemplate};
+pub use session_list::{
+    AdminAuthSessionItem, AdminSessionListTemplate, AuthSessionItem, SessionListTemplate,
+};
 pub use user_create::UserCreateTemplate;
 pub use user_detail::{UserDetail, UserDetailTemplate};
 pub use user_edit::{UserEditData, UserEditTemplate};

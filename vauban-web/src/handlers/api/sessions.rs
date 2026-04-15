@@ -44,18 +44,8 @@ pub async fn list_sessions(
         .get()
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
-    let query = proxy_sessions.into_boxed();
 
-    // Filter by user if not admin
-    // TODO: Check admin status
-    if params.user_id.is_none() {
-        use ::uuid::Uuid as UuidType;
-        let _user_uuid: UuidType = UuidType::parse_str(&user.uuid)
-            .map_err(|_| crate::error::AppError::Validation("Invalid user UUID".to_string()))?;
-        // TODO: Join with users table to filter by UUID
-    }
-
-    let sessions_list = query
+    let sessions_list = proxy_sessions.into_boxed()
         .limit(params.limit.unwrap_or(50))
         .offset(params.offset.unwrap_or(0))
         .order(created_at.desc())
@@ -207,14 +197,12 @@ pub async fn terminate_session(
     State(state): State<AppState>,
     headers: HeaderMap,
     user: AuthUser,
-    Path(session_id_str): Path<String>,
+    Path(session_uuid_str): Path<String>,
 ) -> AppResult<Response> {
     super::require_staff(&state, &user).await?;
 
-    // Parse session ID manually for better error messages
-    let session_id: i32 = session_id_str
-        .parse()
-        .map_err(|_| AppError::Validation("Invalid session ID format".to_string()))?;
+    let session_uuid = Uuid::parse_str(&session_uuid_str)
+        .map_err(|_| AppError::Validation("Invalid UUID format".to_string()))?;
 
     let htmx = is_htmx_request(&headers);
     let mut conn = state
@@ -223,8 +211,7 @@ pub async fn terminate_session(
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
-    // Update the session status to "terminated"
-    let updated_session = diesel::update(proxy_sessions.filter(id.eq(session_id)))
+    let updated_session = diesel::update(proxy_sessions.filter(uuid.eq(session_uuid)))
         .set((
             status.eq("terminated"),
             disconnected_at.eq(chrono::Utc::now()),
@@ -260,8 +247,7 @@ pub async fn terminate_session(
 
     if htmx {
         // Return an updated HTML fragment for the session row
-        let html = format!(
-            r#"<li class="px-6 py-4 hover:bg-gray-50 dark:hover:bg-gray-700">
+        let html = r#"<li class="px-6 py-4 hover:bg-gray-50 dark:hover:bg-gray-700">
                 <div class="flex items-center justify-between">
                     <div class="flex items-center space-x-4">
                         <div class="flex-shrink-0">
@@ -274,21 +260,19 @@ pub async fn terminate_session(
                         <div class="flex-1 min-w-0">
                             <div class="flex items-center">
                                 <p class="text-sm font-medium text-gray-900 dark:text-white truncate">
-                                    Session #{session_id}
+                                    Session terminated
                                 </p>
                                 <span class="ml-2 inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-red-100 text-red-800 dark:bg-red-900/50 dark:text-red-300">
                                     Terminated
                                 </span>
                             </div>
                             <div class="mt-1 flex items-center text-sm text-gray-500 dark:text-gray-400">
-                                <span>Session terminated</span>
+                                <span>Session disconnected by administrator</span>
                             </div>
                         </div>
                     </div>
                 </div>
-            </li>"#,
-            session_id = session_id
-        );
+            </li>"#;
         Ok(Html(html).into_response())
     } else {
         // For JSON API, return the updated session

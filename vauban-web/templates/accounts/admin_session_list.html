@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+
+{% block title %}All Sessions - {{ vauban.brand_name }}{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <div class="md:flex md:items-center md:justify-between">
+        <div class="min-w-0 flex-1">
+            <h2 class="text-2xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-3xl sm:tracking-tight">
+                All Sessions
+            </h2>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                All active login sessions across all users
+            </p>
+        </div>
+    </div>
+
+    {% if sessions.is_empty() %}
+    <div class="bg-white dark:bg-gray-800 shadow rounded-lg p-6">
+        <div class="text-center py-8">
+            <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+            </svg>
+            <h3 class="mt-2 text-sm font-medium text-gray-900 dark:text-white">No active sessions</h3>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                There are no active user sessions at this time.
+            </p>
+        </div>
+    </div>
+    {% else %}
+    <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden"
+         hx-ext="ws"
+         ws-connect="/ws/notifications">
+        <ul role="list" class="divide-y divide-gray-200 dark:divide-gray-700" id="admin-sessions-list">
+            {% for session in sessions %}
+            <li id="admin-session-row-{{ session.uuid }}" class="px-6 py-4">
+                <div class="flex items-center justify-between">
+                    <div class="flex items-center min-w-0 gap-x-4">
+                        <div class="flex-shrink-0">
+                            <span class="inline-flex items-center justify-center h-10 w-10 rounded-full {% if session.is_current %}bg-green-100 dark:bg-green-900{% else %}bg-gray-100 dark:bg-gray-700{% endif %}">
+                                <svg class="h-5 w-5 {% if session.is_current %}text-green-600 dark:text-green-400{% else %}text-gray-600 dark:text-gray-400{% endif %}" fill="currentColor" viewBox="0 0 20 20">
+                                    <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-6-3a2 2 0 11-4 0 2 2 0 014 0zm-2 4a5 5 0 00-4.546 2.916A5.986 5.986 0 0010 16a5.986 5.986 0 004.546-2.084A5 5 0 0010 11z" clip-rule="evenodd" />
+                                </svg>
+                            </span>
+                        </div>
+                        <div class="min-w-0 flex-1">
+                            <p class="text-sm font-medium text-gray-900 dark:text-white truncate">
+                                {{ session.username }}
+                                {% if session.is_current %}
+                                <span class="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200">Current session</span>
+                                {% endif %}
+                                <span class="ml-2 text-xs text-gray-500 dark:text-gray-400 font-normal">
+                                    {{ session.device_info }}
+                                </span>
+                            </p>
+                            <p class="text-sm text-gray-500 dark:text-gray-400">
+                                IP: {{ session.ip_address }}
+                            </p>
+                            <p class="text-xs text-gray-400 dark:text-gray-500">
+                                Started {{ session.age_display() }} &middot; Last active {{ session.last_activity_display() }}
+                            </p>
+                        </div>
+                    </div>
+                    <div class="flex-shrink-0">
+                        {% if session.is_current %}
+                        <span class="text-xs text-gray-400 dark:text-gray-500">This session</span>
+                        {% else %}
+                        <form hx-post="/admin/sessions/{{ session.uuid }}/revoke"
+                              hx-confirm="Are you sure you want to revoke this session for {{ session.username }}? They will be logged out immediately."
+                              hx-target="closest li"
+                              hx-swap="outerHTML"
+                              x-data="csrf">
+                            <input type="hidden" name="csrf_token" x-model="token" />
+                            <button type="submit"
+                                    class="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded text-red-700 bg-red-100 hover:bg-red-200 dark:text-red-200 dark:bg-red-900 dark:hover:bg-red-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500">
+                                Revoke
+                            </button>
+                        </form>
+                        {% endif %}
+                    </div>
+                </div>
+            </li>
+            {% endfor %}
+        </ul>
+    </div>
+
+    <div class="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-4">
+        <div class="flex">
+            <div class="flex-shrink-0">
+                <svg class="h-5 w-5 text-yellow-400" viewBox="0 0 20 20" fill="currentColor">
+                    <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd" />
+                </svg>
+            </div>
+            <div class="ml-3">
+                <h3 class="text-sm font-medium text-yellow-800 dark:text-yellow-200">Administrator notice</h3>
+                <div class="mt-2 text-sm text-yellow-700 dark:text-yellow-300">
+                    <p>Revoking a session will immediately disconnect the user and redirect them to the login page.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
