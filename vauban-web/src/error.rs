@@ -129,7 +129,6 @@ pub fn user_friendly_message(error: &str) -> &str {
         "Invalid credentials" => "Incorrect username or password",
         "Session expired" => "Your session has expired. Please sign in again",
         "Authentication required" => "Please sign in to continue",
-        "Account is locked" => "Your account has been locked. Please contact an administrator",
         "Invalid MFA code" => "The MFA code is incorrect. Please try again",
 
         // Authorization errors

@@ -223,7 +223,7 @@ pub async fn connect_ssh(
             {
                 Ok((id, user_is_active)) => {
                     if !user_is_active {
-                        let msg = "Your account has been deactivated";
+                        let msg = super::ACCOUNT_DEACTIVATED_MSG;
                         if is_htmx {
                             return htmx_error_response(msg);
                         }

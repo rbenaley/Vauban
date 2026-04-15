@@ -108,32 +108,13 @@ pub async fn login(
     let rate_key = client_addr.ip().to_string();
     let rate_result = state.rate_limiter.check(&rate_key).await?;
     if !rate_result.allowed {
-        if htmx {
-            return Ok(Html(login_error_html(LoginErrorKind::RateLimited)).into_response());
-        }
-        return Ok((
-            StatusCode::TOO_MANY_REQUESTS,
-            [
-                ("Retry-After", rate_result.reset_in_secs.to_string()),
-                ("X-RateLimit-Remaining", "0".to_string()),
-            ],
-            Json(serde_json::json!({
-                "error": "Too many login attempts. Please try again later.",
-                "retry_after": rate_result.reset_in_secs
-            })),
-        )
-            .into_response());
+        return rate_limit_response(htmx, rate_result.reset_in_secs);
     }
 
     // Validation -- return the same generic error as invalid credentials
     // to prevent password policy enumeration (SEC-05).
-    if let Err(_e) = validator::Validate::validate(&request) {
-        if htmx {
-            return Ok(
-                Html(login_error_html(LoginErrorKind::InvalidCredentials)).into_response(),
-            );
-        }
-        return Err(AppError::Auth("Invalid credentials".to_string()));
+    if validator::Validate::validate(&request).is_err() {
+        return login_error_response(htmx, LoginErrorKind::InvalidCredentials);
     }
 
     let mut conn = state
@@ -153,33 +134,12 @@ pub async fn login(
     {
         Some(u) => u,
         None => {
-            if htmx {
-                return Ok(
-                    Html(login_error_html(LoginErrorKind::InvalidCredentials)).into_response()
-                );
-            }
-            return Err(AppError::Auth("Invalid credentials".to_string()));
+            return login_error_response(htmx, LoginErrorKind::InvalidCredentials);
         }
     };
 
-    // Check if account is locked
-    if user.is_locked() {
-        if htmx {
-            return Ok(Html(login_error_html(LoginErrorKind::AccountLocked)).into_response());
-        }
-        return Err(AppError::Auth("Account is locked".to_string()));
-    }
-
-    // Check if account is deactivated (SEC-07)
-    if !user.is_active {
-        if htmx {
-            return Ok(
-                Html(login_error_html(LoginErrorKind::AccountDeactivated)).into_response(),
-            );
-        }
-        return Err(AppError::Auth("Account is deactivated".to_string()));
-    }
-
+    // SEC-04: verify password BEFORE checking account state to prevent
+    // enumeration via lockout/deactivation differential responses.
     let password_valid = if let Some(ref client) = state.auth_ipc_client {
         client
             .verify_password(&request.password, &user.password_hash)
@@ -190,8 +150,6 @@ pub async fn login(
             .verify_password(&request.password, &user.password_hash)?
     };
     if !password_valid {
-        // Increment failed attempts and apply progressive lockout if needed
-        let max_failed_attempts = state.config.security.max_failed_login_attempts as i32;
         let new_failed_attempts = user.failed_login_attempts + 1;
         let locked_until_value = lockout_duration_for_attempts(
             new_failed_attempts,
@@ -208,17 +166,15 @@ pub async fn login(
             .await
             .map_err(AppError::Database)?;
 
-        if locked_until_value.is_some() && new_failed_attempts >= max_failed_attempts {
-            if htmx {
-                return Ok(Html(login_error_html(LoginErrorKind::AccountLocked)).into_response());
-            }
-            return Err(AppError::Auth("Account is locked".to_string()));
-        }
+        // SEC-04: always return generic "Invalid credentials" regardless of
+        // whether lockout was triggered, to prevent account enumeration.
+        return login_error_response(htmx, LoginErrorKind::InvalidCredentials);
+    }
 
-        if htmx {
-            return Ok(Html(login_error_html(LoginErrorKind::InvalidCredentials)).into_response());
-        }
-        return Err(AppError::Auth("Invalid credentials".to_string()));
+    // SEC-04: account state checks after password verification -- an attacker
+    // with an invalid password only ever sees "Invalid credentials".
+    if user.is_locked() || !user.is_active {
+        return login_error_response(htmx, LoginErrorKind::InvalidCredentials);
     }
 
     // MFA handling - for web (HTMX), redirect to MFA pages
@@ -500,10 +456,7 @@ pub async fn login_web(
         csrf_cookie.map(|c| c.value()),
         csrf_value,
     ) {
-        if htmx {
-            return Ok(Html(login_error_html(LoginErrorKind::InvalidCsrf)).into_response());
-        }
-        return Err(AppError::Validation("Invalid CSRF token".to_string()));
+        return login_error_response(htmx, LoginErrorKind::InvalidCsrf);
     }
     login(State(state), client_addr, headers, jar, Json(request)).await
 }
@@ -511,8 +464,6 @@ pub async fn login_web(
 #[derive(Debug, Clone, Copy)]
 enum LoginErrorKind {
     InvalidCredentials,
-    AccountLocked,
-    AccountDeactivated,
     InvalidCsrf,
     RateLimited,
 }
@@ -521,34 +472,43 @@ impl LoginErrorKind {
     fn message(self) -> &'static str {
         match self {
             Self::InvalidCredentials => "Invalid credentials",
-            Self::AccountLocked => "Account is locked",
-            Self::AccountDeactivated => {
-                "Your account has been deactivated. Contact your administrator."
-            }
-            Self::InvalidCsrf => "Invalid CSRF token",
+            Self::InvalidCsrf => "Invalid or expired form. Please reload and try again.",
             Self::RateLimited => "Too many attempts. Please wait before trying again.",
         }
     }
 }
 
-/// Generate error HTML for HTMX login response.
 fn login_error_html(kind: LoginErrorKind) -> String {
-    let friendly = kind.message();
     format!(
-        r#"<div id="login-result" class="rounded-md bg-red-50 dark:bg-red-900/50 p-4">
-            <div class="flex">
-                <div class="flex-shrink-0">
-                    <svg class="h-5 w-5 text-red-400" viewBox="0 0 20 20" fill="currentColor">
-                        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd" />
-                    </svg>
-                </div>
-                <div class="ml-3">
-                    <p class="text-sm font-medium text-red-800 dark:text-red-200">{}</p>
-                </div>
-            </div>
-        </div>"#,
-        friendly
+        r#"<div id="login-result" class="rounded-md bg-red-50 dark:bg-red-900/50 p-4">{}</div>"#,
+        crate::error::html_error_fragment(kind.message())
     )
+}
+
+fn login_error_response(htmx: bool, kind: LoginErrorKind) -> AppResult<Response> {
+    if htmx {
+        Ok(Html(login_error_html(kind)).into_response())
+    } else {
+        Err(AppError::Auth(kind.message().to_string()))
+    }
+}
+
+fn rate_limit_response(htmx: bool, reset_in_secs: u64) -> AppResult<Response> {
+    if htmx {
+        return Ok(Html(login_error_html(LoginErrorKind::RateLimited)).into_response());
+    }
+    Ok((
+        StatusCode::TOO_MANY_REQUESTS,
+        [
+            ("Retry-After", reset_in_secs.to_string()),
+            ("X-RateLimit-Remaining", "0".to_string()),
+        ],
+        Json(serde_json::json!({
+            "error": LoginErrorKind::RateLimited.message(),
+            "retry_after": reset_in_secs
+        })),
+    )
+        .into_response())
 }
 
 /// Hash a token using SHA3-256 for secure storage.
@@ -1568,28 +1528,24 @@ mod tests {
     fn test_login_error_html_contains_message() {
         let html = login_error_html(LoginErrorKind::InvalidCredentials);
 
-        assert!(html.contains("Invalid credentials"));
+        // html_error_fragment translates "Invalid credentials" to "Incorrect username or password"
+        assert!(html.contains("Incorrect username or password"));
         assert!(html.contains("login-result"));
         assert!(html.contains("bg-red-50"));
     }
 
     #[test]
-    fn test_login_error_html_account_locked_message() {
-        let html = login_error_html(LoginErrorKind::AccountLocked);
-
-        assert!(html.contains("Account is locked"));
+    fn test_login_error_html_no_account_state_leakage() {
+        let html = login_error_html(LoginErrorKind::InvalidCredentials);
+        assert!(!html.contains("locked"));
+        assert!(!html.contains("deactivated"));
         assert!(html.contains("login-result"));
     }
 
     #[test]
-    fn test_login_error_html_validation_returns_invalid_credentials() {
-        // SEC-05: validation failures must return the same generic message
-        // as invalid credentials to prevent password policy enumeration.
-        // There is no longer a dedicated ValidationError variant.
-        let html = login_error_html(LoginErrorKind::InvalidCredentials);
-
-        assert!(html.contains("Invalid credentials"));
-        assert!(!html.contains("Validation"));
+    fn test_login_error_html_csrf_message() {
+        let html = login_error_html(LoginErrorKind::InvalidCsrf);
+        assert!(html.contains("Invalid or expired form"));
         assert!(html.contains("login-result"));
     }
 

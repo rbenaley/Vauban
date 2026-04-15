@@ -1874,10 +1874,11 @@ async fn test_csrf_login_flow_end_to_end() {
     );
 
     // Should get invalid credentials error (not CSRF error).
-    // SEC-05: validation failures now also return "Invalid credentials".
+    // SEC-05: validation failures now also return "Invalid credentials",
+    // rendered as "Incorrect username or password" by html_error_fragment.
     assert!(
-        response_body.contains("Invalid credentials"),
-        "Expected 'Invalid credentials', got: {}",
+        response_body.contains("Incorrect username or password"),
+        "Expected 'Incorrect username or password', got: {}",
         response_body
     );
 }
@@ -6747,7 +6748,7 @@ async fn test_sec03_rdp_connect_without_justification_when_disabled() {
 // SEC-07: Account status enforcement (is_active)
 // =============================================================================
 
-/// Structural: auth.rs checks is_active before allowing password verification.
+/// Structural: auth.rs checks is_active after password verification (SEC-04/SEC-07).
 #[test]
 fn test_sec07_login_checks_is_active() {
     let auth_source = include_str!("../../src/handlers/auth.rs");
@@ -6755,13 +6756,15 @@ fn test_sec07_login_checks_is_active() {
         auth_source.contains("user.is_active"),
         "SEC-07: login handler must check user.is_active"
     );
+    // SEC-04: AccountDeactivated variant was removed to prevent enumeration;
+    // the login handler now returns generic "Invalid credentials" for deactivated accounts.
     assert!(
-        auth_source.contains("AccountDeactivated"),
-        "SEC-07: LoginErrorKind must have AccountDeactivated variant"
+        !auth_source.contains("AccountDeactivated"),
+        "SEC-04: LoginErrorKind must NOT have AccountDeactivated (prevents enumeration)"
     );
 }
 
-/// Structural: SSH connect handler checks is_active.
+/// Structural: SSH connect handler checks is_active via shared constant.
 #[test]
 fn test_sec07_ssh_connect_checks_is_active() {
     let ssh_source = include_str!("../../src/handlers/web/ssh.rs");
@@ -6770,12 +6773,12 @@ fn test_sec07_ssh_connect_checks_is_active() {
         "SEC-07: SSH connect must verify user is_active"
     );
     assert!(
-        ssh_source.contains("Your account has been deactivated"),
-        "SEC-07: SSH connect must return deactivation message"
+        ssh_source.contains("ACCOUNT_DEACTIVATED_MSG"),
+        "SEC-07: SSH connect must use shared ACCOUNT_DEACTIVATED_MSG constant"
     );
 }
 
-/// Structural: RDP connect handler checks is_active.
+/// Structural: RDP connect handler checks is_active via shared constant.
 #[test]
 fn test_sec07_rdp_connect_checks_is_active() {
     let rdp_source = include_str!("../../src/handlers/web/rdp.rs");
@@ -6784,8 +6787,8 @@ fn test_sec07_rdp_connect_checks_is_active() {
         "SEC-07: RDP connect must verify user is_active"
     );
     assert!(
-        rdp_source.contains("Your account has been deactivated"),
-        "SEC-07: RDP connect must return deactivation message"
+        rdp_source.contains("ACCOUNT_DEACTIVATED_MSG"),
+        "SEC-07: RDP connect must use shared ACCOUNT_DEACTIVATED_MSG constant"
     );
 }
 
@@ -6822,7 +6825,7 @@ fn test_sec07_login_page_shows_deactivation_reason() {
     );
 }
 
-/// Integration: deactivated user cannot login via API.
+/// Integration: deactivated user cannot login via API (SEC-04: generic message).
 #[tokio::test]
 #[serial]
 async fn test_sec07_deactivated_user_cannot_login_api() {
@@ -6853,9 +6856,15 @@ async fn test_sec07_deactivated_user_cannot_login_api() {
 
     assert_status(&response, 401);
     let body = response.text();
+    // SEC-04: must NOT reveal account state -- generic "Invalid credentials" only
     assert!(
-        body.contains("deactivated"),
-        "SEC-07: API login should mention deactivation: {}",
+        body.contains("Invalid credentials"),
+        "SEC-04: API login must return generic error, not reveal deactivation: {}",
+        body
+    );
+    assert!(
+        !body.contains("deactivated"),
+        "SEC-04: API login must NOT mention deactivation: {}",
         body
     );
 
@@ -6899,9 +6908,15 @@ async fn test_sec07_deactivated_user_cannot_login_htmx() {
         .await;
 
     let body = response.text();
+    // SEC-04: html_error_fragment translates "Invalid credentials" to user-friendly form
     assert!(
-        body.contains("deactivated"),
-        "SEC-07: HTMX login should show deactivation message: {}",
+        body.contains("Incorrect username or password"),
+        "SEC-04: HTMX login must return generic error: {}",
+        body
+    );
+    assert!(
+        !body.contains("deactivated"),
+        "SEC-04: HTMX login must NOT mention deactivation: {}",
         body
     );
 
@@ -7445,4 +7460,455 @@ async fn test_sec07_deactivation_sets_recording_metadata_rdp() {
     );
 
     test_db::cleanup(&mut conn).await;
+}
+
+// =============================================================================
+// SEC-04: Anti-enumeration -- login error uniformity
+// =============================================================================
+
+/// Structural: LoginErrorKind must NOT contain variants that reveal account state.
+#[test]
+fn test_sec04_no_account_state_variants() {
+    let auth_source = include_str!("../../src/handlers/auth.rs");
+    assert!(
+        !auth_source.contains("AccountLocked"),
+        "SEC-04: LoginErrorKind must not have AccountLocked variant"
+    );
+    assert!(
+        !auth_source.contains("AccountDeactivated"),
+        "SEC-04: LoginErrorKind must not have AccountDeactivated variant"
+    );
+}
+
+/// Structural: password verification must occur BEFORE is_locked/is_active checks.
+#[test]
+fn test_sec04_password_verified_before_account_state_checks() {
+    let auth_source = include_str!("../../src/handlers/auth.rs");
+    let verify_pos = auth_source
+        .find("verify_password")
+        .expect("verify_password must exist in auth.rs");
+    let locked_pos = auth_source
+        .find("user.is_locked()")
+        .expect("user.is_locked() must exist in auth.rs");
+    let active_pos = auth_source
+        .find("user.is_active")
+        .expect("user.is_active must exist in auth.rs");
+    assert!(
+        verify_pos < locked_pos,
+        "SEC-04: verify_password (pos {}) must come before is_locked (pos {})",
+        verify_pos,
+        locked_pos
+    );
+    assert!(
+        verify_pos < active_pos,
+        "SEC-04: verify_password (pos {}) must come before is_active (pos {})",
+        verify_pos,
+        active_pos
+    );
+}
+
+/// Structural: login_error_response helper must exist and be used for DRY.
+#[test]
+fn test_sec04_login_error_response_helper_exists() {
+    let auth_source = include_str!("../../src/handlers/auth.rs");
+    assert!(
+        auth_source.contains("fn login_error_response("),
+        "SEC-04: login_error_response helper must exist"
+    );
+    assert!(
+        auth_source.contains("fn rate_limit_response("),
+        "SEC-04: rate_limit_response helper must exist"
+    );
+    let call_count = auth_source.matches("login_error_response(").count();
+    assert!(
+        call_count >= 4,
+        "SEC-04: login_error_response should be called at least 4 times (got {})",
+        call_count
+    );
+}
+
+/// Structural: ACCOUNT_DEACTIVATED_MSG constant must be used in ssh.rs and rdp.rs.
+#[test]
+fn test_sec04_deactivated_constant_used() {
+    let ssh_source = include_str!("../../src/handlers/web/ssh.rs");
+    let rdp_source = include_str!("../../src/handlers/web/rdp.rs");
+    let mod_source = include_str!("../../src/handlers/web/mod.rs");
+    assert!(
+        mod_source.contains("ACCOUNT_DEACTIVATED_MSG"),
+        "SEC-04: ACCOUNT_DEACTIVATED_MSG must be defined in handlers/web/mod.rs"
+    );
+    assert!(
+        ssh_source.contains("ACCOUNT_DEACTIVATED_MSG"),
+        "SEC-04: ssh.rs must use ACCOUNT_DEACTIVATED_MSG constant"
+    );
+    assert!(
+        rdp_source.contains("ACCOUNT_DEACTIVATED_MSG"),
+        "SEC-04: rdp.rs must use ACCOUNT_DEACTIVATED_MSG constant"
+    );
+    assert!(
+        !ssh_source.contains("\"Your account has been deactivated\""),
+        "SEC-04: ssh.rs must NOT have hardcoded deactivated string"
+    );
+    assert!(
+        !rdp_source.contains("\"Your account has been deactivated\""),
+        "SEC-04: rdp.rs must NOT have hardcoded deactivated string"
+    );
+}
+
+/// Structural: login_error_html must reuse html_error_fragment from error.rs.
+#[test]
+fn test_sec04_login_error_html_reuses_fragment() {
+    let auth_source = include_str!("../../src/handlers/auth.rs");
+    assert!(
+        auth_source.contains("html_error_fragment"),
+        "SEC-04: login_error_html must delegate to html_error_fragment"
+    );
+}
+
+/// Structural: user_friendly_message must not translate locked/deactivated errors.
+#[test]
+fn test_sec04_user_friendly_message_cleaned() {
+    let error_source = include_str!("../../src/error.rs");
+    assert!(
+        !error_source.contains("\"Account is locked\""),
+        "SEC-04: user_friendly_message must not reference 'Account is locked'"
+    );
+    assert!(
+        !error_source.contains("\"Account is deactivated\""),
+        "SEC-04: user_friendly_message must not reference 'Account is deactivated'"
+    );
+}
+
+/// Integration: non-existent user login returns generic "Invalid credentials".
+#[tokio::test]
+#[serial]
+async fn test_sec04_nonexistent_user_api() {
+    let app = TestApp::spawn().await;
+
+    let response = app
+        .server
+        .post("/api/v1/auth/login")
+        .json(&json!({
+            "username": "sec04_ghost_user_does_not_exist",
+            "password": "SomePassword123!"
+        }))
+        .await;
+
+    assert_status(&response, 401);
+    let body = response.text();
+    assert!(
+        body.contains("Invalid credentials"),
+        "SEC-04: nonexistent user must get generic error: {}",
+        body
+    );
+    assert!(
+        !body.contains("not found"),
+        "SEC-04: must not reveal user does not exist: {}",
+        body
+    );
+}
+
+/// Integration: wrong password returns generic "Invalid credentials".
+#[tokio::test]
+#[serial]
+async fn test_sec04_wrong_password_api() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("sec04_wrong_pw");
+    let _test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
+
+    let response = app
+        .server
+        .post("/api/v1/auth/login")
+        .json(&json!({
+            "username": username,
+            "password": "WrongPassword999!"
+        }))
+        .await;
+
+    assert_status(&response, 401);
+    let body = response.text();
+    assert!(
+        body.contains("Invalid credentials"),
+        "SEC-04: wrong password must get generic error: {}",
+        body
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Integration: locked account + wrong password returns "Invalid credentials" (not "locked").
+#[tokio::test]
+#[serial]
+async fn test_sec04_locked_wrong_password_api() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("sec04_lock_wp");
+    let _test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
+
+    use vauban_web::schema::users;
+    unwrap_ok!(
+        diesel::update(users::table.filter(users::username.eq(&username)))
+            .set(users::locked_until.eq(Some(chrono::Utc::now() + chrono::Duration::hours(1))))
+            .execute(&mut conn)
+            .await
+    );
+
+    let response = app
+        .server
+        .post("/api/v1/auth/login")
+        .json(&json!({
+            "username": username,
+            "password": "WrongPassword999!"
+        }))
+        .await;
+
+    assert_status(&response, 401);
+    let body = response.text();
+    assert!(
+        body.contains("Invalid credentials"),
+        "SEC-04: locked+wrong pw must get generic error: {}",
+        body
+    );
+    assert!(
+        !body.contains("locked"),
+        "SEC-04: must NOT reveal account is locked: {}",
+        body
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Integration: locked account + correct password returns "Invalid credentials" (not "locked").
+#[tokio::test]
+#[serial]
+async fn test_sec04_locked_correct_password_api() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("sec04_lock_cp");
+    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
+
+    use vauban_web::schema::users;
+    unwrap_ok!(
+        diesel::update(users::table.filter(users::username.eq(&username)))
+            .set(users::locked_until.eq(Some(chrono::Utc::now() + chrono::Duration::hours(1))))
+            .execute(&mut conn)
+            .await
+    );
+
+    let response = app
+        .server
+        .post("/api/v1/auth/login")
+        .json(&json!({
+            "username": username,
+            "password": test_user.password
+        }))
+        .await;
+
+    assert_status(&response, 401);
+    let body = response.text();
+    assert!(
+        body.contains("Invalid credentials"),
+        "SEC-04: locked+correct pw must get generic error: {}",
+        body
+    );
+    assert!(
+        !body.contains("locked"),
+        "SEC-04: must NOT reveal account is locked: {}",
+        body
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Integration: deactivated account + correct password returns "Invalid credentials".
+#[tokio::test]
+#[serial]
+async fn test_sec04_deactivated_correct_password_api() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("sec04_deact_cp");
+    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
+
+    use vauban_web::schema::users;
+    unwrap_ok!(
+        diesel::update(users::table.filter(users::username.eq(&username)))
+            .set(users::is_active.eq(false))
+            .execute(&mut conn)
+            .await
+    );
+
+    let response = app
+        .server
+        .post("/api/v1/auth/login")
+        .json(&json!({
+            "username": username,
+            "password": test_user.password
+        }))
+        .await;
+
+    assert_status(&response, 401);
+    let body = response.text();
+    assert!(
+        body.contains("Invalid credentials"),
+        "SEC-04: deactivated+correct pw must get generic error: {}",
+        body
+    );
+    assert!(
+        !body.contains("deactivated"),
+        "SEC-04: must NOT reveal account is deactivated: {}",
+        body
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Integration: all error responses via HTMX also return generic "Invalid credentials".
+#[tokio::test]
+#[serial]
+async fn test_sec04_htmx_uniform_errors() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("sec04_htmx_unif");
+    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
+    let csrf_token = app.generate_csrf_token();
+
+    use vauban_web::schema::users;
+    unwrap_ok!(
+        diesel::update(users::table.filter(users::username.eq(&username)))
+            .set(users::locked_until.eq(Some(chrono::Utc::now() + chrono::Duration::hours(1))))
+            .execute(&mut conn)
+            .await
+    );
+
+    // Locked + correct password via HTMX
+    let response = app
+        .server
+        .post("/auth/login")
+        .add_header("HX-Request", "true")
+        .add_header(header::COOKIE, format!("__vauban_csrf={}", csrf_token))
+        .json(&json!({
+            "username": username,
+            "password": test_user.password,
+            "csrf_token": csrf_token
+        }))
+        .await;
+
+    let body = response.text();
+    // HTMX: html_error_fragment translates to user-friendly message
+    assert!(
+        body.contains("Incorrect username or password"),
+        "SEC-04: HTMX locked+correct pw must show generic error: {}",
+        body
+    );
+    assert!(
+        !body.contains("locked"),
+        "SEC-04: HTMX must NOT reveal locked state: {}",
+        body
+    );
+
+    // Nonexistent user via HTMX
+    let response = app
+        .server
+        .post("/auth/login")
+        .add_header("HX-Request", "true")
+        .add_header(header::COOKIE, format!("__vauban_csrf={}", csrf_token))
+        .json(&json!({
+            "username": "sec04_htmx_ghost_user",
+            "password": "SomePassword123!",
+            "csrf_token": csrf_token
+        }))
+        .await;
+
+    let body = response.text();
+    assert!(
+        body.contains("Incorrect username or password"),
+        "SEC-04: HTMX nonexistent user must show generic error: {}",
+        body
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Integration: progressive lockout still works (5 failed attempts -> locked_until set).
+#[tokio::test]
+#[serial]
+async fn test_sec04_progressive_lockout_still_works() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("sec04_prog_lock");
+    let _test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
+
+    for i in 0..5 {
+        let response = app
+            .server
+            .post("/api/v1/auth/login")
+            .json(&json!({
+                "username": username,
+                "password": "WrongPassword999!"
+            }))
+            .await;
+
+        assert_status(&response, 401);
+        let body = response.text();
+        assert!(
+            body.contains("Invalid credentials"),
+            "SEC-04: attempt {} must return generic error: {}",
+            i + 1,
+            body
+        );
+    }
+
+    use vauban_web::schema::users;
+    let (failed_attempts, lock_until): (i32, Option<chrono::DateTime<chrono::Utc>>) = unwrap_ok!(
+        users::table
+            .filter(users::username.eq(&username))
+            .select((users::failed_login_attempts, users::locked_until))
+            .first(&mut conn)
+            .await
+    );
+    assert_eq!(failed_attempts, 5, "SEC-04: failed_login_attempts should be 5");
+    assert!(
+        lock_until.is_some(),
+        "SEC-04: locked_until should be set after 5 failed attempts"
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Integration: CSRF error returns specific message (not "Invalid credentials").
+#[tokio::test]
+#[serial]
+async fn test_sec04_csrf_error_distinct() {
+    let app = TestApp::spawn().await;
+
+    let response = app
+        .server
+        .post("/auth/login")
+        .add_header("HX-Request", "true")
+        .add_header(header::COOKIE, "__vauban_csrf=invalid_token")
+        .json(&json!({
+            "username": "anyuser",
+            "password": "anypass",
+            "csrf_token": "wrong_csrf"
+        }))
+        .await;
+
+    let body = response.text();
+    assert!(
+        body.contains("Invalid or expired form"),
+        "SEC-04: CSRF error should show form-specific message: {}",
+        body
+    );
+    assert!(
+        !body.contains("Invalid credentials"),
+        "SEC-04: CSRF error should NOT show 'Invalid credentials': {}",
+        body
+    );
 }

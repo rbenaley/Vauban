@@ -84,6 +84,8 @@ pub use sessions::*;
 pub use ssh::*;
 pub use users::*;
 
+pub const ACCOUNT_DEACTIVATED_MSG: &str = "Your account has been deactivated";
+
 #[cfg(test)]
 mod tests;
 

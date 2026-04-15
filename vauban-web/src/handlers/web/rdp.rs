@@ -174,7 +174,7 @@ pub async fn connect_rdp(
             {
                 Ok((id, user_is_active)) => {
                     if !user_is_active {
-                        return htmx_error_response("Your account has been deactivated");
+                        return htmx_error_response(super::ACCOUNT_DEACTIVATED_MSG);
                     }
                     id
                 }
