@@ -11,11 +11,9 @@ use axum_extra::extract::CookieJar;
 use chrono::{Duration, Utc};
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
-use ipnetwork::IpNetwork;
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_256};
-use std::net::SocketAddr;
 use validator::Validate;
 use zeroize::Zeroize;
 
@@ -551,20 +549,7 @@ fn lockout_duration_for_attempts(failed_attempts: i32, threshold: u32) -> Option
     Some(stages[stage_index.min(stages.len() - 1)])
 }
 
-/// Extract client IP from headers (X-Forwarded-For, X-Real-IP) or connection address.
-///
-/// Proxy headers are only trusted when the direct TCP connection originates from
-/// an address listed in `trusted_proxies`.  This prevents spoofing of client IPs
-/// by arbitrary clients injecting `X-Forwarded-For` / `X-Real-IP` headers.
-fn extract_client_ip(
-    headers: &HeaderMap,
-    connect_addr: SocketAddr,
-    trusted_proxies: &[std::net::IpAddr],
-) -> IpNetwork {
-    let resolved =
-        crate::middleware::resolve_client_ip(headers, connect_addr.ip(), trusted_proxies);
-    IpNetwork::from(resolved)
-}
+use crate::middleware::extract_client_ip;
 
 /// Logout handler.
 /// Invalidates the current session in the database and clears the cookie.
@@ -1147,6 +1132,7 @@ pub async fn mfa_verify_submit(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::SocketAddr;
 
     // ==================== LoginRequest Tests ====================
 

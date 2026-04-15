@@ -6490,3 +6490,38 @@ fn test_sec06_web_auth_uses_shared_totp_constants() {
         "SEC-06: services/auth.rs must use shared::totp::TOTP_STEP"
     );
 }
+
+// =============================================================================
+// SEC-02: Client IP Must Not Be Hardcoded (Structural Tests)
+// =============================================================================
+
+/// SEC-02: session-creating handlers must not hardcode 0.0.0.0 as client IP.
+/// They must use extract_client_ip to capture the real address.
+#[test]
+fn test_sec02_no_hardcoded_client_ip_in_session_handlers() {
+    let ssh_source = include_str!("../../src/handlers/web/ssh.rs");
+    assert!(
+        !ssh_source.contains(r#""0.0.0.0/0""#),
+        "SEC-02: ssh.rs must not hardcode 0.0.0.0/0 as client IP"
+    );
+    assert!(
+        ssh_source.contains("extract_client_ip"),
+        "SEC-02: ssh.rs must use extract_client_ip for real client address"
+    );
+
+    let rdp_source = include_str!("../../src/handlers/web/rdp.rs");
+    assert!(
+        !rdp_source.contains(r#""0.0.0.0/0""#),
+        "SEC-02: rdp.rs must not hardcode 0.0.0.0/0 as client IP"
+    );
+    assert!(
+        rdp_source.contains("extract_client_ip"),
+        "SEC-02: rdp.rs must use extract_client_ip for real client address"
+    );
+
+    let sessions_source = include_str!("../../src/handlers/web/sessions.rs");
+    assert!(
+        !sessions_source.contains(r#""0.0.0.0/0""#),
+        "SEC-02: sessions.rs must not hardcode 0.0.0.0/0 as client IP"
+    );
+}

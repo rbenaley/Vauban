@@ -33,6 +33,7 @@ pub async fn connect_rdp(
     headers: axum::http::HeaderMap,
     jar: CookieJar,
     auth_user: AuthUser,
+    client_addr: crate::middleware::ClientAddr,
     axum::extract::Path(asset_uuid_str): axum::extract::Path<String>,
     Form(form): Form<ConnectRdpForm>,
 ) -> Response {
@@ -234,11 +235,10 @@ pub async fn connect_rdp(
     // WebSocket ownership before allowing the upgrade.
     {
         use crate::models::session::{NewProxySession, SessionType};
-        let client_ip: ipnetwork::IpNetwork = "0.0.0.0/0".parse().unwrap_or_else(|_| {
-            ipnetwork::IpNetwork::V4(ipnetwork::Ipv4Network::from(
-                std::net::Ipv4Addr::UNSPECIFIED,
-            ))
-        });
+        let trusted = state.config.security.parsed_trusted_proxies();
+        let client_ip = crate::middleware::extract_client_ip(
+            &headers, client_addr.addr(), &trusted,
+        );
         let new_session = NewProxySession {
             uuid: session_uuid,
             user_id,

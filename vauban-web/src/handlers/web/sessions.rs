@@ -1106,6 +1106,7 @@ pub async fn submit_access_request(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     auth_user: WebAuthUser,
+    client_addr: crate::middleware::ClientAddr,
     jar: CookieJar,
     Form(form): Form<AccessRequestForm>,
 ) -> Response {
@@ -1262,11 +1263,10 @@ pub async fn submit_access_request(
 
     // Create pending session
     let session_uuid = ::uuid::Uuid::new_v4();
-    let client_ip: ipnetwork::IpNetwork = "0.0.0.0/0".parse().unwrap_or_else(|_| {
-        ipnetwork::IpNetwork::V4(ipnetwork::Ipv4Network::from(
-            std::net::Ipv4Addr::UNSPECIFIED,
-        ))
-    });
+    let trusted = state.config.security.parsed_trusted_proxies();
+    let client_ip = crate::middleware::extract_client_ip(
+        &headers, client_addr.addr(), &trusted,
+    );
 
     use crate::models::session::{NewProxySession, SessionType};
 

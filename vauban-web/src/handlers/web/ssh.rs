@@ -59,6 +59,7 @@ pub async fn connect_ssh(
     headers: axum::http::HeaderMap,
     jar: CookieJar,
     auth_user: AuthUser,
+    client_addr: crate::middleware::ClientAddr,
     axum::extract::Path(asset_uuid_str): axum::extract::Path<String>,
     Form(form): Form<ConnectSshForm>,
 ) -> Response {
@@ -456,13 +457,10 @@ pub async fn connect_ssh(
     // WebSocket client owns the session before allowing the upgrade.
     {
         use crate::models::session::{NewProxySession, SessionType};
-        // SAFETY: "0.0.0.0/0" is a valid CIDR; if parse() somehow fails,
-        // fall back to the equivalent IpNetwork constructed from Ipv4Addr.
-        let client_ip: ipnetwork::IpNetwork = "0.0.0.0/0".parse().unwrap_or_else(|_| {
-            ipnetwork::IpNetwork::V4(ipnetwork::Ipv4Network::from(
-                std::net::Ipv4Addr::UNSPECIFIED,
-            ))
-        });
+        let trusted = state.config.security.parsed_trusted_proxies();
+        let client_ip = crate::middleware::extract_client_ip(
+            &headers, client_addr.addr(), &trusted,
+        );
         let new_session = NewProxySession {
             uuid: session_uuid,
             user_id,

@@ -4,6 +4,7 @@
 /// both in production (with ConnectInfo) and in tests (without it).
 use axum::extract::{ConnectInfo, FromRequestParts};
 use axum::http::request::Parts;
+use ipnetwork::IpNetwork;
 use std::net::SocketAddr;
 
 /// Default address used when ConnectInfo is not available (e.g., in tests).
@@ -23,6 +24,19 @@ impl ClientAddr {
     pub fn addr(&self) -> SocketAddr {
         self.0
     }
+}
+
+/// Extract the client IP as an `IpNetwork`, resolving proxy headers
+/// (`X-Forwarded-For`, `X-Real-IP`) when the connection originates from
+/// a trusted proxy.  Falls back to the raw TCP peer address otherwise.
+pub fn extract_client_ip(
+    headers: &axum::http::HeaderMap,
+    connect_addr: SocketAddr,
+    trusted_proxies: &[std::net::IpAddr],
+) -> IpNetwork {
+    let resolved =
+        super::resolve_client_ip(headers, connect_addr.ip(), trusted_proxies);
+    IpNetwork::from(resolved)
 }
 
 impl<S> FromRequestParts<S> for ClientAddr
@@ -138,5 +152,42 @@ mod tests {
         let addr: SocketAddr = unwrap_ok!("[2001:0db8:85a3:0000:0000:8a2e:0370:7334]:80".parse());
         let client_addr = ClientAddr(addr);
         assert!(client_addr.addr().ip().is_ipv6());
+    }
+
+    // ==================== extract_client_ip Tests ====================
+
+    #[test]
+    fn test_extract_client_ip_returns_peer_addr_without_proxy() {
+        let headers = axum::http::HeaderMap::new();
+        let addr: SocketAddr = unwrap_ok!("203.0.113.50:12345".parse());
+        let ip = extract_client_ip(&headers, addr, &[]);
+        assert_eq!(ip.ip().to_string(), "203.0.113.50");
+    }
+
+    #[test]
+    fn test_extract_client_ip_resolves_xff_from_trusted_proxy() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("X-Forwarded-For", unwrap_ok!("198.51.100.1".parse()));
+        let addr: SocketAddr = unwrap_ok!("127.0.0.1:1234".parse());
+        let trusted = vec![unwrap_ok!("127.0.0.1".parse())];
+        let ip = extract_client_ip(&headers, addr, &trusted);
+        assert_eq!(ip.ip().to_string(), "198.51.100.1");
+    }
+
+    #[test]
+    fn test_extract_client_ip_ignores_xff_from_untrusted() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("X-Forwarded-For", unwrap_ok!("198.51.100.1".parse()));
+        let addr: SocketAddr = unwrap_ok!("10.0.0.1:1234".parse());
+        let ip = extract_client_ip(&headers, addr, &[]);
+        assert_eq!(ip.ip().to_string(), "10.0.0.1");
+    }
+
+    #[test]
+    fn test_extract_client_ip_returns_ipnetwork() {
+        let headers = axum::http::HeaderMap::new();
+        let addr: SocketAddr = unwrap_ok!("192.168.1.1:443".parse());
+        let ip = extract_client_ip(&headers, addr, &[]);
+        assert_eq!(ip.prefix(), 32);
     }
 }
