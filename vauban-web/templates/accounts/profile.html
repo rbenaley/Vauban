@@ -23,9 +23,11 @@
             <div class="bg-white dark:bg-gray-800 shadow rounded-lg">
                 <div class="px-6 py-5 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
                     <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Personal Information</h3>
-                    <a href="/accounts/profile/edit" class="text-sm font-medium text-vauban-600 hover:text-vauban-500 dark:text-vauban-400">
+                    {% if profile.is_staff || profile.is_superuser %}
+                    <a href="/accounts/users/{{ profile.uuid }}/edit" class="text-sm font-medium text-vauban-600 hover:text-vauban-500 dark:text-vauban-400">
                         Edit
                     </a>
+                    {% endif %}
                 </div>
                 <div class="px-6 py-5 space-y-6">
                     <div class="flex items-center">

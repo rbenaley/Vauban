@@ -156,6 +156,185 @@ async fn test_profile_page_displays_user_info() {
     assert!(body.contains("Staff"), "Profile should show staff badge");
 }
 
+// =============================================================================
+// BUG-06: Edit button on "My Profile" must only appear for admin users
+// and redirect to /accounts/users/{uuid}/edit.
+// =============================================================================
+
+/// Structural: profile.html must guard the Edit button with admin check
+/// and use {{ profile.uuid }} in the link target.
+#[test]
+fn test_bug06_profile_edit_button_template_structure() {
+    let template = include_str!("../../templates/accounts/profile.html");
+    assert!(
+        template.contains("profile.is_staff || profile.is_superuser"),
+        "BUG-06: Edit button must be guarded by is_staff || is_superuser"
+    );
+    assert!(
+        template.contains("/accounts/users/{{ profile.uuid }}/edit"),
+        "BUG-06: Edit link must point to /accounts/users/{{{{ profile.uuid }}}}/edit"
+    );
+    assert!(
+        !template.contains("/accounts/profile/edit"),
+        "BUG-06: dead /accounts/profile/edit link must be removed"
+    );
+}
+
+/// Regular user (non-admin) must NOT see the Edit button on profile page.
+#[tokio::test]
+async fn test_bug06_regular_user_has_no_edit_button() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("bug06_regular");
+    let user_id = create_simple_user(&mut conn, &username).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+
+    // Generate a token that matches the DB state: not staff, not superuser
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, false, false)
+        .await;
+
+    let response = app
+        .server
+        .get("/accounts/profile")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(response.status_code().as_u16(), 200);
+    let body = response.text();
+
+    assert!(
+        !body.contains(&format!("/accounts/users/{}/edit", user_uuid)),
+        "BUG-06: regular user must NOT see Edit link on their profile"
+    );
+    assert!(
+        !body.contains("/accounts/profile/edit"),
+        "BUG-06: dead /accounts/profile/edit link must not appear"
+    );
+}
+
+/// Staff user must see the Edit button pointing to their own /accounts/users/{uuid}/edit.
+#[tokio::test]
+async fn test_bug06_staff_user_has_edit_button() {
+    use vauban_web::schema::users;
+
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("bug06_staff");
+    let user_uuid = Uuid::new_v4();
+    let password_hash = unwrap_ok!(app.auth_service.hash_password("test_password_123!"));
+
+    unwrap_ok!(
+        diesel::insert_into(users::table)
+            .values((
+                users::uuid.eq(user_uuid),
+                users::username.eq(&username),
+                users::email.eq(format!("{}@test.local", username)),
+                users::password_hash.eq(&password_hash),
+                users::is_active.eq(true),
+                users::is_staff.eq(true),
+                users::is_superuser.eq(false),
+                users::auth_source.eq(AuthSource::Local),
+                users::preferences.eq(serde_json::json!({})),
+            ))
+            .execute(&mut conn)
+            .await
+    );
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, false, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/accounts/profile")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(response.status_code().as_u16(), 200);
+    let body = response.text();
+
+    let expected_href = format!("/accounts/users/{}/edit", user_uuid);
+    assert!(
+        body.contains(&expected_href),
+        "BUG-06: staff user must see Edit link to {}, got body: {}",
+        expected_href,
+        &body[..body.len().min(500)]
+    );
+    assert!(
+        !body.contains("/accounts/profile/edit"),
+        "BUG-06: dead /accounts/profile/edit link must not appear"
+    );
+}
+
+/// Superuser must see the Edit button pointing to their own /accounts/users/{uuid}/edit.
+#[tokio::test]
+async fn test_bug06_superuser_has_edit_button() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("bug06_super");
+    let user_id = create_simple_admin_user(&mut conn, &username).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/accounts/profile")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    assert_eq!(response.status_code().as_u16(), 200);
+    let body = response.text();
+
+    let expected_href = format!("/accounts/users/{}/edit", user_uuid);
+    assert!(
+        body.contains(&expected_href),
+        "BUG-06: superuser must see Edit link to {}",
+        expected_href
+    );
+}
+
+/// Defense-in-depth: a regular user who somehow crafts the edit URL directly
+/// must be denied by the server-side RBAC check (Casbin users:write).
+#[tokio::test]
+async fn test_bug06_regular_user_cannot_access_own_edit_url() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("bug06_no_direct");
+    let user_id = create_simple_user(&mut conn, &username).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, false, false)
+        .await;
+
+    let response = app
+        .server
+        .get(&format!("/accounts/users/{}/edit", user_uuid))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    // The handler performs a flash_redirect on RBAC failure (303 See Other).
+    // We also accept any non-200 as a protective response.
+    assert_ne!(
+        status, 200,
+        "BUG-06: regular user must NOT be able to GET their own edit form; got 200"
+    );
+    assert!(
+        (300..400).contains(&status) || status == 403,
+        "BUG-06: expected redirect or 403 for regular user on edit URL, got {}",
+        status
+    );
+}
+
 #[tokio::test]
 async fn test_profile_page_shows_mfa_status() {
     use vauban_web::schema::users;
