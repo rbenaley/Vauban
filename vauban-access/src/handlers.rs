@@ -956,6 +956,44 @@ async fn handle_delete_vauban_group(conn: &mut DbConnection, uuid_str: &str) -> 
         Err(e) => return AccessResponse::Deleted(Err(e)),
     };
 
+    // Resolve the group's internal id so we can pre-check membership.
+    let group_id: Option<i32> = match vauban_groups::table
+        .filter(vauban_groups::uuid.eq(group_uuid))
+        .select(vauban_groups::id)
+        .first::<i32>(conn)
+        .await
+        .optional()
+    {
+        Ok(v) => v,
+        Err(e) => return AccessResponse::Deleted(Err(format!("Failed to lookup group: {}", e))),
+    };
+
+    let group_id = match group_id {
+        Some(id) => id,
+        None => return AccessResponse::Deleted(Err(format!("Group {} not found", uuid_str))),
+    };
+
+    // Refuse to delete a group that still has members. The caller is expected
+    // to surface a friendly error message mentioning "member" so that the UI
+    // can display a specific hint.
+    let member_count: i64 = match user_groups::table
+        .filter(user_groups::group_id.eq(group_id))
+        .count()
+        .get_result(conn)
+        .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return AccessResponse::Deleted(Err(format!("Failed to count members: {}", e)));
+        }
+    };
+    if member_count > 0 {
+        return AccessResponse::Deleted(Err(format!(
+            "Group {} still has {} member(s); remove them first",
+            uuid_str, member_count
+        )));
+    }
+
     match diesel::delete(vauban_groups::table.filter(vauban_groups::uuid.eq(group_uuid)))
         .execute(conn)
         .await
@@ -1737,7 +1775,7 @@ mod tests {
         .ok();
 
         // Trim each table keeping the N most recent rows by id.
-        diesel::sql_query(&format!(
+        diesel::sql_query(format!(
             "DELETE FROM users WHERE id NOT IN \
              (SELECT id FROM users ORDER BY id DESC LIMIT {MAX_TEST_USERS})"
         ))
@@ -1745,7 +1783,7 @@ mod tests {
         .await
         .expect("test-prune: DELETE users failed");
 
-        diesel::sql_query(&format!(
+        diesel::sql_query(format!(
             "DELETE FROM vauban_groups WHERE id NOT IN \
              (SELECT id FROM vauban_groups ORDER BY id DESC LIMIT {MAX_TEST_VAUBAN_GROUPS})"
         ))
@@ -1753,7 +1791,7 @@ mod tests {
         .await
         .expect("test-prune: DELETE vauban_groups failed");
 
-        diesel::sql_query(&format!(
+        diesel::sql_query(format!(
             "DELETE FROM asset_groups WHERE id NOT IN \
              (SELECT id FROM asset_groups ORDER BY id DESC LIMIT {MAX_TEST_ASSET_GROUPS})"
         ))

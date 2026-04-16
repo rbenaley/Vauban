@@ -5,6 +5,8 @@
 //!
 //! Run BEFORE and AFTER AVX2 modifications to ensure no regression.
 
+#![allow(clippy::unwrap_used, clippy::panic, clippy::needless_range_loop)]
+
 use openh264::encoder::Encoder;
 use openh264::formats::YUVBuffer;
 

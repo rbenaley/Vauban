@@ -2,10 +2,6 @@
 use crate::error::AppResult;
 use crate::ipc::AccessIpcClient;
 use std::sync::Arc;
-#[cfg(not(debug_assertions))]
-use tracing::error;
-#[cfg(debug_assertions)]
-use tracing::warn;
 
 /// RBAC permission check parameters.
 #[derive(Debug, Clone)]
@@ -28,41 +24,24 @@ impl PermissionCheck {
 
 /// RBAC service wrapper.
 ///
-/// Uses the IPC client when running under supervisor, otherwise falls back
-/// to debug-allow / release-deny behavior.
+/// Thin delegator to the Casbin IPC client. vauban-web requires an IPC
+/// connection to vauban-access at startup (no standalone mode, no fallback),
+/// so the caller always has a live `AccessIpcClient`.
 pub struct RbacService;
 
 impl RbacService {
     /// Check if a subject has permission via the RBAC IPC client.
     ///
-    /// Fail-closed: returns false on IPC errors or when client is unavailable
-    /// in release builds.
+    /// Fail-closed: propagates IPC errors to the caller.
     pub async fn check_permission(
-        access_client: Option<&Arc<AccessIpcClient>>,
+        access_client: &Arc<AccessIpcClient>,
         subject: &str,
         resource: &str,
         action: &str,
     ) -> AppResult<bool> {
-        if let Some(client) = access_client {
-            client.check_permission(subject, resource, action).await
-        } else {
-            #[cfg(debug_assertions)]
-            {
-                warn!(
-                    subject,
-                    resource, action, "RBAC fallback: allowing (no IPC client, debug build)"
-                );
-                Ok(true)
-            }
-            #[cfg(not(debug_assertions))]
-            {
-                error!(
-                    subject,
-                    resource, action, "RBAC IPC client not available - denying by default"
-                );
-                Ok(false)
-            }
-        }
+        access_client
+            .check_permission(subject, resource, action)
+            .await
     }
 }
 

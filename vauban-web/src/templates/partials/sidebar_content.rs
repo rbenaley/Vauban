@@ -1,7 +1,15 @@
 /// VAUBAN Web - Sidebar content data structure.
+use crate::auth::PermissionContext;
 use crate::templates::base::UserContext;
 
 /// Sidebar content data (not a template itself, used as data in includes).
+///
+/// `perms` is the Casbin-backed [`PermissionContext`] pre-computed by
+/// [`crate::middleware::permissions::permission_context_middleware`] and
+/// injected by [`crate::handlers::web::apply_sidebar_rbac`]. It is the
+/// **only** source of truth for UI gating: templates must read
+/// `sc.perms.<resource>_<action>` and must not branch on
+/// `sc.user.is_staff` or `sc.user.is_superuser`.
 #[derive(Debug, Clone)]
 pub struct SidebarContentTemplate {
     pub user: UserContext,
@@ -14,12 +22,10 @@ pub struct SidebarContentTemplate {
     pub is_approvals: bool,
     pub is_access_rules: bool,
     pub is_my_requests: bool,
-    pub can_view_groups: bool,
-    pub can_view_access_rules: bool,
-    /// Whether the user can view the Administration section (superuser or staff).
-    pub can_view_admin: bool,
     /// Number of pending approval requests (shown as badge for admins).
     pub pending_approval_count: i64,
+    /// Casbin-backed permission context. Sole source of truth for UI gates.
+    pub perms: PermissionContext,
 }
 
 #[cfg(test)]
@@ -56,11 +62,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_sidebar_content_dashboard_active() {
-        let sidebar = SidebarContentTemplate {
-            user: create_test_user(),
-            is_dashboard: true,
+    fn make_sidebar(user: UserContext, perms: PermissionContext) -> SidebarContentTemplate {
+        SidebarContentTemplate {
+            user,
+            is_dashboard: false,
             is_assets: false,
             is_sessions: false,
             is_recordings: false,
@@ -69,205 +74,99 @@ mod tests {
             is_approvals: false,
             is_access_rules: false,
             is_my_requests: false,
-            can_view_groups: false,
-            can_view_access_rules: false,
-            can_view_admin: false,
             pending_approval_count: 0,
-        };
+            perms,
+        }
+    }
 
+    fn admin_perms() -> PermissionContext {
+        PermissionContext {
+            users_read: true,
+            users_write: true,
+            groups_read: true,
+            groups_write: true,
+            access_rules_read: true,
+            access_rules_write: true,
+            assets_read: true,
+            assets_write: true,
+            admin_view: true,
+            auth_sessions_read: true,
+            auth_sessions_write: true,
+            sessions_read: true,
+            sessions_write: true,
+            profile_read: true,
+            profile_write: true,
+        }
+    }
+
+    #[test]
+    fn test_sidebar_content_dashboard_active() {
+        let mut sidebar = make_sidebar(create_test_user(), PermissionContext::default());
+        sidebar.is_dashboard = true;
         assert!(sidebar.is_dashboard);
         assert!(!sidebar.is_assets);
     }
 
     #[test]
     fn test_sidebar_content_assets_active() {
-        let sidebar = SidebarContentTemplate {
-            user: create_test_user(),
-            is_dashboard: false,
-            is_assets: true,
-            is_sessions: false,
-            is_recordings: false,
-            is_users: false,
-            is_groups: false,
-            is_approvals: false,
-            is_access_rules: false,
-            is_my_requests: false,
-            can_view_groups: false,
-            can_view_access_rules: false,
-            can_view_admin: false,
-            pending_approval_count: 0,
-        };
-
+        let mut sidebar = make_sidebar(create_test_user(), PermissionContext::default());
+        sidebar.is_assets = true;
         assert!(!sidebar.is_dashboard);
         assert!(sidebar.is_assets);
     }
 
     #[test]
     fn test_sidebar_content_admin_permissions() {
-        let sidebar = SidebarContentTemplate {
-            user: create_admin_user(),
-            is_dashboard: false,
-            is_assets: false,
-            is_sessions: false,
-            is_recordings: false,
-            is_users: false,
-            is_groups: true,
-            is_approvals: false,
-            is_access_rules: false,
-            is_my_requests: false,
-            can_view_groups: true,
-            can_view_access_rules: true,
-            can_view_admin: true,
-            pending_approval_count: 0,
-        };
-
-        assert!(sidebar.can_view_groups);
-        assert!(sidebar.can_view_access_rules);
-        assert!(sidebar.can_view_admin);
+        let sidebar = make_sidebar(create_admin_user(), admin_perms());
+        assert!(sidebar.perms.groups_read);
+        assert!(sidebar.perms.access_rules_read);
+        assert!(sidebar.perms.admin_view);
         assert!(sidebar.user.is_superuser);
     }
 
     #[test]
     fn test_sidebar_content_regular_user_permissions() {
-        let sidebar = SidebarContentTemplate {
-            user: create_test_user(),
-            is_dashboard: true,
-            is_assets: false,
-            is_sessions: false,
-            is_recordings: false,
-            is_users: false,
-            is_groups: false,
-            is_approvals: false,
-            is_access_rules: false,
-            is_my_requests: false,
-            can_view_groups: false,
-            can_view_access_rules: false,
-            can_view_admin: false,
-            pending_approval_count: 0,
-        };
-
-        assert!(!sidebar.can_view_groups);
-        assert!(!sidebar.can_view_access_rules);
-        assert!(!sidebar.can_view_admin);
+        let sidebar = make_sidebar(create_test_user(), PermissionContext::default());
+        assert!(!sidebar.perms.groups_read);
+        assert!(!sidebar.perms.access_rules_read);
+        assert!(!sidebar.perms.admin_view);
     }
 
     #[test]
     fn test_sidebar_content_clone() {
-        let sidebar = SidebarContentTemplate {
-            user: create_test_user(),
-            is_dashboard: true,
-            is_assets: false,
-            is_sessions: false,
-            is_recordings: false,
-            is_users: false,
-            is_groups: false,
-            is_approvals: false,
-            is_access_rules: false,
-            is_my_requests: false,
-            can_view_groups: false,
-            can_view_access_rules: false,
-            can_view_admin: false,
-            pending_approval_count: 0,
-        };
+        let sidebar = make_sidebar(create_test_user(), PermissionContext::default());
         let cloned = sidebar.clone();
-
         assert_eq!(sidebar.user.uuid, cloned.user.uuid);
-        assert_eq!(sidebar.is_dashboard, cloned.is_dashboard);
-        assert_eq!(sidebar.can_view_admin, cloned.can_view_admin);
+        assert_eq!(sidebar.perms.admin_view, cloned.perms.admin_view);
     }
 
     #[test]
     fn test_sidebar_content_debug() {
-        let sidebar = SidebarContentTemplate {
-            user: create_test_user(),
-            is_dashboard: true,
-            is_assets: false,
-            is_sessions: false,
-            is_recordings: false,
-            is_users: false,
-            is_groups: false,
-            is_approvals: false,
-            is_access_rules: false,
-            is_my_requests: false,
-            can_view_groups: false,
-            can_view_access_rules: false,
-            can_view_admin: false,
-            pending_approval_count: 0,
-        };
+        let sidebar = make_sidebar(create_test_user(), PermissionContext::default());
         let debug_str = format!("{:?}", sidebar);
-
         assert!(debug_str.contains("SidebarContentTemplate"));
-        assert!(debug_str.contains("is_dashboard"));
-        assert!(debug_str.contains("can_view_admin"));
+        assert!(debug_str.contains("perms"));
     }
 
     #[test]
     fn test_sidebar_admin_visible_for_superuser() {
-        let sidebar = SidebarContentTemplate {
-            user: create_admin_user(),
-            is_dashboard: true,
-            is_assets: false,
-            is_sessions: false,
-            is_recordings: false,
-            is_users: false,
-            is_groups: false,
-            is_approvals: false,
-            is_access_rules: false,
-            is_my_requests: false,
-            can_view_groups: true,
-            can_view_access_rules: true,
-            can_view_admin: true,
-            pending_approval_count: 0,
-        };
-
-        assert!(sidebar.can_view_admin);
+        let sidebar = make_sidebar(create_admin_user(), admin_perms());
+        assert!(sidebar.perms.admin_view);
         assert!(sidebar.user.is_superuser);
     }
 
     #[test]
     fn test_sidebar_admin_visible_for_staff() {
-        let sidebar = SidebarContentTemplate {
-            user: create_staff_user(),
-            is_dashboard: true,
-            is_assets: false,
-            is_sessions: false,
-            is_recordings: false,
-            is_users: false,
-            is_groups: false,
-            is_approvals: false,
-            is_access_rules: false,
-            is_my_requests: false,
-            can_view_groups: true,
-            can_view_access_rules: true,
-            can_view_admin: true,
-            pending_approval_count: 0,
-        };
-
-        assert!(sidebar.can_view_admin);
+        let sidebar = make_sidebar(create_staff_user(), admin_perms());
+        assert!(sidebar.perms.admin_view);
         assert!(sidebar.user.is_staff);
         assert!(!sidebar.user.is_superuser);
     }
 
     #[test]
     fn test_sidebar_admin_hidden_for_normal_user() {
-        let sidebar = SidebarContentTemplate {
-            user: create_test_user(),
-            is_dashboard: true,
-            is_assets: false,
-            is_sessions: false,
-            is_recordings: false,
-            is_users: false,
-            is_groups: false,
-            is_approvals: false,
-            is_access_rules: false,
-            is_my_requests: false,
-            can_view_groups: false,
-            can_view_access_rules: false,
-            can_view_admin: false,
-            pending_approval_count: 0,
-        };
-
-        assert!(!sidebar.can_view_admin);
+        let sidebar = make_sidebar(create_test_user(), PermissionContext::default());
+        assert!(!sidebar.perms.admin_view);
         assert!(!sidebar.user.is_staff);
         assert!(!sidebar.user.is_superuser);
     }

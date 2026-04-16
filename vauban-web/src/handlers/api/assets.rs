@@ -59,7 +59,7 @@ pub async fn list_assets(
             .map_err(|_| AppError::Authorization("User not found".to_string()))?;
 
         let accessible_ids = crate::services::access::list_accessible_asset_ids(
-            state.access_client.as_ref(),
+            &state.access_client,
             &mut conn,
             user_internal_id,
         )

@@ -3,7 +3,6 @@
 /// Asset group table operations delegate to AccessIpcClient when available,
 /// with fallback to direct SQL when IPC is not configured.
 use super::*;
-use shared::messages::AssetGroupInfo;
 
 /// Format RFC3339 date string to display format.
 fn format_rfc3339_date(s: &str, fmt: &str) -> String {
@@ -30,11 +29,8 @@ pub async fn asset_group_list(
     // Filter out empty strings - form sends empty string when search is cleared
     let search_filter = params.get("search").filter(|s| !s.is_empty()).cloned();
 
-    let groups: Vec<crate::templates::assets::group_list::AssetGroupItem> = if let Some(
-        ref client,
-    ) =
-        state.access_client
-    {
+    let client = &state.access_client;
+    let groups: Vec<crate::templates::assets::group_list::AssetGroupItem> = {
         // IPC path: list groups via Access, counts via local SQL
         let ipc_groups = client.list_asset_groups().await?;
         let mut conn = state
@@ -77,81 +73,6 @@ pub async fn asset_group_list(
             .collect();
         groups.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
         groups
-    } else {
-        // SQL fallback
-        let mut conn = state
-            .db_pool
-            .get()
-            .await
-            .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
-        use crate::db::like_contains;
-        use crate::schema::asset_asset_groups;
-        use crate::schema::asset_groups;
-        use diesel::dsl::count;
-
-        let mut query = asset_groups::table
-            .left_join(
-                asset_asset_groups::table
-                    .on(asset_asset_groups::asset_group_id.eq(asset_groups::id)),
-            )
-            .left_join(
-                schema_assets::table.on(schema_assets::id
-                    .eq(asset_asset_groups::asset_id)
-                    .and(schema_assets::is_deleted.eq(false))),
-            )
-            .filter(asset_groups::is_deleted.eq(false))
-            .group_by((
-                asset_groups::id,
-                asset_groups::uuid,
-                asset_groups::name,
-                asset_groups::slug,
-                asset_groups::description,
-                asset_groups::color,
-                asset_groups::icon,
-                asset_groups::created_at,
-            ))
-            .select((
-                asset_groups::uuid,
-                asset_groups::name,
-                asset_groups::slug,
-                asset_groups::description,
-                asset_groups::color,
-                asset_groups::icon,
-                asset_groups::created_at,
-                count(schema_assets::id.nullable()),
-            ))
-            .order(asset_groups::name.asc())
-            .into_boxed();
-
-        if let Some(ref s) = search_filter {
-            let pattern = like_contains(s);
-            query = query.filter(
-                asset_groups::name
-                    .ilike(pattern.clone())
-                    .or(asset_groups::slug.ilike(pattern)),
-            );
-        }
-
-        let groups_data: Vec<AssetGroupRow> =
-            query.load(&mut conn).await.map_err(AppError::Database)?;
-
-        groups_data
-            .into_iter()
-            .map(
-                |(uuid, name, slug, description, color, icon, created_at, asset_count)| {
-                    crate::templates::assets::group_list::AssetGroupItem {
-                        uuid: uuid.to_string(),
-                        name,
-                        slug,
-                        description,
-                        color,
-                        icon,
-                        asset_count,
-                        created_at: created_at.format("%b %d, %Y").to_string(),
-                    }
-                },
-            )
-            .collect()
     };
 
     let template = AssetGroupListTemplate {
@@ -181,18 +102,6 @@ struct GroupCountRow {
     cnt: i64,
 }
 
-/// Query result type for asset group list (L-5: Diesel DSL replaces raw SQL).
-type AssetGroupRow = (
-    ::uuid::Uuid,
-    String,
-    String,
-    Option<String>,
-    String,
-    String,
-    chrono::DateTime<chrono::Utc>,
-    i64,
-);
-
 /// Asset group detail page.
 pub async fn asset_group_detail(
     State(state): State<AppState>,
@@ -209,17 +118,15 @@ pub async fn asset_group_detail(
         .map(|c| c.value().to_string())
         .unwrap_or_default();
 
-    let group_uuid = match ::uuid::Uuid::parse_str(&uuid_str) {
-        Ok(uuid) => uuid,
-        Err(_) => {
-            return flash_redirect(flash.error("Invalid group identifier"), "/assets/groups");
-        }
-    };
+    if ::uuid::Uuid::parse_str(&uuid_str).is_err() {
+        return flash_redirect(flash.error("Invalid group identifier"), "/assets/groups");
+    }
 
+    let client = &state.access_client;
     let (group, group_name): (
         crate::templates::assets::group_detail::AssetGroupDetail,
         String,
-    ) = if let Some(ref client) = state.access_client {
+    ) = {
         // IPC path: get group via Access, assets via local SQL
         let group_info = match client.get_asset_group(&uuid_str).await {
             Ok(info) => info,
@@ -277,82 +184,6 @@ pub async fn asset_group_detail(
             assets,
         };
         (group, group_info.name)
-    } else {
-        // SQL fallback
-        let mut conn = match state.db_pool.get().await {
-            Ok(conn) => conn,
-            Err(_) => {
-                return flash_redirect(
-                    flash.error("Database connection error. Please try again."),
-                    "/assets/groups",
-                );
-            }
-        };
-
-        let group_data: AssetGroupDetailResult = match diesel::sql_query(
-            "SELECT uuid, name, slug, description, color, icon, created_at, updated_at
-             FROM asset_groups WHERE uuid = $1 AND is_deleted = false",
-        )
-        .bind::<DieselUuid, _>(group_uuid)
-        .get_result(&mut conn)
-        .await
-        {
-            Ok(data) => data,
-            Err(diesel::result::Error::NotFound) => {
-                return flash_redirect(flash.error("Asset group not found"), "/assets/groups");
-            }
-            Err(_) => {
-                return flash_redirect(
-                    flash.error("Database error. Please try again."),
-                    "/assets/groups",
-                );
-            }
-        };
-
-        let assets_data: Vec<GroupAssetResult> = match diesel::sql_query(
-            "SELECT a.uuid, a.name, a.hostname, a.asset_type, a.status
-             FROM assets a
-             INNER JOIN asset_asset_groups aag ON aag.asset_id = a.id
-             INNER JOIN asset_groups g ON g.id = aag.asset_group_id
-             WHERE g.uuid = $1 AND a.is_deleted = false
-             ORDER BY a.name ASC",
-        )
-        .bind::<DieselUuid, _>(group_uuid)
-        .load(&mut conn)
-        .await
-        {
-            Ok(data) => data,
-            Err(_) => {
-                return flash_redirect(
-                    flash.error("Database error. Please try again."),
-                    "/assets/groups",
-                );
-            }
-        };
-
-        let assets: Vec<crate::templates::assets::group_detail::GroupAssetItem> = assets_data
-            .into_iter()
-            .map(|a| crate::templates::assets::group_detail::GroupAssetItem {
-                uuid: a.uuid.to_string(),
-                name: a.name,
-                hostname: a.hostname,
-                asset_type: a.asset_type,
-                status: a.status,
-            })
-            .collect();
-
-        let group = crate::templates::assets::group_detail::AssetGroupDetail {
-            uuid: group_data.uuid.to_string(),
-            name: group_data.name.clone(),
-            slug: group_data.slug,
-            description: group_data.description,
-            color: group_data.color,
-            icon: group_data.icon,
-            created_at: group_data.created_at.format("%b %d, %Y %H:%M").to_string(),
-            updated_at: group_data.updated_at.format("%b %d, %Y %H:%M").to_string(),
-            assets,
-        };
-        (group, group_data.name)
     };
 
     let base = BaseTemplate::new(format!("{} - Asset Group", group_name), user.clone())
@@ -380,27 +211,6 @@ pub async fn asset_group_detail(
     }
 }
 
-/// Helper struct for asset group detail query results.
-#[derive(diesel::QueryableByName)]
-struct AssetGroupDetailResult {
-    #[diesel(sql_type = diesel::sql_types::Uuid)]
-    uuid: ::uuid::Uuid,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    name: String,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    slug: String,
-    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
-    description: Option<String>,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    color: String,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    icon: String,
-    #[diesel(sql_type = diesel::sql_types::Timestamptz)]
-    created_at: chrono::DateTime<chrono::Utc>,
-    #[diesel(sql_type = diesel::sql_types::Timestamptz)]
-    updated_at: chrono::DateTime<chrono::Utc>,
-}
-
 /// Helper struct for group asset query results.
 #[derive(diesel::QueryableByName)]
 struct GroupAssetResult {
@@ -420,6 +230,7 @@ struct GroupAssetResult {
 pub async fn asset_group_add_asset_form(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
@@ -428,7 +239,7 @@ pub async fn asset_group_add_asset_form(
         AssetGroupAddAssetTemplate, AvailableAsset, GroupSummary,
     };
 
-    if !check_rbac(&state, &auth_user, "groups", "write").await {
+    if !perms.groups_write {
         return Err(AppError::Authorization(
             "Only administrators can manage asset group membership".to_string(),
         ));
@@ -451,8 +262,8 @@ pub async fn asset_group_add_asset_form(
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
-    let (group, target_group_id): (GroupSummary, i32) = if let Some(ref client) = state.access_client
-    {
+    let client = &state.access_client;
+    let (group, target_group_id): (GroupSummary, i32) = {
         let group_info = client
             .get_asset_group(&uuid_str)
             .await
@@ -462,27 +273,6 @@ pub async fn asset_group_add_asset_form(
             name: group_info.name,
         };
         (group, group_info.id)
-    } else {
-        let group_uuid = ::uuid::Uuid::parse_str(&uuid_str)
-            .map_err(|e| AppError::Validation(format!("Invalid UUID: {}", e)))?;
-        use crate::schema::asset_groups::dsl as ag;
-        let group_row: (i32, ::uuid::Uuid, String) = ag::asset_groups
-            .filter(ag::uuid.eq(group_uuid))
-            .filter(ag::is_deleted.eq(false))
-            .select((ag::id, ag::uuid, ag::name))
-            .first(&mut conn)
-            .await
-            .map_err(|e| match e {
-                diesel::result::Error::NotFound => {
-                    AppError::NotFound("Asset group not found".to_string())
-                }
-                _ => AppError::Database(e),
-            })?;
-        let group = GroupSummary {
-            uuid: group_row.1.to_string(),
-            name: group_row.2,
-        };
-        (group, group_row.0)
     };
 
     let allow_multiple = state.config.assets.allow_multiple_groups_per_asset;
@@ -634,7 +424,8 @@ impl AddAssetToGroupForm {
 /// Handle adding assets to a group (supports multiple selection).
 pub async fn asset_group_add_asset(
     State(state): State<AppState>,
-    auth_user: WebAuthUser,
+    _auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
@@ -658,7 +449,7 @@ pub async fn asset_group_add_asset(
         );
     }
 
-    if !check_rbac(&state, &auth_user, "groups", "write").await {
+    if !perms.groups_write {
         return flash_redirect(
             flash.error("Only administrators can manage asset group membership"),
             &format!("/assets/groups/{}", uuid_str),
@@ -666,12 +457,9 @@ pub async fn asset_group_add_asset(
     }
 
     // Parse group UUID
-    let group_uuid = match ::uuid::Uuid::parse_str(&uuid_str) {
-        Ok(uuid) => uuid,
-        Err(_) => {
-            return flash_redirect(flash.error("Invalid group identifier"), "/assets/groups");
-        }
-    };
+    if ::uuid::Uuid::parse_str(&uuid_str).is_err() {
+        return flash_redirect(flash.error("Invalid group identifier"), "/assets/groups");
+    }
 
     // Check if any assets were selected
     if form.asset_uuids.is_empty() {
@@ -695,7 +483,8 @@ pub async fn asset_group_add_asset(
         }
     }
 
-    let group_id: i32 = if let Some(ref client) = state.access_client {
+    let client = &state.access_client;
+    let group_id: i32 = {
         // IPC path: get group id
         let group_info = match client.get_asset_group(&uuid_str).await {
             Ok(info) => info,
@@ -704,36 +493,6 @@ pub async fn asset_group_add_asset(
             }
         };
         group_info.id
-    } else {
-        // SQL fallback
-        let mut conn = match state.db_pool.get().await {
-            Ok(conn) => conn,
-            Err(_) => {
-                return flash_redirect(
-                    flash.error("Database connection error. Please try again."),
-                    &format!("/assets/groups/{}/add-asset", uuid_str),
-                );
-            }
-        };
-        use crate::schema::asset_groups::dsl as ag;
-        match ag::asset_groups
-            .filter(ag::uuid.eq(group_uuid))
-            .filter(ag::is_deleted.eq(false))
-            .select(ag::id)
-            .first(&mut conn)
-            .await
-        {
-            Ok(id) => id,
-            Err(diesel::result::Error::NotFound) => {
-                return flash_redirect(flash.error("Asset group not found"), "/assets/groups");
-            }
-            Err(_) => {
-                return flash_redirect(
-                    flash.error("Database error. Please try again."),
-                    &format!("/assets/groups/{}/add-asset", uuid_str),
-                );
-            }
-        }
     };
 
     let mut conn = match state.db_pool.get().await {
@@ -864,7 +623,8 @@ pub struct RemoveAssetFromGroupForm {
 /// Handle removing an asset from a group.
 pub async fn asset_group_remove_asset(
     State(state): State<AppState>,
-    auth_user: WebAuthUser,
+    _auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
@@ -885,7 +645,7 @@ pub async fn asset_group_remove_asset(
         );
     }
 
-    if !check_rbac(&state, &auth_user, "groups", "write").await {
+    if !perms.groups_write {
         return flash_redirect(
             flash.error("Only administrators can manage asset group membership"),
             &format!("/assets/groups/{}", uuid_str),
@@ -1000,12 +760,13 @@ pub async fn asset_group_remove_asset(
 pub async fn asset_group_edit(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
 ) -> Response {
     let flash = incoming_flash.flash();
 
-    if !check_rbac(&state, &auth_user, "groups", "write").await {
+    if !perms.groups_write {
         return flash_redirect(
             flash.error("Only administrators can edit asset groups"),
             "/assets/groups",
@@ -1024,8 +785,8 @@ pub async fn asset_group_edit(
         })
         .collect();
 
-    let group = if let Some(ref client) = state.access_client {
-        // IPC path
+    let client = &state.access_client;
+    let group = {
         let group_info = match client.get_asset_group(&uuid_str).await {
             Ok(info) => info,
             Err(_) => {
@@ -1039,53 +800,6 @@ pub async fn asset_group_edit(
             description: group_info.description,
             color: group_info.color,
             icon: group_info.icon,
-        }
-    } else {
-        // SQL fallback
-        let mut conn = match state.db_pool.get().await {
-            Ok(conn) => conn,
-            Err(_) => {
-                return flash_redirect(
-                    flash.error("Database connection error. Please try again."),
-                    "/assets/groups",
-                );
-            }
-        };
-
-        let group_uuid = match ::uuid::Uuid::parse_str(&uuid_str) {
-            Ok(uuid) => uuid,
-            Err(_) => {
-                return flash_redirect(flash.error("Invalid group identifier"), "/assets/groups");
-            }
-        };
-
-        let group_data: AssetGroupEditResult = match diesel::sql_query(
-            "SELECT uuid, name, slug, description, color, icon
-             FROM asset_groups WHERE uuid = $1 AND is_deleted = false",
-        )
-        .bind::<DieselUuid, _>(group_uuid)
-        .get_result(&mut conn)
-        .await
-        {
-            Ok(data) => data,
-            Err(diesel::result::Error::NotFound) => {
-                return flash_redirect(flash.error("Asset group not found"), "/assets/groups");
-            }
-            Err(_) => {
-                return flash_redirect(
-                    flash.error("Database error. Please try again."),
-                    "/assets/groups",
-                );
-            }
-        };
-
-        crate::templates::assets::group_edit::AssetGroupEdit {
-            uuid: group_data.uuid.to_string(),
-            name: group_data.name.clone(),
-            slug: group_data.slug,
-            description: group_data.description,
-            color: group_data.color,
-            icon: group_data.icon,
         }
     };
 
@@ -1116,23 +830,6 @@ pub async fn asset_group_edit(
     }
 }
 
-/// Helper struct for asset group edit query results.
-#[derive(diesel::QueryableByName)]
-struct AssetGroupEditResult {
-    #[diesel(sql_type = diesel::sql_types::Uuid)]
-    uuid: ::uuid::Uuid,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    name: String,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    slug: String,
-    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
-    description: Option<String>,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    color: String,
-    #[diesel(sql_type = diesel::sql_types::Varchar)]
-    icon: String,
-}
-
 /// Form data for updating asset group.
 #[derive(Debug, serde::Deserialize)]
 pub struct UpdateAssetGroupForm {
@@ -1149,7 +846,8 @@ pub struct UpdateAssetGroupForm {
 /// Handles POST /assets/groups/{uuid}/edit with flash messages.
 pub async fn update_asset_group(
     State(state): State<AppState>,
-    auth_user: WebAuthUser,
+    _auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
@@ -1169,7 +867,7 @@ pub async fn update_asset_group(
         );
     }
 
-    if !check_rbac(&state, &auth_user, "groups", "write").await {
+    if !perms.groups_write {
         return flash_redirect(
             flash.error("Only administrators can modify asset groups"),
             &format!("/assets/groups/{}", uuid_str),
@@ -1206,46 +904,18 @@ pub async fn update_asset_group(
     let sanitized_name = sanitize(&form.name);
     let sanitized_description = sanitize_opt(form.description.clone());
 
-    let result: Result<(), AppError> = if let Some(ref client) = state.access_client {
-        // IPC path
-        client
-            .update_asset_group(
-                &uuid_str,
-                &sanitized_name,
-                &form.slug,
-                sanitized_description,
-                &form.color,
-                &form.icon,
-            )
-            .await
-            .map(|_| ())
-    } else {
-        // SQL fallback
-        let mut conn = match state.db_pool.get().await {
-            Ok(conn) => conn,
-            Err(_) => {
-                return flash_redirect(
-                    flash.error("Database connection error. Please try again."),
-                    &format!("/assets/groups/{}/edit", group_uuid),
-                );
-            }
-        };
-
-        diesel::sql_query(
-            "UPDATE asset_groups SET name = $1, slug = $2, description = $3, color = $4, icon = $5, updated_at = NOW()
-             WHERE uuid = $6 AND is_deleted = false",
+    let client = &state.access_client;
+    let result: Result<(), AppError> = client
+        .update_asset_group(
+            &uuid_str,
+            &sanitized_name,
+            &form.slug,
+            sanitized_description,
+            &form.color,
+            &form.icon,
         )
-        .bind::<Text, _>(&sanitized_name)
-        .bind::<Text, _>(&form.slug)
-        .bind::<Nullable<Text>, _>(sanitized_description.as_deref())
-        .bind::<Text, _>(&form.color)
-        .bind::<Text, _>(&form.icon)
-        .bind::<DieselUuid, _>(group_uuid)
-        .execute(&mut conn)
         .await
-        .map(|_| ())
-        .map_err(AppError::Database)
-    };
+        .map(|_| ());
 
     match result {
         Ok(_) => flash_redirect(
@@ -1263,12 +933,13 @@ pub async fn update_asset_group(
 pub async fn asset_group_create_form(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::templates::assets::group_create::{AssetGroupCreateForm, AssetGroupCreateTemplate};
 
-    if !check_rbac(&state, &auth_user, "groups", "write").await {
+    if !perms.groups_write {
         return Err(AppError::Authorization(
             "Only administrators can create asset groups".to_string(),
         ));
@@ -1339,7 +1010,8 @@ pub struct CreateAssetGroupWebForm {
 /// Handle asset group creation form submission.
 pub async fn create_asset_group_web(
     State(state): State<AppState>,
-    auth_user: WebAuthUser,
+    _auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
     Form(form): Form<CreateAssetGroupWebForm>,
@@ -1356,7 +1028,7 @@ pub async fn create_asset_group_web(
         return flash_redirect(flash.error("Invalid CSRF token"), "/assets/groups/new");
     }
 
-    if !check_rbac(&state, &auth_user, "groups", "write").await {
+    if !perms.groups_write {
         return flash_redirect(
             flash.error("Only administrators can create asset groups"),
             "/assets/groups",
@@ -1376,79 +1048,16 @@ pub async fn create_asset_group_web(
     let sanitized_description =
         sanitize_opt(form.description.as_ref().filter(|s| !s.is_empty()).cloned());
 
-    let result = if let Some(ref client) = state.access_client {
-        // IPC path
-        client
-            .create_asset_group(
-                &sanitized_name,
-                form.slug.trim(),
-                sanitized_description,
-                &form.color,
-                &form.icon,
-            )
-            .await
-    } else {
-        // SQL fallback
-        let mut conn = match state.db_pool.get().await {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::error!("Database connection error: {}", e);
-                return flash_redirect(
-                    flash.error("Database connection error"),
-                    "/assets/groups/new",
-                );
-            }
-        };
-
-        // Check if asset group with same slug already exists
-        use crate::schema::asset_groups::dsl as ag;
-        let existing: Option<i32> = ag::asset_groups
-            .filter(ag::slug.eq(form.slug.trim()))
-            .filter(ag::is_deleted.eq(false))
-            .select(ag::id)
-            .first(&mut conn)
-            .await
-            .optional()
-            .ok()
-            .flatten();
-
-        if existing.is_some() {
-            return flash_redirect(
-                flash.error("An asset group with this slug already exists"),
-                "/assets/groups/new",
-            );
-        }
-
-        let new_uuid = ::uuid::Uuid::new_v4();
-        let now = chrono::Utc::now();
-
-        diesel::insert_into(ag::asset_groups)
-            .values((
-                ag::uuid.eq(new_uuid),
-                ag::name.eq(&sanitized_name),
-                ag::slug.eq(form.slug.trim()),
-                ag::description.eq(&sanitized_description),
-                ag::color.eq(&form.color),
-                ag::icon.eq(&form.icon),
-                ag::is_deleted.eq(false),
-                ag::created_at.eq(now),
-                ag::updated_at.eq(now),
-            ))
-            .execute(&mut conn)
-            .await
-            .map(|_| AssetGroupInfo {
-                id: 0,
-                uuid: new_uuid.to_string(),
-                name: sanitized_name.clone(),
-                slug: form.slug.trim().to_string(),
-                description: sanitized_description.clone(),
-                color: form.color.clone(),
-                icon: form.icon.clone(),
-                created_at: now.to_rfc3339(),
-                updated_at: now.to_rfc3339(),
-            })
-            .map_err(AppError::Database)
-    };
+    let client = &state.access_client;
+    let result = client
+        .create_asset_group(
+            &sanitized_name,
+            form.slug.trim(),
+            sanitized_description,
+            &form.color,
+            &form.icon,
+        )
+        .await;
 
     match result {
         Ok(info) => flash_redirect(
@@ -1484,7 +1093,8 @@ pub struct DeleteAssetGroupForm {
 /// Hard-deletes the asset group and its asset associations.
 pub async fn delete_asset_group_web(
     State(state): State<AppState>,
-    auth_user: WebAuthUser,
+    _auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
@@ -1505,7 +1115,7 @@ pub async fn delete_asset_group_web(
         );
     }
 
-    if !check_rbac(&state, &auth_user, "groups", "write").await {
+    if !perms.groups_write {
         return flash_redirect(
             flash.error("Only administrators can delete asset groups"),
             "/assets/groups",
@@ -1513,14 +1123,12 @@ pub async fn delete_asset_group_web(
     }
 
     // Validate UUID
-    let group_uuid = match ::uuid::Uuid::parse_str(&uuid_str) {
-        Ok(uuid) => uuid,
-        Err(_) => {
-            return flash_redirect(flash.error("Invalid group identifier"), "/assets/groups");
-        }
-    };
+    if ::uuid::Uuid::parse_str(&uuid_str).is_err() {
+        return flash_redirect(flash.error("Invalid group identifier"), "/assets/groups");
+    }
 
-    let result = if let Some(ref client) = state.access_client {
+    let client = &state.access_client;
+    let result = {
         // IPC path: get group to know id, clear local assets, then delete via IPC
         let group_info = match client.get_asset_group(&uuid_str).await {
             Ok(info) => info,
@@ -1548,46 +1156,6 @@ pub async fn delete_asset_group_web(
             .delete_asset_group(&uuid_str)
             .await
             .map(|_| group_info.name)
-    } else {
-        // SQL fallback
-        let mut conn = match state.db_pool.get().await {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::error!("Database connection error: {}", e);
-                return flash_redirect(
-                    flash.error("Database connection error"),
-                    &format!("/assets/groups/{}", uuid_str),
-                );
-            }
-        };
-        use crate::schema::asset_groups::dsl as ag;
-        let group_data: Option<(i32, String)> = ag::asset_groups
-            .filter(ag::uuid.eq(group_uuid))
-            .filter(ag::is_deleted.eq(false))
-            .select((ag::id, ag::name))
-            .first(&mut conn)
-            .await
-            .optional()
-            .ok()
-            .flatten();
-
-        let (group_id, group_name) = match group_data {
-            Some(data) => data,
-            None => {
-                return flash_redirect(flash.error("Asset group not found"), "/assets/groups");
-            }
-        };
-
-        use crate::schema::asset_asset_groups::dsl as aag;
-        let _ = diesel::delete(aag::asset_asset_groups.filter(aag::asset_group_id.eq(group_id)))
-            .execute(&mut conn)
-            .await;
-
-        diesel::delete(ag::asset_groups.filter(ag::id.eq(group_id)))
-            .execute(&mut conn)
-            .await
-            .map(|_| group_name)
-            .map_err(AppError::Database)
     };
 
     match result {

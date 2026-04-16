@@ -19,6 +19,7 @@
 pub mod test_utils;
 
 pub mod acme;
+pub mod auth;
 pub mod cache;
 pub mod config;
 pub mod crypto;
@@ -80,8 +81,12 @@ pub struct AppState {
     /// None if vault is not available (development mode without supervisor).
     pub vault_client: Option<Arc<VaultCryptoClient>>,
     /// Access IPC client for authorization checks via vauban-access (Casbin).
-    /// None if not running under supervisor (development mode).
-    pub access_client: Option<Arc<AccessIpcClient>>,
+    ///
+    /// Mandatory: vauban-web refuses to start without a live IPC channel to
+    /// vauban-access. Casbin is the single source of truth for authorization
+    /// and has no fallback path (no role:superuser / role:staff hardcoded
+    /// short-circuit).
+    pub access_client: Arc<AccessIpcClient>,
     /// Auth IPC client for password hashing/verification via vauban-auth (Argon2id).
     /// None if not running under supervisor (development mode).
     pub auth_ipc_client: Option<Arc<AuthIpcClient>>,

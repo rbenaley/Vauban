@@ -34,6 +34,7 @@ impl Default for VaubanConfig {
     }
 }
 
+use crate::auth::PermissionContext;
 use crate::templates::partials::SidebarContentTemplate;
 
 /// Base template that all pages extend.
@@ -49,13 +50,24 @@ pub struct BaseTemplate {
     pub header_user: Option<UserContext>,                // Header user for include
 }
 
-/// User context for templates (simplified from AuthUser).
+/// User context for templates (simplified from `AuthUser`).
+///
+/// **Authorization policy.** `is_superuser` and `is_staff` are exposed for
+/// **display purposes only** (e.g. role badges, account management forms).
+/// They MUST NOT be used to gate UI elements: every authorization check in a
+/// template must read from the Casbin-backed
+/// [`crate::auth::PermissionContext`] published as `sc.perms.*` on the
+/// sidebar (or as `perms.*` on per-page templates that opt in). Patterns
+/// such as `{% if user.is_staff %}` for hiding/showing actionable controls
+/// silently bypass custom Casbin policies (see issue #1) and are forbidden.
 #[derive(Debug, Clone)]
 pub struct UserContext {
     pub uuid: String,
     pub username: String,
     pub display_name: String,
+    /// Display-only: do not gate UI on this; use `PermissionContext` instead.
     pub is_superuser: bool,
+    /// Display-only: do not gate UI on this; use `PermissionContext` instead.
     pub is_staff: bool,
 }
 
@@ -68,24 +80,19 @@ impl UserContext {
 impl BaseTemplate {
     pub fn new(title: String, user: Option<UserContext>) -> Self {
         let header_user = user.clone();
-        let sidebar_content = user.as_ref().map(|u| {
-            let is_admin = u.is_superuser || u.is_staff;
-            SidebarContentTemplate {
-                user: u.clone(),
-                is_dashboard: false,
-                is_assets: false,
-                is_sessions: false,
-                is_recordings: false,
-                is_users: false,
-                is_groups: false,
-                is_approvals: false,
-                is_access_rules: false,
-                is_my_requests: false,
-                can_view_groups: is_admin,
-                can_view_access_rules: is_admin,
-                can_view_admin: is_admin,
-                pending_approval_count: 0,
-            }
+        let sidebar_content = user.as_ref().map(|u| SidebarContentTemplate {
+            user: u.clone(),
+            is_dashboard: false,
+            is_assets: false,
+            is_sessions: false,
+            is_recordings: false,
+            is_users: false,
+            is_groups: false,
+            is_approvals: false,
+            is_access_rules: false,
+            is_my_requests: false,
+            pending_approval_count: 0,
+            perms: PermissionContext::default(),
         });
 
         Self {
@@ -107,7 +114,16 @@ impl BaseTemplate {
     pub fn with_current_path(mut self, path: &str) -> Self {
         // Update sidebar with current path if user exists
         if let Some(ref user) = self.user {
-            let is_admin = user.is_superuser || user.is_staff;
+            // Preserve any perms already injected by an earlier
+            // `apply_sidebar_rbac`/`with_perms` call so that calling
+            // `with_current_path` after the RBAC pre-load does not regress to
+            // the deny-everything default. In practice handlers call this
+            // before `apply_sidebar_rbac`, but we stay defensive.
+            let preserved_perms = self
+                .sidebar_content
+                .as_ref()
+                .map(|s| s.perms.clone())
+                .unwrap_or_default();
             self.sidebar_content = Some(SidebarContentTemplate {
                 user: user.clone(),
                 is_dashboard: path == "/",
@@ -122,26 +138,20 @@ impl BaseTemplate {
                 is_approvals: path.contains("/approvals"),
                 is_access_rules: path.contains("/access"),
                 is_my_requests: path.contains("/my-requests"),
-                can_view_groups: is_admin,
-                can_view_access_rules: is_admin,
-                can_view_admin: is_admin,
                 pending_approval_count: 0,
+                perms: preserved_perms,
             });
         }
         self
     }
 
-    /// Override sidebar RBAC permissions (computed async by handlers).
-    pub fn with_sidebar_permissions(
-        mut self,
-        can_view_groups: bool,
-        can_view_access_rules: bool,
-        can_view_admin: bool,
-    ) -> Self {
+    /// Inject the canonical Casbin [`PermissionContext`] into the sidebar so
+    /// templates can gate UI on `sc.perms.*` instead of `is_staff`/`is_superuser`.
+    /// This is the only supported way to populate sidebar RBAC; handlers must
+    /// call it (typically via [`crate::handlers::web::apply_sidebar_rbac`]).
+    pub fn with_perms(mut self, perms: PermissionContext) -> Self {
         if let Some(ref mut sidebar) = self.sidebar_content {
-            sidebar.can_view_groups = can_view_groups;
-            sidebar.can_view_access_rules = can_view_access_rules;
-            sidebar.can_view_admin = can_view_admin;
+            sidebar.perms = perms;
         }
         self
     }
@@ -412,7 +422,7 @@ mod tests {
     }
 
     #[test]
-    fn test_base_template_superuser_can_view_all() {
+    fn test_base_template_perms_default_until_injected() {
         let user = UserContext {
             uuid: "admin".to_string(),
             username: "admin".to_string(),
@@ -423,8 +433,45 @@ mod tests {
         let base = BaseTemplate::new("Admin".to_string(), Some(user));
 
         let sidebar = unwrap_some!(base.sidebar_content);
-        assert!(sidebar.can_view_groups);
-        assert!(sidebar.can_view_access_rules);
+        assert!(
+            !sidebar.perms.admin_view,
+            "PermissionContext must default to deny until apply_sidebar_rbac runs"
+        );
+    }
+
+    #[test]
+    fn test_base_template_with_perms_injects_casbin_view() {
+        let user = create_test_user();
+        let perms = PermissionContext {
+            admin_view: true,
+            groups_read: true,
+            access_rules_read: true,
+            ..PermissionContext::default()
+        };
+        let base = BaseTemplate::new("Admin".to_string(), Some(user)).with_perms(perms);
+
+        let sidebar = unwrap_some!(base.sidebar_content);
+        assert!(sidebar.perms.admin_view);
+        assert!(sidebar.perms.groups_read);
+        assert!(sidebar.perms.access_rules_read);
+    }
+
+    #[test]
+    fn test_with_current_path_preserves_injected_perms() {
+        let user = create_test_user();
+        let perms = PermissionContext {
+            admin_view: true,
+            ..PermissionContext::default()
+        };
+        let base = BaseTemplate::new("Admin".to_string(), Some(user))
+            .with_perms(perms)
+            .with_current_path("/sessions");
+
+        let sidebar = unwrap_some!(base.sidebar_content);
+        assert!(
+            sidebar.perms.admin_view,
+            "with_current_path must preserve previously injected PermissionContext"
+        );
     }
 
     #[test]

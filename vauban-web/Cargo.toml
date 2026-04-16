@@ -117,6 +117,7 @@ rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "
 
 [dev-dependencies]
 vauban-access = { path = "../vauban-access" }
+casbin.workspace = true
 tokio-test = "0.4"
 mockall = "0.14"
 axum-test = "18"

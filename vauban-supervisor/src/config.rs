@@ -880,7 +880,7 @@ mod tests {
     fn test_service_config_no_uid_gid_in_development() {
         let config = test_config();
 
-        for (_, service) in &config.services {
+        for service in config.services.values() {
             assert!(service.uid.is_none());
             assert!(service.gid.is_none());
         }

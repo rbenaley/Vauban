@@ -192,7 +192,7 @@ pub async fn connect_rdp(
     let mut jit_max_duration: Option<i32> = None;
     if !auth_user.is_superuser && !auth_user.is_staff {
         let access_result = crate::services::access::can_access_asset(
-            state.access_client.as_ref(),
+            &state.access_client,
             &mut conn,
             user_id,
             asset_id,

@@ -36,6 +36,17 @@ pub fn session_status_class(status: &str) -> &'static str {
     }
 }
 
+pub use active_list::{
+    ActiveListContentWidget, ActiveListStatsWidget, ActiveListTemplate, ActiveSessionItem,
+};
+pub use approval_detail::ApprovalDetailTemplate;
+pub use approval_list::ApprovalListTemplate;
+pub use my_requests::MyRequestsTemplate;
+pub use recording_list::RecordingListTemplate;
+pub use session_detail::SessionDetailTemplate;
+pub use session_list::{SessionListContentWidget, SessionListItem, SessionListTemplate};
+pub use terminal::TerminalTemplate;
+
 #[cfg(test)]
 mod tests {
     use super::session_status_class;
@@ -137,14 +148,3 @@ mod tests {
         }
     }
 }
-
-pub use active_list::{
-    ActiveListContentWidget, ActiveListStatsWidget, ActiveListTemplate, ActiveSessionItem,
-};
-pub use approval_detail::ApprovalDetailTemplate;
-pub use approval_list::ApprovalListTemplate;
-pub use my_requests::MyRequestsTemplate;
-pub use recording_list::RecordingListTemplate;
-pub use session_detail::SessionDetailTemplate;
-pub use session_list::{SessionListContentWidget, SessionListItem, SessionListTemplate};
-pub use terminal::TerminalTemplate;

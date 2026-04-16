@@ -6,9 +6,10 @@ use crate::models::session::SessionType;
 pub async fn session_list(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
-    if !check_rbac(&state, &auth_user, "admin", "view").await {
+    if !perms.admin_view {
         return Err(AppError::Authorization(
             "Only administrators can view all sessions".to_string(),
         ));
@@ -252,6 +253,7 @@ pub async fn session_detail(
     State(state): State<AppState>,
     incoming_flash: IncomingFlash,
     auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     axum::extract::Path(id_str): axum::extract::Path<String>,
 ) -> Response {
     use crate::templates::sessions::session_detail::SessionDetail;
@@ -276,7 +278,8 @@ pub async fn session_detail(
             );
         }
     };
-    let user_is_admin = check_rbac(&state, &auth_user, "admin", "view").await;
+    // Sourced from the request-scoped PermissionContext (Casbin via middleware).
+    let user_is_admin = perms.admin_view;
 
     use crate::schema::users;
 
@@ -442,12 +445,13 @@ pub async fn session_detail(
 pub async fn recording_list(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::templates::sessions::recording_list::RecordingListItem;
 
     // Only admin users (superuser or staff) can view recordings
-    if !check_rbac(&state, &auth_user, "admin", "view").await {
+    if !perms.admin_view {
         return Err(AppError::Authorization(
             "Only administrators can view recordings".to_string(),
         ));
@@ -618,6 +622,7 @@ pub async fn recording_play(
     State(state): State<AppState>,
     incoming_flash: IncomingFlash,
     auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     axum::extract::Path(id_str): axum::extract::Path<String>,
 ) -> Response {
     use crate::templates::sessions::recording_play::RecordingData;
@@ -636,7 +641,7 @@ pub async fn recording_play(
     };
 
     // Only admin users (superuser or staff) can play recordings
-    if !check_rbac(&state, &auth_user, "admin", "view").await {
+    if !perms.admin_view {
         return flash_redirect(
             flash.error("Only administrators can play recordings"),
             "/sessions/recordings",
@@ -768,10 +773,11 @@ pub async fn recording_play(
 pub async fn approval_list(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
     // Only admin users (superuser or staff) can view approvals
-    if !check_rbac(&state, &auth_user, "admin", "view").await {
+    if !perms.admin_view {
         return Err(AppError::Authorization(
             "Only administrators can view approvals".to_string(),
         ));
@@ -911,12 +917,13 @@ pub async fn approval_detail(
     State(state): State<AppState>,
     incoming_flash: IncomingFlash,
     auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
 ) -> Response {
     let flash = incoming_flash.flash();
 
     // Only admin users (superuser or staff) can view approval details
-    if !check_rbac(&state, &auth_user, "admin", "view").await {
+    if !perms.admin_view {
         return flash_redirect(
             flash.error("Only administrators can view approval details"),
             "/sessions/approvals",
@@ -1151,7 +1158,7 @@ pub async fn submit_access_request(
     // Access rule check
     let access_result = if !auth_user.is_superuser && !auth_user.is_staff {
         let result = crate::services::access::can_access_asset(
-            state.access_client.as_ref(),
+            &state.access_client,
             &mut conn,
             user_id,
             asset.id,
@@ -1316,6 +1323,7 @@ pub async fn approve_access_request(
     State(state): State<AppState>,
     incoming_flash: IncomingFlash,
     auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     jar: CookieJar,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
     Form(form): Form<ApproveForm>,
@@ -1332,7 +1340,7 @@ pub async fn approve_access_request(
         return Ok((axum::http::StatusCode::BAD_REQUEST, "Invalid CSRF token").into_response());
     }
 
-    if !check_rbac(&state, &auth_user, "admin", "view").await {
+    if !perms.admin_view {
         return Err(AppError::Authorization(
             "Only administrators can approve requests".to_string(),
         ));
@@ -1487,6 +1495,7 @@ pub async fn approve_access_request(
 pub async fn reject_access_request(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     jar: CookieJar,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
     Form(form): Form<CsrfOnlyForm>,
@@ -1501,7 +1510,7 @@ pub async fn reject_access_request(
         return Ok((axum::http::StatusCode::BAD_REQUEST, "Invalid CSRF token").into_response());
     }
 
-    if !check_rbac(&state, &auth_user, "admin", "view").await {
+    if !perms.admin_view {
         return Err(AppError::Authorization(
             "Only administrators can reject requests".to_string(),
         ));
@@ -1867,10 +1876,11 @@ pub async fn my_requests(
 pub async fn active_sessions(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
     // Only admin users (superuser or staff) can view active sessions
-    if !check_rbac(&state, &auth_user, "admin", "view").await {
+    if !perms.admin_view {
         return Err(AppError::Authorization(
             "Only administrators can view active sessions".to_string(),
         ));
@@ -2023,7 +2033,8 @@ pub async fn active_sessions(
 /// chunked streaming via `ReaderStream`.
 pub async fn serve_recording(
     State(state): State<AppState>,
-    auth_user: WebAuthUser,
+    _auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     headers: axum::http::HeaderMap,
     axum::extract::Path(session_uuid_str): axum::extract::Path<String>,
 ) -> Result<axum::response::Response, AppError> {
@@ -2032,7 +2043,7 @@ pub async fn serve_recording(
     use tokio::io::{AsyncReadExt, AsyncSeekExt};
     use tokio_util::io::ReaderStream;
 
-    if !check_rbac(&state, &auth_user, "admin", "view").await {
+    if !perms.admin_view {
         return Err(AppError::Authorization(
             "Only administrators can access recordings".to_string(),
         ));
@@ -2216,13 +2227,14 @@ const DASH_TIMESCALE: u32 = 90_000;
 /// seamless resolution transitions.
 pub async fn serve_manifest(
     State(state): State<AppState>,
-    auth_user: WebAuthUser,
+    _auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     axum::extract::Path(session_uuid_str): axum::extract::Path<String>,
 ) -> Result<axum::response::Response, AppError> {
     use axum::body::Body;
     use axum::http::{StatusCode, header};
 
-    if !check_rbac(&state, &auth_user, "admin", "view").await {
+    if !perms.admin_view {
         return Err(AppError::Authorization(
             "Only administrators can access recordings".to_string(),
         ));
@@ -2377,7 +2389,8 @@ fn build_mpd_xml(session_uuid: &str, segments: &[SegmentMeta]) -> String {
 /// Route: GET /recordings/{session_uuid}/{segment}.mp4
 pub async fn serve_segment(
     State(state): State<AppState>,
-    auth_user: WebAuthUser,
+    _auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     headers: axum::http::HeaderMap,
     axum::extract::Path((session_uuid_str, segment_str)): axum::extract::Path<(String, String)>,
 ) -> Result<axum::response::Response, AppError> {
@@ -2386,7 +2399,7 @@ pub async fn serve_segment(
     use tokio::io::{AsyncReadExt, AsyncSeekExt};
     use tokio_util::io::ReaderStream;
 
-    if !check_rbac(&state, &auth_user, "admin", "view").await {
+    if !perms.admin_view {
         return Err(AppError::Authorization(
             "Only administrators can access recordings".to_string(),
         ));
@@ -2520,14 +2533,15 @@ pub async fn serve_segment(
 /// Route: GET /recordings/{session_uuid}/session.cast
 pub async fn serve_ssh_recording(
     State(state): State<AppState>,
-    auth_user: WebAuthUser,
+    _auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     axum::extract::Path(session_uuid_str): axum::extract::Path<String>,
 ) -> Result<axum::response::Response, AppError> {
     use axum::body::Body;
     use axum::http::header;
     use tokio_util::io::ReaderStream;
 
-    if !check_rbac(&state, &auth_user, "admin", "view").await {
+    if !perms.admin_view {
         return Err(AppError::Authorization(
             "Only administrators can access recordings".to_string(),
         ));

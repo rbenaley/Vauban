@@ -34,6 +34,10 @@ pub struct TestApp {
     pub broadcast: BroadcastService,
     pub user_connections: vauban_web::services::connections::UserConnectionRegistry,
     pub ws_counter: vauban_web::services::connections::WsConnectionCounter,
+    /// Handle to the in-process vauban-access service backing the test
+    /// AppState's `access_client`. Kept alive for the lifetime of the app
+    /// so the background threads (and their Casbin enforcer) stay up.
+    pub _access_service: &'static ipc_test_service::InProcessAccessService,
 }
 
 /// Global test app instance (lazy initialization).
@@ -95,6 +99,23 @@ impl TestApp {
             None, 1000, // High limit for tests
         ));
 
+        // Spawn the in-process vauban-access service (real Casbin enforcer
+        // + real IPC pipes). vauban-web requires a live `access_client` now
+        // that the standalone fallback has been removed.
+        let access_service: &'static ipc_test_service::InProcessAccessService = {
+            static ACCESS_SERVICE: OnceCell<ipc_test_service::InProcessAccessService> =
+                OnceCell::const_new();
+            ACCESS_SERVICE
+                .get_or_init(|| async {
+                    ipc_test_service::spawn(config.database.url.expose_secret())
+                })
+                .await
+        };
+        // The `ipc_test_service::spawn` helper already owns a dedicated
+        // thread that drives `AccessIpcClient::process_incoming`, so here we
+        // only need to clone the `Arc` and hand it to the app state.
+        let access_client = std::sync::Arc::clone(&access_service.access_client);
+
         // Create app state
         let state = AppState {
             config: config.clone(),
@@ -109,7 +130,7 @@ impl TestApp {
             rdp_proxy: None,       // No RDP proxy in tests
             supervisor: None,      // No supervisor in tests
             vault_client: None,    // No vault in tests (dev mode fallback)
-            access_client: None,   // No Access IPC in tests (dev mode fallback)
+            access_client,         // Real Casbin-backed IPC client
             auth_ipc_client: None, // No Auth IPC in tests (dev mode fallback)
         };
 
@@ -127,6 +148,7 @@ impl TestApp {
             broadcast,
             user_connections,
             ws_counter,
+            _access_service: access_service,
         }
     }
 
@@ -607,7 +629,17 @@ fn build_test_router(state: AppState) -> Router {
             ),
             middleware::flash::flash_middleware,
         ))
-        // Add auth middleware
+        // Add Casbin PermissionContext middleware BEFORE auth in the `.layer()`
+        // chain so that after Router's reverse-order wrapping it ends up INSIDE
+        // the auth layer (i.e. runs AFTER auth populates `AuthUser`). This
+        // mirrors the ServiceBuilder-based layering in main.rs where auth is
+        // added first (outermost) and perms second (innermost).
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            middleware::permissions::permission_context_middleware,
+        ))
+        // Add auth middleware (outermost here so it runs first and populates
+        // AuthUser before the PermissionContext middleware).
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             middleware::auth::auth_middleware,
@@ -663,11 +695,17 @@ pub mod test_db {
 /// Spawns a background thread running the vauban-access handler logic,
 /// connected via a pipe pair. Returns the `AccessIpcClient` and a handle
 /// to the background service thread.
+///
+/// The service uses a **real Casbin enforcer** loaded from the workspace
+/// `config/model.conf` and `config/default_policy.csv`, mirroring the
+/// production policy. This means tests exercise the same authorization
+/// logic as production, with no hardcoded "allow all" shortcut.
 pub mod ipc_test_service {
     use std::os::unix::io::IntoRawFd;
     use std::sync::Arc;
     use std::thread::JoinHandle;
 
+    use casbin::prelude::*;
     use shared::ipc::{IpcChannel, IpcError};
     use shared::messages::{AccessResponse, Message, RbacResult};
     use vauban_web::ipc::AccessIpcClient;
@@ -719,6 +757,35 @@ pub mod ipc_test_service {
         }
     }
 
+    fn load_test_enforcer(rt: &tokio::runtime::Runtime) -> Enforcer {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("workspace root")
+            .join("config")
+            .join("access");
+        let model_path = root.join("model.conf");
+        let policy_path = root.join("default_policy.csv");
+        assert!(
+            model_path.exists(),
+            "model.conf not found at {}",
+            model_path.display()
+        );
+        assert!(
+            policy_path.exists(),
+            "default_policy.csv not found at {}",
+            policy_path.display()
+        );
+
+        let model = rt
+            .block_on(DefaultModel::from_file(
+                model_path.to_str().unwrap().to_string(),
+            ))
+            .expect("load Casbin model");
+        let adapter = FileAdapter::new(policy_path.to_str().unwrap().to_string());
+        rt.block_on(Enforcer::new(model, adapter))
+            .expect("build Casbin enforcer")
+    }
+
     fn run_access_service_loop(channel: IpcChannel, database_url: &str) {
         use diesel_async::AsyncPgConnection;
         use diesel_async::pooled_connection::AsyncDieselConnectionManager;
@@ -736,6 +803,8 @@ pub mod ipc_test_service {
             let manager = AsyncDieselConnectionManager::<AsyncPgConnection>::new(database_url);
             Pool::builder(manager).max_size(2).build().expect("DB pool")
         };
+
+        let enforcer = load_test_enforcer(&rt);
 
         loop {
             match channel.recv() {
@@ -768,13 +837,20 @@ pub mod ipc_test_service {
                 }
                 Ok(Message::RbacCheck {
                     request_id,
-                    subject: _,
-                    object: _,
-                    action: _,
+                    subject,
+                    object,
+                    action,
                 }) => {
+                    let allowed = enforcer
+                        .enforce(vec![subject.clone(), object.clone(), action.clone()])
+                        .unwrap_or(false);
                     let result = RbacResult {
-                        allowed: true,
-                        reason: None,
+                        allowed,
+                        reason: if allowed {
+                            None
+                        } else {
+                            Some("Policy denied".to_string())
+                        },
                     };
                     let msg = Message::RbacResponse { request_id, result };
                     if channel.send(&msg).is_err() {

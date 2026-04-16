@@ -435,6 +435,7 @@ use crate::fixtures::create_simple_ssh_asset;
 use vauban_web::schema::proxy_sessions;
 
 /// Create a proxy session with a specific status and timestamps.
+#[allow(clippy::too_many_arguments)]
 async fn create_proxy_session_with_timestamps(
     conn: &mut AsyncPgConnection,
     user_id: i32,

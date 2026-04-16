@@ -47,7 +47,7 @@
                 </ul>
             </li>
 
-            {% if sc.can_view_admin %}
+            {% if sc.perms.admin_view %}
             <li>
                 <div class="text-xs font-semibold leading-6 text-gray-400">Administration</div>
                 <ul role="list" class="-mx-2 mt-2 space-y-1">
@@ -63,7 +63,7 @@
                     </li>
 
                     <!-- Groups -->
-                    {% if sc.can_view_groups %}
+                    {% if sc.perms.groups_read %}
                     <li>
                         <a href="/accounts/groups"
                            class="group flex gap-x-3 rounded-md p-2 text-sm font-semibold leading-6 {% if sc.is_groups %}bg-gray-800 text-white{% else %}text-gray-400 hover:bg-gray-800 hover:text-white{% endif %}">
@@ -121,7 +121,7 @@
                     </li>
 
                     <!-- Access Rules -->
-                    {% if sc.can_view_access_rules %}
+                    {% if sc.perms.access_rules_read %}
                     <li>
                         <a href="/assets/access"
                            class="group flex gap-x-3 rounded-md p-2 text-sm font-semibold leading-6 {% if sc.is_access_rules %}bg-gray-800 text-white{% else %}text-gray-400 hover:bg-gray-800 hover:text-white{% endif %}">
@@ -159,7 +159,11 @@
                            class="block rounded-md py-2 pl-11 pr-2 text-sm leading-6 text-gray-400 hover:bg-gray-700 hover:text-white">
                             My sessions
                         </a>
-                        {% if sc.user.is_staff || sc.user.is_superuser %}
+                        {# Gate "All sessions" on Casbin `auth_sessions:read` (the       #}
+                        {# permission required by `admin_user_sessions`), not on         #}
+                        {# `is_staff || is_superuser`, so policy customizations remain    #}
+                        {# coherent with the server-side gate. (PermissionContext)        #}
+                        {% if sc.perms.auth_sessions_read %}
                         <a href="/admin/sessions"
                            class="block rounded-md py-2 pl-11 pr-2 text-sm leading-6 text-gray-400 hover:bg-gray-700 hover:text-white">
                             All sessions

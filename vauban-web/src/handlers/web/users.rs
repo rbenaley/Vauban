@@ -213,6 +213,7 @@ pub async fn user_detail(
     State(state): State<AppState>,
     incoming_flash: IncomingFlash,
     auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     axum::extract::Path(user_uuid): axum::extract::Path<String>,
 ) -> Response {
     use crate::schema::users;
@@ -335,8 +336,9 @@ pub async fn user_detail(
         created_at: created_at.format("%b %d, %Y").to_string(),
     };
 
-    let has_user_write = check_rbac(&state, &auth_user, "users", "write").await;
-    let can_edit = has_user_write && (!is_superuser || auth_user.is_superuser);
+    // Sourced from the request-scoped PermissionContext (Casbin via middleware)
+    // instead of an ad-hoc `check_rbac` round-trip per request.
+    let can_edit = perms.users_write && (!is_superuser || auth_user.is_superuser);
 
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
@@ -396,10 +398,11 @@ pub struct UpdateUserWebForm {
 pub async fn user_create_form(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::templates::accounts::UserCreateTemplate;
 
-    if !check_rbac(&state, &auth_user, "users", "write").await {
+    if !perms.users_write {
         return Err(AppError::Authorization(
             "You do not have permission to create users".to_string(),
         ));
@@ -437,6 +440,7 @@ pub async fn user_create_form(
 pub async fn create_user_web(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
     Form(form): Form<CreateUserWebForm>,
@@ -459,7 +463,7 @@ pub async fn create_user_web(
         );
     }
 
-    if !check_rbac(&state, &auth_user, "users", "write").await {
+    if !perms.users_write {
         return flash_redirect(
             flash.error("You do not have permission to create users"),
             "/accounts/users",
@@ -592,6 +596,7 @@ pub async fn create_user_web(
 pub async fn user_edit_form(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     axum::extract::Path(user_uuid): axum::extract::Path<String>,
 ) -> Response {
@@ -600,7 +605,7 @@ pub async fn user_edit_form(
 
     let flash = incoming_flash.flash();
 
-    if !check_rbac(&state, &auth_user, "users", "write").await {
+    if !perms.users_write {
         return flash_redirect(
             flash.error("You do not have permission to edit users"),
             "/accounts/users",
@@ -690,8 +695,8 @@ pub async fn user_edit_form(
 
     let password_min_length = state.config.security.password_min_length;
     let can_manage_superusers = auth_user.is_superuser;
-    let has_user_write = check_rbac(&state, &auth_user, "users", "write").await;
-    let can_delete = has_user_write && (!is_superuser || auth_user.is_superuser);
+    // Sourced from the request-scoped PermissionContext (Casbin via middleware).
+    let can_delete = perms.users_write && (!is_superuser || auth_user.is_superuser);
 
     let user = Some(user_context_from_auth(&auth_user));
     let base =
@@ -725,6 +730,7 @@ pub async fn user_edit_form(
 pub async fn update_user_web(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
     axum::extract::Path(user_uuid): axum::extract::Path<String>,
@@ -749,7 +755,7 @@ pub async fn update_user_web(
         );
     }
 
-    if !check_rbac(&state, &auth_user, "users", "write").await {
+    if !perms.users_write {
         return flash_redirect(
             flash.error("You do not have permission to edit users"),
             "/accounts/users",
@@ -933,6 +939,7 @@ pub async fn update_user_web(
 pub async fn delete_user_web(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
     axum::extract::Path(user_uuid): axum::extract::Path<String>,
@@ -957,7 +964,7 @@ pub async fn delete_user_web(
         );
     }
 
-    if !check_rbac(&state, &auth_user, "users", "write").await {
+    if !perms.users_write {
         return flash_redirect(
             flash.error("You do not have permission to delete users"),
             "/accounts/users",
@@ -1068,6 +1075,7 @@ pub async fn profile(
     State(state): State<AppState>,
     jar: axum_extra::extract::CookieJar,
     auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::models::auth_session::AuthSession;
     use crate::models::user::User;
@@ -1190,6 +1198,7 @@ pub async fn profile(
         profile,
         sessions,
         current_session_token: current_token_hash,
+        perms,
     };
 
     let html = template
@@ -1896,8 +1905,9 @@ pub async fn admin_user_sessions(
     State(state): State<AppState>,
     jar: CookieJar,
     auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
 ) -> Result<impl IntoResponse, AppError> {
-    if !check_rbac(&state, &auth_user, "auth_sessions", "read").await {
+    if !perms.auth_sessions_read {
         return Err(AppError::Authorization(
             "Only administrators can view user sessions".to_string(),
         ));
@@ -2127,12 +2137,13 @@ pub async fn reactivate_user(state: &AppState, user_id: i32) {
 /// Admin: revoke any user's auth session and force-logout their browser.
 pub async fn admin_revoke_session(
     State(state): State<AppState>,
-    auth_user: WebAuthUser,
+    _auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     jar: CookieJar,
     axum::extract::Path(session_uuid_str): axum::extract::Path<String>,
     Form(form): Form<CsrfOnlyForm>,
 ) -> AppResult<Response> {
-    if !check_rbac(&state, &auth_user, "auth_sessions", "write").await {
+    if !perms.auth_sessions_write {
         return Err(AppError::Authorization(
             "Only administrators can revoke user sessions".to_string(),
         ));

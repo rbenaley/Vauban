@@ -130,7 +130,7 @@ pub async fn create_session(
     // Superusers bypass access rule checks
     if !user.is_superuser {
         let access_result = crate::services::access::can_access_asset(
-            state.access_client.as_ref(),
+            &state.access_client,
             &mut conn,
             user_internal_id,
             asset_internal_id,

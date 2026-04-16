@@ -161,14 +161,21 @@ async fn test_profile_page_displays_user_info() {
 // and redirect to /accounts/users/{uuid}/edit.
 // =============================================================================
 
-/// Structural: profile.html must guard the Edit button with admin check
+/// Structural: profile.html must guard the Edit button through the Casbin-backed
+/// `perms.users_write` gate (NOT the legacy `is_staff || is_superuser` shortcut)
 /// and use {{ profile.uuid }} in the link target.
 #[test]
 fn test_bug06_profile_edit_button_template_structure() {
     let template = include_str!("../../templates/accounts/profile.html");
     assert!(
-        template.contains("profile.is_staff || profile.is_superuser"),
-        "BUG-06: Edit button must be guarded by is_staff || is_superuser"
+        template.contains("perms.users_write"),
+        "BUG-06: Edit button must be guarded by `perms.users_write` (Casbin-backed PermissionContext)"
+    );
+    assert!(
+        !template.contains("profile.is_staff || profile.is_superuser")
+            && !template.contains("profile.is_superuser || profile.is_staff"),
+        "BUG-06: Edit button must NOT use the legacy `is_staff || is_superuser` shortcut; \
+         use `perms.users_write` instead"
     );
     assert!(
         template.contains("/accounts/users/{{ profile.uuid }}/edit"),

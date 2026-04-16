@@ -116,7 +116,10 @@ fn run_service() -> Result<()> {
 
     let supervisor_channel = unsafe { IpcChannel::from_raw_fds(ipc_read_fd, ipc_write_fd) };
 
-    let enforcer = load_casbin_enforcer(model_path.as_deref(), policy_path.as_deref())?;
+    let enforcer = Some(load_casbin_enforcer(
+        model_path.as_deref(),
+        policy_path.as_deref(),
+    )?);
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -188,44 +191,38 @@ fn parse_topology_channel(service_suffix: &str) -> Option<IpcChannel> {
 ///
 /// Must be called BEFORE entering the Capsicum sandbox, since file access
 /// is required to read model.conf and policy.csv.
-/// Returns None if paths are not provided (dev mode without supervisor).
-fn load_casbin_enforcer(
-    model_path: Option<&str>,
-    policy_path: Option<&str>,
-) -> Result<Option<Enforcer>> {
-    match (model_path, policy_path) {
-        (Some(model), Some(policy)) => {
-            info!(model = %model, policy = %policy, "Loading Casbin model and policies");
-            let model_string = model.to_string();
-            let policy_string = policy.to_string();
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .context("Failed to create Casbin tokio runtime")?;
-            let casbin_model = rt
-                .block_on(DefaultModel::from_file(model_string))
-                .map_err(|e| anyhow::anyhow!("Failed to load Casbin model: {}", e))?;
-            let adapter = FileAdapter::new(policy_string);
-            let enforcer = rt
-                .block_on(Enforcer::new(casbin_model, adapter))
-                .map_err(|e| anyhow::anyhow!("Failed to create Casbin enforcer: {}", e))?;
-            info!(
-                policies = enforcer.get_all_policy().len(),
-                roles = enforcer.get_all_roles().len(),
-                "Casbin enforcer loaded"
-            );
-            Ok(Some(enforcer))
-        }
-        (None, None) => {
-            warn!("Access model/policy paths not set, using fallback behavior");
-            Ok(None)
-        }
-        _ => {
-            anyhow::bail!(
-                "Both VAUBAN_ACCESS_MODEL_PATH and VAUBAN_ACCESS_POLICY_PATH must be set (or neither)"
-            );
-        }
-    }
+///
+/// Hard requirement: both environment variables must be set. vauban-access
+/// is the sole source of truth for authorization and cannot run without an
+/// enforcer; there is no fallback policy.
+fn load_casbin_enforcer(model_path: Option<&str>, policy_path: Option<&str>) -> Result<Enforcer> {
+    let (model, policy) = match (model_path, policy_path) {
+        (Some(m), Some(p)) => (m, p),
+        _ => anyhow::bail!(
+            "VAUBAN_ACCESS_MODEL_PATH and VAUBAN_ACCESS_POLICY_PATH must both be set; \
+             vauban-access refuses to start without a Casbin model and policy."
+        ),
+    };
+    info!(model = %model, policy = %policy, "Loading Casbin model and policies");
+    let model_string = model.to_string();
+    let policy_string = policy.to_string();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("Failed to create Casbin tokio runtime")?;
+    let casbin_model = rt
+        .block_on(DefaultModel::from_file(model_string))
+        .map_err(|e| anyhow::anyhow!("Failed to load Casbin model: {}", e))?;
+    let adapter = FileAdapter::new(policy_string);
+    let enforcer = rt
+        .block_on(Enforcer::new(casbin_model, adapter))
+        .map_err(|e| anyhow::anyhow!("Failed to create Casbin enforcer: {}", e))?;
+    info!(
+        policies = enforcer.get_all_policy().len(),
+        roles = enforcer.get_all_roles().len(),
+        "Casbin enforcer loaded"
+    );
+    Ok(enforcer)
 }
 
 fn main_loop(
@@ -339,32 +336,19 @@ fn handle_message(channel: &IpcChannel, state: &mut ServiceState, msg: Message) 
                     }
                 }
             } else {
-                // Fallback when no enforcer is loaded (dev mode without supervisor)
-                #[cfg(debug_assertions)]
-                {
-                    warn!(
-                        subject = %subject,
-                        object = %object,
-                        action = %action,
-                        "RBAC fallback: allowing request (debug build, no enforcer)"
-                    );
-                    RbacResult {
-                        allowed: true,
-                        reason: None,
-                    }
-                }
-                #[cfg(not(debug_assertions))]
-                {
-                    error!(
-                        subject = %subject,
-                        object = %object,
-                        action = %action,
-                        "RBAC policy engine not loaded - denying by default"
-                    );
-                    RbacResult {
-                        allowed: false,
-                        reason: Some("RBAC policy engine not configured".to_string()),
-                    }
+                // No enforcer loaded: this should only happen in unit tests that
+                // explicitly build a `ServiceState::default()`. Production always
+                // has an enforcer because `load_casbin_enforcer` hard-fails when
+                // model/policy paths are missing.
+                error!(
+                    subject = %subject,
+                    object = %object,
+                    action = %action,
+                    "RBAC policy engine not loaded - denying by default"
+                );
+                RbacResult {
+                    allowed: false,
+                    reason: Some("RBAC policy engine not configured".to_string()),
                 }
             };
 
@@ -463,7 +447,6 @@ mod tests {
             Some(policy.to_str().unwrap()),
         )
         .expect("Failed to load test enforcer")
-        .expect("Enforcer should be Some")
     }
 
     fn state_with_enforcer() -> ServiceState {
@@ -487,8 +470,10 @@ mod tests {
     #[test]
     fn test_handle_control_ping() {
         let (supervisor, service) = IpcChannel::pair().unwrap();
-        let mut state = ServiceState::default();
-        state.requests_processed = 50;
+        let mut state = ServiceState {
+            requests_processed: 50,
+            ..ServiceState::default()
+        };
 
         let ping = ControlMessage::Ping { seq: 10 };
         handle_control(&service, &mut state, ping).unwrap();
@@ -532,19 +517,21 @@ mod tests {
         ));
     }
 
-    // ==================== Fallback Tests (no enforcer) ====================
+    // ==================== No-enforcer deny-by-default test ====================
 
     #[test]
-    #[cfg(debug_assertions)]
-    fn test_rbac_fallback_allows_in_debug_build() {
+    fn test_rbac_denies_when_no_enforcer_configured() {
+        // The hardcoded fallback has been removed: if the enforcer is missing
+        // (which can only happen inside unit tests that intentionally build a
+        // `ServiceState::default()`), the handler must deny the request.
         let (client, service) = IpcChannel::pair().unwrap();
         let mut state = ServiceState::default();
 
         let request = Message::RbacCheck {
             request_id: 42,
-            subject: "user:bob".to_string(),
-            object: "asset:db-prod".to_string(),
-            action: "ssh".to_string(),
+            subject: "role:superuser".to_string(),
+            object: "users".to_string(),
+            action: "write".to_string(),
         };
         handle_message(&service, &mut state, request).unwrap();
 
@@ -552,8 +539,8 @@ mod tests {
         if let Message::RbacResponse { request_id, result } = response {
             assert_eq!(request_id, 42);
             assert!(
-                result.allowed,
-                "RBAC fallback must allow requests in debug builds when no enforcer"
+                !result.allowed,
+                "RBAC must deny when no Casbin enforcer is loaded (no debug fallback)"
             );
         } else {
             panic!("Expected RbacResponse");
@@ -572,9 +559,10 @@ mod tests {
     }
 
     #[test]
-    fn test_load_casbin_enforcer_none_when_no_paths() {
-        let result = load_casbin_enforcer(None, None).unwrap();
-        assert!(result.is_none());
+    fn test_load_casbin_enforcer_error_when_no_paths() {
+        // No fallback: missing paths must be a hard startup error.
+        let result = load_casbin_enforcer(None, None);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -822,26 +810,38 @@ mod tests {
 
     // ==================== Structural Regression Tests ====================
 
-    /// Verify that the source code contains cfg(debug_assertions) guards
-    /// for the fallback path when no enforcer is loaded.
+    /// Non-regression: the historical `#[cfg(debug_assertions)]` allow-all
+    /// fallback has been removed. `vauban-access` is now mandatory at
+    /// runtime — if the enforcer is missing, every request is denied.
+    ///
+    /// The forbidden substrings are reconstructed at runtime so that the
+    /// assertion strings never match themselves.
     #[test]
-    fn test_rbac_fallback_has_cfg_debug_guard() {
-        let source = include_str!("main.rs");
+    fn test_rbac_fallback_has_been_removed_from_prod_source() {
+        let source = prod_source();
 
+        let forbidden_dbg_cfg = format!("#[{}(debug_assertions)]", "cfg");
         assert!(
-            source.contains("#[cfg(debug_assertions)]"),
-            "vauban-access/src/main.rs must contain #[cfg(debug_assertions)] \
-             to guard the RBAC allow-all fallback"
+            !source.contains(&forbidden_dbg_cfg),
+            "vauban-access production code must not contain debug-gated RBAC fallbacks"
         );
+
+        let forbidden_not_dbg_cfg = format!("#[{}(not(debug_assertions))]", "cfg");
         assert!(
-            source.contains("#[cfg(not(debug_assertions))]"),
-            "vauban-access/src/main.rs must contain #[cfg(not(debug_assertions))] \
-             with a deny-by-default fallback"
+            !source.contains(&forbidden_not_dbg_cfg),
+            "vauban-access production code must not split RBAC behavior by build profile"
         );
+
+        let forbidden_fallback_str = format!("RBAC {}", "fallback");
+        assert!(
+            !source.contains(&forbidden_fallback_str),
+            "vauban-access production code must not reference the legacy RBAC fallback"
+        );
+
+        // Production code MUST contain at least one deny-by-default path.
         assert!(
             source.contains("allowed: false"),
-            "vauban-access/src/main.rs must contain a deny-by-default path \
-             (allowed: false) for release builds"
+            "vauban-access production code must keep at least one deny-by-default path"
         );
     }
 

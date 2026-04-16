@@ -513,7 +513,7 @@ mod tests {
         let mut lo = 1usize;
         let mut hi = MAX_IPC_PAGE_LIMIT as usize;
         while lo < hi {
-            let mid = (lo + hi + 1) / 2;
+            let mid = (lo + hi).div_ceil(2);
             if asset_group_page_size_bytes(mid) <= MAX_MESSAGE_SIZE {
                 lo = mid;
             } else {
@@ -533,7 +533,7 @@ mod tests {
         let mut lo = 1usize;
         let mut hi = MAX_IPC_PAGE_LIMIT as usize;
         while lo < hi {
-            let mid = (lo + hi + 1) / 2;
+            let mid = (lo + hi).div_ceil(2);
             let msg = Message::AccessResponse {
                 request_id: 1,
                 response: AccessResponse::AccessRulePage(IpcPage {

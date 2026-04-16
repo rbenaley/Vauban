@@ -8,11 +8,12 @@ const ASSETS_PER_PAGE: i64 = 30;
 pub async fn asset_create_form(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     jar: CookieJar,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::templates::assets::asset_create::{AssetCreateForm, AssetCreateTemplate};
 
-    if !check_rbac(&state, &auth_user, "assets", "write").await {
+    if !perms.assets_write {
         return Err(AppError::Authorization(
             "Only administrators can create assets".to_string(),
         ));
@@ -85,7 +86,8 @@ pub struct CreateAssetWebForm {
 /// Handle asset creation form submission.
 pub async fn create_asset_web(
     State(state): State<AppState>,
-    auth_user: WebAuthUser,
+    _auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
     Form(form): Form<CreateAssetWebForm>,
@@ -102,7 +104,7 @@ pub async fn create_asset_web(
         return flash_redirect(flash.error("Invalid CSRF token"), "/assets/new");
     }
 
-    if !check_rbac(&state, &auth_user, "assets", "write").await {
+    if !perms.assets_write {
         return flash_redirect(
             flash.error("Only administrators can create assets"),
             "/assets",
@@ -267,6 +269,7 @@ pub async fn create_asset_web(
 pub async fn asset_list(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
@@ -276,7 +279,8 @@ pub async fn asset_list(
             .await
             .into_fields();
 
-    let user_is_admin = check_rbac(&state, &auth_user, "assets", "read").await;
+    // Sourced from the request-scoped PermissionContext (Casbin via middleware).
+    let user_is_admin = perms.assets_read;
 
     // Load assets from database
     let mut conn = state
@@ -314,7 +318,7 @@ pub async fn asset_list(
     // Resolve accessible asset IDs once for non-admin users
     let accessible_ids: Option<Vec<i32>> = if let Some(uid) = user_internal_id {
         let ids = crate::services::access::list_accessible_asset_ids(
-            state.access_client.as_ref(),
+            &state.access_client,
             &mut conn,
             uid,
         )
@@ -600,6 +604,7 @@ pub async fn asset_detail(
     State(state): State<AppState>,
     incoming_flash: IncomingFlash,
     auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     axum::extract::Path(asset_uuid_str): axum::extract::Path<String>,
 ) -> Response {
     let flash = incoming_flash.flash();
@@ -612,7 +617,7 @@ pub async fn asset_detail(
         }
     };
 
-    if !check_rbac(&state, &auth_user, "assets", "read").await {
+    if !perms.assets_read {
         return flash_redirect(
             flash.error("Only administrators can view asset details"),
             "/assets",
@@ -671,7 +676,7 @@ pub async fn asset_detail(
         let asset_internal_id = asset_model.id;
 
         let accessible_ids = crate::services::access::list_accessible_asset_ids(
-            state.access_client.as_ref(),
+            &state.access_client,
             &mut conn,
             user_internal_id,
         )
@@ -697,7 +702,7 @@ pub async fn asset_detail(
                 .unwrap_or(0);
 
             let access_result = crate::services::access::can_access_asset(
-                state.access_client.as_ref(),
+                &state.access_client,
                 &mut conn,
                 user_internal_id,
                 asset_model.id,
@@ -824,12 +829,13 @@ pub async fn asset_detail(
 pub async fn asset_edit(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
 ) -> Response {
     let flash = incoming_flash.flash();
 
-    if !check_rbac(&state, &auth_user, "assets", "write").await {
+    if !perms.assets_write {
         return flash_redirect(
             flash.error("Only administrators can edit assets"),
             "/assets",
@@ -989,7 +995,8 @@ pub async fn asset_edit(
 /// Soft-deletes the asset and updates related approvals/sessions.
 pub async fn delete_asset_web(
     State(state): State<AppState>,
-    auth_user: WebAuthUser,
+    _auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
@@ -1010,7 +1017,7 @@ pub async fn delete_asset_web(
         );
     }
 
-    if !check_rbac(&state, &auth_user, "assets", "write").await {
+    if !perms.assets_write {
         return flash_redirect(
             flash.error("You do not have permission to delete assets"),
             &format!("/assets/{}", uuid_str),
@@ -1149,7 +1156,8 @@ pub struct CsrfOnlyForm {
 /// Handles POST /assets/{uuid}/edit with flash messages.
 pub async fn update_asset_web(
     State(state): State<AppState>,
-    auth_user: WebAuthUser,
+    _auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
@@ -1169,7 +1177,7 @@ pub async fn update_asset_web(
         );
     }
 
-    if !check_rbac(&state, &auth_user, "assets", "write").await {
+    if !perms.assets_write {
         return flash_redirect(
             flash.error("Only administrators can modify assets"),
             &format!("/assets/{}", uuid_str),

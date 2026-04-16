@@ -34,10 +34,8 @@ mod tests {
             is_approvals: false,
             is_access_rules: false,
             is_my_requests: false,
-            can_view_groups: false,
-            can_view_access_rules: false,
-            can_view_admin: false,
             pending_approval_count: 0,
+            perms: crate::auth::PermissionContext::default(),
         }
     }
 
@@ -54,14 +52,16 @@ mod tests {
         let mut content = create_test_sidebar_content();
         content.user.is_superuser = true;
         content.user.is_staff = true;
-        content.can_view_groups = true;
-        content.can_view_access_rules = true;
+        content.perms.groups_read = true;
+        content.perms.access_rules_read = true;
+        content.perms.admin_view = true;
 
         let template = SidebarTemplate {
             sidebar_content: content,
         };
         assert!(template.sidebar_content.user.is_superuser);
-        assert!(template.sidebar_content.can_view_groups);
+        assert!(template.sidebar_content.perms.groups_read);
+        assert!(template.sidebar_content.perms.admin_view);
     }
 
     #[test]

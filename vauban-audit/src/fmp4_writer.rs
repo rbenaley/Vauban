@@ -690,8 +690,9 @@ mod tests {
         let sps = test_sps();
         let pps = test_pps();
         let mut output = Vec::new();
-        let writer = Fmp4Writer::new(&mut output, &sps, &pps, 1920, 1080).unwrap();
-        drop(writer);
+        {
+            let _writer = Fmp4Writer::new(&mut output, &sps, &pps, 1920, 1080).unwrap();
+        }
 
         assert!(output.len() > 16);
         // ftyp at the start

@@ -3,9 +3,8 @@
 /// Determines which assets a user can see and connect to, based on
 /// access rules linking user groups to asset groups.
 ///
-/// When `access_client` is Some, access checks are delegated to vauban-access
-/// via IPC. When None, falls back to direct SQL queries.
-use chrono::Utc;
+/// All decisions are delegated to vauban-access via IPC; vauban-web does not
+/// run in standalone mode and therefore carries no SQL fallback.
 use diesel::prelude::*;
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use std::sync::Arc;
@@ -36,34 +35,27 @@ impl AccessCheckResult {
 /// Return the IDs of all assets accessible to a given user via active,
 /// temporally valid access rules.
 ///
-/// The query walks: user -> user_groups -> access_rules -> asset_groups -> assets.
-/// Only non-deleted assets with active, temporally valid rules are returned.
-/// Assets are filtered by protocol: the asset's `asset_type` must appear in the
-/// rule's `allowed_protocols` array.
+/// The IPC service computes the set of (asset_group_id, protocols) accessible
+/// to the user; local DB is only used to resolve those groups to asset IDs
+/// and filter deleted rows / protocol mismatches.
 ///
-/// When `access_client` is Some, delegates to vauban-access via IPC and resolves
-/// asset IDs from local DB. On IPC error, returns empty Vec (fail-closed).
+/// Fail-closed: returns an empty Vec on IPC error.
 pub async fn list_accessible_asset_ids(
-    access_client: Option<&Arc<AccessIpcClient>>,
-    conn: &mut AsyncPgConnection,
-    user_id: i32,
-) -> Result<Vec<i32>, AppError> {
-    if let Some(client) = access_client {
-        return list_accessible_asset_ids_ipc(client, conn, user_id).await;
-    }
-    list_accessible_asset_ids_sql(conn, user_id).await
-}
-
-async fn list_accessible_asset_ids_ipc(
-    client: &AccessIpcClient,
+    access_client: &Arc<AccessIpcClient>,
     conn: &mut AsyncPgConnection,
     user_id: i32,
 ) -> Result<Vec<i32>, AppError> {
     use crate::schema::{asset_asset_groups, assets};
 
-    let entries = match client.list_accessible_groups(user_id).await {
+    let entries = match access_client.list_accessible_groups(user_id).await {
         Ok(e) => e,
-        Err(_) => return Ok(Vec::new()), // fail-closed
+        Err(err) => {
+            tracing::error!(
+                user_id, error = %err,
+                "list_accessible_groups IPC call failed; returning empty set (fail-closed)"
+            );
+            return Ok(Vec::new());
+        }
     };
 
     let mut all_ids = Vec::new();
@@ -89,53 +81,6 @@ async fn list_accessible_asset_ids_ipc(
     Ok(all_ids)
 }
 
-async fn list_accessible_asset_ids_sql(
-    conn: &mut AsyncPgConnection,
-    user_id: i32,
-) -> Result<Vec<i32>, AppError> {
-    use crate::schema::{access_rules, asset_asset_groups, asset_groups, assets, user_groups};
-
-    let now = Utc::now();
-
-    #[allow(deprecated)]
-    let ids: Vec<i32> = assets::table
-        .inner_join(
-            asset_asset_groups::table.on(assets::id.eq(asset_asset_groups::asset_id)),
-        )
-        .inner_join(
-            asset_groups::table.on(asset_asset_groups::asset_group_id.eq(asset_groups::id)),
-        )
-        .inner_join(access_rules::table.on(access_rules::asset_group_id.eq(asset_groups::id)))
-        .inner_join(user_groups::table.on(user_groups::group_id.eq(access_rules::user_group_id)))
-        .filter(user_groups::user_id.eq(user_id))
-        .filter(access_rules::is_active.eq(true))
-        .filter(assets::is_deleted.eq(false))
-        .filter(
-            assets::asset_type
-                .nullable()
-                .eq(diesel::pg::expression::dsl::any(
-                    access_rules::allowed_protocols,
-                )),
-        )
-        .filter(
-            access_rules::valid_from
-                .is_null()
-                .or(access_rules::valid_from.le(now)),
-        )
-        .filter(
-            access_rules::valid_until
-                .is_null()
-                .or(access_rules::valid_until.ge(now)),
-        )
-        .select(assets::id)
-        .distinct()
-        .load(conn)
-        .await
-        .map_err(AppError::Database)?;
-
-    Ok(ids)
-}
-
 /// Check whether a user can access a specific asset for a given protocol.
 ///
 /// Returns an `AccessCheckResult` containing the decision and any constraints
@@ -146,29 +91,17 @@ async fn list_accessible_asset_ids_sql(
 /// but MFA/justification requirements are ORed (if any matching rule requires
 /// them, the caller must enforce them).
 ///
-/// When `access_client` is Some, delegates to vauban-access via IPC. On IPC
-/// error, returns denied (fail-closed).
+/// Always delegates to vauban-access via IPC (no fallback). On IPC error,
+/// returns denied (fail-closed).
 pub async fn can_access_asset(
-    access_client: Option<&Arc<AccessIpcClient>>,
-    conn: &mut AsyncPgConnection,
-    user_id: i32,
-    asset_id: i32,
-    protocol: &str,
-) -> Result<AccessCheckResult, AppError> {
-    if let Some(client) = access_client {
-        return can_access_asset_ipc(client, conn, user_id, asset_id, protocol).await;
-    }
-    can_access_asset_sql(conn, user_id, asset_id, protocol).await
-}
-
-async fn can_access_asset_ipc(
-    client: &AccessIpcClient,
+    access_client: &Arc<AccessIpcClient>,
     conn: &mut AsyncPgConnection,
     user_id: i32,
     asset_id: i32,
     protocol: &str,
 ) -> Result<AccessCheckResult, AppError> {
     use crate::schema::{asset_asset_groups, assets};
+    let client = access_client.as_ref();
 
     let _: i32 = assets::table
         .filter(assets::id.eq(asset_id))
@@ -222,80 +155,6 @@ async fn can_access_asset_ipc(
     if !allowed {
         return Ok(AccessCheckResult::denied());
     }
-
-    Ok(AccessCheckResult {
-        allowed: true,
-        require_mfa,
-        require_approval,
-        max_session_duration,
-    })
-}
-
-async fn can_access_asset_sql(
-    conn: &mut AsyncPgConnection,
-    user_id: i32,
-    asset_id: i32,
-    protocol: &str,
-) -> Result<AccessCheckResult, AppError> {
-    use crate::schema::{access_rules, asset_asset_groups, assets, user_groups};
-
-    let now = Utc::now();
-
-    let _: i32 = assets::table
-        .filter(assets::id.eq(asset_id))
-        .filter(assets::is_deleted.eq(false))
-        .select(assets::id)
-        .first(conn)
-        .await
-        .map_err(|e| match e {
-            diesel::result::Error::NotFound => AppError::NotFound("Asset not found".to_string()),
-            _ => AppError::Database(e),
-        })?;
-
-    let asset_group_ids: Vec<i32> = asset_asset_groups::table
-        .filter(asset_asset_groups::asset_id.eq(asset_id))
-        .select(asset_asset_groups::asset_group_id)
-        .load(conn)
-        .await
-        .map_err(AppError::Database)?;
-
-    if asset_group_ids.is_empty() {
-        return Ok(AccessCheckResult::denied());
-    }
-
-    #[allow(clippy::type_complexity)]
-    let matching_rules: Vec<(bool, bool, Option<i32>)> = access_rules::table
-        .inner_join(user_groups::table.on(user_groups::group_id.eq(access_rules::user_group_id)))
-        .filter(user_groups::user_id.eq(user_id))
-        .filter(access_rules::asset_group_id.eq_any(asset_group_ids))
-        .filter(access_rules::is_active.eq(true))
-        .filter(
-            access_rules::valid_from
-                .is_null()
-                .or(access_rules::valid_from.le(now)),
-        )
-        .filter(
-            access_rules::valid_until
-                .is_null()
-                .or(access_rules::valid_until.ge(now)),
-        )
-        .select((
-            access_rules::require_mfa,
-            access_rules::require_approval,
-            access_rules::max_session_duration,
-        ))
-        .filter(access_rules::allowed_protocols.contains(vec![Some(protocol.to_string())]))
-        .load(conn)
-        .await
-        .map_err(AppError::Database)?;
-
-    if matching_rules.is_empty() {
-        return Ok(AccessCheckResult::denied());
-    }
-
-    let require_mfa = matching_rules.iter().any(|(mfa, _, _)| *mfa);
-    let require_approval = matching_rules.iter().any(|(_, just, _)| *just);
-    let max_session_duration = matching_rules.iter().filter_map(|(_, _, dur)| *dur).min();
 
     Ok(AccessCheckResult {
         allowed: true,

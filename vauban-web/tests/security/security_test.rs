@@ -3832,89 +3832,92 @@ async fn test_static_files_have_cache_headers() {
 // H-8 Regression: RBAC stub deny-by-default in release builds
 // =============================================================================
 
-/// H-8 Regression: The Access service source must contain compile-time guards
-/// (#[cfg(debug_assertions)]) around the allow-all stub to prevent production
-/// deployment with a permissive Access service.
+/// H-8 Regression: The Access service must hard-fail at startup when no
+/// Casbin enforcer is configured, and must deny-by-default at runtime in
+/// the unlikely case that the enforcer ends up missing anyway. No debug
+/// allow-all fallback is allowed anymore (Casbin is mandatory).
 #[tokio::test]
 #[serial]
 async fn test_access_service_has_compile_time_guard() {
-    // Read the Access service source at compile time to verify structural
-    // safety. This catches accidental removal of the cfg guards.
-    let access_source = include_str!("../../../vauban-access/src/main.rs");
+    let full_source = include_str!("../../../vauban-access/src/main.rs");
+    // Only inspect production code; unit tests below #[cfg(test)] legitimately
+    // mention removed patterns in their assertion strings.
+    let prod = match full_source.find("#[cfg(test)]") {
+        Some(idx) => &full_source[..idx],
+        None => full_source,
+    };
 
-    // Must have the debug-only guard
     assert!(
-        access_source.contains("#[cfg(debug_assertions)]"),
-        "vauban-access/src/main.rs must guard the allow-all Access stub \
-         with #[cfg(debug_assertions)]"
+        prod.contains("refuses to start without a Casbin model"),
+        "vauban-access must hard-fail at startup when model/policy paths are missing"
     );
 
-    // Must have the release deny-by-default guard
     assert!(
-        access_source.contains("#[cfg(not(debug_assertions))]"),
-        "vauban-access/src/main.rs must contain #[cfg(not(debug_assertions))] \
-         with a deny-by-default fallback for release builds"
+        prod.contains("allowed: false"),
+        "vauban-access must deny by default when the enforcer is missing"
     );
 
-    // Must contain the deny-by-default result
+    let forbidden_dbg_cfg = format!("#[{}(debug_assertions)]", "cfg");
     assert!(
-        access_source.contains("allowed: false"),
-        "vauban-access/src/main.rs must deny Access requests by default \
-         (allowed: false) in release builds"
+        !prod.contains(&forbidden_dbg_cfg),
+        "vauban-access production code must not contain debug-gated allow-all fallbacks"
     );
 }
 
-/// H-8 Regression: The RBAC client in vauban-web must also contain
-/// compile-time guards to prevent the stub from allowing all requests
-/// in production.
+/// H-8 Regression: The legacy allow-all RBAC shim in
+/// `vauban-web/src/ipc/clients.rs` has been removed in favor of the
+/// Casbin-backed [`crate::ipc::AccessIpcClient`]. This non-regression test
+/// makes sure it does not resurface. Forbidden patterns are rebuilt at
+/// runtime so the assertion strings themselves never match.
 #[tokio::test]
 #[serial]
 async fn test_access_client_has_compile_time_guard() {
     let client_source = include_str!("../../src/ipc/clients.rs");
 
+    let forbidden_struct = format!("pub {} Rbac{}", "struct", "Client");
     assert!(
-        client_source.contains("#[cfg(debug_assertions)]"),
-        "ipc/clients.rs must guard the allow-all RBAC client stub \
-         with #[cfg(debug_assertions)]"
+        !client_source.contains(&forbidden_struct),
+        "ipc/clients.rs must not define the legacy Rbac type; use AccessIpcClient + Casbin"
     );
 
+    let forbidden_cfg = format!("#[{}(debug_assertions)]", "cfg");
     assert!(
-        client_source.contains("#[cfg(not(debug_assertions))]"),
-        "ipc/clients.rs must contain #[cfg(not(debug_assertions))] \
-         with a deny-by-default fallback for release builds"
-    );
-
-    assert!(
-        client_source.contains("Ok(false)"),
-        "ipc/clients.rs must deny RBAC requests by default \
-         (Ok(false)) in release builds"
+        !client_source.contains(&forbidden_cfg),
+        "ipc/clients.rs must not carry debug-gated RBAC fallbacks"
     );
 }
 
-/// H-8 Regression: The Access service must not contain an unguarded
-/// `allowed: true` (i.e., one that is NOT inside a cfg(debug_assertions) block).
-/// This is a heuristic check that scans for the pattern.
+/// H-8 Regression: The Access service must never contain an unguarded
+/// allow-all fallback. Casbin is mandatory; when no enforcer is loaded the
+/// handler must hardcode `allowed: false` (deny-by-default) and there must
+/// be no debug-only allow-all short-circuit.
 #[tokio::test]
 #[serial]
 async fn test_access_no_unguarded_allow_all() {
-    let access_source = include_str!("../../../vauban-access/src/main.rs");
+    let full_source = include_str!("../../../vauban-access/src/main.rs");
+    let prod = match full_source.find("#[cfg(test)]") {
+        Some(idx) => &full_source[..idx],
+        None => full_source,
+    };
 
-    // Count occurrences of "allowed: true" - there should be exactly as many
-    // as there are cfg(debug_assertions) blocks containing it (currently 1).
-    let allow_count = access_source.matches("allowed: true").count();
-    let deny_count = access_source.matches("allowed: false").count();
-
+    let deny_count = prod.matches("allowed: false").count();
     assert!(
         deny_count >= 1,
-        "Must have at least one deny-by-default path (allowed: false), found {deny_count}"
+        "Must have at least one deny-by-default path (allowed: false) in production code, found {deny_count}"
     );
 
-    // In test code, the stub result is checked (assert!(result.allowed)),
-    // so we only check that deny paths exist alongside allow paths.
+    // The legacy debug fallback used `#[cfg(debug_assertions)] ... allowed: true`.
+    // That fallback has been removed; any surviving occurrence is a regression.
+    let forbidden_dbg_cfg = format!("#[{}(debug_assertions)]", "cfg");
     assert!(
-        deny_count >= 1 && allow_count >= 1,
-        "Must have both allow (debug) and deny (release) paths. \
-         Found allow_count={allow_count}, deny_count={deny_count}"
+        !prod.contains(&forbidden_dbg_cfg),
+        "vauban-access production code must not contain debug-gated RBAC fallbacks anymore"
+    );
+
+    let forbidden_fallback_str = format!("RBAC {}", "fallback");
+    assert!(
+        !prod.contains(&forbidden_fallback_str),
+        "vauban-access production code must not reference the legacy RBAC fallback"
     );
 }
 

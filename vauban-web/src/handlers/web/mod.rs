@@ -27,7 +27,6 @@ pub(crate) use axum::{
 };
 pub(crate) use axum_extra::extract::CookieJar;
 pub(crate) use diesel::prelude::*;
-pub(crate) use diesel::sql_types::{Nullable, Text, Uuid as DieselUuid};
 pub(crate) use diesel_async::{AsyncConnection, RunQueryDsl};
 pub(crate) use secrecy::ExposeSecret;
 pub(crate) use std::collections::HashMap;
@@ -104,80 +103,32 @@ pub(crate) fn user_context_from_auth(auth_user: &AuthUser) -> UserContext {
     }
 }
 
-/// Check RBAC permission via IPC (Casbin) or fallback.
+/// Re-export of the canonical Casbin RBAC check from [`crate::auth`].
 ///
-/// Maps `AuthUser` flags to a Casbin role subject, then delegates to the
-/// RBAC service. Fail-closed: returns `false` on IPC error.
-///
-/// When no IPC client is available (dev mode without supervisor),
-/// falls back to the legacy `is_superuser || is_staff` check.
-pub(crate) async fn check_rbac(
-    state: &AppState,
-    auth_user: &crate::middleware::auth::AuthUser,
-    resource: &str,
-    action: &str,
-) -> bool {
-    let subject = if auth_user.is_superuser {
-        "role:superuser"
-    } else if auth_user.is_staff {
-        "role:staff"
-    } else {
-        "role:user"
-    };
-    if let Some(ref access) = state.access_client {
-        access
-            .check_permission(subject, resource, action)
-            .await
-            .unwrap_or(false)
-    } else {
-        // Fallback when IPC is unavailable: mirror default_policy.csv
-        if auth_user.is_superuser {
-            return true;
-        }
-        if auth_user.is_staff {
-            return matches!(
-                (resource, action),
-                ("users", "read")
-                    | ("users", "write")
-                    | ("assets", "read")
-                    | ("assets", "write")
-                    | ("sessions", "read")
-                    | ("sessions", "write")
-                    | ("groups", "read")
-                    | ("groups", "write")
-                    | ("access_rules", "read")
-                    | ("access_rules", "write")
-                    | ("auth_sessions", "read")
-                    | ("auth_sessions", "write")
-                    | ("admin", "view")
-            );
-        }
-        matches!(
-            (resource, action),
-            ("assets", "read")
-                | ("sessions", "read")
-                | ("sessions", "create")
-                | ("profile", "read")
-                | ("profile", "write")
-        )
-    }
-}
+/// The implementation lives in [`crate::auth::permissions::check_rbac`]; this
+/// alias is kept for the lifetime of the PermissionContext migration so that
+/// existing handler code continues to compile unchanged.
+pub(crate) use crate::auth::check_rbac;
 
 /// Apply RBAC-based sidebar permissions to a `BaseTemplate`.
 ///
-/// Queries the RBAC service for groups/access_rules/admin view permissions
-/// and overrides the sync defaults set during template construction.
+/// Loads the canonical [`crate::auth::PermissionContext`] for the user (one
+/// parallel `tokio::join!` of every tracked Casbin permission) and:
+///
+/// 1. Injects it into the sidebar so templates can gate on `sc.perms.*`
+///    rather than the `is_staff || is_superuser` shortcut. This is the **only**
+///    sidebar RBAC path: there is no longer a parallel set of legacy
+///    `can_view_*` booleans to keep in sync.
+/// 2. Loads the pending-approval counter when the user is allowed to view
+///    the administration section.
 pub(crate) async fn apply_sidebar_rbac(
     state: &AppState,
     auth_user: &crate::middleware::auth::AuthUser,
     base: crate::templates::base::BaseTemplate,
 ) -> crate::templates::base::BaseTemplate {
-    let (groups, access_rules, admin) = tokio::join!(
-        check_rbac(state, auth_user, "groups", "read"),
-        check_rbac(state, auth_user, "access_rules", "read"),
-        check_rbac(state, auth_user, "admin", "view"),
-    );
-    let mut base = base.with_sidebar_permissions(groups, access_rules, admin);
+    let perms = crate::auth::PermissionContext::load(state, auth_user).await;
+    let admin = perms.admin_view;
+    let mut base = base.with_perms(perms);
 
     if admin
         && let Ok(mut conn) = state.db_pool.get().await

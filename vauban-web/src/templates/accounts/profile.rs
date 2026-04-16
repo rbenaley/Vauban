@@ -1,3 +1,4 @@
+use crate::auth::PermissionContext;
 use crate::templates::base::{FlashMessage, UserContext, VaubanConfig};
 /// VAUBAN Web - User profile template.
 use askama::Template;
@@ -79,6 +80,9 @@ pub struct ProfileTemplate {
     pub profile: ProfileDetail,
     pub sessions: Vec<ProfileSession>,
     pub current_session_token: Option<String>,
+    /// Casbin-backed permissions for the current user; gates UI elements like
+    /// the "Edit" button (which requires `users:write`).
+    pub perms: PermissionContext,
 }
 
 #[cfg(test)]
@@ -169,6 +173,7 @@ mod tests {
             profile: create_test_profile_detail(),
             sessions: vec![create_test_session()],
             current_session_token: Some("token123".to_string()),
+            perms: PermissionContext::default(),
         };
         assert_eq!(template.title, "Profile");
         assert!(template.user.is_some());
@@ -188,6 +193,7 @@ mod tests {
             profile: create_test_profile_detail(),
             sessions: Vec::new(),
             current_session_token: None,
+            perms: PermissionContext::default(),
         };
         let result = template.render();
         assert!(result.is_ok());
@@ -407,6 +413,7 @@ mod tests {
             profile,
             sessions: Vec::new(),
             current_session_token: None,
+            perms: PermissionContext::default(),
         };
 
         let result = template.render();
@@ -451,6 +458,7 @@ mod tests {
             profile: create_test_profile_detail(),
             sessions,
             current_session_token: Some("token123".to_string()),
+            perms: PermissionContext::default(),
         };
 
         let result = template.render();
@@ -479,6 +487,7 @@ mod tests {
             profile,
             sessions: Vec::new(),
             current_session_token: None,
+            perms: PermissionContext::default(),
         };
 
         let result = template.render();
@@ -505,6 +514,7 @@ mod tests {
             profile,
             sessions: Vec::new(),
             current_session_token: None,
+            perms: PermissionContext::default(),
         };
 
         let result = template.render();
@@ -532,6 +542,7 @@ mod tests {
             profile,
             sessions: Vec::new(),
             current_session_token: None,
+            perms: PermissionContext::default(),
         };
 
         let result = template.render();
@@ -559,6 +570,7 @@ mod tests {
             profile,
             sessions: Vec::new(),
             current_session_token: None,
+            perms: PermissionContext::default(),
         };
 
         let result = template.render();

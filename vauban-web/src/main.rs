@@ -188,26 +188,29 @@ fn init_rdp_proxy_client() -> Option<Arc<ProxyRdpClient>> {
 
 /// Initialize the Access IPC client if running under supervisor.
 ///
-/// Returns Some(Arc<AccessIpcClient>) if VAUBAN_ACCESS_IPC_READ and VAUBAN_ACCESS_IPC_WRITE
-/// environment variables are set (running under supervisor), None otherwise.
-fn init_access_client() -> Option<Arc<AccessIpcClient>> {
+/// Returns `Ok(Arc<AccessIpcClient>)` when both `VAUBAN_ACCESS_IPC_READ` and
+/// `VAUBAN_ACCESS_IPC_WRITE` are set by the supervisor. Vauban-web cannot run
+/// in a standalone mode: Casbin is the single source of truth for
+/// authorization, so if the IPC channel to vauban-access is not available the
+/// binary refuses to start.
+fn init_access_client() -> anyhow::Result<Arc<AccessIpcClient>> {
     use std::os::unix::io::RawFd;
 
-    let read_fd: RawFd = match std::env::var("VAUBAN_ACCESS_IPC_READ") {
-        Ok(val) => match val.parse() {
-            Ok(fd) => fd,
-            Err(_) => return None,
-        },
-        Err(_) => return None,
-    };
+    let read_fd: RawFd = std::env::var("VAUBAN_ACCESS_IPC_READ")
+        .map_err(|_| anyhow::anyhow!(
+            "VAUBAN_ACCESS_IPC_READ is not set. vauban-web must be launched under vauban-supervisor \
+             with vauban-access wired up; standalone execution is not supported."
+        ))?
+        .parse()
+        .map_err(|e| anyhow::anyhow!("VAUBAN_ACCESS_IPC_READ must be a valid file descriptor: {}", e))?;
 
-    let write_fd: RawFd = match std::env::var("VAUBAN_ACCESS_IPC_WRITE") {
-        Ok(val) => match val.parse() {
-            Ok(fd) => fd,
-            Err(_) => return None,
-        },
-        Err(_) => return None,
-    };
+    let write_fd: RawFd = std::env::var("VAUBAN_ACCESS_IPC_WRITE")
+        .map_err(|_| anyhow::anyhow!(
+            "VAUBAN_ACCESS_IPC_WRITE is not set. vauban-web must be launched under vauban-supervisor \
+             with vauban-access wired up; standalone execution is not supported."
+        ))?
+        .parse()
+        .map_err(|e| anyhow::anyhow!("VAUBAN_ACCESS_IPC_WRITE must be a valid file descriptor: {}", e))?;
 
     // SAFETY: We are early in startup, before spawning async tasks
     unsafe {
@@ -215,16 +218,10 @@ fn init_access_client() -> Option<Arc<AccessIpcClient>> {
         std::env::remove_var("VAUBAN_ACCESS_IPC_WRITE");
     }
 
-    match AccessIpcClient::new(read_fd, write_fd) {
-        Ok(client) => {
-            tracing::info!("Access IPC client initialized (running under supervisor)");
-            Some(client)
-        }
-        Err(e) => {
-            tracing::warn!("Failed to initialize Access IPC client: {}", e);
-            None
-        }
-    }
+    let client = AccessIpcClient::new(read_fd, write_fd)
+        .map_err(|e| anyhow::anyhow!("Failed to initialize Access IPC client: {}", e))?;
+    tracing::info!("Access IPC client initialized (running under supervisor)");
+    Ok(client)
 }
 
 /// Initialize the auth IPC client if running under supervisor.
@@ -631,12 +628,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("Vault IPC processing task started");
     }
 
-    // Create Access IPC client if running under supervisor
-    let access_client = init_access_client();
+    // Create Access IPC client (mandatory - hard fail if not running under
+    // supervisor). Casbin is essential; there is no standalone fallback.
+    let access_client = init_access_client()?;
 
-    // Spawn Access IPC processing task if client is available
-    if let Some(ref client) = access_client {
-        let client_clone = Arc::clone(client);
+    // Spawn Access IPC processing task (always present in production).
+    {
+        let client_clone = Arc::clone(&access_client);
         tokio::spawn(async move {
             if let Err(e) = client_clone.process_incoming().await {
                 tracing::error!(error = %e, "Access IPC processing task failed");
@@ -1374,6 +1372,13 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             middleware::auth::auth_middleware,
+        ))
+        // Pre-compute Casbin-backed PermissionContext once per authenticated
+        // request, after the auth middleware has populated AuthUser. Templates
+        // and handlers consume the result via the FromRequestParts extractor.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            middleware::permissions::permission_context_middleware,
         ))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),

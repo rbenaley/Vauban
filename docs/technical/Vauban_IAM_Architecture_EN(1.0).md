@@ -944,22 +944,54 @@ Key design elements:
 - **Non-blocking pipe I/O** via `tokio::io::unix::AsyncFd`
 - **Background task** (`process_incoming()`) continuously reads the pipe and dispatches responses
 
-### 9.3 SQL Fallback
+### 9.3 No SQL Fallback — vauban-web is IPC-only
 
-When IPC clients are unavailable (dev/test mode without supervisor), `vauban-web` falls back to direct SQL access:
+Earlier revisions of Vauban shipped a dual-path design in which `vauban-web`
+could degrade to direct SQL access (and a `#[cfg(debug_assertions)]` allow-all
+RBAC stub) when the IPC clients were unavailable. This fallback has been
+**removed entirely**: Casbin is the single source of truth for authorization,
+and `vauban-web` cannot run standalone.
 
-| Operation | With IPC | Without IPC (fallback) |
-|-----------|----------|----------------------|
-| Password verify | `AuthIpcClient::verify_password()` | Local `argon2::verify_password()` |
-| Password hash | `AuthIpcClient::hash_password()` | Local `argon2::hash_password()` |
-| RBAC check | `AccessIpcClient::check_permission()` | Debug: allow all / Release: deny all |
-| Access check | `AccessIpcClient::check_access()` | Direct Diesel DSL query against local DB |
-| Access rule CRUD | `AccessIpcClient::create_access_rule()` etc. | Direct Diesel DSL queries |
+| Operation | Current behavior |
+|-----------|----------|
+| Password verify | `AuthIpcClient::verify_password()` (mandatory) |
+| Password hash | `AuthIpcClient::hash_password()` (mandatory) |
+| RBAC check | `AccessIpcClient::check_permission()` → Casbin `enforce()` in `vauban-access` |
+| Access check | `AccessIpcClient::check_access()` (mandatory) |
+| Access rule CRUD | `AccessIpcClient::create_access_rule()` etc. (mandatory) |
+| Vauban / asset groups CRUD | IPC calls to `vauban-access` (mandatory) |
 
-This dual-path design enables:
-- **Development** without running the full supervisor topology
-- **Testing** with direct database access
-- **Production** with full IPC privilege separation
+Concretely:
+
+1. `vauban-web`'s `init_access_client()` **hard-fails at startup** unless both
+   `VAUBAN_ACCESS_IPC_READ` and `VAUBAN_ACCESS_IPC_WRITE` are set and point to
+   live pipes. The process exits before opening its HTTP listener.
+2. `AppState::access_client` is typed `Arc<AccessIpcClient>`, not
+   `Option<_>`. There is no code path left in production where it can be
+   `None`.
+3. `check_rbac()` (`vauban-web/src/auth/permissions.rs`) calls Casbin via IPC
+   and fails closed on any IPC error. It never short-circuits on
+   `is_superuser`/`is_staff`: those attributes are only used to pick the
+   subject (`role:superuser`, `role:staff`, `role:user`) that Casbin then
+   evaluates against the policy file.
+4. `vauban-access` itself hard-fails at startup if
+   `VAUBAN_ACCESS_MODEL_PATH` or `VAUBAN_ACCESS_POLICY_PATH` are missing, and
+   denies every check at runtime if — through an unexpected test-only path —
+   the enforcer is `None`.
+5. Integration tests spin up an in-process `vauban-access` backed by a real
+   `casbin::Enforcer` loaded from
+   `config/access/{model.conf,default_policy.csv}`. Tests exercise the actual
+   Casbin policy, not a mock.
+
+Consequences:
+
+- **vauban-web cannot be executed in standalone mode.** It must be launched
+  by `vauban-supervisor`, which spawns `vauban-auth` and `vauban-access` and
+  wires up the IPC channels via pre-opened file descriptors.
+- Attempting to run `./target/debug/vauban-web` directly terminates with an
+  explicit error referencing the missing IPC environment variables.
+- Local development and CI therefore always exercise the same authorization
+  path as production.
 
 ### 9.4 Asset List Filtering
 
@@ -988,6 +1020,106 @@ Access rule forms use the Alpine.js double-submit cookie pattern for CSRF protec
 1. Server generates a CSRF token and sets it as a cookie
 2. Alpine.js reads the cookie and includes the token in the form submission
 3. Server validates that the form token matches the cookie token
+
+### 9.6 PermissionContext (Casbin-backed UI gating)
+
+To eliminate hardcoded `is_staff || is_superuser` shortcuts (issue #1) that
+silently bypass custom Casbin policies, every authorization decision in
+`vauban-web` — both inside Axum handlers and inside Askama templates — flows
+through a single `PermissionContext` struct (`vauban-web/src/auth/permissions.rs`).
+
+> **Deployment precondition.** `vauban-web` can only run as a child of
+> `vauban-supervisor`, next to `vauban-auth` and `vauban-access`. There is no
+> standalone mode: if the IPC channels to `vauban-access` are not wired up at
+> startup, `vauban-web` terminates before serving any request. See §9.3.
+
+#### Lifecycle of a request
+
+```mermaid
+sequenceDiagram
+    participant U as User Browser
+    participant AM as auth_middleware
+    participant PM as permission_context_middleware
+    participant H as Axum Handler
+    participant T as Askama Template
+
+    U->>AM: HTTP request (cookie/JWT)
+    AM->>AM: validate session, build AuthUser
+    AM-->>PM: req.extensions.AuthUser
+    PM->>PM: PermissionContext::load(state, user)<br/>tokio::join! over every Casbin perm
+    PM-->>H: req.extensions.PermissionContext
+    H->>H: extract `perms: PermissionContext`<br/>via FromRequestParts
+    H->>T: render(BaseTemplate.with_perms(perms))
+    T->>U: HTML where {% if sc.perms.users_write %} ...
+```
+
+`PermissionContext` is a flat struct of pre-computed booleans
+(`users_read`, `users_write`, `groups_read`, `groups_write`,
+`access_rules_read`, `access_rules_write`, `assets_read`, `assets_write`,
+`admin_view`, `auth_sessions_read`, `auth_sessions_write`,
+`sessions_read`, `sessions_write`, `profile_read`, `profile_write`).
+All checks for one user happen **once per request**, in parallel via
+`tokio::join!`, regardless of how many handlers / template branches read them.
+
+#### Handler usage
+
+```rust
+pub async fn user_detail(
+    State(state): State<AppState>,
+    auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext, // <- extractor
+    axum::extract::Path(uuid): axum::extract::Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    if !perms.users_read {
+        return Err(AppError::Authorization("...".into()));
+    }
+    let can_edit = perms.users_write && (!is_target_superuser || auth_user.is_superuser);
+    // ...
+}
+```
+
+There is no longer any per-handler `check_rbac(&state, &user, "X", "Y").await`
+call: those round-trips are consolidated into the middleware's single parallel
+load. Handlers may still inspect `auth_user.is_superuser` for *target-vs-actor*
+business rules (e.g. only a superuser may edit another superuser), but never to
+gate visibility.
+
+#### Template usage
+
+The sidebar context (`SidebarContentTemplate`) carries a `perms` field of type
+`PermissionContext`. Templates gate UI on `sc.perms.<resource>_<action>`:
+
+```askama
+{% if sc.perms.admin_view %}
+  <!-- Administration block -->
+{% endif %}
+
+{% if sc.perms.groups_read %}
+  <a href="/accounts/groups">Groups</a>
+{% endif %}
+```
+
+Per-page templates may opt into a `perms: PermissionContext` field of their own
+(see `ProfileTemplate`) when a gate is needed outside the sidebar.
+
+`UserContext.is_staff` and `UserContext.is_superuser` remain available **for
+display only** (role badges, account-management forms). Using them inside
+`{% if %}` directives to hide actionable controls is forbidden by the
+structural lint `vauban-web/scripts/check_no_template_role_gates.sh`, which
+detects:
+
+1. The legacy `is_staff || is_superuser` (or symmetric) chain in any
+   `if`/`elif` directive.
+2. `sc.user.is_staff` / `sc.user.is_superuser` in any `if`/`elif` directive.
+
+#### Why PermissionContext, not ad-hoc checks
+
+| Concern | Old pattern (`is_staff || is_superuser`) | New pattern (`PermissionContext`) |
+|---|---|---|
+| Custom Casbin policy (e.g. `role:custom` with `users:write` only) | Ignored: UI hides the action even though the server allows it (or vice-versa) | Honoured: UI mirrors the exact server gate |
+| Number of round-trips per request | 1 per template branch + 1 per handler check | 1 parallel join per request, regardless of branch count |
+| Test coverage | Required redundant `is_staff` flips in fixtures | Single `PermissionContext::default()` plus targeted overrides |
+| Drift between server and template | Frequent: easy to gate one but forget the other | Impossible: same struct is consulted on both sides |
 
 ---
 
@@ -1068,7 +1200,7 @@ The supervisor injects configuration via environment variables at service spawn 
 Argon2 parameters are configured in two places:
 
 - **`[auth]`** in the supervisor config: read by `vauban-supervisor` and injected as env vars into `vauban-auth` at spawn time. Defaults in Rust code: `19456 KB`, `2 iterations`, `1 parallelism`.
-- **`[security.argon2]`** in `config/default.toml`: read by `vauban-web` for its local password hashing fallback (dev mode without supervisor). Production values: `65536 KB`, `3 iterations`, `1 parallelism`.
+- **`[security.argon2]`** in `config/default.toml`: historically used by `vauban-web` for a local password-hashing fallback. That fallback has been removed alongside the RBAC one; `vauban-web` now always delegates hashing and verification to `vauban-auth`. The section is kept for backward compatibility with older configuration files but has no runtime effect. Production values used by `vauban-auth` remain `65536 KB`, `3 iterations`, `1 parallelism`.
 
 ```toml
 # config/default.toml
@@ -1084,7 +1216,8 @@ policy_path = "config/access/default_policy.csv"
 # argon2_parallelism = 1
 
 [security.argon2]
-# Web-side Argon2 parameters (local fallback in dev mode)
+# Historical web-side Argon2 parameters (no longer used: vauban-web always
+# delegates hashing and verification to vauban-auth via IPC).
 memory_size_kb = 65536
 iterations = 3
 parallelism = 1
@@ -1173,7 +1306,7 @@ INFO vauban_access: Access denied: no matching rules user_id=99 asset_group_id=5
 |---------------|-------|-------------|
 | Service state | 1 | Default values |
 | Control messages | 3 | Ping/Pong, Drain, Control via handle_message |
-| RBAC fallback | 1 | Debug build allows without enforcer |
+| RBAC hard-fail | 1 | `load_casbin_enforcer()` errors out when model/policy paths are missing |
 | Casbin enforcer | 8 | Load success/failure, superuser wildcard, staff permissions, user restrictions, unknown role denial |
 | Request ID preservation | 1 | Response echoes request_id correctly |
 | Counter tracking | 1 | requests_processed incremented per check |
@@ -1222,7 +1355,7 @@ Tests in `vauban-web/tests/`:
 | Async runtime in sync service | Single-threaded Tokio | Required by `diesel-async`; minimal overhead in current_thread mode |
 | SensitiveString | Custom zeroizing wrapper | Prevent credential leaks in logs and memory dumps |
 | Drop FK for DB separation | `ALTER TABLE assets DROP CONSTRAINT` | Enable separate PostgreSQL instances for web and access data |
-| Dual fallback mode | cfg(debug_assertions) | Dev convenience vs production security |
+| No dual fallback mode | Casbin mandatory at runtime | Avoid drift between dev and prod; Casbin is the single source of truth |
 | Priority-based rules | `priority` column | Explicit conflict resolution for overlapping access rules |
 | Protocol-level granularity | `text[]` column | Single rule can grant SSH but not RDP (or vice versa) |
 
@@ -1531,8 +1664,8 @@ sequenceDiagram
 │   │   │   ├── auth.rs             # AuthIpcClient (verify/hash)
 │   │   │   └── access.rs           # AccessIpcClient (RBAC + access rules)
 │   │   ├── services/
-│   │   │   ├── rbac.rs             # RbacService wrapper (debug=allow, release=deny)
-│   │   │   └── access.rs           # Access service (IPC or local Diesel DSL fallback)
+│   │   │   ├── rbac.rs             # RbacService wrapper (thin shim over AccessIpcClient; Casbin is the single source of truth)
+│   │   │   └── access.rs           # Access service (IPC-only; the Diesel DSL fallback has been removed)
 │   │   ├── handlers/
 │   │   │   ├── web/access_rules.rs # Web form handlers (CSRF + RBAC)
 │   │   │   └── api/access_rules.rs # REST API handlers
