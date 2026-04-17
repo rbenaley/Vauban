@@ -93,7 +93,10 @@ async fn test_web_access_rules_list_shows_rules() {
         body.contains("test-rule"),
         "List page should show the created rule name"
     );
-    assert!(body.contains("SSH"), "List page should show protocols");
+    // NOTE: Protocols are intentionally NOT exposed on the list page anymore
+    // (issue #14 follow-up). They remain available on the detail/edit pages.
+    // See test_access_list_does_not_render_protocols_column for the
+    // structural guard.
 
     test_db::cleanup(&mut conn).await;
 }
