@@ -7,8 +7,8 @@
     <!-- Header -->
     <div class="md:flex md:items-center md:justify-between">
         <div class="min-w-0 flex-1">
-            <nav class="flex" aria-label="Breadcrumb">
-                <ol class="flex items-center space-x-2">
+            <nav class="flex overflow-x-auto" aria-label="Breadcrumb">
+                <ol class="flex items-center space-x-2 whitespace-nowrap">
                     <li>
                         <a href="/assets/groups" class="text-gray-400 hover:text-gray-500 dark:text-gray-500 dark:hover:text-gray-400">
                             <svg class="h-5 w-5 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
@@ -56,12 +56,12 @@
                         {% endif %}
                     </svg>
                 </span>
-                <h2 class="text-2xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-3xl sm:tracking-tight">
+                <h2 class="text-xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-2xl lg:text-3xl sm:tracking-tight">
                     {{ group.name }}
                 </h2>
             </div>
         </div>
-        <div class="mt-4 flex md:ml-4 md:mt-0 space-x-3">
+        <div class="mt-4 flex flex-wrap gap-2 md:ml-4 md:mt-0 md:flex-nowrap md:space-x-3 md:gap-0">
             <a href="/assets/groups/{{ group.uuid }}/edit"
                class="inline-flex items-center rounded-md bg-white dark:bg-gray-700 px-3 py-2 text-sm font-semibold text-gray-900 dark:text-white shadow-sm ring-1 ring-inset ring-gray-300 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600">
                 <svg class="-ml-0.5 mr-1.5 h-5 w-5 text-gray-400" viewBox="0 0 20 20" fill="currentColor">
@@ -122,14 +122,14 @@
 
     <!-- Assets in Group -->
     <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
-        <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
                 <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Assets</h3>
                 <p class="mt-1 max-w-2xl text-sm text-gray-500 dark:text-gray-400">
                     {{ group.assets.len() }} asset{% if group.assets.len() != 1 %}s{% endif %} in this group
                 </p>
             </div>
-            <div class="flex items-center space-x-4">
+            <div class="flex flex-wrap items-center gap-3 sm:gap-4">
                 <a href="/assets/groups/{{ group.uuid }}/add-asset"
                    class="inline-flex items-center rounded-md bg-vauban-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-600">
                     <svg class="-ml-0.5 mr-1.5 h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
@@ -147,9 +147,9 @@
         {% if !group.assets.is_empty() %}
         <ul role="list" class="divide-y divide-gray-200 dark:divide-gray-700">
             {% for asset in group.assets %}
-            <li class="px-6 py-4 hover:bg-gray-50 dark:hover:bg-gray-700">
-                <div class="flex items-center justify-between">
-                    <div class="flex items-center space-x-4">
+            <li class="px-4 py-4 sm:px-6 hover:bg-gray-50 dark:hover:bg-gray-700">
+                <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div class="flex items-start space-x-3 sm:space-x-4 min-w-0">
                         <div class="flex-shrink-0">
                             <span class="inline-flex h-10 w-10 items-center justify-center rounded-full
                                 {% if asset.asset_type == "ssh" %}bg-green-100 dark:bg-green-900/50
@@ -163,14 +163,14 @@
                                 </span>
                             </span>
                         </div>
-                        <div>
-                            <a href="/assets/{{ asset.uuid }}" class="text-sm font-medium text-gray-900 dark:text-white hover:text-vauban-600 dark:hover:text-vauban-400">
+                        <div class="min-w-0 flex-1">
+                            <a href="/assets/{{ asset.uuid }}" class="text-sm font-medium text-gray-900 dark:text-white hover:text-vauban-600 dark:hover:text-vauban-400 break-words">
                                 {{ asset.name }}
                             </a>
-                            <p class="text-sm text-gray-500 dark:text-gray-400">{{ asset.hostname }}</p>
+                            <p class="text-sm text-gray-500 dark:text-gray-400 break-all">{{ asset.hostname }}</p>
                         </div>
                     </div>
-                    <div class="flex items-center space-x-3">
+                    <div class="flex flex-wrap items-center gap-2 sm:gap-3 sm:flex-shrink-0">
                         <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium {{ asset.status_class() }}">
                             {{ asset.status }}
                         </span>
@@ -192,7 +192,7 @@
             {% endfor %}
         </ul>
         {% else %}
-        <div class="px-6 py-12 text-center">
+        <div class="px-4 py-12 sm:px-6 text-center">
             <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"/>
             </svg>

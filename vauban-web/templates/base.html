@@ -80,7 +80,7 @@
     </div>
 
     <!-- Notifications toast -->
-    <div class="fixed bottom-4 right-4 z-50 space-y-2 max-w-md w-96" aria-live="polite">
+    <div class="fixed bottom-2 left-2 right-2 sm:bottom-4 sm:right-4 sm:left-auto z-50 space-y-2 sm:w-96 sm:max-w-md" aria-live="polite">
         <template x-for="notification in notifications" :key="notification.id">
             <div x-show="true"
                  x-transition:enter="transform ease-out duration-300 transition"

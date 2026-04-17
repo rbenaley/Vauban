@@ -6,25 +6,25 @@
 <div class="space-y-6">
     <div class="md:flex md:items-center md:justify-between">
         <div class="min-w-0 flex-1">
-            <h2 class="text-2xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-3xl sm:tracking-tight">
+            <h2 class="text-xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-2xl lg:text-3xl sm:tracking-tight">
                 API Keys
             </h2>
             <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
                 Manage API keys for programmatic access to VAUBAN
             </p>
         </div>
-        <div class="mt-4 flex flex-col items-end md:ml-4 md:mt-0">
+        <div class="mt-4 flex flex-col items-stretch sm:items-end md:ml-4 md:mt-0">
             <button type="button"
                     hx-get="/accounts/apikeys/create"
                     hx-target="#create-key-modal"
                     hx-swap="innerHTML"
-                    class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 dark:focus:ring-offset-gray-900">
+                    class="inline-flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 dark:focus:ring-offset-gray-900">
                 <svg class="-ml-1 mr-2 h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
                     <path fill-rule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clip-rule="evenodd" />
                 </svg>
                 Create API Key
             </button>
-            <p class="mt-1.5 text-xs font-mono text-gray-400 dark:text-gray-500">{{ vauban.version }}</p>
+            <p class="mt-1.5 text-xs font-mono text-gray-400 dark:text-gray-500 text-center sm:text-right">{{ vauban.version }}</p>
         </div>
     </div>
 
@@ -46,103 +46,157 @@
     <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden"
          hx-ext="ws"
          ws-connect="/ws/notifications">
-        <table class="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
-            <thead class="bg-gray-50 dark:bg-gray-900">
-                <tr>
-                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                        Name
-                    </th>
-                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                        Key
-                    </th>
-                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                        Scopes
-                    </th>
-                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                        Last Used
-                    </th>
-                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                        Expires
-                    </th>
-                    <th scope="col" class="relative px-6 py-3">
-                        <span class="sr-only">Actions</span>
-                    </th>
-                </tr>
-            </thead>
-            <tbody class="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
-                {% for key in api_keys %}
-                <tr id="api-key-{{ key.uuid }}" class="{% if !key.is_active || key.is_expired() %}opacity-50{% endif %}">
-                    <td class="px-6 py-4 whitespace-nowrap">
-                        <div class="flex items-center">
-                            <div class="flex-shrink-0 h-8 w-8">
-                                <span class="inline-flex items-center justify-center h-8 w-8 rounded-full {% if key.is_active && !key.is_expired() %}bg-green-100 dark:bg-green-900{% else %}bg-gray-100 dark:bg-gray-700{% endif %}">
-                                    <svg class="h-4 w-4 {% if key.is_active && !key.is_expired() %}text-green-600 dark:text-green-400{% else %}text-gray-600 dark:text-gray-400{% endif %}" fill="currentColor" viewBox="0 0 20 20">
-                                        <path fill-rule="evenodd" d="M18 8a6 6 0 01-7.743 5.743L10 14l-1 1-1 1H6v2H2v-4l4.257-4.257A6 6 0 1118 8zm-6-4a1 1 0 100 2 2 2 0 012 2 1 1 0 102 0 4 4 0 00-4-4z" clip-rule="evenodd" />
-                                    </svg>
+        <div class="overflow-x-auto">
+            <table class="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                <thead class="bg-gray-50 dark:bg-gray-900">
+                    <tr>
+                        <th scope="col" class="px-3 py-3 sm:px-4 lg:px-6 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                            Name
+                        </th>
+                        <th scope="col" class="hidden sm:table-cell px-3 py-3 sm:px-4 lg:px-6 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                            Key
+                        </th>
+                        <th scope="col" class="hidden lg:table-cell px-3 py-3 sm:px-4 lg:px-6 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                            Scopes
+                        </th>
+                        <th scope="col" class="hidden md:table-cell px-3 py-3 sm:px-4 lg:px-6 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                            Last Used
+                        </th>
+                        <th scope="col" class="hidden md:table-cell px-3 py-3 sm:px-4 lg:px-6 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                            Expires
+                        </th>
+                        <th scope="col" class="relative px-3 py-3 sm:px-4 lg:px-6">
+                            <span class="sr-only">Actions</span>
+                        </th>
+                    </tr>
+                </thead>
+                <tbody class="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
+                    {% for key in api_keys %}
+                    <tr id="api-key-{{ key.uuid }}" class="{% if !key.is_active || key.is_expired() %}opacity-50{% endif %}">
+                        <td class="px-3 py-4 sm:px-4 lg:px-6 align-top">
+                            <div class="flex items-start">
+                                <div class="flex-shrink-0 h-8 w-8">
+                                    <span class="inline-flex items-center justify-center h-8 w-8 rounded-full {% if key.is_active && !key.is_expired() %}bg-green-100 dark:bg-green-900{% else %}bg-gray-100 dark:bg-gray-700{% endif %}">
+                                        <svg class="h-4 w-4 {% if key.is_active && !key.is_expired() %}text-green-600 dark:text-green-400{% else %}text-gray-600 dark:text-gray-400{% endif %}" fill="currentColor" viewBox="0 0 20 20">
+                                            <path fill-rule="evenodd" d="M18 8a6 6 0 01-7.743 5.743L10 14l-1 1-1 1H6v2H2v-4l4.257-4.257A6 6 0 1118 8zm-6-4a1 1 0 100 2 2 2 0 012 2 1 1 0 102 0 4 4 0 00-4-4z" clip-rule="evenodd" />
+                                        </svg>
+                                    </span>
+                                </div>
+                                <div class="ml-3 sm:ml-4 min-w-0 flex-1">
+                                    <div class="text-sm font-medium text-gray-900 dark:text-white break-words">
+                                        {{ key.name }}
+                                    </div>
+                                    <div class="text-xs text-gray-500 dark:text-gray-400">
+                                        Created {{ key.created_at.format("%b %d, %Y") }}
+                                    </div>
+                                    <!-- Mobile-only nested info: Key + Scopes + Expires -->
+                                    <div class="mt-2 space-y-1 sm:hidden">
+                                        <code class="inline-block px-2 py-0.5 text-xs font-mono bg-gray-100 dark:bg-gray-700 rounded text-gray-600 dark:text-gray-300 break-all">
+                                            {{ key.key_prefix }}••••••••
+                                        </code>
+                                        <div class="flex flex-wrap gap-1">
+                                            {% for scope in key.scopes %}
+                                            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium
+                                                {% if scope == "admin" %}
+                                                bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200
+                                                {% elif scope == "write" %}
+                                                bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200
+                                                {% else %}
+                                                bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200
+                                                {% endif %}">
+                                                {{ scope }}
+                                            </span>
+                                            {% endfor %}
+                                        </div>
+                                        <div class="text-xs text-gray-500 dark:text-gray-400">
+                                            {% if key.is_expired() %}
+                                            <span class="text-red-600 dark:text-red-400">Expired</span>
+                                            {% else %}
+                                            Expires: {{ key.expires_display() }} &middot; Last used: {{ key.last_used_display() }}
+                                            {% endif %}
+                                        </div>
+                                    </div>
+                                    <!-- Tablet (sm+ but <md): show Expires inline since md hides Last Used too -->
+                                    <div class="mt-1 text-xs text-gray-500 dark:text-gray-400 hidden sm:block md:hidden">
+                                        {% if key.is_expired() %}
+                                        <span class="text-red-600 dark:text-red-400">Expired</span>
+                                        {% else %}
+                                        Expires: {{ key.expires_display() }} &middot; Last used: {{ key.last_used_display() }}
+                                        {% endif %}
+                                    </div>
+                                    <!-- md (no Scopes column): show scopes inline -->
+                                    <div class="mt-1 hidden sm:block lg:hidden">
+                                        <div class="flex flex-wrap gap-1">
+                                            {% for scope in key.scopes %}
+                                            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium
+                                                {% if scope == "admin" %}
+                                                bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200
+                                                {% elif scope == "write" %}
+                                                bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200
+                                                {% else %}
+                                                bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200
+                                                {% endif %}">
+                                                {{ scope }}
+                                            </span>
+                                            {% endfor %}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </td>
+                        <td class="hidden sm:table-cell px-3 py-4 sm:px-4 lg:px-6 align-top">
+                            <code class="px-2 py-1 text-sm font-mono bg-gray-100 dark:bg-gray-700 rounded text-gray-600 dark:text-gray-300 break-all">
+                                {{ key.key_prefix }}••••••••
+                            </code>
+                        </td>
+                        <td class="hidden lg:table-cell px-3 py-4 sm:px-4 lg:px-6 align-top">
+                            <div class="flex flex-wrap gap-1">
+                                {% for scope in key.scopes %}
+                                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium
+                                    {% if scope == "admin" %}
+                                    bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200
+                                    {% elif scope == "write" %}
+                                    bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200
+                                    {% else %}
+                                    bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200
+                                    {% endif %}">
+                                    {{ scope }}
                                 </span>
+                                {% endfor %}
                             </div>
-                            <div class="ml-4">
-                                <div class="text-sm font-medium text-gray-900 dark:text-white">
-                                    {{ key.name }}
-                                </div>
-                                <div class="text-xs text-gray-500 dark:text-gray-400">
-                                    Created {{ key.created_at.format("%b %d, %Y") }}
-                                </div>
-                            </div>
-                        </div>
-                    </td>
-                    <td class="px-6 py-4 whitespace-nowrap">
-                        <code class="px-2 py-1 text-sm font-mono bg-gray-100 dark:bg-gray-700 rounded text-gray-600 dark:text-gray-300">
-                            {{ key.key_prefix }}••••••••
-                        </code>
-                    </td>
-                    <td class="px-6 py-4 whitespace-nowrap">
-                        <div class="flex flex-wrap gap-1">
-                            {% for scope in key.scopes %}
-                            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium
-                                {% if scope == "admin" %}
-                                bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200
-                                {% elif scope == "write" %}
-                                bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200
-                                {% else %}
-                                bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200
-                                {% endif %}">
-                                {{ scope }}
-                            </span>
-                            {% endfor %}
-                        </div>
-                    </td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
-                        {{ key.last_used_display() }}
-                    </td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm">
-                        {% if key.is_expired() %}
-                        <span class="text-red-600 dark:text-red-400">Expired</span>
-                        {% else %}
-                        <span class="text-gray-500 dark:text-gray-400">{{ key.expires_display() }}</span>
-                        {% endif %}
-                    </td>
-                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                        {% if key.is_active %}
-                        <form hx-post="/accounts/apikeys/{{ key.uuid }}/revoke"
-                              hx-confirm="Are you sure you want to revoke this API key? This action cannot be undone."
-                              hx-target="#api-key-{{ key.uuid }}"
-                              hx-swap="outerHTML"
-                              x-data="csrf">
-                            <input type="hidden" name="csrf_token" x-model="token" />
-                            <button type="submit"
-                                    class="text-red-600 hover:text-red-900 dark:text-red-400 dark:hover:text-red-300">
-                                Revoke
-                            </button>
-                        </form>
-                        {% else %}
-                        <span class="text-gray-400 dark:text-gray-600">Revoked</span>
-                        {% endif %}
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
+                        </td>
+                        <td class="hidden md:table-cell px-3 py-4 sm:px-4 lg:px-6 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400 align-top">
+                            {{ key.last_used_display() }}
+                        </td>
+                        <td class="hidden md:table-cell px-3 py-4 sm:px-4 lg:px-6 whitespace-nowrap text-sm align-top">
+                            {% if key.is_expired() %}
+                            <span class="text-red-600 dark:text-red-400">Expired</span>
+                            {% else %}
+                            <span class="text-gray-500 dark:text-gray-400">{{ key.expires_display() }}</span>
+                            {% endif %}
+                        </td>
+                        <td class="px-3 py-4 sm:px-4 lg:px-6 whitespace-nowrap text-right text-sm font-medium align-top">
+                            {% if key.is_active %}
+                            <form hx-post="/accounts/apikeys/{{ key.uuid }}/revoke"
+                                  hx-confirm="Are you sure you want to revoke this API key? This action cannot be undone."
+                                  hx-target="#api-key-{{ key.uuid }}"
+                                  hx-swap="outerHTML"
+                                  x-data="csrf">
+                                <input type="hidden" name="csrf_token" x-model="token" />
+                                <button type="submit"
+                                        class="text-red-600 hover:text-red-900 dark:text-red-400 dark:hover:text-red-300">
+                                    Revoke
+                                </button>
+                            </form>
+                            {% else %}
+                            <span class="text-gray-400 dark:text-gray-600">Revoked</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
     </div>
     {% endif %}
 

@@ -187,7 +187,25 @@ fn test_bug06_profile_edit_button_template_structure() {
     );
 }
 
-/// Regular user (non-admin) must NOT see the Edit button on profile page.
+/// Structural: the user list page must NOT expose the user's email address
+/// as a column. Email remains accessible from the user detail (`View`) page.
+/// Regression guard for the privacy-tightening change requested after the
+/// responsive overhaul (issue #14 follow-up).
+#[test]
+fn test_user_list_does_not_render_email_column() {
+    let template = include_str!("../../templates/accounts/user_list.html");
+
+    let lower = template.to_lowercase();
+    assert!(
+        !lower.contains(">email<"),
+        "user_list: forbidden 'Email' column header detected; email is now View-only"
+    );
+
+    assert!(
+        !template.contains("{{ user.email }}"),
+        "user_list: forbidden user.email rendering detected; email is now View-only"
+    );
+}
 #[tokio::test]
 async fn test_bug06_regular_user_has_no_edit_button() {
     let app = TestApp::spawn().await;

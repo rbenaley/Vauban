@@ -6,7 +6,7 @@
 <div class="space-y-6">
     <div class="md:flex md:items-center md:justify-between">
         <div class="min-w-0 flex-1">
-            <h2 class="text-2xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-3xl sm:tracking-tight">
+            <h2 class="text-xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-2xl lg:text-3xl sm:tracking-tight">
                 All Sessions
             </h2>
             <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -33,9 +33,9 @@
          ws-connect="/ws/notifications">
         <ul role="list" class="divide-y divide-gray-200 dark:divide-gray-700" id="admin-sessions-list">
             {% for session in sessions %}
-            <li id="admin-session-row-{{ session.uuid }}" class="px-6 py-4">
-                <div class="flex items-center justify-between">
-                    <div class="flex items-center min-w-0 gap-x-4">
+            <li id="admin-session-row-{{ session.uuid }}" class="px-4 py-4 sm:px-6">
+                <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div class="flex items-start min-w-0 gap-x-3 sm:gap-x-4">
                         <div class="flex-shrink-0">
                             <span class="inline-flex items-center justify-center h-10 w-10 rounded-full {% if session.is_current %}bg-green-100 dark:bg-green-900{% else %}bg-gray-100 dark:bg-gray-700{% endif %}">
                                 <svg class="h-5 w-5 {% if session.is_current %}text-green-600 dark:text-green-400{% else %}text-gray-600 dark:text-gray-400{% endif %}" fill="currentColor" viewBox="0 0 20 20">
@@ -44,16 +44,18 @@
                             </span>
                         </div>
                         <div class="min-w-0 flex-1">
-                            <p class="text-sm font-medium text-gray-900 dark:text-white truncate">
-                                {{ session.username }}
+                            <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                <p class="text-sm font-medium text-gray-900 dark:text-white break-all">
+                                    {{ session.username }}
+                                </p>
                                 {% if session.is_current %}
-                                <span class="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200">Current session</span>
+                                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200">Current session</span>
                                 {% endif %}
-                                <span class="ml-2 text-xs text-gray-500 dark:text-gray-400 font-normal">
+                                <span class="text-xs text-gray-500 dark:text-gray-400 font-normal break-words">
                                     {{ session.device_info }}
                                 </span>
-                            </p>
-                            <p class="text-sm text-gray-500 dark:text-gray-400">
+                            </div>
+                            <p class="text-sm text-gray-500 dark:text-gray-400 break-all">
                                 IP: {{ session.ip_address }}
                             </p>
                             <p class="text-xs text-gray-400 dark:text-gray-500">
@@ -61,7 +63,7 @@
                             </p>
                         </div>
                     </div>
-                    <div class="flex-shrink-0">
+                    <div class="flex-shrink-0 sm:ml-4">
                         {% if session.is_current %}
                         <span class="text-xs text-gray-400 dark:text-gray-500">This session</span>
                         {% else %}

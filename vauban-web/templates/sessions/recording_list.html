@@ -7,7 +7,7 @@
     <!-- Header -->
     <div class="md:flex md:items-center md:justify-between">
         <div class="min-w-0 flex-1">
-            <h2 class="text-2xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-3xl sm:tracking-tight">
+            <h2 class="text-xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-2xl lg:text-3xl sm:tracking-tight">
                 Session Recordings
             </h2>
             <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -57,9 +57,9 @@
         {% if !recordings.is_empty() %}
         <ul role="list" class="divide-y divide-gray-200 dark:divide-gray-700">
             {% for recording in recordings %}
-            <li class="px-6 py-4 hover:bg-gray-50 dark:hover:bg-gray-700">
-                <div class="flex items-center justify-between">
-                    <div class="flex items-center space-x-4 flex-1">
+            <li class="px-4 py-4 sm:px-6 hover:bg-gray-50 dark:hover:bg-gray-700">
+                <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div class="flex items-start space-x-3 sm:space-x-4 min-w-0 flex-1">
                         <div class="flex-shrink-0">
                             <span class="inline-flex h-10 w-10 items-center justify-center rounded-full
                                 {% if recording.session_type == "ssh" %}bg-green-100 text-green-600 dark:bg-green-900/50 dark:text-green-400
@@ -77,32 +77,32 @@
                             </span>
                         </div>
                         <div class="flex-1 min-w-0">
-                            <div class="flex items-center">
-                                <p class="text-sm font-medium text-gray-900 dark:text-white truncate">
+                            <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                <p class="text-sm font-medium text-gray-900 dark:text-white break-words">
                                     {{ recording.asset_name }}
                                 </p>
-                                <span class="ml-2 inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300">
+                                <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300">
                                     Ready
                                 </span>
                             </div>
-                            <div class="mt-1 flex items-center text-sm text-gray-500 dark:text-gray-400">
+                            <div class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-gray-500 dark:text-gray-400">
                                 <span>{{ recording.format_display() }}</span>
-                                <span class="mx-2">•</span>
+                                <span class="hidden sm:inline">&bull;</span>
                                 <span>{{ recording.session_type_display() }}</span>
                                 {% if recording.duration_seconds.is_some() %}
-                                <span class="mx-2">•</span>
+                                <span class="hidden sm:inline">&bull;</span>
                                 <span>{{ recording.duration_display() }}</span>
                                 {% endif %}
-                                <span class="mx-2">•</span>
-                                <span>{{ recording.credential_username }}</span>
+                                <span class="hidden sm:inline">&bull;</span>
+                                <span class="break-all">{{ recording.credential_username }}</span>
                                 {% if let Some(connected) = recording.connected_at.as_ref() %}
-                                <span class="mx-2">•</span>
+                                <span class="hidden sm:inline">&bull;</span>
                                 <span>{{ connected }}</span>
                                 {% endif %}
                             </div>
                         </div>
                     </div>
-                    <div class="flex items-center space-x-2 ml-4">
+                    <div class="flex items-center gap-2 sm:ml-4 sm:flex-shrink-0">
                         <a href="/sessions/{{ recording.session_id }}"
                            class="text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">
                             View
@@ -172,7 +172,7 @@
         {% endif %}
 
         {% else %}
-        <div class="px-6 py-12 text-center">
+        <div class="px-4 py-12 sm:px-6 text-center">
             <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/>
             </svg>

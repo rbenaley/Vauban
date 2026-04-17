@@ -1,9 +1,9 @@
 {% if !sessions.is_empty() %}
 <ul role="list" class="divide-y divide-gray-200 dark:divide-gray-700">
     {% for session in sessions %}
-    <li class="px-6 py-4 hover:bg-gray-50 dark:hover:bg-gray-700">
-        <div class="flex items-center justify-between">
-            <div class="flex items-center space-x-4">
+    <li class="px-4 py-4 sm:px-6 hover:bg-gray-50 dark:hover:bg-gray-700">
+        <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div class="flex items-start space-x-3 sm:space-x-4 min-w-0">
                 <div class="flex-shrink-0">
                     <span class="inline-flex h-10 w-10 items-center justify-center rounded-full
                         {% if session.session_type == "ssh" %}bg-green-100 text-green-600 dark:bg-green-900/50 dark:text-green-400
@@ -25,37 +25,37 @@
                     </span>
                 </div>
                 <div class="flex-1 min-w-0">
-                    <div class="flex items-center">
-                        <p class="text-sm font-medium text-gray-900 dark:text-white truncate">
+                    <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+                        <p class="text-sm font-medium text-gray-900 dark:text-white break-words">
                             {{ session.asset_name }}
                         </p>
-                        <span class="ml-2 inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium {{ session.status_class() }}">
+                        <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium {{ session.status_class() }}">
                             {{ session.status_display() }}
                         </span>
                         {% if session.is_recorded %}
-                        <span class="ml-2 inline-flex items-center text-gray-400" title="Recorded">
+                        <span class="inline-flex items-center text-gray-400" title="Recorded">
                             <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.75 10.5l4.72-4.72a.75.75 0 011.28.53v11.38a.75.75 0 01-1.28.53l-4.72-4.72M4.5 18.75h9a2.25 2.25 0 002.25-2.25v-9a2.25 2.25 0 00-2.25-2.25h-9A2.25 2.25 0 002.25 7.5v9a2.25 2.25 0 002.25 2.25z"/>
                             </svg>
                         </span>
                         {% endif %}
                     </div>
-                    <div class="mt-1 flex items-center text-sm text-gray-500 dark:text-gray-400">
+                    <div class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-gray-500 dark:text-gray-400">
                         <span>{{ session.session_type_display() }}</span>
-                        <span class="mx-2">•</span>
-                        <span>{{ session.credential_username }}</span>
+                        <span class="hidden sm:inline">&bull;</span>
+                        <span class="break-all">{{ session.credential_username }}</span>
                         {% if let Some(connected) = session.connected_at.as_ref() %}
-                        <span class="mx-2">•</span>
+                        <span class="hidden sm:inline">&bull;</span>
                         <span>{{ connected }}</span>
                         {% endif %}
                         {% if session.duration_seconds.is_some() %}
-                        <span class="mx-2">•</span>
+                        <span class="hidden sm:inline">&bull;</span>
                         <span>{{ session.duration_display() }}</span>
                         {% endif %}
                     </div>
                 </div>
             </div>
-            <div class="flex items-center space-x-2">
+            <div class="flex items-center gap-2 sm:flex-shrink-0">
                 {% if show_view_link %}
                 <a href="/sessions/{{ session.id }}"
                    class="text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">
@@ -68,7 +68,7 @@
     {% endfor %}
 </ul>
 {% else %}
-<div class="px-6 py-12 text-center">
+<div class="px-4 py-12 sm:px-6 text-center">
     <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17.25v1.007a3 3 0 01-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0115 18.257V17.25m6-12V15a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 15V5.25m18 0A2.25 2.25 0 0018.75 3H5.25A2.25 2.25 0 003 5.25m18 0V12a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 12V5.25"/>
     </svg>

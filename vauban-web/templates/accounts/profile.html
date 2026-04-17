@@ -7,7 +7,7 @@
     <!-- Header -->
     <div class="md:flex md:items-center md:justify-between">
         <div class="min-w-0 flex-1">
-            <h2 class="text-2xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-3xl sm:tracking-tight">
+            <h2 class="text-xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-2xl lg:text-3xl sm:tracking-tight">
                 My Profile
             </h2>
             <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -21,7 +21,7 @@
         <div class="lg:col-span-2 space-y-6">
             <!-- Personal Information Card -->
             <div class="bg-white dark:bg-gray-800 shadow rounded-lg">
-                <div class="px-6 py-5 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
+                <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
                     <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Personal Information</h3>
                     {# Gate the Edit link on the Casbin `users:write` permission, not on  #}
                     {# `is_staff || is_superuser`, so that custom Casbin policies that    #}
@@ -117,13 +117,13 @@
 
             <!-- Active Sessions Card -->
             <div class="bg-white dark:bg-gray-800 shadow rounded-lg">
-                <div class="px-6 py-5 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
+                <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
                     <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Active Sessions</h3>
                     <a href="/accounts/sessions" class="text-sm font-medium text-vauban-600 hover:text-vauban-500 dark:text-vauban-400">
                         Manage all
                     </a>
                 </div>
-                <div class="px-6 py-5">
+                <div class="px-4 py-5 sm:px-6">
                     {% if sessions.is_empty() %}
                     <p class="text-sm text-gray-500 dark:text-gray-400">No active sessions found.</p>
                     {% else %}
@@ -174,7 +174,7 @@
         <div class="space-y-6">
             <!-- Security Card -->
             <div class="bg-white dark:bg-gray-800 shadow rounded-lg">
-                <div class="px-6 py-5 border-b border-gray-200 dark:border-gray-700">
+                <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
                     <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Security</h3>
                 </div>
                 <div class="px-6 py-5 space-y-4">
@@ -238,10 +238,10 @@
 
             <!-- Quick Actions Card -->
             <div class="bg-white dark:bg-gray-800 shadow rounded-lg">
-                <div class="px-6 py-5 border-b border-gray-200 dark:border-gray-700">
+                <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
                     <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Quick Actions</h3>
                 </div>
-                <div class="px-6 py-5">
+                <div class="px-4 py-5 sm:px-6">
                     <ul class="space-y-3">
                         <li>
                             <a href="/accounts/api-keys" class="flex items-center text-sm font-medium text-gray-700 hover:text-vauban-600 dark:text-gray-300 dark:hover:text-vauban-400">
@@ -275,10 +275,10 @@
 
             <!-- Account Info Card -->
             <div class="bg-white dark:bg-gray-800 shadow rounded-lg">
-                <div class="px-6 py-5 border-b border-gray-200 dark:border-gray-700">
+                <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
                     <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Account Details</h3>
                 </div>
-                <div class="px-6 py-5">
+                <div class="px-4 py-5 sm:px-6">
                     <dl class="space-y-3">
                         <div>
                             <dt class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">User ID</dt>

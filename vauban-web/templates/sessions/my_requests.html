@@ -7,7 +7,7 @@
     <!-- Header -->
     <div class="md:flex md:items-center md:justify-between">
         <div class="min-w-0 flex-1">
-            <h2 class="text-2xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-3xl sm:tracking-tight">
+            <h2 class="text-xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-2xl lg:text-3xl sm:tracking-tight">
                 My Access Requests
             </h2>
             <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -30,9 +30,9 @@
         {% if !requests.is_empty() %}
         <ul role="list" class="divide-y divide-gray-200 dark:divide-gray-700">
             {% for req in requests %}
-            <li class="px-6 py-4">
-                <div class="flex items-center justify-between">
-                    <div class="flex items-center space-x-4">
+            <li class="px-4 py-4 sm:px-6">
+                <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div class="flex items-start space-x-3 sm:space-x-4 min-w-0">
                         <div class="flex-shrink-0">
                             <span class="inline-flex h-10 w-10 items-center justify-center rounded-full
                                 {% if req.asset_type == "ssh" %}bg-green-100 dark:bg-green-900/50
@@ -47,19 +47,19 @@
                             </span>
                         </div>
                         <div class="flex-1 min-w-0">
-                            <div class="flex items-center space-x-2">
-                                <p class="text-sm font-medium text-gray-900 dark:text-white truncate">
+                            <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                <p class="text-sm font-medium text-gray-900 dark:text-white break-words">
                                     {{ req.asset_name }}
                                 </p>
-                                <span class="text-gray-400 dark:text-gray-500 text-xs">({{ req.asset_hostname }})</span>
+                                <span class="text-gray-400 dark:text-gray-500 text-xs break-all">({{ req.asset_hostname }})</span>
                                 <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {{ req.status_class() }}">
                                     {{ req.status_label() }}
                                 </span>
                             </div>
-                            <div class="mt-1 flex items-center text-sm text-gray-500 dark:text-gray-400">
+                            <div class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-gray-500 dark:text-gray-400">
                                 <span>Requested {{ req.created_at }}</span>
                                 {% if let Some(at) = req.approved_at.as_ref() %}
-                                <span class="mx-2">&middot;</span>
+                                <span class="hidden sm:inline">&middot;</span>
                                 <span>
                                     {% if req.status == "rejected" %}Rejected{% else %}Approved{% endif %}
                                     {{ at }}
@@ -68,7 +68,7 @@
                                     {% endif %}
                                 </span>
                                 {% endif %}
-                                <span class="mx-2">&middot;</span>
+                                <span class="hidden sm:inline">&middot;</span>
                                 <span class="inline-flex items-center space-x-1">
                                     <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
@@ -77,13 +77,13 @@
                                 </span>
                             </div>
                             {% if let Some(just) = req.justification.as_ref() %}
-                            <p class="mt-1 text-sm text-gray-600 dark:text-gray-300 line-clamp-1">
+                            <p class="mt-1 text-sm text-gray-600 dark:text-gray-300 line-clamp-2 break-words">
                                 {{ just }}
                             </p>
                             {% endif %}
                         </div>
                     </div>
-                    <div class="flex items-center space-x-2">
+                    <div class="flex items-center gap-2 sm:flex-shrink-0">
                         {% if req.is_approved() %}
                         <a href="/assets/{{ req.uuid }}"
                            class="inline-flex items-center rounded-md bg-vauban-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500">
@@ -190,7 +190,7 @@
         {% endif %}
 
         {% else %}
-        <div class="px-6 py-12 text-center">
+        <div class="px-4 py-12 sm:px-6 text-center">
             <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
             </svg>

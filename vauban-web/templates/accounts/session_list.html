@@ -6,7 +6,7 @@
 <div class="space-y-6">
     <div class="md:flex md:items-center md:justify-between">
         <div class="min-w-0 flex-1">
-            <h2 class="text-2xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-3xl sm:tracking-tight">
+            <h2 class="text-xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-2xl lg:text-3xl sm:tracking-tight">
                 My Sessions
             </h2>
             <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -33,9 +33,9 @@
          ws-connect="/ws/notifications">
         <ul role="list" class="divide-y divide-gray-200 dark:divide-gray-700" id="sessions-list">
             {% for session in sessions %}
-            <li id="session-row-{{ session.uuid }}" class="px-6 py-4">
-                <div class="flex items-center justify-between">
-                    <div class="flex items-center min-w-0 gap-x-4">
+            <li id="session-row-{{ session.uuid }}" class="px-4 py-4 sm:px-6">
+                <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div class="flex items-start min-w-0 gap-x-3 sm:gap-x-4">
                         <div class="flex-shrink-0">
                             {% if session.is_current %}
                             <span class="inline-flex items-center justify-center h-10 w-10 rounded-full bg-green-100 dark:bg-green-900">
@@ -52,7 +52,7 @@
                             {% endif %}
                         </div>
                         <div class="min-w-0 flex-1">
-                            <p class="text-sm font-medium text-gray-900 dark:text-white truncate">
+                            <p class="text-sm font-medium text-gray-900 dark:text-white break-words">
                                 {{ session.device_info }}
                                 {% if session.is_current %}
                                 <span class="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200">
@@ -60,7 +60,7 @@
                                 </span>
                                 {% endif %}
                             </p>
-                            <p class="text-sm text-gray-500 dark:text-gray-400">
+                            <p class="text-sm text-gray-500 dark:text-gray-400 break-all">
                                 IP: {{ session.ip_address }}
                             </p>
                             <p class="text-xs text-gray-400 dark:text-gray-500">
@@ -68,7 +68,7 @@
                             </p>
                         </div>
                     </div>
-                    <div class="flex-shrink-0">
+                    <div class="flex-shrink-0 sm:ml-4">
                         {% if session.is_current %}
                         <span class="text-xs text-gray-400 dark:text-gray-500">This device</span>
                         {% else %}

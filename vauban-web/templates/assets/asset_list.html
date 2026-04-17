@@ -7,14 +7,14 @@
     <!-- Header -->
     <div class="md:flex md:items-center md:justify-between">
         <div class="min-w-0 flex-1">
-            <h2 class="text-2xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-3xl sm:tracking-tight">
+            <h2 class="text-xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-2xl lg:text-3xl sm:tracking-tight">
                 Assets
             </h2>
             <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
                 Manage and connect to your servers
             </p>
         </div>
-        <div class="mt-4 flex md:ml-4 md:mt-0 space-x-3">
+        <div class="mt-4 flex flex-wrap gap-2 md:ml-4 md:mt-0 md:flex-nowrap md:space-x-3 md:gap-0">
             <a href="/assets/groups"
                class="inline-flex items-center rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm font-semibold text-gray-700 dark:text-gray-300 shadow-sm hover:bg-gray-50 dark:hover:bg-gray-600">
                 <svg class="-ml-0.5 mr-1.5 h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -83,9 +83,9 @@
         {% if !assets.is_empty() %}
         <ul role="list" class="divide-y divide-gray-200 dark:divide-gray-700">
             {% for asset in assets %}
-            <li class="px-6 py-4 hover:bg-gray-50 dark:hover:bg-gray-700">
-                <div class="flex items-center justify-between">
-                    <div class="flex items-center space-x-4">
+            <li class="px-4 py-4 sm:px-6 hover:bg-gray-50 dark:hover:bg-gray-700">
+                <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div class="flex items-start space-x-3 sm:space-x-4 min-w-0">
                         <div class="flex-shrink-0">
                             <span class="inline-flex h-10 w-10 items-center justify-center rounded-full
                                 {% if asset.asset_type == "ssh" %}bg-green-100 text-green-600 dark:bg-green-900/50 dark:text-green-400
@@ -107,11 +107,11 @@
                             </span>
                         </div>
                         <div class="flex-1 min-w-0">
-                            <div class="flex items-center">
-                                <p class="text-sm font-medium text-gray-900 dark:text-white truncate">
+                            <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                <p class="text-sm font-medium text-gray-900 dark:text-white break-words">
                                     {{ asset.name }}
                                 </p>
-                                <span class="ml-2 inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium
+                                <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium
                                     {% if asset.status == "online" %}bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300
                                     {% elif asset.status == "offline" %}bg-red-100 text-red-800 dark:bg-red-900/50 dark:text-red-300
                                     {% elif asset.status == "maintenance" %}bg-yellow-100 text-yellow-800 dark:bg-yellow-900/50 dark:text-yellow-300
@@ -119,15 +119,15 @@
                                     {{ asset.status|upper }}
                                 </span>
                             </div>
-                            <p class="text-sm text-gray-500 dark:text-gray-400">
+                            <p class="text-sm text-gray-500 dark:text-gray-400 break-all">
                                 {{ asset.hostname }}:{{ asset.port }}
                                 {% if asset.group_name.is_some() %}
-                                <span class="text-gray-400">• {{ asset.group_name.as_ref().unwrap() }}</span>
+                                <span class="text-gray-400">&bull; {{ asset.group_name.as_ref().unwrap() }}</span>
                                 {% endif %}
                             </p>
                         </div>
                     </div>
-                    <div class="flex items-center space-x-2">
+                    <div class="flex flex-wrap items-center gap-2 sm:flex-shrink-0">
                         {% if show_view_link %}
                         <a href="/assets/{{ asset.uuid }}"
                            class="text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">
@@ -248,7 +248,7 @@
         {% endif %}
 
         {% else %}
-        <div class="px-6 py-12 text-center">
+        <div class="px-4 py-12 sm:px-6 text-center">
             <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17.25v1.007a3 3 0 01-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0115 18.257V17.25m6-12V15a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 15V5.25m18 0A2.25 2.25 0 0018.75 3H5.25A2.25 2.25 0 003 5.25m18 0V12a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 12V5.25"/>
             </svg>

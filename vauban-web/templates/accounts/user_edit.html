@@ -7,8 +7,8 @@
     <!-- Header -->
     <div class="md:flex md:items-center md:justify-between">
         <div class="min-w-0 flex-1">
-            <nav class="flex" aria-label="Breadcrumb">
-                <ol class="flex items-center space-x-2">
+            <nav class="flex overflow-x-auto" aria-label="Breadcrumb">
+                <ol class="flex items-center space-x-2 whitespace-nowrap">
                     <li>
                         <a href="/" class="text-gray-400 hover:text-gray-500 dark:text-gray-500 dark:hover:text-gray-400">
                             <svg class="h-5 w-5 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
@@ -51,7 +51,7 @@
                     </div>
                 </div>
                 <div>
-                    <h2 class="text-2xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-3xl sm:tracking-tight">
+                    <h2 class="text-xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-2xl lg:text-3xl sm:tracking-tight">
                         Edit User
                     </h2>
                     <p class="text-sm text-gray-500 dark:text-gray-400">@{{ user_data.username }}</p>

@@ -21,6 +21,26 @@ use crate::fixtures::{
 // List Page
 // =============================================================================
 
+/// Structural: the access rules list must NOT expose a "Protocols" column.
+/// Protocols remain accessible from the access rule detail/edit pages.
+/// Regression guard for the privacy/UX-tightening change requested after the
+/// responsive overhaul (issue #14 follow-up).
+#[test]
+fn test_access_list_does_not_render_protocols_column() {
+    let template = include_str!("../../templates/assets/access_list.html");
+
+    let lower = template.to_lowercase();
+    assert!(
+        !lower.contains(">protocols<"),
+        "access_list: forbidden 'Protocols' column header detected; protocols are now Edit-only"
+    );
+
+    assert!(
+        !template.contains("rule.protocols_display()"),
+        "access_list: forbidden rule.protocols_display() rendering detected; protocols are now Edit-only"
+    );
+}
+
 /// Access rules list page loads with empty state when no rules exist.
 #[tokio::test]
 #[serial]

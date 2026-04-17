@@ -2,9 +2,9 @@
 {% if !sessions.is_empty() %}
 <ul role="list" class="divide-y divide-gray-200 dark:divide-gray-700">
     {% for session in sessions %}
-    <li class="px-6 py-4 hover:bg-gray-50 dark:hover:bg-gray-700">
-        <div class="flex items-center justify-between">
-            <div class="flex items-center space-x-4">
+    <li class="px-4 py-4 sm:px-6 hover:bg-gray-50 dark:hover:bg-gray-700">
+        <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div class="flex items-start space-x-3 sm:space-x-4 min-w-0">
                 <div class="flex-shrink-0">
                     <span class="inline-flex h-10 w-10 items-center justify-center rounded-full bg-green-100 dark:bg-green-900/50">
                         <svg class="h-5 w-5 text-green-600 dark:text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -13,29 +13,29 @@
                     </span>
                 </div>
                 <div class="flex-1 min-w-0">
-                    <div class="flex items-center space-x-2">
-                        <p class="text-sm font-medium text-gray-900 dark:text-white truncate">
+                    <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+                        <p class="text-sm font-medium text-gray-900 dark:text-white break-words">
                             {{ session.username }}
                         </p>
-                        <span class="text-gray-400 dark:text-gray-500">→</span>
-                        <p class="text-sm font-medium text-gray-900 dark:text-white truncate">
+                        <span class="text-gray-400 dark:text-gray-500">&rarr;</span>
+                        <p class="text-sm font-medium text-gray-900 dark:text-white break-words">
                             {{ session.asset_name }}
                         </p>
                         <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {{ session.session_type_class() }}">
                             {{ session.session_type|upper }}
                         </span>
                     </div>
-                    <div class="mt-1 flex items-center text-sm text-gray-500 dark:text-gray-400">
-                        <span>{{ session.asset_hostname }}</span>
-                        <span class="mx-2">•</span>
-                        <span>{{ session.client_ip }}</span>
-                        <span class="mx-2">•</span>
+                    <div class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-gray-500 dark:text-gray-400">
+                        <span class="break-all">{{ session.asset_hostname }}</span>
+                        <span class="hidden sm:inline">&bull;</span>
+                        <span class="break-all">{{ session.client_ip }}</span>
+                        <span class="hidden sm:inline">&bull;</span>
                         <span>Connected {{ session.connected_at }}</span>
                     </div>
                 </div>
             </div>
-            <div class="flex items-center space-x-4">
-                <div class="text-right">
+            <div class="flex items-center justify-between gap-3 sm:gap-4 sm:flex-shrink-0">
+                <div class="text-left sm:text-right">
                     <p class="text-sm font-medium text-gray-900 dark:text-white">{{ session.duration }}</p>
                     <p class="text-xs text-gray-500 dark:text-gray-400">Duration</p>
                 </div>
@@ -59,7 +59,7 @@
     {% endfor %}
 </ul>
 {% else %}
-<div class="px-6 py-12 text-center">
+<div class="px-4 py-12 sm:px-6 text-center">
     <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
     </svg>

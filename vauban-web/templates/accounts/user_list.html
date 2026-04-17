@@ -7,7 +7,7 @@
     <!-- Header -->
     <div class="md:flex md:items-center md:justify-between">
         <div class="min-w-0 flex-1">
-            <h2 class="text-2xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-3xl sm:tracking-tight">
+            <h2 class="text-xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-2xl lg:text-3xl sm:tracking-tight">
                 Users
             </h2>
             <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -16,7 +16,7 @@
         </div>
         <div class="mt-4 flex md:ml-4 md:mt-0">
             <a href="/accounts/users/new"
-               class="ml-3 inline-flex items-center rounded-md bg-vauban-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-600">
+               class="inline-flex items-center rounded-md bg-vauban-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-600">
                 <svg class="-ml-0.5 mr-1.5 h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
                     <path d="M10.75 4.75a.75.75 0 00-1.5 0v4.5h-4.5a.75.75 0 000 1.5h4.5v4.5a.75.75 0 001.5 0v-4.5h4.5a.75.75 0 000-1.5h-4.5v-4.5z"/>
                 </svg>
@@ -59,41 +59,59 @@
             <table class="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
                 <thead class="bg-gray-50 dark:bg-gray-700">
                     <tr>
-                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">User</th>
-                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Email</th>
-                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Auth Source</th>
-                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">MFA</th>
-                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Status</th>
-                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Last Login</th>
-                        <th scope="col" class="relative px-6 py-3"><span class="sr-only">Actions</span></th>
+                        <th scope="col" class="px-3 py-3 sm:px-4 lg:px-6 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">User</th>
+                        <th scope="col" class="hidden lg:table-cell px-3 py-3 sm:px-4 lg:px-6 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Auth Source</th>
+                        <th scope="col" class="hidden lg:table-cell px-3 py-3 sm:px-4 lg:px-6 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">MFA</th>
+                        <th scope="col" class="px-3 py-3 sm:px-4 lg:px-6 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Status</th>
+                        <th scope="col" class="hidden md:table-cell px-3 py-3 sm:px-4 lg:px-6 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Last Login</th>
+                        <th scope="col" class="relative px-3 py-3 sm:px-4 lg:px-6"><span class="sr-only">Actions</span></th>
                     </tr>
                 </thead>
                 <tbody class="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
                     {% for user in users %}
                     <tr class="hover:bg-gray-50 dark:hover:bg-gray-700">
-                        <td class="px-6 py-4 whitespace-nowrap">
-                            <div class="flex items-center">
-                                <div class="flex-shrink-0 h-10 w-10">
-                                    <div class="h-10 w-10 rounded-full bg-vauban-100 dark:bg-vauban-900/50 flex items-center justify-center">
+                        <td class="px-3 py-4 sm:px-4 lg:px-6 align-top">
+                            <div class="flex items-start">
+                                <div class="flex-shrink-0 h-8 w-8 sm:h-10 sm:w-10">
+                                    <div class="h-8 w-8 sm:h-10 sm:w-10 rounded-full bg-vauban-100 dark:bg-vauban-900/50 flex items-center justify-center">
                                         <span class="text-vauban-600 dark:text-vauban-400 font-medium text-sm">
                                             {{ user.username[..1].to_uppercase() }}
                                         </span>
                                     </div>
                                 </div>
-                                <div class="ml-4">
-                                    <div class="text-sm font-medium text-gray-900 dark:text-white">
+                                <div class="ml-3 sm:ml-4 min-w-0 flex-1">
+                                    <div class="text-sm font-medium text-gray-900 dark:text-white break-words">
                                         {% if user.full_name.is_some() %}{{ user.full_name.as_ref().unwrap() }}{% else %}{{ user.username }}{% endif %}
                                     </div>
-                                    <div class="text-sm text-gray-500 dark:text-gray-400">
+                                    <div class="text-sm text-gray-500 dark:text-gray-400 break-all">
                                         @{{ user.username }}
+                                    </div>
+                                    <!-- Mobile-only nested info: auth + MFA + last login (email is now View-only) -->
+                                    <div class="mt-1 space-y-0.5 text-xs text-gray-500 dark:text-gray-400 lg:hidden">
+                                        <div class="flex flex-wrap items-center gap-1">
+                                            <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium
+                                                {% if user.auth_source == "local" %}bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-300
+                                                {% elif user.auth_source == "ldap" %}bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300
+                                                {% elif user.auth_source == "saml" %}bg-purple-100 text-purple-800 dark:bg-purple-900/50 dark:text-purple-300
+                                                {% else %}bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300{% endif %}">
+                                                {{ user.auth_source|upper }}
+                                            </span>
+                                            {% if user.mfa_enabled %}
+                                            <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300">MFA</span>
+                                            {% endif %}
+                                        </div>
+                                        <div class="pt-0.5 md:hidden">
+                                            {% if user.last_login.is_some() %}
+                                                Last login: {{ user.last_login.as_ref().unwrap() }}
+                                            {% else %}
+                                                <span class="text-gray-400 dark:text-gray-500">Never logged in</span>
+                                            {% endif %}
+                                        </div>
                                     </div>
                                 </div>
                             </div>
                         </td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
-                            {{ user.email }}
-                        </td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
+                        <td class="hidden lg:table-cell px-3 py-4 sm:px-4 lg:px-6 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400 align-top">
                             <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium
                                 {% if user.auth_source == "local" %}bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-300
                                 {% elif user.auth_source == "ldap" %}bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300
@@ -102,7 +120,7 @@
                                 {{ user.auth_source|upper }}
                             </span>
                         </td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
+                        <td class="hidden lg:table-cell px-3 py-4 sm:px-4 lg:px-6 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400 align-top">
                             {% if user.mfa_enabled %}
                             <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300">
                                 <svg class="mr-1 h-3 w-3" fill="currentColor" viewBox="0 0 20 20">
@@ -116,31 +134,33 @@
                             </span>
                             {% endif %}
                         </td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
-                            <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium
-                                {% if user.is_active %}bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300
-                                {% else %}bg-red-100 text-red-800 dark:bg-red-900/50 dark:text-red-300{% endif %}">
-                                {% if user.is_active %}Active{% else %}Inactive{% endif %}
-                            </span>
-                            {% if user.is_staff %}
-                            <span class="ml-2 inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-300">
-                                Staff
-                            </span>
-                            {% endif %}
-                            {% if user.is_superuser %}
-                            <span class="ml-2 inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-purple-100 text-purple-800 dark:bg-purple-900/50 dark:text-purple-300">
-                                Admin
-                            </span>
-                            {% endif %}
+                        <td class="px-3 py-4 sm:px-4 lg:px-6 align-top">
+                            <div class="flex flex-wrap gap-1">
+                                <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium
+                                    {% if user.is_active %}bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300
+                                    {% else %}bg-red-100 text-red-800 dark:bg-red-900/50 dark:text-red-300{% endif %}">
+                                    {% if user.is_active %}Active{% else %}Inactive{% endif %}
+                                </span>
+                                {% if user.is_staff %}
+                                <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-300">
+                                    Staff
+                                </span>
+                                {% endif %}
+                                {% if user.is_superuser %}
+                                <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-purple-100 text-purple-800 dark:bg-purple-900/50 dark:text-purple-300">
+                                    Admin
+                                </span>
+                                {% endif %}
+                            </div>
                         </td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
+                        <td class="hidden md:table-cell px-3 py-4 sm:px-4 lg:px-6 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400 align-top">
                             {% if user.last_login.is_some() %}
                                 {{ user.last_login.as_ref().unwrap() }}
                             {% else %}
                                 <span class="text-gray-400 dark:text-gray-500">Never</span>
                             {% endif %}
                         </td>
-                        <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                        <td class="px-3 py-4 sm:px-4 lg:px-6 whitespace-nowrap text-right text-sm font-medium align-top">
                             <a href="/accounts/users/{{ user.uuid }}" class="text-vauban-600 hover:text-vauban-900 dark:text-vauban-400 dark:hover:text-vauban-300">View</a>
                         </td>
                     </tr>
@@ -231,7 +251,7 @@
         </div>
         {% endif %}
         {% else %}
-        <div class="px-6 py-12 text-center">
+        <div class="px-4 py-12 sm:px-6 text-center">
             <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"/>
             </svg>
