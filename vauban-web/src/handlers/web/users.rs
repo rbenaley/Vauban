@@ -1247,7 +1247,7 @@ pub async fn mfa_setup(
     let (user_id, user_username, existing_secret) = user_data;
 
     // Generate or use existing secret
-    // M-1: When vault is available, secrets are encrypted at rest.
+    // When vault is available, secrets are encrypted at rest.
     // QR code is generated locally from the plaintext secret obtained from vault.
     let (secret, mut qr_code_base64) = if let Some(ref vault) = state.vault_client {
         if let Some(s) = existing_secret {

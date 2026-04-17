@@ -13,7 +13,7 @@ use crate::schema::proxy_sessions;
 // Diesel's network-address feature provides FromSql for IpAddr with Inet
 // We use deserialize_as to convert automatically
 
-/// Session type (protocol) (L-7: Diesel enum instead of String).
+/// Session type (protocol).
 #[derive(
     Debug,
     Clone,

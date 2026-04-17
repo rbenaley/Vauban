@@ -518,15 +518,15 @@ async fn test_terminal_ws_uuid_session_id() {
     );
 }
 
-// ==================== L-8: Connection Limit Integration Tests ====================
+// ==================== Connection Limit Integration Tests ====================
 
-/// Test L-8: WebSocket connection limit is enforced via middleware.
+/// WebSocket connection limit is enforced via middleware.
 ///
 /// Pre-fills the WsConnectionCounter to the limit, then verifies that
 /// new WebSocket requests are rejected with 429 Too Many Requests.
 #[tokio::test]
 #[serial]
-async fn test_l8_ws_connection_limit_enforced() {
+async fn test_ws_connection_limit_enforced() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
     let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("wslimit")).await;
@@ -571,7 +571,7 @@ async fn test_l8_ws_connection_limit_enforced() {
     let status = response.status_code().as_u16();
     assert_eq!(
         status, 429,
-        "L-8: WebSocket request should be rejected with 429 when limit is reached, got {}",
+        "WebSocket request should be rejected with 429 when limit is reached, got {}",
         status
     );
 
@@ -599,15 +599,15 @@ async fn test_l8_ws_connection_limit_enforced() {
     let status = response.status_code().as_u16();
     assert!(
         status == 101 || status == 400 || status == 426,
-        "L-8: WebSocket request should succeed after limit is freed, got {}",
+        "WebSocket request should succeed after limit is freed, got {}",
         status
     );
 }
 
-/// Test L-8: Connection limit rejection message contains useful info.
+/// Connection limit rejection message contains useful info.
 #[tokio::test]
 #[serial]
-async fn test_l8_ws_rejection_contains_limit_message() {
+async fn test_ws_rejection_contains_limit_message() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
     let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("wslimmsg")).await;
@@ -645,12 +645,12 @@ async fn test_l8_ws_rejection_contains_limit_message() {
     let body = response.text();
     assert!(
         body.contains("connection limit reached"),
-        "L-8: Rejection body should contain 'connection limit reached', got: {}",
+        "Rejection body should contain 'connection limit reached', got: {}",
         body
     );
     assert!(
         body.contains(&format!("{}", limit)),
-        "L-8: Rejection body should contain the limit value ({}), got: {}",
+        "Rejection body should contain the limit value ({}), got: {}",
         limit,
         body
     );
@@ -658,10 +658,10 @@ async fn test_l8_ws_rejection_contains_limit_message() {
     drop(guards);
 }
 
-/// Test L-8: Different users have independent limits.
+/// Different users have independent limits.
 #[tokio::test]
 #[serial]
-async fn test_l8_ws_limit_per_user_independent() {
+async fn test_ws_limit_per_user_independent() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
     let admin1 = create_admin_user(&mut conn, &app.auth_service, &unique_name("wslim1")).await;
@@ -698,7 +698,7 @@ async fn test_l8_ws_limit_per_user_independent() {
     assert_eq!(
         response.status_code().as_u16(),
         429,
-        "L-8: user1 should be rejected (at limit)"
+        "user1 should be rejected (at limit)"
     );
 
     // user2 should still be allowed (independent counter)
@@ -714,7 +714,7 @@ async fn test_l8_ws_limit_per_user_independent() {
     let status = response.status_code().as_u16();
     assert!(
         status == 101 || status == 400 || status == 426,
-        "L-8: user2 should NOT be rejected (independent limit), got {}",
+        "user2 should NOT be rejected (independent limit), got {}",
         status
     );
 

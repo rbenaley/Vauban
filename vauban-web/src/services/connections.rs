@@ -3,7 +3,7 @@
 /// Manages individual WebSocket connections with their context (token_hash)
 /// to enable personalized messages (e.g., "Current session" indicator).
 ///
-/// Also provides `WsConnectionCounter` (L-8): a per-user connection counter
+/// Also provides `WsConnectionCounter`: a per-user connection counter
 /// applied as an Axum middleware to **all** WebSocket routes, ensuring every
 /// current and future handler is automatically limited.
 use std::collections::HashMap;
@@ -14,7 +14,7 @@ use tracing::{debug, warn};
 use uuid::Uuid;
 
 // ============================================================================
-// L-8: Per-user WebSocket connection counter (applied to all WS routes)
+// Per-user WebSocket connection counter (applied to all WS routes)
 // ============================================================================
 
 /// Error returned when a user exceeds the WebSocket connection limit.
@@ -33,7 +33,7 @@ impl std::fmt::Display for ConnectionLimitError {
     }
 }
 
-/// Per-user WebSocket connection counter (L-8).
+/// Per-user WebSocket connection counter.
 ///
 /// Counts all active WebSocket connections per user across **all** handler
 /// types (dashboard, notifications, terminal, session, active-sessions).
@@ -841,10 +841,10 @@ mod tests {
         assert_eq!(registry.total_connections().await, 50);
     }
 
-    // ==================== L-8: WsConnectionCounter Tests ====================
+    // ==================== WsConnectionCounter Tests ====================
 
     #[tokio::test]
-    async fn test_l8_counter_basic_acquire_and_drop() {
+    async fn test_counter_basic_acquire_and_drop() {
         let counter = WsConnectionCounter::new(10);
         assert_eq!(counter.count("user-1").await, 0);
 
@@ -856,7 +856,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_l8_counter_limit_reached() {
+    async fn test_counter_limit_reached() {
         let counter = WsConnectionCounter::new(3);
         assert_eq!(counter.max_per_user(), 3);
 
@@ -867,12 +867,12 @@ mod tests {
 
         // 4th should fail
         let result = counter.try_acquire("user-1").await;
-        assert!(result.is_err(), "L-8: Should reject beyond limit");
+        assert!(result.is_err(), "Should reject beyond limit");
         assert_eq!(counter.count("user-1").await, 3);
     }
 
     #[tokio::test]
-    async fn test_l8_counter_limit_per_user_not_global() {
+    async fn test_counter_limit_per_user_not_global() {
         let counter = WsConnectionCounter::new(2);
 
         let _g1 = counter.try_acquire("user-1").await.unwrap();
@@ -885,7 +885,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_l8_counter_recovers_after_drop() {
+    async fn test_counter_recovers_after_drop() {
         let counter = WsConnectionCounter::new(2);
 
         let g1 = counter.try_acquire("user-1").await.unwrap();
@@ -904,7 +904,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_l8_counter_raii_on_scope_exit() {
+    async fn test_counter_raii_on_scope_exit() {
         let counter = WsConnectionCounter::new(10);
 
         {
@@ -917,7 +917,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_l8_counter_error_message_contains_limit() {
+    async fn test_counter_error_message_contains_limit() {
         let counter = WsConnectionCounter::new(1);
 
         let _g = counter.try_acquire("user-1").await.unwrap();
@@ -926,12 +926,12 @@ mod tests {
         let msg = format!("{err}");
         assert!(
             msg.contains("1 per user"),
-            "L-8: Error message should contain the configured limit, got: {msg}"
+            "Error message should contain the configured limit, got: {msg}"
         );
     }
 
     #[tokio::test]
-    async fn test_l8_counter_total() {
+    async fn test_counter_total() {
         let counter = WsConnectionCounter::new(10);
 
         let _g1 = counter.try_acquire("user-a").await.unwrap();
@@ -944,7 +944,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_l8_counter_clone_shares_state() {
+    async fn test_counter_clone_shares_state() {
         let counter = WsConnectionCounter::new(10);
         let cloned = counter.clone();
 
@@ -953,7 +953,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_l8_counter_concurrent_acquire() {
+    async fn test_counter_concurrent_acquire() {
         let counter = WsConnectionCounter::new(100);
         let mut handles = Vec::new();
 
@@ -983,7 +983,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_l8_counter_limit_one() {
+    async fn test_counter_limit_one() {
         let counter = WsConnectionCounter::new(1);
 
         let g = counter.try_acquire("user-1").await.unwrap();

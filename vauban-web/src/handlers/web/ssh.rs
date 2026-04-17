@@ -388,7 +388,7 @@ pub async fn connect_ssh(
         .unwrap_or("password")
         .to_string();
 
-    // C-2 + H-10: Decrypt credentials via vault if encrypted, then wrap in SecretString.
+    // Decrypt credentials via vault if encrypted, then wrap in SecretString.
     // Helper closure for vault-aware credential extraction.
     let vault_ref = state.vault_client.as_ref();
 
@@ -488,7 +488,7 @@ pub async fn connect_ssh(
         _ => None,
     };
 
-    // Extract stored SSH host key for verification (H-9)
+    // Extract stored SSH host key for verification
     let expected_host_key = config
         .get("ssh_host_key")
         .and_then(|v| v.as_str())
@@ -657,7 +657,7 @@ pub async fn connect_ssh(
 
                 // Detect host key mismatch errors and persist the
                 // mismatch flag in connection_config so that the asset
-                // detail page can display the warning state (H-9).
+                // detail page can display the warning state.
                 let is_host_key_mismatch = msg.contains("host key")
                     || msg.contains("MITM")
                     || msg.contains("Host key verification failed");

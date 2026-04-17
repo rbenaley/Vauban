@@ -1,4 +1,4 @@
-// L-1: Relax strict clippy lints in test code where unwrap/expect/panic are idiomatic
+// Relax strict clippy lints in test code where unwrap/expect/panic are idiomatic
 #![cfg_attr(
     test,
     allow(

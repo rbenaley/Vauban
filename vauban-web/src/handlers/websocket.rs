@@ -2,7 +2,7 @@
 ///
 /// Handles WebSocket connections for real-time updates.
 ///
-/// L-8: All WebSocket routes are protected by the `ws_connection_limit`
+/// All WebSocket routes are protected by the `ws_connection_limit`
 /// middleware, which enforces a per-user connection limit configured via
 /// `[websocket] max_connections_per_user` in config.toml.
 ///
@@ -37,10 +37,10 @@ use crate::services::broadcast::WsChannel;
 use crate::services::connections::WsConnectionGuard;
 
 // ============================================================================
-// L-8: WebSocket connection limit middleware + guard extractor
+// WebSocket connection limit middleware + guard extractor
 // ============================================================================
 
-/// RAII guard wrapper extracted by WebSocket handlers (L-8).
+/// RAII guard wrapper extracted by WebSocket handlers.
 ///
 /// Each WebSocket handler **must** accept this as a parameter and move it
 /// into the `on_upgrade` closure. This ensures the guard lives for the
@@ -74,7 +74,7 @@ where
     }
 }
 
-/// Middleware that enforces the per-user WebSocket connection limit (L-8).
+/// Middleware that enforces the per-user WebSocket connection limit.
 ///
 /// Applied as a layer on the `ws_routes` group in main.rs so that **every**
 /// WebSocket handler -- current and future -- is automatically protected.
@@ -684,7 +684,7 @@ async fn handle_notifications_socket(
     token_hash: String,
     _ws_guard: WsGuard,
 ) {
-    // Register for personalized messaging (L-8 limit is enforced by ws_connection_limit middleware)
+    // Register for personalized messaging
     let (connection_id, mut personalized_rx) = state
         .user_connections
         .register(&user.uuid, token_hash)

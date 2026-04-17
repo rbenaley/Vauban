@@ -1,4 +1,4 @@
-// L-1: Relax strict clippy lints in test code where unwrap/expect/panic are idiomatic
+// Relax strict clippy lints in test code where unwrap/expect/panic are idiomatic
 #![cfg_attr(
     test,
     allow(
@@ -39,7 +39,7 @@ struct ServiceState {
     requests_processed: u64,
     requests_failed: u64,
     draining: bool,
-    /// M-8: Flag set by ControlMessage::Shutdown to break the main loop
+    /// Flag set by ControlMessage::Shutdown to break the main loop
     /// and allow destructors to run.
     shutdown_requested: bool,
 }
@@ -234,7 +234,7 @@ fn main_loop(
     };
 
     loop {
-        // M-8/M-10: Check shutdown flag before blocking on poll.
+        // Check shutdown flag before blocking on poll.
         if state.shutdown_requested {
             info!("Shutdown flag set, exiting main loop to run destructors");
             return Ok(());
@@ -688,7 +688,7 @@ fn handle_control(
         }
         ControlMessage::Shutdown => {
             info!("Shutdown requested, setting graceful shutdown flag");
-            // M-8/M-10: Set flag instead of exit(0) so the main loop breaks
+            // Set flag instead of exit(0) so the main loop breaks
             // and all destructors run.
             state.shutdown_requested = true;
         }
@@ -905,7 +905,7 @@ mod tests {
         handle.join().unwrap();
     }
 
-    // ==================== M-8/M-10 Structural Regression Tests ====================
+    // ==================== Structural Regression Tests ====================
 
     /// Helper: Extract production code (before #[cfg(test)]).
     fn prod_source() -> &'static str {
@@ -918,36 +918,36 @@ mod tests {
     }
 
     #[test]
-    fn test_m8_no_process_exit_in_production_code() {
+    fn test_no_process_exit_in_production_code() {
         let source = prod_source();
         assert!(
             !source.contains("process::exit"),
-            "M-8/M-10: service must not call process::exit() in production code"
+            "service must not call process::exit() in production code"
         );
     }
 
     #[test]
-    fn test_m8_has_shutdown_requested_flag() {
+    fn test_has_shutdown_requested_flag() {
         let source = prod_source();
         assert!(
             source.contains("shutdown_requested"),
-            "M-8/M-10: ServiceState must have a shutdown_requested flag"
+            "ServiceState must have a shutdown_requested flag"
         );
     }
 
     #[test]
-    fn test_m8_main_loop_checks_shutdown_flag() {
+    fn test_main_loop_checks_shutdown_flag() {
         let source = prod_source();
         let main_loop_start = source.find("fn main_loop").expect("main_loop must exist");
         let main_loop_source = &source[main_loop_start..];
         assert!(
             main_loop_source.contains("shutdown_requested"),
-            "M-8/M-10: main_loop must check shutdown_requested flag"
+            "main_loop must check shutdown_requested flag"
         );
     }
 
     #[test]
-    fn test_m8_handle_control_sets_shutdown_flag() {
+    fn test_handle_control_sets_shutdown_flag() {
         let source = prod_source();
         let handle_ctrl_start = source
             .find("fn handle_control")
@@ -955,7 +955,7 @@ mod tests {
         let handle_ctrl_source = &source[handle_ctrl_start..];
         assert!(
             handle_ctrl_source.contains("shutdown_requested = true"),
-            "M-8/M-10: handle_control must set shutdown_requested = true on Shutdown"
+            "handle_control must set shutdown_requested = true on Shutdown"
         );
     }
 

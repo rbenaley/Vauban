@@ -169,7 +169,7 @@ pub(crate) fn sanitize_opt_ref(value: Option<&String>) -> Option<String> {
 ///
 /// This stores credentials in the connection_config field of the asset.
 /// When vault_client is provided (production), credential fields (password,
-/// private_key, passphrase) are encrypted at rest via vauban-vault (C-2).
+/// private_key, passphrase) are encrypted at rest via vauban-vault.
 pub(crate) fn build_connection_config(
     username: Option<&str>,
     auth_type: Option<&str>,
@@ -227,7 +227,7 @@ pub(crate) fn build_connection_config(
     serde_json::Value::Object(config)
 }
 
-/// Encrypt credential fields in a connection_config JSON via vault (C-2).
+/// Encrypt credential fields in a connection_config JSON via vault.
 ///
 /// Encrypts "password", "private_key", and "passphrase" fields in-place.
 /// Non-credential fields (username, auth_type, host_key, etc.) are left as-is.

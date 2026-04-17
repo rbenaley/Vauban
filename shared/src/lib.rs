@@ -5,7 +5,7 @@
 //! - Unix pipe utilities with SCM_RIGHTS support
 //! - Capsicum sandboxing wrappers for FreeBSD
 
-// L-1: Relax strict clippy lints in test code where unwrap/expect/panic are idiomatic
+// Relax strict clippy lints in test code where unwrap/expect/panic are idiomatic
 #![cfg_attr(
     test,
     allow(

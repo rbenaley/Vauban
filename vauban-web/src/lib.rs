@@ -2,7 +2,7 @@
 //!
 //! This file makes modules available for integration tests.
 
-// L-1: Relax strict clippy lints in test code where unwrap/expect/panic are idiomatic
+// Relax strict clippy lints in test code where unwrap/expect/panic are idiomatic
 #![cfg_attr(
     test,
     allow(
@@ -61,7 +61,7 @@ pub struct AppState {
     pub broadcast: BroadcastService,
     /// Registry for WebSocket connections with personalized context.
     pub user_connections: UserConnectionRegistry,
-    /// Per-user WebSocket connection counter (L-8).
+    /// Per-user WebSocket connection counter.
     /// Applied as middleware on all WS routes to enforce the configured limit.
     pub ws_counter: WsConnectionCounter,
     /// Rate limiter for login endpoints.
@@ -76,7 +76,7 @@ pub struct AppState {
     /// Used for TCP connection brokering (Capsicum sandbox support).
     /// None if not running under supervisor (development mode).
     pub supervisor: Option<Arc<ipc::SupervisorClient>>,
-    /// Vault crypto client for IPC with vauban-vault (M-1, C-2).
+    /// Vault crypto client for IPC with vauban-vault.
     /// Provides encrypt/decrypt and MFA operations.
     /// None if vault is not available (development mode without supervisor).
     pub vault_client: Option<Arc<VaultCryptoClient>>,

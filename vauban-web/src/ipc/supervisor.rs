@@ -68,7 +68,7 @@ pub struct SupervisorClientInner {
     pub requests_failed: AtomicU64,
     /// Flag to stop the handler thread.
     shutdown: AtomicBool,
-    /// M-8/M-10: Server handle for triggering graceful shutdown.
+    /// Server handle for triggering graceful shutdown.
     /// When the supervisor requests shutdown or IPC closes, we use this
     /// to stop the HTTP server instead of calling process::exit(0).
     server_handle: Option<axum_server::Handle<SocketAddr>>,
@@ -103,7 +103,7 @@ impl SupervisorClient {
     /// Create a new supervisor client from IPC file descriptors.
     ///
     /// Spawns a dedicated thread for handling IPC communication.
-    /// The optional `server_handle` is used for M-8/M-10 graceful shutdown:
+    /// The optional `server_handle` is used for graceful shutdown:
     /// instead of calling `process::exit(0)`, the IPC thread will trigger
     /// graceful HTTP server shutdown, allowing all destructors to run.
     ///
@@ -374,7 +374,7 @@ fn supervisor_ipc_loop(inner: Arc<SupervisorClientInner>) {
             }
             Ok(Message::Control(ControlMessage::Shutdown)) => {
                 info!("Shutdown requested by supervisor, triggering graceful shutdown");
-                // M-8/M-10: Trigger graceful HTTP server shutdown instead of exit(0).
+                // Trigger graceful HTTP server shutdown instead of exit(0).
                 // This allows all Drop/Zeroize destructors to run.
                 if let Some(ref handle) = inner.server_handle {
                     handle.graceful_shutdown(Some(Duration::from_secs(10)));
@@ -599,7 +599,7 @@ fn supervisor_ipc_loop(inner: Arc<SupervisorClientInner>) {
             }
             Err(shared::ipc::IpcError::ConnectionClosed) => {
                 info!("IPC connection closed, supervisor exited, triggering graceful shutdown");
-                // M-8/M-10: Trigger graceful HTTP server shutdown instead of exit(0).
+                // Trigger graceful HTTP server shutdown instead of exit(0).
                 if let Some(ref handle) = inner.server_handle {
                     handle.graceful_shutdown(Some(Duration::from_secs(10)));
                 }

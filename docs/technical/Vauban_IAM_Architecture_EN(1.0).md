@@ -1298,7 +1298,7 @@ INFO vauban_access: Access denied: no matching rules user_id=99 asset_group_id=5
 | Argon2id hashing | 3 | Hash + verify, wrong password, invalid hash format |
 | Multiple requests | 1 | Sequential request processing |
 | ServiceStats | 1 | Statistics tracking |
-| M-8/M-10 regression | 7 | No `process::exit()`, shutdown flag, main loop checks, env var cleanup, structural patterns |
+| Graceful shutdown regression | 7 | No `process::exit()`, shutdown flag, main loop checks, env var cleanup, structural patterns |
 
 ### 13.2 vauban-access Tests
 
@@ -1310,7 +1310,7 @@ INFO vauban_access: Access denied: no matching rules user_id=99 asset_group_id=5
 | Casbin enforcer | 8 | Load success/failure, superuser wildcard, staff permissions, user restrictions, unknown role denial |
 | Request ID preservation | 1 | Response echoes request_id correctly |
 | Counter tracking | 1 | requests_processed incremented per check |
-| Structural regression | 4 | cfg(debug_assertions) guard, Casbin integration, M-8/M-10 patterns |
+| Structural regression | 4 | cfg(debug_assertions) guard, Casbin integration, graceful shutdown patterns |
 
 ### 13.3 Handler Tests (vauban-access)
 

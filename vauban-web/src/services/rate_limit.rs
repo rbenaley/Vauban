@@ -51,7 +51,7 @@ pub struct RateLimitEntry {
 impl RateLimiter {
     /// Create a new rate limiter based on configuration.
     ///
-    /// # Fail-closed behavior (M-2)
+    /// # Fail-closed behavior
     ///
     /// - If `cache_enabled` is true and `redis_url` is provided, the Redis
     ///   client **must** be created successfully.  On failure an error is
@@ -65,7 +65,7 @@ impl RateLimiter {
     ) -> AppResult<Self> {
         if cache_enabled {
             if let Some(url) = redis_url {
-                // cache_enabled = true -> Redis MUST work (fail-closed, M-2).
+                // cache_enabled = true -> Redis MUST work (fail-closed).
                 let client = redis::Client::open(url).map_err(|e| {
                     AppError::Config(format!(
                         "Rate limiter: cache is enabled but Redis client creation failed: {}. \
@@ -121,7 +121,7 @@ impl RateLimiter {
         }
     }
 
-    /// Lua script for atomic rate limiting (M-6).
+    /// Lua script for atomic rate limiting.
     ///
     /// Executes INCR and TTL management in a single atomic operation on the
     /// Redis server, preventing the race condition where a crash between INCR
@@ -144,7 +144,7 @@ end
 return { count, ttl }
 "#;
 
-    /// Check rate limit using Redis with an atomic Lua script (M-6).
+    /// Check rate limit using Redis with an atomic Lua script.
     async fn check_redis(
         &self,
         client: &redis::Client,
@@ -457,10 +457,10 @@ mod tests {
         );
     }
 
-    // ==================== M-2: Fail-closed rate limiter tests ====================
+    // ==================== Fail-closed rate limiter tests ====================
 
     #[test]
-    fn test_m2_cache_disabled_returns_in_memory() {
+    fn test_cache_disabled_returns_in_memory() {
         // When cache_enabled = false, the rate limiter must use InMemory.
         // This is the current dev/testing path and must never break.
         let limiter = unwrap_ok!(RateLimiter::new(false, None, 10));
@@ -471,7 +471,7 @@ mod tests {
     }
 
     #[test]
-    fn test_m2_cache_disabled_with_url_returns_in_memory() {
+    fn test_cache_disabled_with_url_returns_in_memory() {
         // Even when a URL is provided, cache_enabled = false -> InMemory.
         let limiter = unwrap_ok!(RateLimiter::new(false, Some("redis://localhost:6379"), 10));
         assert!(
@@ -481,7 +481,7 @@ mod tests {
     }
 
     #[test]
-    fn test_m2_cache_enabled_valid_url_returns_redis() {
+    fn test_cache_enabled_valid_url_returns_redis() {
         // cache_enabled = true + valid URL format -> Redis variant.
         // Note: Client::open only validates the URL format, it does not
         // actually connect (that happens in check_redis).
@@ -493,7 +493,7 @@ mod tests {
     }
 
     #[test]
-    fn test_m2_cache_enabled_bad_url_returns_error() {
+    fn test_cache_enabled_bad_url_returns_error() {
         // cache_enabled = true + malformed URL -> error (fail-closed).
         let result = RateLimiter::new(true, Some("not-a-valid-redis-url"), 10);
         let err = match result {
@@ -515,7 +515,7 @@ mod tests {
     }
 
     #[test]
-    fn test_m2_cache_enabled_no_url_returns_error() {
+    fn test_cache_enabled_no_url_returns_error() {
         // cache_enabled = true but no URL -> error (fail-closed).
         let result = RateLimiter::new(true, None, 10);
         let err = match result {
@@ -532,8 +532,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_m2_in_memory_rate_limiter_still_functional() {
-        // Regression: after M-2 fix, the in-memory backend must still work.
+    async fn test_in_memory_rate_limiter_still_functional() {
+        // Regression: the in-memory backend must still work.
         let limiter = unwrap_ok!(RateLimiter::new(false, None, 3));
 
         // Use up the limit
@@ -548,66 +548,66 @@ mod tests {
         assert_eq!(result.remaining, 0);
     }
 
-    // ==================== M-6: Atomic Lua script tests ====================
+    // ==================== Atomic Lua script tests ====================
 
     #[test]
-    fn test_m6_lua_script_contains_atomic_incr_and_expire() {
+    fn test_lua_script_contains_atomic_incr_and_expire() {
         // The Lua script must contain INCR and EXPIRE in a single script
         // so they execute atomically on the Redis server.
         let lua = RateLimiter::RATE_LIMIT_LUA;
         assert!(
             lua.contains("redis.call('INCR'"),
-            "M-6: Lua script must call INCR"
+            "Lua script must call INCR"
         );
         assert!(
             lua.contains("redis.call('EXPIRE'"),
-            "M-6: Lua script must call EXPIRE"
+            "Lua script must call EXPIRE"
         );
         assert!(
             lua.contains("redis.call('TTL'"),
-            "M-6: Lua script must call TTL to check key expiry"
+            "Lua script must call TTL to check key expiry"
         );
     }
 
     #[test]
-    fn test_m6_lua_script_handles_missing_ttl() {
+    fn test_lua_script_handles_missing_ttl() {
         // The script must detect keys without TTL (ttl == -1) and set one.
         // This handles both first-request and crash-recovery scenarios.
         let lua = RateLimiter::RATE_LIMIT_LUA;
         assert!(
             lua.contains("ttl == -1"),
-            "M-6: Lua script must detect missing TTL (ttl == -1) for crash recovery"
+            "Lua script must detect missing TTL (ttl == -1) for crash recovery"
         );
     }
 
     #[test]
-    fn test_m6_lua_script_returns_count_and_ttl() {
+    fn test_lua_script_returns_count_and_ttl() {
         // The script must return both count and ttl so the Rust code
         // can compute allowed/remaining/reset_in_secs.
         let lua = RateLimiter::RATE_LIMIT_LUA;
         assert!(
             lua.contains("return { count, ttl }") || lua.contains("return {count, ttl}"),
-            "M-6: Lua script must return {{ count, ttl }}"
+            "Lua script must return {{ count, ttl }}"
         );
     }
 
     #[test]
-    fn test_m6_lua_script_uses_keys_and_argv() {
+    fn test_lua_script_uses_keys_and_argv() {
         // The script must use KEYS[1] for the rate limit key and
         // ARGV[1] for the window size, following Redis best practices.
         let lua = RateLimiter::RATE_LIMIT_LUA;
         assert!(
             lua.contains("KEYS[1]"),
-            "M-6: Lua script must use KEYS[1] for the rate limit key"
+            "Lua script must use KEYS[1] for the rate limit key"
         );
         assert!(
             lua.contains("ARGV[1]"),
-            "M-6: Lua script must use ARGV[1] for the window size"
+            "Lua script must use ARGV[1] for the window size"
         );
     }
 
     #[test]
-    fn test_m6_lua_script_is_valid_redis_script() {
+    fn test_lua_script_is_valid_redis_script() {
         // redis::Script::new() accepts the Lua code and computes a SHA1 hash.
         // A non-empty hash confirms the script is structurally accepted by the
         // redis crate (actual Lua syntax is validated server-side).
@@ -615,18 +615,18 @@ mod tests {
         let hash = script.get_hash();
         assert!(
             !hash.is_empty(),
-            "M-6: redis::Script must produce a non-empty SHA1 hash"
+            "redis::Script must produce a non-empty SHA1 hash"
         );
         assert_eq!(
             hash.len(),
             40,
-            "M-6: SHA1 hash should be 40 hex chars, got {}",
+            "SHA1 hash should be 40 hex chars, got {}",
             hash.len()
         );
     }
 
     #[test]
-    fn test_m6_lua_script_hash_is_stable() {
+    fn test_lua_script_hash_is_stable() {
         // The Lua script hash must be stable across invocations (same code
         // produces same hash).  This ensures EVALSHA caching works correctly.
         let script1 = redis::Script::new(RateLimiter::RATE_LIMIT_LUA);
@@ -634,12 +634,12 @@ mod tests {
         assert_eq!(
             script1.get_hash(),
             script2.get_hash(),
-            "M-6: Lua script hash must be stable across invocations"
+            "Lua script hash must be stable across invocations"
         );
     }
 
     #[test]
-    fn test_m6_check_redis_uses_lua_script_not_separate_commands() {
+    fn test_check_redis_uses_lua_script_not_separate_commands() {
         // Structural test: check_redis must call Script::new / invoke_async,
         // NOT individual INCR + EXPIRE commands.
         let source = include_str!("rate_limit.rs");
@@ -647,36 +647,36 @@ mod tests {
         // Must use the Lua script approach
         assert!(
             source.contains("RATE_LIMIT_LUA"),
-            "M-6: check_redis must reference RATE_LIMIT_LUA constant"
+            "check_redis must reference RATE_LIMIT_LUA constant"
         );
         assert!(
             source.contains("invoke_async"),
-            "M-6: check_redis must use invoke_async for atomic script execution"
+            "check_redis must use invoke_async for atomic script execution"
         );
     }
 
     #[tokio::test]
-    async fn test_m6_in_memory_backend_unaffected() {
+    async fn test_in_memory_backend_unaffected_by_lua_script() {
         // Regression: the in-memory backend must still function correctly
         // after the Redis path was changed to use Lua scripting.
         let limiter = unwrap_ok!(RateLimiter::new(false, None, 5));
 
         // Verify basic rate limiting still works
         for i in 1..=5 {
-            let result = unwrap_ok!(limiter.check("m6_regression_ip").await);
+            let result = unwrap_ok!(limiter.check("lua_regression_ip").await);
             assert!(result.allowed, "Request {} should be allowed", i);
             assert_eq!(result.remaining, 5 - i);
         }
 
         // 6th request should be blocked
-        let result = unwrap_ok!(limiter.check("m6_regression_ip").await);
+        let result = unwrap_ok!(limiter.check("lua_regression_ip").await);
         assert!(!result.allowed, "6th request should be blocked");
         assert_eq!(result.remaining, 0);
         assert!(result.reset_in_secs <= 60);
     }
 
     #[tokio::test]
-    async fn test_m6_disabled_backend_unaffected() {
+    async fn test_disabled_backend_unaffected() {
         // Regression: the disabled backend must still work.
         let limiter = RateLimiter::disabled();
         let result = unwrap_ok!(limiter.check("any_ip").await);

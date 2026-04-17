@@ -405,7 +405,7 @@ mod tests {
         assert!(debug.contains("Password"));
         assert!(
             !debug.contains("secret"),
-            "H-10: credential must be redacted in debug"
+            "credential must be redacted in debug"
         );
     }
 }

@@ -65,7 +65,7 @@ fn make_ssh_config() -> Arc<client::Config> {
 
 /// SSH credential types supported by the proxy.
 ///
-/// Wraps credentials in `SecretString` (H-10) to ensure:
+/// Wraps credentials in `SecretString` to ensure:
 /// - Memory is zeroized when the credential is dropped
 /// - `.expose_secret()` is required for access (compile-time enforcement)
 /// - `Debug` output never contains the actual credential values
@@ -690,14 +690,14 @@ mod tests {
         let cred = SshCredential::Password(SecretString::from("secret".to_string()));
         let debug = format!("{:?}", cred);
         assert!(debug.contains("Password"));
-        // H-10: Debug must NOT contain actual secret
+        // Debug must NOT contain actual secret
         assert!(
             !debug.contains("secret"),
-            "H-10: credential debug must be redacted"
+            "credential debug must be redacted"
         );
         assert!(
             debug.contains("REDACTED"),
-            "H-10: credential debug must show [REDACTED]"
+            "credential debug must show [REDACTED]"
         );
     }
 
@@ -825,7 +825,7 @@ mod tests {
         );
     }
 
-    // ==================== H-9 Regression: Host Key Verification ====================
+    // ==================== Regression: Host Key Verification ====================
 
     /// Structural test: verify that check_server_key contains host key
     /// verification logic (not just Ok(true)).

@@ -123,7 +123,7 @@ async fn force_create_all_connections(pool: &DbPool, count: usize) -> AppResult<
 
 /// Escape LIKE/ILIKE wildcard characters in a search pattern.
 ///
-/// L-5: PostgreSQL LIKE treats `%` and `_` as wildcards. If user input is passed
+/// PostgreSQL LIKE treats `%` and `_` as wildcards. If user input is passed
 /// directly into a LIKE pattern, these characters allow unintended pattern matching.
 /// This function escapes them so they are treated as literals.
 ///
@@ -156,9 +156,9 @@ pub async fn get_connection(pool: &DbPool) -> AppResult<DbConnection> {
 /// This function is designed for Capsicum sandbox mode where the service
 /// cannot recover from a lost database connection. If the connection cannot
 /// be obtained, a graceful shutdown is triggered via the server handle to
-/// allow all Drop/Zeroize destructors to run (M-8/M-10).
+/// allow all Drop/Zeroize destructors to run.
 ///
-/// L-3: Uses structured pattern matching on `PoolError` variants instead of
+/// Uses structured pattern matching on `PoolError` variants instead of
 /// fragile string-based error detection.
 ///
 /// Returns `Err` if the connection cannot be obtained and shutdown was triggered.
@@ -169,14 +169,14 @@ pub async fn get_connection_or_shutdown(
     match pool.get().await {
         Ok(conn) => Ok(conn),
         Err(e) => {
-            // L-3: Classify errors structurally instead of string matching.
+            // Classify errors structurally instead of string matching.
             let (category, detail) = classify_pool_error(&e);
             tracing::error!(
                 "Database {} in sandbox mode: {}. Triggering graceful shutdown for respawn.",
                 category,
                 detail
             );
-            // M-8/M-10: Trigger graceful shutdown instead of exit().
+            // Trigger graceful shutdown instead of exit().
             if let Some(handle) = server_handle {
                 handle.graceful_shutdown(Some(std::time::Duration::from_secs(5)));
             }
@@ -191,7 +191,7 @@ pub async fn get_connection_or_shutdown(
 
 /// Classify a pool error into a human-readable category and detail message.
 ///
-/// L-3: This replaces the former string-based error detection function which relied
+/// This replaces the former string-based error detection function which relied
 /// on fragile substring matching. By pattern-matching on the structured `PoolError`
 /// variants from deadpool/diesel-async, we get reliable classification that
 /// won't break when upstream libraries change their error messages.
@@ -257,7 +257,7 @@ mod tests {
         assert_eq!(EXIT_CODE_CONNECTION_LOST, 100);
     }
 
-    // ==================== L-3: Structural Pool Error Classification ====================
+    // ==================== Structural Pool Error Classification ====================
 
     use deadpool::managed::{PoolError, TimeoutType};
     use diesel_async::pooled_connection::PoolError as DieselPoolError;
@@ -345,7 +345,7 @@ mod tests {
         assert_eq!(category, "configuration error");
     }
 
-    // ==================== L-5: LIKE Pattern Escaping Tests ====================
+    // ==================== LIKE Pattern Escaping Tests ====================
 
     #[test]
     fn test_escape_like_pattern_no_special_chars() {

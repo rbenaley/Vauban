@@ -20,9 +20,9 @@ use tracing::{debug, error, info, warn};
 /// Request to open an SSH session.
 ///
 /// `Debug` is manually implemented to redact `password`, `private_key`, and
-/// `passphrase` fields, preventing credential leaks in logs (H-4 / H-10).
+/// `passphrase` fields, preventing credential leaks in logs.
 ///
-/// Credential fields use `SecretString` (H-10) for:
+/// Credential fields use `SecretString` for:
 /// - Zeroize on drop (memory is scrubbed when the request is dropped)
 /// - Compile-time enforcement via `.expose_secret()`
 /// - Automatic Debug redaction by `SecretString` itself
@@ -46,11 +46,11 @@ pub struct SshSessionOpenRequest {
     pub terminal_rows: u16,
     /// Authentication type: "password" or "private_key".
     pub auth_type: String,
-    /// Password for password authentication (H-10: SecretString).
+    /// Password for password authentication.
     pub password: Option<SecretString>,
-    /// PEM-encoded private key for key authentication (H-10: SecretString).
+    /// PEM-encoded private key for key authentication.
     pub private_key: Option<SecretString>,
-    /// Passphrase for encrypted private key (H-10: SecretString).
+    /// Passphrase for encrypted private key.
     pub passphrase: Option<SecretString>,
     /// Expected SSH host key in OpenSSH format (e.g. "ssh-ed25519 AAAA...").
     /// If set, the proxy verifies the server key matches before continuing.
@@ -223,7 +223,7 @@ impl ProxySshClient {
             pending.insert(request_id, tx);
         }
 
-        // Send request -- convert SecretString -> SensitiveString for IPC transport (H-10)
+        // Send request -- convert SecretString -> SensitiveString for IPC transport
         let msg = Message::SshSessionOpen {
             request_id,
             session_id,
@@ -612,7 +612,7 @@ mod tests {
         assert!(debug_str.contains("SshSessionOpenRequest"));
         assert!(debug_str.contains("debug-sess"));
         assert!(debug_str.contains("host.local"));
-        // Secrets MUST be redacted (H-4 / H-10)
+        // Secrets MUST be redacted
         assert!(
             !debug_str.contains("super-secret-password"),
             "Password must not appear in Debug output"

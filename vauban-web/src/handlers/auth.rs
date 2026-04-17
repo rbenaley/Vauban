@@ -53,13 +53,13 @@ fn is_encrypted(value: &str) -> bool {
     value[1..colon_pos].chars().all(|c| c.is_ascii_digit())
 }
 
-// L-6: is_htmx_request deduplicated - use crate::error::is_htmx_request
+// is_htmx_request deduplicated - use crate::error::is_htmx_request
 use crate::error::is_htmx_request;
 
 /// Login request.
 ///
 /// `Debug` is manually implemented to redact the `password` and `mfa_code`
-/// fields, preventing accidental credential leaks in logs (H-4).
+/// fields, preventing accidental credential leaks in logs.
 #[derive(Deserialize, Validate)]
 pub struct LoginRequest {
     #[validate(length(min = 3))]
@@ -285,7 +285,7 @@ pub async fn login(
     let mfa_verified = if user.mfa_enabled {
         if let Some(code) = request.mfa_code {
             if let Some(secret) = &user.mfa_secret {
-                // M-1: Verify TOTP via vault (encrypted secrets) or directly (plaintext, pre-migration)
+                // Verify TOTP via vault (encrypted secrets) or directly (plaintext, pre-migration)
                 let valid = if let Some(ref vault) = state.vault_client
                     && is_encrypted(secret)
                 {
@@ -670,7 +670,7 @@ pub async fn mfa_setup_page(
     let (user_id, user_username, existing_secret) = user_data;
 
     // Generate or use existing secret
-    // M-1: When vault is available, secrets are encrypted at rest.
+    // When vault is available, secrets are encrypted at rest.
     // QR code is generated locally from the plaintext secret obtained from vault.
     let (secret, mut qr_code_base64) = if let Some(ref vault) = state.vault_client {
         if let Some(s) = existing_secret {
@@ -843,7 +843,7 @@ pub async fn mfa_setup_submit(
         secret_opt.ok_or_else(|| AppError::Internal(anyhow::anyhow!("MFA secret not found")))?;
 
     // Validate TOTP code
-    // M-1: Verify via vault when available (encrypted secrets), or directly (plaintext, pre-migration)
+    // Verify via vault when available (encrypted secrets), or directly (plaintext, pre-migration)
     let code = form.totp_code.trim();
     let valid = if let Some(ref vault) = state.vault_client
         && is_encrypted(&secret)
@@ -1052,7 +1052,7 @@ pub async fn mfa_verify_submit(
         secret_opt.ok_or_else(|| AppError::Internal(anyhow::anyhow!("MFA secret not found")))?;
 
     // Validate TOTP code
-    // M-1: Verify via vault when available (encrypted secrets), or directly (plaintext, pre-migration)
+    // Verify via vault when available (encrypted secrets), or directly (plaintext, pre-migration)
     let code = form.totp_code.trim();
     let valid = if let Some(ref vault) = state.vault_client
         && is_encrypted(&secret)
@@ -1598,7 +1598,7 @@ mod tests {
 
         assert!(debug_str.contains("LoginRequest"));
         assert!(debug_str.contains("testuser"));
-        // Password and mfa_code MUST be redacted (H-4)
+        // Password and mfa_code MUST be redacted
         assert!(
             !debug_str.contains("securepassword"),
             "Password must not appear in Debug output"

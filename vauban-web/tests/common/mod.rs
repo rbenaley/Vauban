@@ -294,7 +294,7 @@ fn build_test_router(state: AppState) -> Router {
     let session_guard =
         axum::middleware::from_fn_with_state(state.clone(), handlers::websocket::ws_session_guard);
 
-    // L-8: Per-user WS connection limit middleware
+    // Per-user WS connection limit middleware
     let ws_limit_layer = axum::middleware::from_fn_with_state(
         state.clone(),
         handlers::websocket::ws_connection_limit,
@@ -324,7 +324,7 @@ fn build_test_router(state: AppState) -> Router {
     Router::new()
         // Login page (for redirect tests)
         .route("/login", get(handlers::web::login_page))
-        // WebSocket routes (with L-8 connection limit layer)
+        // WebSocket routes
         .merge(ws_routes)
         // Auth routes
         .route("/api/v1/auth/login", post(handlers::auth::login))
@@ -343,7 +343,7 @@ fn build_test_router(state: AppState) -> Router {
         // Accounts routes
         .route("/api/v1/accounts", get(handlers::api::list_users))
         .route("/api/v1/accounts", post(handlers::api::create_user))
-        // L-2: DELETE stub returns 501 Not Implemented (not 200 OK)
+        // DELETE stub returns 501 Not Implemented (not 200 OK)
         .route(
             "/api/v1/accounts/{uuid}",
             get(handlers::api::get_user)
@@ -353,7 +353,7 @@ fn build_test_router(state: AppState) -> Router {
         // Assets routes
         .route("/api/v1/assets", get(handlers::api::list_assets))
         .route("/api/v1/assets", post(handlers::api::create_asset))
-        // L-2: DELETE stub returns 501 Not Implemented (not 200 OK)
+        // DELETE stub returns 501 Not Implemented (not 200 OK)
         .route(
             "/api/v1/assets/{uuid}",
             get(handlers::api::get_asset)
@@ -388,7 +388,7 @@ fn build_test_router(state: AppState) -> Router {
         // Sessions routes
         .route("/api/v1/sessions", get(handlers::api::list_sessions))
         .route("/api/v1/sessions", post(handlers::api::create_session))
-        // L-2: DELETE stub returns 501 Not Implemented (not 200 OK)
+        // DELETE stub returns 501 Not Implemented (not 200 OK)
         .route(
             "/api/v1/sessions/{uuid}",
             get(handlers::api::get_session)
@@ -583,7 +583,7 @@ fn build_test_router(state: AppState) -> Router {
             post(handlers::web::connect_rdp),
         )
         .route("/sessions/rdp/{session_id}", get(handlers::web::rdp_page))
-        // SSH host key management (H-9)
+        // SSH host key management
         .route(
             "/assets/{uuid}/fetch-host-key",
             post(handlers::web::fetch_ssh_host_key),

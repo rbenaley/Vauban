@@ -275,7 +275,7 @@ cargo run -- seed-data
 ### Migrate Secrets
 
 Batch-encrypt all plaintext secrets in the database using vauban-vault's keyring.
-This tool addresses M-1 (TOTP secrets) and C-2 (SSH credentials stored in plaintext).
+This tool encrypts TOTP secrets and SSH credentials that would otherwise be stored in plaintext.
 
 ```bash
 # Preview what would be migrated (no changes made)
@@ -305,8 +305,8 @@ The tool is **idempotent**: already-encrypted values (`v{N}:...` format) are ski
 The `--dry-run` flag is recommended before any production migration.
 
 **What it migrates**:
-- `users.mfa_secret` - TOTP secrets (M-1)
-- `assets.connection_config` - Credential fields: `password`, `private_key`, `passphrase` (C-2)
+- `users.mfa_secret` - TOTP secrets
+- `assets.connection_config` - Credential fields: `password`, `private_key`, `passphrase`
 
 > **Note**: Encrypt-on-read is also built into the application itself. When a user logs in
 > with a plaintext MFA secret, it is automatically encrypted and updated in the database.

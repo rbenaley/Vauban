@@ -29,10 +29,10 @@ Vauban stores sensitive data that must be recoverable (i.e. cannot be hashed):
 
 | Data | Location | Vulnerability |
 |------|----------|---------------|
-| TOTP MFA secrets | `users.mfa_secret` | M-1: Stored in plaintext |
-| SSH passwords | `assets.connection_config` (JSONB) | C-2: Stored in plaintext |
-| SSH private keys | `assets.connection_config` (JSONB) | C-2: Stored in plaintext |
-| SSH passphrases | `assets.connection_config` (JSONB) | C-2: Stored in plaintext |
+| TOTP MFA secrets | `users.mfa_secret` | Stored in plaintext |
+| SSH passwords | `assets.connection_config` (JSONB) | Stored in plaintext |
+| SSH private keys | `assets.connection_config` (JSONB) | Stored in plaintext |
+| SSH passphrases | `assets.connection_config` (JSONB) | Stored in plaintext |
 
 These secrets must be encrypted at rest while remaining available for legitimate operations (TOTP verification, SSH session establishment).
 
@@ -474,7 +474,7 @@ sequenceDiagram
     Note over V: Decrypt with keyring["credentials"]<br/>Return plaintext in SensitiveString
     V->>W: VaultDecryptResponse(plaintext="s3cret")
     
-    Note over W: Wrap in SecretString (H-10)<br/>Send to proxy via IPC
+    Note over W: Wrap in SecretString<br/>Send to proxy via IPC
     W->>P: SshSessionOpen(password=SensitiveString("s3cret"))
     
     Note over W: SecretString dropped, zeroized
@@ -732,7 +732,7 @@ Add `Web <-> Vault` pipe to the topology constant:
 ```rust
 const TOPOLOGY: &[PipeTopology] = &[
     // ... existing pipes ...
-    PipeTopology { from: Service::Web, to: Service::Vault },  // NEW for M-1 and C-2
+    PipeTopology { from: Service::Web, to: Service::Vault },  // Web encrypts/decrypts secrets via vault
 ];
 ```
 
@@ -1057,7 +1057,7 @@ fn test_vault_has_no_network_dependency() {
 | Key rotation | Version counter + multi-version keyring | No downtime, no re-encryption required, rewrap optional |
 | Ciphertext format | `v{N}:{base64}` | Self-describing, compact, fits existing DB columns |
 | TOTP handling | Secret generation, encryption, decryption, and verification | Encryption keys never leave vault; TOTP plaintext is returned as SensitiveString (zeroize-on-drop) for QR generation by vauban-web |
-| IPC transport of secrets | `SensitiveString` | Zeroize-on-drop + redacted Debug, compatible with bincode (H-10) |
+| IPC transport of secrets | `SensitiveString` | Zeroize-on-drop + redacted Debug, compatible with bincode |
 
 ### 10.2 Scope and Boundaries
 
@@ -1081,7 +1081,7 @@ The vault is a **pure cryptographic service**. Business logic belongs in higher 
 
 #### Phase 1 -- Current (v1.0)
 
-Core encryption-at-rest resolving M-1 and C-2:
+Core encryption-at-rest for TOTP secrets and SSH credentials:
 
 - `VaultEncrypt` / `VaultDecrypt` with domain-separated keyrings
 - `VaultMfaGenerate` / `VaultMfaVerify` / `VaultMfaGetSecret`

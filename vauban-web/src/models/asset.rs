@@ -37,7 +37,7 @@ where
     }
 }
 
-/// Asset type (protocol) (L-7: Diesel enum instead of String).
+/// Asset type (protocol).
 #[derive(
     Debug,
     Clone,

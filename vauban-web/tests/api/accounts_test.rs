@@ -467,7 +467,7 @@ async fn test_update_user_malformed_uuid_returns_validation_error() {
     test_db::cleanup(&mut conn).await;
 }
 
-/// L-2: DELETE /api/v1/accounts/{uuid} must return 501 Not Implemented (not 200 OK).
+/// DELETE /api/v1/accounts/{uuid} must return 501 Not Implemented (not 200 OK).
 #[tokio::test]
 #[serial]
 async fn test_delete_account_returns_501_not_implemented() {

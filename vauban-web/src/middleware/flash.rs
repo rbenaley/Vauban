@@ -339,7 +339,7 @@ fn base64_decode(encoded: &str) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
-// L-6: constant_time_compare deduplicated - use crate::crypto::constant_time_compare_str
+// constant_time_compare deduplicated - use crate::crypto::constant_time_compare_str
 use crate::crypto::constant_time_compare_str as constant_time_compare;
 
 #[cfg(test)]

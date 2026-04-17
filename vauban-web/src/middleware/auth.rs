@@ -224,7 +224,7 @@ async fn update_last_activity(state: &AppState, token_hash: &str) {
 /// Extract token from Authorization header or cookie.
 ///
 /// Per RFC 7235 s2.1 and RFC 6750 s2.1, the "Bearer" authentication scheme
-/// must be compared case-insensitively (L-4).
+/// must be compared case-insensitively.
 fn extract_token(jar: &CookieJar, request: &Request) -> Result<Option<String>, AppError> {
     // Try Authorization header first (case-insensitive "Bearer " prefix per RFC 7235)
     if let Some(auth_header) = request.headers().get("Authorization")
@@ -424,7 +424,7 @@ mod tests {
 
     #[test]
     fn test_extract_token_bearer_case_insensitive() {
-        // L-4: RFC 7235 requires case-insensitive scheme comparison
+        // RFC 7235 requires case-insensitive scheme comparison
         for prefix in &["Bearer ", "bearer ", "BEARER ", "bEaReR "] {
             let request = unwrap_ok!(
                 HttpRequest::builder()

@@ -225,7 +225,7 @@ async fn test_get_session_not_owner() {
     test_db::cleanup(&mut conn).await;
 }
 
-/// L-2: DELETE /api/v1/sessions/{uuid} must return 501 Not Implemented (not 200 OK).
+/// DELETE /api/v1/sessions/{uuid} must return 501 Not Implemented (not 200 OK).
 #[tokio::test]
 #[serial]
 async fn test_delete_session_returns_501_not_implemented() {

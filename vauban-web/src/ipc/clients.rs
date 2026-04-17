@@ -127,7 +127,7 @@ mod tests {
         let _ = client;
     }
 
-    // ==================== H-8 Regression Tests ====================
+    // ==================== Regression Tests ====================
 
     /// Structural non-regression: `clients.rs` must no longer contain the
     /// legacy allow-all RBAC stub. The canonical path goes through

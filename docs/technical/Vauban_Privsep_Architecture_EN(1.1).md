@@ -165,7 +165,7 @@ Services communicate directly via Unix pipes in a partial mesh topology. This av
 | `proxy-rdp` | `access` | Session authorization |
 | `proxy-rdp` | `vault` | Windows credentials |
 | `proxy-rdp` | `audit` | Video capture |
-| `web` | `vault` | Encrypt/decrypt secrets (M-1/C-2) |
+| `web` | `vault` | Encrypt/decrypt secrets |
 
 **Total: 14 pipe pairs (28 file descriptors)**
 
@@ -1144,7 +1144,7 @@ sequenceDiagram
     V->>P: VaultCredentialResponse (SSH key/password)
     P->>T: SSH Handshake (over pre-connected socket)
     
-    Note over P,T: Host Key Verification (H-9)
+    Note over P,T: Host Key Verification
     T-->>P: Server public key
     P->>P: Compare with expected_host_key
     alt Key matches or no key stored

@@ -18,7 +18,7 @@ use crate::middleware::auth::AuthUser;
 use crate::models::session::{CreateSessionRequest, NewProxySession, ProxySession, SessionType};
 use crate::schema::proxy_sessions::dsl::*;
 
-// L-6: is_htmx_request deduplicated - use crate::error::is_htmx_request
+// is_htmx_request deduplicated - use crate::error::is_htmx_request
 use crate::error::is_htmx_request;
 
 /// Query parameters for list sessions.

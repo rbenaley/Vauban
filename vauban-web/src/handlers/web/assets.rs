@@ -224,7 +224,7 @@ pub async fn create_asset_web(
         form.ssh_passphrase.as_deref(),
     );
 
-    // C-2: Encrypt credential fields via vault when available
+    // Encrypt credential fields via vault when available
     if let Some(ref vault) = state.vault_client
         && let Err(e) = encrypt_connection_config(vault, &mut connection_config).await
     {
@@ -739,7 +739,7 @@ pub async fn asset_detail(
             (false, false, false)
         };
 
-    // Extract SSH host key fingerprint and mismatch status from connection_config (H-9)
+    // Extract SSH host key fingerprint and mismatch status from connection_config
     let asset_connection_config = &asset_model.connection_config;
     let ssh_host_key_fingerprint = asset_connection_config
         .get("ssh_host_key_fingerprint")
@@ -1254,7 +1254,7 @@ pub async fn update_asset_web(
         form.ssh_passphrase.as_deref(),
     );
 
-    // C-2: Encrypt credential fields via vault when available
+    // Encrypt credential fields via vault when available
     if let Some(ref vault) = state.vault_client
         && let Err(e) = encrypt_connection_config(vault, &mut connection_config).await
     {

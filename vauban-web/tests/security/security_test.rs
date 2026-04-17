@@ -135,12 +135,12 @@ async fn test_sql_injection_prevention_user_search() {
 }
 
 // =============================================================================
-// SQL Injection Prevention: Group Search (C-1 regression tests)
+// SQL Injection Prevention: Group Search
 // =============================================================================
 
 /// Test that group search handles SQL injection payloads safely.
 ///
-/// Regression test for C-1: SQL Injection in group_list handler.
+/// Regression test: SQL Injection in group_list handler.
 /// Previously, the handler used raw SQL string interpolation with format!()
 /// which could be exploited. Now uses Diesel DSL .ilike() with parameterized queries.
 #[tokio::test]
@@ -334,12 +334,12 @@ async fn test_group_search_legitimate_query_works() {
 }
 
 // =============================================================================
-// SQL Injection Prevention: Group Member Search (C-1 regression tests)
+// SQL Injection Prevention: Group Member Search
 // =============================================================================
 
 /// Test SQL injection in group member search endpoint.
 ///
-/// Regression test for C-1: SQL Injection in group_member_search handler.
+/// Regression test: SQL Injection in group_member_search handler.
 /// The available_users_data query was also vulnerable to string interpolation.
 #[tokio::test]
 #[serial]
@@ -493,12 +493,12 @@ async fn test_group_member_search_legitimate_query_works() {
 }
 
 // =============================================================================
-// API Authorization Tests (H-1 regression tests)
+// API Authorization Tests
 // =============================================================================
 
 /// Test that regular users cannot create users via the API.
 ///
-/// Regression test for H-1: No authorization checks on API endpoints.
+/// Regression test: No authorization checks on API endpoints.
 /// Previously, any authenticated user could create/modify users, assets, etc.
 /// Now requires staff or superuser privileges.
 #[tokio::test]
@@ -1220,7 +1220,7 @@ async fn test_jwt_expiration() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    // Use admin user since /api/v1/accounts requires staff/superuser (H-1)
+    // Use admin user since /api/v1/accounts requires staff/superuser
     let username = unique_name("test_jwt_exp");
     let test_user = create_admin_user(&mut conn, &app.auth_service, &username).await;
 
@@ -1505,12 +1505,12 @@ async fn test_csrf_protection() {
 }
 
 // =============================================================================
-// CSRF Validation: connect_ssh (C-3 regression tests)
+// CSRF Validation: connect_ssh
 // =============================================================================
 
 /// Test that connect_ssh rejects requests without a CSRF token.
 ///
-/// Regression test for C-3: Missing CSRF Validation in connect_ssh.
+/// Regression test: Missing CSRF Validation in connect_ssh.
 /// Previously, the handler accepted but never validated the csrf_token field,
 /// enabling CSRF attacks to initiate SSH connections on behalf of authenticated users.
 #[tokio::test]
@@ -1914,7 +1914,7 @@ async fn test_csrf_fresh_session_works() {
 }
 
 // =============================================================================
-// H-4: Credential Leak via Debug Derive Tests
+// Credential Leak via Debug Derive Tests
 // =============================================================================
 // These tests verify that Debug implementations for LoginRequest and
 // SshSessionOpenRequest redact sensitive fields (password, mfa_code,
@@ -2092,7 +2092,7 @@ fn test_ssh_request_debug_none_secrets_show_none() {
 }
 
 // =============================================================================
-// H-3: X-Forwarded-For Header Spoofing Tests
+// X-Forwarded-For Header Spoofing Tests
 // =============================================================================
 // These tests verify that X-Forwarded-For / X-Real-IP headers are NOT trusted
 // when the request does not originate from a configured trusted proxy.
@@ -2100,7 +2100,7 @@ fn test_ssh_request_debug_none_secrets_show_none() {
 // bypassing rate limiting and poisoning audit logs.
 
 /// Test that the resolve_client_ip utility ignores XFF from untrusted sources.
-/// This is a unit-level regression test for the core H-3 fix.
+/// This is a unit-level regression test for the core fix.
 #[test]
 fn test_resolve_client_ip_ignores_xff_without_trusted_proxy() {
     use axum::http::HeaderMap;
@@ -2326,7 +2326,7 @@ async fn test_login_ignores_spoofed_xff_header() {
 }
 
 // =============================================================================
-// H-2: Session Revocation Bypass Tests
+// Session Revocation Bypass Tests
 // =============================================================================
 // These tests verify that a JWT token whose session has been revoked (deleted)
 // from the database is correctly rejected by the auth middleware.
@@ -2334,7 +2334,7 @@ async fn test_login_ignores_spoofed_xff_header() {
 // the database, allowing revoked tokens to remain valid.
 
 /// Test that an API request with a valid JWT but a revoked session is rejected.
-/// This is the core H-2 regression test.
+/// This is the core regression test.
 #[tokio::test]
 #[serial]
 async fn test_revoked_session_token_rejected_on_api() {
@@ -2762,7 +2762,7 @@ async fn test_regular_user_revoked_session_rejected() {
 }
 
 // =============================================================================
-// H-5: XSS Sanitization Regression Tests
+// XSS Sanitization Regression Tests
 // =============================================================================
 // These tests verify that HTML tags and XSS payloads are stripped from all
 // user-supplied text fields in both web (Form) and API (JSON) handlers.
@@ -3315,7 +3315,7 @@ fn extract_csrf_token_from_html(html: &str) -> Option<String> {
     None
 }
 
-// ==================== H-6: WebSocket Session Ownership Verification ====================
+// ==================== WebSocket Session Ownership Verification ====================
 
 /// Helper: send a GET request to the terminal WebSocket endpoint.
 ///
@@ -3348,7 +3348,7 @@ async fn ws_session_request(
         .await
 }
 
-/// H-6 Regression: A regular user cannot access another user's terminal WebSocket.
+/// Regression: A regular user cannot access another user's terminal WebSocket.
 #[tokio::test]
 #[serial]
 async fn test_terminal_ws_forbidden_for_non_owner() {
@@ -3378,7 +3378,7 @@ async fn test_terminal_ws_forbidden_for_non_owner() {
     );
 }
 
-/// H-6 Regression: A regular user cannot access another user's session monitoring WebSocket.
+/// Regression: A regular user cannot access another user's session monitoring WebSocket.
 #[tokio::test]
 #[serial]
 async fn test_session_ws_forbidden_for_non_owner() {
@@ -3404,7 +3404,7 @@ async fn test_session_ws_forbidden_for_non_owner() {
     );
 }
 
-/// H-6 Regression: The session owner can access their own terminal WebSocket.
+/// Regression: The session owner can access their own terminal WebSocket.
 /// Without WS headers, the ownership middleware passes and the handler returns
 /// 426 (Upgrade Required) because no actual WebSocket upgrade is attempted.
 #[tokio::test]
@@ -3432,7 +3432,7 @@ async fn test_terminal_ws_allowed_for_owner() {
     );
 }
 
-/// H-6 Regression: The session owner can access their own session monitoring WebSocket.
+/// Regression: The session owner can access their own session monitoring WebSocket.
 #[tokio::test]
 #[serial]
 async fn test_session_ws_allowed_for_owner() {
@@ -3456,7 +3456,7 @@ async fn test_session_ws_allowed_for_owner() {
     );
 }
 
-/// H-6 Regression: An admin/staff user can access another user's terminal WebSocket.
+/// Regression: An admin/staff user can access another user's terminal WebSocket.
 #[tokio::test]
 #[serial]
 async fn test_terminal_ws_allowed_for_admin() {
@@ -3483,7 +3483,7 @@ async fn test_terminal_ws_allowed_for_admin() {
     );
 }
 
-/// H-6 Regression: An admin/staff user can access another user's session monitoring WebSocket.
+/// Regression: An admin/staff user can access another user's session monitoring WebSocket.
 #[tokio::test]
 #[serial]
 async fn test_session_ws_allowed_for_admin() {
@@ -3508,7 +3508,7 @@ async fn test_session_ws_allowed_for_admin() {
     );
 }
 
-/// H-6 Regression: Non-existent session UUID returns 404.
+/// Regression: Non-existent session UUID returns 404.
 #[tokio::test]
 #[serial]
 async fn test_terminal_ws_nonexistent_session_returns_404() {
@@ -3528,7 +3528,7 @@ async fn test_terminal_ws_nonexistent_session_returns_404() {
     );
 }
 
-/// H-6 Regression: Invalid session ID (not a UUID) returns 400.
+/// Regression: Invalid session ID (not a UUID) returns 400.
 #[tokio::test]
 #[serial]
 async fn test_terminal_ws_invalid_session_id_returns_400() {
@@ -3547,9 +3547,9 @@ async fn test_terminal_ws_invalid_session_id_returns_400() {
     );
 }
 
-// ==================== H-7: CSP unsafe-inline Removal ====================
+// ==================== CSP unsafe-inline Removal ====================
 //
-// H-7 stated that `'unsafe-inline'` in script-src and `'unsafe-eval'` in the CSP
+// stated that `'unsafe-inline'` in script-src and `'unsafe-eval'` in the CSP
 // negated most XSS protections. The fix moved all inline <script> and <style>
 // blocks to external files and removed `'unsafe-inline'` from script-src.
 //
@@ -3560,7 +3560,7 @@ async fn test_terminal_ws_invalid_session_id_returns_400() {
 //  4. Directory traversal is blocked
 //  5. CSP is present on all endpoint types (pages, API, login)
 
-/// H-7 Regression: CSP script-src must NOT contain 'unsafe-inline'.
+/// Regression: CSP script-src must NOT contain 'unsafe-inline'.
 #[tokio::test]
 #[serial]
 async fn test_csp_script_src_no_unsafe_inline() {
@@ -3582,12 +3582,12 @@ async fn test_csp_script_src_no_unsafe_inline() {
 
     assert!(
         !script_src.contains("'unsafe-inline'"),
-        "script-src MUST NOT contain 'unsafe-inline' (H-7 fix). Got: {}",
+        "script-src MUST NOT contain 'unsafe-inline'. Got: {}",
         script_src
     );
 }
 
-/// H-7 Regression: CSP must contain base-uri restriction.
+/// Regression: CSP must contain base-uri restriction.
 #[tokio::test]
 #[serial]
 async fn test_csp_contains_base_uri_restriction() {
@@ -3608,7 +3608,7 @@ async fn test_csp_contains_base_uri_restriction() {
     );
 }
 
-/// H-7 Regression: CSP must contain form-action restriction.
+/// Regression: CSP must contain form-action restriction.
 #[tokio::test]
 #[serial]
 async fn test_csp_contains_form_action_restriction() {
@@ -3629,7 +3629,7 @@ async fn test_csp_contains_form_action_restriction() {
     );
 }
 
-/// H-7 Regression: CSP must contain frame-ancestors 'none'.
+/// Regression: CSP must contain frame-ancestors 'none'.
 #[tokio::test]
 #[serial]
 async fn test_csp_contains_frame_ancestors_none() {
@@ -3650,7 +3650,7 @@ async fn test_csp_contains_frame_ancestors_none() {
     );
 }
 
-/// H-7 Regression: CSP is consistent across page types (login, API, health).
+/// Regression: CSP is consistent across page types (login, API, health).
 #[tokio::test]
 #[serial]
 async fn test_csp_consistent_across_endpoints() {
@@ -3699,7 +3699,7 @@ async fn test_csp_consistent_across_endpoints() {
     );
 }
 
-/// H-7 Regression: Static JS files are served with correct Content-Type.
+/// Regression: Static JS files are served with correct Content-Type.
 #[tokio::test]
 #[serial]
 async fn test_static_js_served_with_correct_content_type() {
@@ -3726,7 +3726,7 @@ async fn test_static_js_served_with_correct_content_type() {
     );
 }
 
-/// H-7 Regression: Static CSS files are served with correct Content-Type.
+/// Regression: Static CSS files are served with correct Content-Type.
 #[tokio::test]
 #[serial]
 async fn test_static_css_served_with_correct_content_type() {
@@ -3753,7 +3753,7 @@ async fn test_static_css_served_with_correct_content_type() {
     );
 }
 
-/// H-7 Regression: Directory traversal via static path is blocked.
+/// Regression: Directory traversal via static path is blocked.
 ///
 /// The HTTP framework normalizes `..` segments before route matching, so paths
 /// like `/static/../../etc/passwd` never reach the handler. This test verifies
@@ -3791,7 +3791,7 @@ async fn test_static_directory_traversal_blocked() {
     );
 }
 
-/// H-7 Regression: Unknown file extensions return 404.
+/// Regression: Unknown file extensions return 404.
 #[tokio::test]
 #[serial]
 async fn test_static_unknown_extension_returns_404() {
@@ -3806,7 +3806,7 @@ async fn test_static_unknown_extension_returns_404() {
     );
 }
 
-/// H-7 Regression: Static files have cache headers.
+/// Regression: Static files have cache headers.
 #[tokio::test]
 #[serial]
 async fn test_static_files_have_cache_headers() {
@@ -3829,10 +3829,10 @@ async fn test_static_files_have_cache_headers() {
 }
 
 // =============================================================================
-// H-8 Regression: RBAC stub deny-by-default in release builds
+// Regression: RBAC stub deny-by-default in release builds
 // =============================================================================
 
-/// H-8 Regression: The Access service must hard-fail at startup when no
+/// Regression: The Access service must hard-fail at startup when no
 /// Casbin enforcer is configured, and must deny-by-default at runtime in
 /// the unlikely case that the enforcer ends up missing anyway. No debug
 /// allow-all fallback is allowed anymore (Casbin is mandatory).
@@ -3864,7 +3864,7 @@ async fn test_access_service_has_compile_time_guard() {
     );
 }
 
-/// H-8 Regression: The legacy allow-all RBAC shim in
+/// Regression: The legacy allow-all RBAC shim in
 /// `vauban-web/src/ipc/clients.rs` has been removed in favor of the
 /// Casbin-backed [`crate::ipc::AccessIpcClient`]. This non-regression test
 /// makes sure it does not resurface. Forbidden patterns are rebuilt at
@@ -3887,7 +3887,7 @@ async fn test_access_client_has_compile_time_guard() {
     );
 }
 
-/// H-8 Regression: The Access service must never contain an unguarded
+/// Regression: The Access service must never contain an unguarded
 /// allow-all fallback. Casbin is mandatory; when no enforcer is loaded the
 /// handler must hardcode `allowed: false` (deny-by-default) and there must
 /// be no debug-only allow-all short-circuit.
@@ -3922,10 +3922,10 @@ async fn test_access_no_unguarded_allow_all() {
 }
 
 // =============================================================================
-// H-9: SSH Host Key Verification Tests
+// SSH Host Key Verification Tests
 // =============================================================================
 
-/// H-9 Regression: Verify that check_server_key in vauban-proxy-ssh
+/// Regression: Verify that check_server_key in vauban-proxy-ssh
 /// contains host key verification logic (not just Ok(true)).
 #[tokio::test]
 #[serial]
@@ -3935,13 +3935,13 @@ async fn test_ssh_host_key_verification_exists_in_proxy() {
     // Must reference expected_host_key for verification
     assert!(
         session_source.contains("expected_host_key"),
-        "H-9: session.rs must contain expected_host_key field for host key verification"
+        "session.rs must contain expected_host_key field for host key verification"
     );
 
     // Must contain the comparison logic
     assert!(
         session_source.contains("MITM"),
-        "H-9: session.rs must warn about MITM attacks on host key mismatch"
+        "session.rs must warn about MITM attacks on host key mismatch"
     );
 
     // Must NOT contain the old unconditional accept-all pattern.
@@ -3952,17 +3952,17 @@ async fn test_ssh_host_key_verification_exists_in_proxy() {
 
     assert!(
         ok_false_count >= 1,
-        "H-9: check_server_key must return Ok(false) on mismatch, found {} Ok(false)",
+        "check_server_key must return Ok(false) on mismatch, found {} Ok(false)",
         ok_false_count
     );
     assert!(
         ok_true_count >= 1,
-        "H-9: check_server_key must return Ok(true) on match, found {} Ok(true)",
+        "check_server_key must return Ok(true) on match, found {} Ok(true)",
         ok_true_count
     );
 }
 
-/// H-9 Regression: Verify that SshSessionOpen message includes expected_host_key.
+/// Regression: Verify that SshSessionOpen message includes expected_host_key.
 #[tokio::test]
 #[serial]
 async fn test_ssh_session_open_has_expected_host_key_field() {
@@ -3971,11 +3971,11 @@ async fn test_ssh_session_open_has_expected_host_key_field() {
     // The SshSessionOpen variant must include expected_host_key
     assert!(
         messages_source.contains("expected_host_key: Option<String>"),
-        "H-9: SshSessionOpen must include expected_host_key: Option<String>"
+        "SshSessionOpen must include expected_host_key: Option<String>"
     );
 }
 
-/// H-9 Regression: Verify that SshFetchHostKey and SshHostKeyResult
+/// Regression: Verify that SshFetchHostKey and SshHostKeyResult
 /// message variants exist.
 #[tokio::test]
 #[serial]
@@ -3984,19 +3984,19 @@ async fn test_ssh_host_key_fetch_messages_exist() {
 
     assert!(
         messages_source.contains("SshFetchHostKey"),
-        "H-9: Message enum must include SshFetchHostKey variant"
+        "Message enum must include SshFetchHostKey variant"
     );
     assert!(
         messages_source.contains("SshHostKeyResult"),
-        "H-9: Message enum must include SshHostKeyResult variant"
+        "Message enum must include SshHostKeyResult variant"
     );
     assert!(
         messages_source.contains("key_fingerprint"),
-        "H-9: SshHostKeyResult must include key_fingerprint field"
+        "SshHostKeyResult must include key_fingerprint field"
     );
 }
 
-/// H-9 Regression: Verify that connect_ssh passes the expected host key
+/// Regression: Verify that connect_ssh passes the expected host key
 /// from connection_config to the proxy.
 #[tokio::test]
 #[serial]
@@ -4006,17 +4006,17 @@ async fn test_connect_ssh_passes_host_key() {
     // connect_ssh must extract ssh_host_key from connection_config
     assert!(
         web_source.contains("ssh_host_key"),
-        "H-9: connect_ssh must extract ssh_host_key from connection_config"
+        "connect_ssh must extract ssh_host_key from connection_config"
     );
 
     // Must pass expected_host_key to the open request
     assert!(
         web_source.contains("expected_host_key"),
-        "H-9: connect_ssh must pass expected_host_key in SshSessionOpenRequest"
+        "connect_ssh must pass expected_host_key in SshSessionOpenRequest"
     );
 }
 
-/// H-9 Regression: Verify that the proxy handles SshFetchHostKey messages.
+/// Regression: Verify that the proxy handles SshFetchHostKey messages.
 #[tokio::test]
 #[serial]
 async fn test_proxy_handles_fetch_host_key_message() {
@@ -4024,19 +4024,19 @@ async fn test_proxy_handles_fetch_host_key_message() {
 
     assert!(
         proxy_main_source.contains("SshFetchHostKey"),
-        "H-9: vauban-proxy-ssh/main.rs must handle SshFetchHostKey messages"
+        "vauban-proxy-ssh/main.rs must handle SshFetchHostKey messages"
     );
     assert!(
         proxy_main_source.contains("SshHostKeyResult"),
-        "H-9: vauban-proxy-ssh/main.rs must send SshHostKeyResult responses"
+        "vauban-proxy-ssh/main.rs must send SshHostKeyResult responses"
     );
     assert!(
         proxy_main_source.contains("fetch_host_key"),
-        "H-9: vauban-proxy-ssh/main.rs must call fetch_host_key function"
+        "vauban-proxy-ssh/main.rs must call fetch_host_key function"
     );
 }
 
-/// H-9 Regression: Verify that the fetch_ssh_host_key endpoint
+/// Regression: Verify that the fetch_ssh_host_key endpoint
 /// rejects non-SSH assets.
 #[tokio::test]
 #[serial]
@@ -4046,11 +4046,11 @@ async fn test_fetch_host_key_rejects_non_ssh_assets() {
     // The handler must check asset type
     assert!(
         web_source.contains("Host key fetch is only available for SSH assets"),
-        "H-9: fetch_ssh_host_key must reject non-SSH assets with clear error message"
+        "fetch_ssh_host_key must reject non-SSH assets with clear error message"
     );
 }
 
-/// H-9 Regression: Verify that host key data is stored in connection_config JSONB.
+/// Regression: Verify that host key data is stored in connection_config JSONB.
 #[tokio::test]
 #[serial]
 async fn test_host_key_stored_in_connection_config() {
@@ -4059,15 +4059,15 @@ async fn test_host_key_stored_in_connection_config() {
     // The handler must store ssh_host_key and ssh_host_key_fingerprint
     assert!(
         web_source.contains(r#"config["ssh_host_key"]"#),
-        "H-9: fetch handler must store ssh_host_key in connection_config"
+        "fetch handler must store ssh_host_key in connection_config"
     );
     assert!(
         web_source.contains(r#"config["ssh_host_key_fingerprint"]"#),
-        "H-9: fetch handler must store ssh_host_key_fingerprint in connection_config"
+        "fetch handler must store ssh_host_key_fingerprint in connection_config"
     );
 }
 
-/// H-9 Regression: Verify that the IPC client (proxy_ssh.rs) handles
+/// Regression: Verify that the IPC client (proxy_ssh.rs) handles
 /// SshHostKeyResult responses.
 #[tokio::test]
 #[serial]
@@ -4076,19 +4076,19 @@ async fn test_ipc_client_handles_host_key_result() {
 
     assert!(
         client_source.contains("SshHostKeyResult"),
-        "H-9: ProxySshClient must handle SshHostKeyResult messages"
+        "ProxySshClient must handle SshHostKeyResult messages"
     );
     assert!(
         client_source.contains("pending_host_key_requests"),
-        "H-9: ProxySshClient must track pending host key requests"
+        "ProxySshClient must track pending host key requests"
     );
     assert!(
         client_source.contains("fetch_host_key"),
-        "H-9: ProxySshClient must provide a fetch_host_key method"
+        "ProxySshClient must provide a fetch_host_key method"
     );
 }
 
-// ── H-9 Host Key Mismatch Detection Tests ──
+// ── Host Key Mismatch Detection Tests ──
 
 /// Verify that fetch_ssh_host_key handler detects key changes and returns
 /// a mismatch fragment instead of silently overwriting the stored key.
@@ -4100,19 +4100,19 @@ async fn test_fetch_host_key_detects_key_change() {
     // Handler must compare old key with new key
     assert!(
         web_source.contains("stored_host_key"),
-        "H-9: fetch_ssh_host_key must read the previously stored host key"
+        "fetch_ssh_host_key must read the previously stored host key"
     );
     assert!(
         web_source.contains("old_key != &host_key"),
-        "H-9: fetch_ssh_host_key must compare old key with newly fetched key"
+        "fetch_ssh_host_key must compare old key with newly fetched key"
     );
     assert!(
         web_source.contains("_ssh_host_key_mismatch_fragment.html"),
-        "H-9: fetch_ssh_host_key must return mismatch fragment when keys differ"
+        "fetch_ssh_host_key must return mismatch fragment when keys differ"
     );
     assert!(
         web_source.contains(r#""confirm""#),
-        "H-9: fetch_ssh_host_key must support confirm parameter to accept new key"
+        "fetch_ssh_host_key must support confirm parameter to accept new key"
     );
 }
 
@@ -4125,15 +4125,15 @@ async fn test_api_fetch_host_key_detects_key_change() {
 
     assert!(
         api_source.contains("stored_host_key"),
-        "H-9: API fetch handler must read the previously stored host key"
+        "API fetch handler must read the previously stored host key"
     );
     assert!(
         api_source.contains("key_changed"),
-        "H-9: API fetch handler must return key_changed flag when keys differ"
+        "API fetch handler must return key_changed flag when keys differ"
     );
     assert!(
         api_source.contains(r#""confirm""#),
-        "H-9: API fetch handler must support confirm parameter"
+        "API fetch handler must support confirm parameter"
     );
 }
 
@@ -4146,17 +4146,17 @@ async fn test_connect_ssh_marks_mismatch_on_failure() {
 
     assert!(
         web_source.contains("ssh_host_key_mismatch"),
-        "H-9: connect_ssh must set ssh_host_key_mismatch flag on key verification failure"
+        "connect_ssh must set ssh_host_key_mismatch flag on key verification failure"
     );
     assert!(
         web_source.contains("is_host_key_mismatch"),
-        "H-9: connect_ssh must detect host key mismatch from error messages"
+        "connect_ssh must detect host key mismatch from error messages"
     );
     // Verify that the mismatch detection checks for relevant keywords
     assert!(
         web_source.contains(r#"msg.contains("MITM")"#)
             || web_source.contains(r#"error_str.contains("MITM")"#),
-        "H-9: connect_ssh must detect MITM-related error messages"
+        "connect_ssh must detect MITM-related error messages"
     );
 }
 
@@ -4170,48 +4170,48 @@ async fn test_asset_detail_template_three_host_key_states() {
     // The template must trigger auto-verification via HTMX on page load
     assert!(
         template_source.contains("verify-host-key"),
-        "H-9: asset_detail template must call verify-host-key endpoint"
+        "asset_detail template must call verify-host-key endpoint"
     );
     assert!(
         template_source.contains("hx-trigger"),
-        "H-9: asset_detail template must use hx-trigger for auto-verification"
+        "asset_detail template must use hx-trigger for auto-verification"
     );
     assert!(
         template_source.contains("Verifying host key"),
-        "H-9: asset_detail template must show a 'Verifying' loading state"
+        "asset_detail template must show a 'Verifying' loading state"
     );
 
     // State 2 (no key) is still rendered server-side
     assert!(
         template_source.contains("No Host Key Stored"),
-        "H-9: asset_detail template must show 'No Host Key Stored' state"
+        "asset_detail template must show 'No Host Key Stored' state"
     );
 
     // States 1 (verified) and 3 (mismatch) are now in HTMX fragments
     let verified_fragment = include_str!("../../templates/assets/_ssh_host_key_fragment.html");
     assert!(
         verified_fragment.contains("Host Key Verified"),
-        "H-9: verified fragment must show 'Host Key Verified'"
+        "verified fragment must show 'Host Key Verified'"
     );
 
     let mismatch_fragment =
         include_str!("../../templates/assets/_ssh_host_key_mismatch_fragment.html");
     assert!(
         mismatch_fragment.contains("Host Key Changed"),
-        "H-9: mismatch fragment must show host key change warning"
+        "mismatch fragment must show host key change warning"
     );
 
     let stored_mismatch_fragment =
         include_str!("../../templates/assets/_ssh_host_key_stored_mismatch_fragment.html");
     assert!(
         stored_mismatch_fragment.contains("Host Key Mismatch"),
-        "H-9: stored mismatch fragment must show 'Host Key Mismatch'"
+        "stored mismatch fragment must show 'Host Key Mismatch'"
     );
 
     let no_key_fragment = include_str!("../../templates/assets/_ssh_host_key_no_key_fragment.html");
     assert!(
         no_key_fragment.contains("No Host Key Stored"),
-        "H-9: no-key fragment must show 'No Host Key Stored'"
+        "no-key fragment must show 'No Host Key Stored'"
     );
 }
 
@@ -4223,7 +4223,7 @@ async fn test_asset_detail_struct_has_mismatch_field() {
 
     assert!(
         struct_source.contains("ssh_host_key_mismatch: bool"),
-        "H-9: AssetDetail struct must have ssh_host_key_mismatch field"
+        "AssetDetail struct must have ssh_host_key_mismatch field"
     );
 }
 
@@ -4236,27 +4236,27 @@ async fn test_mismatch_fragment_has_security_warnings() {
 
     assert!(
         fragment.contains("WARNING"),
-        "H-9: mismatch fragment must display a WARNING message"
+        "mismatch fragment must display a WARNING message"
     );
     assert!(
         fragment.contains("man-in-the-middle"),
-        "H-9: mismatch fragment must warn about MITM attacks"
+        "mismatch fragment must warn about MITM attacks"
     );
     assert!(
         fragment.contains("__OLD_FINGERPRINT__"),
-        "H-9: mismatch fragment must show the old fingerprint"
+        "mismatch fragment must show the old fingerprint"
     );
     assert!(
         fragment.contains("__NEW_FINGERPRINT__"),
-        "H-9: mismatch fragment must show the new fingerprint"
+        "mismatch fragment must show the new fingerprint"
     );
     assert!(
         fragment.contains("confirm=true"),
-        "H-9: mismatch fragment must have a button to accept the new key"
+        "mismatch fragment must have a button to accept the new key"
     );
     assert!(
         fragment.contains("hx-confirm"),
-        "H-9: mismatch fragment must require user confirmation before accepting"
+        "mismatch fragment must require user confirmation before accepting"
     );
 }
 
@@ -4269,13 +4269,13 @@ async fn test_fetch_handler_clears_mismatch_flag() {
 
     assert!(
         web_source.contains(r#"m.remove("ssh_host_key_mismatch")"#),
-        "H-9: fetch handler must remove the mismatch flag when storing a new key"
+        "fetch handler must remove the mismatch flag when storing a new key"
     );
 
     let api_source = include_str!("../../src/handlers/api/assets.rs");
     assert!(
         api_source.contains(r#"m.remove("ssh_host_key_mismatch")"#),
-        "H-9: API fetch handler must remove the mismatch flag when storing a new key"
+        "API fetch handler must remove the mismatch flag when storing a new key"
     );
 }
 
@@ -4288,19 +4288,19 @@ async fn test_api_get_ssh_host_key_status_endpoint_exists() {
 
     assert!(
         api_source.contains("get_ssh_host_key_status"),
-        "H-9: API must have a get_ssh_host_key_status handler"
+        "API must have a get_ssh_host_key_status handler"
     );
     assert!(
         api_source.contains(r#""verified""#),
-        "H-9: get_ssh_host_key_status must return 'verified' state"
+        "get_ssh_host_key_status must return 'verified' state"
     );
     assert!(
         api_source.contains(r#""mismatch""#),
-        "H-9: get_ssh_host_key_status must return 'mismatch' state"
+        "get_ssh_host_key_status must return 'mismatch' state"
     );
     assert!(
         api_source.contains(r#""no_key""#),
-        "H-9: get_ssh_host_key_status must return 'no_key' state"
+        "get_ssh_host_key_status must return 'no_key' state"
     );
 }
 
@@ -4312,11 +4312,11 @@ async fn test_api_get_ssh_host_key_route_registered() {
 
     assert!(
         main_source.contains("get_ssh_host_key_status"),
-        "H-9: GET ssh-host-key route must be registered in main.rs"
+        "GET ssh-host-key route must be registered in main.rs"
     );
     assert!(
         main_source.contains("get(handlers::api::get_ssh_host_key_status)"),
-        "H-9: GET handler must be wired with get() in the route definition"
+        "GET handler must be wired with get() in the route definition"
     );
 }
 
@@ -4332,7 +4332,7 @@ async fn test_connect_ssh_detects_mismatch_in_both_error_branches() {
     let mismatch_count = web_source.matches("is_host_key_mismatch").count();
     assert!(
         mismatch_count >= 4,
-        "H-9: connect_ssh must check for host key mismatch in both error branches \
+        "connect_ssh must check for host key mismatch in both error branches \
          (found {} occurrences of is_host_key_mismatch, expected >= 4)",
         mismatch_count
     );
@@ -4346,7 +4346,7 @@ async fn test_api_mod_exports_host_key_status() {
 
     assert!(
         mod_source.contains("get_ssh_host_key_status"),
-        "H-9: api/mod.rs must re-export get_ssh_host_key_status"
+        "api/mod.rs must re-export get_ssh_host_key_status"
     );
 }
 
@@ -4359,23 +4359,23 @@ async fn test_verify_ssh_host_key_handler_exists() {
 
     assert!(
         web_source.contains("verify_ssh_host_key"),
-        "H-9: web handler must include verify_ssh_host_key for proactive verification"
+        "web handler must include verify_ssh_host_key for proactive verification"
     );
     // Must compare stored key against remote key
     assert!(
         web_source.contains("old_key == remote_key"),
-        "H-9: verify handler must compare stored key against remote key"
+        "verify handler must compare stored key against remote key"
     );
     // Must handle proxy unavailability gracefully
     assert!(
         web_source.contains("Proxy unavailable")
             || web_source.contains("SSH proxy not available, returning stored state"),
-        "H-9: verify handler must fall back gracefully when proxy is unavailable"
+        "verify handler must fall back gracefully when proxy is unavailable"
     );
     // Must handle connection failure gracefully
     assert!(
         web_source.contains("Could not verify host key against remote server"),
-        "H-9: verify handler must fall back gracefully when connection fails"
+        "verify handler must fall back gracefully when connection fails"
     );
 }
 
@@ -4387,11 +4387,11 @@ async fn test_verify_host_key_route_registered() {
 
     assert!(
         main_source.contains("verify-host-key"),
-        "H-9: verify-host-key route must be registered in main.rs"
+        "verify-host-key route must be registered in main.rs"
     );
     assert!(
         main_source.contains("verify_ssh_host_key"),
-        "H-9: verify_ssh_host_key handler must be wired in main.rs"
+        "verify_ssh_host_key handler must be wired in main.rs"
     );
 }
 
@@ -4411,7 +4411,7 @@ async fn test_all_ssh_host_key_fragments_exist() {
 }
 
 // ---------------------------------------------------------------------------
-// H-9: Privilege separation (privsep) compliance for SSH host key fetch
+// Privilege separation (privsep) compliance for SSH host key fetch
 // ---------------------------------------------------------------------------
 // Under Capsicum (FreeBSD sandbox), after cap_enter() no new network
 // connections are allowed.  TCP connections must be brokered by the
@@ -4430,7 +4430,7 @@ async fn test_fetch_host_key_accepts_supervisor_param() {
     // The method signature must accept an optional supervisor reference
     assert!(
         ipc_source.contains("supervisor: Option<&super::SupervisorClient>"),
-        "H-9/privsep: fetch_host_key must accept an optional SupervisorClient for Capsicum TCP brokering"
+        "privsep: fetch_host_key must accept an optional SupervisorClient for Capsicum TCP brokering"
     );
 }
 
@@ -4444,19 +4444,19 @@ async fn test_fetch_host_key_requests_supervisor_tcp_connect() {
     // Must call request_tcp_connect when supervisor is available
     assert!(
         ipc_source.contains("request_tcp_connect"),
-        "H-9/privsep: fetch_host_key must call request_tcp_connect on the supervisor"
+        "privsep: fetch_host_key must call request_tcp_connect on the supervisor"
     );
 
     // Must use the correct session_id format matching the proxy's expectation
     assert!(
         ipc_source.contains(r#"format!("fetch-hostkey-{}", request_id)"#),
-        "H-9/privsep: fetch_host_key must use 'fetch-hostkey-{{request_id}}' as session_id for TCP connect"
+        "privsep: fetch_host_key must use 'fetch-hostkey-{{request_id}}' as session_id for TCP connect"
     );
 
     // Must target Service::ProxySsh
     assert!(
         ipc_source.contains("Service::ProxySsh"),
-        "H-9/privsep: fetch_host_key must target Service::ProxySsh for TCP connect brokering"
+        "privsep: fetch_host_key must target Service::ProxySsh for TCP connect brokering"
     );
 }
 
@@ -4470,11 +4470,11 @@ async fn test_verify_handler_passes_supervisor() {
     // The verify handler must extract the supervisor and pass it
     assert!(
         web_source.contains("supervisor_ref"),
-        "H-9/privsep: verify_ssh_host_key must extract supervisor reference"
+        "privsep: verify_ssh_host_key must extract supervisor reference"
     );
     assert!(
         web_source.contains("state.supervisor.as_deref()"),
-        "H-9/privsep: verify_ssh_host_key must get supervisor from state"
+        "privsep: verify_ssh_host_key must get supervisor from state"
     );
 }
 
@@ -4491,7 +4491,7 @@ async fn test_fetch_web_handler_passes_supervisor() {
     let count = web_source.matches("supervisor_ref").count();
     assert!(
         count >= 2,
-        "H-9/privsep: both fetch_ssh_host_key and verify_ssh_host_key must pass supervisor_ref (found {} occurrences)",
+        "privsep: both fetch_ssh_host_key and verify_ssh_host_key must pass supervisor_ref (found {} occurrences)",
         count
     );
 }
@@ -4505,11 +4505,11 @@ async fn test_fetch_api_handler_passes_supervisor() {
 
     assert!(
         api_source.contains("supervisor_ref"),
-        "H-9/privsep: fetch_ssh_host_key_api must extract supervisor reference"
+        "privsep: fetch_ssh_host_key_api must extract supervisor reference"
     );
     assert!(
         api_source.contains("state.supervisor.as_deref()"),
-        "H-9/privsep: fetch_ssh_host_key_api must get supervisor from state"
+        "privsep: fetch_ssh_host_key_api must get supervisor from state"
     );
 }
 
@@ -4523,13 +4523,13 @@ async fn test_proxy_fetch_session_id_matches_supervisor() {
     // The proxy must construct the same session_id format
     assert!(
         proxy_source.contains(r#"format!("fetch-hostkey-{}", request_id)"#),
-        "H-9/privsep: proxy must construct fetch_session_id matching the supervisor TCP connect session_id"
+        "privsep: proxy must construct fetch_session_id matching the supervisor TCP connect session_id"
     );
 
     // The proxy must look up the FD in pending_connections
     assert!(
         proxy_source.contains("pending.lock().await.remove(&fetch_session_id)"),
-        "H-9/privsep: proxy must retrieve pre-connected FD from pending_connections"
+        "privsep: proxy must retrieve pre-connected FD from pending_connections"
     );
 }
 
@@ -4543,24 +4543,24 @@ async fn test_session_fetch_supports_preconnected_fd() {
     // Must accept an optional pre-connected FD
     assert!(
         session_source.contains("preconnected_fd: Option<OwnedFd>"),
-        "H-9/privsep: session::fetch_host_key must accept Option<OwnedFd> for pre-connected FD"
+        "privsep: session::fetch_host_key must accept Option<OwnedFd> for pre-connected FD"
     );
 
     // Must handle the pre-connected case (use from_raw_fd)
     assert!(
         session_source.contains("from_raw_fd"),
-        "H-9/privsep: session::fetch_host_key must use from_raw_fd for pre-connected FD"
+        "privsep: session::fetch_host_key must use from_raw_fd for pre-connected FD"
     );
 
     // Must have a fallback for direct connection (dev mode without supervisor)
     assert!(
         session_source.contains("client::connect(ssh_config, addr, handler)"),
-        "H-9/privsep: session::fetch_host_key must fall back to direct connect when no FD is provided"
+        "privsep: session::fetch_host_key must fall back to direct connect when no FD is provided"
     );
 }
 
 // =============================================================================
-// H-10: SSH Secrets Zeroization and Redaction Tests
+// SSH Secrets Zeroization and Redaction Tests
 // =============================================================================
 // These tests verify that credential fields (password, private_key, passphrase)
 // are protected with secrecy/zeroize wrappers at every layer:
@@ -4573,81 +4573,81 @@ async fn test_session_fetch_supports_preconnected_fd() {
 // - Redacted Debug: format!("{:?}") never reveals credential values
 // - Compile-time enforcement: expose_secret() required to access the value
 
-/// H-10: SshSessionOpenRequest credential fields MUST be SecretString, not String.
+/// SshSessionOpenRequest credential fields MUST be SecretString, not String.
 #[test]
-fn test_h10_ssh_session_open_request_uses_secret_string() {
+fn test_ssh_session_open_request_uses_secret_string() {
     let source = include_str!("../../src/ipc/proxy_ssh.rs");
 
     // password field must be Option<SecretString>
     assert!(
         source.contains("pub password: Option<SecretString>"),
-        "H-10: SshSessionOpenRequest.password must be Option<SecretString>"
+        "SshSessionOpenRequest.password must be Option<SecretString>"
     );
 
     // private_key field must be Option<SecretString>
     assert!(
         source.contains("pub private_key: Option<SecretString>"),
-        "H-10: SshSessionOpenRequest.private_key must be Option<SecretString>"
+        "SshSessionOpenRequest.private_key must be Option<SecretString>"
     );
 
     // passphrase field must be Option<SecretString>
     assert!(
         source.contains("pub passphrase: Option<SecretString>"),
-        "H-10: SshSessionOpenRequest.passphrase must be Option<SecretString>"
+        "SshSessionOpenRequest.passphrase must be Option<SecretString>"
     );
 }
 
-/// H-10: Message::SshSessionOpen credential fields MUST be SensitiveString for IPC transport.
+/// Message::SshSessionOpen credential fields MUST be SensitiveString for IPC transport.
 #[test]
-fn test_h10_message_ssh_session_open_uses_sensitive_string() {
+fn test_message_ssh_session_open_uses_sensitive_string() {
     let source = include_str!("../../../shared/src/messages.rs");
 
     // SensitiveString type must exist
     assert!(
         source.contains("pub struct SensitiveString"),
-        "H-10: shared/messages.rs must define SensitiveString type"
+        "shared/messages.rs must define SensitiveString type"
     );
 
     // password field in SshSessionOpen must use SensitiveString
     assert!(
         source.contains("password: Option<SensitiveString>"),
-        "H-10: Message::SshSessionOpen.password must be Option<SensitiveString>"
+        "Message::SshSessionOpen.password must be Option<SensitiveString>"
     );
 
     // private_key field must use SensitiveString
     assert!(
         source.contains("private_key: Option<SensitiveString>"),
-        "H-10: Message::SshSessionOpen.private_key must be Option<SensitiveString>"
+        "Message::SshSessionOpen.private_key must be Option<SensitiveString>"
     );
 
     // passphrase field must use SensitiveString
     assert!(
         source.contains("passphrase: Option<SensitiveString>"),
-        "H-10: Message::SshSessionOpen.passphrase must be Option<SensitiveString>"
+        "Message::SshSessionOpen.passphrase must be Option<SensitiveString>"
     );
 }
 
-/// H-10: SensitiveString must implement Zeroize on Drop.
+/// SensitiveString must implement Zeroize on Drop.
 #[test]
-fn test_h10_sensitive_string_has_zeroize_drop() {
+fn test_sensitive_string_has_zeroize_drop() {
     let source = include_str!("../../../shared/src/messages.rs");
 
     // Must use zeroize crate
     assert!(
         source.contains("use zeroize::Zeroize"),
-        "H-10: shared/messages.rs must import zeroize::Zeroize"
+        "shared/messages.rs must import zeroize::Zeroize"
     );
 
     // Drop impl must call zeroize
     assert!(
         source.contains("self.0.zeroize()"),
-        "H-10: SensitiveString Drop must call zeroize() on inner string"
+        "SensitiveString Drop must call zeroize() on inner string"
     );
 }
 
-/// H-10: SensitiveString Debug must print [REDACTED], not the secret value.
+/// SensitiveString Debug must print [REDACTED], not the secret value.
 #[test]
-fn test_h10_sensitive_string_debug_redacted() {
+fn test_sensitive_string_debug_redacted() {
     use shared::messages::SensitiveString;
 
     let secret = SensitiveString::new("top-secret-password-12345".to_string());
@@ -4655,617 +4655,617 @@ fn test_h10_sensitive_string_debug_redacted() {
 
     assert!(
         !debug.contains("top-secret-password"),
-        "H-10: SensitiveString Debug must NOT reveal the secret. Got: {}",
+        "SensitiveString Debug must NOT reveal the secret. Got: {}",
         debug
     );
     assert!(
         debug.contains("REDACTED"),
-        "H-10: SensitiveString Debug must show [REDACTED]. Got: {}",
+        "SensitiveString Debug must show [REDACTED]. Got: {}",
         debug
     );
 }
 
-/// H-10: SensitiveString must be serde-transparent (no IPC protocol break).
+/// SensitiveString must be serde-transparent (no IPC protocol break).
 #[test]
-fn test_h10_sensitive_string_serde_transparent() {
+fn test_sensitive_string_serde_transparent() {
     let source = include_str!("../../../shared/src/messages.rs");
 
     assert!(
         source.contains("#[serde(transparent)]"),
-        "H-10: SensitiveString must use #[serde(transparent)] for IPC compatibility"
+        "SensitiveString must use #[serde(transparent)] for IPC compatibility"
     );
 }
 
-/// H-10: SshCredential (proxy side) must use SecretString, not plain String.
+/// SshCredential (proxy side) must use SecretString, not plain String.
 #[test]
-fn test_h10_ssh_credential_uses_secret_string() {
+fn test_ssh_credential_uses_secret_string() {
     let source = include_str!("../../../vauban-proxy-ssh/src/session.rs");
 
     // Password variant must use SecretString
     assert!(
         source.contains("Password(SecretString)"),
-        "H-10: SshCredential::Password must wrap SecretString, not String"
+        "SshCredential::Password must wrap SecretString, not String"
     );
 
     // PrivateKey key_pem must use SecretString
     assert!(
         source.contains("key_pem: SecretString"),
-        "H-10: SshCredential::PrivateKey.key_pem must be SecretString"
+        "SshCredential::PrivateKey.key_pem must be SecretString"
     );
 
     // PrivateKey passphrase must use Option<SecretString>
     assert!(
         source.contains("passphrase: Option<SecretString>"),
-        "H-10: SshCredential::PrivateKey.passphrase must be Option<SecretString>"
+        "SshCredential::PrivateKey.passphrase must be Option<SecretString>"
     );
 }
 
-/// H-10: SshCredential Debug must not derive automatically; must be redacted.
+/// SshCredential Debug must not derive automatically; must be redacted.
 #[test]
-fn test_h10_ssh_credential_debug_not_derived() {
+fn test_ssh_credential_debug_not_derived() {
     let source = include_str!("../../../vauban-proxy-ssh/src/session.rs");
 
     // SshCredential must NOT have #[derive(Debug)]
     // It should have a manual Debug impl with [REDACTED]
     assert!(
         source.contains("impl std::fmt::Debug for SshCredential"),
-        "H-10: SshCredential must have manual Debug impl (not derive)"
+        "SshCredential must have manual Debug impl (not derive)"
     );
 
     assert!(
         source.contains("REDACTED"),
-        "H-10: SshCredential Debug impl must use [REDACTED]"
+        "SshCredential Debug impl must use [REDACTED]"
     );
 }
 
-/// H-10: Proxy main.rs must convert SensitiveString -> SecretString.
+/// Proxy main.rs must convert SensitiveString -> SecretString.
 #[test]
-fn test_h10_proxy_converts_sensitive_to_secret() {
+fn test_proxy_converts_sensitive_to_secret() {
     let source = include_str!("../../../vauban-proxy-ssh/src/main.rs");
 
     // Must import SecretString
     assert!(
         source.contains("use secrecy::SecretString"),
-        "H-10: proxy main.rs must import secrecy::SecretString"
+        "proxy main.rs must import secrecy::SecretString"
     );
 
     // Must use into_inner() to extract from SensitiveString
     assert!(
         source.contains("into_inner()"),
-        "H-10: proxy must call SensitiveString::into_inner() for conversion"
+        "proxy must call SensitiveString::into_inner() for conversion"
     );
 }
 
-/// H-10: connect_ssh handler must wrap credentials in SecretString.
+/// connect_ssh handler must wrap credentials in SecretString.
 #[test]
-fn test_h10_connect_ssh_wraps_credentials() {
+fn test_connect_ssh_wraps_credentials() {
     let source = include_str!("../../src/handlers/web/ssh.rs");
 
     // Must use SecretString::from() or secrecy::SecretString for credentials
     assert!(
         source.contains("secrecy::SecretString::from(val.to_string())")
             || source.contains("secrecy::SecretString::from(s.to_string())"),
-        "H-10: connect_ssh must wrap extracted credentials in SecretString"
+        "connect_ssh must wrap extracted credentials in SecretString"
     );
 }
 
-/// H-10: open_session() must convert SecretString -> SensitiveString for IPC.
+/// open_session() must convert SecretString -> SensitiveString for IPC.
 #[test]
-fn test_h10_open_session_converts_secret_to_sensitive() {
+fn test_open_session_converts_secret_to_sensitive() {
     let source = include_str!("../../src/ipc/proxy_ssh.rs");
 
     // Must use expose_secret() to access credential before IPC transport
     assert!(
         source.contains("expose_secret()"),
-        "H-10: open_session must call expose_secret() when converting to SensitiveString"
+        "open_session must call expose_secret() when converting to SensitiveString"
     );
 
     // Must create SensitiveString for IPC message
     assert!(
         source.contains("SensitiveString::new"),
-        "H-10: open_session must construct SensitiveString for IPC message fields"
+        "open_session must construct SensitiveString for IPC message fields"
     );
 }
 
-/// H-10: SshCredential authentication must use expose_secret().
+/// SshCredential authentication must use expose_secret().
 #[test]
-fn test_h10_credential_auth_uses_expose_secret() {
+fn test_credential_auth_uses_expose_secret() {
     let source = include_str!("../../../vauban-proxy-ssh/src/session.rs");
 
     // Password auth must call expose_secret()
     assert!(
         source.contains("password.expose_secret()"),
-        "H-10: password authentication must call .expose_secret()"
+        "password authentication must call .expose_secret()"
     );
 
     // Private key auth must call expose_secret()
     assert!(
         source.contains("key_pem.expose_secret()"),
-        "H-10: private key decoding must call .expose_secret()"
+        "private key decoding must call .expose_secret()"
     );
 }
 
 // =============================================================================
-// M-1 / C-2: Vault Structural Regression Tests
+// Vault Structural Regression Tests
 // =============================================================================
 
-/// M-1 / C-2: vauban-vault must NOT depend on tokio (synchronous service).
+/// vauban-vault must NOT depend on tokio (synchronous service).
 #[test]
 fn test_vault_no_tokio_dependency() {
     let cargo = include_str!("../../../vauban-vault/Cargo.toml");
     assert!(
         !cargo.contains("tokio"),
-        "M-1/C-2: vauban-vault must NOT depend on tokio (pure synchronous service)"
+        "vauban-vault must NOT depend on tokio (pure synchronous service)"
     );
 }
 
-/// M-1 / C-2: vauban-vault must NOT depend on diesel or sqlx (no database).
+/// vauban-vault must NOT depend on diesel or sqlx (no database).
 #[test]
 fn test_vault_no_database_dependency() {
     let cargo = include_str!("../../../vauban-vault/Cargo.toml");
     assert!(
         !cargo.contains("diesel"),
-        "M-1/C-2: vauban-vault must NOT depend on diesel (no database access)"
+        "vauban-vault must NOT depend on diesel (no database access)"
     );
     assert!(
         !cargo.contains("sqlx"),
-        "M-1/C-2: vauban-vault must NOT depend on sqlx (no database access)"
+        "vauban-vault must NOT depend on sqlx (no database access)"
     );
 }
 
-/// M-1 / C-2: vauban-vault must NOT depend on reqwest (no network).
+/// vauban-vault must NOT depend on reqwest (no network).
 #[test]
 fn test_vault_no_network_dependency() {
     let cargo = include_str!("../../../vauban-vault/Cargo.toml");
     assert!(
         !cargo.contains("reqwest"),
-        "M-1/C-2: vauban-vault must NOT depend on reqwest (no network access)"
+        "vauban-vault must NOT depend on reqwest (no network access)"
     );
     assert!(
         !cargo.contains("hyper"),
-        "M-1/C-2: vauban-vault must NOT depend on hyper (no network access)"
+        "vauban-vault must NOT depend on hyper (no network access)"
     );
 }
 
-/// M-1 / C-2: vauban-vault must depend on zeroize for key material cleanup.
+/// vauban-vault must depend on zeroize for key material cleanup.
 #[test]
 fn test_vault_has_zeroize_dependency() {
     let cargo = include_str!("../../../vauban-vault/Cargo.toml");
     assert!(
         cargo.contains("zeroize"),
-        "M-1/C-2: vauban-vault must depend on zeroize for key material cleanup"
+        "vauban-vault must depend on zeroize for key material cleanup"
     );
 }
 
-/// M-1 / C-2: MasterKey must implement zeroization (ZeroizeOnDrop pattern).
+/// MasterKey must implement zeroization (ZeroizeOnDrop pattern).
 #[test]
 fn test_vault_master_key_zeroize() {
     let source = include_str!("../../../vauban-vault/src/keyring.rs");
     assert!(
         source.contains("fn drop(&mut self)") && source.contains("zeroize()"),
-        "M-1/C-2: MasterKey must zeroize on drop"
+        "MasterKey must zeroize on drop"
     );
 }
 
-/// M-1 / C-2: MasterKey Debug must be redacted (no key material in logs).
+/// MasterKey Debug must be redacted (no key material in logs).
 #[test]
 fn test_vault_master_key_debug_redacted() {
     let source = include_str!("../../../vauban-vault/src/keyring.rs");
     assert!(
         source.contains("MasterKey([REDACTED])"),
-        "M-1/C-2: MasterKey Debug must show [REDACTED], never raw key bytes"
+        "MasterKey Debug must show [REDACTED], never raw key bytes"
     );
 }
 
-/// M-1 / C-2: Vault crypto module uses AES-256-GCM and OsRng for nonces.
+/// Vault crypto module uses AES-256-GCM and OsRng for nonces.
 #[test]
 fn test_vault_crypto_uses_aes256_gcm_osrng() {
     let source = include_str!("../../../vauban-vault/src/crypto.rs");
     assert!(
         source.contains("Aes256Gcm"),
-        "M-1/C-2: vault crypto must use AES-256-GCM"
+        "vault crypto must use AES-256-GCM"
     );
     assert!(
         source.contains("OsRng"),
-        "M-1/C-2: vault crypto must use OsRng for nonce generation"
+        "vault crypto must use OsRng for nonce generation"
     );
 }
 
-/// M-1 / C-2: Vault keyring uses HKDF-SHA3-256 for key derivation (PQC alignment).
+/// Vault keyring uses HKDF-SHA3-256 for key derivation (PQC alignment).
 #[test]
 fn test_vault_keyring_uses_hkdf_sha3() {
     let source = include_str!("../../../vauban-vault/src/keyring.rs");
     assert!(
         source.contains("Hkdf::<Sha3_256>"),
-        "M-1/C-2: vault keyring must use HKDF-SHA3-256 for PQC-aligned key derivation"
+        "vault keyring must use HKDF-SHA3-256 for PQC-aligned key derivation"
     );
 }
 
-/// M-1 / C-2: Vault transit handlers zeroize plaintext after operations.
+/// Vault transit handlers zeroize plaintext after operations.
 #[test]
 fn test_vault_transit_zeroizes_plaintext() {
     let source = include_str!("../../../vauban-vault/src/transit.rs");
     assert!(
         source.contains("zeroize()"),
-        "M-1/C-2: vault transit handlers must zeroize plaintext after operations"
+        "vault transit handlers must zeroize plaintext after operations"
     );
 }
 
-/// M-1 / C-2: Vault IPC messages use SensitiveString for credential transport.
+/// Vault IPC messages use SensitiveString for credential transport.
 #[test]
 fn test_vault_messages_use_sensitive_string() {
     let source = include_str!("../../../shared/src/messages.rs");
     // VaultEncrypt must use SensitiveString for plaintext
     assert!(
         source.contains("plaintext: SensitiveString"),
-        "M-1/C-2: VaultEncrypt must use SensitiveString for plaintext field"
+        "VaultEncrypt must use SensitiveString for plaintext field"
     );
     // VaultDecryptResponse must use SensitiveString for plaintext
     assert!(
         source.contains("plaintext: Option<SensitiveString>"),
-        "M-1/C-2: VaultDecryptResponse must use SensitiveString for plaintext field"
+        "VaultDecryptResponse must use SensitiveString for plaintext field"
     );
 }
 
-/// C-2: connect_ssh handler must decrypt encrypted credentials via vault.
+/// connect_ssh handler must decrypt encrypted credentials via vault.
 #[test]
-fn test_c2_connect_ssh_decrypts_via_vault() {
+fn test_connect_ssh_decrypts_via_vault() {
     let source = include_str!("../../src/handlers/web/ssh.rs");
     assert!(
         source.contains("vault.decrypt(\"credentials\""),
-        "C-2: connect_ssh must call vault.decrypt for encrypted credentials"
+        "connect_ssh must call vault.decrypt for encrypted credentials"
     );
     assert!(
         source.contains("is_encrypted(val)"),
-        "C-2: connect_ssh must check is_encrypted() for backward compatibility"
+        "connect_ssh must check is_encrypted() for backward compatibility"
     );
 }
 
-/// C-2: Asset creation must encrypt credentials via vault.
+/// Asset creation must encrypt credentials via vault.
 #[test]
-fn test_c2_asset_creation_encrypts_via_vault() {
+fn test_asset_creation_encrypts_via_vault() {
     let source = include_str!("../../src/handlers/web/assets.rs");
     assert!(
         source.contains("encrypt_connection_config"),
-        "C-2: asset creation/edit must call encrypt_connection_config for credential encryption"
+        "asset creation/edit must call encrypt_connection_config for credential encryption"
     );
 }
 
-/// M-1: MFA handlers must use vault for TOTP generation and verification.
+/// MFA handlers must use vault for TOTP generation and verification.
 #[test]
-fn test_m1_mfa_handlers_use_vault() {
+fn test_mfa_handlers_use_vault() {
     let source = include_str!("../../src/handlers/auth.rs");
     assert!(
         source.contains(".mfa_verify("),
-        "M-1: MFA verification must use vault.mfa_verify"
+        "MFA verification must use vault.mfa_verify"
     );
     assert!(
         source.contains(".mfa_generate("),
-        "M-1: MFA setup must use vault.mfa_generate"
+        "MFA setup must use vault.mfa_generate"
     );
 }
 
-/// M-1: Vault client in AppState must be available.
+/// Vault client in AppState must be available.
 #[test]
-fn test_m1_vault_client_in_appstate() {
+fn test_vault_client_in_appstate() {
     let source = include_str!("../../src/lib.rs");
     assert!(
         source.contains("vault_client: Option<Arc<VaultCryptoClient>>"),
-        "M-1/C-2: AppState must contain vault_client field"
+        "AppState must contain vault_client field"
     );
 }
 
-/// M-1 / C-2: is_encrypted helper must check version prefix format.
+/// is_encrypted helper must check version prefix format.
 #[test]
 fn test_is_encrypted_helper_exists() {
     let source = include_str!("../../src/handlers/web/mod.rs");
     assert!(
         source.contains("fn is_encrypted("),
-        "C-2: is_encrypted() helper must exist for backward compatibility"
+        "is_encrypted() helper must exist for backward compatibility"
     );
 }
 
 // =============================================================================
-// M-1 Backward Compatibility: plaintext -> encrypted progressive migration
+// Backward Compatibility: plaintext -> encrypted progressive migration
 // =============================================================================
 
-/// M-1: auth.rs must have is_encrypted() for backward compatibility with plaintext secrets.
+/// auth.rs must have is_encrypted() for backward compatibility with plaintext secrets.
 #[test]
-fn test_m1_auth_has_is_encrypted() {
+fn test_auth_has_is_encrypted() {
     let source = include_str!("../../src/handlers/auth.rs");
     assert!(
         source.contains("fn is_encrypted("),
-        "M-1: auth.rs must have is_encrypted() for backward compatibility"
+        "auth.rs must have is_encrypted() for backward compatibility"
     );
 }
 
-/// M-1: MFA verify in auth.rs must check is_encrypted before sending to vault.
+/// MFA verify in auth.rs must check is_encrypted before sending to vault.
 /// This ensures plaintext secrets (pre-migration) still work via direct verification.
 #[test]
-fn test_m1_mfa_verify_checks_is_encrypted() {
+fn test_mfa_verify_checks_is_encrypted() {
     let source = include_str!("../../src/handlers/auth.rs");
     // The pattern: vault is only used when is_encrypted(secret) is true
     assert!(
         source.contains("is_encrypted(secret)")
             || source.contains("is_encrypted(&secret)")
             || source.contains("is_encrypted(&s)"),
-        "M-1: MFA verification must check is_encrypted() before calling vault"
+        "MFA verification must check is_encrypted() before calling vault"
     );
 }
 
-/// M-1: auth.rs must implement encrypt-on-read for progressive migration.
+/// auth.rs must implement encrypt-on-read for progressive migration.
 /// When a plaintext secret is verified successfully, it should be encrypted
 /// and updated in the database.
 #[test]
-fn test_m1_encrypt_on_read_in_auth() {
+fn test_encrypt_on_read_in_auth() {
     let source = include_str!("../../src/handlers/auth.rs");
     assert!(
         source.contains("encrypt-on-read")
             || source.contains("Migrated plaintext MFA secret to encrypted"),
-        "M-1: auth.rs must implement encrypt-on-read for progressive secret migration"
+        "auth.rs must implement encrypt-on-read for progressive secret migration"
     );
     // Must call vault.encrypt for the migration
     assert!(
         source.contains("vault.encrypt(\"mfa\""),
-        "M-1: encrypt-on-read must call vault.encrypt(\"mfa\", ...) to encrypt plaintext secrets"
+        "encrypt-on-read must call vault.encrypt(\"mfa\", ...) to encrypt plaintext secrets"
     );
 }
 
-/// M-1: mfa_setup_page must handle plaintext existing secrets with encrypt-on-read.
+/// mfa_setup_page must handle plaintext existing secrets with encrypt-on-read.
 #[test]
-fn test_m1_mfa_setup_page_backward_compat() {
+fn test_mfa_setup_page_backward_compat() {
     let source = include_str!("../../src/handlers/auth.rs");
     // The mfa_setup_page handler must check is_encrypted on existing secrets
     // and encrypt-on-read if they are plaintext
     assert!(
         source.contains("Plaintext secret (pre-migration)"),
-        "M-1: mfa_setup_page must handle plaintext secrets with encrypt-on-read"
+        "mfa_setup_page must handle plaintext secrets with encrypt-on-read"
     );
 }
 
-/// M-1 / C-2: vauban-vault must expose a library crate for reuse by vauban-migrate.
+/// vauban-vault must expose a library crate for reuse by vauban-migrate.
 #[test]
 fn test_vault_has_lib_crate() {
     let cargo = include_str!("../../../vauban-vault/Cargo.toml");
     assert!(
         cargo.contains("[lib]"),
-        "M-1/C-2: vauban-vault must expose a [lib] section for reuse by vauban-migrate"
+        "vauban-vault must expose a [lib] section for reuse by vauban-migrate"
     );
 }
 
-/// M-1 / C-2: vauban-vault lib.rs must export crypto and keyring modules.
+/// vauban-vault lib.rs must export crypto and keyring modules.
 #[test]
 fn test_vault_lib_exports_modules() {
     let source = include_str!("../../../vauban-vault/src/lib.rs");
     assert!(
         source.contains("pub mod crypto"),
-        "M-1/C-2: vauban-vault lib must export crypto module"
+        "vauban-vault lib must export crypto module"
     );
     assert!(
         source.contains("pub mod keyring"),
-        "M-1/C-2: vauban-vault lib must export keyring module"
+        "vauban-vault lib must export keyring module"
     );
 }
 
-/// M-1 / C-2: migrate_secrets logic must exist in vauban-supervisor/src/admin.rs.
+/// migrate_secrets logic must exist in vauban-supervisor/src/admin.rs.
 #[test]
 fn test_migrate_secrets_exists_in_supervisor() {
     let source = include_str!("../../../vauban-supervisor/src/admin.rs");
     assert!(
         source.contains("cmd_migrate_secrets"),
-        "M-1/C-2: migrate_secrets must exist in vauban-supervisor/src/admin.rs"
+        "migrate_secrets must exist in vauban-supervisor/src/admin.rs"
     );
 }
 
-/// M-1 / C-2: vauban-supervisor must depend on vauban-vault for keyring reuse by migrate_secrets.
+/// vauban-supervisor must depend on vauban-vault for keyring reuse by migrate_secrets.
 #[test]
 fn test_supervisor_depends_on_vault() {
     let cargo = include_str!("../../../vauban-supervisor/Cargo.toml");
     assert!(
         cargo.contains("vauban-vault"),
-        "M-1/C-2: vauban-supervisor must depend on vauban-vault for keyring reuse"
+        "vauban-supervisor must depend on vauban-vault for keyring reuse"
     );
 }
 
-/// M-1 / C-2: migrate_secrets must implement is_encrypted for idempotent migration.
+/// migrate_secrets must implement is_encrypted for idempotent migration.
 #[test]
 fn test_migrate_has_is_encrypted() {
     let source = include_str!("../../../vauban-supervisor/src/admin.rs");
     assert!(
         source.contains("fn is_encrypted("),
-        "M-1/C-2: migrate_secrets must have is_encrypted() for idempotent migration"
+        "migrate_secrets must have is_encrypted() for idempotent migration"
     );
 }
 
-/// M-1 / C-2: migrate_secrets must support --dry-run for safe operation.
+/// migrate_secrets must support --dry-run for safe operation.
 #[test]
 fn test_migrate_supports_dry_run() {
     let admin_source = include_str!("../../../vauban-supervisor/src/admin.rs");
     let main_source = include_str!("../../../vauban-supervisor/src/main.rs");
     assert!(
         admin_source.contains("dry_run") && main_source.contains("dry_run"),
-        "M-1/C-2: migrate_secrets must support --dry-run flag for safe operation"
+        "migrate_secrets must support --dry-run flag for safe operation"
     );
 }
 
-/// M-1: migrate_secrets must migrate MFA secrets.
+/// migrate_secrets must migrate MFA secrets.
 #[test]
 fn test_migrate_handles_mfa_secrets() {
     let source = include_str!("../../../vauban-supervisor/src/admin.rs");
     assert!(
         source.contains("migrate_mfa_secrets"),
-        "M-1: migrate_secrets must have migrate_mfa_secrets function"
+        "migrate_secrets must have migrate_mfa_secrets function"
     );
 }
 
-/// C-2: migrate_secrets must migrate credential secrets in connection_config.
+/// migrate_secrets must migrate credential secrets in connection_config.
 #[test]
 fn test_migrate_handles_credential_secrets() {
     let source = include_str!("../../../vauban-supervisor/src/admin.rs");
     assert!(
         source.contains("migrate_credential_secrets"),
-        "C-2: migrate_secrets must have migrate_credential_secrets function"
+        "migrate_secrets must have migrate_credential_secrets function"
     );
     assert!(
         source.contains("\"password\"")
             && source.contains("\"private_key\"")
             && source.contains("\"passphrase\""),
-        "C-2: migrate_secrets must encrypt password, private_key, and passphrase fields"
+        "migrate_secrets must encrypt password, private_key, and passphrase fields"
     );
 }
 
 // =============================================================================
-// M-3: OptionalSecret Zeroize Regression Tests
+// OptionalSecret Zeroize Regression Tests
 // =============================================================================
 
-/// M-3: OptionalSecret must import zeroize.
+/// OptionalSecret must import zeroize.
 #[test]
-fn test_m3_config_imports_zeroize() {
+fn test_config_imports_zeroize() {
     let source = include_str!("../../src/config.rs");
     assert!(
         source.contains("use zeroize::Zeroize"),
-        "M-3: config.rs must import zeroize::Zeroize"
+        "config.rs must import zeroize::Zeroize"
     );
 }
 
-/// M-3: OptionalSecret must implement Drop with zeroization.
+/// OptionalSecret must implement Drop with zeroization.
 #[test]
-fn test_m3_optional_secret_has_zeroize_drop() {
+fn test_optional_secret_has_zeroize_drop() {
     let source = include_str!("../../src/config.rs");
     assert!(
         source.contains("impl Drop for OptionalSecret"),
-        "M-3: OptionalSecret must implement Drop"
+        "OptionalSecret must implement Drop"
     );
     assert!(
         source.contains("s.zeroize()"),
-        "M-3: OptionalSecret Drop must call zeroize() on the inner String"
+        "OptionalSecret Drop must call zeroize() on the inner String"
     );
 }
 
-/// M-3: OptionalSecret Debug must still redact secrets (not regressed).
+/// OptionalSecret Debug must still redact secrets (not regressed).
 #[test]
-fn test_m3_optional_secret_debug_redacts() {
+fn test_optional_secret_debug_redacts() {
     let source = include_str!("../../src/config.rs");
     assert!(
         source.contains("impl std::fmt::Debug for OptionalSecret") && source.contains("[REDACTED]"),
-        "M-3: OptionalSecret Debug must redact values as [REDACTED]"
+        "OptionalSecret Debug must redact values as [REDACTED]"
     );
 }
 
 // =============================================================================
-// M-5: Post-Quantum Secret Key Zeroize Regression Tests
+// Post-Quantum Secret Key Zeroize Regression Tests
 // =============================================================================
 
-/// M-5: crypto.rs must define zeroize_pq_secret_key helper.
+/// crypto.rs must define zeroize_pq_secret_key helper.
 #[test]
-fn test_m5_has_zeroize_pq_helper() {
+fn test_has_zeroize_pq_helper() {
     let source = include_str!("../../src/crypto.rs");
     assert!(
         source.contains("fn zeroize_pq_secret_key"),
-        "M-5: crypto.rs must define zeroize_pq_secret_key helper function"
+        "crypto.rs must define zeroize_pq_secret_key helper function"
     );
 }
 
-/// M-5: HybridKemSecretKey Drop must call zeroize on PQ key.
+/// HybridKemSecretKey Drop must call zeroize on PQ key.
 #[test]
-fn test_m5_kem_drop_zeroizes_pq_key() {
+fn test_kem_drop_zeroizes_pq_key() {
     let source = include_str!("../../src/crypto.rs");
     // Find the Drop impl for HybridKemSecretKey and verify it calls zeroize
     assert!(
         source.contains("impl Drop for HybridKemSecretKey"),
-        "M-5: HybridKemSecretKey must implement Drop"
+        "HybridKemSecretKey must implement Drop"
     );
     // The Drop impl must not be empty (the old version had an empty body)
     let drop_start = source
         .find("impl Drop for HybridKemSecretKey")
-        .expect("M-5: HybridKemSecretKey Drop not found");
+        .expect("HybridKemSecretKey Drop not found");
     let drop_end = drop_start + source[drop_start..].find("\n}\n").unwrap_or(600) + 3;
     let drop_body = &source[drop_start..drop_end];
     assert!(
         drop_body.contains("zeroize_pq_secret_key"),
-        "M-5: HybridKemSecretKey Drop must call zeroize_pq_secret_key"
+        "HybridKemSecretKey Drop must call zeroize_pq_secret_key"
     );
 }
 
-/// M-5: HybridSigSecretKey Drop must call zeroize on PQ key.
+/// HybridSigSecretKey Drop must call zeroize on PQ key.
 #[test]
-fn test_m5_sig_drop_zeroizes_pq_key() {
+fn test_sig_drop_zeroizes_pq_key() {
     let source = include_str!("../../src/crypto.rs");
     assert!(
         source.contains("impl Drop for HybridSigSecretKey"),
-        "M-5: HybridSigSecretKey must implement Drop"
+        "HybridSigSecretKey must implement Drop"
     );
     let drop_start = source
         .find("impl Drop for HybridSigSecretKey")
-        .expect("M-5: HybridSigSecretKey Drop not found");
+        .expect("HybridSigSecretKey Drop not found");
     let drop_end = drop_start + source[drop_start..].find("\n}\n").unwrap_or(600) + 3;
     let drop_body = &source[drop_start..drop_end];
     assert!(
         drop_body.contains("zeroize_pq_secret_key"),
-        "M-5: HybridSigSecretKey Drop must call zeroize_pq_secret_key"
+        "HybridSigSecretKey Drop must call zeroize_pq_secret_key"
     );
 }
 
-/// M-5: PqSecretKeyBytes trait must be implemented for both PQ key types.
+/// PqSecretKeyBytes trait must be implemented for both PQ key types.
 #[test]
-fn test_m5_pq_secret_key_bytes_trait_impls() {
+fn test_pq_secret_key_bytes_trait_impls() {
     let source = include_str!("../../src/crypto.rs");
     assert!(
         source.contains("impl PqSecretKeyBytes for mlkem768::SecretKey"),
-        "M-5: PqSecretKeyBytes must be implemented for mlkem768::SecretKey"
+        "PqSecretKeyBytes must be implemented for mlkem768::SecretKey"
     );
     assert!(
         source.contains("impl PqSecretKeyBytes for mldsa65::SecretKey"),
-        "M-5: PqSecretKeyBytes must be implemented for mldsa65::SecretKey"
+        "PqSecretKeyBytes must be implemented for mldsa65::SecretKey"
     );
 }
 
-/// M-5: The zeroize helper must actually call zeroize() on the raw bytes.
+/// The zeroize helper must actually call zeroize() on the raw bytes.
 #[test]
-fn test_m5_zeroize_helper_calls_zeroize() {
+fn test_zeroize_helper_calls_zeroize() {
     let source = include_str!("../../src/crypto.rs");
     let helper_start = source
         .find("fn zeroize_pq_secret_key")
-        .expect("M-5: zeroize_pq_secret_key not found");
+        .expect("zeroize_pq_secret_key not found");
     let helper_body = &source[helper_start..helper_start + 500];
     assert!(
         helper_body.contains("slice.zeroize()"),
-        "M-5: zeroize_pq_secret_key must call slice.zeroize()"
+        "zeroize_pq_secret_key must call slice.zeroize()"
     );
 }
 
-// ==================== M-4: VAUBAN_SECRET_KEY cleared from environment ====================
+// ==================== VAUBAN_SECRET_KEY cleared from environment ====================
 
 #[test]
-fn test_m4_source_removes_env_var_after_reading() {
+fn test_source_removes_env_var_after_reading() {
     // Structural regression test: load_with_environment must call
     // remove_var("VAUBAN_SECRET_KEY") immediately after std::env::var()
     let source = include_str!("../../src/config.rs");
     assert!(
         source.contains(r#"remove_var("VAUBAN_SECRET_KEY")"#),
-        "M-4: config.rs must call remove_var(\"VAUBAN_SECRET_KEY\") to clear the env var"
+        "config.rs must call remove_var(\"VAUBAN_SECRET_KEY\") to clear the env var"
     );
 }
 
 #[test]
-fn test_m4_remove_var_before_set_override() {
+fn test_remove_var_before_set_override() {
     // The remove_var call must happen BEFORE the value is used (defense in depth):
     // if set_override fails, the env var is already cleared.
     let source = include_str!("../../src/config.rs");
     let remove_pos = source
         .find(r#"remove_var("VAUBAN_SECRET_KEY")"#)
-        .expect("M-4: remove_var not found");
+        .expect("remove_var not found");
     let set_override_pos = source[remove_pos..]
         .find("set_override")
-        .expect("M-4: set_override not found after remove_var");
+        .expect("set_override not found after remove_var");
     assert!(
         set_override_pos > 0,
-        "M-4: remove_var must appear before set_override in the source"
+        "remove_var must appear before set_override in the source"
     );
 }
 
 #[test]
-fn test_m4_remove_var_inside_env_var_block() {
+fn test_remove_var_inside_env_var_block() {
     // The remove_var must be inside the `if let Ok(secret) = std::env::var(...)` block,
     // i.e. it only runs when the env var was actually set.
     let source = include_str!("../../src/config.rs");
@@ -5273,25 +5273,25 @@ fn test_m4_remove_var_inside_env_var_block() {
     // Find the env::var("VAUBAN_SECRET_KEY") read
     let env_read_pos = source
         .find(r#"std::env::var("VAUBAN_SECRET_KEY")"#)
-        .expect("M-4: env::var(\"VAUBAN_SECRET_KEY\") not found");
+        .expect("env::var(\"VAUBAN_SECRET_KEY\") not found");
 
     // Find remove_var relative to the env read
     let after_read = &source[env_read_pos..];
     let remove_offset = after_read
         .find(r#"remove_var("VAUBAN_SECRET_KEY")"#)
-        .expect("M-4: remove_var not found after env::var read");
+        .expect("remove_var not found after env::var read");
 
     // The remove_var should be close (within the same if-block, < 700 chars).
     // The allowance accounts for the SAFETY comment explaining the unsafe block.
     assert!(
         remove_offset < 700,
-        "M-4: remove_var should be close to env::var read (found at offset {})",
+        "remove_var should be close to env::var read (found at offset {})",
         remove_offset
     );
 }
 
 #[test]
-fn test_m4_toml_secret_key_path_preserved() {
+fn test_toml_secret_key_path_preserved() {
     // Structural regression test: the TOML-based secret_key loading path must still exist.
     // This guards against someone accidentally removing TOML support while implementing
     // the env var clearing.
@@ -5300,48 +5300,48 @@ fn test_m4_toml_secret_key_path_preserved() {
     // The config struct must still have a secret_key field of type SecretString
     assert!(
         source.contains("pub secret_key: secrecy::SecretString"),
-        "M-4 regression: Config must still have secret_key: secrecy::SecretString"
+        "regression: Config must still have secret_key: secrecy::SecretString"
     );
 
     // The error message mentioning TOML as a valid source must still exist
     assert!(
         source.contains("config/{environment}.toml"),
-        "M-4 regression: error message must still mention TOML as a valid source for secret_key"
+        "regression: error message must still mention TOML as a valid source for secret_key"
     );
 
     // The validation that secret_key is not empty must still exist
     assert!(
         source.contains("config.secret_key.expose_secret().is_empty()"),
-        "M-4 regression: validation that secret_key is not empty must remain"
+        "regression: validation that secret_key is not empty must remain"
     );
 }
 
-// ==================== M-2: Silent cache fallback -> fail-closed ====================
+// ==================== Silent cache fallback -> fail-closed ====================
 
 #[test]
-fn test_m2_cache_no_silent_fallback_to_mock() {
+fn test_cache_no_silent_fallback_to_mock() {
     // The old pattern "falling back to mock cache" must no longer appear in
     // create_cache_client().  When cache.enabled = true and Redis fails,
     // an error must be returned, not a silent MockCache.
     let source = include_str!("../../src/cache.rs");
     assert!(
         !source.contains("falling back to mock"),
-        "M-2: cache.rs must not contain 'falling back to mock' (fail-closed when enabled)"
+        "cache.rs must not contain 'falling back to mock' (fail-closed when enabled)"
     );
 }
 
 #[test]
-fn test_m2_cache_disabled_mock_path_preserved() {
+fn test_cache_disabled_mock_path_preserved() {
     // Regression: the explicit cache.enabled = false -> MockCache path must remain.
     let source = include_str!("../../src/cache.rs");
     assert!(
         source.contains("Cache is disabled - using mock cache"),
-        "M-2 regression: cache.rs must still have the disabled -> mock path"
+        "regression: cache.rs must still have the disabled -> mock path"
     );
 }
 
 #[test]
-fn test_m2_cache_enabled_uses_error_propagation() {
+fn test_cache_enabled_uses_error_propagation() {
     // When cache.enabled = true, errors must propagate via ? (not match/Ok(Mock)).
     // Look for the fail-closed pattern: map_err + AppError::Config.
     let source = include_str!("../../src/cache.rs");
@@ -5349,18 +5349,18 @@ fn test_m2_cache_enabled_uses_error_propagation() {
     // The function must return AppError::Config on Redis client creation failure
     assert!(
         source.contains("Cache is enabled but Redis client creation failed"),
-        "M-2: cache.rs must return Config error on Redis client creation failure"
+        "cache.rs must return Config error on Redis client creation failure"
     );
 
     // The function must return AppError::Config on Redis connection failure
     assert!(
         source.contains("Cache is enabled but cannot connect to Redis"),
-        "M-2: cache.rs must return Config error on Redis connection failure"
+        "cache.rs must return Config error on Redis connection failure"
     );
 }
 
 #[test]
-fn test_m2_cache_error_messages_suggest_disabling() {
+fn test_cache_error_messages_suggest_disabling() {
     // Error messages must tell the operator how to recover.
     let source = include_str!("../../src/cache.rs");
 
@@ -5369,65 +5369,65 @@ fn test_m2_cache_error_messages_suggest_disabling() {
         .count();
     assert!(
         error_count >= 2,
-        "M-2: both cache error paths must suggest 'Set cache.enabled = false' (found {})",
+        "both cache error paths must suggest 'Set cache.enabled = false' (found {})",
         error_count
     );
 }
 
 #[test]
-fn test_m2_rate_limiter_no_silent_fallback() {
+fn test_rate_limiter_no_silent_fallback() {
     // The old "Falling back to in-memory" pattern must be gone.
     let source = include_str!("../../src/services/rate_limit.rs");
     assert!(
         !source.contains("Falling back to in-memory"),
-        "M-2: rate_limit.rs must not silently fall back to in-memory when cache is enabled"
+        "rate_limit.rs must not silently fall back to in-memory when cache is enabled"
     );
 }
 
 #[test]
-fn test_m2_rate_limiter_fail_closed_on_bad_client() {
+fn test_rate_limiter_fail_closed_on_bad_client() {
     // When cache_enabled = true, Redis client creation failure must return
     // an error via AppError::Config, not a warn + fallback.
     let source = include_str!("../../src/services/rate_limit.rs");
     assert!(
         source.contains("cache is enabled but Redis client creation failed"),
-        "M-2: rate_limit.rs must return Config error on Redis client failure"
+        "rate_limit.rs must return Config error on Redis client failure"
     );
 }
 
 #[test]
-fn test_m2_rate_limiter_fail_closed_on_no_url() {
+fn test_rate_limiter_fail_closed_on_no_url() {
     // When cache_enabled = true but no URL, must return an error.
     let source = include_str!("../../src/services/rate_limit.rs");
     assert!(
         source.contains("cache is enabled but no Redis URL provided"),
-        "M-2: rate_limit.rs must return error when cache enabled but no URL"
+        "rate_limit.rs must return error when cache enabled but no URL"
     );
 }
 
 #[test]
-fn test_m2_rate_limiter_in_memory_path_preserved() {
+fn test_rate_limiter_in_memory_path_preserved() {
     // Regression: the cache_enabled = false -> InMemory path must remain.
     let source = include_str!("../../src/services/rate_limit.rs");
     assert!(
         source.contains("Rate limiter using in-memory backend"),
-        "M-2 regression: rate_limit.rs must still have the in-memory backend path"
+        "regression: rate_limit.rs must still have the in-memory backend path"
     );
 }
 
-// ==================== M-6: Atomic Redis rate limiting (Lua script) ====================
+// ==================== Atomic Redis rate limiting (Lua script) ====================
 
 #[test]
-fn test_m6_no_separate_incr_expire_in_check_redis() {
+fn test_no_separate_incr_expire_in_check_redis() {
     // The old non-atomic pattern used separate INCR then EXPIRE commands.
-    // After M-6, check_redis must NOT contain individual redis::cmd("INCR")
+    // After the Lua-script refactor, check_redis must NOT contain individual redis::cmd("INCR")
     // or conn.expire() calls -- only the atomic Lua script.
     let source = include_str!("../../src/services/rate_limit.rs");
 
     // Find the check_redis function body
     let fn_start = source
         .find("async fn check_redis")
-        .expect("M-6: check_redis function must exist");
+        .expect("check_redis function must exist");
     let fn_body = &source[fn_start..];
     // Find the end of the function (next "fn " at same indentation level)
     let fn_end = fn_body[1..]
@@ -5439,30 +5439,30 @@ fn test_m6_no_separate_incr_expire_in_check_redis() {
 
     assert!(
         !fn_body.contains("redis::cmd(\"INCR\")"),
-        "M-6: check_redis must not use separate INCR command (use Lua script instead)"
+        "check_redis must not use separate INCR command (use Lua script instead)"
     );
     assert!(
         !fn_body.contains(".expire("),
-        "M-6: check_redis must not use separate expire() call (use Lua script instead)"
+        "check_redis must not use separate expire() call (use Lua script instead)"
     );
 }
 
 #[test]
-fn test_m6_uses_lua_script_constant() {
+fn test_uses_lua_script_constant() {
     // The rate limiter must define and use a RATE_LIMIT_LUA constant.
     let source = include_str!("../../src/services/rate_limit.rs");
     assert!(
         source.contains("RATE_LIMIT_LUA"),
-        "M-6: rate_limit.rs must define RATE_LIMIT_LUA constant"
+        "rate_limit.rs must define RATE_LIMIT_LUA constant"
     );
     assert!(
         source.contains("Script::new(Self::RATE_LIMIT_LUA)"),
-        "M-6: check_redis must use Script::new(Self::RATE_LIMIT_LUA)"
+        "check_redis must use Script::new(Self::RATE_LIMIT_LUA)"
     );
 }
 
 #[test]
-fn test_m6_lua_script_is_atomic() {
+fn test_lua_script_is_atomic() {
     // The Lua script must contain INCR, TTL, and EXPIRE in a single script body.
     // This guarantees atomicity on the Redis server.
     let source = include_str!("../../src/services/rate_limit.rs");
@@ -5470,33 +5470,33 @@ fn test_m6_lua_script_is_atomic() {
     // Extract the Lua script content (between r#" and "#)
     let lua_start = source
         .find("RATE_LIMIT_LUA")
-        .expect("M-6: RATE_LIMIT_LUA not found");
+        .expect("RATE_LIMIT_LUA not found");
     let after = &source[lua_start..];
     // Find the raw string delimiters
     let script_start = after
         .find("r#\"")
-        .expect("M-6: Lua script must be a raw string literal");
+        .expect("Lua script must be a raw string literal");
     let script_end = after[script_start + 3..]
         .find("\"#")
-        .expect("M-6: Lua script raw string must be closed");
+        .expect("Lua script raw string must be closed");
     let lua_body = &after[script_start + 3..script_start + 3 + script_end];
 
     assert!(
         lua_body.contains("redis.call('INCR'"),
-        "M-6: Lua script must call INCR"
+        "Lua script must call INCR"
     );
     assert!(
         lua_body.contains("redis.call('EXPIRE'"),
-        "M-6: Lua script must call EXPIRE"
+        "Lua script must call EXPIRE"
     );
     assert!(
         lua_body.contains("redis.call('TTL'"),
-        "M-6: Lua script must call TTL"
+        "Lua script must call TTL"
     );
 }
 
 #[test]
-fn test_m6_lua_script_recovers_stale_keys() {
+fn test_lua_script_recovers_stale_keys() {
     // The Lua script must handle the case where a key exists without TTL
     // (ttl == -1), which could happen from the old non-atomic code or a crash.
     let source = include_str!("../../src/services/rate_limit.rs");
@@ -5509,21 +5509,21 @@ fn test_m6_lua_script_recovers_stale_keys() {
 
     assert!(
         lua_body.contains("ttl == -1"),
-        "M-6: Lua script must check for ttl == -1 (missing TTL / crash recovery)"
+        "Lua script must check for ttl == -1 (missing TTL / crash recovery)"
     );
 }
 
 #[test]
-fn test_m6_check_redis_uses_invoke_async() {
+fn test_check_redis_uses_invoke_async() {
     // The script must be executed via invoke_async for async compatibility.
     let source = include_str!("../../src/services/rate_limit.rs");
     assert!(
         source.contains("invoke_async"),
-        "M-6: check_redis must use invoke_async for the Lua script"
+        "check_redis must use invoke_async for the Lua script"
     );
 }
 
-// ==================== M-7: No Mutex serialization on Redis cache ====================
+// ==================== No Mutex serialization on Redis cache ====================
 
 /// Return only the production (non-test) portion of cache.rs source.
 fn cache_prod_source() -> &'static str {
@@ -5532,57 +5532,57 @@ fn cache_prod_source() -> &'static str {
 }
 
 #[test]
-fn test_m7_no_mutex_on_multiplexed_connection() {
+fn test_no_mutex_on_multiplexed_connection() {
     // MultiplexedConnection handles multiplexing internally and is Clone.
     // Wrapping it in a Mutex serializes all cache operations unnecessarily.
     let source = cache_prod_source();
     assert!(
         !source.contains("Mutex<redis"),
-        "M-7: CacheConnection::Redis must not wrap MultiplexedConnection in Mutex"
+        "CacheConnection::Redis must not wrap MultiplexedConnection in Mutex"
     );
 }
 
 #[test]
-fn test_m7_no_lock_await_in_cache() {
+fn test_no_lock_await_in_cache() {
     // With the Mutex removed, no .lock().await should remain in production code.
     let source = cache_prod_source();
     assert!(
         !source.contains(".lock().await"),
-        "M-7: cache.rs production code must not call .lock().await"
+        "cache.rs production code must not call .lock().await"
     );
 }
 
 #[test]
-fn test_m7_no_tokio_mutex_import() {
+fn test_no_tokio_mutex_import() {
     // The tokio::sync::Mutex import should be gone from production code.
     let source = cache_prod_source();
     assert!(
         !source.contains("tokio::sync::Mutex"),
-        "M-7: cache.rs must not import tokio::sync::Mutex"
+        "cache.rs must not import tokio::sync::Mutex"
     );
 }
 
 #[test]
-fn test_m7_uses_connection_clone() {
+fn test_uses_connection_clone() {
     // Cache operations must clone the MultiplexedConnection for concurrent access.
     let source = cache_prod_source();
     assert!(
         source.contains("conn.clone()"),
-        "M-7: cache operations must use conn.clone() for concurrent access"
+        "cache operations must use conn.clone() for concurrent access"
     );
 }
 
 #[test]
-fn test_m7_redis_variant_stores_connection_directly() {
+fn test_redis_variant_stores_connection_directly() {
     // The Redis variant must store MultiplexedConnection directly, not Arc<Mutex<...>>.
     let source = cache_prod_source();
     assert!(
         source.contains("Redis(redis::aio::MultiplexedConnection)"),
-        "M-7: CacheConnection::Redis must store MultiplexedConnection directly"
+        "CacheConnection::Redis must store MultiplexedConnection directly"
     );
 }
 
-// ==================== M-8 / M-10 Structural Regression Tests ====================
+// ==================== Structural Regression Tests ====================
 // Verify that process::exit() is not called in production code across all services.
 // These tests prevent regressions where destructors (Drop/Zeroize) would be bypassed.
 
@@ -5611,116 +5611,116 @@ fn prod_code_contains(source: &str, pattern: &str) -> bool {
 // --- vauban-web: ipc/supervisor.rs ---
 
 #[test]
-fn test_m8_supervisor_ipc_no_process_exit() {
+fn test_supervisor_ipc_no_process_exit() {
     let source = include_str!("../../src/ipc/supervisor.rs");
     let prod = prod_source(source);
     assert!(
         !prod_code_contains(prod, "process::exit"),
-        "M-8/M-10: supervisor.rs must not call process::exit() - use server_handle.graceful_shutdown() instead"
+        "supervisor.rs must not call process::exit() - use server_handle.graceful_shutdown() instead"
     );
 }
 
 #[test]
-fn test_m8_supervisor_ipc_has_graceful_shutdown() {
+fn test_supervisor_ipc_has_graceful_shutdown() {
     let source = include_str!("../../src/ipc/supervisor.rs");
     let prod = prod_source(source);
     assert!(
         prod.contains("graceful_shutdown"),
-        "M-8/M-10: supervisor.rs must call graceful_shutdown() on ControlMessage::Shutdown"
+        "supervisor.rs must call graceful_shutdown() on ControlMessage::Shutdown"
     );
 }
 
 #[test]
-fn test_m8_supervisor_ipc_has_server_handle() {
+fn test_supervisor_ipc_has_server_handle() {
     let source = include_str!("../../src/ipc/supervisor.rs");
     let prod = prod_source(source);
     assert!(
         prod.contains("server_handle"),
-        "M-8/M-10: SupervisorClientInner must have a server_handle field"
+        "SupervisorClientInner must have a server_handle field"
     );
 }
 
 // --- vauban-web: cache.rs ---
 
 #[test]
-fn test_m8_cache_no_process_exit() {
+fn test_cache_no_process_exit() {
     let source = cache_prod_source();
     assert!(
         !prod_code_contains(source, "process::exit"),
-        "M-8/M-10: cache.rs production code must not call process::exit()"
+        "cache.rs production code must not call process::exit()"
     );
 }
 
 #[test]
-fn test_m8_cache_uses_check_or_shutdown() {
+fn test_cache_uses_check_or_shutdown() {
     let source = cache_prod_source();
     assert!(
         source.contains("check_or_shutdown"),
-        "M-8/M-10: cache.rs must use check_or_shutdown (not check_or_exit)"
+        "cache.rs must use check_or_shutdown (not check_or_exit)"
     );
 }
 
 // --- vauban-web: db.rs ---
 
 #[test]
-fn test_m8_db_no_process_exit() {
+fn test_db_no_process_exit() {
     let source = include_str!("../../src/db.rs");
     let prod = prod_source(source);
     assert!(
         !prod_code_contains(prod, "process::exit"),
-        "M-8/M-10: db.rs production code must not call process::exit()"
+        "db.rs production code must not call process::exit()"
     );
 }
 
 #[test]
-fn test_m8_db_uses_get_connection_or_shutdown() {
+fn test_db_uses_get_connection_or_shutdown() {
     let source = include_str!("../../src/db.rs");
     let prod = prod_source(source);
     assert!(
         prod.contains("get_connection_or_shutdown"),
-        "M-8/M-10: db.rs must use get_connection_or_shutdown (not get_connection_or_exit)"
+        "db.rs must use get_connection_or_shutdown (not get_connection_or_exit)"
     );
 }
 
 // --- vauban-web: main.rs ---
 
 #[test]
-fn test_m8_web_main_no_process_exit() {
+fn test_web_main_no_process_exit() {
     let source = include_str!("../../src/main.rs");
     let prod = prod_source(source);
     assert!(
         !prod_code_contains(prod, "process::exit"),
-        "M-8/M-10: main.rs production code must not call process::exit()"
+        "main.rs production code must not call process::exit()"
     );
 }
 
 #[test]
-fn test_m8_web_main_uses_server_handle() {
+fn test_web_main_uses_server_handle() {
     let source = include_str!("../../src/main.rs");
     let prod = prod_source(source);
     assert!(
         prod.contains("server_handle"),
-        "M-8/M-10: main.rs must create and pass a server_handle for graceful shutdown"
+        "main.rs must create and pass a server_handle for graceful shutdown"
     );
 }
 
 // --- create_superuser (now in vauban-supervisor) ---
 
 #[test]
-fn test_m8_create_superuser_no_process_exit() {
+fn test_create_superuser_no_process_exit() {
     let source = include_str!("../../../vauban-supervisor/src/admin.rs");
     assert!(
         !source.contains("process::exit"),
-        "M-8/M-10: admin.rs must not call process::exit() - use anyhow::Result instead"
+        "admin.rs must not call process::exit() - use anyhow::Result instead"
     );
 }
 
 #[test]
-fn test_m8_create_superuser_uses_result() {
+fn test_create_superuser_uses_result() {
     let source = include_str!("../../../vauban-supervisor/src/admin.rs");
     assert!(
         source.contains("-> Result<()>"),
-        "M-8/M-10: admin.rs must use anyhow::Result for error propagation"
+        "admin.rs must use anyhow::Result for error propagation"
     );
 }
 
@@ -5838,11 +5838,11 @@ fn test_web_admin_ipc_handler_exists() {
     );
 }
 
-// ==================== L-2 Structural Regression Tests ====================
+// ==================== Structural Regression Tests ====================
 // Verify that stub DELETE handlers return 501 Not Implemented, not 200 OK.
 
 #[test]
-fn test_l2_delete_stubs_return_501() {
+fn test_delete_stubs_return_501() {
     let source = include_str!("../../src/main.rs");
     // Ensure no bare "Not implemented" string response remains (which returns 200 OK)
     let has_bare_stub = source.lines().any(|line| {
@@ -5854,12 +5854,12 @@ fn test_l2_delete_stubs_return_501() {
     });
     assert!(
         !has_bare_stub,
-        "L-2: All DELETE stubs must return StatusCode::NOT_IMPLEMENTED, not bare 200 OK"
+        "All DELETE stubs must return StatusCode::NOT_IMPLEMENTED, not bare 200 OK"
     );
 }
 
 #[test]
-fn test_l2_delete_stubs_use_not_implemented_status() {
+fn test_delete_stubs_use_not_implemented_status() {
     let source = include_str!("../../src/main.rs");
     let prod = prod_source(source);
     // Every "Not implemented" in production code must be paired with NOT_IMPLEMENTED status
@@ -5867,7 +5867,7 @@ fn test_l2_delete_stubs_use_not_implemented_status() {
     let status_501_count = prod.matches("StatusCode::NOT_IMPLEMENTED").count();
     assert!(
         status_501_count >= not_impl_count,
-        "L-2: Found {} 'Not implemented' strings but only {} StatusCode::NOT_IMPLEMENTED. \
+        "Found {} 'Not implemented' strings but only {} StatusCode::NOT_IMPLEMENTED. \
          All stubs must return 501.",
         not_impl_count,
         status_501_count
@@ -5875,71 +5875,71 @@ fn test_l2_delete_stubs_use_not_implemented_status() {
 }
 
 // ==========================================================================
-// L-4: Bearer token extraction must be case-insensitive (RFC 7235)
+// Bearer token extraction must be case-insensitive (RFC 7235)
 // ==========================================================================
 
 // ==========================================================================
-// L-3: Pool error detection must use structural matching, not string parsing
+// Pool error detection must use structural matching, not string parsing
 // ==========================================================================
 
 #[test]
-fn test_l3_no_string_based_connection_lost_detection() {
-    // L-3: Ensure db.rs does not use fragile string-based error detection
+fn test_no_string_based_connection_lost_detection() {
+    // Ensure db.rs does not use fragile string-based error detection
     let source = include_str!("../../src/db.rs");
     let prod = prod_source(source);
     // The old is_connection_lost() pattern matched on error message substrings
     assert!(
         !prod.contains("is_connection_lost"),
-        "L-3 regression: db.rs must use structural PoolError matching, \
+        "regression: db.rs must use structural PoolError matching, \
          not the fragile string-based is_connection_lost() function."
     );
 }
 
 #[test]
-fn test_l3_uses_classify_pool_error() {
+fn test_uses_classify_pool_error() {
     let source = include_str!("../../src/db.rs");
     let prod = prod_source(source);
     assert!(
         prod.contains("classify_pool_error"),
-        "L-3 regression: db.rs must use classify_pool_error() for structured error handling."
+        "regression: db.rs must use classify_pool_error() for structured error handling."
     );
 }
 
 // ==========================================================================
-// L-4: Bearer token extraction must be case-insensitive (RFC 7235)
+// Bearer token extraction must be case-insensitive (RFC 7235)
 // ==========================================================================
 
 #[test]
-fn test_l4_no_case_sensitive_bearer_prefix() {
-    // L-4: Ensure extract_token does not use case-sensitive strip_prefix("Bearer ")
+fn test_no_case_sensitive_bearer_prefix() {
+    // Ensure extract_token does not use case-sensitive strip_prefix("Bearer ")
     let source = include_str!("../../src/middleware/auth.rs");
     let prod = prod_source(source);
     assert!(
         !prod.contains(r#"strip_prefix("Bearer "#),
-        "L-4 regression: Bearer prefix must be compared case-insensitively (RFC 7235). \
+        "regression: Bearer prefix must be compared case-insensitively (RFC 7235). \
          Use eq_ignore_ascii_case instead of strip_prefix."
     );
 }
 
 #[test]
-fn test_l4_bearer_uses_case_insensitive_comparison() {
+fn test_bearer_uses_case_insensitive_comparison() {
     let source = include_str!("../../src/middleware/auth.rs");
     let prod = prod_source(source);
     assert!(
         prod.contains("eq_ignore_ascii_case")
             || prod.contains("to_ascii_lowercase")
             || prod.contains("to_lowercase"),
-        "L-4 regression: Bearer scheme extraction must use case-insensitive comparison (RFC 7235)."
+        "regression: Bearer scheme extraction must use case-insensitive comparison (RFC 7235)."
     );
 }
 
 // ==========================================================================
-// L-5: LIKE wildcard characters must be escaped in search inputs
+// LIKE wildcard characters must be escaped in search inputs
 // ==========================================================================
 
 #[test]
-fn test_l5_no_raw_like_pattern_in_handlers() {
-    // L-5: Ensure no handler builds ILIKE patterns with unescaped format!("%{}%", ...)
+fn test_no_raw_like_pattern_in_handlers() {
+    // Ensure no handler builds ILIKE patterns with unescaped format!("%{}%", ...)
     let files = [
         ("web/users", include_str!("../../src/handlers/web/users.rs")),
         (
@@ -5969,7 +5969,7 @@ fn test_l5_no_raw_like_pattern_in_handlers() {
         // Check that no format!("%{}%", ...) pattern is used for LIKE queries
         assert!(
             !prod.contains(r#"format!("%{}%""#),
-            "L-5 regression in {}: LIKE patterns must use like_contains() to escape wildcards. \
+            "regression in {}: LIKE patterns must use like_contains() to escape wildcards. \
              Found raw format!(\"%{{}}%\") pattern.",
             name
         );
@@ -5977,7 +5977,7 @@ fn test_l5_no_raw_like_pattern_in_handlers() {
 }
 
 #[test]
-fn test_l5_like_contains_used_in_handlers() {
+fn test_like_contains_used_in_handlers() {
     let files = [
         ("web/users", include_str!("../../src/handlers/web/users.rs")),
         (
@@ -5994,19 +5994,19 @@ fn test_l5_like_contains_used_in_handlers() {
         let prod = prod_source(source);
         assert!(
             prod.contains("like_contains"),
-            "L-5 regression in {}: search handlers must use like_contains() for ILIKE patterns.",
+            "regression in {}: search handlers must use like_contains() for ILIKE patterns.",
             name
         );
     }
 }
 
 // ==========================================================================
-// L-6: No duplicated utility functions
+// No duplicated utility functions
 // ==========================================================================
 
 #[test]
-fn test_l6_no_duplicate_is_htmx_request() {
-    // L-6: is_htmx_request must only be defined once (in error.rs)
+fn test_no_duplicate_is_htmx_request() {
+    // is_htmx_request must only be defined once (in error.rs)
     let files = [
         ("handlers/auth", include_str!("../../src/handlers/auth.rs")),
         (
@@ -6019,7 +6019,7 @@ fn test_l6_no_duplicate_is_htmx_request() {
         let prod = prod_source(source);
         assert!(
             !prod.contains("fn is_htmx_request("),
-            "L-6 regression in {}: is_htmx_request must not be redefined locally. \
+            "regression in {}: is_htmx_request must not be redefined locally. \
              Use crate::error::is_htmx_request instead.",
             name
         );
@@ -6027,8 +6027,8 @@ fn test_l6_no_duplicate_is_htmx_request() {
 }
 
 #[test]
-fn test_l6_no_duplicate_constant_time_compare() {
-    // L-6: constant_time_compare must only be defined in crypto.rs
+fn test_no_duplicate_constant_time_compare() {
+    // constant_time_compare must only be defined in crypto.rs
     let files = [
         (
             "middleware/csrf",
@@ -6044,7 +6044,7 @@ fn test_l6_no_duplicate_constant_time_compare() {
         let prod = prod_source(source);
         assert!(
             !prod.contains("fn constant_time_compare("),
-            "L-6 regression in {}: constant_time_compare must not be redefined locally. \
+            "regression in {}: constant_time_compare must not be redefined locally. \
              Use crate::crypto::constant_time_compare_str instead.",
             name
         );
@@ -6052,128 +6052,128 @@ fn test_l6_no_duplicate_constant_time_compare() {
 }
 
 // ==========================================================================
-// L-8: Per-user WebSocket connection limit (unified middleware approach)
+// Per-user WebSocket connection limit (unified middleware approach)
 // ==========================================================================
 
 #[test]
-fn test_l8_ws_connection_counter_exists() {
+fn test_ws_connection_counter_exists() {
     let source = include_str!("../../src/services/connections.rs");
     let prod = prod_source(source);
     assert!(
         prod.contains("WsConnectionCounter"),
-        "L-8 regression: connections.rs must define WsConnectionCounter for unified per-user WS limiting"
+        "regression: connections.rs must define WsConnectionCounter for unified per-user WS limiting"
     );
     assert!(
         prod.contains("try_acquire"),
-        "L-8 regression: WsConnectionCounter must have a try_acquire method"
+        "regression: WsConnectionCounter must have a try_acquire method"
     );
 }
 
 #[test]
-fn test_l8_ws_connection_guard_raii() {
+fn test_ws_connection_guard_raii() {
     let source = include_str!("../../src/services/connections.rs");
     let prod = prod_source(source);
     assert!(
         prod.contains("WsConnectionGuard"),
-        "L-8 regression: connections.rs must define WsConnectionGuard (RAII)"
+        "regression: connections.rs must define WsConnectionGuard (RAII)"
     );
     assert!(
         prod.contains("impl Drop for WsConnectionGuard"),
-        "L-8 regression: WsConnectionGuard must implement Drop to decrement counter"
+        "regression: WsConnectionGuard must implement Drop to decrement counter"
     );
     assert!(
         prod.contains("fetch_sub"),
-        "L-8 regression: WsConnectionGuard::drop must use fetch_sub to decrement atomic counter"
+        "regression: WsConnectionGuard::drop must use fetch_sub to decrement atomic counter"
     );
 }
 
 #[test]
-fn test_l8_connection_limit_error() {
+fn test_connection_limit_error() {
     let source = include_str!("../../src/services/connections.rs");
     let prod = prod_source(source);
     assert!(
         prod.contains("ConnectionLimitError"),
-        "L-8 regression: connections.rs must define ConnectionLimitError"
+        "regression: connections.rs must define ConnectionLimitError"
     );
     assert!(
         prod.contains("connection limit reached"),
-        "L-8 regression: ConnectionLimitError message must indicate limit reached"
+        "regression: ConnectionLimitError message must indicate limit reached"
     );
 }
 
 #[test]
-fn test_l8_ws_connection_limit_middleware_exists() {
+fn test_ws_connection_limit_middleware_exists() {
     let source = include_str!("../../src/handlers/websocket.rs");
     let prod = prod_source(source);
     assert!(
         prod.contains("ws_connection_limit"),
-        "L-8 regression: websocket.rs must define ws_connection_limit middleware"
+        "regression: websocket.rs must define ws_connection_limit middleware"
     );
     assert!(
         prod.contains("try_acquire"),
-        "L-8 regression: ws_connection_limit middleware must call try_acquire on WsConnectionCounter"
+        "regression: ws_connection_limit middleware must call try_acquire on WsConnectionCounter"
     );
     assert!(
         prod.contains("TOO_MANY_REQUESTS"),
-        "L-8 regression: ws_connection_limit must return 429 when limit is reached"
+        "regression: ws_connection_limit must return 429 when limit is reached"
     );
 }
 
 #[test]
-fn test_l8_middleware_applied_to_ws_routes() {
+fn test_middleware_applied_to_ws_routes() {
     let source = include_str!("../../src/main.rs");
     let prod = prod_source(source);
     assert!(
         prod.contains("ws_connection_limit"),
-        "L-8 regression: main.rs must apply ws_connection_limit middleware to WS routes"
+        "regression: main.rs must apply ws_connection_limit middleware to WS routes"
     );
     assert!(
         prod.contains("ws_limit_layer") || prod.contains("ws_connection_limit"),
-        "L-8 regression: main.rs must create the WS limit layer"
+        "regression: main.rs must create the WS limit layer"
     );
 }
 
 #[test]
-fn test_l8_ws_counter_in_app_state() {
+fn test_ws_counter_in_app_state() {
     let source = include_str!("../../src/lib.rs");
     let prod = prod_source(source);
     assert!(
         prod.contains("ws_counter"),
-        "L-8 regression: AppState must include ws_counter (WsConnectionCounter)"
+        "regression: AppState must include ws_counter (WsConnectionCounter)"
     );
     assert!(
         prod.contains("WsConnectionCounter"),
-        "L-8 regression: AppState must import WsConnectionCounter"
+        "regression: AppState must import WsConnectionCounter"
     );
 }
 
 #[test]
-fn test_l8_config_has_websocket_section() {
+fn test_config_has_websocket_section() {
     let source = include_str!("../../src/config.rs");
     let prod = prod_source(source);
     assert!(
         prod.contains("WebSocketConfig"),
-        "L-8 regression: config.rs must define WebSocketConfig for TOML configuration"
+        "regression: config.rs must define WebSocketConfig for TOML configuration"
     );
     assert!(
         prod.contains("max_connections_per_user"),
-        "L-8 regression: WebSocketConfig must have max_connections_per_user field"
+        "regression: WebSocketConfig must have max_connections_per_user field"
     );
 }
 
 #[test]
-fn test_l8_default_limit_is_30() {
+fn test_default_limit_is_30() {
     let source = include_str!("../../src/config.rs");
     let prod = prod_source(source);
     // The Default impl should set max_connections_per_user to 30
     assert!(
         prod.contains("max_connections_per_user: 30"),
-        "L-8 regression: default max_connections_per_user must be 30"
+        "regression: default max_connections_per_user must be 30"
     );
 }
 
 #[test]
-fn test_l8_register_is_simple_tuple() {
+fn test_register_is_simple_tuple() {
     // After the unified middleware approach, register() should return a simple tuple,
     // NOT a Result. The connection limit is enforced by the middleware, not by register().
     let source = include_str!("../../src/services/connections.rs");
@@ -6181,12 +6181,12 @@ fn test_l8_register_is_simple_tuple() {
     assert!(
         !prod.contains("pub async fn register")
             || !prod.contains("-> Result<(Uuid, mpsc::Receiver<String>), ConnectionLimitError>"),
-        "L-8 regression: register() must NOT return Result -- limit is enforced by middleware"
+        "regression: register() must NOT return Result -- limit is enforced by middleware"
     );
 }
 
 #[test]
-fn test_l8_all_ws_routes_protected_by_layer() {
+fn test_all_ws_routes_protected_by_layer() {
     // Verify that the layer is applied to the entire ws_routes group,
     // not to individual routes. This ensures future handlers are also protected.
     let source = include_str!("../../src/main.rs");
@@ -6194,27 +6194,27 @@ fn test_l8_all_ws_routes_protected_by_layer() {
     // The layer must be applied at the Router level, not per-route
     assert!(
         prod.contains(".layer(ws_limit_layer)"),
-        "L-8 regression: ws_limit_layer must be applied as .layer() on the ws_routes Router"
+        "regression: ws_limit_layer must be applied as .layer() on the ws_routes Router"
     );
 }
 
 #[test]
-fn test_l8_ws_guard_extractor_exists() {
+fn test_ws_guard_extractor_exists() {
     // WsGuard must be defined as an Axum extractor wrapping Arc<WsConnectionGuard>
     let source = include_str!("../../src/handlers/websocket.rs");
     let prod = prod_source(source);
     assert!(
         prod.contains("struct WsGuard"),
-        "L-8 regression: websocket.rs must define WsGuard extractor"
+        "regression: websocket.rs must define WsGuard extractor"
     );
     assert!(
         prod.contains("FromRequestParts"),
-        "L-8 regression: WsGuard must implement FromRequestParts (Axum extractor)"
+        "regression: WsGuard must implement FromRequestParts (Axum extractor)"
     );
 }
 
 #[test]
-fn test_l8_all_ws_handlers_accept_ws_guard() {
+fn test_all_ws_handlers_accept_ws_guard() {
     // CRITICAL: Every WebSocket handler must accept WsGuard as a parameter
     // and pass it into on_upgrade(). Without this, the RAII guard is dropped
     // after the HTTP handshake, not when the WebSocket connection closes.
@@ -6232,7 +6232,7 @@ fn test_l8_all_ws_handlers_accept_ws_guard() {
     for handler in handlers {
         // Find the handler function and check it has WsGuard parameter
         let handler_start = prod.find(&format!("fn {handler}(")).unwrap_or_else(|| {
-            panic!("L-8 regression: handler {handler} not found in websocket.rs")
+            panic!("regression: handler {handler} not found in websocket.rs")
         });
 
         // Get the function signature (up to the opening brace)
@@ -6244,14 +6244,14 @@ fn test_l8_all_ws_handlers_accept_ws_guard() {
 
         assert!(
             signature.contains("WsGuard") || signature.contains("ws_guard"),
-            "L-8 regression: handler {handler} must accept WsGuard parameter to hold the guard \
+            "regression: handler {handler} must accept WsGuard parameter to hold the guard \
              for the entire WebSocket connection lifetime. Signature: {signature}"
         );
     }
 }
 
 #[test]
-fn test_l8_all_handle_fns_receive_ws_guard() {
+fn test_all_handle_fns_receive_ws_guard() {
     // The internal handle_*_socket functions must also receive the guard
     // (passed from the on_upgrade closure) to keep it alive.
     let source = include_str!("../../src/handlers/websocket.rs");
@@ -6268,7 +6268,7 @@ fn test_l8_all_handle_fns_receive_ws_guard() {
     for func in handle_fns {
         let fn_start = prod
             .find(&format!("fn {func}("))
-            .unwrap_or_else(|| panic!("L-8 regression: function {func} not found in websocket.rs"));
+            .unwrap_or_else(|| panic!("regression: function {func} not found in websocket.rs"));
 
         let signature_end = prod[fn_start..]
             .find('{')
@@ -6278,7 +6278,7 @@ fn test_l8_all_handle_fns_receive_ws_guard() {
 
         assert!(
             signature.contains("WsGuard") || signature.contains("ws_guard"),
-            "L-8 regression: function {func} must receive WsGuard to hold it for the connection \
+            "regression: function {func} must receive WsGuard to hold it for the connection \
              lifetime. Without it, the guard is dropped after the HTTP upgrade handshake. \
              Signature: {signature}"
         );

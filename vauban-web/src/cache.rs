@@ -22,7 +22,7 @@ pub const EXIT_CODE_CONNECTION_LOST: i32 = 100;
 
 /// Cache connection enum - can be real Redis or mock.
 ///
-/// # Concurrency (M-7)
+/// # Concurrency
 ///
 /// The Redis variant stores a [`MultiplexedConnection`] directly (no `Mutex`).
 /// `MultiplexedConnection` is `Clone`-cheap (it shares an internal channel
@@ -73,7 +73,7 @@ impl CacheConnection {
     /// This is designed for Capsicum sandbox mode where the service cannot
     /// recover from a lost cache connection. If the connection check fails,
     /// a graceful shutdown is triggered via the server handle to allow
-    /// all Drop/Zeroize destructors to run (M-8/M-10).
+    /// all Drop/Zeroize destructors to run.
     ///
     /// For mock cache, this always succeeds without triggering shutdown.
     pub async fn check_or_shutdown(
@@ -88,7 +88,7 @@ impl CacheConnection {
                         "Cache connection lost in sandbox mode: {}. Triggering graceful shutdown for respawn.",
                         e
                     );
-                    // M-8/M-10: Trigger graceful shutdown instead of exit().
+                    // Trigger graceful shutdown instead of exit().
                     if let Some(handle) = server_handle {
                         handle.graceful_shutdown(Some(std::time::Duration::from_secs(5)));
                     }
@@ -123,7 +123,7 @@ impl MockCache {
 
 /// Create a cache client (Redis or mock based on configuration).
 ///
-/// # Fail-closed behavior (M-2)
+/// # Fail-closed behavior
 ///
 /// When `cache.enabled = true`, Redis **must** be reachable.  If the client
 /// cannot be created or the connection fails, an error is returned instead of
@@ -138,7 +138,7 @@ pub async fn create_cache_client(config: &Config) -> AppResult<CacheConnection> 
         return Ok(CacheConnection::Mock(Arc::new(MockCache::new())));
     }
 
-    // cache.enabled = true -> Redis MUST be available (fail-closed, M-2).
+    // cache.enabled = true -> Redis MUST be available (fail-closed).
     let client = Client::open(config.cache.url.expose_secret()).map_err(|e| {
         AppError::Config(format!(
             "Cache is enabled but Redis client creation failed: {}. \
@@ -596,7 +596,7 @@ mod tests {
         assert!(!mock_conn.is_redis());
     }
 
-    // ==================== M-2: Fail-closed cache creation tests ====================
+    // ==================== Fail-closed cache creation tests ====================
 
     /// Helper: build a Config with specific cache settings.
     fn config_with_cache(url: &str, enabled: bool) -> Config {
@@ -609,7 +609,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_m2_cache_disabled_returns_mock() {
+    async fn test_cache_disabled_returns_mock() {
         // When cache.enabled = false, a MockCache must be returned (no error).
         // This is the current dev/testing path and must never break.
         let config = config_with_cache("redis://localhost:6379", false);
@@ -624,7 +624,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_m2_cache_enabled_invalid_url_returns_error() {
+    async fn test_cache_enabled_invalid_url_returns_error() {
         // When cache.enabled = true but the URL is unreachable, the function
         // must return an error (fail-closed), NOT a silent MockCache fallback.
         let config = config_with_cache("redis://invalid-host-that-does-not-exist:9999", true);
@@ -648,7 +648,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_m2_cache_enabled_bad_scheme_returns_error() {
+    async fn test_cache_enabled_bad_scheme_returns_error() {
         // A malformed URL scheme must also fail, not silently fallback.
         let config = config_with_cache("not-a-valid-redis-url", true);
 
@@ -667,7 +667,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_m2_cache_disabled_with_bad_url_still_returns_mock() {
+    async fn test_cache_disabled_with_bad_url_still_returns_mock() {
         // Even with a garbage URL, cache.enabled = false must return MockCache.
         // The URL is never contacted.
         let config = config_with_cache("completely-invalid-garbage", false);
@@ -679,7 +679,7 @@ mod tests {
         );
     }
 
-    // ==================== M-7: No Mutex on MultiplexedConnection ====================
+    // ==================== No Mutex on MultiplexedConnection ====================
 
     /// Return only the production (non-test) portion of cache.rs source.
     fn cache_prod_source() -> &'static str {
@@ -688,50 +688,50 @@ mod tests {
     }
 
     #[test]
-    fn test_m7_source_no_mutex_on_connection() {
+    fn test_source_no_mutex_on_connection() {
         // Structural test: CacheConnection::Redis must NOT wrap the connection
         // in a Mutex.  MultiplexedConnection is Clone and handles multiplexing
         // internally -- a Mutex serializes all cache operations unnecessarily.
         let source = cache_prod_source();
         assert!(
             !source.contains("Mutex<redis"),
-            "M-7: CacheConnection must not wrap MultiplexedConnection in a Mutex"
+            "CacheConnection must not wrap MultiplexedConnection in a Mutex"
         );
     }
 
     #[test]
-    fn test_m7_source_no_lock_calls() {
+    fn test_source_no_lock_calls() {
         // Structural test: there must be no .lock().await calls in production code
         // since we no longer use a Mutex.
         let source = cache_prod_source();
         assert!(
             !source.contains(".lock().await"),
-            "M-7: cache.rs production code must not contain .lock().await"
+            "cache.rs production code must not contain .lock().await"
         );
     }
 
     #[test]
-    fn test_m7_source_uses_clone_for_connection() {
+    fn test_source_uses_clone_for_connection() {
         // The new pattern clones the MultiplexedConnection for each operation.
         let source = cache_prod_source();
         assert!(
             source.contains("conn.clone()"),
-            "M-7: cache operations must clone the MultiplexedConnection"
+            "cache operations must clone the MultiplexedConnection"
         );
     }
 
     #[test]
-    fn test_m7_source_no_tokio_mutex_import() {
+    fn test_source_no_tokio_mutex_import() {
         // tokio::sync::Mutex should no longer be imported in production code.
         let source = cache_prod_source();
         assert!(
             !source.contains("tokio::sync::Mutex"),
-            "M-7: cache.rs must not import tokio::sync::Mutex"
+            "cache.rs must not import tokio::sync::Mutex"
         );
     }
 
     #[tokio::test]
-    async fn test_m7_mock_cache_still_works() {
+    async fn test_mock_cache_still_works() {
         // Regression: MockCache must still function after the Mutex removal.
         let conn = CacheConnection::Mock(Arc::new(MockCache::new()));
         assert!(conn.is_mock());
@@ -746,7 +746,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_m7_mock_cache_clone_independent() {
+    async fn test_mock_cache_clone_independent() {
         // Cloned MockCache connections must work independently.
         let conn1 = CacheConnection::Mock(Arc::new(MockCache::new()));
         let conn2 = conn1.clone();

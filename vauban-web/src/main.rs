@@ -1,4 +1,4 @@
-// L-1: Relax strict clippy lints in test code where unwrap/expect/panic are idiomatic
+// Relax strict clippy lints in test code where unwrap/expect/panic are idiomatic
 #![cfg_attr(
     test,
     allow(
@@ -39,7 +39,7 @@ use vauban_web::ipc::{AccessIpcClient, AuthIpcClient, SupervisorClient, VaultCry
 ///
 /// Returns the supervisor client and a TLS cert receiver if IPC is available, None otherwise.
 /// The client spawns a dedicated thread for IPC communication (heartbeat, TCP brokering).
-/// The `server_handle` is used for M-8/M-10 graceful shutdown.
+/// The `server_handle` is used for graceful shutdown.
 fn init_supervisor_client(
     server_handle: axum_server::Handle<std::net::SocketAddr>,
 ) -> (
@@ -265,7 +265,7 @@ fn init_auth_client() -> Option<Arc<AuthIpcClient>> {
     }
 }
 
-/// Initialize the vault crypto client if running under supervisor (M-1, C-2).
+/// Initialize the vault crypto client if running under supervisor.
 ///
 /// Returns Some(Arc<VaultCryptoClient>) if VAUBAN_VAULT_IPC_READ and VAUBAN_VAULT_IPC_WRITE
 /// environment variables are set (running under supervisor), None otherwise.
@@ -312,7 +312,7 @@ fn init_vault_client() -> Option<Arc<VaultCryptoClient>> {
 #[allow(clippy::print_stderr)]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // M-8/M-10: Create server handle early for graceful shutdown.
+    // Create server handle early for graceful shutdown.
     // The handle is shared with the supervisor IPC thread so it can trigger
     // graceful HTTP server shutdown instead of calling process::exit(0).
     let server_handle = axum_server::Handle::new();
@@ -614,7 +614,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("RDP proxy IPC processing task started");
     }
 
-    // Create vault crypto client if running under supervisor (M-1, C-2)
+    // Create vault crypto client if running under supervisor
     let vault_client = init_vault_client();
 
     // Spawn vault IPC processing task if client is available
@@ -970,7 +970,7 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
     let session_guard =
         axum::middleware::from_fn_with_state(state.clone(), handlers::websocket::ws_session_guard);
 
-    // L-8: ws_connection_limit middleware enforces per-user WebSocket connection limit
+    // ws_connection_limit middleware enforces per-user WebSocket connection limit
     // on ALL WS routes. Every current and future handler added to ws_routes is
     // automatically protected.
     let ws_limit_layer = axum::middleware::from_fn_with_state(
@@ -1005,7 +1005,7 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             "/ws/rdp/{session_id}",
             get(handlers::websocket::rdp_ws).layer(session_guard),
         )
-        // L-8: Apply per-user connection limit to ALL WebSocket routes
+        // Apply per-user connection limit to ALL WebSocket routes
         .layer(ws_limit_layer);
 
     // ==========================================================================
@@ -1237,7 +1237,7 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
         .route("/sessions/active", get(handlers::web::active_sessions))
         // SSH connection endpoints
         .route("/assets/{uuid}/connect", post(handlers::web::connect_ssh))
-        // SSH host key management (H-9)
+        // SSH host key management
         .route(
             "/assets/{uuid}/fetch-host-key",
             post(handlers::web::fetch_ssh_host_key),
@@ -1273,7 +1273,7 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             // Accounts API
             .route("/api/v1/accounts", get(handlers::api::list_users))
             .route("/api/v1/accounts", post(handlers::api::create_user))
-            // L-2: DELETE stub returns 501 Not Implemented (not 200 OK)
+            // DELETE stub returns 501 Not Implemented (not 200 OK)
             .route(
                 "/api/v1/accounts/{uuid}",
                 get(handlers::api::get_user)
@@ -1285,7 +1285,7 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             // Assets API
             .route("/api/v1/assets", get(handlers::api::list_assets))
             .route("/api/v1/assets", post(handlers::api::create_asset))
-            // L-2: DELETE stub returns 501 Not Implemented (not 200 OK)
+            // DELETE stub returns 501 Not Implemented (not 200 OK)
             .route(
                 "/api/v1/assets/{uuid}",
                 get(handlers::api::get_asset)
@@ -1294,7 +1294,7 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
                         (axum::http::StatusCode::NOT_IMPLEMENTED, "Not implemented")
                     }),
             )
-            // SSH host key API (H-9)
+            // SSH host key API
             .route(
                 "/api/v1/assets/{uuid}/ssh-host-key",
                 get(handlers::api::get_ssh_host_key_status)
@@ -1312,7 +1312,7 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             // Sessions API
             .route("/api/v1/sessions", get(handlers::api::list_sessions))
             .route("/api/v1/sessions", post(handlers::api::create_session))
-            // L-2: DELETE stub returns 501 Not Implemented (not 200 OK)
+            // DELETE stub returns 501 Not Implemented (not 200 OK)
             .route(
                 "/api/v1/sessions/{uuid}",
                 get(handlers::api::get_session).delete(|| async {

@@ -54,7 +54,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # H.264 video encoding for real-time streaming
 openh264 = "0.9"
 
-# Secret management (H-10: credential zeroization)
+# Secret management
 secrecy = { version = "0.10", features = ["serde"] }
 
 [dev-dependencies]

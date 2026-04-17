@@ -526,7 +526,7 @@ impl Default for ApiConfig {
 /// WebSocket configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebSocketConfig {
-    /// Maximum number of concurrent WebSocket connections per user (L-8).
+    /// Maximum number of concurrent WebSocket connections per user.
     /// Prevents a single user from exhausting server resources.
     /// Each browser tab can open multiple WebSocket connections (dashboard,
     /// notifications, terminal, session, active-sessions), so this should be
@@ -744,7 +744,7 @@ impl Config {
 
         // 4. Override secret_key from VAUBAN_SECRET_KEY if set
         if let Ok(secret) = std::env::var("VAUBAN_SECRET_KEY") {
-            // M-4: Clear the environment variable immediately after reading.
+            // Clear the environment variable immediately after reading.
             // The secret is moved into the config builder; keeping it in the
             // environment would expose it to child processes and to readers
             // of /proc/PID/environ.
@@ -1331,7 +1331,7 @@ mod tests {
         );
     }
 
-    // ==================== M-3: OptionalSecret Zeroize Tests ====================
+    // ==================== OptionalSecret Zeroize Tests ====================
 
     #[test]
     fn test_optional_secret_zeroize_on_drop() {
@@ -1421,11 +1421,11 @@ mod tests {
         );
     }
 
-    // ==================== M-4: VAUBAN_SECRET_KEY env-var clearing Tests ====================
+    // ==================== VAUBAN_SECRET_KEY env-var clearing Tests ====================
 
     #[test]
     #[serial_test::serial]
-    fn test_m4_env_var_cleared_after_config_load() {
+    fn test_env_var_cleared_after_config_load() {
         // When VAUBAN_SECRET_KEY is set, loading configuration must
         // (a) use its value as secret_key, then (b) remove it from the environment.
         let env_secret = "env-secret-for-m4-clearing-test!";
@@ -1459,11 +1459,11 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    fn test_m4_toml_secret_key_still_works_without_env_var() {
+    fn test_toml_secret_key_still_works_without_env_var() {
         // Regression guard: when VAUBAN_SECRET_KEY is NOT set, the secret_key
         // must still be loaded from TOML files (current production path).
         //
-        // This is the most important test for M-4: we must not break the
+        // This is the most important test: we must not break the
         // TOML-based secret_key loading that is the primary usage today.
         unsafe {
             std::env::remove_var("VAUBAN_SECRET_KEY");
@@ -1487,7 +1487,7 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    fn test_m4_env_var_overrides_toml_secret_key() {
+    fn test_env_var_overrides_toml_secret_key() {
         // When both TOML and env var provide secret_key, the env var wins.
         let env_secret = "env-override-takes-priority-ok!!";
 
@@ -1514,7 +1514,7 @@ mod tests {
     }
 
     #[test]
-    fn test_m4_source_has_remove_var() {
+    fn test_source_has_remove_var() {
         // Structural regression test: the source code must contain
         // remove_var("VAUBAN_SECRET_KEY") to ensure the env var is cleared.
         let source = include_str!("config.rs");

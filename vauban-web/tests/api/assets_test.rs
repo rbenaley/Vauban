@@ -499,7 +499,7 @@ async fn test_get_asset_malformed_uuid_returns_validation_error() {
 }
 
 // =============================================================================
-// SSH Host Key Status API Tests (H-9 Three States)
+// SSH Host Key Status API Tests (Three States)
 // =============================================================================
 
 /// Helper: update an asset's connection_config directly in the DB.
@@ -886,7 +886,7 @@ async fn test_update_asset_malformed_uuid_returns_validation_error() {
     test_db::cleanup(&mut conn).await;
 }
 
-/// L-2: DELETE /api/v1/assets/{uuid} must return 501 Not Implemented (not 200 OK).
+/// DELETE /api/v1/assets/{uuid} must return 501 Not Implemented (not 200 OK).
 #[tokio::test]
 #[serial]
 async fn test_delete_asset_returns_501_not_implemented() {

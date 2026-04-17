@@ -1,7 +1,7 @@
 //! IPC client for communication with vauban-vault.
 //!
 //! Provides async methods to encrypt/decrypt secrets and manage TOTP MFA
-//! via IPC pipes to the vault service (M-1, C-2).
+//! via IPC pipes to the vault service.
 //!
 //! This client follows the same pattern as `ProxySshClient` but is simpler
 //! since all vault operations are request/response (no streaming).

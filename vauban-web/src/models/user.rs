@@ -61,7 +61,7 @@ pub fn validate_password_complexity(password: &str) -> Result<(), validator::Val
     Ok(())
 }
 
-/// User authentication source (L-7: Diesel enum instead of String).
+/// User authentication source.
 #[derive(
     Debug,
     Clone,

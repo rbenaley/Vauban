@@ -1,4 +1,4 @@
-// L-1: Relax strict clippy lints in test code where unwrap/expect/panic are idiomatic
+// Relax strict clippy lints in test code where unwrap/expect/panic are idiomatic
 #![cfg_attr(
     test,
     allow(
@@ -53,7 +53,7 @@ struct ServiceState {
     requests_processed: AtomicU64,
     requests_failed: AtomicU64,
     draining: AtomicBool,
-    /// M-8: Flag set by ControlMessage::Shutdown to break the main loop
+    /// Flag set by ControlMessage::Shutdown to break the main loop
     /// and allow destructors to run (SecretString credentials).
     shutdown_requested: AtomicBool,
 }
@@ -351,7 +351,7 @@ async fn main_loop(
     let pending_connections = fd_passing.as_ref().map(|fp| Arc::clone(&fp.pending));
 
     loop {
-        // M-8/M-10: Check shutdown flag before blocking on select.
+        // Check shutdown flag before blocking on select.
         if state.shutdown_requested.load(Ordering::SeqCst) {
             info!("Shutdown flag set, exiting main loop to run destructors");
             break;
@@ -476,7 +476,7 @@ async fn handle_control_message(
         }
         ControlMessage::Shutdown => {
             info!("Shutdown requested, setting graceful shutdown flag");
-            // M-8/M-10: Set flag instead of exit(0) so the main loop breaks
+            // Set flag instead of exit(0) so the main loop breaks
             // and destructors run (SecretString credentials, session state).
             state.shutdown_requested.store(true, Ordering::SeqCst);
         }
@@ -544,7 +544,7 @@ async fn handle_web_message(
             // Build credential from received authentication data
             // TODO: In production, credentials should come from Vault
             // Convert SensitiveString credentials (from IPC transport) into
-            // SecretString (H-10: zeroize on drop + expose_secret enforcement).
+            // SecretString.
             let credential = match auth_type.as_str() {
                 "private_key" => {
                     if let Some(key) = private_key {
@@ -833,7 +833,7 @@ mod tests {
         }
     }
 
-    // ==================== M-8/M-10 Structural Regression Tests ====================
+    // ==================== Structural Regression Tests ====================
 
     /// Helper: Extract production code (before #[cfg(test)]).
     fn prod_source() -> &'static str {
@@ -846,37 +846,37 @@ mod tests {
     }
 
     #[test]
-    fn test_m8_no_process_exit_in_production_code() {
+    fn test_no_process_exit_in_production_code() {
         let source = prod_source();
         assert!(
             !source.contains("process::exit"),
-            "M-8/M-10: vauban-proxy-ssh must not call process::exit() in production code"
+            "vauban-proxy-ssh must not call process::exit() in production code"
         );
     }
 
     #[test]
-    fn test_m8_has_shutdown_requested_flag() {
+    fn test_has_shutdown_requested_flag() {
         let source = prod_source();
         assert!(
             source.contains("shutdown_requested"),
-            "M-8/M-10: ServiceState must have a shutdown_requested flag"
+            "ServiceState must have a shutdown_requested flag"
         );
     }
 
     #[test]
-    fn test_m8_main_loop_checks_shutdown_flag() {
+    fn test_main_loop_checks_shutdown_flag() {
         let source = prod_source();
         // proxy-ssh uses tokio::select! in the main loop
         let loop_start = source.find("loop {").expect("main loop must exist");
         let loop_source = &source[loop_start..];
         assert!(
             loop_source.contains("shutdown_requested"),
-            "M-8/M-10: main loop must check shutdown_requested flag"
+            "main loop must check shutdown_requested flag"
         );
     }
 
     #[test]
-    fn test_m8_handle_control_sets_shutdown_flag() {
+    fn test_handle_control_sets_shutdown_flag() {
         let source = prod_source();
         let handle_start = source
             .find("fn handle_control_message")
@@ -884,17 +884,17 @@ mod tests {
         let handle_source = &source[handle_start..];
         assert!(
             handle_source.contains("shutdown_requested.store(true"),
-            "M-8/M-10: handle_control_message must set shutdown_requested on Shutdown"
+            "handle_control_message must set shutdown_requested on Shutdown"
         );
     }
 
     #[test]
-    fn test_m8_shutdown_flag_is_atomic_bool() {
+    fn test_shutdown_flag_is_atomic_bool() {
         let source = prod_source();
         // proxy-ssh uses AtomicBool for thread-safe access from async tasks
         assert!(
             source.contains("shutdown_requested: AtomicBool"),
-            "M-8/M-10: shutdown_requested must be AtomicBool for async safety"
+            "shutdown_requested must be AtomicBool for async safety"
         );
     }
 

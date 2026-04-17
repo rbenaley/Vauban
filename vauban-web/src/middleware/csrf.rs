@@ -129,7 +129,7 @@ fn base64_encode_bytes(data: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(data)
 }
 
-// L-6: constant_time_compare deduplicated - use crate::crypto::constant_time_compare_str
+// constant_time_compare deduplicated - use crate::crypto::constant_time_compare_str
 use crate::crypto::constant_time_compare_str as constant_time_compare;
 
 #[cfg(test)]

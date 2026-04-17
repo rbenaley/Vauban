@@ -639,7 +639,7 @@ pub enum Message {
     },
 
     // ========== Vault Crypto (Any service -> Vault) ==========
-    /// Encrypt plaintext with a named key domain (M-1, C-2).
+    /// Encrypt plaintext with a named key domain.
     VaultEncrypt {
         request_id: u64,
         /// Key domain: "credentials", "mfa", etc.
@@ -655,7 +655,7 @@ pub enum Message {
         error: Option<String>,
     },
 
-    /// Decrypt ciphertext with a named key domain (M-1, C-2).
+    /// Decrypt ciphertext with a named key domain.
     VaultDecrypt {
         request_id: u64,
         /// Key domain: "credentials", "mfa", etc.
@@ -766,13 +766,13 @@ pub enum Message {
         /// Authentication type: "password" or "private_key".
         auth_type: String,
         /// Password for password authentication (if auth_type == "password").
-        /// Wrapped in `SensitiveString` for zeroize-on-drop and redacted Debug (H-10).
+        /// Wrapped in `SensitiveString` for zeroize-on-drop and redacted Debug.
         password: Option<SensitiveString>,
         /// PEM-encoded private key (if auth_type == "private_key").
-        /// Wrapped in `SensitiveString` for zeroize-on-drop and redacted Debug (H-10).
+        /// Wrapped in `SensitiveString` for zeroize-on-drop and redacted Debug.
         private_key: Option<SensitiveString>,
         /// Passphrase for encrypted private key.
-        /// Wrapped in `SensitiveString` for zeroize-on-drop and redacted Debug (H-10).
+        /// Wrapped in `SensitiveString` for zeroize-on-drop and redacted Debug.
         passphrase: Option<SensitiveString>,
         /// Expected SSH host key in OpenSSH format (e.g. "ssh-ed25519 AAAA...").
         /// If set, the proxy MUST verify the server key matches before continuing.
@@ -848,7 +848,7 @@ pub enum Message {
         /// RDP username on target server.
         username: String,
         /// Password for RDP authentication.
-        /// Wrapped in `SensitiveString` for zeroize-on-drop and redacted Debug (H-10).
+        /// Wrapped in `SensitiveString` for zeroize-on-drop and redacted Debug.
         password: Option<SensitiveString>,
         /// Windows domain (optional).
         domain: Option<String>,
@@ -2045,7 +2045,7 @@ mod tests {
         }
     }
 
-    // ==================== Vault Crypto Message Tests (M-1, C-2) ====================
+    // ==================== Vault Crypto Message Tests ====================
 
     #[test]
     fn test_message_vault_encrypt() {
@@ -2894,11 +2894,11 @@ mod tests {
         let debug = format!("{:?}", msg);
         assert!(
             !debug.contains("super-secret-rdp-pwd"),
-            "H-10: RDP Message Debug must NOT contain password"
+            "RDP Message Debug must NOT contain password"
         );
         assert!(
             debug.contains("REDACTED"),
-            "H-10: RDP password must show [REDACTED]"
+            "RDP password must show [REDACTED]"
         );
     }
 
@@ -3408,7 +3408,7 @@ mod tests {
         }
     }
 
-    // ==================== SensitiveString Tests (H-10) ====================
+    // ==================== SensitiveString Tests ====================
 
     #[test]
     fn test_sensitive_string_debug_redacts() {
@@ -3491,19 +3491,19 @@ mod tests {
         let debug = format!("{:?}", msg);
         assert!(
             !debug.contains("super-secret-pwd"),
-            "H-10: Message Debug must NOT contain password"
+            "Message Debug must NOT contain password"
         );
         assert!(
             !debug.contains("BEGIN KEY"),
-            "H-10: Message Debug must NOT contain private key"
+            "Message Debug must NOT contain private key"
         );
         assert!(
             !debug.contains("my-passphrase"),
-            "H-10: Message Debug must NOT contain passphrase"
+            "Message Debug must NOT contain passphrase"
         );
         assert!(
             debug.contains("REDACTED"),
-            "H-10: Message Debug must show [REDACTED]"
+            "Message Debug must show [REDACTED]"
         );
     }
 

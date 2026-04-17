@@ -163,7 +163,7 @@
         </div>
     </div>
 
-    <!-- SSH Host Key Verification (H-9) - Only for SSH assets -->
+    <!-- SSH Host Key Verification - Only for SSH assets -->
     {% if asset.asset_type == "ssh" %}
     <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
         <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
@@ -173,7 +173,7 @@
             </p>
         </div>
         <div class="px-4 py-5 sm:p-6">
-            <!-- Auto-verify host key against remote server on page load (H-9).
+            <!-- Auto-verify host key against remote server on page load.
                  HTMX replaces this placeholder with the real state once the
                  verify endpoint responds.  The initial server-rendered content
                  provides a meaningful fallback if JS/HTMX is unavailable. -->

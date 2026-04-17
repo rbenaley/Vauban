@@ -140,7 +140,7 @@ pub fn constant_time_compare(a: &[u8], b: &[u8]) -> bool {
 
 /// Constant-time string comparison to prevent timing attacks.
 ///
-/// L-6: Canonical implementation used by CSRF, flash cookie, and API key validation.
+/// Canonical implementation used by CSRF, flash cookie, and API key validation.
 /// Delegates to the byte-level `constant_time_compare` for consistent behavior.
 pub fn constant_time_compare_str(a: &str, b: &str) -> bool {
     constant_time_compare(a.as_bytes(), b.as_bytes())
@@ -279,7 +279,7 @@ mod tests {
         assert!(pk.verify(wrong_message, &sig).is_err());
     }
 
-    // ==================== M-5: PQ Secret Key Zeroization Tests ====================
+    // ==================== PQ Secret Key Zeroization Tests ====================
 
     #[test]
     fn test_mlkem768_secret_key_zeroized_by_helper() {
