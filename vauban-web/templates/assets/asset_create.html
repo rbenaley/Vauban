@@ -57,9 +57,11 @@
     <form action="/assets" method="POST" class="space-y-6"
           x-data="{
               defaults: { ssh: 22, rdp: 3389 },
+              usernameDefaults: { ssh: 'root', rdp: 'Administrator' },
               port: {{ form.port }},
               assetType: '{{ form.asset_type }}',
-              authType: '{{ form.ssh_auth_type.as_deref().unwrap_or("password") }}'
+              authType: '{{ form.ssh_auth_type.as_deref().unwrap_or("password") }}',
+              username: '{{ form.ssh_username.as_deref().unwrap_or("root") }}'
           }"
           x-effect="if (assetType === 'rdp' && authType !== 'password') { authType = 'password' }">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
@@ -84,7 +86,10 @@
                                 class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
                                 required
                                 x-model="assetType"
-                                x-on:change="if (defaults[$event.target.value] && Object.values(defaults).includes(port)) { port = defaults[$event.target.value] }">
+                                x-on:change="
+                                    if (defaults[$event.target.value] && Object.values(defaults).includes(port)) { port = defaults[$event.target.value] }
+                                    if (usernameDefaults[$event.target.value] && Object.values(usernameDefaults).includes(username)) { username = usernameDefaults[$event.target.value] }
+                                ">
                             {% for (value, label) in asset_types %}
                             <option value="{{ value }}" {% if form.asset_type == *value %}selected{% endif %}>{{ label }}</option>
                             {% endfor %}
@@ -132,10 +137,11 @@
                 <div class="grid grid-cols-1 gap-6 sm:grid-cols-2">
                     <div>
                         <label for="ssh_username" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Username</label>
-                        <input type="text" name="ssh_username" id="ssh_username" value="{{ form.ssh_username.as_deref().unwrap_or("root") }}"
-                               class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
-                               placeholder="root">
-                        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">SSH/RDP username for authentication</p>
+                        <input type="text" name="ssh_username" id="ssh_username"
+                               x-model="username"
+                               :placeholder="usernameDefaults[assetType] || 'root'"
+                               class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
+                        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Default: <code>root</code> for SSH, <code>Administrator</code> for RDP. Override as needed.</p>
                     </div>
                     <!-- Authentication Type selector: SSH only.
                          RDP cannot use private-key auth (rejected
