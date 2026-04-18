@@ -214,6 +214,86 @@ pub(crate) fn validate_auth_inputs(
     Ok(())
 }
 
+/// Validate that the credential fields required by the FA `ASS-02`
+/// (SSH) and `ASS-03` (RDP) acceptance criteria are actually present.
+///
+/// `validate_auth_inputs` only catches **forbidden** combinations (e.g.
+/// RDP + private key); this helper catches the dual case of
+/// **missing** credentials, which `build_connection_config` would
+/// otherwise silently drop because every credential field is optional
+/// at the JSON layer.
+///
+/// Per FA §4.4:
+///
+/// - `ASS-03` (RDP): a row is only operational when it carries a
+///   non-empty `password`. Without it, the proxy will either fail the
+///   first NLA handshake confusingly or — worse — succeed against an
+///   anonymous-allow host, creating an audit gap.
+/// - `ASS-02` (SSH): a row needs *either* a non-empty `password` (when
+///   `auth_type=password`) *or* a non-empty `private_key` (when
+///   `auth_type=private_key`). The default `auth_type` when absent is
+///   `password`.
+///
+/// Trimmed-empty values count as missing on purpose: a single space
+/// is never a usable secret and accepting it would let an operator
+/// bypass the check by accident.
+pub(crate) fn validate_required_credentials(
+    asset_type: crate::models::asset::AssetType,
+    auth_type: Option<&str>,
+    password: Option<&str>,
+    private_key: Option<&str>,
+) -> Result<(), String> {
+    use crate::models::asset::AssetType;
+
+    let is_blank = |o: Option<&str>| o.map(str::trim).is_none_or(str::is_empty);
+
+    match asset_type {
+        AssetType::Rdp => {
+            if is_blank(password) {
+                return Err(
+                    "Password is required for RDP assets (ASS-03)."
+                        .to_string(),
+                );
+            }
+        }
+        AssetType::Ssh => {
+            // The form omits `auth_type` only on RDP; an SSH submit
+            // without it is a tampered request, but treat it as the
+            // documented default for backwards compatibility rather
+            // than 500-ing the operator.
+            let mode = auth_type.unwrap_or("password");
+            match mode {
+                "password" => {
+                    if is_blank(password) {
+                        return Err(
+                            "Password is required for SSH assets when authentication \
+                             type is 'password' (ASS-02)."
+                                .to_string(),
+                        );
+                    }
+                }
+                "private_key" => {
+                    if is_blank(private_key) {
+                        return Err(
+                            "Private key is required for SSH assets when authentication \
+                             type is 'private_key' (ASS-02)."
+                                .to_string(),
+                        );
+                    }
+                }
+                other => {
+                    return Err(format!(
+                        "Unknown SSH authentication type '{}'. Expected 'password' or 'private_key'.",
+                        other
+                    ));
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Build connection_config JSON from credential form fields.
 ///
 /// Protocol-aware: the shape of the resulting JSON depends on
@@ -311,6 +391,44 @@ pub(crate) fn build_connection_config(
     }
 
     serde_json::Value::Object(config)
+}
+
+/// Preserve credential fields from `existing` into `new_config` when
+/// the operator did not resubmit them.
+///
+/// Implements the "edit-form option A" semantic: an empty input on
+/// the edit page means "keep the value we have", not "wipe to empty".
+/// Without this, an operator who edits an asset just to change its
+/// description would silently destroy the stored credentials, because
+/// `build_connection_config` only emits keys for non-empty form
+/// fields.
+///
+/// Only credential fields are preservable here: `username` lives in
+/// its dedicated `connection_username` column, and `domain` is a
+/// regular text input that the operator can clear deliberately
+/// (preserving an empty submit would prevent removing a domain).
+///
+/// The copied JSON value can be plaintext or vault ciphertext; the
+/// downstream `encrypt_connection_config` call leaves already-
+/// encrypted strings alone via `is_encrypted`, so a round-trip stays
+/// idempotent.
+pub(crate) fn merge_preserved_credentials(
+    new_config: &mut serde_json::Value,
+    existing: &serde_json::Value,
+) {
+    const PRESERVABLE: [&str; 3] = ["password", "private_key", "passphrase"];
+    let (Some(new_obj), Some(existing_obj)) =
+        (new_config.as_object_mut(), existing.as_object())
+    else {
+        return;
+    };
+    for field in &PRESERVABLE {
+        if !new_obj.contains_key(*field)
+            && let Some(v) = existing_obj.get(*field).filter(|v| !v.is_null())
+        {
+            new_obj.insert((*field).to_string(), v.clone());
+        }
+    }
 }
 
 /// Encrypt credential fields in a connection_config JSON via vault.

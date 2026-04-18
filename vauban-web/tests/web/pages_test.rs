@@ -6407,6 +6407,9 @@ async fn test_asset_create_success() {
             ("port", "22"),
             ("asset_type", "ssh"),
             ("status", "online"),
+            ("ssh_username", "root"),
+            ("ssh_auth_type", "password"),
+            ("ssh_password", "test-pwd"),
         ])
         .await;
 
@@ -6729,6 +6732,9 @@ async fn test_asset_create_with_checkboxes() {
             ("port", "22"),
             ("asset_type", "ssh"),
             ("status", "online"),
+            ("ssh_username", "root"),
+            ("ssh_auth_type", "password"),
+            ("ssh_password", "test-pwd"),
         ])
         .await;
 
@@ -6783,6 +6789,8 @@ async fn test_asset_create_without_checkboxes() {
             ("port", "3389"),
             ("asset_type", "rdp"),
             ("status", "online"),
+            ("ssh_username", "Administrator"),
+            ("ssh_password", "test-pwd"),
         ])
         .await;
 
@@ -6865,6 +6873,9 @@ async fn test_asset_create_reactivates_soft_deleted() {
             ("port", "22"),
             ("asset_type", "ssh"),
             ("status", "online"),
+            ("ssh_username", "root"),
+            ("ssh_auth_type", "password"),
+            ("ssh_password", "test-pwd"),
         ])
         .await;
 

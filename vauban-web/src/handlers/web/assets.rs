@@ -144,6 +144,19 @@ pub async fn create_asset_web(
         return flash_redirect(flash.error(msg), "/assets/new");
     }
 
+    // Enforce the FA ASS-02 / ASS-03 required-credential contract.
+    // Without this, `build_connection_config` would silently drop empty
+    // credential inputs and persist a row with no usable secret -- the
+    // BUG-10 / CANARY-RDP-EMPTY-20260418 scenario.
+    if let Err(msg) = validate_required_credentials(
+        parsed_asset_type,
+        form.ssh_auth_type.as_deref(),
+        form.ssh_password.as_deref(),
+        form.ssh_private_key.as_deref(),
+    ) {
+        return flash_redirect(flash.error(msg), "/assets/new");
+    }
+
     let mut conn = match state.db_pool.get().await {
         Ok(c) => c,
         Err(e) => {
@@ -961,21 +974,20 @@ pub async fn asset_edit(
         .and_then(|v| v.as_str())
         .unwrap_or("password")
         .to_string();
-    let ssh_password = asset_connection_config
-        .get("password")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
-    let ssh_private_key = asset_connection_config
-        .get("private_key")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
-    let ssh_passphrase = asset_connection_config
-        .get("passphrase")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
+    // Only expose the *presence* of each secret to the template, never
+    // the value itself (encrypted or plaintext). The edit form renders
+    // empty inputs with "Leave blank to keep current" hints; the
+    // handler then preserves the stored value when the operator
+    // submits a blank field (option A, see `merge_preserved_credentials`).
+    let has_secret = |key: &str| {
+        asset_connection_config
+            .get(key)
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| !s.is_empty())
+    };
+    let has_password = has_secret("password");
+    let has_private_key = has_secret("private_key");
+    let has_passphrase = has_secret("passphrase");
     let ssh_host_key_fingerprint = asset_connection_config
         .get("ssh_host_key_fingerprint")
         .and_then(|v| v.as_str())
@@ -996,9 +1008,9 @@ pub async fn asset_edit(
         description: asset_description,
         ssh_username,
         ssh_auth_type,
-        ssh_password,
-        ssh_private_key,
-        ssh_passphrase,
+        has_password,
+        has_private_key,
+        has_passphrase,
         ssh_host_key_fingerprint,
         rdp_domain,
     };
@@ -1311,6 +1323,49 @@ pub async fn update_asset_web(
         return flash_redirect(flash.error(msg), &format!("/assets/{}/edit", asset_uuid));
     }
 
+    // Enforce ASS-02 / ASS-03 required credentials, taking into
+    // account the option-A "blank field means keep existing" semantic:
+    // we accept a blank submit ONLY when the existing connection_config
+    // already carries the field. If neither side has it, we reject.
+    let blank = |o: Option<&str>| o.map(str::trim).is_none_or(str::is_empty);
+    let existing_field = |k: &str| {
+        existing
+            .connection_config
+            .get(k)
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+    };
+    let effective_password = if blank(form.ssh_password.as_deref()) {
+        existing_field("password")
+    } else {
+        form.ssh_password.as_deref()
+    };
+    let effective_private_key = if blank(form.ssh_private_key.as_deref()) {
+        existing_field("private_key")
+    } else {
+        form.ssh_private_key.as_deref()
+    };
+    // Likewise for auth_type: the form may omit it (e.g. RDP) or send
+    // an empty string; fall back to whatever the row already records.
+    let effective_auth_type = form
+        .ssh_auth_type
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            existing
+                .connection_config
+                .get("auth_type")
+                .and_then(|v| v.as_str())
+        });
+    if let Err(msg) = validate_required_credentials(
+        existing.asset_type,
+        effective_auth_type,
+        effective_password,
+        effective_private_key,
+    ) {
+        return flash_redirect(flash.error(msg), &format!("/assets/{}/edit", asset_uuid));
+    }
+
     let mut connection_config = build_connection_config(
         existing.asset_type,
         form.ssh_username.as_deref(),
@@ -1320,6 +1375,13 @@ pub async fn update_asset_web(
         form.ssh_passphrase.as_deref(),
         form.rdp_domain.as_deref(),
     );
+
+    // Option A: a blank password / private_key / passphrase input on
+    // the edit form means "keep what we already have", not "wipe it".
+    // The merge happens BEFORE encryption so the existing ciphertext
+    // (already in `connection_config`) round-trips untouched via
+    // `is_encrypted` inside `encrypt_connection_config`.
+    merge_preserved_credentials(&mut connection_config, &existing.connection_config);
 
     // Encrypt credential fields via vault when available
     if let Some(ref vault) = state.vault_client

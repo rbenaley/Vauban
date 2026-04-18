@@ -13,12 +13,21 @@ pub struct AssetEdit {
     pub asset_type: String,
     pub status: String,
     pub description: Option<String>,
-    // SSH credentials extracted from connection_config
+    // SSH credentials extracted from connection_config.
+    //
+    // Note: secret values (password, private key, passphrase) are
+    // intentionally NOT exposed to the template. Surfacing the stored
+    // ciphertext into a `<input type="password">` would (a) leak it
+    // into browser DOM/autofill/history and (b) confuse operators with
+    // a 200+ dot field that has nothing to do with their original
+    // password length. We only expose presence booleans so the form
+    // can render "Leave blank to keep current ..." hints when an
+    // existing secret is on file.
     pub ssh_username: String,
     pub ssh_auth_type: String,
-    pub ssh_password: String,
-    pub ssh_private_key: String,
-    pub ssh_passphrase: String,
+    pub has_password: bool,
+    pub has_private_key: bool,
+    pub has_passphrase: bool,
     /// SSH host key fingerprint (read-only, from connection_config).
     pub ssh_host_key_fingerprint: Option<String>,
     /// Windows AD domain extracted from connection_config (RDP only).
@@ -54,9 +63,9 @@ mod tests {
             description: Some("Main production server".to_string()),
             ssh_username: "root".to_string(),
             ssh_auth_type: "password".to_string(),
-            ssh_password: String::new(),
-            ssh_private_key: String::new(),
-            ssh_passphrase: String::new(),
+            has_password: false,
+            has_private_key: false,
+            has_passphrase: false,
             ssh_host_key_fingerprint: None,
             rdp_domain: String::new(),
         }

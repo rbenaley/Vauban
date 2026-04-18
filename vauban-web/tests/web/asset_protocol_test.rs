@@ -831,3 +831,364 @@ async fn test_edit_rdp_cannot_set_private_key_via_form() {
         cfg
     );
 }
+
+// =============================================================================
+// ASS-02 / ASS-03 required-credential enforcement (issue #16) -- 6 tests
+//
+// Background: `build_connection_config` silently dropped empty
+// credential inputs, so an RDP asset could be persisted with no
+// password (CANARY-RDP-EMPTY-20260418). These tests pin the
+// post-fix contract:
+//
+// - On CREATE: empty password / private_key MUST 4xx with a flash
+//   error and persist NOTHING.
+// - On EDIT: an empty input means "keep existing" (option A semantic),
+//   never "wipe to empty". A non-empty input replaces the stored
+//   value.
+// - On EDIT render: the stored ciphertext MUST NEVER be sent back to
+//   the browser (defence in depth + UX).
+// =============================================================================
+
+/// **CANARY-RDP-EMPTY-20260418** -- the BUG-10 / issue #16 regression.
+/// POST a brand-new RDP asset with `ssh_password=""` and verify the
+/// handler bounces the operator back to `/assets/new` with an explicit
+/// ASS-03 error, and that NO row is persisted on the
+/// (hostname, port, username) triplet.
+#[tokio::test]
+#[serial]
+async fn test_create_rdp_with_empty_password_rejects_400_canary_empty_20260418() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("ass03_canary");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+    let csrf = app.generate_csrf_token();
+
+    let asset_name = unique_name("CANARY-RDP-EMPTY-20260418");
+    let asset_hostname = format!("{}.canary-empty.test", unique_name("host"));
+
+    let response = app
+        .server
+        .post("/assets")
+        .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
+        .form(&[
+            ("csrf_token", csrf.as_str()),
+            ("name", &asset_name),
+            ("hostname", &asset_hostname),
+            ("port", "3389"),
+            ("asset_type", "rdp"),
+            ("status", "online"),
+            ("ssh_username", "Administrator"),
+            ("ssh_password", ""),
+        ])
+        .await;
+
+    assert_status(&response, 303);
+    let location = response
+        .headers()
+        .get(LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(
+        location, "/assets/new",
+        "RDP+empty-password create must bounce to /assets/new, got {}",
+        location
+    );
+
+    let flash_cookie = response
+        .headers()
+        .get_all(SET_COOKIE)
+        .iter()
+        .filter_map(|c| c.to_str().ok())
+        .find(|c| c.contains("__vauban_flash"))
+        .expect("rejection must set a flash cookie");
+    assert!(
+        flash_cookie.contains("__vauban_flash"),
+        "expected a flash cookie carrying the ASS-03 rejection"
+    );
+
+    let persisted =
+        read_asset_by_triplet(&mut conn, &asset_hostname, 3389, "Administrator").await;
+    assert!(
+        persisted.is_none(),
+        "no row must be persisted when RDP password is empty, got: {:?}",
+        persisted.map(|a| a.connection_config)
+    );
+}
+
+/// SSH password-mode counterpart to the RDP canary above. Symmetric
+/// rejection so we don't quietly create a useless SSH row either.
+#[tokio::test]
+#[serial]
+async fn test_create_ssh_password_mode_with_empty_password_rejects_400() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("ass02_pwd_canary");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+    let csrf = app.generate_csrf_token();
+
+    let asset_hostname = format!("{}.ass02-pwd.test", unique_name("host"));
+    let response = app
+        .server
+        .post("/assets")
+        .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
+        .form(&[
+            ("csrf_token", csrf.as_str()),
+            ("name", &unique_name("ssh-empty-pwd")),
+            ("hostname", &asset_hostname),
+            ("port", "22"),
+            ("asset_type", "ssh"),
+            ("status", "online"),
+            ("ssh_username", "root"),
+            ("ssh_auth_type", "password"),
+            ("ssh_password", ""),
+        ])
+        .await;
+
+    assert_status(&response, 303);
+    let location = response
+        .headers()
+        .get(LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(location, "/assets/new");
+
+    let persisted = read_asset_by_triplet(&mut conn, &asset_hostname, 22, "root").await;
+    assert!(
+        persisted.is_none(),
+        "no row must be persisted when SSH password mode has empty password"
+    );
+}
+
+/// SSH private-key-mode counterpart. An empty key submit must be
+/// rejected with the matching ASS-02 error; nothing persisted.
+#[tokio::test]
+#[serial]
+async fn test_create_ssh_key_mode_with_empty_private_key_rejects_400() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("ass02_key_canary");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+    let csrf = app.generate_csrf_token();
+
+    let asset_hostname = format!("{}.ass02-key.test", unique_name("host"));
+    let response = app
+        .server
+        .post("/assets")
+        .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
+        .form(&[
+            ("csrf_token", csrf.as_str()),
+            ("name", &unique_name("ssh-empty-key")),
+            ("hostname", &asset_hostname),
+            ("port", "22"),
+            ("asset_type", "ssh"),
+            ("status", "online"),
+            ("ssh_username", "root"),
+            ("ssh_auth_type", "private_key"),
+            ("ssh_private_key", ""),
+        ])
+        .await;
+
+    assert_status(&response, 303);
+    let location = response
+        .headers()
+        .get(LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(location, "/assets/new");
+
+    let persisted = read_asset_by_triplet(&mut conn, &asset_hostname, 22, "root").await;
+    assert!(
+        persisted.is_none(),
+        "no row must be persisted when SSH key mode has empty private_key"
+    );
+}
+
+/// Option A semantic: editing an RDP asset with `ssh_password=""`
+/// MUST preserve the previously stored password instead of wiping it.
+/// We simulate the stored row carrying a recognisable plaintext sentinel
+/// so we can assert it round-tripped untouched.
+#[tokio::test]
+#[serial]
+async fn test_edit_rdp_with_blank_password_preserves_existing() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("ass03_keep_pwd");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+    let csrf = app.generate_csrf_token();
+
+    let hostname = format!("{}.keep-pwd.test", unique_name("host"));
+    const SENTINEL: &str = "KEEP-ME-ACROSS-EDIT-20260419";
+    let asset = insert_asset_with_config(
+        &mut conn,
+        &unique_name("rdp-keep-target"),
+        &hostname,
+        3389,
+        AssetType::Rdp,
+        "Administrator",
+        serde_json::json!({"username": "Administrator", "password": SENTINEL}),
+    )
+    .await;
+
+    let response = app
+        .server
+        .post(&format!("/assets/{}/edit", asset.uuid))
+        .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
+        .form(&[
+            ("csrf_token", csrf.as_str()),
+            ("name", &asset.name),
+            ("hostname", &hostname),
+            ("port", "3389"),
+            ("status", "maintenance"),
+            ("ssh_username", "Administrator"),
+            ("ssh_password", ""),
+            ("description", "operator only changed the description"),
+        ])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 302 || status == 303,
+        "blank-password edit on a row with stored password must succeed, got {}",
+        status
+    );
+
+    let after = read_asset_by_uuid(&mut conn, asset.uuid)
+        .await
+        .expect("row must still exist after edit");
+    let cfg_str = after.connection_config.to_string();
+    assert!(
+        cfg_str.contains(SENTINEL),
+        "blank password edit MUST preserve the stored password sentinel, got: {}",
+        cfg_str
+    );
+    assert_eq!(
+        after.status, "maintenance",
+        "the non-credential field the operator actually changed must be persisted"
+    );
+}
+
+/// Non-regression mirror of the previous test: a non-blank password on
+/// the edit form must replace the stored value. Without this we'd be
+/// unable to rotate credentials at all.
+#[tokio::test]
+#[serial]
+async fn test_edit_rdp_with_new_password_replaces_existing() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("ass03_replace_pwd");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+    let csrf = app.generate_csrf_token();
+
+    let hostname = format!("{}.replace-pwd.test", unique_name("host"));
+    const OLD: &str = "OLD-PWD-MUST-BE-GONE-20260419";
+    const NEW: &str = "NEW-PWD-MUST-BE-PRESENT-20260419";
+    let asset = insert_asset_with_config(
+        &mut conn,
+        &unique_name("rdp-replace-target"),
+        &hostname,
+        3389,
+        AssetType::Rdp,
+        "Administrator",
+        serde_json::json!({"username": "Administrator", "password": OLD}),
+    )
+    .await;
+
+    let response = app
+        .server
+        .post(&format!("/assets/{}/edit", asset.uuid))
+        .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
+        .form(&[
+            ("csrf_token", csrf.as_str()),
+            ("name", &asset.name),
+            ("hostname", &hostname),
+            ("port", "3389"),
+            ("status", "online"),
+            ("ssh_username", "Administrator"),
+            ("ssh_password", NEW),
+        ])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 302 || status == 303,
+        "credential rotation on edit must succeed, got {}",
+        status
+    );
+
+    let after = read_asset_by_uuid(&mut conn, asset.uuid)
+        .await
+        .expect("row must still exist");
+    let cfg_str = after.connection_config.to_string();
+    // The new value either lands plaintext (no vault wired in tests) or
+    // wrapped in a `v1:` ciphertext envelope; either way the OLD
+    // plaintext sentinel must NOT remain visible.
+    assert!(
+        !cfg_str.contains(OLD),
+        "old password sentinel must be evicted, got: {}",
+        cfg_str
+    );
+    // Plaintext path (vault disabled) -- the most common test config.
+    // If vault is wired, encryption hides the sentinel and we just
+    // assert eviction of OLD above.
+    if !cfg_str.contains("\"v1:") {
+        assert!(
+            cfg_str.contains(NEW),
+            "new password sentinel must be persisted (plaintext path), got: {}",
+            cfg_str
+        );
+    }
+}
+
+/// Defence-in-depth: the GET `/assets/{uuid}/edit` page MUST NOT echo
+/// the stored credential ciphertext (or plaintext) back into the
+/// `<input type="password">` `value=` attribute. Doing so would leak
+/// secrets into browser DOM, autofill and history, and confuse
+/// operators with a 200+ dot field unrelated to the original password.
+#[tokio::test]
+#[serial]
+async fn test_edit_form_does_not_leak_stored_credential_into_html() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("ass03_no_leak");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+
+    let hostname = format!("{}.no-leak.test", unique_name("host"));
+    const SENTINEL: &str = "NEVER-RENDER-IN-HTML-20260419";
+    let asset = insert_asset_with_config(
+        &mut conn,
+        &unique_name("rdp-no-leak-target"),
+        &hostname,
+        3389,
+        AssetType::Rdp,
+        "Administrator",
+        serde_json::json!({"username": "Administrator", "password": SENTINEL}),
+    )
+    .await;
+
+    let response = app
+        .server
+        .get(&format!("/assets/{}/edit", asset.uuid))
+        .add_header(COOKIE, format!("access_token={}", admin.token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        !body.contains(SENTINEL),
+        "stored credential MUST NOT appear in the edit-form HTML, got body fragment:\n{}",
+        body.chars()
+            .skip_while(|c| *c != '<')
+            .take(2000)
+            .collect::<String>()
+    );
+    assert!(
+        body.contains("Leave blank to keep current password"),
+        "edit form must surface the option-A hint when a password is on file"
+    );
+}

@@ -3084,6 +3084,9 @@ async fn test_xss_sanitized_in_web_asset_create() {
             ("asset_type", "ssh"),
             ("status", "active"),
             ("description", xss_desc),
+            ("ssh_username", "root"),
+            ("ssh_auth_type", "password"),
+            ("ssh_password", "test-pwd"),
         ])
         .await;
 
