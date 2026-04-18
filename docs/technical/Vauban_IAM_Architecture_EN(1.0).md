@@ -1252,7 +1252,7 @@ detects:
 
 #### Why PermissionContext, not ad-hoc checks
 
-| Concern | Old pattern (`is_staff || is_superuser`) | New pattern (`PermissionContext`) |
+| Concern | Old pattern (`is_staff \|\| is_superuser`) | New pattern (`PermissionContext`) |
 |---|---|---|
 | Custom Casbin policy (e.g. `role:custom` with `users:write` only) | Ignored: UI hides the action even though the server allows it (or vice-versa) | Honoured: UI mirrors the exact server gate |
 | Number of round-trips per request | 1 per template branch + 1 per handler check | 1 parallel join per request, regardless of branch count |
