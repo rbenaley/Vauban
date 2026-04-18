@@ -16,7 +16,9 @@
 /// Runs exclusively over HTTPS with TLS 1.3.
 use axum::{
     Router,
+    extract::Path,
     http::Method,
+    response::Redirect,
     routing::{get, post},
 };
 use axum_server::tls_rustls::RustlsConfig;
@@ -677,8 +679,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Start background tasks for WebSocket updates
     start_dashboard_tasks(broadcast, db_pool.clone()).await;
 
-    // Start cleanup tasks for expired sessions and API keys
-    start_cleanup_tasks(db_pool).await;
+    // Start cleanup tasks for expired/idle sessions and API keys
+    // (Issue #8: idle_timeout drives the auth_sessions purge predicate).
+    start_cleanup_tasks(db_pool, config.security.session_idle_timeout_secs).await;
 
     // Start ACME certificate monitoring task (if enabled)
     if let Some(ref acme_config) = config.server.tls.acme
@@ -1057,16 +1060,47 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
         )
         .route("/accounts/profile", get(handlers::web::profile))
         .route("/accounts/mfa", get(handlers::web::mfa_setup))
-        .route("/accounts/sessions", get(handlers::web::user_sessions))
+        // Issue #8: renamed from /accounts/sessions to disambiguate web
+        // login sessions from bastion proxy sessions in the UI.
         .route(
-            "/accounts/sessions/{uuid}/revoke",
+            "/accounts/login-sessions",
+            get(handlers::web::user_sessions),
+        )
+        .route(
+            "/accounts/login-sessions/{uuid}/revoke",
             post(handlers::web::revoke_session),
         )
-        // Admin: all users' web sessions
-        .route("/admin/sessions", get(handlers::web::admin_user_sessions))
+        // Admin: all users' web login sessions (renamed from /admin/sessions
+        // for the same reason).
+        .route(
+            "/accounts/all-login-sessions",
+            get(handlers::web::admin_user_sessions),
+        )
+        .route(
+            "/accounts/all-login-sessions/{uuid}/revoke",
+            post(handlers::web::admin_revoke_session),
+        )
+        // 301 redirects for backward compatibility (bookmarks, external
+        // links). Safe to drop after one release cycle.
+        .route(
+            "/accounts/sessions",
+            get(|| async { Redirect::permanent("/accounts/login-sessions") }),
+        )
+        .route(
+            "/accounts/sessions/{uuid}/revoke",
+            post(|Path(uuid): Path<String>| async move {
+                Redirect::permanent(&format!("/accounts/login-sessions/{uuid}/revoke"))
+            }),
+        )
+        .route(
+            "/admin/sessions",
+            get(|| async { Redirect::permanent("/accounts/all-login-sessions") }),
+        )
         .route(
             "/admin/sessions/{uuid}/revoke",
-            post(handlers::web::admin_revoke_session),
+            post(|Path(uuid): Path<String>| async move {
+                Redirect::permanent(&format!("/accounts/all-login-sessions/{uuid}/revoke"))
+            }),
         )
         .route("/accounts/apikeys", get(handlers::web::api_keys))
         .route(

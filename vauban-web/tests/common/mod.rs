@@ -4,7 +4,7 @@
 // Re-export test macros for all test files
 pub use vauban_web::{assert_err, assert_none, assert_ok, assert_some, unwrap_ok, unwrap_some};
 
-use axum::{Router, http::HeaderValue};
+use axum::{Router, extract::Path, http::HeaderValue, response::Redirect};
 use axum_test::TestServer;
 use diesel::{ExpressionMethods, QueryDsl};
 use diesel_async::AsyncPgConnection;
@@ -226,13 +226,17 @@ impl TestApp {
         let token_hash = format!("{:x}", hasher.finalize());
 
         let ip: ipnetwork::IpNetwork = unwrap_ok!("127.0.0.1".parse());
+        // Issue #8: per-token `device_info` so two `generate_test_token`
+        // calls for the same user (different `mfa_verified`/`is_superuser`
+        // combinations) can coexist without tripping the
+        // `uniq_auth_sessions_per_device` UNIQUE index.
         let new_session = NewAuthSession {
             uuid: uuid::Uuid::new_v4(),
             user_id,
-            token_hash,
+            token_hash: token_hash.clone(),
             ip_address: ip,
             user_agent: Some("Test Client".to_string()),
-            device_info: Some("Test".to_string()),
+            device_info: format!("Test/{}", &token_hash[..8]),
             expires_at: Utc::now() + Duration::hours(24),
             is_current: true,
         };
@@ -551,18 +555,45 @@ fn build_test_router(state: AppState) -> Router {
             "/accounts/users/{uuid}",
             get(handlers::web::user_detail).post(handlers::web::update_user_web),
         )
-        // Account pages (profile, sessions and API keys)
+        // Account pages (profile, login sessions and API keys)
         .route("/accounts/profile", get(handlers::web::profile))
-        .route("/accounts/sessions", get(handlers::web::user_sessions))
+        // Issue #8: renamed routes (mirror production main.rs).
         .route(
-            "/accounts/sessions/{uuid}/revoke",
+            "/accounts/login-sessions",
+            get(handlers::web::user_sessions),
+        )
+        .route(
+            "/accounts/login-sessions/{uuid}/revoke",
             post(handlers::web::revoke_session),
         )
-        // Admin: all users' web sessions
-        .route("/admin/sessions", get(handlers::web::admin_user_sessions))
+        .route(
+            "/accounts/all-login-sessions",
+            get(handlers::web::admin_user_sessions),
+        )
+        .route(
+            "/accounts/all-login-sessions/{uuid}/revoke",
+            post(handlers::web::admin_revoke_session),
+        )
+        // Legacy 301 redirects (Issue #8 backward compatibility).
+        .route(
+            "/accounts/sessions",
+            get(|| async { Redirect::permanent("/accounts/login-sessions") }),
+        )
+        .route(
+            "/accounts/sessions/{uuid}/revoke",
+            post(|Path(uuid): Path<String>| async move {
+                Redirect::permanent(&format!("/accounts/login-sessions/{uuid}/revoke"))
+            }),
+        )
+        .route(
+            "/admin/sessions",
+            get(|| async { Redirect::permanent("/accounts/all-login-sessions") }),
+        )
         .route(
             "/admin/sessions/{uuid}/revoke",
-            post(handlers::web::admin_revoke_session),
+            post(|Path(uuid): Path<String>| async move {
+                Redirect::permanent(&format!("/accounts/all-login-sessions/{uuid}/revoke"))
+            }),
         )
         .route("/accounts/apikeys", get(handlers::web::api_keys))
         .route(

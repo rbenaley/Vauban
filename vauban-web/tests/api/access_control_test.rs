@@ -73,10 +73,10 @@ async fn create_staff_user(
     let new_session = NewAuthSession {
         uuid: Uuid::new_v4(),
         user_id: user.id,
-        token_hash,
+        token_hash: token_hash.clone(),
         ip_address: ip,
         user_agent: Some("Test Client".to_string()),
-        device_info: Some("Test".to_string()),
+        device_info: format!("Test/{}", &token_hash[..8]),
         expires_at: chrono::Utc::now() + chrono::Duration::hours(24),
         is_current: true,
     };
@@ -147,10 +147,10 @@ async fn create_superuser_only(
     let new_session = NewAuthSession {
         uuid: Uuid::new_v4(),
         user_id: user.id,
-        token_hash,
+        token_hash: token_hash.clone(),
         ip_address: ip,
         user_agent: Some("Test Client".to_string()),
-        device_info: Some("Test".to_string()),
+        device_info: format!("Test/{}", &token_hash[..8]),
         expires_at: chrono::Utc::now() + chrono::Duration::hours(24),
         is_current: true,
     };

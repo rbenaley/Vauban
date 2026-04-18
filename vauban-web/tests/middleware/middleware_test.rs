@@ -57,7 +57,7 @@ async fn test_auth_middleware_extracts_user_from_bearer_token() {
     // Request with Bearer token in Authorization header
     let response = app
         .server
-        .get("/accounts/sessions")
+        .get("/accounts/login-sessions")
         .add_header(AUTHORIZATION, format!("Bearer {}", token))
         .await;
 
@@ -94,7 +94,7 @@ async fn test_auth_middleware_extracts_user_from_cookie() {
     // Request with token in cookie
     let response = app
         .server
-        .get("/accounts/sessions")
+        .get("/accounts/login-sessions")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -110,7 +110,7 @@ async fn test_auth_middleware_ignores_invalid_token() {
     // Request with invalid token
     let response = app
         .server
-        .get("/accounts/sessions")
+        .get("/accounts/login-sessions")
         .add_header(AUTHORIZATION, "Bearer invalid.token.here")
         .await;
 
@@ -169,7 +169,7 @@ async fn test_auth_middleware_rejects_expired_token() {
     // Request with idle-expired session
     let response = app
         .server
-        .get("/accounts/sessions")
+        .get("/accounts/login-sessions")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -225,7 +225,7 @@ async fn test_auth_middleware_rejects_revoked_session() {
     // Request with revoked session
     let response = app
         .server
-        .get("/accounts/sessions")
+        .get("/accounts/login-sessions")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -292,7 +292,7 @@ async fn test_bearer_token_takes_priority_over_cookie() {
     // Bearer should take priority
     let response = app
         .server
-        .get("/accounts/sessions")
+        .get("/accounts/login-sessions")
         .add_header(AUTHORIZATION, format!("Bearer {}", token1))
         .add_header(COOKIE, format!("access_token={}", token2))
         .await;
@@ -323,7 +323,7 @@ async fn test_malformed_bearer_header() {
     for header in malformed_headers {
         let response = app
             .server
-            .get("/accounts/sessions")
+            .get("/accounts/login-sessions")
             .add_header(AUTHORIZATION, header)
             .await;
 
@@ -346,7 +346,7 @@ async fn test_empty_cookie() {
 
     let response = app
         .server
-        .get("/accounts/sessions")
+        .get("/accounts/login-sessions")
         .add_header(COOKIE, "access_token=")
         .await;
 
@@ -398,7 +398,7 @@ async fn test_superuser_flag_extracted() {
 
     let response = app
         .server
-        .get("/accounts/sessions")
+        .get("/accounts/login-sessions")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -417,7 +417,7 @@ async fn test_regular_user_access() {
 
     let response = app
         .server
-        .get("/accounts/sessions")
+        .get("/accounts/login-sessions")
         .add_header(COOKIE, format!("access_token={}", test_user.token))
         .await;
 
@@ -475,7 +475,7 @@ async fn test_session_rejected_when_max_duration_exceeded() {
     // Request should fail - session max duration exceeded
     let response = app
         .server
-        .get("/accounts/sessions")
+        .get("/accounts/login-sessions")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -518,7 +518,7 @@ async fn test_session_valid_within_timeout_limits() {
     // Request should succeed - session is fresh
     let response = app
         .server
-        .get("/accounts/sessions")
+        .get("/accounts/login-sessions")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -572,7 +572,7 @@ async fn test_last_activity_updated_on_request() {
 
     let response = app
         .server
-        .get("/accounts/sessions")
+        .get("/accounts/login-sessions")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -649,7 +649,7 @@ async fn test_session_valid_with_old_but_active_session() {
     // Request should succeed - session is old but active and within max_duration
     let response = app
         .server
-        .get("/accounts/sessions")
+        .get("/accounts/login-sessions")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 

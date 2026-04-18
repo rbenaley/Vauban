@@ -172,7 +172,7 @@ async fn permission_context_load_matches_per_check_rbac() {
 // End-to-end: handlers reject via PermissionContext, not is_staff shortcut
 // ---------------------------------------------------------------------------
 
-/// Regular user must be denied the admin-only "All sessions" page even though
+/// Regular user must be denied the admin-only "All login sessions" page even though
 /// their JWT is valid (this is a structural gate via PermissionContext).
 #[tokio::test]
 #[serial]
@@ -202,7 +202,7 @@ async fn admin_route_denied_for_regular_user() {
 
     let response = app
         .server
-        .get("/admin/sessions")
+        .get("/accounts/all-login-sessions")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -251,7 +251,7 @@ async fn admin_route_allowed_for_admin_user() {
 
     let response = app
         .server
-        .get("/admin/sessions")
+        .get("/accounts/all-login-sessions")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 

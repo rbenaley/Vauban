@@ -1,13 +1,13 @@
 {% extends "base.html" %}
 
-{% block title %}All Sessions - {{ vauban.brand_name }}{% endblock %}
+{% block title %}All Login Sessions - {{ vauban.brand_name }}{% endblock %}
 
 {% block content %}
 <div class="space-y-6">
     <div class="md:flex md:items-center md:justify-between">
         <div class="min-w-0 flex-1">
             <h2 class="text-xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-2xl lg:text-3xl sm:tracking-tight">
-                All Sessions
+                All Login Sessions
             </h2>
             <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
                 All active login sessions across all users
@@ -67,7 +67,7 @@
                         {% if session.is_current %}
                         <span class="text-xs text-gray-400 dark:text-gray-500">This session</span>
                         {% else %}
-                        <form hx-post="/admin/sessions/{{ session.uuid }}/revoke"
+                        <form hx-post="/accounts/all-login-sessions/{{ session.uuid }}/revoke"
                               hx-confirm="Are you sure you want to revoke this session for {{ session.username }}? They will be logged out immediately."
                               hx-target="closest li"
                               hx-swap="outerHTML"

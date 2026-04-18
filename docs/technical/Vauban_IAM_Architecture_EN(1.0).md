@@ -735,6 +735,60 @@ CREATE INDEX idx_access_rules_active ON access_rules(is_active) WHERE is_active 
 
 The partial index on `is_active` optimizes the most frequent query pattern (evaluating active rules during connection attempts).
 
+### 7.6 auth_sessions Uniqueness Invariant (Issue #8)
+
+The `auth_sessions` table (owned by `vauban-web`) tracks **login** sessions
+— authenticated browser/API clients holding an `access_token` cookie. It is
+**unrelated** to `proxy_sessions`, which tracks bastion (SSH/RDP) connections.
+
+To prevent the "My login sessions" view from filling up with near-duplicate
+rows after every browser refresh / token rotation, the table enforces a
+**single-row-per-device invariant**:
+
+```sql
+-- Migration: 20260419000000_dedupe_and_uniq_auth_sessions
+CREATE UNIQUE INDEX uniq_auth_sessions_per_device
+    ON auth_sessions (user_id, device_info, ip_address);
+
+CREATE INDEX idx_auth_sessions_last_activity
+    ON auth_sessions (last_activity);
+```
+
+| Column | Role in the invariant |
+|--------|-----------------------|
+| `user_id` | Identifies the human/service account. |
+| `device_info` | Browser fingerprint derived from `User-Agent` by `AuthSession::parse_device_info`. **Made `NOT NULL DEFAULT 'Unknown browser'`** so the index is deterministic even when the UA is missing or unparseable. |
+| `ip_address` | Resolved client IP after honouring trusted proxies (`extract_client_ip`). |
+
+The invariant is enforced by **three coordinated layers**:
+
+1. **At login** — `handlers::auth::insert_session_with_purge` runs
+   `purge_sessions_for_device` + `INSERT` inside a single transaction so
+   no two requests in the same pod can race. If a different pod wins the
+   race between purge and INSERT, the UNIQUE index trips a
+   `UniqueViolation` and the helper retries once after re-purging,
+   which converges because the second purge picks up the row inserted
+   by the other pod.
+
+2. **At read time** — `My login sessions` and `All login sessions`
+   (admin) display `auth_sessions` directly; thanks to the invariant
+   above they no longer need any application-side deduplication.
+
+3. **In the background** — `tasks::cleanup::cleanup_expired_or_idle_sessions`
+   runs every `CLEANUP_INTERVAL_SECS` (30 s) and deletes rows where
+   `expires_at < now` **OR** `last_activity < now - session_idle_timeout_secs`,
+   so disconnected browsers and abandoned tabs do not linger forever.
+   `idx_auth_sessions_last_activity` keeps that scan cheap.
+
+Routes that surface this data were renamed to make the distinction with
+bastion sessions explicit (the old paths still answer `308 Permanent
+Redirect`):
+
+| Old route | New route | View |
+|-----------|-----------|------|
+| `/accounts/sessions` | `/accounts/login-sessions` | User's own login sessions |
+| `/admin/sessions` | `/accounts/all-login-sessions` | Admin: every user's login sessions |
+
 ---
 
 ## 8. IPC Protocol

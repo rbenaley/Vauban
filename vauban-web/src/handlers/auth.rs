@@ -196,40 +196,46 @@ pub async fn login(
             .get("User-Agent")
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
-        let device_info = user_agent_str
-            .as_ref()
-            .map(|ua| AuthSession::parse_device_info(ua));
+        // Issue #8: `device_info` is now NOT NULL in the DB so we resolve
+        // the User-Agent eagerly (or fall back to the same sentinel as the
+        // SQL default) to keep the (user, device, IP) fingerprint
+        // deterministic for the UNIQUE index.
+        let device_info_str = user_agent_str
+            .as_deref()
+            .map(AuthSession::parse_device_info)
+            .unwrap_or_else(|| "Unknown browser".to_string());
 
-        // Mark any existing "current" sessions as not current
-        diesel::update(
-            auth_sessions::table
-                .filter(auth_sessions::user_id.eq(user.id))
-                .filter(auth_sessions::is_current.eq(true)),
-        )
-        .set(auth_sessions::is_current.eq(false))
-        .execute(&mut conn)
-        .await
-        .ok();
-
-        // Insert new session
-        // expires_at is set to session_max_duration_secs from config (absolute max lifetime)
+        // Insert new session inside a transaction that first purges any
+        // prior session for the same (user, device, IP) -- see Issue #8
+        // and `insert_session_with_purge`. expires_at is set to
+        // session_max_duration_secs from config (absolute max lifetime).
         let new_session = NewAuthSession {
             uuid: ::uuid::Uuid::new_v4(),
             user_id: user.id,
             token_hash,
             ip_address: client_ip,
             user_agent: user_agent_str,
-            device_info,
+            device_info: device_info_str.clone(),
             expires_at: Utc::now()
                 + Duration::seconds(state.config.security.session_max_duration_secs as i64),
             is_current: true,
         };
 
-        let session_created = diesel::insert_into(auth_sessions::table)
-            .values(&new_session)
-            .execute(&mut conn)
-            .await
-            .is_ok();
+        let session_created = match insert_session_with_purge(
+            &mut conn,
+            user.id,
+            device_info_str,
+            client_ip,
+            new_session,
+        )
+        .await
+        {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!("Failed to create auth session: {}", e);
+                false
+            }
+        };
 
         if session_created {
             crate::handlers::web::broadcast_sessions_update(
@@ -365,44 +371,43 @@ pub async fn login(
         .get("User-Agent")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
-    let device_info = user_agent_str
-        .as_ref()
-        .map(|ua| AuthSession::parse_device_info(ua));
+    // Issue #8: same fingerprint normalisation as the web flow above.
+    let device_info_str = user_agent_str
+        .as_deref()
+        .map(AuthSession::parse_device_info)
+        .unwrap_or_else(|| "Unknown browser".to_string());
 
-    // Mark any existing "current" sessions as not current
-    diesel::update(
-        auth_sessions::table
-            .filter(auth_sessions::user_id.eq(user.id))
-            .filter(auth_sessions::is_current.eq(true)),
-    )
-    .set(auth_sessions::is_current.eq(false))
-    .execute(&mut conn)
-    .await
-    .ok(); // Ignore errors - not critical
-
-    // Insert new session
-    // expires_at is set to session_max_duration_secs from config (absolute max lifetime)
+    // Insert new session inside a transaction that first purges any prior
+    // session for the same (user, device, IP) -- see Issue #8 and
+    // `insert_session_with_purge`. expires_at is set to
+    // session_max_duration_secs from config (absolute max lifetime).
     let new_session = NewAuthSession {
         uuid: ::uuid::Uuid::new_v4(),
         user_id: user.id,
         token_hash,
         ip_address: client_ip,
         user_agent: user_agent_str,
-        device_info,
+        device_info: device_info_str.clone(),
         expires_at: Utc::now()
             + Duration::seconds(state.config.security.session_max_duration_secs as i64),
         is_current: true,
     };
 
-    let session_created = diesel::insert_into(auth_sessions::table)
-        .values(&new_session)
-        .execute(&mut conn)
-        .await
-        .map_err(|e| {
+    let session_created = match insert_session_with_purge(
+        &mut conn,
+        user.id,
+        device_info_str,
+        client_ip,
+        new_session,
+    )
+    .await
+    {
+        Ok(()) => true,
+        Err(e) => {
             tracing::warn!("Failed to create auth session: {}", e);
-            e
-        })
-        .is_ok();
+            false
+        }
+    };
 
     // Broadcast session update to all connected WebSocket clients for this user
     if session_created {
@@ -517,6 +522,112 @@ fn hash_token(token: &str) -> String {
     let mut hasher = Sha3_256::new();
     hasher.update(token.as_bytes());
     format!("{:x}", hasher.finalize())
+}
+
+/// Issue #8: enforce at most one live `auth_sessions` row per
+/// `(user_id, device_info, ip_address)` fingerprint.
+///
+/// Called inside the same DB transaction as the INSERT of a new session,
+/// so concurrent logins for the same fingerprint cannot both win the
+/// race -- the loser will either re-purge or trip the
+/// `uniq_auth_sessions_per_device` UNIQUE index and be retried by
+/// [`insert_session_with_purge`].
+async fn purge_sessions_for_device(
+    conn: &mut diesel_async::AsyncPgConnection,
+    user_id_val: i32,
+    device: &str,
+    client_ip: ipnetwork::IpNetwork,
+) -> Result<usize, diesel::result::Error> {
+    let deleted = diesel::delete(
+        auth_sessions::table
+            .filter(auth_sessions::user_id.eq(user_id_val))
+            .filter(auth_sessions::device_info.eq(device))
+            .filter(auth_sessions::ip_address.eq(client_ip)),
+    )
+    .execute(conn)
+    .await?;
+    if deleted > 0 {
+        tracing::info!(
+            user_id = user_id_val,
+            deleted,
+            device = %device,
+            "Purged superseded login sessions for device on new login"
+        );
+    }
+    Ok(deleted)
+}
+
+/// Issue #8: insert a new `auth_sessions` row while enforcing the
+/// "at most one live session per (user, device, IP)" invariant.
+///
+/// The purge + INSERT pair runs inside a single transaction so an
+/// inter-request race within the same pod cannot create two rows. If
+/// another pod (multi-replica deployment) wins the race between the
+/// purge and the INSERT, the UNIQUE index trips a `UniqueViolation`;
+/// we retry once after re-purging, which converges because the second
+/// purge picks up the row inserted by the other pod.
+async fn insert_session_with_purge(
+    conn: &mut diesel_async::AsyncPgConnection,
+    user_id_val: i32,
+    device_info_str: String,
+    client_ip: ipnetwork::IpNetwork,
+    new_session: NewAuthSession,
+) -> Result<(), diesel::result::Error> {
+    use diesel::result::{DatabaseErrorKind, Error as DieselError};
+    use diesel_async::AsyncConnection;
+
+    for attempt in 0u8..2 {
+        let device_info_attempt = device_info_str.clone();
+        let new_session_attempt = new_session.clone();
+        let result = conn
+            .transaction::<_, DieselError, _>(|conn| {
+                Box::pin(async move {
+                    // Clear `is_current` on other sessions for this user
+                    // (the same-device row will be deleted by the purge
+                    // below; this only affects sessions on other devices).
+                    diesel::update(
+                        auth_sessions::table
+                            .filter(auth_sessions::user_id.eq(user_id_val))
+                            .filter(auth_sessions::is_current.eq(true)),
+                    )
+                    .set(auth_sessions::is_current.eq(false))
+                    .execute(conn)
+                    .await?;
+
+                    purge_sessions_for_device(
+                        conn,
+                        user_id_val,
+                        &device_info_attempt,
+                        client_ip,
+                    )
+                    .await?;
+
+                    diesel::insert_into(auth_sessions::table)
+                        .values(&new_session_attempt)
+                        .execute(conn)
+                        .await?;
+                    Ok(())
+                })
+            })
+            .await;
+
+        match result {
+            Ok(()) => return Ok(()),
+            Err(DieselError::DatabaseError(DatabaseErrorKind::UniqueViolation, _))
+                if attempt == 0 =>
+            {
+                tracing::warn!(
+                    user_id = user_id_val,
+                    "Unique violation on auth_sessions INSERT; retrying once after re-purge"
+                );
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    // Unreachable: the loop either returns Ok, returns Err, or continues
+    // exactly once before exiting on the second attempt.
+    unreachable!("insert_session_with_purge retry loop exited without returning")
 }
 
 /// Determine progressive lockout duration based on failed attempts.

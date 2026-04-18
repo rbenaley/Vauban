@@ -231,7 +231,7 @@ mod tests {
     #[test]
     fn test_admin_session_list_template_creation() {
         let template = AdminSessionListTemplate {
-            title: "All Sessions".to_string(),
+            title: "All Login Sessions".to_string(),
             user: None,
             vauban: create_test_vauban_config(),
             messages: Vec::new(),

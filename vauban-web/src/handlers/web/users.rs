@@ -1279,9 +1279,7 @@ pub async fn profile(
     let sessions: Vec<ProfileSession> = db_sessions
         .into_iter()
         .map(|s| {
-            let device_info = s.device_info.clone().unwrap_or_else(|| {
-                AuthSession::parse_device_info(s.user_agent.as_deref().unwrap_or(""))
-            });
+            let device_info = s.device_info.clone();
             let is_current = current_token_hash
                 .as_ref()
                 .map(|hash| hash == &s.token_hash)
@@ -1477,8 +1475,8 @@ pub async fn user_sessions(
     use sha3::{Digest, Sha3_256};
 
     let user = Some(user_context_from_auth(&auth_user));
-    let base = BaseTemplate::new("My Sessions".to_string(), user.clone())
-        .with_current_path("/accounts/sessions");
+    let base = BaseTemplate::new("My Login Sessions".to_string(), user.clone())
+        .with_current_path("/accounts/login-sessions");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
             .await
@@ -1535,10 +1533,7 @@ pub async fn user_sessions(
     let sessions: Vec<AuthSessionItem> = db_sessions
         .into_iter()
         .map(|s| {
-            let device_info = s.device_info.clone().unwrap_or_else(|| {
-                AuthSession::parse_device_info(s.user_agent.as_deref().unwrap_or(""))
-            });
-            // Determine if this is the current session by comparing token hashes
+            let device_info = s.device_info.clone();
             let is_current = current_token_hash
                 .as_ref()
                 .map(|hash| hash == &s.token_hash)
@@ -1669,7 +1664,7 @@ pub async fn revoke_session(
     let session_uuid = match uuid::Uuid::parse_str(&session_uuid_str) {
         Ok(uuid) => uuid,
         Err(_) => {
-            return Ok(Redirect::to("/accounts/sessions").into_response());
+            return Ok(Redirect::to("/accounts/login-sessions").into_response());
         }
     };
 
@@ -1758,18 +1753,13 @@ pub(crate) fn build_sessions_html(
     sessions: &[crate::models::AuthSession],
     client_token_hash: &str,
 ) -> String {
-    use crate::models::AuthSession;
-
     if sessions.is_empty() {
         return r#"<li class="px-6 py-8 text-center text-gray-500 dark:text-gray-400">No active sessions</li>"#.to_string();
     }
 
     let mut html = String::new();
     for s in sessions {
-        let device_info = s.device_info.clone().unwrap_or_else(|| {
-            AuthSession::parse_device_info(s.user_agent.as_deref().unwrap_or(""))
-        });
-        // Determine if this is the current session by comparing token hashes
+        let device_info = s.device_info.clone();
         let is_current = !client_token_hash.is_empty() && client_token_hash == s.token_hash;
         let ip = s.ip_address.ip().to_string();
         let uuid = s.uuid;
@@ -1796,7 +1786,7 @@ pub(crate) fn build_sessions_html(
                 .to_string()
         } else {
             format!(
-                r#"<form hx-post="/accounts/sessions/{}/revoke" hx-confirm="Are you sure you want to revoke this session?" hx-target="closest li" hx-swap="outerHTML">
+                r#"<form hx-post="/accounts/login-sessions/{}/revoke" hx-confirm="Are you sure you want to revoke this session?" hx-target="closest li" hx-swap="outerHTML">
                     <button type="submit" class="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded text-red-700 bg-red-100 hover:bg-red-200 dark:text-red-200 dark:bg-red-900 dark:hover:bg-red-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500">Revoke</button>
                 </form>"#,
                 uuid
@@ -2036,8 +2026,8 @@ pub async fn admin_user_sessions(
     use sha3::{Digest, Sha3_256};
 
     let user = Some(user_context_from_auth(&auth_user));
-    let base = BaseTemplate::new("All Sessions".to_string(), user.clone())
-        .with_current_path("/admin/sessions");
+    let base = BaseTemplate::new("All Login Sessions".to_string(), user.clone())
+        .with_current_path("/accounts/all-login-sessions");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
             .await
@@ -2069,9 +2059,7 @@ pub async fn admin_user_sessions(
     let sessions: Vec<AdminAuthSessionItem> = db_sessions
         .into_iter()
         .map(|(s, username, user_uuid)| {
-            let device_info = s.device_info.clone().unwrap_or_else(|| {
-                AuthSession::parse_device_info(s.user_agent.as_deref().unwrap_or(""))
-            });
+            let device_info = s.device_info.clone();
             let is_current = current_token_hash
                 .as_deref()
                 .is_some_and(|h| h == s.token_hash);
@@ -2279,7 +2267,7 @@ pub async fn admin_revoke_session(
     let session_uuid = match uuid::Uuid::parse_str(&session_uuid_str) {
         Ok(uuid) => uuid,
         Err(_) => {
-            return Ok(Redirect::to("/admin/sessions").into_response());
+            return Ok(Redirect::to("/accounts/all-login-sessions").into_response());
         }
     };
 
@@ -2392,8 +2380,6 @@ fn build_admin_sessions_html(
     sessions: &[(crate::models::AuthSession, String, uuid::Uuid)],
     viewer_token_hash: &str,
 ) -> String {
-    use crate::models::AuthSession;
-
     if sessions.is_empty() {
         return r#"<li class="px-6 py-8 text-center text-gray-500 dark:text-gray-400">No active sessions</li>"#.to_string();
     }
@@ -2401,9 +2387,7 @@ fn build_admin_sessions_html(
     let mut html = String::new();
     for (s, username, _user_uuid) in sessions {
         let is_current = !viewer_token_hash.is_empty() && s.token_hash == viewer_token_hash;
-        let device_info = s.device_info.clone().unwrap_or_else(|| {
-            AuthSession::parse_device_info(s.user_agent.as_deref().unwrap_or(""))
-        });
+        let device_info = s.device_info.clone();
         let ip = s.ip_address.ip().to_string();
         let uuid = s.uuid;
 
@@ -2456,7 +2440,7 @@ fn build_admin_sessions_html(
                 .to_string()
         } else {
             format!(
-                r#"<form hx-post="/admin/sessions/{uuid}/revoke" hx-confirm="Are you sure you want to revoke this session for {username}? They will be logged out immediately." hx-target="closest li" hx-swap="outerHTML" x-data="csrf">
+                r#"<form hx-post="/accounts/all-login-sessions/{uuid}/revoke" hx-confirm="Are you sure you want to revoke this session for {username}? They will be logged out immediately." hx-target="closest li" hx-swap="outerHTML" x-data="csrf">
                             <input type="hidden" name="csrf_token" x-model="token" />
                             <button type="submit" class="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded text-red-700 bg-red-100 hover:bg-red-200 dark:text-red-200 dark:bg-red-900 dark:hover:bg-red-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500">Revoke</button>
                         </form>"#,

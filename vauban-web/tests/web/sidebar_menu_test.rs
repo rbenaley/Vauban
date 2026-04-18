@@ -2,7 +2,7 @@
 ///
 /// Tests for the user menu in the sidebar (bottom left):
 /// - My profile link navigation
-/// - My sessions link navigation
+/// - My login sessions link navigation
 /// - API keys link navigation
 /// - Log out functionality
 ///
@@ -91,14 +91,14 @@ async fn test_sidebar_contains_user_sessions_link() {
 
     let body = response.text();
 
-    // Check that the sidebar contains the My sessions link
+    // Check that the sidebar contains the My login sessions link
     assert!(
-        body.contains("/accounts/sessions"),
-        "Sidebar should contain link to /accounts/sessions"
+        body.contains("/accounts/login-sessions"),
+        "Sidebar should contain link to /accounts/login-sessions"
     );
     assert!(
-        body.contains("My sessions"),
-        "Sidebar should contain 'My sessions' text"
+        body.contains("My login sessions"),
+        "Sidebar should contain 'My login sessions' text"
     );
 }
 
@@ -258,7 +258,7 @@ async fn test_my_sessions_link_navigates_correctly() {
     // Navigate to sessions page (the link from sidebar)
     let response = app
         .server
-        .get("/accounts/sessions")
+        .get("/accounts/login-sessions")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -271,7 +271,7 @@ async fn test_my_sessions_link_navigates_correctly() {
 
     let body = response.text();
     assert!(
-        body.contains("My Sessions") || body.contains("Sessions"),
+        body.contains("My Login Sessions") || body.contains("Login Sessions"),
         "Sessions page should have sessions title"
     );
 }
@@ -388,7 +388,7 @@ async fn test_my_sessions_requires_authentication() {
     let app = TestApp::spawn().await;
 
     // Request without auth token
-    let response = app.server.get("/accounts/sessions").await;
+    let response = app.server.get("/accounts/login-sessions").await;
 
     let status = response.status_code().as_u16();
     assert_eq!(
@@ -502,7 +502,7 @@ async fn test_complete_user_menu_navigation_flow() {
         "Dashboard should have profile link"
     );
     assert!(
-        dashboard_body.contains("/accounts/sessions"),
+        dashboard_body.contains("/accounts/login-sessions"),
         "Dashboard should have sessions link"
     );
     assert!(
@@ -529,7 +529,7 @@ async fn test_complete_user_menu_navigation_flow() {
     // Step 3: Navigate to Sessions
     let sessions_response = app
         .server
-        .get("/accounts/sessions")
+        .get("/accounts/login-sessions")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
     assert_eq!(
@@ -586,7 +586,7 @@ async fn test_sidebar_user_menu_on_all_pages() {
     let pages = [
         "/",
         "/accounts/profile",
-        "/accounts/sessions",
+        "/accounts/login-sessions",
         "/accounts/apikeys",
         "/assets",
         "/sessions",

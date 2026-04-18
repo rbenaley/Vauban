@@ -118,8 +118,8 @@
             <!-- Active Sessions Card -->
             <div class="bg-white dark:bg-gray-800 shadow rounded-lg">
                 <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
-                    <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Active Sessions</h3>
-                    <a href="/accounts/sessions" class="text-sm font-medium text-vauban-600 hover:text-vauban-500 dark:text-vauban-400">
+                    <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Active Login Sessions</h3>
+                    <a href="/accounts/login-sessions" class="text-sm font-medium text-vauban-600 hover:text-vauban-500 dark:text-vauban-400">
                         Manage all
                     </a>
                 </div>
@@ -154,7 +154,7 @@
                                     </div>
                                 </div>
                                 {% if !session.is_current %}
-                                <form method="post" action="/accounts/sessions/{{ session.uuid }}/revoke" class="flex-shrink-0 ml-4" x-data="csrf">
+                                <form method="post" action="/accounts/login-sessions/{{ session.uuid }}/revoke" class="flex-shrink-0 ml-4" x-data="csrf">
                                     <input type="hidden" name="csrf_token" x-model="token" />
                                     <button type="submit" class="text-sm font-medium text-red-600 hover:text-red-500 dark:text-red-400 dark:hover:text-red-300">
                                         Revoke
@@ -252,11 +252,11 @@
                             </a>
                         </li>
                         <li>
-                            <a href="/accounts/sessions" class="flex items-center text-sm font-medium text-gray-700 hover:text-vauban-600 dark:text-gray-300 dark:hover:text-vauban-400">
+                            <a href="/accounts/login-sessions" class="flex items-center text-sm font-medium text-gray-700 hover:text-vauban-600 dark:text-gray-300 dark:hover:text-vauban-400">
                                 <svg class="mr-3 h-5 w-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
                                     <path stroke-linecap="round" stroke-linejoin="round" d="M9 17.25v1.007a3 3 0 01-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0115 18.257V17.25m6-12V15a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 15V5.25m18 0A2.25 2.25 0 0018.75 3H5.25A2.25 2.25 0 003 5.25m18 0V12a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 12V5.25" />
                                 </svg>
-                                Manage Sessions
+                                Manage Login Sessions
                             </a>
                         </li>
                         {% if profile.mfa_enabled %}

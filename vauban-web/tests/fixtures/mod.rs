@@ -29,13 +29,18 @@ async fn create_session_for_token(conn: &mut AsyncPgConnection, user_id: i32, to
     let token_hash = format!("{:x}", hasher.finalize());
 
     let ip: ipnetwork::IpNetwork = unwrap_ok!("127.0.0.1".parse());
+    // Issue #8: `auth_sessions` now has a UNIQUE index on
+    // (user_id, device_info, ip_address). Tests routinely create several
+    // sessions for the same user from 127.0.0.1, so we derive
+    // `device_info` from the token hash to keep each fixture row
+    // distinct.
     let new_session = NewAuthSession {
         uuid: Uuid::new_v4(),
         user_id,
-        token_hash,
+        token_hash: token_hash.clone(),
         ip_address: ip,
         user_agent: Some("Test Client".to_string()),
-        device_info: Some("Test".to_string()),
+        device_info: format!("Test/{}", &token_hash[..8]),
         expires_at: Utc::now() + Duration::hours(24),
         is_current: true,
     };
@@ -1024,18 +1029,21 @@ pub async fn create_test_auth_session(
     let session_uuid = Uuid::new_v4();
     let ip: ipnetwork::IpNetwork = unwrap_ok!("127.0.0.1".parse());
     let token_hash = format!(
-        "hash_{}_{}",
+        "hash_{}_{}_{}",
         user_id,
-        if is_current { "current" } else { "other" }
+        if is_current { "current" } else { "other" },
+        session_uuid.simple()
     );
 
+    // Issue #8: keep `device_info` unique per fixture row to avoid
+    // tripping `uniq_auth_sessions_per_device`.
     let new_session = NewAuthSession {
         uuid: session_uuid,
         user_id,
         token_hash,
         ip_address: ip,
         user_agent: Some("Mozilla/5.0 Test".to_string()),
-        device_info: Some("Test Browser".to_string()),
+        device_info: format!("Test Browser/{}", session_uuid.simple()),
         expires_at: Utc::now() + Duration::hours(24),
         is_current,
     };
@@ -1130,13 +1138,16 @@ pub async fn create_auth_session_with_token(
     hasher.update(token.as_bytes());
     let token_hash = format!("{:x}", hasher.finalize());
 
+    // Issue #8: derive `device_info` from the token hash so two
+    // sessions for the same user (revocation tests) do not collide on
+    // `uniq_auth_sessions_per_device`.
     let new_session = NewAuthSession {
         uuid: session_uuid,
         user_id,
-        token_hash,
+        token_hash: token_hash.clone(),
         ip_address: ip,
         user_agent: Some("Mozilla/5.0 Test".to_string()),
-        device_info: Some("Test Browser".to_string()),
+        device_info: format!("Test Browser/{}", &token_hash[..8]),
         expires_at: Utc::now() + Duration::hours(24),
         is_current,
     };
@@ -1171,13 +1182,14 @@ pub async fn create_expired_auth_session(
     hasher.update(token.as_bytes());
     let token_hash = format!("{:x}", hasher.finalize());
 
+    // Issue #8: same per-token uniqueness as the active fixture above.
     let new_session = NewAuthSession {
         uuid: session_uuid,
         user_id,
-        token_hash,
+        token_hash: token_hash.clone(),
         ip_address: ip,
         user_agent: Some("Mozilla/5.0 Expired Test".to_string()),
-        device_info: Some("Expired Browser".to_string()),
+        device_info: format!("Expired Browser/{}", &token_hash[..8]),
         expires_at: Utc::now() - Duration::hours(1), // Expired 1 hour ago
         is_current: false,
     };

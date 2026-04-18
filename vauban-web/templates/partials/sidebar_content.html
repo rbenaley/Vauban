@@ -155,18 +155,20 @@
                            class="block rounded-md py-2 pl-11 pr-2 text-sm leading-6 text-gray-400 hover:bg-gray-700 hover:text-white">
                             My profile
                         </a>
-                        <a href="/accounts/sessions"
+                        {# Issue #8: renamed to "login sessions" to make it explicit  #}
+                        {# these are web auth sessions, not bastion proxy sessions.    #}
+                        <a href="/accounts/login-sessions"
                            class="block rounded-md py-2 pl-11 pr-2 text-sm leading-6 text-gray-400 hover:bg-gray-700 hover:text-white">
-                            My sessions
+                            My login sessions
                         </a>
-                        {# Gate "All sessions" on Casbin `auth_sessions:read` (the       #}
-                        {# permission required by `admin_user_sessions`), not on         #}
-                        {# `is_staff || is_superuser`, so policy customizations remain    #}
-                        {# coherent with the server-side gate. (PermissionContext)        #}
+                        {# Gate "All login sessions" on Casbin `auth_sessions:read`    #}
+                        {# (the permission required by `admin_user_sessions`), not on  #}
+                        {# `is_staff || is_superuser`, so policy customizations remain #}
+                        {# coherent with the server-side gate. (PermissionContext)     #}
                         {% if sc.perms.auth_sessions_read %}
-                        <a href="/admin/sessions"
+                        <a href="/accounts/all-login-sessions"
                            class="block rounded-md py-2 pl-11 pr-2 text-sm leading-6 text-gray-400 hover:bg-gray-700 hover:text-white">
-                            All sessions
+                            All login sessions
                         </a>
                         {% endif %}
                         <a href="/accounts/apikeys"

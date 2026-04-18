@@ -2396,7 +2396,7 @@ async fn test_revoked_session_token_redirects_on_web() {
     // Verify the token works before revocation (web page)
     let response = app
         .server
-        .get("/accounts/sessions")
+        .get("/accounts/login-sessions")
         .add_header(
             header::COOKIE,
             format!("access_token={}", admin.token)
@@ -2422,7 +2422,7 @@ async fn test_revoked_session_token_redirects_on_web() {
     // The same token should redirect to login
     let response = app
         .server
-        .get("/accounts/sessions")
+        .get("/accounts/login-sessions")
         .add_header(
             header::COOKIE,
             format!("access_token={}", admin.token)
@@ -2622,7 +2622,7 @@ async fn test_valid_session_accepted_on_api() {
     // Also works on web pages
     let response = app
         .server
-        .get("/accounts/sessions")
+        .get("/accounts/login-sessions")
         .add_header(
             header::COOKIE,
             format!("access_token={}", admin.token)
@@ -2714,7 +2714,7 @@ async fn test_regular_user_revoked_session_rejected() {
     // Regular user accessing their own sessions page (no staff required)
     let response = app
         .server
-        .get("/accounts/sessions")
+        .get("/accounts/login-sessions")
         .add_header(
             header::COOKIE,
             format!("access_token={}", regular.token)
@@ -2742,7 +2742,7 @@ async fn test_regular_user_revoked_session_rejected() {
     // Should be rejected after revocation
     let response = app
         .server
-        .get("/accounts/sessions")
+        .get("/accounts/login-sessions")
         .add_header(
             header::COOKIE,
             format!("access_token={}", regular.token)

@@ -110,7 +110,7 @@ diesel::table! {
         ip_address -> Inet,
         user_agent -> Nullable<Text>,
         #[max_length = 255]
-        device_info -> Nullable<Varchar>,
+        device_info -> Varchar,
         last_activity -> Timestamptz,
         expires_at -> Timestamptz,
         is_current -> Bool,

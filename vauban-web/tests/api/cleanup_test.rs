@@ -306,13 +306,16 @@ async fn create_expired_session(conn: &mut AsyncPgConnection, user_id: i32, toke
     hasher.update(token.as_bytes());
     let token_hash = format!("{:x}", hasher.finalize());
 
+    // Issue #8: per-token `device_info` to avoid colliding with the
+    // `uniq_auth_sessions_per_device` UNIQUE index when a single test
+    // creates several sessions for the same (user, IP).
     let new_session = NewAuthSession {
         uuid: session_uuid,
         user_id,
-        token_hash,
+        token_hash: token_hash.clone(),
         ip_address: ip,
         user_agent: Some("Test Expired".to_string()),
-        device_info: Some("Expired Device".to_string()),
+        device_info: format!("Expired Device/{}", &token_hash[..8]),
         expires_at: Utc::now() - Duration::hours(1), // Expired 1 hour ago
         is_current: false,
     };
@@ -338,13 +341,14 @@ async fn create_valid_session(conn: &mut AsyncPgConnection, user_id: i32, token:
     hasher.update(token.as_bytes());
     let token_hash = format!("{:x}", hasher.finalize());
 
+    // Issue #8: per-token `device_info` (see expired-session helper above).
     let new_session = NewAuthSession {
         uuid: session_uuid,
         user_id,
-        token_hash,
+        token_hash: token_hash.clone(),
         ip_address: ip,
         user_agent: Some("Test Valid".to_string()),
-        device_info: Some("Valid Device".to_string()),
+        device_info: format!("Valid Device/{}", &token_hash[..8]),
         expires_at: Utc::now() + Duration::hours(24), // Expires in 24 hours
         is_current: true,
     };

@@ -24,13 +24,13 @@ pub enum WsChannel {
     Notifications,
     /// Live session updates for a specific session.
     SessionLive(String),
-    /// User auth sessions list updates (for /accounts/sessions page).
+    /// User auth sessions list updates (for /accounts/login-sessions page).
     UserAuthSessions(String),
     /// User API keys list updates (for /accounts/apikeys page).
     UserApiKeys(String),
     /// Session history list updates (for /sessions page, admin-only).
     SessionsList,
-    /// Admin auth sessions list updates (for /admin/sessions page).
+    /// Admin auth sessions list updates (for /accounts/all-login-sessions page).
     AdminAuthSessions,
 }
 

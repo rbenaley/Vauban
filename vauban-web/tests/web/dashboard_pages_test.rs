@@ -59,8 +59,8 @@ async fn test_dashboard_home_redirects_without_auth() {
     let app = TestApp::spawn().await;
 
     // Dashboard requires authentication - should redirect
-    // Note: /dashboard not in test router, use /accounts/sessions as proxy
-    let response = app.server.get("/accounts/sessions").await;
+    // Note: /dashboard not in test router, use /accounts/login-sessions as proxy
+    let response = app.server.get("/accounts/login-sessions").await;
 
     let status = response.status_code().as_u16();
     assert!(
@@ -97,7 +97,7 @@ async fn test_dashboard_home_loads_with_auth() {
 
     let response = app
         .server
-        .get("/accounts/sessions")
+        .get("/accounts/login-sessions")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -135,7 +135,7 @@ async fn test_user_sessions_page_contains_html() {
 
     let response = app
         .server
-        .get("/accounts/sessions")
+        .get("/accounts/login-sessions")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -144,7 +144,7 @@ async fn test_user_sessions_page_contains_html() {
     let body = response.text();
     // Verify it's HTML content
     assert!(
-        body.contains("<!DOCTYPE html>") || body.contains("<html") || body.contains("My Sessions"),
+        body.contains("<!DOCTYPE html>") || body.contains("<html") || body.contains("My Login Sessions"),
         "Expected HTML content"
     );
 }
@@ -563,7 +563,7 @@ async fn test_html_pages_return_html_content_type() {
 
     let response = app
         .server
-        .get("/accounts/sessions")
+        .get("/accounts/login-sessions")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 

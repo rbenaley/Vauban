@@ -2,10 +2,10 @@
 ///
 /// Tests for:
 /// - /accounts/profile - User's profile page
-/// - /accounts/sessions - User's active login sessions
-/// - /accounts/sessions/{uuid}/revoke - Revoke a session
-/// - /admin/sessions - Admin: all users' web sessions
-/// - /admin/sessions/{uuid}/revoke - Admin: revoke any user's session
+/// - /accounts/login-sessions - User's active login sessions
+/// - /accounts/login-sessions/{uuid}/revoke - Revoke a session
+/// - /accounts/all-login-sessions - Admin: all users' web sessions
+/// - /accounts/all-login-sessions/{uuid}/revoke - Admin: revoke any user's session
 /// - /accounts/apikeys - User's API keys
 /// - /accounts/apikeys/create - Create a new API key
 /// - /accounts/apikeys/{uuid}/revoke - Revoke an API key
@@ -13,11 +13,12 @@ use crate::common::{TestApp, unwrap_ok};
 use crate::fixtures::{
     create_auth_session_with_token, create_expired_api_key, create_expired_auth_session,
     create_simple_admin_user, create_simple_user, create_test_api_key, create_test_auth_session,
-    unique_name,
+    create_test_user, unique_name,
 };
-use axum::http::header::COOKIE;
+use axum::http::header::{COOKIE, USER_AGENT};
 use diesel::{ExpressionMethods, QueryDsl};
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
+use serde_json::json;
 use uuid::Uuid;
 use vauban_web::models::user::AuthSource;
 
@@ -600,7 +601,7 @@ async fn test_profile_page_shows_quick_actions() {
         "Profile should have link to API Keys"
     );
     assert!(
-        body.contains("Manage Sessions") || body.contains("/accounts/sessions"),
+        body.contains("Manage Login Sessions") || body.contains("/accounts/login-sessions"),
         "Profile should have link to sessions"
     );
 }
@@ -658,7 +659,7 @@ async fn test_user_sessions_page_loads() {
     // Request user sessions page
     let response = app
         .server
-        .get("/accounts/sessions")
+        .get("/accounts/login-sessions")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -675,7 +676,7 @@ async fn test_user_sessions_page_requires_auth() {
     let app = TestApp::spawn().await;
 
     // Request without auth token
-    let response = app.server.get("/accounts/sessions").await;
+    let response = app.server.get("/accounts/login-sessions").await;
 
     // Web pages should redirect to login (303 See Other)
     let status = response.status_code().as_u16();
@@ -711,7 +712,7 @@ async fn test_user_sessions_page_shows_empty_state() {
 
     let response = app
         .server
-        .get("/accounts/sessions")
+        .get("/accounts/login-sessions")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -720,9 +721,9 @@ async fn test_user_sessions_page_shows_empty_state() {
 
     if status == 200 {
         let body = response.text();
-        // Note: The token generation creates a session, so we check for "My Sessions" title
+        // Note: The token generation creates a session, so we check for "My Login Sessions" title
         assert!(
-            body.contains("My Sessions"),
+            body.contains("My Login Sessions"),
             "Expected sessions page content"
         );
     }
@@ -756,7 +757,7 @@ async fn test_user_sessions_page_displays_sessions() {
 
     let response = app
         .server
-        .get("/accounts/sessions")
+        .get("/accounts/login-sessions")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -793,7 +794,7 @@ async fn test_revoke_session_works() {
     // Revoke the session
     let response = app
         .server
-        .post(&format!("/accounts/sessions/{}/revoke", session_uuid))
+        .post(&format!("/accounts/login-sessions/{}/revoke", session_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -817,7 +818,7 @@ async fn test_revoke_session_requires_auth() {
     // Request without auth
     let response = app
         .server
-        .post(&format!("/accounts/sessions/{}/revoke", session_uuid))
+        .post(&format!("/accounts/login-sessions/{}/revoke", session_uuid))
         .await;
 
     let status = response.status_code().as_u16();
@@ -1237,7 +1238,7 @@ async fn test_revoked_session_token_becomes_invalid() {
     // First, verify the token works (session exists)
     let response = app
         .server
-        .get("/accounts/sessions")
+        .get("/accounts/login-sessions")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
     assert_eq!(
@@ -1255,7 +1256,7 @@ async fn test_revoked_session_token_becomes_invalid() {
     // Try to use the token again - it should now be invalid
     let response2 = app
         .server
-        .get("/accounts/sessions")
+        .get("/accounts/login-sessions")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -1393,7 +1394,7 @@ async fn test_expired_session_is_rejected() {
     // Try to use the token - should be rejected (session idle-expired)
     let response = app
         .server
-        .get("/accounts/sessions")
+        .get("/accounts/login-sessions")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -1446,7 +1447,7 @@ async fn test_revoke_session_broadcasts_update_to_websocket() {
     // Revoke the session
     let response = app
         .server
-        .post(&format!("/accounts/sessions/{}/revoke", session_to_revoke))
+        .post(&format!("/accounts/login-sessions/{}/revoke", session_to_revoke))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -1519,7 +1520,7 @@ async fn test_revoke_session_removes_session_from_database() {
     // Revoke the session
     let _response = app
         .server
-        .post(&format!("/accounts/sessions/{}/revoke", session_uuid))
+        .post(&format!("/accounts/login-sessions/{}/revoke", session_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -1728,7 +1729,7 @@ async fn test_multiple_sessions_all_updated_on_revoke() {
     // Revoke session2
     let _response = app
         .server
-        .post(&format!("/accounts/sessions/{}/revoke", session2))
+        .post(&format!("/accounts/login-sessions/{}/revoke", session2))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -1770,7 +1771,7 @@ async fn test_multiple_sessions_all_updated_on_revoke() {
 }
 
 // =============================================================================
-// Admin Users Sessions Page Tests (/admin/sessions)
+// Admin Users Sessions Page Tests (/accounts/all-login-sessions)
 // =============================================================================
 
 #[tokio::test]
@@ -1788,7 +1789,7 @@ async fn test_admin_sessions_page_loads_for_admin() {
 
     let response = app
         .server
-        .get("/admin/sessions")
+        .get("/accounts/all-login-sessions")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -1800,7 +1801,7 @@ async fn test_admin_sessions_page_loads_for_admin() {
     );
     let body = response.text();
     assert!(
-        body.contains("All Sessions"),
+        body.contains("All Login Sessions"),
         "Page should contain 'All Sessions' title"
     );
 }
@@ -1820,7 +1821,7 @@ async fn test_admin_sessions_page_loads_for_staff() {
 
     let response = app
         .server
-        .get("/admin/sessions")
+        .get("/accounts/all-login-sessions")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -1847,7 +1848,7 @@ async fn test_admin_sessions_page_rejected_for_regular_user() {
 
     let response = app
         .server
-        .get("/admin/sessions")
+        .get("/accounts/all-login-sessions")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -1881,7 +1882,7 @@ async fn test_admin_sessions_shows_all_users_sessions() {
 
     let response = app
         .server
-        .get("/admin/sessions")
+        .get("/accounts/all-login-sessions")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -1916,7 +1917,7 @@ async fn test_admin_sessions_hides_expired() {
 
     let response = app
         .server
-        .get("/admin/sessions")
+        .get("/accounts/all-login-sessions")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -1950,7 +1951,7 @@ async fn test_admin_revoke_session_deletes_from_db() {
 
     let response = app
         .server
-        .post(&format!("/admin/sessions/{}/revoke", session_uuid))
+        .post(&format!("/accounts/all-login-sessions/{}/revoke", session_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -2001,7 +2002,7 @@ async fn test_admin_revoke_non_staff_rejected() {
 
     let response = app
         .server
-        .post(&format!("/admin/sessions/{}/revoke", session_uuid))
+        .post(&format!("/accounts/all-login-sessions/{}/revoke", session_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -2047,7 +2048,7 @@ async fn test_admin_revoke_nonexistent_session() {
     let nonexistent = Uuid::new_v4();
     let response = app
         .server
-        .post(&format!("/admin/sessions/{}/revoke", nonexistent))
+        .post(&format!("/accounts/all-login-sessions/{}/revoke", nonexistent))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -2079,7 +2080,7 @@ async fn test_admin_revoke_invalid_uuid() {
 
     let response = app
         .server
-        .post("/admin/sessions/not-a-valid-uuid/revoke")
+        .post("/accounts/all-login-sessions/not-a-valid-uuid/revoke")
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -2115,7 +2116,7 @@ async fn test_admin_revoke_invalid_csrf() {
 
     let response = app
         .server
-        .post(&format!("/admin/sessions/{}/revoke", session_uuid))
+        .post(&format!("/accounts/all-login-sessions/{}/revoke", session_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf=invalid", token),
@@ -2159,7 +2160,7 @@ async fn test_admin_revoke_idempotent() {
     // First revocation
     let response = app
         .server
-        .post(&format!("/admin/sessions/{}/revoke", session_uuid))
+        .post(&format!("/accounts/all-login-sessions/{}/revoke", session_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -2172,7 +2173,7 @@ async fn test_admin_revoke_idempotent() {
     let csrf_token2 = app.generate_csrf_token();
     let response2 = app
         .server
-        .post(&format!("/admin/sessions/{}/revoke", session_uuid))
+        .post(&format!("/accounts/all-login-sessions/{}/revoke", session_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token2),
@@ -2209,7 +2210,7 @@ async fn test_admin_revoke_no_crash_when_target_offline() {
     // Revoke while user has no WebSocket connection -- should not crash
     let response = app
         .server
-        .post(&format!("/admin/sessions/{}/revoke", session_uuid))
+        .post(&format!("/accounts/all-login-sessions/{}/revoke", session_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -2248,7 +2249,7 @@ async fn test_admin_revoke_last_session() {
 
     let response = app
         .server
-        .post(&format!("/admin/sessions/{}/revoke", session_uuid))
+        .post(&format!("/accounts/all-login-sessions/{}/revoke", session_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -2284,18 +2285,328 @@ async fn test_admin_sessions_page_has_correct_structure() {
 
     let response = app
         .server
-        .get("/admin/sessions")
+        .get("/accounts/all-login-sessions")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
     assert_eq!(response.status_code().as_u16(), 200);
     let body = response.text();
     assert!(
-        body.contains("All Sessions"),
+        body.contains("All Login Sessions"),
         "Page should contain the 'All Sessions' title"
     );
     assert!(
         body.contains("All active login sessions across all users"),
         "Page should contain the subtitle"
+    );
+}
+
+// =============================================================================
+// Issue #8 - Login session deduplication & route renaming
+// =============================================================================
+
+/// Helper: count rows in `auth_sessions` for a given user_id.
+async fn count_auth_sessions(conn: &mut AsyncPgConnection, user_id_val: i32) -> i64 {
+    use vauban_web::schema::auth_sessions;
+    unwrap_ok!(
+        auth_sessions::table
+            .filter(auth_sessions::user_id.eq(user_id_val))
+            .count()
+            .get_result::<i64>(conn)
+            .await
+    )
+}
+
+/// Issue #8 -- the `uniq_auth_sessions_per_device` UNIQUE index must
+/// reject a second `auth_sessions` row that shares (user_id, device_info,
+/// ip_address) with an existing one.
+///
+/// This is the database-level invariant that backstops
+/// `insert_session_with_purge` against inter-pod races.
+#[tokio::test]
+async fn test_unique_index_blocks_duplicate_session_per_device() {
+    use chrono::{Duration, Utc};
+    use diesel::result::{DatabaseErrorKind, Error as DieselError};
+    use vauban_web::models::NewAuthSession;
+    use vauban_web::schema::auth_sessions;
+
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("uniq_idx_dup");
+    let user_id = create_simple_user(&mut conn, &username).await;
+
+    let ip: ipnetwork::IpNetwork = unwrap_ok!("127.0.0.1".parse());
+    let device = "Chrome on macOS".to_string();
+
+    // First insert: must succeed.
+    let s1 = NewAuthSession {
+        uuid: Uuid::new_v4(),
+        user_id,
+        token_hash: format!("hash_dup_a_{}", user_id),
+        ip_address: ip,
+        user_agent: Some("Mozilla/5.0 Test A".to_string()),
+        device_info: device.clone(),
+        expires_at: Utc::now() + Duration::hours(24),
+        is_current: true,
+    };
+    unwrap_ok!(
+        diesel::insert_into(auth_sessions::table)
+            .values(&s1)
+            .execute(&mut conn)
+            .await
+    );
+
+    // Second insert with the same (user_id, device_info, ip_address)
+    // tuple: must trip the UNIQUE index.
+    let s2 = NewAuthSession {
+        uuid: Uuid::new_v4(),
+        user_id,
+        token_hash: format!("hash_dup_b_{}", user_id),
+        ip_address: ip,
+        user_agent: Some("Mozilla/5.0 Test B".to_string()),
+        device_info: device.clone(),
+        expires_at: Utc::now() + Duration::hours(24),
+        is_current: true,
+    };
+    let result = diesel::insert_into(auth_sessions::table)
+        .values(&s2)
+        .execute(&mut conn)
+        .await;
+
+    match result {
+        Err(DieselError::DatabaseError(DatabaseErrorKind::UniqueViolation, _)) => {}
+        Err(e) => panic!("expected UniqueViolation, got {:?}", e),
+        Ok(_) => panic!(
+            "expected UniqueViolation on second insert with same (user, device, ip); \
+             did the migration `uniq_auth_sessions_per_device` run on the test DB?"
+        ),
+    }
+
+    // Sanity: only the first row survives.
+    assert_eq!(count_auth_sessions(&mut conn, user_id).await, 1);
+}
+
+/// Issue #8 -- two consecutive logins from the same user/device/IP must
+/// leave exactly ONE row in `auth_sessions` (B-strict policy enforced
+/// by `insert_session_with_purge`).
+#[tokio::test]
+async fn test_login_purges_previous_session_for_same_device() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("dedup_same_device");
+    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
+    let user_id = test_user.user.id;
+
+    // Snapshot baseline: `create_test_user` inserts a bootstrap session.
+    let baseline = count_auth_sessions(&mut conn, user_id).await;
+
+    // First real login.
+    let r1 = app
+        .server
+        .post("/api/v1/auth/login")
+        .add_header(USER_AGENT, "Mozilla/5.0 (Dedup Test Browser)")
+        .json(&json!({
+            "username": username,
+            "password": test_user.password,
+        }))
+        .await;
+    assert_eq!(r1.status_code().as_u16(), 200);
+
+    let after_first = count_auth_sessions(&mut conn, user_id).await;
+    assert!(
+        after_first >= baseline,
+        "first login should not decrease session count (baseline={}, after={})",
+        baseline,
+        after_first
+    );
+
+    // Second login from the same client (same UA, same default IP):
+    // `insert_session_with_purge` must delete the row from r1 before
+    // inserting the new one, so the count must NOT grow.
+    let r2 = app
+        .server
+        .post("/api/v1/auth/login")
+        .add_header(USER_AGENT, "Mozilla/5.0 (Dedup Test Browser)")
+        .json(&json!({
+            "username": username,
+            "password": test_user.password,
+        }))
+        .await;
+    assert_eq!(r2.status_code().as_u16(), 200);
+
+    let after_second = count_auth_sessions(&mut conn, user_id).await;
+    assert_eq!(
+        after_second, after_first,
+        "second login from the same (user, device, ip) must replace the previous \
+         session, not duplicate it (was {}, now {})",
+        after_first, after_second
+    );
+}
+
+/// Issue #8 -- two logins with DIFFERENT User-Agents must keep BOTH
+/// rows: the device fingerprint differs, so they are distinct devices.
+#[tokio::test]
+async fn test_login_keeps_sessions_for_different_user_agents() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("dedup_diff_device");
+    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
+    let user_id = test_user.user.id;
+
+    let baseline = count_auth_sessions(&mut conn, user_id).await;
+
+    // First login -- pretend we are on macOS Chrome.
+    let r1 = app
+        .server
+        .post("/api/v1/auth/login")
+        .add_header(
+            USER_AGENT,
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 \
+             (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        )
+        .json(&json!({
+            "username": username,
+            "password": test_user.password,
+        }))
+        .await;
+    assert_eq!(r1.status_code().as_u16(), 200);
+
+    // Second login -- pretend we are on Windows Firefox.
+    let r2 = app
+        .server
+        .post("/api/v1/auth/login")
+        .add_header(
+            USER_AGENT,
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) \
+             Gecko/20100101 Firefox/121.0",
+        )
+        .json(&json!({
+            "username": username,
+            "password": test_user.password,
+        }))
+        .await;
+    assert_eq!(r2.status_code().as_u16(), 200);
+
+    let after = count_auth_sessions(&mut conn, user_id).await;
+    assert_eq!(
+        after,
+        baseline + 2,
+        "two logins with distinct device fingerprints must produce two rows \
+         (baseline={}, after={})",
+        baseline,
+        after
+    );
+}
+
+/// Issue #8 -- the legacy GET `/accounts/sessions` route must answer
+/// 308 Permanent Redirect to `/accounts/login-sessions` so external
+/// bookmarks and HTTP clients keep working.
+#[tokio::test]
+async fn test_legacy_user_sessions_route_redirects_permanent() {
+    let app = TestApp::spawn().await;
+
+    let response = app.server.get("/accounts/sessions").await;
+
+    assert_eq!(
+        response.status_code().as_u16(),
+        308,
+        "GET /accounts/sessions must answer 308 Permanent Redirect"
+    );
+    let location = unwrap_ok!(unwrap_ok!(
+        response
+            .headers()
+            .get("location")
+            .ok_or("missing Location header")
+    )
+    .to_str());
+    assert_eq!(location, "/accounts/login-sessions");
+}
+
+/// Issue #8 -- the legacy GET `/admin/sessions` route must redirect
+/// to `/accounts/all-login-sessions` (admin view was reparented under
+/// `/accounts` because it is a login-session view, not a bastion view).
+#[tokio::test]
+async fn test_legacy_admin_sessions_route_redirects_permanent() {
+    let app = TestApp::spawn().await;
+
+    let response = app.server.get("/admin/sessions").await;
+
+    assert_eq!(
+        response.status_code().as_u16(),
+        308,
+        "GET /admin/sessions must answer 308 Permanent Redirect"
+    );
+    let location = unwrap_ok!(unwrap_ok!(
+        response
+            .headers()
+            .get("location")
+            .ok_or("missing Location header")
+    )
+    .to_str());
+    assert_eq!(location, "/accounts/all-login-sessions");
+}
+
+/// Issue #8 -- the legacy POST `/accounts/sessions/{uuid}/revoke`
+/// route must redirect to the new `/accounts/login-sessions/{uuid}/revoke`
+/// while preserving the session UUID in the path.
+#[tokio::test]
+async fn test_legacy_user_revoke_route_redirects_permanent() {
+    let app = TestApp::spawn().await;
+    let session_uuid = Uuid::new_v4();
+
+    let response = app
+        .server
+        .post(&format!("/accounts/sessions/{}/revoke", session_uuid))
+        .await;
+
+    assert_eq!(
+        response.status_code().as_u16(),
+        308,
+        "POST /accounts/sessions/{{uuid}}/revoke must answer 308 Permanent Redirect"
+    );
+    let location = unwrap_ok!(unwrap_ok!(
+        response
+            .headers()
+            .get("location")
+            .ok_or("missing Location header")
+    )
+    .to_str());
+    assert_eq!(
+        location,
+        format!("/accounts/login-sessions/{}/revoke", session_uuid)
+    );
+}
+
+/// Issue #8 -- legacy admin revoke route must redirect to the new
+/// admin revoke route under `/accounts/all-login-sessions`, preserving
+/// the session UUID.
+#[tokio::test]
+async fn test_legacy_admin_revoke_route_redirects_permanent() {
+    let app = TestApp::spawn().await;
+    let session_uuid = Uuid::new_v4();
+
+    let response = app
+        .server
+        .post(&format!("/admin/sessions/{}/revoke", session_uuid))
+        .await;
+
+    assert_eq!(
+        response.status_code().as_u16(),
+        308,
+        "POST /admin/sessions/{{uuid}}/revoke must answer 308 Permanent Redirect"
+    );
+    let location = unwrap_ok!(unwrap_ok!(
+        response
+            .headers()
+            .get("location")
+            .ok_or("missing Location header")
+    )
+    .to_str());
+    assert_eq!(
+        location,
+        format!("/accounts/all-login-sessions/{}/revoke", session_uuid)
     );
 }

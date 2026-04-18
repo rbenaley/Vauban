@@ -26,38 +26,43 @@ const CONNECTING_TTL_MINUTES: i64 = 2;
 const STALE_ACTIVE_TTL_HOURS: i64 = 24;
 
 /// Start all cleanup tasks.
-pub async fn start_cleanup_tasks(db_pool: DbPool) {
+///
+/// `idle_timeout_secs` mirrors `config.security.session_idle_timeout_secs`
+/// and is forwarded to [`cleanup_expired_or_idle_sessions`] (Issue #8) so
+/// long-idle login sessions are reaped on the same 30-second tick as
+/// already-expired ones.
+pub async fn start_cleanup_tasks(db_pool: DbPool, idle_timeout_secs: u64) {
     let db_pool = Arc::new(db_pool);
 
     // Spawn session cleanup task
     let db_clone = Arc::clone(&db_pool);
     tokio::spawn(async move {
-        session_cleanup_task(db_clone).await;
+        session_cleanup_task(db_clone, idle_timeout_secs).await;
     });
 
     info!(
         interval_secs = CLEANUP_INTERVAL_SECS,
-        "Cleanup background tasks started"
+        idle_timeout_secs, "Cleanup background tasks started"
     );
 }
 
 /// Task that periodically cleans up expired auth sessions and API keys.
-async fn session_cleanup_task(db_pool: Arc<DbPool>) {
+async fn session_cleanup_task(db_pool: Arc<DbPool>, idle_timeout_secs: u64) {
     let mut ticker = interval(Duration::from_secs(CLEANUP_INTERVAL_SECS));
 
     loop {
         ticker.tick().await;
 
-        // Cleanup expired auth sessions
-        match cleanup_expired_sessions(&db_pool).await {
+        // Cleanup expired or long-idle auth sessions (Issue #8).
+        match cleanup_expired_or_idle_sessions(&db_pool, idle_timeout_secs).await {
             Ok(count) => {
                 if count > 0 {
-                    info!(deleted = count, "Cleaned up expired auth sessions");
+                    info!(deleted = count, "Cleaned up expired or idle auth sessions");
                 } else {
-                    debug!("No expired auth sessions to clean up");
+                    debug!("No expired or idle auth sessions to clean up");
                 }
             }
-            Err(e) => error!(error = %e, "Failed to clean up expired auth sessions"),
+            Err(e) => error!(error = %e, "Failed to clean up expired or idle auth sessions"),
         }
 
         // Cleanup expired and inactive API keys
@@ -131,17 +136,34 @@ async fn session_cleanup_task(db_pool: Arc<DbPool>) {
     }
 }
 
-/// Delete expired auth sessions from the database.
-async fn cleanup_expired_sessions(db_pool: &DbPool) -> Result<usize, String> {
+/// Delete expired or long-idle auth sessions from the database.
+///
+/// Issue #8: in addition to the original `expires_at` predicate, this also
+/// deletes rows whose `last_activity` is older than `idle_timeout_secs`.
+/// Combined with the per-(user, device, IP) UNIQUE index and the purge
+/// performed at login (`handlers::auth::insert_session_with_purge`), this
+/// keeps the `My login sessions` view free of duplicates and stale
+/// entries.
+async fn cleanup_expired_or_idle_sessions(
+    db_pool: &DbPool,
+    idle_timeout_secs: u64,
+) -> Result<usize, String> {
     use diesel_async::RunQueryDsl;
 
     let mut conn = db_pool.get().await.map_err(|e| e.to_string())?;
+    let now = Utc::now();
+    let idle_cutoff = now - chrono::Duration::seconds(idle_timeout_secs as i64);
 
-    let deleted =
-        diesel::delete(auth_sessions::table.filter(auth_sessions::expires_at.lt(Utc::now())))
-            .execute(&mut conn)
-            .await
-            .map_err(|e| e.to_string())?;
+    let deleted = diesel::delete(
+        auth_sessions::table.filter(
+            auth_sessions::expires_at
+                .lt(now)
+                .or(auth_sessions::last_activity.lt(idle_cutoff)),
+        ),
+    )
+    .execute(&mut conn)
+    .await
+    .map_err(|e| e.to_string())?;
 
     Ok(deleted)
 }
@@ -797,6 +819,92 @@ mod tests {
         assert!(
             fn_body.contains("disconnect_stale_active_sessions"),
             "session_cleanup_task must call disconnect_stale_active_sessions"
+        );
+    }
+
+    // ==================== Issue #8 -- Idle session cleanup ====================
+
+    /// `start_cleanup_tasks` must accept the idle timeout as a parameter,
+    /// otherwise it cannot honour `config.security.session_idle_timeout_secs`.
+    #[test]
+    fn test_start_cleanup_tasks_takes_idle_timeout_param() {
+        let source = include_str!("cleanup.rs");
+        assert!(
+            source.contains("pub async fn start_cleanup_tasks(db_pool: DbPool, idle_timeout_secs: u64)"),
+            "start_cleanup_tasks must take an idle_timeout_secs parameter (Issue #8)"
+        );
+    }
+
+    /// The session-cleanup task must call the renamed function so the new
+    /// idle-cleanup behaviour actually runs on every tick.
+    #[test]
+    fn test_cleanup_task_calls_expired_or_idle_cleanup() {
+        let source = include_str!("cleanup.rs");
+        let fn_start = source
+            .find("fn session_cleanup_task")
+            .expect("session_cleanup_task must exist");
+        let fn_body = &source[fn_start..];
+        let fn_end = fn_body[1..]
+            .find("\nasync fn ")
+            .or_else(|| fn_body[1..].find("\n/// "))
+            .unwrap_or(fn_body.len());
+        let fn_body = &fn_body[..fn_end];
+
+        assert!(
+            fn_body.contains("cleanup_expired_or_idle_sessions"),
+            "session_cleanup_task must call cleanup_expired_or_idle_sessions (Issue #8)"
+        );
+        assert!(
+            fn_body.contains("idle_timeout_secs"),
+            "session_cleanup_task must forward idle_timeout_secs to the cleanup helper"
+        );
+    }
+
+    /// The cleanup helper must filter on BOTH `expires_at < now` (original
+    /// behaviour) AND `last_activity < idle_cutoff` (Issue #8), where
+    /// `idle_cutoff = now - idle_timeout_secs`.
+    #[test]
+    fn test_cleanup_expired_or_idle_filters_both_predicates() {
+        let source = include_str!("cleanup.rs");
+        let fn_start = source
+            .find("fn cleanup_expired_or_idle_sessions")
+            .expect("cleanup_expired_or_idle_sessions function must exist");
+        let fn_body = &source[fn_start..];
+        let fn_end = fn_body[1..]
+            .find("\nasync fn ")
+            .or_else(|| fn_body[1..].find("\n/// "))
+            .or_else(|| fn_body[1..].find("#[cfg(test)]"))
+            .unwrap_or(fn_body.len());
+        let fn_body = &fn_body[..fn_end];
+
+        assert!(
+            fn_body.contains("expires_at"),
+            "cleanup_expired_or_idle_sessions must still filter on expires_at"
+        );
+        assert!(
+            fn_body.contains("last_activity"),
+            "cleanup_expired_or_idle_sessions must filter on last_activity (Issue #8)"
+        );
+        assert!(
+            fn_body.contains(".or("),
+            "cleanup_expired_or_idle_sessions must combine the two predicates with OR \
+             (so a row matching either is reaped)"
+        );
+        assert!(
+            fn_body.contains("idle_cutoff") && fn_body.contains("idle_timeout_secs"),
+            "cleanup_expired_or_idle_sessions must derive idle_cutoff from idle_timeout_secs"
+        );
+    }
+
+    /// Sanity guard: the idle-cleanup arithmetic must subtract a Duration
+    /// from `now` -- not add it -- otherwise we would delete future
+    /// sessions instead of stale ones.
+    #[test]
+    fn test_idle_cutoff_is_in_the_past() {
+        let source = include_str!("cleanup.rs");
+        assert!(
+            source.contains("now - chrono::Duration::seconds(idle_timeout_secs as i64)"),
+            "idle_cutoff must be `now - idle_timeout_secs`, not `now + ...`"
         );
     }
 }
