@@ -81,6 +81,12 @@ pub struct CreateAssetWebForm {
     pub ssh_private_key: Option<String>,
     /// Passphrase for encrypted private keys
     pub ssh_passphrase: Option<String>,
+    /// Optional Windows AD domain for RDP authentication.
+    ///
+    /// Stored as `connection_config.domain` and consumed by
+    /// `vauban-proxy-rdp` (see `SessionConfig.domain`). Ignored for
+    /// non-RDP `asset_type` values to keep the JSONB blob protocol-clean.
+    pub rdp_domain: Option<String>,
 }
 
 /// Handle asset creation form submission.
@@ -123,6 +129,19 @@ pub async fn create_asset_web(
             flash.error("Port must be between 1 and 65535"),
             "/assets/new",
         );
+    }
+
+    // Reject illegal protocol+auth combinations BEFORE we touch the DB so
+    // a tampered request (UI bypass, scripted POST, ...) cannot persist
+    // SSH credentials on an RDP row. Mirrors the carryover defence below.
+    let parsed_asset_type = AssetType::parse(&form.asset_type);
+    if let Err(msg) = validate_auth_inputs(
+        parsed_asset_type,
+        form.ssh_auth_type.as_deref(),
+        form.ssh_private_key.as_deref(),
+        form.ssh_passphrase.as_deref(),
+    ) {
+        return flash_redirect(flash.error(msg), "/assets/new");
     }
 
     let mut conn = match state.db_pool.get().await {
@@ -179,16 +198,42 @@ pub async fn create_asset_web(
     let sanitized_name = sanitize(form.name.trim());
     let sanitized_description =
         sanitize_opt(form.description.as_ref().filter(|s| !s.is_empty()).cloned());
-    let parsed_asset_type = AssetType::parse(&form.asset_type);
+
+    // Build the (encrypted) connection_config blob ONCE: every code path
+    // below (reactivation + fresh insert) needs an identical, protocol-
+    // aware payload. Doing it inline previously made it possible for the
+    // reactivation branch to skip the rewrite entirely (SEC-11).
+    let mut connection_config = build_connection_config(
+        parsed_asset_type,
+        form.ssh_username.as_deref(),
+        form.ssh_auth_type.as_deref(),
+        form.ssh_password.as_deref(),
+        form.ssh_private_key.as_deref(),
+        form.ssh_passphrase.as_deref(),
+        form.rdp_domain.as_deref(),
+    );
+
+    if let Some(ref vault) = state.vault_client
+        && let Err(e) = encrypt_connection_config(vault, &mut connection_config).await
+    {
+        tracing::error!("Failed to encrypt connection config: {}", e);
+        return flash_redirect(flash.error("Failed to encrypt credentials"), "/assets/new");
+    }
 
     if let Some((deleted_id, deleted_uuid)) = existing_deleted {
-        // Reactivate the soft-deleted asset with new data
+        // SEC-11: when reactivating a soft-deleted row we MUST overwrite
+        // `connection_config` with the freshly-submitted values. Without
+        // this, recreating an RDP asset on the same triplet as a
+        // soft-deleted SSH asset silently inherited the old encrypted
+        // private key, which the proxy would then attempt to use on the
+        // first session establishment.
         let result = diesel::update(a::assets.filter(a::id.eq(deleted_id)))
             .set((
                 a::name.eq(&sanitized_name),
                 a::asset_type.eq(parsed_asset_type),
                 a::status.eq(&form.status),
                 a::description.eq(&sanitized_description),
+                a::connection_config.eq(&connection_config),
                 a::connection_username.eq(connection_username),
                 a::is_deleted.eq(false),
                 a::deleted_at.eq(None::<chrono::DateTime<chrono::Utc>>),
@@ -200,7 +245,7 @@ pub async fn create_asset_web(
         return match result {
             Ok(_) => flash_redirect(
                 flash.success(format!(
-                    "Asset '{}' reactivated successfully",
+                    "Asset '{}' reactivated. Previous credentials were replaced with the values you submitted.",
                     sanitized_name
                 )),
                 &format!("/assets/{}", deleted_uuid),
@@ -212,28 +257,7 @@ pub async fn create_asset_web(
         };
     }
 
-    // Create new asset
     let new_uuid = ::uuid::Uuid::new_v4();
-
-    // Build connection_config JSON with SSH credentials
-    let mut connection_config = build_connection_config(
-        form.ssh_username.as_deref(),
-        form.ssh_auth_type.as_deref(),
-        form.ssh_password.as_deref(),
-        form.ssh_private_key.as_deref(),
-        form.ssh_passphrase.as_deref(),
-    );
-
-    // Encrypt credential fields via vault when available
-    if let Some(ref vault) = state.vault_client
-        && let Err(e) = encrypt_connection_config(vault, &mut connection_config).await
-    {
-        tracing::error!("Failed to encrypt connection config: {}", e);
-        return flash_redirect(
-            flash.error("Failed to encrypt credentials"),
-            "/assets/create",
-        );
-    }
 
     let result = diesel::insert_into(a::assets)
         .values((
@@ -795,8 +819,22 @@ pub async fn asset_detail(
         require_justification: state.config.security.require_justification,
     };
 
+    // Forward incoming flash messages so post-redirect-get flows
+    // (notably the SEC-11 reactivation success warning produced by
+    // `create_asset_web`) actually reach the operator on the detail
+    // page they land on.
+    let flash_messages: Vec<crate::templates::base::FlashMessage> = incoming_flash
+        .messages()
+        .iter()
+        .map(|m| crate::templates::base::FlashMessage {
+            level: m.level.clone(),
+            message: m.message.clone(),
+        })
+        .collect();
+
     let base = BaseTemplate::new(format!("{} - Asset", asset_name), user.clone())
-        .with_current_path("/assets");
+        .with_current_path("/assets")
+        .with_messages(flash_messages);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
             .await
@@ -942,6 +980,11 @@ pub async fn asset_edit(
         .get("ssh_host_key_fingerprint")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    let rdp_domain = asset_connection_config
+        .get("domain")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
 
     let asset = crate::templates::assets::asset_edit::AssetEdit {
         uuid: asset_uuid_val.to_string(),
@@ -957,6 +1000,7 @@ pub async fn asset_edit(
         ssh_private_key,
         ssh_passphrase,
         ssh_host_key_fingerprint,
+        rdp_domain,
     };
 
     let base = BaseTemplate::new(format!("Edit {} - Asset", asset_name), user.clone())
@@ -1066,11 +1110,19 @@ pub async fn delete_asset_web(
     let result = conn
         .transaction::<_, diesel::result::Error, _>(|conn| {
             Box::pin(async move {
+                // SEC-11: scrub `connection_config` on soft-delete so a
+                // later reactivation (or any operator inspecting the
+                // row directly) cannot inherit stale credentials. The
+                // reactivation path also rewrites this column, but
+                // belt-and-suspenders matters here -- a row that lives
+                // in `is_deleted=true` for months should not carry an
+                // encrypted secret blob.
                 diesel::update(a::assets.filter(a::id.eq(asset_id)))
                     .set((
                         a::is_deleted.eq(true),
                         a::deleted_at.eq(now),
                         a::updated_at.eq(now),
+                        a::connection_config.eq(serde_json::json!({})),
                     ))
                     .execute(conn)
                     .await?;
@@ -1135,6 +1187,8 @@ pub struct UpdateAssetForm {
     pub ssh_private_key: Option<String>,
     /// Passphrase for encrypted private keys
     pub ssh_passphrase: Option<String>,
+    /// Optional Windows AD domain for RDP authentication.
+    pub rdp_domain: Option<String>,
 }
 
 /// Form data for deleting an asset.
@@ -1243,13 +1297,28 @@ pub async fn update_asset_web(
         }
     };
 
-    // Build connection_config JSON with SSH credentials
+    // Reject illegal protocol+auth combinations using the asset's
+    // immutable type. We deliberately read `existing.asset_type`
+    // (rather than a form field) because the edit form does NOT expose
+    // an `asset_type` selector -- a tampered request that smuggled one
+    // in must not flip the protocol to bypass validation.
+    if let Err(msg) = validate_auth_inputs(
+        existing.asset_type,
+        form.ssh_auth_type.as_deref(),
+        form.ssh_private_key.as_deref(),
+        form.ssh_passphrase.as_deref(),
+    ) {
+        return flash_redirect(flash.error(msg), &format!("/assets/{}/edit", asset_uuid));
+    }
+
     let mut connection_config = build_connection_config(
+        existing.asset_type,
         form.ssh_username.as_deref(),
         form.ssh_auth_type.as_deref(),
         form.ssh_password.as_deref(),
         form.ssh_private_key.as_deref(),
         form.ssh_passphrase.as_deref(),
+        form.rdp_domain.as_deref(),
     );
 
     // Encrypt credential fields via vault when available

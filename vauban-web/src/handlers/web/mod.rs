@@ -163,21 +163,89 @@ pub(crate) fn sanitize_opt_ref(value: Option<&String>) -> Option<String> {
     value.map(|s| sanitize(s))
 }
 
-/// Build connection_config JSON from SSH credential form fields.
+/// Reject combinations of `asset_type` + auth fields that are nonsensical
+/// for the chosen protocol. Returns the user-facing error message that
+/// should be surfaced via flash redirect.
 ///
-/// This stores credentials in the connection_config field of the asset.
-/// When vault_client is provided (production), credential fields (password,
-/// private_key, passphrase) are encrypted at rest via vauban-vault.
+/// Currently the only forbidden combination is RDP + private-key auth:
+///
+/// - RDP does not understand SSH key material; storing one would leave a
+///   dormant secret on the row that the proxy would never use, and would
+///   silently reactivate on the next operator looking at the form (see
+///   the SEC-11 carryover scenario closed in this same change).
+/// - SSH accepts both `password` and `private_key`, no further check
+///   needed at this layer (length validation lives elsewhere).
+///
+/// We refuse rather than silently strip so an operator who pasted a key
+/// learns immediately that the field will not be honoured, instead of
+/// discovering the mistake during a later session establishment.
+pub(crate) fn validate_auth_inputs(
+    asset_type: crate::models::asset::AssetType,
+    auth_type: Option<&str>,
+    private_key: Option<&str>,
+    passphrase: Option<&str>,
+) -> Result<(), String> {
+    use crate::models::asset::AssetType;
+
+    if asset_type == AssetType::Rdp {
+        if matches!(auth_type, Some("private_key")) {
+            return Err(
+                "Private key authentication is not supported for RDP assets. \
+                 Use password authentication instead."
+                    .to_string(),
+            );
+        }
+        if private_key.is_some_and(|s| !s.is_empty()) {
+            return Err(
+                "Private key field is not allowed for RDP assets. Clear it and \
+                 retry with password authentication."
+                    .to_string(),
+            );
+        }
+        if passphrase.is_some_and(|s| !s.is_empty()) {
+            return Err(
+                "Passphrase field is not allowed for RDP assets. Clear it and \
+                 retry with password authentication."
+                    .to_string(),
+            );
+        }
+    }
+
+    Ok(())
+}
+
+/// Build connection_config JSON from credential form fields.
+///
+/// Protocol-aware: the shape of the resulting JSON depends on
+/// `asset_type` so the persisted blob never contains keys that the
+/// matching proxy would not consume.
+///
+/// - `Ssh` -> may contain `username`, `auth_type`, `password` (when
+///   `auth_type=password`), `private_key` + `passphrase` (when
+///   `auth_type=private_key`). `domain` is ignored.
+/// - `Rdp` -> may contain `username`, `password`, `domain`. The
+///   `auth_type`, `private_key` and `passphrase` arguments are ignored
+///   on purpose: callers should have rejected those upstream via
+///   `validate_auth_inputs`, and accepting them here would only
+///   re-introduce the SEC-11 carryover risk.
+///
+/// When the `vault_client` is wired in, credential fields are
+/// encrypted at rest via `encrypt_connection_config` after this helper
+/// returns.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_connection_config(
+    asset_type: crate::models::asset::AssetType,
     username: Option<&str>,
     auth_type: Option<&str>,
     password: Option<&str>,
     private_key: Option<&str>,
     passphrase: Option<&str>,
+    domain: Option<&str>,
 ) -> serde_json::Value {
+    use crate::models::asset::AssetType;
+
     let mut config = serde_json::Map::new();
 
-    // Add username if provided
     if let Some(u) = username.filter(|s| !s.trim().is_empty()) {
         config.insert(
             "username".to_string(),
@@ -185,40 +253,60 @@ pub(crate) fn build_connection_config(
         );
     }
 
-    // Add auth_type if provided
-    if let Some(at) = auth_type.filter(|s| !s.trim().is_empty()) {
-        config.insert(
-            "auth_type".to_string(),
-            serde_json::Value::String(at.to_string()),
-        );
+    match asset_type {
+        AssetType::Ssh => {
+            if let Some(at) = auth_type.filter(|s| !s.trim().is_empty()) {
+                config.insert(
+                    "auth_type".to_string(),
+                    serde_json::Value::String(at.to_string()),
+                );
 
-        match at {
-            "password" => {
-                // Add password if auth type is password
-                if let Some(p) = password.filter(|s| !s.is_empty()) {
-                    config.insert(
-                        "password".to_string(),
-                        serde_json::Value::String(p.to_string()),
-                    );
+                match at {
+                    "password" => {
+                        if let Some(p) = password.filter(|s| !s.is_empty()) {
+                            config.insert(
+                                "password".to_string(),
+                                serde_json::Value::String(p.to_string()),
+                            );
+                        }
+                    }
+                    "private_key" => {
+                        if let Some(pk) = private_key.filter(|s| !s.is_empty()) {
+                            config.insert(
+                                "private_key".to_string(),
+                                serde_json::Value::String(pk.to_string()),
+                            );
+                        }
+                        if let Some(pp) = passphrase.filter(|s| !s.is_empty()) {
+                            config.insert(
+                                "passphrase".to_string(),
+                                serde_json::Value::String(pp.to_string()),
+                            );
+                        }
+                    }
+                    _ => {}
                 }
             }
-            "private_key" => {
-                // Add private key if auth type is private_key
-                if let Some(pk) = private_key.filter(|s| !s.is_empty()) {
-                    config.insert(
-                        "private_key".to_string(),
-                        serde_json::Value::String(pk.to_string()),
-                    );
-                }
-                // Add passphrase if provided
-                if let Some(pp) = passphrase.filter(|s| !s.is_empty()) {
-                    config.insert(
-                        "passphrase".to_string(),
-                        serde_json::Value::String(pp.to_string()),
-                    );
-                }
+        }
+        AssetType::Rdp => {
+            // RDP only knows username + password (+ optional Windows
+            // domain). `auth_type`, `private_key`, `passphrase` are
+            // intentionally dropped here as a defence-in-depth layer
+            // behind `validate_auth_inputs` -- a tampered request that
+            // bypassed validation still cannot persist SSH key material
+            // on an RDP row.
+            if let Some(p) = password.filter(|s| !s.is_empty()) {
+                config.insert(
+                    "password".to_string(),
+                    serde_json::Value::String(p.to_string()),
+                );
             }
-            _ => {}
+            if let Some(d) = domain.filter(|s| !s.trim().is_empty()) {
+                config.insert(
+                    "domain".to_string(),
+                    serde_json::Value::String(d.trim().to_string()),
+                );
+            }
         }
     }
 

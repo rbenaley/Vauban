@@ -21,6 +21,8 @@ pub struct AssetEdit {
     pub ssh_passphrase: String,
     /// SSH host key fingerprint (read-only, from connection_config).
     pub ssh_host_key_fingerprint: Option<String>,
+    /// Windows AD domain extracted from connection_config (RDP only).
+    pub rdp_domain: String,
 }
 
 #[derive(Template)]
@@ -56,6 +58,7 @@ mod tests {
             ssh_private_key: String::new(),
             ssh_passphrase: String::new(),
             ssh_host_key_fingerprint: None,
+            rdp_domain: String::new(),
         }
     }
 

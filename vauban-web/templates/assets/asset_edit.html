@@ -111,9 +111,18 @@
             </div>
         </div>
 
-        <!-- Authentication Settings (for SSH/RDP) -->
+        <!-- Authentication Settings (protocol-aware).
+             `assetType` is server-rendered and READ-ONLY here: edit
+             never lets the operator change the protocol of an existing
+             asset (that constraint is enforced server-side by reading
+             `existing.asset_type` instead of trusting any submitted
+             field). -->
         <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden"
-             x-data="{ authType: '{{ asset.ssh_auth_type }}' }">
+             x-data="{
+                 assetType: '{{ asset.asset_type }}',
+                 authType: '{{ asset.ssh_auth_type }}'
+             }"
+             x-effect="if (assetType === 'rdp' && authType !== 'password') { authType = 'password' }">
             <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
                 <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Authentication</h3>
                 <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">Configure credentials for connecting to this asset.</p>
@@ -122,13 +131,17 @@
                 <div class="grid grid-cols-1 gap-6 sm:grid-cols-2">
                     <div>
                         <label for="ssh_username" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Username</label>
-                        <input type="text" name="ssh_username" id="ssh_username" 
+                        <input type="text" name="ssh_username" id="ssh_username"
                                value="{{ asset.ssh_username }}"
                                class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
                                placeholder="root">
                         <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">SSH/RDP username for authentication</p>
                     </div>
-                    <div>
+                    <!-- Authentication Type selector: SSH only.
+                         Hidden for RDP because the proxy only consumes
+                         password auth; private-key would be rejected by
+                         validate_auth_inputs. -->
+                    <div x-show="assetType === 'ssh'" x-cloak>
                         <label for="ssh_auth_type" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Authentication Type</label>
                         <select name="ssh_auth_type" id="ssh_auth_type" x-model="authType"
                                 class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
@@ -138,8 +151,9 @@
                     </div>
                 </div>
 
-                <!-- Password field (shown when auth type is password) -->
-                <div x-show="authType === 'password'" x-cloak>
+                <!-- Password field: shown for RDP (always) and for SSH
+                     when auth_type=password. -->
+                <div x-show="assetType === 'rdp' || authType === 'password'" x-cloak>
                     <label for="ssh_password" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Password</label>
                     <input type="password" name="ssh_password" id="ssh_password"
                            value="{{ asset.ssh_password }}"
@@ -148,8 +162,8 @@
                     <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Password for authentication</p>
                 </div>
 
-                <!-- Private key fields (shown when auth type is private_key) -->
-                <div x-show="authType === 'private_key'" x-cloak class="space-y-4">
+                <!-- Private key fields: SSH only AND auth_type=private_key. -->
+                <div x-show="assetType === 'ssh' && authType === 'private_key'" x-cloak class="space-y-4">
                     <div>
                         <label for="ssh_private_key" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Private Key</label>
                         <textarea name="ssh_private_key" id="ssh_private_key" rows="6"
@@ -167,6 +181,16 @@
                                placeholder="Key passphrase (if encrypted)">
                         <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Leave empty if the private key is not encrypted</p>
                     </div>
+                </div>
+
+                <!-- Windows AD domain: RDP only. -->
+                <div x-show="assetType === 'rdp'" x-cloak>
+                    <label for="rdp_domain" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Domain (optional)</label>
+                    <input type="text" name="rdp_domain" id="rdp_domain"
+                           value="{{ asset.rdp_domain }}"
+                           class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
+                           maxlength="255" placeholder="CORP">
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Windows Active Directory domain (e.g. <code>CORP</code>). Leave empty for local accounts.</p>
                 </div>
             </div>
         </div>
