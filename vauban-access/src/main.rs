@@ -28,7 +28,7 @@ use shared::messages::{AccessResponse, ControlMessage, Message, RbacResult, Serv
 use std::os::unix::io::RawFd;
 use std::process::ExitCode;
 use std::time::Instant;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Service runtime state.
 struct ServiceState {
@@ -305,7 +305,7 @@ fn handle_message(channel: &IpcChannel, state: &mut ServiceState, msg: Message) 
             let result = if let Some(ref enforcer) = state.enforcer {
                 match enforcer.enforce(vec![subject.clone(), object.clone(), action.clone()]) {
                     Ok(allowed) => {
-                        info!(
+                        debug!(
                             subject = %subject,
                             object = %object,
                             action = %action,
