@@ -393,10 +393,7 @@ async fn handle_check_access_multi(
                             allowed: true,
                             require_mfa: rules.iter().any(|(mfa, _, _)| *mfa),
                             require_approval: rules.iter().any(|(_, just, _)| *just),
-                            max_session_duration: rules
-                                .iter()
-                                .filter_map(|(_, _, dur)| *dur)
-                                .min(),
+                            max_session_duration: rules.iter().filter_map(|(_, _, dur)| *dur).min(),
                         },
                         _ => AccessCheckResult {
                             allowed: false,
@@ -600,7 +597,10 @@ async fn handle_list_access_rules(conn: &mut DbConnection, page: IpcPageParams) 
                 rows.truncate(base_limit as usize);
             }
             let infos: Vec<AccessRuleInfo> = rows.into_iter().map(to_access_rule_info).collect();
-            AccessResponse::AccessRulePage(IpcPage { items: infos, has_more })
+            AccessResponse::AccessRulePage(IpcPage {
+                items: infos,
+                has_more,
+            })
         }
         Err(e) => AccessResponse::Error(format!("Failed to list access rules: {}", e)),
     }
@@ -914,7 +914,10 @@ async fn handle_list_vauban_groups(conn: &mut DbConnection, page: IpcPageParams)
                     }
                 }
             }
-            AccessResponse::VaubanGroupPage(IpcPage { items: infos, has_more })
+            AccessResponse::VaubanGroupPage(IpcPage {
+                items: infos,
+                has_more,
+            })
         }
         Err(e) => AccessResponse::Error(format!("Failed to list groups: {}", e)),
     }
@@ -1164,7 +1167,10 @@ async fn handle_list_user_groups(
                     }
                 }
             }
-            AccessResponse::UserGroupPage(IpcPage { items: infos, has_more })
+            AccessResponse::UserGroupPage(IpcPage {
+                items: infos,
+                has_more,
+            })
         }
         Err(e) => AccessResponse::Error(format!("Failed to list user groups: {}", e)),
     }
@@ -1344,7 +1350,10 @@ async fn handle_list_asset_groups(conn: &mut DbConnection, page: IpcPageParams) 
                     },
                 )
                 .collect();
-            AccessResponse::AssetGroupPage(IpcPage { items: infos, has_more })
+            AccessResponse::AssetGroupPage(IpcPage {
+                items: infos,
+                has_more,
+            })
         }
         Err(e) => AccessResponse::Error(format!("Failed to list asset groups: {}", e)),
     }
@@ -1407,7 +1416,10 @@ async fn handle_delete_asset_group(conn: &mut DbConnection, uuid_str: &str) -> A
 
 // ==================== Group options ====================
 
-async fn handle_list_user_group_options(conn: &mut DbConnection, page: IpcPageParams) -> AccessResponse {
+async fn handle_list_user_group_options(
+    conn: &mut DbConnection,
+    page: IpcPageParams,
+) -> AccessResponse {
     let (base_limit, offset) = normalize_ipc_page(page);
     let fetch = base_limit.saturating_add(1);
     let user_group_rows = vauban_groups::table
@@ -1694,8 +1706,8 @@ mod tests {
     }
 
     use std::collections::HashSet;
-    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -1799,8 +1811,11 @@ mod tests {
         .await
         .expect("test-prune: DELETE asset_groups failed");
 
-        let remaining_users: i64 =
-            users::table.count().get_result(&mut conn).await.unwrap_or(0);
+        let remaining_users: i64 = users::table
+            .count()
+            .get_result(&mut conn)
+            .await
+            .unwrap_or(0);
         let remaining_ag: i64 = crate::schema::asset_groups::table
             .count()
             .get_result(&mut conn)
@@ -2002,11 +2017,8 @@ mod tests {
     #[tokio::test]
     async fn test_list_vauban_groups() {
         let pool = test_pool().await;
-        let resp = handle_access_request(
-            &pool,
-            AccessRequest::ListVaubanGroups { page: page0() },
-        )
-        .await;
+        let resp =
+            handle_access_request(&pool, AccessRequest::ListVaubanGroups { page: page0() }).await;
         match resp {
             AccessResponse::VaubanGroupPage(page) => {
                 let _ = page;
@@ -2060,11 +2072,8 @@ mod tests {
     #[tokio::test]
     async fn test_list_asset_groups() {
         let pool = test_pool().await;
-        let resp = handle_access_request(
-            &pool,
-            AccessRequest::ListAssetGroups { page: page0() },
-        )
-        .await;
+        let resp =
+            handle_access_request(&pool, AccessRequest::ListAssetGroups { page: page0() }).await;
         match resp {
             AccessResponse::AssetGroupPage(_) => {}
             other => panic!("Expected AssetGroupPage, got {:?}", other),
@@ -2158,11 +2167,8 @@ mod tests {
     #[tokio::test]
     async fn test_list_access_rules() {
         let pool = test_pool().await;
-        let resp = handle_access_request(
-            &pool,
-            AccessRequest::ListAccessRules { page: page0() },
-        )
-        .await;
+        let resp =
+            handle_access_request(&pool, AccessRequest::ListAccessRules { page: page0() }).await;
         match resp {
             AccessResponse::AccessRulePage(_) => {}
             other => panic!("Expected AccessRulePage, got {:?}", other),
@@ -2178,22 +2184,10 @@ mod tests {
         let ug = create_test_vauban_group(&pool, &ug_name).await;
         let ag1 = create_test_asset_group(&pool, &ag_a).await;
         let ag2 = create_test_asset_group(&pool, &ag_b).await;
-        let r1 = create_test_rule(
-            &pool,
-            &unique_name("rule_eq_a"),
-            ug.id,
-            ag1.id,
-            vec!["ssh"],
-        )
-        .await;
-        let r2 = create_test_rule(
-            &pool,
-            &unique_name("rule_eq_b"),
-            ug.id,
-            ag2.id,
-            vec!["rdp"],
-        )
-        .await;
+        let r1 =
+            create_test_rule(&pool, &unique_name("rule_eq_a"), ug.id, ag1.id, vec!["ssh"]).await;
+        let r2 =
+            create_test_rule(&pool, &unique_name("rule_eq_b"), ug.id, ag2.id, vec!["rdp"]).await;
         let uuids_1 = collect_access_rule_uuids_paged(&pool, 50).await;
         let uuids_256 = collect_access_rule_uuids_paged(&pool, 256).await;
         assert_eq!(uuids_1, uuids_256);
@@ -2538,11 +2532,9 @@ mod tests {
     #[tokio::test]
     async fn test_get_group_options() {
         let pool = test_pool().await;
-        let resp = handle_access_request(
-            &pool,
-            AccessRequest::ListUserGroupOptions { page: page0() },
-        )
-        .await;
+        let resp =
+            handle_access_request(&pool, AccessRequest::ListUserGroupOptions { page: page0() })
+                .await;
         match resp {
             AccessResponse::UserGroupOptionsPage(_) => {}
             other => panic!("Expected UserGroupOptionsPage, got {:?}", other),
@@ -2695,10 +2687,9 @@ mod tests {
         )
         .await;
 
-        let r1 = create_test_rule(&pool, &unique_name("merge_r1"), ug.id, ag.id, vec!["ssh"])
-            .await;
-        let r2 = create_test_rule(&pool, &unique_name("merge_r2"), ug2.id, ag.id, vec!["rdp"])
-            .await;
+        let r1 = create_test_rule(&pool, &unique_name("merge_r1"), ug.id, ag.id, vec!["ssh"]).await;
+        let r2 =
+            create_test_rule(&pool, &unique_name("merge_r2"), ug2.id, ag.id, vec!["rdp"]).await;
 
         let groups = collect_accessible_groups_normalized_paged(&pool, user_id, 256).await;
         let entry = groups

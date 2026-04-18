@@ -12,10 +12,10 @@ use uuid::Uuid;
 
 use crate::common::{TestApp, assertions::*, test_db};
 use crate::fixtures::{
-    add_user_to_vauban_group, create_admin_user, create_approved_session,
-    create_simple_admin_user, create_simple_ssh_asset, create_simple_user,
-    create_test_access_rule_with_constraints, create_test_asset_group, create_test_asset_in_group,
-    create_test_rdp_asset, create_test_ssh_asset, create_test_vauban_group, unique_name,
+    add_user_to_vauban_group, create_admin_user, create_approved_session, create_simple_admin_user,
+    create_simple_ssh_asset, create_simple_user, create_test_access_rule_with_constraints,
+    create_test_asset_group, create_test_asset_in_group, create_test_rdp_asset,
+    create_test_ssh_asset, create_test_vauban_group, unique_name,
 };
 
 // =============================================================================
@@ -707,10 +707,22 @@ async fn test_asset_list_pagination_with_many_assets() {
 
     assert_status(&response, 200);
     let body = response.text();
-    assert!(body.contains("Showing"), "page 1 should show pagination counter");
-    assert!(body.contains("title=\"Next page\""), "page 1 should have Next button");
-    assert!(body.contains("title=\"Last page\""), "page 1 should have Last button");
-    assert!(!body.contains("title=\"First page\""), "page 1 should not have First button");
+    assert!(
+        body.contains("Showing"),
+        "page 1 should show pagination counter"
+    );
+    assert!(
+        body.contains("title=\"Next page\""),
+        "page 1 should have Next button"
+    );
+    assert!(
+        body.contains("title=\"Last page\""),
+        "page 1 should have Last button"
+    );
+    assert!(
+        !body.contains("title=\"First page\""),
+        "page 1 should not have First button"
+    );
 }
 
 #[tokio::test]
@@ -739,8 +751,14 @@ async fn test_asset_list_page_2() {
 
     assert_status(&response, 200);
     let body = response.text();
-    assert!(body.contains("title=\"First page\""), "page 2 should have First button");
-    assert!(body.contains("title=\"Previous page\""), "page 2 should have Previous button");
+    assert!(
+        body.contains("title=\"First page\""),
+        "page 2 should have First button"
+    );
+    assert!(
+        body.contains("title=\"Previous page\""),
+        "page 2 should have Previous button"
+    );
 }
 
 #[tokio::test]
@@ -915,7 +933,8 @@ async fn test_asset_button_shows_request_when_approval_required() {
     add_user_to_vauban_group(&mut conn, user_id, &ug_uuid).await;
 
     let ag_uuid = create_test_asset_group(&mut conn, &unique_name("btn_ag")).await;
-    let _asset_id = create_test_asset_in_group(&mut conn, &unique_name("btn_asset"), admin_id, &ag_uuid).await;
+    let _asset_id =
+        create_test_asset_in_group(&mut conn, &unique_name("btn_asset"), admin_id, &ag_uuid).await;
 
     create_test_access_rule_with_constraints(
         &mut conn,
@@ -970,7 +989,9 @@ async fn test_asset_button_shows_connect_when_no_approval() {
     add_user_to_vauban_group(&mut conn, user_id, &ug_uuid).await;
 
     let ag_uuid = create_test_asset_group(&mut conn, &unique_name("btn_ag_na")).await;
-    let _asset_id = create_test_asset_in_group(&mut conn, &unique_name("btn_asset_na"), admin_id, &ag_uuid).await;
+    let _asset_id =
+        create_test_asset_in_group(&mut conn, &unique_name("btn_asset_na"), admin_id, &ag_uuid)
+            .await;
 
     create_test_access_rule_with_constraints(
         &mut conn,
@@ -1021,7 +1042,9 @@ async fn test_asset_button_shows_connect_after_approval() {
     add_user_to_vauban_group(&mut conn, user_id, &ug_uuid).await;
 
     let ag_uuid = create_test_asset_group(&mut conn, &unique_name("btn_ag_ap")).await;
-    let asset_id = create_test_asset_in_group(&mut conn, &unique_name("btn_asset_ap"), admin_id, &ag_uuid).await;
+    let asset_id =
+        create_test_asset_in_group(&mut conn, &unique_name("btn_asset_ap"), admin_id, &ag_uuid)
+            .await;
 
     create_test_access_rule_with_constraints(
         &mut conn,
@@ -1069,7 +1092,9 @@ async fn test_asset_button_shows_connect_for_admin() {
 
     let ug_uuid = create_test_vauban_group(&mut conn, "btn_ug_adm").await;
     let ag_uuid = create_test_asset_group(&mut conn, &unique_name("btn_ag_adm")).await;
-    let _asset_id = create_test_asset_in_group(&mut conn, &unique_name("btn_asset_adm"), admin_id, &ag_uuid).await;
+    let _asset_id =
+        create_test_asset_in_group(&mut conn, &unique_name("btn_asset_adm"), admin_id, &ag_uuid)
+            .await;
 
     create_test_access_rule_with_constraints(
         &mut conn,
@@ -1124,7 +1149,9 @@ async fn test_asset_button_request_links_to_detail() {
     add_user_to_vauban_group(&mut conn, user_id, &ug_uuid).await;
 
     let ag_uuid = create_test_asset_group(&mut conn, &unique_name("btn_ag_lnk")).await;
-    let _asset_id = create_test_asset_in_group(&mut conn, &unique_name("btn_asset_lnk"), admin_id, &ag_uuid).await;
+    let _asset_id =
+        create_test_asset_in_group(&mut conn, &unique_name("btn_asset_lnk"), admin_id, &ag_uuid)
+            .await;
 
     create_test_access_rule_with_constraints(
         &mut conn,

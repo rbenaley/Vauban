@@ -6231,9 +6231,9 @@ fn test_all_ws_handlers_accept_ws_guard() {
 
     for handler in handlers {
         // Find the handler function and check it has WsGuard parameter
-        let handler_start = prod.find(&format!("fn {handler}(")).unwrap_or_else(|| {
-            panic!("regression: handler {handler} not found in websocket.rs")
-        });
+        let handler_start = prod
+            .find(&format!("fn {handler}("))
+            .unwrap_or_else(|| panic!("regression: handler {handler} not found in websocket.rs"));
 
         // Get the function signature (up to the opening brace)
         let signature_end = prod[handler_start..]
@@ -6355,11 +6355,7 @@ async fn test_mfa_verified_jwt_can_access_protected_pages() {
         .await;
 
     let status = response.status_code().as_u16();
-    assert_eq!(
-        status, 200,
-        "MFA-verified JWT must get 200, got {}",
-        status
-    );
+    assert_eq!(status, 200, "MFA-verified JWT must get 200, got {}", status);
 
     test_db::cleanup(&mut conn).await;
 }
@@ -6899,10 +6895,7 @@ async fn test_sec07_deactivated_user_cannot_login_htmx() {
         .server
         .post("/auth/login")
         .add_header("HX-Request", "true")
-        .add_header(
-            header::COOKIE,
-            format!("__vauban_csrf={}", csrf_token),
-        )
+        .add_header(header::COOKIE, format!("__vauban_csrf={}", csrf_token))
         .json(&json!({
             "username": username,
             "password": test_user.password,
@@ -6979,7 +6972,11 @@ async fn test_sec07_deactivation_revokes_auth_sessions() {
         .await;
 
     let status = response.status_code().as_u16();
-    assert!(status == 303 || status == 302, "Expected redirect, got {}", status);
+    assert!(
+        status == 303 || status == 302,
+        "Expected redirect, got {}",
+        status
+    );
 
     // Verify sessions are deleted
     let count_after: i64 = unwrap_ok!(
@@ -6989,7 +6986,10 @@ async fn test_sec07_deactivation_revokes_auth_sessions() {
             .get_result(&mut conn)
             .await
     );
-    assert_eq!(count_after, 0, "All auth sessions should be revoked after deactivation");
+    assert_eq!(
+        count_after, 0,
+        "All auth sessions should be revoked after deactivation"
+    );
 
     test_db::cleanup(&mut conn).await;
 }
@@ -7054,7 +7054,10 @@ async fn test_sec07_deactivation_disables_api_keys() {
             .get_result(&mut conn)
             .await
     );
-    assert_eq!(active_after, 0, "All API keys should be disabled after deactivation");
+    assert_eq!(
+        active_after, 0,
+        "All API keys should be disabled after deactivation"
+    );
 
     test_db::cleanup(&mut conn).await;
 }
@@ -7105,7 +7108,10 @@ async fn test_sec07_reactivation_restores_api_keys() {
         .post(&format!("/accounts/users/{}", target_uuid))
         .add_header(
             COOKIE,
-            format!("access_token={}; __vauban_csrf={}", admin_token, csrf_token2),
+            format!(
+                "access_token={}; __vauban_csrf={}",
+                admin_token, csrf_token2
+            ),
         )
         .form(&[
             ("csrf_token", csrf_token2.as_str()),
@@ -7124,7 +7130,10 @@ async fn test_sec07_reactivation_restores_api_keys() {
             .get_result(&mut conn)
             .await
     );
-    assert_eq!(active_after, 2, "All API keys should be re-enabled after reactivation");
+    assert_eq!(
+        active_after, 2,
+        "All API keys should be re-enabled after reactivation"
+    );
 
     test_db::cleanup(&mut conn).await;
 }
@@ -7276,14 +7285,14 @@ async fn test_sec07_deactivation_sets_recording_metadata_ssh() {
     let (is_rec_before, rec_path_before): (bool, Option<String>) = unwrap_ok!(
         proxy_sessions::table
             .filter(proxy_sessions::id.eq(session_id))
-            .select((
-                proxy_sessions::is_recorded,
-                proxy_sessions::recording_path,
-            ))
+            .select((proxy_sessions::is_recorded, proxy_sessions::recording_path,))
             .first(&mut conn)
             .await
     );
-    assert!(!is_rec_before, "is_recorded should be false before deactivation");
+    assert!(
+        !is_rec_before,
+        "is_recorded should be false before deactivation"
+    );
     assert!(
         rec_path_before.is_none(),
         "recording_path should be None before deactivation"
@@ -7297,10 +7306,7 @@ async fn test_sec07_deactivation_sets_recording_metadata_ssh() {
         .post(&format!("/accounts/users/{}", target_uuid))
         .add_header(
             COOKIE,
-            format!(
-                "access_token={}; __vauban_csrf={}",
-                admin_token, csrf_token
-            ),
+            format!("access_token={}; __vauban_csrf={}", admin_token, csrf_token),
         )
         .form(&[
             ("csrf_token", csrf_token.as_str()),
@@ -7322,7 +7328,10 @@ async fn test_sec07_deactivation_sets_recording_metadata_ssh() {
             .await
     );
     assert_eq!(db_status, "terminated", "Session should be terminated");
-    assert!(is_rec_after, "is_recorded should be true after deactivation");
+    assert!(
+        is_rec_after,
+        "is_recorded should be true after deactivation"
+    );
     assert!(
         rec_path_after.is_some(),
         "recording_path should be set after deactivation"
@@ -7364,10 +7373,7 @@ async fn test_sec07_terminate_session_sets_recording_metadata() {
         .post(&format!("/sessions/{}/terminate", session_uuid))
         .add_header(
             COOKIE,
-            format!(
-                "access_token={}; __vauban_csrf={}",
-                token, csrf_token
-            ),
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
         )
         .add_header("HX-Request", "true")
         .form(&[("csrf_token", csrf_token.as_str())])
@@ -7428,10 +7434,7 @@ async fn test_sec07_deactivation_sets_recording_metadata_rdp() {
         .post(&format!("/accounts/users/{}", target_uuid))
         .add_header(
             COOKIE,
-            format!(
-                "access_token={}; __vauban_csrf={}",
-                admin_token, csrf_token
-            ),
+            format!("access_token={}; __vauban_csrf={}", admin_token, csrf_token),
         )
         .form(&[
             ("csrf_token", csrf_token.as_str()),
@@ -7876,7 +7879,10 @@ async fn test_sec04_progressive_lockout_still_works() {
             .first(&mut conn)
             .await
     );
-    assert_eq!(failed_attempts, 5, "SEC-04: failed_login_attempts should be 5");
+    assert_eq!(
+        failed_attempts, 5,
+        "SEC-04: failed_login_attempts should be 5"
+    );
     assert!(
         lock_until.is_some(),
         "SEC-04: locked_until should be set after 5 failed attempts"

@@ -480,7 +480,10 @@ mod tests {
             html.contains("ws-connect=\"/ws/sessions/list\""),
             "WS-enabled template must include ws-connect"
         );
-        assert!(html.contains("Live"), "WS-enabled template must show Live badge");
+        assert!(
+            html.contains("Live"),
+            "WS-enabled template must show Live badge"
+        );
     }
 
     #[test]

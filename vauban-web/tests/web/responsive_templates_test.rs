@@ -51,7 +51,9 @@ fn test_tables_have_overflow_x_auto_wrapper() {
     let mut offenders = Vec::new();
     for file in &files {
         let body = read(file);
-        if body.contains("<table") && !(body.contains("overflow-x-auto") || body.contains("overflow-auto")) {
+        if body.contains("<table")
+            && !(body.contains("overflow-x-auto") || body.contains("overflow-auto"))
+        {
             offenders.push(file.display().to_string());
         }
     }
@@ -88,7 +90,12 @@ fn test_page_titles_have_responsive_text_size() {
                 || lower.contains("lg:text-")
                 || lower.contains("xl:text-");
             if !has_responsive {
-                offenders.push(format!("{}:{}: {}", file.display(), lineno + 1, line.trim()));
+                offenders.push(format!(
+                    "{}:{}: {}",
+                    file.display(),
+                    lineno + 1,
+                    line.trim()
+                ));
             }
         }
     }
@@ -115,9 +122,8 @@ fn test_no_unscoped_w_96_floating_container() {
                 continue;
             }
             // Allow only when prefixed by a breakpoint variant (e.g. sm:w-96).
-            let mut iter = line.match_indices("w-96").peekable();
             let mut bare = false;
-            while let Some((idx, _)) = iter.next() {
+            for (idx, _) in line.match_indices("w-96") {
                 let prev = line[..idx].chars().last();
                 if !matches!(prev, Some(':')) {
                     bare = true;
@@ -125,7 +131,12 @@ fn test_no_unscoped_w_96_floating_container() {
                 }
             }
             if bare {
-                offenders.push(format!("{}:{}: {}", file.display(), lineno + 1, line.trim()));
+                offenders.push(format!(
+                    "{}:{}: {}",
+                    file.display(),
+                    lineno + 1,
+                    line.trim()
+                ));
             }
         }
     }

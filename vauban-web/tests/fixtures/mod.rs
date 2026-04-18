@@ -18,11 +18,7 @@ use vauban_web::services::auth::AuthService;
 use crate::common::{unwrap_ok, unwrap_some};
 
 /// Helper to create an auth session for a token in the database.
-pub async fn create_session_for_token_pub(
-    conn: &mut AsyncPgConnection,
-    user_id: i32,
-    token: &str,
-) {
+pub async fn create_session_for_token_pub(conn: &mut AsyncPgConnection, user_id: i32, token: &str) {
     create_session_for_token(conn, user_id, token).await;
 }
 
@@ -735,8 +731,7 @@ pub async fn create_approved_session(
     let session_uuid = Uuid::new_v4();
     let ip: ipnetwork::IpNetwork = unwrap_ok!("127.0.0.1".parse());
     let now = Utc::now();
-    let expires_at =
-        max_duration.map(|secs| now + chrono::Duration::seconds(secs as i64));
+    let expires_at = max_duration.map(|secs| now + chrono::Duration::seconds(secs as i64));
 
     unwrap_ok!(
         diesel::insert_into(proxy_sessions::table)

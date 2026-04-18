@@ -58,9 +58,7 @@ pub async fn connect_rdp(
     let form_justification = if state.config.security.require_justification {
         let j = form.justification.as_deref().unwrap_or("").trim();
         if j.len() < 10 {
-            return htmx_error_response(
-                "Justification is required (minimum 10 characters)",
-            );
+            return htmx_error_response("Justification is required (minimum 10 characters)");
         }
         Some(j.to_string())
     } else {
@@ -232,14 +230,12 @@ pub async fn connect_rdp(
                     jit_max_duration = max_dur.or(access_result.max_session_duration);
                 }
                 None => {
-                    let detail_url =
-                        format!("/assets/{}#request-access", asset_uuid_str);
+                    let detail_url = format!("/assets/{}#request-access", asset_uuid_str);
                     return ([(
                         axum::http::header::HeaderName::from_static("hx-redirect"),
-                        axum::http::header::HeaderValue::from_str(&detail_url)
-                            .unwrap_or_else(|_| {
-                                axum::http::header::HeaderValue::from_static("/assets")
-                            }),
+                        axum::http::header::HeaderValue::from_str(&detail_url).unwrap_or_else(
+                            |_| axum::http::header::HeaderValue::from_static("/assets"),
+                        ),
                     )])
                     .into_response();
                 }
@@ -260,9 +256,8 @@ pub async fn connect_rdp(
     {
         use crate::models::session::{NewProxySession, SessionType};
         let trusted = state.config.security.parsed_trusted_proxies();
-        let client_ip = crate::middleware::extract_client_ip(
-            &headers, client_addr.addr(), &trusted,
-        );
+        let client_ip =
+            crate::middleware::extract_client_ip(&headers, client_addr.addr(), &trusted);
         let new_session = NewProxySession {
             uuid: session_uuid,
             user_id,

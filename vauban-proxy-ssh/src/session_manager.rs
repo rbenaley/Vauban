@@ -105,7 +105,14 @@ impl SessionManager {
         let session_id_clone = session_id.clone();
         let manager = self.clone_for_cleanup();
         tokio::spawn(async move {
-            session_task(session_id_clone.clone(), ssh_session, cmd_rx, web_tx, audit_tx).await;
+            session_task(
+                session_id_clone.clone(),
+                ssh_session,
+                cmd_rx,
+                web_tx,
+                audit_tx,
+            )
+            .await;
             // Cleanup when task ends
             manager.remove_session_internal(&session_id_clone).await;
         });

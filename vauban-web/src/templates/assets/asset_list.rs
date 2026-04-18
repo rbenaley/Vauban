@@ -253,13 +253,28 @@ mod tests {
         let template = make_template(Some(pg), None, None, None);
         let html = template.render().expect("should render");
         assert!(html.contains("Showing"), "should show Showing X to Y");
-        assert!(html.contains("of <span class=\"font-medium\">90</span>"), "should show total");
+        assert!(
+            html.contains("of <span class=\"font-medium\">90</span>"),
+            "should show total"
+        );
         assert!(html.contains("?page=2"), "should have next page link");
         assert!(!html.contains("?page=0"), "should not have page 0");
-        assert!(html.contains("title=\"Next page\""), "should have Next button");
-        assert!(html.contains("title=\"Last page\""), "should have Last button");
-        assert!(!html.contains("title=\"First page\""), "should not have First on page 1");
-        assert!(!html.contains("title=\"Previous page\""), "should not have Previous on page 1");
+        assert!(
+            html.contains("title=\"Next page\""),
+            "should have Next button"
+        );
+        assert!(
+            html.contains("title=\"Last page\""),
+            "should have Last button"
+        );
+        assert!(
+            !html.contains("title=\"First page\""),
+            "should not have First on page 1"
+        );
+        assert!(
+            !html.contains("title=\"Previous page\""),
+            "should not have Previous on page 1"
+        );
     }
 
     #[test]
@@ -267,12 +282,30 @@ mod tests {
         let pg = make_pagination(3, 3, 90);
         let template = make_template(Some(pg), None, None, None);
         let html = template.render().expect("should render");
-        assert!(html.contains("title=\"First page\""), "should have First button");
-        assert!(html.contains("title=\"Previous page\""), "should have Previous button");
-        assert!(!html.contains("title=\"Next page\""), "should not have Next on last page");
-        assert!(!html.contains("title=\"Last page\""), "should not have Last on last page");
-        assert!(html.contains("?page=1"), "should have link to page 1 (First)");
-        assert!(html.contains("?page=2"), "should have link to page 2 (Previous)");
+        assert!(
+            html.contains("title=\"First page\""),
+            "should have First button"
+        );
+        assert!(
+            html.contains("title=\"Previous page\""),
+            "should have Previous button"
+        );
+        assert!(
+            !html.contains("title=\"Next page\""),
+            "should not have Next on last page"
+        );
+        assert!(
+            !html.contains("title=\"Last page\""),
+            "should not have Last on last page"
+        );
+        assert!(
+            html.contains("?page=1"),
+            "should have link to page 1 (First)"
+        );
+        assert!(
+            html.contains("?page=2"),
+            "should have link to page 2 (Previous)"
+        );
     }
 
     #[test]
@@ -281,7 +314,10 @@ mod tests {
         let template = make_template(Some(pg), None, None, None);
         let html = template.render().expect("should render");
         assert!(html.contains("title=\"First page\""), "should have First");
-        assert!(html.contains("title=\"Previous page\""), "should have Previous");
+        assert!(
+            html.contains("title=\"Previous page\""),
+            "should have Previous"
+        );
         assert!(html.contains("title=\"Next page\""), "should have Next");
         assert!(html.contains("title=\"Last page\""), "should have Last");
         assert!(html.contains("?page=5"), "should link to last page (5)");
@@ -291,8 +327,14 @@ mod tests {
     fn test_pagination_single_page_no_controls() {
         let template = make_template(None, None, None, None);
         let html = template.render().expect("should render");
-        assert!(!html.contains("Showing"), "single page should not show pagination");
-        assert!(!html.contains("title=\"Next page\""), "no Next on single page");
+        assert!(
+            !html.contains("Showing"),
+            "single page should not show pagination"
+        );
+        assert!(
+            !html.contains("title=\"Next page\""),
+            "no Next on single page"
+        );
     }
 
     #[test]
@@ -306,12 +348,7 @@ mod tests {
     #[test]
     fn test_pagination_preserves_search_filter() {
         let pg = make_pagination(1, 3, 90);
-        let template = make_template(
-            Some(pg),
-            Some("myserver".to_string()),
-            None,
-            None,
-        );
+        let template = make_template(Some(pg), Some("myserver".to_string()), None, None);
         let html = template.render().expect("should render");
         assert!(
             html.contains("search=myserver"),
@@ -322,12 +359,7 @@ mod tests {
     #[test]
     fn test_pagination_preserves_type_filter() {
         let pg = make_pagination(1, 3, 90);
-        let template = make_template(
-            Some(pg),
-            None,
-            Some("ssh".to_string()),
-            None,
-        );
+        let template = make_template(Some(pg), None, Some("ssh".to_string()), None);
         let html = template.render().expect("should render");
         assert!(
             html.contains("type=ssh"),
@@ -338,12 +370,7 @@ mod tests {
     #[test]
     fn test_pagination_preserves_status_filter() {
         let pg = make_pagination(2, 3, 90);
-        let template = make_template(
-            Some(pg),
-            None,
-            None,
-            Some("online".to_string()),
-        );
+        let template = make_template(Some(pg), None, None, Some("online".to_string()));
         let html = template.render().expect("should render");
         assert!(
             html.contains("status=online"),

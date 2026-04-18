@@ -64,9 +64,7 @@ pub async fn list_accessible_asset_ids(
             continue;
         }
         let ids: Vec<i32> = assets::table
-            .inner_join(
-                asset_asset_groups::table.on(assets::id.eq(asset_asset_groups::asset_id)),
-            )
+            .inner_join(asset_asset_groups::table.on(assets::id.eq(asset_asset_groups::asset_id)))
             .filter(asset_asset_groups::asset_group_id.eq(entry.asset_group_id))
             .filter(assets::is_deleted.eq(false))
             .filter(assets::asset_type.eq_any(&entry.protocols))

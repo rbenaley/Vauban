@@ -155,8 +155,7 @@ pub async fn create_access_rule(
                     || msg.to_lowercase().contains("unique"))
             {
                 return AppError::Validation(
-                    "An access rule for this user group and asset group already exists"
-                        .to_string(),
+                    "An access rule for this user group and asset group already exists".to_string(),
                 );
             }
             e

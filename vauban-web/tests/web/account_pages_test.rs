@@ -1908,8 +1908,7 @@ async fn test_admin_sessions_hides_expired() {
     let user_id = create_simple_user(&mut conn, &user_name).await;
 
     // Create an expired session for user
-    let expired_uuid =
-        create_expired_auth_session(&mut conn, user_id, "expired_token_value").await;
+    let expired_uuid = create_expired_auth_session(&mut conn, user_id, "expired_token_value").await;
 
     let token = app
         .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
@@ -2025,7 +2024,10 @@ async fn test_admin_revoke_non_staff_rejected() {
     .get_result(&mut conn)
     .await
     .unwrap();
-    assert!(session_exists, "Session should remain after rejected revoke");
+    assert!(
+        session_exists,
+        "Session should remain after rejected revoke"
+    );
 }
 
 #[tokio::test]

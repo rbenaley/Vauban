@@ -917,7 +917,10 @@ mod tests {
     fn test_access_config_loaded_from_toml() {
         let config = test_config();
         assert_eq!(config.access.model_path, "config/access/model.conf");
-        assert_eq!(config.access.policy_path, "config/access/default_policy.csv");
+        assert_eq!(
+            config.access.policy_path,
+            "config/access/default_policy.csv"
+        );
     }
 
     #[test]

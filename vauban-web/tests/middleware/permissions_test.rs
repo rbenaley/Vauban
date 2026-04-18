@@ -226,10 +226,7 @@ async fn admin_route_allowed_for_admin_user() {
         use vauban_web::schema::users;
         unwrap_ok!(
             diesel::update(users::table.filter(users::id.eq(user_id)))
-                .set((
-                    users::is_superuser.eq(true),
-                    users::is_staff.eq(true),
-                ))
+                .set((users::is_superuser.eq(true), users::is_staff.eq(true),))
                 .execute(&mut conn)
                 .await
         );
@@ -325,10 +322,7 @@ async fn profile_edit_button_shown_for_admin_user() {
         use vauban_web::schema::users;
         unwrap_ok!(
             diesel::update(users::table.filter(users::id.eq(user_id)))
-                .set((
-                    users::is_superuser.eq(true),
-                    users::is_staff.eq(true),
-                ))
+                .set((users::is_superuser.eq(true), users::is_staff.eq(true),))
                 .execute(&mut conn)
                 .await
         );

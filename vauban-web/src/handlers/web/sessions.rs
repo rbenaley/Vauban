@@ -86,13 +86,11 @@ pub async fn session_list(
         count_query = count_query.filter(schema_assets::name.ilike(pattern));
     }
 
-    let total_items: i64 = count_query
-        .count()
-        .get_result(&mut conn)
-        .await
-        .unwrap_or(0);
+    let total_items: i64 = count_query.count().get_result(&mut conn).await.unwrap_or(0);
 
-    let total_pages = ((total_items as f64) / (SESSIONS_PER_PAGE as f64)).ceil().max(1.0) as i32;
+    let total_pages = ((total_items as f64) / (SESSIONS_PER_PAGE as f64))
+        .ceil()
+        .max(1.0) as i32;
     let page = page.min(total_pages);
     let offset = ((page - 1) as i64) * SESSIONS_PER_PAGE;
 
@@ -189,8 +187,7 @@ pub async fn session_list(
         None
     };
 
-    let has_filters =
-        status_filter.is_some() || type_filter.is_some() || asset_filter.is_some();
+    let has_filters = status_filter.is_some() || type_filter.is_some() || asset_filter.is_some();
     let ws_enabled = !has_filters && page == 1;
 
     let template = WebSessionListTemplate {
@@ -285,13 +282,29 @@ pub async fn session_detail(
 
     #[allow(clippy::type_complexity)]
     let session_row: (
-        i32, uuid::Uuid, String, uuid::Uuid,
-        String, String, uuid::Uuid, String,
-        String, String, String, ipnetwork::IpNetwork,
-        Option<String>, Option<String>,
-        Option<chrono::DateTime<chrono::Utc>>, Option<chrono::DateTime<chrono::Utc>>,
-        Option<String>, bool, Option<String>,
-        i64, i64, i32, chrono::DateTime<chrono::Utc>,
+        i32,
+        uuid::Uuid,
+        String,
+        uuid::Uuid,
+        String,
+        String,
+        uuid::Uuid,
+        String,
+        String,
+        String,
+        String,
+        ipnetwork::IpNetwork,
+        Option<String>,
+        Option<String>,
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<String>,
+        bool,
+        Option<String>,
+        i64,
+        i64,
+        i32,
+        chrono::DateTime<chrono::Utc>,
     ) = match proxy_sessions::table
         .inner_join(schema_assets::table)
         .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
@@ -329,18 +342,37 @@ pub async fn session_detail(
             return flash_redirect(flash.error("Session not found"), "/sessions");
         }
         Err(_) => {
-            return flash_redirect(flash.error("Database error. Please try again."), "/sessions");
+            return flash_redirect(
+                flash.error("Database error. Please try again."),
+                "/sessions",
+            );
         }
     };
 
     let (
-        s_id, s_uuid, s_username, s_user_uuid,
-        s_asset_name, s_asset_hostname, s_asset_uuid, s_asset_type,
-        s_session_type, s_status, s_credential_username, s_client_ip,
-        s_client_user_agent, s_proxy_instance,
-        s_connected_at, s_disconnected_at,
-        s_justification, s_is_recorded, s_recording_path,
-        s_bytes_sent, s_bytes_received, s_commands_count, s_created_at,
+        s_id,
+        s_uuid,
+        s_username,
+        s_user_uuid,
+        s_asset_name,
+        s_asset_hostname,
+        s_asset_uuid,
+        s_asset_type,
+        s_session_type,
+        s_status,
+        s_credential_username,
+        s_client_ip,
+        s_client_user_agent,
+        s_proxy_instance,
+        s_connected_at,
+        s_disconnected_at,
+        s_justification,
+        s_is_recorded,
+        s_recording_path,
+        s_bytes_sent,
+        s_bytes_received,
+        s_commands_count,
+        s_created_at,
     ) = session_row;
 
     let user_uuid_str = s_user_uuid.to_string();
@@ -399,10 +431,8 @@ pub async fn session_detail(
         client_ip: s_client_ip.ip().to_string(),
         client_user_agent: s_client_user_agent,
         proxy_instance: s_proxy_instance,
-        connected_at: s_connected_at
-            .map(|dt| dt.format("%b %d, %Y %H:%M:%S").to_string()),
-        disconnected_at: s_disconnected_at
-            .map(|dt| dt.format("%b %d, %Y %H:%M:%S").to_string()),
+        connected_at: s_connected_at.map(|dt| dt.format("%b %d, %Y %H:%M:%S").to_string()),
+        disconnected_at: s_disconnected_at.map(|dt| dt.format("%b %d, %Y %H:%M:%S").to_string()),
         duration,
         justification: s_justification,
         is_recorded: s_is_recorded,
@@ -410,9 +440,7 @@ pub async fn session_detail(
         bytes_sent: s_bytes_sent,
         bytes_received: s_bytes_received,
         commands_count: s_commands_count,
-        created_at: s_created_at
-            .format("%b %d, %Y %H:%M:%S")
-            .to_string(),
+        created_at: s_created_at.format("%b %d, %Y %H:%M:%S").to_string(),
     };
 
     let base =
@@ -439,7 +467,6 @@ pub async fn session_detail(
         Err(_) => flash_redirect(flash.error("Failed to render page"), "/sessions"),
     }
 }
-
 
 /// Recording list page.
 pub async fn recording_list(
@@ -515,7 +542,9 @@ pub async fn recording_list(
     }
 
     let total_items: i64 = count_query.count().get_result(&mut conn).await.unwrap_or(0);
-    let total_pages = ((total_items as f64) / (RECORDINGS_PER_PAGE as f64)).ceil().max(1.0) as i32;
+    let total_pages = ((total_items as f64) / (RECORDINGS_PER_PAGE as f64))
+        .ceil()
+        .max(1.0) as i32;
     let page = page.min(total_pages);
     let offset = ((page - 1) as i64) * RECORDINGS_PER_PAGE;
 
@@ -663,10 +692,18 @@ pub async fn recording_play(
 
     #[allow(clippy::type_complexity)]
     let recording_row: (
-        i32, uuid::Uuid, String, String, String,
-        String, Option<chrono::DateTime<chrono::Utc>>,
-        Option<chrono::DateTime<chrono::Utc>>, Option<String>,
-        i64, i64, i32,
+        i32,
+        uuid::Uuid,
+        String,
+        String,
+        String,
+        String,
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<String>,
+        i64,
+        i64,
+        i32,
     ) = match proxy_sessions::table
         .inner_join(schema_assets::table)
         .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
@@ -702,9 +739,18 @@ pub async fn recording_play(
     };
 
     let (
-        r_id, r_uuid, r_username, r_asset_name, r_asset_hostname,
-        r_session_type, r_connected_at, r_disconnected_at, r_recording_path,
-        r_bytes_sent, r_bytes_received, r_commands_count,
+        r_id,
+        r_uuid,
+        r_username,
+        r_asset_name,
+        r_asset_hostname,
+        r_session_type,
+        r_connected_at,
+        r_disconnected_at,
+        r_recording_path,
+        r_bytes_sent,
+        r_bytes_received,
+        r_commands_count,
     ) = recording_row;
 
     // Calculate duration
@@ -730,10 +776,8 @@ pub async fn recording_play(
         asset_name: r_asset_name,
         asset_hostname: r_asset_hostname,
         session_type: r_session_type,
-        connected_at: r_connected_at
-            .map(|dt| dt.format("%b %d, %Y %H:%M:%S").to_string()),
-        disconnected_at: r_disconnected_at
-            .map(|dt| dt.format("%b %d, %Y %H:%M:%S").to_string()),
+        connected_at: r_connected_at.map(|dt| dt.format("%b %d, %Y %H:%M:%S").to_string()),
+        disconnected_at: r_disconnected_at.map(|dt| dt.format("%b %d, %Y %H:%M:%S").to_string()),
         duration,
         recording_path: r_recording_path,
         bytes_sent: r_bytes_sent,
@@ -767,7 +811,6 @@ pub async fn recording_play(
         Err(_) => flash_redirect(flash.error("Failed to render page"), "/sessions/recordings"),
     }
 }
-
 
 /// Approval list page.
 pub async fn approval_list(
@@ -814,11 +857,7 @@ pub async fn approval_list(
         count_query = count_query.filter(proxy_sessions::status.eq(status));
     }
 
-    let total_items: i64 = count_query
-        .count()
-        .get_result(&mut conn)
-        .await
-        .unwrap_or(0);
+    let total_items: i64 = count_query.count().get_result(&mut conn).await.unwrap_or(0);
 
     let total_pages = ((total_items as f64) / (items_per_page as f64)).ceil() as i32;
     let offset = ((page - 1) * items_per_page) as i64;
@@ -835,9 +874,16 @@ pub async fn approval_list(
 
     #[allow(clippy::type_complexity)]
     let approvals_data: Vec<(
-        uuid::Uuid, String, String, String, String,
-        Option<String>, ipnetwork::IpNetwork,
-        chrono::DateTime<chrono::Utc>, String, Option<i32>,
+        uuid::Uuid,
+        String,
+        String,
+        String,
+        String,
+        Option<String>,
+        ipnetwork::IpNetwork,
+        chrono::DateTime<chrono::Utc>,
+        String,
+        Option<i32>,
     )> = list_query
         .select((
             proxy_sessions::uuid,
@@ -862,8 +908,18 @@ pub async fn approval_list(
         approvals_data
             .into_iter()
             .map(
-                |(uuid, username, asset_name, asset_type, session_type,
-                  justification, client_ip, created_at, status, max_session_duration)| {
+                |(
+                    uuid,
+                    username,
+                    asset_name,
+                    asset_type,
+                    session_type,
+                    justification,
+                    client_ip,
+                    created_at,
+                    status,
+                    max_session_duration,
+                )| {
                     crate::templates::sessions::approval_list::ApprovalListItem {
                         uuid: uuid.to_string(),
                         username,
@@ -911,7 +967,6 @@ pub async fn approval_list(
     Ok(Html(html))
 }
 
-
 /// Approval detail page.
 pub async fn approval_detail(
     State(state): State<AppState>,
@@ -956,9 +1011,20 @@ pub async fn approval_detail(
 
     #[allow(clippy::type_complexity)]
     let approval_row: (
-        uuid::Uuid, String, String, String, String, String,
-        String, String, Option<String>, ipnetwork::IpNetwork,
-        String, chrono::DateTime<chrono::Utc>, bool, Option<i32>,
+        uuid::Uuid,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        Option<String>,
+        ipnetwork::IpNetwork,
+        String,
+        chrono::DateTime<chrono::Utc>,
+        bool,
+        Option<i32>,
     ) = match proxy_sessions::table
         .inner_join(schema_assets::table)
         .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
@@ -998,9 +1064,20 @@ pub async fn approval_detail(
     };
 
     let (
-        a_uuid, username, user_email, asset_name, asset_type, asset_hostname,
-        session_type, status, justification, client_ip,
-        credential_username, created_at, is_recorded, max_session_duration,
+        a_uuid,
+        username,
+        user_email,
+        asset_name,
+        asset_type,
+        asset_hostname,
+        session_type,
+        status,
+        justification,
+        client_ip,
+        credential_username,
+        created_at,
+        is_recorded,
+        max_session_duration,
     ) = approval_row;
 
     let approval = crate::templates::sessions::approval_detail::ApprovalDetail {
@@ -1044,7 +1121,6 @@ pub async fn approval_detail(
     }
 }
 
-
 /// Form for approval with optional duration override.
 #[derive(Debug, serde::Deserialize)]
 pub struct ApproveForm {
@@ -1060,10 +1136,7 @@ pub struct ApproveForm {
 impl ApproveForm {
     /// Delegate to the shared resolver in `utils`.
     pub fn resolve_duration_seconds(&self) -> Result<Option<i32>, &'static str> {
-        crate::utils::resolve_duration_seconds(
-            self.duration_value,
-            self.duration_unit.as_deref(),
-        )
+        crate::utils::resolve_duration_seconds(self.duration_value, self.duration_unit.as_deref())
     }
 }
 
@@ -1244,9 +1317,7 @@ pub async fn submit_access_request(
     // Create pending session
     let session_uuid = ::uuid::Uuid::new_v4();
     let trusted = state.config.security.parsed_trusted_proxies();
-    let client_ip = crate::middleware::extract_client_ip(
-        &headers, client_addr.addr(), &trusted,
-    );
+    let client_ip = crate::middleware::extract_client_ip(&headers, client_addr.addr(), &trusted);
 
     use crate::models::session::{NewProxySession, SessionType};
 
@@ -1287,16 +1358,19 @@ pub async fn submit_access_request(
     );
 
     // Notify admins via BroadcastService
-    let _ = state.broadcast.send(
-        &crate::services::broadcast::WsChannel::Notifications,
-        crate::services::broadcast::WsMessage::new(
-            "jit-notification",
-            format!(
-                r#"{{"type":"access_request","user":"{}","asset":"{}","uuid":"{}"}}"#,
-                auth_user.username, asset.name, session_uuid
+    let _ = state
+        .broadcast
+        .send(
+            &crate::services::broadcast::WsChannel::Notifications,
+            crate::services::broadcast::WsMessage::new(
+                "jit-notification",
+                format!(
+                    r#"{{"type":"access_request","user":"{}","asset":"{}","uuid":"{}"}}"#,
+                    auth_user.username, asset.name, session_uuid
+                ),
             ),
-        ),
-    ).await;
+        )
+        .await;
 
     broadcast_approval_badge(&state).await;
 
@@ -1471,16 +1545,19 @@ pub async fn approve_access_request(
             .map(|u| u.to_string());
 
         if let Some(ref uuid_s) = user_uuid_str {
-            let _ = state.broadcast.send(
-                &crate::services::broadcast::WsChannel::Notifications,
-                crate::services::broadcast::WsMessage::new(
-                    "jit-notification",
-                    format!(
-                        r#"{{"type":"request_approved","session_uuid":"{}","user_uuid":"{}"}}"#,
-                        session_uuid, uuid_s
+            let _ = state
+                .broadcast
+                .send(
+                    &crate::services::broadcast::WsChannel::Notifications,
+                    crate::services::broadcast::WsMessage::new(
+                        "jit-notification",
+                        format!(
+                            r#"{{"type":"request_approved","session_uuid":"{}","user_uuid":"{}"}}"#,
+                            session_uuid, uuid_s
+                        ),
                     ),
-                ),
-            ).await;
+                )
+                .await;
         }
     }
 
@@ -1568,16 +1645,19 @@ pub async fn reject_access_request(
             .map(|u| u.to_string());
 
         if let Some(ref uuid_s) = user_uuid_str {
-            let _ = state.broadcast.send(
-                &crate::services::broadcast::WsChannel::Notifications,
-                crate::services::broadcast::WsMessage::new(
-                    "jit-notification",
-                    format!(
-                        r#"{{"type":"request_rejected","session_uuid":"{}","user_uuid":"{}"}}"#,
-                        session_uuid, uuid_s
+            let _ = state
+                .broadcast
+                .send(
+                    &crate::services::broadcast::WsChannel::Notifications,
+                    crate::services::broadcast::WsMessage::new(
+                        "jit-notification",
+                        format!(
+                            r#"{{"type":"request_rejected","session_uuid":"{}","user_uuid":"{}"}}"#,
+                            session_uuid, uuid_s
+                        ),
                     ),
-                ),
-            ).await;
+                )
+                .await;
         }
     }
 
@@ -1700,16 +1780,19 @@ pub async fn cancel_access_request(
         "JIT access request cancelled by user"
     );
 
-    let _ = state.broadcast.send(
-        &crate::services::broadcast::WsChannel::Notifications,
-        crate::services::broadcast::WsMessage::new(
-            "jit-notification",
-            format!(
-                r#"{{"type":"request_cancelled","session_uuid":"{}","user_uuid":"{}"}}"#,
-                session_uuid, auth_user.uuid
+    let _ = state
+        .broadcast
+        .send(
+            &crate::services::broadcast::WsChannel::Notifications,
+            crate::services::broadcast::WsMessage::new(
+                "jit-notification",
+                format!(
+                    r#"{{"type":"request_cancelled","session_uuid":"{}","user_uuid":"{}"}}"#,
+                    session_uuid, auth_user.uuid
+                ),
             ),
-        ),
-    ).await;
+        )
+        .await;
 
     broadcast_approval_badge(&state).await;
 
@@ -1759,8 +1842,14 @@ pub async fn my_requests(
         .max(1);
 
     let statuses = [
-        "pending", "approved", "rejected", "expired",
-        "consumed", "active", "disconnected", "terminated",
+        "pending",
+        "approved",
+        "rejected",
+        "expired",
+        "consumed",
+        "active",
+        "disconnected",
+        "terminated",
     ];
 
     let total_items: i64 = proxy_sessions::table
@@ -1772,14 +1861,21 @@ pub async fn my_requests(
         .await
         .unwrap_or(0);
 
-    let total_pages = ((total_items as f64) / (MY_REQUESTS_PER_PAGE as f64)).ceil().max(1.0) as i32;
+    let total_pages = ((total_items as f64) / (MY_REQUESTS_PER_PAGE as f64))
+        .ceil()
+        .max(1.0) as i32;
     let page = page.min(total_pages);
     let offset = ((page - 1) as i64) * MY_REQUESTS_PER_PAGE;
 
     #[allow(clippy::type_complexity)]
     let requests_data: Vec<(
-        uuid::Uuid, String, String, String,
-        String, String, Option<String>,
+        uuid::Uuid,
+        String,
+        String,
+        String,
+        String,
+        String,
+        Option<String>,
         chrono::DateTime<chrono::Utc>,
         Option<chrono::DateTime<chrono::Utc>>,
         Option<String>,
@@ -1813,9 +1909,19 @@ pub async fn my_requests(
     let requests: Vec<crate::templates::sessions::my_requests::MyRequestItem> = requests_data
         .into_iter()
         .map(
-            |(uuid, asset_name, asset_hostname, asset_type,
-              session_type, status, justification,
-              created_at, approved_at, approved_by, max_session_duration)| {
+            |(
+                uuid,
+                asset_name,
+                asset_hostname,
+                asset_type,
+                session_type,
+                status,
+                justification,
+                created_at,
+                approved_at,
+                approved_by,
+                max_session_duration,
+            )| {
                 crate::templates::sessions::my_requests::MyRequestItem {
                     uuid: uuid.to_string(),
                     asset_name,
@@ -1871,7 +1977,6 @@ pub async fn my_requests(
     Ok(Html(html))
 }
 
-
 /// Active sessions page.
 pub async fn active_sessions(
     State(state): State<AppState>,
@@ -1920,14 +2025,21 @@ pub async fn active_sessions(
         .await
         .unwrap_or(0);
 
-    let total_pages = ((total_items as f64) / (ACTIVE_PER_PAGE as f64)).ceil().max(1.0) as i32;
+    let total_pages = ((total_items as f64) / (ACTIVE_PER_PAGE as f64))
+        .ceil()
+        .max(1.0) as i32;
     let page = page.min(total_pages);
     let offset = ((page - 1) as i64) * ACTIVE_PER_PAGE;
 
     #[allow(clippy::type_complexity)]
     let sessions_data: Vec<(
-        i32, uuid::Uuid, String, String, String,
-        String, ipnetwork::IpNetwork,
+        i32,
+        uuid::Uuid,
+        String,
+        String,
+        String,
+        String,
+        ipnetwork::IpNetwork,
         Option<chrono::DateTime<chrono::Utc>>,
     )> = proxy_sessions::table
         .inner_join(schema_assets::table)
@@ -1954,7 +2066,16 @@ pub async fn active_sessions(
     let sessions: Vec<crate::templates::sessions::active_list::ActiveSessionItem> = sessions_data
         .into_iter()
         .filter_map(
-            |(session_id, uuid, username, asset_name, asset_hostname, session_type, client_ip, connected_at)| {
+            |(
+                session_id,
+                uuid,
+                username,
+                asset_name,
+                asset_hostname,
+                session_type,
+                client_ip,
+                connected_at,
+            )| {
                 let connected = connected_at?;
                 let duration = chrono::Utc::now().signed_duration_since(connected);
                 let duration_str = if duration.num_hours() > 0 {
@@ -2021,7 +2142,6 @@ pub async fn active_sessions(
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
     Ok(Html(html))
 }
-
 
 /// Serve an MP4 recording file for a given session UUID.
 ///
@@ -2708,10 +2828,7 @@ mod tests {
         let form = "csrf_token=tok&duration_value=24&duration_unit=hours";
         let parsed: ApproveForm = serde_urlencoded::from_str(form).unwrap();
         assert_eq!(parsed.duration_value, Some(24));
-        assert_eq!(
-            parsed.resolve_duration_seconds().unwrap(),
-            Some(86400),
-        );
+        assert_eq!(parsed.resolve_duration_seconds().unwrap(), Some(86400),);
     }
 
     #[test]
@@ -3031,8 +3148,14 @@ mod tests {
         let body = &source[my_req_fn..next_fn];
 
         for status in &[
-            "pending", "approved", "rejected", "expired",
-            "consumed", "active", "disconnected", "terminated",
+            "pending",
+            "approved",
+            "rejected",
+            "expired",
+            "consumed",
+            "active",
+            "disconnected",
+            "terminated",
         ] {
             assert!(
                 body.contains(&format!("\"{}\"", status)),
@@ -3062,7 +3185,10 @@ mod tests {
 
     #[test]
     fn test_my_requests_per_page_is_30() {
-        assert_eq!(MY_REQUESTS_PER_PAGE, 30, "my_requests should paginate at 30 items");
+        assert_eq!(
+            MY_REQUESTS_PER_PAGE, 30,
+            "my_requests should paginate at 30 items"
+        );
     }
 
     #[test]
@@ -3080,8 +3206,14 @@ mod tests {
 
         assert!(body.contains(".count()"), "must use COUNT query");
         assert!(body.contains(".offset("), "must use OFFSET");
-        assert!(body.contains("MY_REQUESTS_PER_PAGE"), "must reference per-page constant");
-        assert!(body.contains("Pagination {"), "must construct Pagination struct");
+        assert!(
+            body.contains("MY_REQUESTS_PER_PAGE"),
+            "must reference per-page constant"
+        );
+        assert!(
+            body.contains("Pagination {"),
+            "must construct Pagination struct"
+        );
     }
 
     #[test]
@@ -3099,7 +3231,10 @@ mod tests {
 
         assert!(body.contains("\"page\""), "must extract page parameter");
         assert!(body.contains(".max(1)"), "must clamp page to min 1");
-        assert!(body.contains(".min(total_pages)"), "must clamp page to max total_pages");
+        assert!(
+            body.contains(".min(total_pages)"),
+            "must clamp page to max total_pages"
+        );
     }
 
     #[test]

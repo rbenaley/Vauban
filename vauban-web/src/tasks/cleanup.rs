@@ -76,7 +76,10 @@ async fn session_cleanup_task(db_pool: Arc<DbPool>) {
         match terminate_expired_proxy_sessions(&db_pool).await {
             Ok(count) => {
                 if count > 0 {
-                    info!(terminated = count, "Terminated expired proxy sessions (max_session_duration)");
+                    info!(
+                        terminated = count,
+                        "Terminated expired proxy sessions (max_session_duration)"
+                    );
                 }
             }
             Err(e) => error!(error = %e, "Failed to terminate expired proxy sessions"),
@@ -116,7 +119,11 @@ async fn session_cleanup_task(db_pool: Arc<DbPool>) {
         match disconnect_stale_active_sessions(&db_pool).await {
             Ok(count) => {
                 if count > 0 {
-                    info!(disconnected = count, "Disconnected stale active sessions (no expiry, no update for {}h)", STALE_ACTIVE_TTL_HOURS);
+                    info!(
+                        disconnected = count,
+                        "Disconnected stale active sessions (no expiry, no update for {}h)",
+                        STALE_ACTIVE_TTL_HOURS
+                    );
                 }
             }
             Err(e) => error!(error = %e, "Failed to disconnect stale active sessions"),

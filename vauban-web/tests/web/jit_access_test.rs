@@ -7,9 +7,8 @@ use crate::fixtures::{
     add_user_to_vauban_group, create_approval_request, create_approval_request_with_duration,
     create_approved_session, create_expired_approved_session, create_jit_session,
     create_simple_admin_user, create_simple_ssh_asset, create_simple_user,
-    create_test_access_rule_with_constraints, create_test_asset_group,
-    create_test_asset_in_group, create_test_session, create_test_vauban_group, get_asset_uuid,
-    unique_name,
+    create_test_access_rule_with_constraints, create_test_asset_group, create_test_asset_in_group,
+    create_test_session, create_test_vauban_group, get_asset_uuid, unique_name,
 };
 use axum::http::header::COOKIE;
 use diesel::{BoolExpressionMethods, ExpressionMethods, QueryDsl};
@@ -113,10 +112,7 @@ async fn test_approve_session_updates_status() {
 
     let response = app
         .server
-        .post(&format!(
-            "/sessions/approvals/{}/approve",
-            session_uuid
-        ))
+        .post(&format!("/sessions/approvals/{}/approve", session_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -177,10 +173,7 @@ async fn test_reject_session_updates_status() {
 
     let response = app
         .server
-        .post(&format!(
-            "/sessions/approvals/{}/reject",
-            session_uuid
-        ))
+        .post(&format!("/sessions/approvals/{}/reject", session_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -357,8 +350,7 @@ async fn test_my_requests_shows_consumed_jit_sessions() {
 
     let asset_name = unique_name("jit_mr_cons_ast");
     let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
-    let _session_id =
-        create_jit_session(&mut conn, user_id, asset_id, "ssh", "consumed").await;
+    let _session_id = create_jit_session(&mut conn, user_id, asset_id, "ssh", "consumed").await;
 
     let token = app
         .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
@@ -396,8 +388,7 @@ async fn test_my_requests_shows_disconnected_jit_sessions() {
 
     let asset_name = unique_name("jit_mr_disc_ast");
     let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
-    let _session_id =
-        create_jit_session(&mut conn, user_id, asset_id, "ssh", "disconnected").await;
+    let _session_id = create_jit_session(&mut conn, user_id, asset_id, "ssh", "disconnected").await;
 
     let token = app
         .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
@@ -431,8 +422,7 @@ async fn test_my_requests_shows_terminated_jit_sessions() {
 
     let asset_name = unique_name("jit_mr_term_ast");
     let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
-    let _session_id =
-        create_jit_session(&mut conn, user_id, asset_id, "ssh", "terminated").await;
+    let _session_id = create_jit_session(&mut conn, user_id, asset_id, "ssh", "terminated").await;
 
     let token = app
         .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
@@ -467,7 +457,13 @@ async fn test_my_requests_shows_all_jit_lifecycle_statuses() {
     let asset_name = unique_name("jit_mr_all_ast");
     let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
 
-    for status in &["pending", "approved", "consumed", "disconnected", "terminated"] {
+    for status in &[
+        "pending",
+        "approved",
+        "consumed",
+        "disconnected",
+        "terminated",
+    ] {
         let _id = create_jit_session(&mut conn, user_id, asset_id, "ssh", status).await;
     }
 
@@ -486,8 +482,14 @@ async fn test_my_requests_shows_all_jit_lifecycle_statuses() {
 
     assert!(body.contains("Pending"), "should show Pending");
     assert!(body.contains("Approved"), "should show Approved");
-    assert!(body.contains("Connected"), "should show Connected (consumed)");
-    assert!(body.contains("Completed"), "should show Completed (disconnected)");
+    assert!(
+        body.contains("Connected"),
+        "should show Connected (consumed)"
+    );
+    assert!(
+        body.contains("Completed"),
+        "should show Completed (disconnected)"
+    );
     assert!(body.contains("Terminated"), "should show Terminated");
 }
 
@@ -591,10 +593,7 @@ async fn test_cancel_own_pending_request() {
 
     let response = app
         .server
-        .post(&format!(
-            "/sessions/my-requests/{}/cancel",
-            session_uuid
-        ))
+        .post(&format!("/sessions/my-requests/{}/cancel", session_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -1354,17 +1353,16 @@ async fn test_approve_with_override_sets_correct_expires_at() {
         ])
         .await;
 
-    let (db_duration, db_expires_at): (Option<i32>, Option<chrono::DateTime<chrono::Utc>>) =
-        unwrap_ok!(
-            proxy_sessions::table
-                .filter(proxy_sessions::uuid.eq(session_uuid))
-                .select((
-                    proxy_sessions::max_session_duration,
-                    proxy_sessions::expires_at
-                ))
-                .first(&mut conn)
-                .await
-        );
+    let (db_duration, db_expires_at): (Option<i32>, Option<chrono::DateTime<chrono::Utc>>) = unwrap_ok!(
+        proxy_sessions::table
+            .filter(proxy_sessions::uuid.eq(session_uuid))
+            .select((
+                proxy_sessions::max_session_duration,
+                proxy_sessions::expires_at
+            ))
+            .first(&mut conn)
+            .await
+    );
 
     assert_eq!(db_duration, Some(1800), "duration should be 30 min = 1800s");
     assert!(db_expires_at.is_some(), "expires_at must be set");
@@ -1441,8 +1439,7 @@ async fn test_expired_approved_session_not_found_by_status_query() {
     let asset_name = unique_name("jit_ast_exp_nf");
     let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
 
-    let _expired_uuid =
-        create_expired_approved_session(&mut conn, user_id, asset_id).await;
+    let _expired_uuid = create_expired_approved_session(&mut conn, user_id, asset_id).await;
 
     // Query like SSH/RDP handlers do: approved + not expired
     let now = chrono::Utc::now();
@@ -1481,8 +1478,7 @@ async fn test_valid_approved_session_found_by_status_query() {
     let asset_name = unique_name("jit_ast_val_f");
     let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
 
-    let approved_uuid =
-        create_approved_session(&mut conn, user_id, asset_id, Some(900)).await;
+    let approved_uuid = create_approved_session(&mut conn, user_id, asset_id, Some(900)).await;
 
     let now = chrono::Utc::now();
     let found: Option<Uuid> = proxy_sessions::table
@@ -1522,8 +1518,7 @@ async fn test_approved_session_survives_connection() {
     let asset_name = unique_name("jit_ast_survive");
     let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
 
-    let approved_uuid =
-        create_approved_session(&mut conn, user_id, asset_id, Some(900)).await;
+    let approved_uuid = create_approved_session(&mut conn, user_id, asset_id, Some(900)).await;
 
     // Simulate what the SSH/RDP handler now does: look up approval (no consume)
     let now = chrono::Utc::now();
@@ -1616,8 +1611,7 @@ async fn test_approved_session_reusable_within_expiry() {
     let asset_name = unique_name("jit_ast_reuse");
     let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
 
-    let approved_uuid =
-        create_approved_session(&mut conn, user_id, asset_id, Some(900)).await;
+    let approved_uuid = create_approved_session(&mut conn, user_id, asset_id, Some(900)).await;
 
     let now = chrono::Utc::now();
     let ip: ipnetwork::IpNetwork = "127.0.0.1".parse().unwrap();
@@ -1644,26 +1638,22 @@ async fn test_approved_session_reusable_within_expiry() {
 
     // Activate then disconnect connection 1
     unwrap_ok!(
-        diesel::update(
-            proxy_sessions::table.filter(proxy_sessions::uuid.eq(conn1_uuid)),
-        )
-        .set((
-            proxy_sessions::status.eq("active"),
-            proxy_sessions::connected_at.eq(now),
-        ))
-        .execute(&mut conn)
-        .await
+        diesel::update(proxy_sessions::table.filter(proxy_sessions::uuid.eq(conn1_uuid)),)
+            .set((
+                proxy_sessions::status.eq("active"),
+                proxy_sessions::connected_at.eq(now),
+            ))
+            .execute(&mut conn)
+            .await
     );
     unwrap_ok!(
-        diesel::update(
-            proxy_sessions::table.filter(proxy_sessions::uuid.eq(conn1_uuid)),
-        )
-        .set((
-            proxy_sessions::status.eq("disconnected"),
-            proxy_sessions::disconnected_at.eq(now),
-        ))
-        .execute(&mut conn)
-        .await
+        diesel::update(proxy_sessions::table.filter(proxy_sessions::uuid.eq(conn1_uuid)),)
+            .set((
+                proxy_sessions::status.eq("disconnected"),
+                proxy_sessions::disconnected_at.eq(now),
+            ))
+            .execute(&mut conn)
+            .await
     );
 
     // --- Connection 2 (reconnection) ---
@@ -1704,8 +1694,7 @@ async fn test_reconnection_fails_after_expiry() {
     let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
 
     // Create an already-expired approved session
-    let _expired_uuid =
-        create_expired_approved_session(&mut conn, user_id, asset_id).await;
+    let _expired_uuid = create_expired_approved_session(&mut conn, user_id, asset_id).await;
 
     let now = chrono::Utc::now();
     let found: Option<Uuid> = proxy_sessions::table
@@ -1745,8 +1734,7 @@ async fn test_reconnection_with_rdp_asset() {
     let asset_name = unique_name("jit_ast_rdp_recon");
     let asset_id = create_simple_rdp_asset(&mut conn, &asset_name, admin_id).await;
 
-    let approved_uuid =
-        create_approved_session(&mut conn, user_id, asset_id, Some(900)).await;
+    let approved_uuid = create_approved_session(&mut conn, user_id, asset_id, Some(900)).await;
 
     let now = chrono::Utc::now();
     let ip: ipnetwork::IpNetwork = "127.0.0.1".parse().unwrap();
@@ -1818,8 +1806,7 @@ async fn test_approval_not_shared_between_users() {
     let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
 
     // Only User A has an approval
-    let _approved_uuid =
-        create_approved_session(&mut conn, user_a_id, asset_id, Some(900)).await;
+    let _approved_uuid = create_approved_session(&mut conn, user_a_id, asset_id, Some(900)).await;
 
     // User B queries for approved sessions on the same asset
     let now = chrono::Utc::now();
@@ -1862,8 +1849,7 @@ async fn test_approval_not_shared_between_assets() {
     let asset_b_id = create_simple_ssh_asset(&mut conn, &asset_b_name, admin_id).await;
 
     // Approval only for Asset A
-    let _approved_uuid =
-        create_approved_session(&mut conn, user_id, asset_a_id, Some(900)).await;
+    let _approved_uuid = create_approved_session(&mut conn, user_id, asset_a_id, Some(900)).await;
 
     // Query for Asset B
     let now = chrono::Utc::now();
@@ -1903,8 +1889,7 @@ async fn test_concurrent_connections_from_single_approval() {
     let asset_name = unique_name("jit_ast_conc");
     let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
 
-    let approved_uuid =
-        create_approved_session(&mut conn, user_id, asset_id, Some(900)).await;
+    let approved_uuid = create_approved_session(&mut conn, user_id, asset_id, Some(900)).await;
 
     let ip: ipnetwork::IpNetwork = "127.0.0.1".parse().unwrap();
 
@@ -1940,7 +1925,10 @@ async fn test_concurrent_connections_from_single_approval() {
             .get_result(&mut conn)
             .await
     );
-    assert_eq!(connecting_count, 2, "two concurrent connections should coexist");
+    assert_eq!(
+        connecting_count, 2,
+        "two concurrent connections should coexist"
+    );
 
     // Approval still valid
     let now = chrono::Utc::now();
@@ -1980,10 +1968,8 @@ async fn test_expired_approval_not_found_after_cleanup() {
     let asset_name = unique_name("jit_ast_cl_mix");
     let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
 
-    let expired_uuid =
-        create_expired_approved_session(&mut conn, user_id, asset_id).await;
-    let valid_uuid =
-        create_approved_session(&mut conn, user_id, asset_id, Some(3600)).await;
+    let expired_uuid = create_expired_approved_session(&mut conn, user_id, asset_id).await;
+    let valid_uuid = create_approved_session(&mut conn, user_id, asset_id, Some(3600)).await;
 
     // Run cleanup logic
     let now = chrono::Utc::now();
@@ -2019,7 +2005,10 @@ async fn test_expired_approval_not_found_after_cleanup() {
             .first(&mut conn)
             .await
     );
-    assert_eq!(valid_status, "approved", "valid approval must survive cleanup");
+    assert_eq!(
+        valid_status, "approved",
+        "valid approval must survive cleanup"
+    );
 }
 
 /// The cleanup task must expire approved sessions whose expires_at has passed.
@@ -2037,8 +2026,7 @@ async fn test_cleanup_expires_stale_approved_sessions() {
     let asset_name = unique_name("jit_ast_cleanup");
     let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
 
-    let expired_uuid =
-        create_expired_approved_session(&mut conn, user_id, asset_id).await;
+    let expired_uuid = create_expired_approved_session(&mut conn, user_id, asset_id).await;
 
     // Simulate what the cleanup task does
     let now = chrono::Utc::now();
@@ -2091,10 +2079,8 @@ async fn test_mixed_expired_and_valid_approvals_returns_valid_only() {
     let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
 
     // Create one expired and one valid
-    let _expired_uuid =
-        create_expired_approved_session(&mut conn, user_id, asset_id).await;
-    let valid_uuid =
-        create_approved_session(&mut conn, user_id, asset_id, Some(3600)).await;
+    let _expired_uuid = create_expired_approved_session(&mut conn, user_id, asset_id).await;
+    let valid_uuid = create_approved_session(&mut conn, user_id, asset_id, Some(3600)).await;
 
     let now = chrono::Utc::now();
     let found: Option<Uuid> = proxy_sessions::table
@@ -2135,8 +2121,7 @@ async fn test_approved_session_without_expires_at_still_valid() {
     let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
 
     // Create approved session with no duration (NULL expires_at)
-    let approved_uuid =
-        create_approved_session(&mut conn, user_id, asset_id, None).await;
+    let approved_uuid = create_approved_session(&mut conn, user_id, asset_id, None).await;
 
     let now = chrono::Utc::now();
     let found: Option<Uuid> = proxy_sessions::table
@@ -2644,8 +2629,7 @@ async fn test_cleanup_does_not_expire_unlimited_approved_sessions() {
     let asset_name = unique_name("jit_ast_unlim_cl");
     let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
 
-    let unlimited_uuid =
-        create_approved_session(&mut conn, user_id, asset_id, None).await;
+    let unlimited_uuid = create_approved_session(&mut conn, user_id, asset_id, None).await;
 
     // Run cleanup logic
     let now = chrono::Utc::now();
@@ -2688,7 +2672,9 @@ async fn test_my_requests_page_1_default() {
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
     let admin_id = create_simple_admin_user(&mut conn, &unique_name("mrpg1adm")).await;
     let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("mrpg1a"), admin_id).await;
-    let token = app.generate_test_token(&user_uuid.to_string(), &user_name, false, false).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
+        .await;
 
     for _ in 0..5 {
         create_jit_session(&mut conn, user_id, asset_id, "ssh", "pending").await;
@@ -2701,7 +2687,10 @@ async fn test_my_requests_page_1_default() {
         .await;
     assert_status(&response, 200);
     let body = response.text();
-    assert!(body.contains("Showing"), "page 1 should show pagination counter");
+    assert!(
+        body.contains("Showing"),
+        "page 1 should show pagination counter"
+    );
     assert!(
         body.contains("of <span class=\"font-medium\">5</span>"),
         "should display total 5 items"
@@ -2717,7 +2706,9 @@ async fn test_my_requests_pagination_with_many_items() {
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
     let admin_id = create_simple_admin_user(&mut conn, &unique_name("mrpgmanyadm")).await;
     let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("mrpgmanya"), admin_id).await;
-    let token = app.generate_test_token(&user_uuid.to_string(), &user_name, false, false).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
+        .await;
 
     for _ in 0..35 {
         create_jit_session(&mut conn, user_id, asset_id, "ssh", "pending").await;
@@ -2730,7 +2721,10 @@ async fn test_my_requests_pagination_with_many_items() {
         .await;
     assert_status(&response, 200);
     let body = response.text();
-    assert!(body.contains("Next page"), "should have Next link when more than 30 items");
+    assert!(
+        body.contains("Next page"),
+        "should have Next link when more than 30 items"
+    );
     assert!(body.contains("page=2"), "should link to page 2");
 }
 
@@ -2743,7 +2737,9 @@ async fn test_my_requests_page_2() {
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
     let admin_id = create_simple_admin_user(&mut conn, &unique_name("mrpg2adm")).await;
     let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("mrpg2a"), admin_id).await;
-    let token = app.generate_test_token(&user_uuid.to_string(), &user_name, false, false).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
+        .await;
 
     for _ in 0..35 {
         create_jit_session(&mut conn, user_id, asset_id, "ssh", "pending").await;
@@ -2756,7 +2752,10 @@ async fn test_my_requests_page_2() {
         .await;
     assert_status(&response, 200);
     let body = response.text();
-    assert!(body.contains("Previous page"), "page 2 should have Previous link");
+    assert!(
+        body.contains("Previous page"),
+        "page 2 should have Previous link"
+    );
     assert!(body.contains("First page"), "page 2 should have First link");
 }
 
@@ -2769,7 +2768,9 @@ async fn test_my_requests_page_999_clamps_to_last() {
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
     let admin_id = create_simple_admin_user(&mut conn, &unique_name("mrpg999adm")).await;
     let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("mrpg999a"), admin_id).await;
-    let token = app.generate_test_token(&user_uuid.to_string(), &user_name, false, false).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
+        .await;
 
     for _ in 0..5 {
         create_jit_session(&mut conn, user_id, asset_id, "ssh", "pending").await;
@@ -2782,8 +2783,14 @@ async fn test_my_requests_page_999_clamps_to_last() {
         .await;
     assert_status(&response, 200);
     let body = response.text();
-    assert!(body.contains("Showing"), "clamped page should still show results");
-    assert!(!body.contains("Next page"), "clamped to last page should not have Next");
+    assert!(
+        body.contains("Showing"),
+        "clamped page should still show results"
+    );
+    assert!(
+        !body.contains("Next page"),
+        "clamped to last page should not have Next"
+    );
 }
 
 #[tokio::test]
@@ -2795,7 +2802,9 @@ async fn test_my_requests_page_negative_defaults_to_1() {
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
     let admin_id = create_simple_admin_user(&mut conn, &unique_name("mrpgnegadm")).await;
     let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("mrpgnega"), admin_id).await;
-    let token = app.generate_test_token(&user_uuid.to_string(), &user_name, false, false).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
+        .await;
 
     for _ in 0..5 {
         create_jit_session(&mut conn, user_id, asset_id, "ssh", "pending").await;
@@ -2808,7 +2817,10 @@ async fn test_my_requests_page_negative_defaults_to_1() {
         .await;
     assert_status(&response, 200);
     let body = response.text();
-    assert!(body.contains("Showing"), "negative page should default to 1 and show results");
+    assert!(
+        body.contains("Showing"),
+        "negative page should default to 1 and show results"
+    );
 }
 
 #[tokio::test]
@@ -2820,7 +2832,9 @@ async fn test_my_requests_page_abc_defaults_to_1() {
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
     let admin_id = create_simple_admin_user(&mut conn, &unique_name("mrpgabcadm")).await;
     let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("mrpgabca"), admin_id).await;
-    let token = app.generate_test_token(&user_uuid.to_string(), &user_name, false, false).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
+        .await;
 
     for _ in 0..5 {
         create_jit_session(&mut conn, user_id, asset_id, "ssh", "pending").await;
@@ -2833,7 +2847,10 @@ async fn test_my_requests_page_abc_defaults_to_1() {
         .await;
     assert_status(&response, 200);
     let body = response.text();
-    assert!(body.contains("Showing"), "non-numeric page should default to 1");
+    assert!(
+        body.contains("Showing"),
+        "non-numeric page should default to 1"
+    );
 }
 
 #[tokio::test]
@@ -2845,7 +2862,9 @@ async fn test_my_requests_showing_counter_accurate() {
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
     let admin_id = create_simple_admin_user(&mut conn, &unique_name("mrpgctradm")).await;
     let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("mrpgctra"), admin_id).await;
-    let token = app.generate_test_token(&user_uuid.to_string(), &user_name, false, false).await;
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
+        .await;
 
     for _ in 0..35 {
         create_jit_session(&mut conn, user_id, asset_id, "ssh", "pending").await;
@@ -2858,8 +2877,14 @@ async fn test_my_requests_showing_counter_accurate() {
         .await;
     assert_status(&response, 200);
     let body = response.text();
-    assert!(body.contains(">31</span>"), "page 2 start_index should be 31");
-    assert!(body.contains(">35</span>"), "page 2 end_index should be 35 (total is 35)");
+    assert!(
+        body.contains(">31</span>"),
+        "page 2 start_index should be 31"
+    );
+    assert!(
+        body.contains(">35</span>"),
+        "page 2 end_index should be 35 (total is 35)"
+    );
     assert!(
         body.contains("of <span class=\"font-medium\">35</span>"),
         "total should be 35"

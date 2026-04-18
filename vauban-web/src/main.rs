@@ -1226,10 +1226,7 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             "/sessions/request",
             post(handlers::web::submit_access_request),
         )
-        .route(
-            "/sessions/my-requests",
-            get(handlers::web::my_requests),
-        )
+        .route("/sessions/my-requests", get(handlers::web::my_requests))
         .route(
             "/sessions/my-requests/{uuid}/cancel",
             post(handlers::web::cancel_access_request),

@@ -49,7 +49,6 @@ impl AssetDetail {
             _ => "bg-gray-100 text-gray-800 dark:bg-gray-900/50 dark:text-gray-300",
         }
     }
-
 }
 
 #[derive(Template)]

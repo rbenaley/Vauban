@@ -343,7 +343,8 @@ mod tests {
         let trigger_pos = html
             .find("recording-ws-trigger")
             .expect("trigger must exist");
-        let surrounding = &html[trigger_pos.saturating_sub(200)..std::cmp::min(trigger_pos + 200, html.len())];
+        let surrounding =
+            &html[trigger_pos.saturating_sub(200)..std::cmp::min(trigger_pos + 200, html.len())];
         assert!(
             surrounding.contains("hidden"),
             "WS trigger element must be hidden"
@@ -352,11 +353,7 @@ mod tests {
 
     #[test]
     fn test_recording_list_trigger_preserves_format_filter() {
-        let html = render_recording_list(
-            vec![],
-            Some("ssh".to_string()),
-            None,
-        );
+        let html = render_recording_list(vec![], Some("ssh".to_string()), None);
         assert!(
             html.contains("format=ssh"),
             "WS trigger hx-get must preserve format filter, got: {}",
@@ -368,11 +365,7 @@ mod tests {
 
     #[test]
     fn test_recording_list_trigger_preserves_asset_filter() {
-        let html = render_recording_list(
-            vec![],
-            None,
-            Some("prod-server".to_string()),
-        );
+        let html = render_recording_list(vec![], None, Some("prod-server".to_string()));
         assert!(
             html.contains("asset=prod-server"),
             "WS trigger hx-get must preserve asset filter"
@@ -381,11 +374,8 @@ mod tests {
 
     #[test]
     fn test_recording_list_trigger_preserves_both_filters() {
-        let html = render_recording_list(
-            vec![],
-            Some("rdp".to_string()),
-            Some("myasset".to_string()),
-        );
+        let html =
+            render_recording_list(vec![], Some("rdp".to_string()), Some("myasset".to_string()));
         assert!(
             html.contains("format=rdp") && html.contains("asset=myasset"),
             "WS trigger hx-get must preserve both filters"

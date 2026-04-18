@@ -617,10 +617,7 @@ impl AccessIpcClient {
 
 /// `limit == 0` lets vauban-access apply [`shared::messages::DEFAULT_IPC_PAGE_LIMIT`].
 fn ipc_page(offset: u32) -> IpcPageParams {
-    IpcPageParams {
-        limit: 0,
-        offset,
-    }
+    IpcPageParams { limit: 0, offset }
 }
 
 fn set_nonblocking(fd: RawFd) -> io::Result<()> {

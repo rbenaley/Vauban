@@ -42,16 +42,16 @@ pub async fn group_list(
             .map_err(|e| AppError::Internal(anyhow::anyhow!("IPC error: {}", e)))?;
         let mut items: Vec<_> = groups
             .into_iter()
-            .map(|g: IpcVaubanGroupInfo| {
-                crate::templates::accounts::group_list::GroupListItem {
+            .map(
+                |g: IpcVaubanGroupInfo| crate::templates::accounts::group_list::GroupListItem {
                     uuid: g.uuid,
                     name: g.name,
                     description: g.description,
                     source: g.source,
                     member_count: g.member_count,
                     created_at: format_rfc3339_date(&g.created_at),
-                }
-            })
+                },
+            )
             .collect();
         if let Some(ref s) = search_filter {
             let search_lower = s.to_lowercase();
@@ -75,10 +75,16 @@ pub async fn group_list(
         .max(1);
 
     let total_items = group_items.len();
-    let total_pages = ((total_items as f64) / (GROUPS_PER_PAGE as f64)).ceil().max(1.0) as usize;
+    let total_pages = ((total_items as f64) / (GROUPS_PER_PAGE as f64))
+        .ceil()
+        .max(1.0) as usize;
     let page = page.min(total_pages);
     let offset = (page - 1) * GROUPS_PER_PAGE;
-    let paged_items: Vec<_> = group_items.into_iter().skip(offset).take(GROUPS_PER_PAGE).collect();
+    let paged_items: Vec<_> = group_items
+        .into_iter()
+        .skip(offset)
+        .take(GROUPS_PER_PAGE)
+        .collect();
 
     use crate::templates::accounts::user_list::Pagination;
 

@@ -122,9 +122,17 @@ mod tests {
                 name: "Servers".to_string(),
             }],
         };
-        let html = template.render().expect("AccessRuleCreateTemplate should render");
-        assert!(html.contains("duration_value"), "should have duration_value input");
-        assert!(html.contains("duration_unit"), "should have duration_unit select");
+        let html = template
+            .render()
+            .expect("AccessRuleCreateTemplate should render");
+        assert!(
+            html.contains("duration_value"),
+            "should have duration_value input"
+        );
+        assert!(
+            html.contains("duration_unit"),
+            "should have duration_unit select"
+        );
         assert!(html.contains("value=\"2\""), "should default to 2 hours");
     }
 }

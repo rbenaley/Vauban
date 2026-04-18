@@ -45,7 +45,8 @@ pub async fn list_sessions(
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
-    let sessions_list = proxy_sessions.into_boxed()
+    let sessions_list = proxy_sessions
+        .into_boxed()
         .limit(params.limit.unwrap_or(50))
         .offset(params.offset.unwrap_or(0))
         .order(created_at.desc())
@@ -248,10 +249,7 @@ pub async fn terminate_session(
             .await
     } else {
         diesel::update(proxy_sessions.filter(uuid.eq(session_uuid)))
-            .set((
-                status.eq("terminated"),
-                disconnected_at.eq(now),
-            ))
+            .set((status.eq("terminated"), disconnected_at.eq(now)))
             .get_result::<ProxySession>(&mut conn)
             .await
     }

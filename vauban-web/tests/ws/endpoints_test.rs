@@ -486,12 +486,8 @@ async fn test_terminal_ws_requires_auth() {
 async fn test_terminal_ws_uuid_session_id() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
-    let admin = create_admin_user(
-        &mut conn,
-        &app.auth_service,
-        &unique_name("wsterminaluuid"),
-    )
-    .await;
+    let admin =
+        create_admin_user(&mut conn, &app.auth_service, &unique_name("wsterminaluuid")).await;
     drop(conn);
     {
         let mut c = app.get_conn().await;
@@ -729,12 +725,8 @@ async fn test_ws_limit_per_user_independent() {
 async fn test_session_list_ws_endpoint_exists() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
-    let admin = create_admin_user(
-        &mut conn,
-        &app.auth_service,
-        &unique_name("wssessionlist"),
-    )
-    .await;
+    let admin =
+        create_admin_user(&mut conn, &app.auth_service, &unique_name("wssessionlist")).await;
     drop(conn);
     {
         let mut c = app.get_conn().await;

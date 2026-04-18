@@ -39,14 +39,14 @@ pub async fn asset_group_list(
             .await
             .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
         let count_rows: Vec<GroupCountRow> = diesel::sql_query(
-                "SELECT aag.asset_group_id AS group_id, COUNT(*)::bigint AS cnt \
+            "SELECT aag.asset_group_id AS group_id, COUNT(*)::bigint AS cnt \
                  FROM asset_asset_groups aag \
                  INNER JOIN assets a ON a.id = aag.asset_id AND a.is_deleted = false \
                  GROUP BY aag.asset_group_id",
-            )
-            .load(&mut conn)
-            .await
-            .map_err(AppError::Database)?;
+        )
+        .load(&mut conn)
+        .await
+        .map_err(AppError::Database)?;
         let counts: std::collections::HashMap<i32, i64> = count_rows
             .into_iter()
             .map(|r| (r.group_id, r.cnt))
@@ -283,27 +283,21 @@ pub async fn asset_group_add_asset_form(
     use crate::schema::asset_groups::dsl as ag;
     use crate::schema::assets::dsl as a;
 
-    let available_asset_rows: Vec<(
-        i32,
-        ::uuid::Uuid,
-        String,
-        String,
-        DbAssetType,
-        String,
-    )> = a::assets
-        .filter(a::is_deleted.eq(false))
-        .select((
-            a::id,
-            a::uuid,
-            a::name,
-            a::hostname,
-            a::asset_type,
-            a::status,
-        ))
-        .order(a::name.asc())
-        .load(&mut conn)
-        .await
-        .map_err(AppError::Database)?;
+    let available_asset_rows: Vec<(i32, ::uuid::Uuid, String, String, DbAssetType, String)> =
+        a::assets
+            .filter(a::is_deleted.eq(false))
+            .select((
+                a::id,
+                a::uuid,
+                a::name,
+                a::hostname,
+                a::asset_type,
+                a::status,
+            ))
+            .order(a::name.asc())
+            .load(&mut conn)
+            .await
+            .map_err(AppError::Database)?;
 
     let asset_ids: Vec<i32> = available_asset_rows.iter().map(|r| r.0).collect();
 
@@ -328,27 +322,25 @@ pub async fn asset_group_add_asset_form(
 
     let available_assets: Vec<AvailableAsset> = available_asset_rows
         .into_iter()
-        .map(
-            |(asset_pk, uuid, name, hostname, asset_type, status)| {
-                let mems = by_asset.get(&asset_pk).cloned().unwrap_or_default();
-                let in_target_group = mems.iter().any(|(id, _)| *id == target_group_id);
-                let other_group_names: Vec<String> = mems
-                    .into_iter()
-                    .filter(|(id, _)| *id != target_group_id)
-                    .map(|(_, n)| n)
-                    .collect();
-                AvailableAsset {
-                    uuid: uuid.to_string(),
-                    name,
-                    hostname,
-                    asset_type: asset_type.to_string(),
-                    status,
-                    in_target_group,
-                    other_group_names,
-                    allow_multiple_groups_per_asset: allow_multiple,
-                }
-            },
-        )
+        .map(|(asset_pk, uuid, name, hostname, asset_type, status)| {
+            let mems = by_asset.get(&asset_pk).cloned().unwrap_or_default();
+            let in_target_group = mems.iter().any(|(id, _)| *id == target_group_id);
+            let other_group_names: Vec<String> = mems
+                .into_iter()
+                .filter(|(id, _)| *id != target_group_id)
+                .map(|(_, n)| n)
+                .collect();
+            AvailableAsset {
+                uuid: uuid.to_string(),
+                name,
+                hostname,
+                asset_type: asset_type.to_string(),
+                status,
+                in_target_group,
+                other_group_names,
+                allow_multiple_groups_per_asset: allow_multiple,
+            }
+        })
         .collect();
 
     // Count selectable assets for this form
@@ -1147,11 +1139,10 @@ pub async fn delete_asset_group_web(
             }
         };
         use crate::schema::asset_asset_groups::dsl as aag;
-        let _ = diesel::delete(
-            aag::asset_asset_groups.filter(aag::asset_group_id.eq(group_info.id)),
-        )
-        .execute(&mut conn)
-        .await;
+        let _ =
+            diesel::delete(aag::asset_asset_groups.filter(aag::asset_group_id.eq(group_info.id)))
+                .execute(&mut conn)
+                .await;
         client
             .delete_asset_group(&uuid_str)
             .await

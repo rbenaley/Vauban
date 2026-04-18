@@ -392,13 +392,7 @@ fn handle_message(
         Message::SshRecordingStart { .. }
         | Message::SshRecordingData { .. }
         | Message::SshRecordingEnd { .. } => {
-            handle_ssh_recording_message(
-                state,
-                ssh_recording_mgr,
-                channel,
-                fd_passing_socket,
-                msg,
-            )
+            handle_ssh_recording_message(state, ssh_recording_mgr, channel, fd_passing_socket, msg)
         }
 
         _ => {
@@ -753,7 +747,15 @@ mod tests {
             source_ip: Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))),
             details: "SSH session started".to_string(),
         };
-        handle_message(&service, &mut state, &mut recording_mgr, &mut None, None, event).unwrap();
+        handle_message(
+            &service,
+            &mut state,
+            &mut recording_mgr,
+            &mut None,
+            None,
+            event,
+        )
+        .unwrap();
 
         assert_eq!(state.requests_processed, 1);
 
@@ -776,7 +778,15 @@ mod tests {
             sequence: 1,
             data: vec![0; 1024],
         };
-        handle_message(&service, &mut state, &mut recording_mgr, &mut None, None, chunk).unwrap();
+        handle_message(
+            &service,
+            &mut state,
+            &mut recording_mgr,
+            &mut None,
+            None,
+            chunk,
+        )
+        .unwrap();
 
         assert_eq!(state.requests_processed, 1);
     }
@@ -788,7 +798,15 @@ mod tests {
         let mut recording_mgr = None;
 
         let msg = Message::Control(ControlMessage::Ping { seq: 11 });
-        handle_message(&service, &mut state, &mut recording_mgr, &mut None, None, msg).unwrap();
+        handle_message(
+            &service,
+            &mut state,
+            &mut recording_mgr,
+            &mut None,
+            None,
+            msg,
+        )
+        .unwrap();
 
         let response: Message = supervisor.recv().unwrap();
         assert!(matches!(
@@ -812,8 +830,15 @@ mod tests {
                 source_ip: None,
                 details: "Login".to_string(),
             };
-            handle_message(&service, &mut state, &mut recording_mgr, &mut None, None, event)
-                .unwrap();
+            handle_message(
+                &service,
+                &mut state,
+                &mut recording_mgr,
+                &mut None,
+                None,
+                event,
+            )
+            .unwrap();
         }
 
         assert_eq!(state.requests_processed, 5);
@@ -1118,7 +1143,11 @@ mod tests {
         for line in &lines[1..] {
             let event: serde_json::Value = serde_json::from_str(line).unwrap();
             assert!(event.is_array(), "Event must be a JSON array");
-            assert_eq!(event.as_array().unwrap().len(), 3, "Event must have 3 elements");
+            assert_eq!(
+                event.as_array().unwrap().len(),
+                3,
+                "Event must have 3 elements"
+            );
         }
 
         // Verify meta.json exists and is valid
@@ -1166,9 +1195,7 @@ mod tests {
     #[test]
     fn test_ssh_recording_main_loop_polls_ssh_channel() {
         let source = prod_source();
-        let main_loop = source
-            .find("fn main_loop")
-            .expect("main_loop must exist");
+        let main_loop = source.find("fn main_loop").expect("main_loop must exist");
         let main_loop_source = &source[main_loop..];
         assert!(
             main_loop_source.contains("ssh_poll_idx"),

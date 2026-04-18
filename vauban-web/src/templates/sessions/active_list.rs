@@ -45,11 +45,17 @@ pub struct ActiveListTemplate {
 
 impl ActiveListTemplate {
     pub fn ssh_count(&self) -> usize {
-        self.sessions.iter().filter(|s| s.session_type == "ssh").count()
+        self.sessions
+            .iter()
+            .filter(|s| s.session_type == "ssh")
+            .count()
     }
 
     pub fn rdp_count(&self) -> usize {
-        self.sessions.iter().filter(|s| s.session_type == "rdp").count()
+        self.sessions
+            .iter()
+            .filter(|s| s.session_type == "rdp")
+            .count()
     }
 }
 
@@ -69,11 +75,17 @@ pub struct ActiveListStatsWidget {
 
 impl ActiveListStatsWidget {
     pub fn ssh_count(&self) -> usize {
-        self.sessions.iter().filter(|s| s.session_type == "ssh").count()
+        self.sessions
+            .iter()
+            .filter(|s| s.session_type == "ssh")
+            .count()
     }
 
     pub fn rdp_count(&self) -> usize {
-        self.sessions.iter().filter(|s| s.session_type == "rdp").count()
+        self.sessions
+            .iter()
+            .filter(|s| s.session_type == "rdp")
+            .count()
     }
 }
 

@@ -181,9 +181,7 @@ async fn verify_session_ownership(
             );
             Err(axum::http::StatusCode::GONE)
         }
-        Some((owner, _)) if owner == user_uuid || user.is_staff || user.is_superuser => {
-            Ok(())
-        }
+        Some((owner, _)) if owner == user_uuid || user.is_staff || user.is_superuser => Ok(()),
         Some(_) => {
             warn!(
                 session_id = %session_uuid_str,
@@ -972,8 +970,25 @@ pub(crate) async fn fetch_active_sessions_list(
     Ok(rows
         .into_iter()
         .filter_map(
-            |(session_id, uuid, username, asset_name, asset_hostname, session_type, client_ip, connected_at):
-             (i32, uuid::Uuid, String, String, String, String, ipnetwork::IpNetwork, Option<chrono::DateTime<chrono::Utc>>)| {
+            |(
+                session_id,
+                uuid,
+                username,
+                asset_name,
+                asset_hostname,
+                session_type,
+                client_ip,
+                connected_at,
+            ): (
+                i32,
+                uuid::Uuid,
+                String,
+                String,
+                String,
+                String,
+                ipnetwork::IpNetwork,
+                Option<chrono::DateTime<chrono::Utc>>,
+            )| {
                 let connected = connected_at?;
                 let duration_secs = now.signed_duration_since(connected).num_seconds();
                 let duration_str = format_duration(duration_secs);
@@ -1024,10 +1039,7 @@ async fn handle_session_list_socket(
     }
     debug!(user = %user.username, "Initial session list data sent");
 
-    let mut sessions_rx = state
-        .broadcast
-        .subscribe(&WsChannel::SessionsList)
-        .await;
+    let mut sessions_rx = state.broadcast.subscribe(&WsChannel::SessionsList).await;
 
     let mut ping_interval = interval(Duration::from_secs(PING_INTERVAL_SECS));
     let mut should_close = false;
@@ -1194,8 +1206,7 @@ pub(crate) async fn fetch_session_list_data(
                     session_type: session_type.to_string(),
                     status,
                     credential_username,
-                    connected_at: connected_at
-                        .map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
+                    connected_at: connected_at.map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
                     duration_seconds,
                     is_recorded,
                 }
@@ -1498,16 +1509,19 @@ async fn handle_terminal_socket(
                     match update_result {
                         Ok(count) if count > 0 => {
                             debug!(session_id = %session_id, "SSH session recording metadata saved");
-                            let _ = state.broadcast.send(
-                                &crate::services::broadcast::WsChannel::Notifications,
-                                crate::services::broadcast::WsMessage::new(
-                                    "jit-notification",
-                                    format!(
-                                        r#"{{"type":"recording_ready","session_uuid":"{}"}}"#,
-                                        session_id
+                            let _ = state
+                                .broadcast
+                                .send(
+                                    &crate::services::broadcast::WsChannel::Notifications,
+                                    crate::services::broadcast::WsMessage::new(
+                                        "jit-notification",
+                                        format!(
+                                            r#"{{"type":"recording_ready","session_uuid":"{}"}}"#,
+                                            session_id
+                                        ),
                                     ),
-                                ),
-                            ).await;
+                                )
+                                .await;
                         }
                         Ok(_) => {
                             debug!(session_id = %session_id, "SSH session already in terminal state");
@@ -1522,10 +1536,7 @@ async fn handle_terminal_socket(
                             .filter(dsl::uuid.eq(session_uuid))
                             .filter(dsl::status.eq_any(["active", "connecting"])),
                     )
-                    .set((
-                        dsl::status.eq("disconnected"),
-                        dsl::disconnected_at.eq(now),
-                    ))
+                    .set((dsl::status.eq("disconnected"), dsl::disconnected_at.eq(now)))
                     .execute(&mut conn)
                     .await;
 
@@ -1864,16 +1875,19 @@ async fn handle_rdp_socket(
                     match update_result {
                         Ok(count) if count > 0 => {
                             debug!(session_id = %session_id, "RDP session recording metadata saved");
-                            let _ = state.broadcast.send(
-                                &crate::services::broadcast::WsChannel::Notifications,
-                                crate::services::broadcast::WsMessage::new(
-                                    "jit-notification",
-                                    format!(
-                                        r#"{{"type":"recording_ready","session_uuid":"{}"}}"#,
-                                        session_id
+                            let _ = state
+                                .broadcast
+                                .send(
+                                    &crate::services::broadcast::WsChannel::Notifications,
+                                    crate::services::broadcast::WsMessage::new(
+                                        "jit-notification",
+                                        format!(
+                                            r#"{{"type":"recording_ready","session_uuid":"{}"}}"#,
+                                            session_id
+                                        ),
                                     ),
-                                ),
-                            ).await;
+                                )
+                                .await;
                         }
                         Ok(_) => {
                             debug!(session_id = %session_id, "RDP session already in terminal state");
@@ -1888,10 +1902,7 @@ async fn handle_rdp_socket(
                             .filter(dsl::uuid.eq(session_uuid))
                             .filter(dsl::status.eq_any(["active", "connecting"])),
                     )
-                    .set((
-                        dsl::status.eq("disconnected"),
-                        dsl::disconnected_at.eq(now),
-                    ))
+                    .set((dsl::status.eq("disconnected"), dsl::disconnected_at.eq(now)))
                     .execute(&mut conn)
                     .await;
 
@@ -2606,9 +2617,7 @@ mod tests {
             .find("fn handle_rdp_socket")
             .expect("handle_rdp_socket must exist");
         let rdp_body = &source[rdp_fn_start..];
-        let tests_start = rdp_body
-            .find("#[cfg(test)]")
-            .unwrap_or(rdp_body.len());
+        let tests_start = rdp_body.find("#[cfg(test)]").unwrap_or(rdp_body.len());
         let rdp_fn_body = &rdp_body[..tests_start];
         assert!(
             rdp_fn_body.contains("recording_ready"),
@@ -2753,7 +2762,10 @@ mod tests {
             .await
             .expect("reader must finish within 2s")
             .expect("reader must not panic");
-        assert_eq!(result, "closed", "select! loop must break when sender is dropped via HashMap::remove");
+        assert_eq!(
+            result, "closed",
+            "select! loop must break when sender is dropped via HashMap::remove"
+        );
     }
 
     // ==================== verify_session_ownership Tests ====================
@@ -3024,8 +3036,8 @@ mod tests {
         let cfg_test = fn_body.find("#[cfg(test)]").unwrap_or(fn_body.len());
         let fn_body = &fn_body[..cfg_test];
 
-        let has_else_branch = fn_body.contains("} else {")
-            && fn_body.contains("status.eq(\"disconnected\")");
+        let has_else_branch =
+            fn_body.contains("} else {") && fn_body.contains("status.eq(\"disconnected\")");
         assert!(
             has_else_branch,
             "SSH handler must always mark session as disconnected, even when recording is disabled"
@@ -3042,8 +3054,8 @@ mod tests {
         let cfg_test = fn_body.find("#[cfg(test)]").unwrap_or(fn_body.len());
         let fn_body = &fn_body[..cfg_test];
 
-        let has_else_branch = fn_body.contains("} else {")
-            && fn_body.contains("status.eq(\"disconnected\")");
+        let has_else_branch =
+            fn_body.contains("} else {") && fn_body.contains("status.eq(\"disconnected\")");
         assert!(
             has_else_branch,
             "RDP handler must always mark session as disconnected, even when recording is disabled"

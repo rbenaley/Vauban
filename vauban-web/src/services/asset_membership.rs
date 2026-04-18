@@ -1,9 +1,9 @@
 //! Asset–asset_group membership (many-to-many) helpers.
 
-use diesel::dsl::count_star;
 use diesel::ExpressionMethods;
 use diesel::OptionalExtension;
 use diesel::QueryDsl;
+use diesel::dsl::count_star;
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 
 use crate::db::DbPool;

@@ -103,15 +103,13 @@ pub async fn list_group_members(
         members_data
             .into_iter()
             .map(
-                |(uuid, username, email, first_name, last_name, is_active)| {
-                    GroupMemberResponse {
-                        uuid: uuid.to_string(),
-                        username,
-                        email,
-                        first_name,
-                        last_name,
-                        is_active,
-                    }
+                |(uuid, username, email, first_name, last_name, is_active)| GroupMemberResponse {
+                    uuid: uuid.to_string(),
+                    username,
+                    email,
+                    first_name,
+                    last_name,
+                    is_active,
                 },
             )
             .collect()

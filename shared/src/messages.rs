@@ -3585,17 +3585,10 @@ mod tests {
             limit: 10,
             offset: 0,
         };
-        let req = AccessRequest::ListAccessibleGroups {
-            user_id: 42,
-            page,
-        };
+        let req = AccessRequest::ListAccessibleGroups { user_id: 42, page };
         let serialized = serialize(&req);
         let deserialized: AccessRequest = deserialize(&serialized);
-        if let AccessRequest::ListAccessibleGroups {
-            user_id,
-            page: p,
-        } = deserialized
-        {
+        if let AccessRequest::ListAccessibleGroups { user_id, page: p } = deserialized {
             assert_eq!(user_id, 42);
             assert_eq!(p.limit, 10);
             assert_eq!(p.offset, 0);
@@ -3896,71 +3889,179 @@ mod tests {
             priority: 0,
         };
         let expected: Vec<(&str, u8, AccessRequest)> = vec![
-            ("CheckAccess", 0, AccessRequest::CheckAccess {
-                user_id: 1, asset_group_id: 1, protocol: "ssh".into(),
-            }),
-            ("ListAccessibleGroups", 1, AccessRequest::ListAccessibleGroups {
-                user_id: 1, page: p,
-            }),
-            ("CreateAccessRule", 2, AccessRequest::CreateAccessRule {
-                data: dummy_data.clone(),
-            }),
-            ("GetAccessRule", 3, AccessRequest::GetAccessRule {
-                uuid: "u".into(),
-            }),
-            ("ListAccessRules", 4, AccessRequest::ListAccessRules { page: p }),
-            ("UpdateAccessRule", 5, AccessRequest::UpdateAccessRule {
-                uuid: "u".into(), data: dummy_data,
-            }),
-            ("DeleteAccessRule", 6, AccessRequest::DeleteAccessRule {
-                uuid: "u".into(),
-            }),
-            ("CreateVaubanGroup", 7, AccessRequest::CreateVaubanGroup {
-                name: "g".into(), description: None,
-            }),
-            ("GetVaubanGroup", 8, AccessRequest::GetVaubanGroup {
-                uuid: "u".into(),
-            }),
-            ("GetVaubanGroupById", 9, AccessRequest::GetVaubanGroupById { id: 1 }),
-            ("ListVaubanGroups", 10, AccessRequest::ListVaubanGroups { page: p }),
-            ("UpdateVaubanGroup", 11, AccessRequest::UpdateVaubanGroup {
-                uuid: "u".into(), name: "g".into(), description: None,
-            }),
-            ("DeleteVaubanGroup", 12, AccessRequest::DeleteVaubanGroup {
-                uuid: "u".into(),
-            }),
-            ("AddGroupMember", 13, AccessRequest::AddGroupMember {
-                group_id: 1, user_id: 1,
-            }),
-            ("RemoveGroupMember", 14, AccessRequest::RemoveGroupMember {
-                group_id: 1, user_id: 1,
-            }),
-            ("ListGroupMembers", 15, AccessRequest::ListGroupMembers {
-                group_id: 1, page: p,
-            }),
-            ("ListUserGroups", 16, AccessRequest::ListUserGroups {
-                user_id: 1, page: p,
-            }),
-            ("CreateAssetGroup", 17, AccessRequest::CreateAssetGroup {
-                name: "ag".into(), slug: "ag".into(), description: None,
-                color: "#000".into(), icon: "server".into(),
-            }),
-            ("GetAssetGroup", 18, AccessRequest::GetAssetGroup {
-                uuid: "u".into(),
-            }),
-            ("ListAssetGroups", 19, AccessRequest::ListAssetGroups { page: p }),
-            ("UpdateAssetGroup", 20, AccessRequest::UpdateAssetGroup {
-                uuid: "u".into(), name: "ag".into(), slug: "ag".into(),
-                description: None, color: "#000".into(), icon: "server".into(),
-            }),
-            ("DeleteAssetGroup", 21, AccessRequest::DeleteAssetGroup {
-                uuid: "u".into(),
-            }),
-            ("ListUserGroupOptions", 22, AccessRequest::ListUserGroupOptions { page: p }),
-            ("ListAssetGroupOptions", 23, AccessRequest::ListAssetGroupOptions { page: p }),
-            ("CheckAccessMulti", 24, AccessRequest::CheckAccessMulti {
-                user_id: 1, asset_group_ids: vec![1], protocol: "ssh".into(),
-            }),
+            (
+                "CheckAccess",
+                0,
+                AccessRequest::CheckAccess {
+                    user_id: 1,
+                    asset_group_id: 1,
+                    protocol: "ssh".into(),
+                },
+            ),
+            (
+                "ListAccessibleGroups",
+                1,
+                AccessRequest::ListAccessibleGroups {
+                    user_id: 1,
+                    page: p,
+                },
+            ),
+            (
+                "CreateAccessRule",
+                2,
+                AccessRequest::CreateAccessRule {
+                    data: dummy_data.clone(),
+                },
+            ),
+            (
+                "GetAccessRule",
+                3,
+                AccessRequest::GetAccessRule { uuid: "u".into() },
+            ),
+            (
+                "ListAccessRules",
+                4,
+                AccessRequest::ListAccessRules { page: p },
+            ),
+            (
+                "UpdateAccessRule",
+                5,
+                AccessRequest::UpdateAccessRule {
+                    uuid: "u".into(),
+                    data: dummy_data,
+                },
+            ),
+            (
+                "DeleteAccessRule",
+                6,
+                AccessRequest::DeleteAccessRule { uuid: "u".into() },
+            ),
+            (
+                "CreateVaubanGroup",
+                7,
+                AccessRequest::CreateVaubanGroup {
+                    name: "g".into(),
+                    description: None,
+                },
+            ),
+            (
+                "GetVaubanGroup",
+                8,
+                AccessRequest::GetVaubanGroup { uuid: "u".into() },
+            ),
+            (
+                "GetVaubanGroupById",
+                9,
+                AccessRequest::GetVaubanGroupById { id: 1 },
+            ),
+            (
+                "ListVaubanGroups",
+                10,
+                AccessRequest::ListVaubanGroups { page: p },
+            ),
+            (
+                "UpdateVaubanGroup",
+                11,
+                AccessRequest::UpdateVaubanGroup {
+                    uuid: "u".into(),
+                    name: "g".into(),
+                    description: None,
+                },
+            ),
+            (
+                "DeleteVaubanGroup",
+                12,
+                AccessRequest::DeleteVaubanGroup { uuid: "u".into() },
+            ),
+            (
+                "AddGroupMember",
+                13,
+                AccessRequest::AddGroupMember {
+                    group_id: 1,
+                    user_id: 1,
+                },
+            ),
+            (
+                "RemoveGroupMember",
+                14,
+                AccessRequest::RemoveGroupMember {
+                    group_id: 1,
+                    user_id: 1,
+                },
+            ),
+            (
+                "ListGroupMembers",
+                15,
+                AccessRequest::ListGroupMembers {
+                    group_id: 1,
+                    page: p,
+                },
+            ),
+            (
+                "ListUserGroups",
+                16,
+                AccessRequest::ListUserGroups {
+                    user_id: 1,
+                    page: p,
+                },
+            ),
+            (
+                "CreateAssetGroup",
+                17,
+                AccessRequest::CreateAssetGroup {
+                    name: "ag".into(),
+                    slug: "ag".into(),
+                    description: None,
+                    color: "#000".into(),
+                    icon: "server".into(),
+                },
+            ),
+            (
+                "GetAssetGroup",
+                18,
+                AccessRequest::GetAssetGroup { uuid: "u".into() },
+            ),
+            (
+                "ListAssetGroups",
+                19,
+                AccessRequest::ListAssetGroups { page: p },
+            ),
+            (
+                "UpdateAssetGroup",
+                20,
+                AccessRequest::UpdateAssetGroup {
+                    uuid: "u".into(),
+                    name: "ag".into(),
+                    slug: "ag".into(),
+                    description: None,
+                    color: "#000".into(),
+                    icon: "server".into(),
+                },
+            ),
+            (
+                "DeleteAssetGroup",
+                21,
+                AccessRequest::DeleteAssetGroup { uuid: "u".into() },
+            ),
+            (
+                "ListUserGroupOptions",
+                22,
+                AccessRequest::ListUserGroupOptions { page: p },
+            ),
+            (
+                "ListAssetGroupOptions",
+                23,
+                AccessRequest::ListAssetGroupOptions { page: p },
+            ),
+            (
+                "CheckAccessMulti",
+                24,
+                AccessRequest::CheckAccessMulti {
+                    user_id: 1,
+                    asset_group_ids: vec![1],
+                    protocol: "ssh".into(),
+                },
+            ),
         ];
         for (name, idx, variant) in &expected {
             let bytes = serialize(variant);
@@ -3975,33 +4076,100 @@ mod tests {
 
     #[test]
     fn test_access_response_bincode_variant_indices_stable() {
-        let empty_page_i32: IpcPage<i32> = IpcPage { items: vec![], has_more: false };
-        let empty_page_vg: IpcPage<VaubanGroupInfo> = IpcPage { items: vec![], has_more: false };
-        let empty_page_ag: IpcPage<AssetGroupInfo> = IpcPage { items: vec![], has_more: false };
-        let empty_page_ri: IpcPage<AccessRuleInfo> = IpcPage { items: vec![], has_more: false };
-        let empty_page_go: IpcPage<GroupOption> = IpcPage { items: vec![], has_more: false };
-        let empty_page_ae: IpcPage<AccessibleGroupEntry> = IpcPage { items: vec![], has_more: false };
+        let empty_page_i32: IpcPage<i32> = IpcPage {
+            items: vec![],
+            has_more: false,
+        };
+        let empty_page_vg: IpcPage<VaubanGroupInfo> = IpcPage {
+            items: vec![],
+            has_more: false,
+        };
+        let empty_page_ag: IpcPage<AssetGroupInfo> = IpcPage {
+            items: vec![],
+            has_more: false,
+        };
+        let empty_page_ri: IpcPage<AccessRuleInfo> = IpcPage {
+            items: vec![],
+            has_more: false,
+        };
+        let empty_page_go: IpcPage<GroupOption> = IpcPage {
+            items: vec![],
+            has_more: false,
+        };
+        let empty_page_ae: IpcPage<AccessibleGroupEntry> = IpcPage {
+            items: vec![],
+            has_more: false,
+        };
 
         let expected: Vec<(&str, u8, AccessResponse)> = vec![
-            ("AccessChecked", 0, AccessResponse::AccessChecked(AccessCheckResult {
-                allowed: false, require_mfa: false, require_approval: false,
-                max_session_duration: None,
-            })),
-            ("AccessibleGroupsPage", 1, AccessResponse::AccessibleGroupsPage(empty_page_ae)),
+            (
+                "AccessChecked",
+                0,
+                AccessResponse::AccessChecked(AccessCheckResult {
+                    allowed: false,
+                    require_mfa: false,
+                    require_approval: false,
+                    max_session_duration: None,
+                }),
+            ),
+            (
+                "AccessibleGroupsPage",
+                1,
+                AccessResponse::AccessibleGroupsPage(empty_page_ae),
+            ),
             ("AccessRule", 2, AccessResponse::AccessRule(Err("e".into()))),
-            ("AccessRulePage", 3, AccessResponse::AccessRulePage(empty_page_ri)),
-            ("VaubanGroup", 4, AccessResponse::VaubanGroup(Err("e".into()))),
-            ("VaubanGroupPage", 5, AccessResponse::VaubanGroupPage(empty_page_vg)),
-            ("MemberListPage", 6, AccessResponse::MemberListPage(empty_page_i32)),
-            ("UserGroupPage", 7, AccessResponse::UserGroupPage(IpcPage { items: vec![], has_more: false })),
+            (
+                "AccessRulePage",
+                3,
+                AccessResponse::AccessRulePage(empty_page_ri),
+            ),
+            (
+                "VaubanGroup",
+                4,
+                AccessResponse::VaubanGroup(Err("e".into())),
+            ),
+            (
+                "VaubanGroupPage",
+                5,
+                AccessResponse::VaubanGroupPage(empty_page_vg),
+            ),
+            (
+                "MemberListPage",
+                6,
+                AccessResponse::MemberListPage(empty_page_i32),
+            ),
+            (
+                "UserGroupPage",
+                7,
+                AccessResponse::UserGroupPage(IpcPage {
+                    items: vec![],
+                    has_more: false,
+                }),
+            ),
             ("AssetGroup", 8, AccessResponse::AssetGroup(Err("e".into()))),
-            ("AssetGroupPage", 9, AccessResponse::AssetGroupPage(empty_page_ag)),
-            ("UserGroupOptionsPage", 10, AccessResponse::UserGroupOptionsPage(empty_page_go.clone())),
-            ("AssetGroupOptionsPage", 11, AccessResponse::AssetGroupOptionsPage(empty_page_go)),
+            (
+                "AssetGroupPage",
+                9,
+                AccessResponse::AssetGroupPage(empty_page_ag),
+            ),
+            (
+                "UserGroupOptionsPage",
+                10,
+                AccessResponse::UserGroupOptionsPage(empty_page_go.clone()),
+            ),
+            (
+                "AssetGroupOptionsPage",
+                11,
+                AccessResponse::AssetGroupOptionsPage(empty_page_go),
+            ),
             ("Ok", 12, AccessResponse::Ok),
             ("Deleted", 13, AccessResponse::Deleted(Ok(()))),
             ("Error", 14, AccessResponse::Error("e".into())),
-            ("AccessCheckedMulti", 15, AccessResponse::AccessCheckedMulti(vec![])),
+            (
+                "AccessCheckedMulti",
+                15,
+                AccessResponse::AccessCheckedMulti(vec![]),
+            ),
         ];
         for (name, idx, variant) in &expected {
             let bytes = serialize(variant);

@@ -10,9 +10,8 @@
 use crate::common::{TestApp, assertions::assert_status, unwrap_ok};
 use crate::fixtures::{
     create_admin_user, create_recorded_session, create_recorded_session_with_type,
-    create_simple_admin_user, create_simple_rdp_asset, create_simple_ssh_asset,
-    create_simple_user, create_test_session, create_test_session_with_uuid, create_test_user,
-    unique_name,
+    create_simple_admin_user, create_simple_rdp_asset, create_simple_ssh_asset, create_simple_user,
+    create_test_session, create_test_session_with_uuid, create_test_user, unique_name,
 };
 use axum::http::header::COOKIE;
 use diesel::{BoolExpressionMethods, ExpressionMethods, QueryDsl};
@@ -1290,14 +1289,8 @@ async fn test_recording_list_multiple_types_have_ws_elements() {
 
     assert_status(&response, 200);
     let body = response.text();
-    assert!(
-        body.contains(&ssh_asset),
-        "SSH recording asset must appear"
-    );
-    assert!(
-        body.contains(&rdp_asset),
-        "RDP recording asset must appear"
-    );
+    assert!(body.contains(&ssh_asset), "SSH recording asset must appear");
+    assert!(body.contains(&rdp_asset), "RDP recording asset must appear");
     assert!(
         body.contains("recording-ws-trigger"),
         "WS trigger must be present with multiple recordings"
@@ -1316,8 +1309,10 @@ async fn test_terminate_active_ssh_session() {
     let admin_name = unique_name("term_ssh_admin");
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
-    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("term_ssh_asset"), admin_id).await;
-    let (session_id, session_uuid) = create_test_session_with_uuid(&mut conn, admin_id, asset_id, "ssh", "active").await;
+    let asset_id =
+        create_simple_ssh_asset(&mut conn, &unique_name("term_ssh_asset"), admin_id).await;
+    let (session_id, session_uuid) =
+        create_test_session_with_uuid(&mut conn, admin_id, asset_id, "ssh", "active").await;
 
     let token = app
         .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
@@ -1337,7 +1332,10 @@ async fn test_terminate_active_ssh_session() {
 
     assert_status(&response, 200);
     let body = response.text();
-    assert!(body.contains("Terminated"), "Response must show Terminated badge");
+    assert!(
+        body.contains("Terminated"),
+        "Response must show Terminated badge"
+    );
 
     use vauban_web::schema::proxy_sessions;
     let (db_status, disc_at): (String, Option<chrono::DateTime<chrono::Utc>>) = unwrap_ok!(
@@ -1348,7 +1346,10 @@ async fn test_terminate_active_ssh_session() {
             .await
     );
     assert_eq!(db_status, "terminated");
-    assert!(disc_at.is_some(), "disconnected_at must be set after termination");
+    assert!(
+        disc_at.is_some(),
+        "disconnected_at must be set after termination"
+    );
 }
 
 #[tokio::test]
@@ -1359,8 +1360,10 @@ async fn test_terminate_active_rdp_session() {
     let admin_name = unique_name("term_rdp_admin");
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
-    let asset_id = create_simple_rdp_asset(&mut conn, &unique_name("term_rdp_asset"), admin_id).await;
-    let (session_id, session_uuid) = create_test_session_with_uuid(&mut conn, admin_id, asset_id, "rdp", "active").await;
+    let asset_id =
+        create_simple_rdp_asset(&mut conn, &unique_name("term_rdp_asset"), admin_id).await;
+    let (session_id, session_uuid) =
+        create_test_session_with_uuid(&mut conn, admin_id, asset_id, "rdp", "active").await;
 
     let token = app
         .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
@@ -1401,8 +1404,10 @@ async fn test_terminate_non_staff_rejected() {
 
     let admin_name = unique_name("term_nostaff_adm");
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
-    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("term_nostaff_ast"), admin_id).await;
-    let (session_id, session_uuid) = create_test_session_with_uuid(&mut conn, admin_id, asset_id, "ssh", "active").await;
+    let asset_id =
+        create_simple_ssh_asset(&mut conn, &unique_name("term_nostaff_ast"), admin_id).await;
+    let (session_id, session_uuid) =
+        create_test_session_with_uuid(&mut conn, admin_id, asset_id, "ssh", "active").await;
 
     let token = app
         .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
@@ -1434,7 +1439,10 @@ async fn test_terminate_non_staff_rejected() {
             .first(&mut conn)
             .await
     );
-    assert_eq!(db_status, "active", "Session must remain active when non-staff tries to terminate");
+    assert_eq!(
+        db_status, "active",
+        "Session must remain active when non-staff tries to terminate"
+    );
 }
 
 #[tokio::test]
@@ -1445,8 +1453,10 @@ async fn test_terminate_already_terminated_session() {
     let admin_name = unique_name("term_already_adm");
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
-    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("term_already_ast"), admin_id).await;
-    let (_session_id, session_uuid) = create_test_session_with_uuid(&mut conn, admin_id, asset_id, "ssh", "terminated").await;
+    let asset_id =
+        create_simple_ssh_asset(&mut conn, &unique_name("term_already_ast"), admin_id).await;
+    let (_session_id, session_uuid) =
+        create_test_session_with_uuid(&mut conn, admin_id, asset_id, "ssh", "terminated").await;
 
     let token = app
         .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
@@ -1539,8 +1549,10 @@ async fn test_terminate_preserves_status_after_cleanup() {
     let admin_name = unique_name("term_preserve_adm");
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
-    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("term_preserve_ast"), admin_id).await;
-    let (session_id, session_uuid) = create_test_session_with_uuid(&mut conn, admin_id, asset_id, "ssh", "active").await;
+    let asset_id =
+        create_simple_ssh_asset(&mut conn, &unique_name("term_preserve_ast"), admin_id).await;
+    let (session_id, session_uuid) =
+        create_test_session_with_uuid(&mut conn, admin_id, asset_id, "ssh", "active").await;
 
     let token = app
         .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
@@ -1590,7 +1602,10 @@ async fn test_terminate_preserves_status_after_cleanup() {
             .first(&mut conn)
             .await
     );
-    assert_eq!(db_status, "terminated", "Status must remain terminated after cleanup");
+    assert_eq!(
+        db_status, "terminated",
+        "Status must remain terminated after cleanup"
+    );
 }
 
 #[tokio::test]
@@ -1603,7 +1618,8 @@ async fn test_terminate_then_second_terminate_is_idempotent() {
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
     let asset_id =
         create_simple_ssh_asset(&mut conn, &unique_name("term_idempotent_ast"), admin_id).await;
-    let (session_id, session_uuid) = create_test_session_with_uuid(&mut conn, admin_id, asset_id, "ssh", "active").await;
+    let (session_id, session_uuid) =
+        create_test_session_with_uuid(&mut conn, admin_id, asset_id, "ssh", "active").await;
 
     let token = app
         .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
@@ -1657,8 +1673,7 @@ async fn test_terminate_then_second_terminate_is_idempotent() {
 async fn test_session_list_admin_page1_has_ws_connect() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
-    let admin =
-        create_admin_user(&mut conn, &app.auth_service, &unique_name("wslist_admin")).await;
+    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("wslist_admin")).await;
     drop(conn);
 
     let response = app
@@ -1704,8 +1719,7 @@ async fn test_session_list_admin_with_filter_no_ws() {
 async fn test_session_list_normal_user_denied() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
-    let user =
-        create_test_user(&mut conn, &app.auth_service, &unique_name("wslist_user")).await;
+    let user = create_test_user(&mut conn, &app.auth_service, &unique_name("wslist_user")).await;
     drop(conn);
 
     let response = app
@@ -1750,7 +1764,11 @@ async fn test_active_sessions_shows_real_username() {
         .await;
 
     let status = response.status_code().as_u16();
-    assert!(status == 200 || status == 303, "Expected 200 or 303, got {}", status);
+    assert!(
+        status == 200 || status == 303,
+        "Expected 200 or 303, got {}",
+        status
+    );
 
     if status == 200 {
         let body = response.text();
@@ -1804,8 +1822,7 @@ async fn test_active_sessions_disconnect_terminates() {
     let username = unique_name("active_disc_admin");
     let admin_id = create_simple_admin_user(&mut conn, &username).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
-    let asset_id =
-        create_simple_ssh_asset(&mut conn, &unique_name("disc-asset"), admin_id).await;
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("disc-asset"), admin_id).await;
     let (session_id, session_uuid) =
         create_test_session_with_uuid(&mut conn, admin_id, asset_id, "ssh", "active").await;
 
@@ -1853,8 +1870,7 @@ async fn test_active_sessions_excludes_no_connected_at() {
     let username = unique_name("active_no_conn_user");
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
-    let asset_id =
-        create_simple_ssh_asset(&mut conn, &unique_name("no-conn-asset"), user_id).await;
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("no-conn-asset"), user_id).await;
 
     use vauban_web::schema::proxy_sessions;
 
@@ -1907,15 +1923,11 @@ async fn test_active_sessions_stats_show_type_counters() {
     let username = unique_name("active_stats_user");
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
-    let ssh_asset_id =
-        create_simple_ssh_asset(&mut conn, &unique_name("stats-ssh"), user_id).await;
-    let rdp_asset_id =
-        create_simple_rdp_asset(&mut conn, &unique_name("stats-rdp"), user_id).await;
+    let ssh_asset_id = create_simple_ssh_asset(&mut conn, &unique_name("stats-ssh"), user_id).await;
+    let rdp_asset_id = create_simple_rdp_asset(&mut conn, &unique_name("stats-rdp"), user_id).await;
 
-    let _ssh_session =
-        create_test_session(&mut conn, user_id, ssh_asset_id, "ssh", "active").await;
-    let _rdp_session =
-        create_test_session(&mut conn, user_id, rdp_asset_id, "rdp", "active").await;
+    let _ssh_session = create_test_session(&mut conn, user_id, ssh_asset_id, "ssh", "active").await;
+    let _rdp_session = create_test_session(&mut conn, user_id, rdp_asset_id, "rdp", "active").await;
 
     let token = app
         .generate_test_token(&user_uuid.to_string(), &username, true, true)
@@ -1929,14 +1941,8 @@ async fn test_active_sessions_stats_show_type_counters() {
 
     if response.status_code().as_u16() == 200 {
         let body = response.text();
-        assert!(
-            body.contains("SSH"),
-            "Stats must include SSH counter label"
-        );
-        assert!(
-            body.contains("RDP"),
-            "Stats must include RDP counter label"
-        );
+        assert!(body.contains("SSH"), "Stats must include SSH counter label");
+        assert!(body.contains("RDP"), "Stats must include RDP counter label");
     }
 }
 
@@ -1946,12 +1952,7 @@ async fn test_active_sessions_has_ws_connect() {
     let app = TestApp::spawn().await;
 
     let token = app
-        .generate_test_token(
-            &Uuid::new_v4().to_string(),
-            "test_ws_active",
-            true,
-            true,
-        )
+        .generate_test_token(&Uuid::new_v4().to_string(), "test_ws_active", true, true)
         .await;
 
     let response = app
@@ -1978,8 +1979,7 @@ async fn test_active_sessions_disconnect_has_csrf() {
     let username = unique_name("active_csrf_user");
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
-    let asset_id =
-        create_simple_ssh_asset(&mut conn, &unique_name("csrf-asset"), user_id).await;
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("csrf-asset"), user_id).await;
     let _session_id = create_test_session(&mut conn, user_id, asset_id, "ssh", "active").await;
 
     let token = app
@@ -2063,7 +2063,8 @@ async fn test_active_sessions_has_disconnect_button() {
         diesel::update(proxy_sessions::table.filter(proxy_sessions::id.eq(session_id)))
             .set((
                 proxy_sessions::connected_at.eq(chrono::Utc::now()),
-                proxy_sessions::client_ip.eq(ipnetwork::IpNetwork::V4("127.0.0.1".parse().unwrap())),
+                proxy_sessions::client_ip
+                    .eq(ipnetwork::IpNetwork::V4("127.0.0.1".parse().unwrap())),
             ))
             .execute(&mut conn)
             .await
@@ -2101,8 +2102,7 @@ async fn test_active_sessions_excludes_terminated() {
     let username = unique_name("active_no_term");
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
-    let asset_id =
-        create_simple_ssh_asset(&mut conn, &unique_name("term-asset"), user_id).await;
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("term-asset"), user_id).await;
     let _term_session =
         create_test_session(&mut conn, user_id, asset_id, "ssh", "terminated").await;
 

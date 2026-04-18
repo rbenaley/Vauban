@@ -362,7 +362,9 @@ pub async fn asset_list(
     }
 
     let total_items: i64 = count_query.count().get_result(&mut conn).await.unwrap_or(0);
-    let total_pages = ((total_items as f64) / (ASSETS_PER_PAGE as f64)).ceil().max(1.0) as i32;
+    let total_pages = ((total_items as f64) / (ASSETS_PER_PAGE as f64))
+        .ceil()
+        .max(1.0) as i32;
     let page = page.min(total_pages);
     let offset = ((page - 1) as i64) * ASSETS_PER_PAGE;
 
@@ -785,14 +787,8 @@ pub async fn asset_detail(
         description: asset_model.description.clone(),
         require_approval,
         require_mfa: require_mfa_from_rule,
-        created_at: asset_model
-            .created_at
-            .format("%b %d, %Y %H:%M")
-            .to_string(),
-        updated_at: asset_model
-            .updated_at
-            .format("%b %d, %Y %H:%M")
-            .to_string(),
+        created_at: asset_model.created_at.format("%b %d, %Y %H:%M").to_string(),
+        updated_at: asset_model.updated_at.format("%b %d, %Y %H:%M").to_string(),
         ssh_host_key_fingerprint,
         ssh_host_key_mismatch,
         has_approved_session,

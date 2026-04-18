@@ -49,8 +49,7 @@ async fn create_admin_with_mfa_local(
     let username = unique_name(label);
     let user_uuid = Uuid::new_v4();
     let hash = unwrap_ok!(app.auth_service.hash_password("StableAdminPwd#2026!"));
-    let (mfa_secret, _) =
-        unwrap_ok!(AuthService::generate_totp_secret(&username, "VAUBAN-tests"));
+    let (mfa_secret, _) = unwrap_ok!(AuthService::generate_totp_secret(&username, "VAUBAN-tests"));
 
     let id: i32 = unwrap_ok!(
         diesel::insert_into(users::table)

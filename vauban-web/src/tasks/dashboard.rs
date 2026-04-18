@@ -205,11 +205,7 @@ async fn session_list_updater(broadcast: Arc<BroadcastService>, db_pool: Arc<DbP
                 };
                 if let Ok(html) = widget.render() {
                     let msg = WsMessage::new("ws-session-list-content", html);
-                    if broadcast
-                        .send(&WsChannel::SessionsList, msg)
-                        .await
-                        .is_err()
-                    {
+                    if broadcast.send(&WsChannel::SessionsList, msg).await.is_err() {
                         trace!("No subscribers for session list channel");
                     }
                 }
@@ -341,8 +337,25 @@ async fn fetch_active_sessions_full(
     Ok(rows
         .into_iter()
         .filter_map(
-            |(session_id, uuid, username, asset_name, asset_hostname, session_type, client_ip, connected_at):
-             (i32, uuid::Uuid, String, String, String, String, ipnetwork::IpNetwork, Option<chrono::DateTime<chrono::Utc>>)| {
+            |(
+                session_id,
+                uuid,
+                username,
+                asset_name,
+                asset_hostname,
+                session_type,
+                client_ip,
+                connected_at,
+            ): (
+                i32,
+                uuid::Uuid,
+                String,
+                String,
+                String,
+                String,
+                ipnetwork::IpNetwork,
+                Option<chrono::DateTime<chrono::Utc>>,
+            )| {
                 let connected = connected_at?;
                 let duration_secs = now.signed_duration_since(connected).num_seconds();
                 let duration_str = format_duration(duration_secs);
@@ -469,8 +482,7 @@ async fn fetch_session_list(db_pool: &DbPool) -> Result<Vec<SessionListItem>, St
                     session_type: session_type.to_string(),
                     status,
                     credential_username,
-                    connected_at: connected_at
-                        .map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
+                    connected_at: connected_at.map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
                     duration_seconds,
                     is_recorded,
                 }
@@ -511,17 +523,13 @@ pub async fn push_active_sessions_update(broadcast: &BroadcastService, db_pool: 
             };
             if let Ok(html) = stats_widget.render() {
                 let msg = WsMessage::new("ws-sessions-stats", html);
-                let _ = broadcast
-                    .send(&WsChannel::ActiveSessionsList, msg)
-                    .await;
+                let _ = broadcast.send(&WsChannel::ActiveSessionsList, msg).await;
             }
 
             let content_widget = ActiveListContentWidget { sessions };
             if let Ok(html) = content_widget.render() {
                 let msg = WsMessage::new("ws-sessions-list", html);
-                let _ = broadcast
-                    .send(&WsChannel::ActiveSessionsList, msg)
-                    .await;
+                let _ = broadcast.send(&WsChannel::ActiveSessionsList, msg).await;
             }
         }
         Err(e) => error!(error = %e, "Failed to push active sessions update"),

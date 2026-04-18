@@ -130,9 +130,7 @@ pub(crate) async fn apply_sidebar_rbac(
     let admin = perms.admin_view;
     let mut base = base.with_perms(perms);
 
-    if admin
-        && let Ok(mut conn) = state.db_pool.get().await
-    {
+    if admin && let Ok(mut conn) = state.db_pool.get().await {
         let count: i64 = proxy_sessions::table
             .filter(proxy_sessions::status.eq("pending"))
             .count()

@@ -12,7 +12,6 @@
 
 use crate::AdminSubcommand;
 use crate::config::SupervisorConfig;
-use vauban_db::schema::{asset_groups, assets, users, vauban_groups};
 use anyhow::{Context, Result, anyhow, bail};
 use argon2::{Algorithm, Argon2, Params, PasswordHasher, Version, password_hash::SaltString};
 use diesel::dsl::exists;
@@ -20,6 +19,7 @@ use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use rand::rngs::OsRng;
 use std::io::{self, Write};
+use vauban_db::schema::{asset_groups, assets, users, vauban_groups};
 
 /// Execute an admin subcommand.
 pub fn run_admin_command(cmd: AdminSubcommand) -> Result<()> {
@@ -44,7 +44,11 @@ fn cmd_create_superuser() -> Result<()> {
     let mut conn = load_db_connection()?;
 
     let has_superuser: bool = diesel::select(exists(
-        users::table.filter(users::is_superuser.eq(true).and(users::is_deleted.eq(false))),
+        users::table.filter(
+            users::is_superuser
+                .eq(true)
+                .and(users::is_deleted.eq(false)),
+        ),
     ))
     .get_result(&mut conn)
     .unwrap_or(false);
@@ -167,7 +171,11 @@ fn cmd_reset_password(username: &str) -> Result<()> {
     let mut conn = load_db_connection()?;
 
     let user_exists: bool = diesel::select(exists(
-        users::table.filter(users::username.eq(username).and(users::is_deleted.eq(false))),
+        users::table.filter(
+            users::username
+                .eq(username)
+                .and(users::is_deleted.eq(false)),
+        ),
     ))
     .get_result(&mut conn)
     .unwrap_or(false);
@@ -193,7 +201,11 @@ fn cmd_reset_password(username: &str) -> Result<()> {
     let hash = hash_password(&password)?;
 
     let rows = diesel::update(
-        users::table.filter(users::username.eq(username).and(users::is_deleted.eq(false))),
+        users::table.filter(
+            users::username
+                .eq(username)
+                .and(users::is_deleted.eq(false)),
+        ),
     )
     .set((
         users::password_hash.eq(&hash),
@@ -222,7 +234,11 @@ fn cmd_reset_2fa(username: &str) -> Result<()> {
     let mut conn = load_db_connection()?;
 
     let mfa_status: Option<MfaStatus> = users::table
-        .filter(users::username.eq(username).and(users::is_deleted.eq(false)))
+        .filter(
+            users::username
+                .eq(username)
+                .and(users::is_deleted.eq(false)),
+        )
         .select(MfaStatus::as_select())
         .first(&mut conn)
         .optional()
@@ -247,7 +263,11 @@ fn cmd_reset_2fa(username: &str) -> Result<()> {
     }
 
     diesel::update(
-        users::table.filter(users::username.eq(username).and(users::is_deleted.eq(false))),
+        users::table.filter(
+            users::username
+                .eq(username)
+                .and(users::is_deleted.eq(false)),
+        ),
     )
     .set((
         users::mfa_enabled.eq(false),
@@ -366,11 +386,9 @@ fn cmd_seed_data() -> Result<()> {
 
     let mut user_count = 0u32;
     for (uname, mail, fname, lname, staff, superuser) in &users_data {
-        let exists: bool = diesel::select(exists(
-            users::table.filter(users::username.eq(uname)),
-        ))
-        .get_result(&mut conn)
-        .unwrap_or(false);
+        let exists: bool = diesel::select(exists(users::table.filter(users::username.eq(uname))))
+            .get_result(&mut conn)
+            .unwrap_or(false);
 
         if exists {
             println!("  - {uname} already exists");
@@ -455,8 +473,11 @@ fn cmd_seed_data() -> Result<()> {
     let mut ag_count = 0u32;
     for (name, slug, color, icon) in &asset_groups {
         let exists: bool = diesel::select(exists(
-            asset_groups::table
-                .filter(asset_groups::slug.eq(slug).and(asset_groups::is_deleted.eq(false))),
+            asset_groups::table.filter(
+                asset_groups::slug
+                    .eq(slug)
+                    .and(asset_groups::is_deleted.eq(false)),
+            ),
         ))
         .get_result(&mut conn)
         .unwrap_or(false);
@@ -547,7 +568,11 @@ fn migrate_mfa_secrets(
     println!("Scanning MFA secrets...");
 
     let rows: Vec<MfaRow> = users::table
-        .filter(users::mfa_secret.is_not_null().and(users::is_deleted.eq(false)))
+        .filter(
+            users::mfa_secret
+                .is_not_null()
+                .and(users::is_deleted.eq(false)),
+        )
         .select(MfaRow::as_select())
         .load(conn)
         .context("Failed to query users")?;

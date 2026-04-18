@@ -155,8 +155,7 @@ impl SshRecordingManager {
         }
         session.last_timestamp_us = timestamp_us;
 
-        let relative_ts = timestamp_us
-            .saturating_sub(session.first_timestamp_us.unwrap_or(0));
+        let relative_ts = timestamp_us.saturating_sub(session.first_timestamp_us.unwrap_or(0));
         let ts_secs = relative_ts as f64 / 1_000_000.0;
 
         let event_code = match event_type {
@@ -309,18 +308,26 @@ mod tests {
         let mut mgr = SshRecordingManager::new();
         let (f, reader) = create_temp_file_pair();
 
-        mgr.start_session("s1", SshSessionStartParams {
-            file: f,
-            relative_path: "2026/03/s1/session.cast".to_string(),
-            width: 120,
-            height: 40,
-            asset_name: "srv".to_string(),
-            username: "admin".to_string(),
-        });
+        mgr.start_session(
+            "s1",
+            SshSessionStartParams {
+                file: f,
+                relative_path: "2026/03/s1/session.cast".to_string(),
+                width: 120,
+                height: 40,
+                asset_name: "srv".to_string(),
+                username: "admin".to_string(),
+            },
+        );
 
         mgr.handle_data("s1", 0, SshRecordingEvent::Output, b"$ ");
         mgr.handle_data("s1", 100_000, SshRecordingEvent::Input, b"ls\r");
-        mgr.handle_data("s1", 200_000, SshRecordingEvent::Output, b"file1  file2\r\n");
+        mgr.handle_data(
+            "s1",
+            200_000,
+            SshRecordingEvent::Output,
+            b"file1  file2\r\n",
+        );
 
         let result = mgr.end_session("s1").unwrap();
         assert_eq!(result.total_events, 3);
@@ -340,18 +347,22 @@ mod tests {
         let mut mgr = SshRecordingManager::new();
         let (f, reader) = create_temp_file_pair();
 
-        mgr.start_session("s1", SshSessionStartParams {
-            file: f,
-            relative_path: "p".to_string(),
-            width: 80,
-            height: 24,
-            asset_name: "host".to_string(),
-            username: "user".to_string(),
-        });
+        mgr.start_session(
+            "s1",
+            SshSessionStartParams {
+                file: f,
+                relative_path: "p".to_string(),
+                width: 80,
+                height: 24,
+                asset_name: "host".to_string(),
+                username: "user".to_string(),
+            },
+        );
         mgr.end_session("s1");
 
         let contents = read_file_contents(reader);
-        let header: serde_json::Value = serde_json::from_str(contents.lines().next().unwrap()).unwrap();
+        let header: serde_json::Value =
+            serde_json::from_str(contents.lines().next().unwrap()).unwrap();
         assert_eq!(header["version"], 2);
         assert_eq!(header["width"], 80);
         assert_eq!(header["height"], 24);
@@ -423,7 +434,10 @@ mod tests {
         for line in contents.lines().skip(1) {
             let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
             let ts = parsed[0].as_f64().unwrap();
-            assert!(ts >= prev_ts, "Timestamps must be monotonically non-decreasing");
+            assert!(
+                ts >= prev_ts,
+                "Timestamps must be monotonically non-decreasing"
+            );
             prev_ts = ts;
         }
     }
@@ -456,14 +470,17 @@ mod tests {
         let f2 = create_temp_file();
 
         mgr.start_session("s1", test_params(f1, "p1"));
-        mgr.start_session("s1", SshSessionStartParams {
-            file: f2,
-            relative_path: "p2".to_string(),
-            width: 120,
-            height: 40,
-            asset_name: "h2".to_string(),
-            username: "u2".to_string(),
-        });
+        mgr.start_session(
+            "s1",
+            SshSessionStartParams {
+                file: f2,
+                relative_path: "p2".to_string(),
+                width: 120,
+                height: 40,
+                asset_name: "h2".to_string(),
+                username: "u2".to_string(),
+            },
+        );
 
         let result = mgr.end_session("s1").unwrap();
         assert_eq!(result.width, 80);
@@ -493,14 +510,17 @@ mod tests {
         let (f2, reader2) = create_temp_file_pair();
 
         mgr.start_session("s1", test_params(f1, "p1"));
-        mgr.start_session("s2", SshSessionStartParams {
-            file: f2,
-            relative_path: "p2".to_string(),
-            width: 120,
-            height: 40,
-            asset_name: "h2".to_string(),
-            username: "u2".to_string(),
-        });
+        mgr.start_session(
+            "s2",
+            SshSessionStartParams {
+                file: f2,
+                relative_path: "p2".to_string(),
+                width: 120,
+                height: 40,
+                asset_name: "h2".to_string(),
+                username: "u2".to_string(),
+            },
+        );
 
         assert_eq!(mgr.active_count(), 2);
 
@@ -544,7 +564,12 @@ mod tests {
         let (f, reader) = create_temp_file_pair();
 
         mgr.start_session("s1", test_params(f, "p"));
-        mgr.handle_data("s1", 0, SshRecordingEvent::Output, &[0xFF, 0xFE, 0x00, 0x01]);
+        mgr.handle_data(
+            "s1",
+            0,
+            SshRecordingEvent::Output,
+            &[0xFF, 0xFE, 0x00, 0x01],
+        );
         let result = mgr.end_session("s1").unwrap();
 
         assert_eq!(result.total_events, 1);
@@ -623,7 +648,12 @@ mod tests {
         let (f, reader) = create_temp_file_pair();
 
         mgr.start_session("s1", test_params(f, "p"));
-        mgr.handle_data("s1", 0, SshRecordingEvent::Output, "Bonjour le monde! \u{1F600}".as_bytes());
+        mgr.handle_data(
+            "s1",
+            0,
+            SshRecordingEvent::Output,
+            "Bonjour le monde! \u{1F600}".as_bytes(),
+        );
         mgr.end_session("s1");
 
         let contents = read_file_contents(reader);
@@ -674,7 +704,10 @@ mod tests {
         let event_line = contents.lines().nth(1).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(event_line).unwrap();
         let ts = parsed[0].as_f64().unwrap();
-        assert!((ts - 0.0).abs() < 0.001, "First event timestamp should be relative (0.0)");
+        assert!(
+            (ts - 0.0).abs() < 0.001,
+            "First event timestamp should be relative (0.0)"
+        );
     }
 
     #[test]

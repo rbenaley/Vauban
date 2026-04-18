@@ -313,7 +313,10 @@ async fn test_web_create_access_rule_with_duration() {
         .await;
     assert_status(&detail, 200);
     let body = detail.text();
-    assert!(body.contains("2h"), "Detail page should display duration as '2h'");
+    assert!(
+        body.contains("2h"),
+        "Detail page should display duration as '2h'"
+    );
 
     test_db::cleanup(&mut conn).await;
 }
@@ -386,7 +389,10 @@ async fn test_web_create_access_rule_with_minutes_duration() {
         .await;
     assert_status(&detail, 200);
     let body = detail.text();
-    assert!(body.contains("30min"), "Detail page should display duration as '30min'");
+    assert!(
+        body.contains("30min"),
+        "Detail page should display duration as '30min'"
+    );
 
     test_db::cleanup(&mut conn).await;
 }
@@ -469,9 +475,16 @@ async fn test_web_access_rule_edit_form_shows_duration_fields() {
     let ag = create_test_asset_group(&mut conn, &unique_name("w-ar-edit-dur-ag")).await;
 
     use crate::fixtures::create_test_access_rule_with_constraints;
-    let rule_uuid =
-        create_test_access_rule_with_constraints(&mut conn, &ug, &ag, &["ssh"], false, false, Some(7200))
-            .await;
+    let rule_uuid = create_test_access_rule_with_constraints(
+        &mut conn,
+        &ug,
+        &ag,
+        &["ssh"],
+        false,
+        false,
+        Some(7200),
+    )
+    .await;
 
     let response = app
         .server

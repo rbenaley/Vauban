@@ -150,10 +150,16 @@ pub async fn access_rules_list(
         .max(1);
 
     let total_items = rules.len();
-    let total_pages = ((total_items as f64) / (RULES_PER_PAGE as f64)).ceil().max(1.0) as usize;
+    let total_pages = ((total_items as f64) / (RULES_PER_PAGE as f64))
+        .ceil()
+        .max(1.0) as usize;
     let page = page.min(total_pages);
     let offset = (page - 1) * RULES_PER_PAGE;
-    let paged_rules: Vec<_> = rules.into_iter().skip(offset).take(RULES_PER_PAGE).collect();
+    let paged_rules: Vec<_> = rules
+        .into_iter()
+        .skip(offset)
+        .take(RULES_PER_PAGE)
+        .collect();
 
     use crate::templates::accounts::user_list::Pagination;
 
@@ -436,9 +442,7 @@ pub async fn create_access_rule_web(
                 || msg.to_lowercase().contains("already exists") =>
         {
             flash_redirect(
-                flash.error(
-                    "A rule for this user group / asset group combination already exists",
-                ),
+                flash.error("A rule for this user group / asset group combination already exists"),
                 "/assets/access/new",
             )
         }
@@ -669,9 +673,7 @@ pub async fn update_access_rule_web(
                 || msg.to_lowercase().contains("already exists") =>
         {
             flash_redirect(
-                flash.error(
-                    "A rule for this user group / asset group combination already exists",
-                ),
+                flash.error("A rule for this user group / asset group combination already exists"),
                 &edit_url,
             )
         }

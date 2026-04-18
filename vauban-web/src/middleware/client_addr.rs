@@ -34,8 +34,7 @@ pub fn extract_client_ip(
     connect_addr: SocketAddr,
     trusted_proxies: &[std::net::IpAddr],
 ) -> IpNetwork {
-    let resolved =
-        super::resolve_client_ip(headers, connect_addr.ip(), trusted_proxies);
+    let resolved = super::resolve_client_ip(headers, connect_addr.ip(), trusted_proxies);
     IpNetwork::from(resolved)
 }
 

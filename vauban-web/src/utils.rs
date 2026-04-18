@@ -251,15 +251,30 @@ mod tests {
 
     #[test]
     fn test_resolve_duration_hours() {
-        assert_eq!(resolve_duration_seconds(Some(2), Some("hours")), Ok(Some(7200)));
-        assert_eq!(resolve_duration_seconds(Some(1), Some("hours")), Ok(Some(3600)));
-        assert_eq!(resolve_duration_seconds(Some(24), Some("hours")), Ok(Some(86400)));
+        assert_eq!(
+            resolve_duration_seconds(Some(2), Some("hours")),
+            Ok(Some(7200))
+        );
+        assert_eq!(
+            resolve_duration_seconds(Some(1), Some("hours")),
+            Ok(Some(3600))
+        );
+        assert_eq!(
+            resolve_duration_seconds(Some(24), Some("hours")),
+            Ok(Some(86400))
+        );
     }
 
     #[test]
     fn test_resolve_duration_minutes() {
-        assert_eq!(resolve_duration_seconds(Some(30), Some("minutes")), Ok(Some(1800)));
-        assert_eq!(resolve_duration_seconds(Some(1), Some("minutes")), Ok(Some(60)));
+        assert_eq!(
+            resolve_duration_seconds(Some(30), Some("minutes")),
+            Ok(Some(1800))
+        );
+        assert_eq!(
+            resolve_duration_seconds(Some(1), Some("minutes")),
+            Ok(Some(60))
+        );
     }
 
     #[test]

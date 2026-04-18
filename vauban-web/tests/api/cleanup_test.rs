@@ -489,15 +489,29 @@ async fn test_cleanup_stale_connecting_sessions() {
     let stale_time = Utc::now() - Duration::minutes(5);
 
     let (stale_id, _) = create_proxy_session_with_timestamps(
-        &mut conn, user_id, asset_id,
-        "connecting", stale_time, stale_time, None, None,
-    ).await;
+        &mut conn,
+        user_id,
+        asset_id,
+        "connecting",
+        stale_time,
+        stale_time,
+        None,
+        None,
+    )
+    .await;
 
     let recent_time = Utc::now();
     let (fresh_id, _) = create_proxy_session_with_timestamps(
-        &mut conn, user_id, asset_id,
-        "connecting", recent_time, recent_time, None, None,
-    ).await;
+        &mut conn,
+        user_id,
+        asset_id,
+        "connecting",
+        recent_time,
+        recent_time,
+        None,
+        None,
+    )
+    .await;
 
     let cutoff = Utc::now() - Duration::minutes(2);
     let expired: usize = unwrap_ok!(
@@ -515,7 +529,10 @@ async fn test_cleanup_stale_connecting_sessions() {
         .await
     );
 
-    assert!(expired >= 1, "Should disconnect at least 1 stale connecting session");
+    assert!(
+        expired >= 1,
+        "Should disconnect at least 1 stale connecting session"
+    );
 
     let stale_status: String = unwrap_ok!(
         proxy_sessions::table
@@ -524,7 +541,10 @@ async fn test_cleanup_stale_connecting_sessions() {
             .first(&mut conn)
             .await
     );
-    assert_eq!(stale_status, "disconnected", "Stale connecting session must be disconnected");
+    assert_eq!(
+        stale_status, "disconnected",
+        "Stale connecting session must be disconnected"
+    );
 
     let fresh_status: String = unwrap_ok!(
         proxy_sessions::table
@@ -533,7 +553,10 @@ async fn test_cleanup_stale_connecting_sessions() {
             .first(&mut conn)
             .await
     );
-    assert_eq!(fresh_status, "connecting", "Recent connecting session must remain connecting");
+    assert_eq!(
+        fresh_status, "connecting",
+        "Recent connecting session must remain connecting"
+    );
 
     test_db::cleanup(&mut conn).await;
 }
@@ -552,15 +575,29 @@ async fn test_cleanup_stale_active_sessions_no_expiry() {
     let stale_time = Utc::now() - Duration::hours(25);
 
     let (stale_id, _) = create_proxy_session_with_timestamps(
-        &mut conn, user_id, asset_id,
-        "active", stale_time, stale_time, Some(stale_time), None,
-    ).await;
+        &mut conn,
+        user_id,
+        asset_id,
+        "active",
+        stale_time,
+        stale_time,
+        Some(stale_time),
+        None,
+    )
+    .await;
 
     let recent_time = Utc::now() - Duration::hours(1);
     let (fresh_id, _) = create_proxy_session_with_timestamps(
-        &mut conn, user_id, asset_id,
-        "active", recent_time, recent_time, Some(recent_time), None,
-    ).await;
+        &mut conn,
+        user_id,
+        asset_id,
+        "active",
+        recent_time,
+        recent_time,
+        Some(recent_time),
+        None,
+    )
+    .await;
 
     let now = Utc::now();
     let cutoff = now - Duration::hours(24);
@@ -580,7 +617,10 @@ async fn test_cleanup_stale_active_sessions_no_expiry() {
         .await
     );
 
-    assert!(disconnected >= 1, "Should disconnect at least 1 stale active session");
+    assert!(
+        disconnected >= 1,
+        "Should disconnect at least 1 stale active session"
+    );
 
     let stale_status: String = unwrap_ok!(
         proxy_sessions::table
@@ -589,7 +629,10 @@ async fn test_cleanup_stale_active_sessions_no_expiry() {
             .first(&mut conn)
             .await
     );
-    assert_eq!(stale_status, "disconnected", "Stale active session without expiry must be disconnected");
+    assert_eq!(
+        stale_status, "disconnected",
+        "Stale active session without expiry must be disconnected"
+    );
 
     let fresh_status: String = unwrap_ok!(
         proxy_sessions::table
@@ -598,7 +641,10 @@ async fn test_cleanup_stale_active_sessions_no_expiry() {
             .first(&mut conn)
             .await
     );
-    assert_eq!(fresh_status, "active", "Recent active session must remain active");
+    assert_eq!(
+        fresh_status, "active",
+        "Recent active session must remain active"
+    );
 
     test_db::cleanup(&mut conn).await;
 }
@@ -618,9 +664,16 @@ async fn test_cleanup_stale_active_ignores_sessions_with_expiry() {
     let future_expiry = Utc::now() + Duration::hours(1);
 
     let (session_id, _) = create_proxy_session_with_timestamps(
-        &mut conn, user_id, asset_id,
-        "active", stale_time, stale_time, Some(stale_time), Some(future_expiry),
-    ).await;
+        &mut conn,
+        user_id,
+        asset_id,
+        "active",
+        stale_time,
+        stale_time,
+        Some(stale_time),
+        Some(future_expiry),
+    )
+    .await;
 
     let now = Utc::now();
     let cutoff = now - Duration::hours(24);
@@ -640,7 +693,10 @@ async fn test_cleanup_stale_active_ignores_sessions_with_expiry() {
         .await
     );
 
-    assert_eq!(disconnected, 0, "Should NOT disconnect sessions with expires_at set");
+    assert_eq!(
+        disconnected, 0,
+        "Should NOT disconnect sessions with expires_at set"
+    );
 
     let status: String = unwrap_ok!(
         proxy_sessions::table
@@ -649,7 +705,10 @@ async fn test_cleanup_stale_active_ignores_sessions_with_expiry() {
             .first(&mut conn)
             .await
     );
-    assert_eq!(status, "active", "Session with expires_at must remain active");
+    assert_eq!(
+        status, "active",
+        "Session with expires_at must remain active"
+    );
 
     test_db::cleanup(&mut conn).await;
 }
@@ -668,9 +727,16 @@ async fn test_cleanup_connecting_does_not_affect_active() {
     let stale_time = Utc::now() - Duration::minutes(10);
 
     let (active_id, _) = create_proxy_session_with_timestamps(
-        &mut conn, user_id, asset_id,
-        "active", stale_time, stale_time, Some(stale_time), None,
-    ).await;
+        &mut conn,
+        user_id,
+        asset_id,
+        "active",
+        stale_time,
+        stale_time,
+        Some(stale_time),
+        None,
+    )
+    .await;
 
     let cutoff = Utc::now() - Duration::minutes(2);
     let expired: usize = unwrap_ok!(
@@ -697,7 +763,10 @@ async fn test_cleanup_connecting_does_not_affect_active() {
             .first(&mut conn)
             .await
     );
-    assert_eq!(status, "active", "Active session must not be touched by connecting cleanup");
+    assert_eq!(
+        status, "active",
+        "Active session must not be touched by connecting cleanup"
+    );
 
     test_db::cleanup(&mut conn).await;
 }

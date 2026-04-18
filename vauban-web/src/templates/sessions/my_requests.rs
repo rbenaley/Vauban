@@ -106,12 +106,20 @@ mod tests {
 
     #[test]
     fn test_status_class_disconnected() {
-        assert!(make_item("disconnected", None).status_class().contains("indigo"));
+        assert!(
+            make_item("disconnected", None)
+                .status_class()
+                .contains("indigo")
+        );
     }
 
     #[test]
     fn test_status_class_terminated() {
-        assert!(make_item("terminated", None).status_class().contains("orange"));
+        assert!(
+            make_item("terminated", None)
+                .status_class()
+                .contains("orange")
+        );
     }
 
     #[test]
@@ -204,14 +212,20 @@ mod tests {
 
     #[test]
     fn test_duration_display_minutes() {
-        assert_eq!(make_item("approved", Some(1800)).duration_display(), "30min");
+        assert_eq!(
+            make_item("approved", Some(1800)).duration_display(),
+            "30min"
+        );
         assert_eq!(make_item("approved", Some(900)).duration_display(), "15min");
         assert_eq!(make_item("approved", Some(60)).duration_display(), "1min");
     }
 
     #[test]
     fn test_duration_display_mixed_falls_back_to_minutes() {
-        assert_eq!(make_item("approved", Some(5400)).duration_display(), "90min");
+        assert_eq!(
+            make_item("approved", Some(5400)).duration_display(),
+            "90min"
+        );
     }
 
     #[test]
@@ -284,9 +298,15 @@ mod tests {
         let html = template.render().expect("template should render");
         assert!(html.contains("1h"), "should show 1h duration");
         assert!(html.contains("Unlimited"), "should show Unlimited");
-        assert!(html.contains("ws-connect=\"/ws/notifications\""), "should have ws-connect");
+        assert!(
+            html.contains("ws-connect=\"/ws/notifications\""),
+            "should have ws-connect"
+        );
         assert!(html.contains("jit-notification"), "should have OOB target");
-        assert!(html.contains("request_approved"), "should filter on request_approved");
+        assert!(
+            html.contains("request_approved"),
+            "should filter on request_approved"
+        );
     }
 
     #[test]
@@ -328,13 +348,14 @@ mod tests {
                 pagination: None,
             };
 
-            let html = template.render().unwrap_or_else(|_| {
-                panic!("template should render for status '{}'", status)
-            });
+            let html = template
+                .render()
+                .unwrap_or_else(|_| panic!("template should render for status '{}'", status));
             assert!(
                 html.contains(label),
                 "status '{}' should render label '{}' in template",
-                status, label
+                status,
+                label
             );
         }
     }
@@ -367,10 +388,16 @@ mod tests {
         };
 
         let html = template.render().expect("template should render");
-        assert!(html.contains("No access requests"), "should show empty state");
+        assert!(
+            html.contains("No access requests"),
+            "should show empty state"
+        );
     }
 
-    fn make_template(items: Vec<MyRequestItem>, pagination: Option<Pagination>) -> MyRequestsTemplate {
+    fn make_template(
+        items: Vec<MyRequestItem>,
+        pagination: Option<Pagination>,
+    ) -> MyRequestsTemplate {
         use crate::templates::base::{UserContext, VaubanConfig};
         MyRequestsTemplate {
             title: "My Requests".to_string(),
@@ -422,8 +449,14 @@ mod tests {
         let template = make_template(items, Some(pg));
         let html = template.render().expect("render");
         assert!(html.contains("Showing"), "should show pagination counter");
-        assert!(html.contains("of <span class=\"font-medium\">75</span>"), "should show total");
-        assert!(!html.contains("First page"), "first page should not have First link (sr-only text)");
+        assert!(
+            html.contains("of <span class=\"font-medium\">75</span>"),
+            "should show total"
+        );
+        assert!(
+            !html.contains("First page"),
+            "first page should not have First link (sr-only text)"
+        );
         assert!(html.contains("Next page"), "should have Next link");
         assert!(html.contains("Last page"), "should have Last link");
     }
@@ -450,8 +483,14 @@ mod tests {
         let html = template.render().expect("render");
         assert!(html.contains("First page"), "should have First link");
         assert!(html.contains("Previous page"), "should have Previous link");
-        assert!(!html.contains("Next page"), "last page should not have Next");
-        assert!(!html.contains("Last page"), "last page should not have Last");
+        assert!(
+            !html.contains("Next page"),
+            "last page should not have Next"
+        );
+        assert!(
+            !html.contains("Last page"),
+            "last page should not have Last"
+        );
     }
 
     #[test]
@@ -471,7 +510,10 @@ mod tests {
         let items: Vec<MyRequestItem> = (0..30).map(|_| make_item("pending", None)).collect();
         let template = make_template(items, Some(pg));
         let html = template.render().expect("render");
-        assert!(html.contains("aria-current=\"page\""), "current page should have aria-current");
+        assert!(
+            html.contains("aria-current=\"page\""),
+            "current page should have aria-current"
+        );
     }
 
     #[test]
@@ -488,7 +530,10 @@ mod tests {
         let template = make_template(Vec::new(), None);
         let html = template.render().expect("render");
         assert!(!html.contains("Showing"), "no pagination for empty list");
-        assert!(html.contains("No access requests"), "should show empty state");
+        assert!(
+            html.contains("No access requests"),
+            "should show empty state"
+        );
     }
 
     #[test]
@@ -498,8 +543,14 @@ mod tests {
         let template = make_template(items, Some(pg));
         let html = template.render().expect("render");
         assert!(html.contains("Showing"), "should still show counter");
-        assert!(!html.contains("Next page"), "single page should not have Next");
-        assert!(!html.contains("Previous page"), "single page should not have Previous");
+        assert!(
+            !html.contains("Next page"),
+            "single page should not have Next"
+        );
+        assert!(
+            !html.contains("Previous page"),
+            "single page should not have Previous"
+        );
     }
 }
 

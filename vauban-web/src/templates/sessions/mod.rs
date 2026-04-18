@@ -29,9 +29,7 @@ pub fn session_status_class(status: &str) -> &'static str {
         "disconnected" | "completed" => {
             "bg-indigo-100 text-indigo-800 dark:bg-indigo-900/50 dark:text-indigo-300"
         }
-        "terminated" => {
-            "bg-orange-100 text-orange-800 dark:bg-orange-900/50 dark:text-orange-300"
-        }
+        "terminated" => "bg-orange-100 text-orange-800 dark:bg-orange-900/50 dark:text-orange-300",
         _ => "bg-gray-100 text-gray-800 dark:bg-gray-900/50 dark:text-gray-300",
     }
 }
@@ -78,7 +76,10 @@ mod tests {
 
     #[test]
     fn test_expired_and_orphaned_share_same_class() {
-        assert_eq!(session_status_class("expired"), session_status_class("orphaned"));
+        assert_eq!(
+            session_status_class("expired"),
+            session_status_class("orphaned")
+        );
     }
 
     #[test]
@@ -139,12 +140,24 @@ mod tests {
     #[test]
     fn test_all_statuses_return_nonempty_class() {
         let statuses = [
-            "pending", "approved", "rejected", "expired", "orphaned",
-            "consumed", "active", "connecting", "disconnected", "completed",
-            "terminated", "unknown",
+            "pending",
+            "approved",
+            "rejected",
+            "expired",
+            "orphaned",
+            "consumed",
+            "active",
+            "connecting",
+            "disconnected",
+            "completed",
+            "terminated",
+            "unknown",
         ];
         for s in statuses {
-            assert!(!session_status_class(s).is_empty(), "class for '{s}' must not be empty");
+            assert!(
+                !session_status_class(s).is_empty(),
+                "class for '{s}' must not be empty"
+            );
         }
     }
 }

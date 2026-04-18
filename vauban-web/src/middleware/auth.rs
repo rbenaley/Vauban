@@ -726,16 +726,16 @@ mod tests {
             is_staff: false,
         };
 
-        let mut parts = unwrap_ok!(
-            HttpRequest::builder()
-                .body(axum::body::Body::empty())
-        )
-        .into_parts()
-        .0;
+        let mut parts = unwrap_ok!(HttpRequest::builder().body(axum::body::Body::empty()))
+            .into_parts()
+            .0;
         parts.extensions.insert(pre_mfa_user);
 
         let result = WebAuthUser::from_request_parts(&mut parts, &()).await;
-        assert!(result.is_err(), "WebAuthUser must reject mfa_verified=false");
+        assert!(
+            result.is_err(),
+            "WebAuthUser must reject mfa_verified=false"
+        );
         let err_response = result.unwrap_err().into_response();
         assert_eq!(err_response.status(), StatusCode::SEE_OTHER);
         assert_eq!(
@@ -754,12 +754,9 @@ mod tests {
             is_staff: false,
         };
 
-        let mut parts = unwrap_ok!(
-            HttpRequest::builder()
-                .body(axum::body::Body::empty())
-        )
-        .into_parts()
-        .0;
+        let mut parts = unwrap_ok!(HttpRequest::builder().body(axum::body::Body::empty()))
+            .into_parts()
+            .0;
         parts.extensions.insert(mfa_user);
 
         let result = WebAuthUser::from_request_parts(&mut parts, &()).await;
@@ -768,12 +765,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_web_auth_user_redirects_to_login_when_no_session() {
-        let mut parts = unwrap_ok!(
-            HttpRequest::builder()
-                .body(axum::body::Body::empty())
-        )
-        .into_parts()
-        .0;
+        let mut parts = unwrap_ok!(HttpRequest::builder().body(axum::body::Body::empty()))
+            .into_parts()
+            .0;
 
         let result = WebAuthUser::from_request_parts(&mut parts, &()).await;
         assert!(result.is_err());
@@ -821,16 +815,16 @@ mod tests {
             is_staff: false,
         };
 
-        let mut parts = unwrap_ok!(
-            HttpRequest::builder()
-                .body(axum::body::Body::empty())
-        )
-        .into_parts()
-        .0;
+        let mut parts = unwrap_ok!(HttpRequest::builder().body(axum::body::Body::empty()))
+            .into_parts()
+            .0;
         parts.extensions.insert(pre_mfa_user);
 
         let result = PreMfaAuthUser::from_request_parts(&mut parts, &()).await;
-        assert!(result.is_ok(), "PreMfaAuthUser must accept mfa_verified=false");
+        assert!(
+            result.is_ok(),
+            "PreMfaAuthUser must accept mfa_verified=false"
+        );
     }
 
     #[tokio::test]
@@ -843,26 +837,23 @@ mod tests {
             is_staff: false,
         };
 
-        let mut parts = unwrap_ok!(
-            HttpRequest::builder()
-                .body(axum::body::Body::empty())
-        )
-        .into_parts()
-        .0;
+        let mut parts = unwrap_ok!(HttpRequest::builder().body(axum::body::Body::empty()))
+            .into_parts()
+            .0;
         parts.extensions.insert(mfa_user);
 
         let result = PreMfaAuthUser::from_request_parts(&mut parts, &()).await;
-        assert!(result.is_ok(), "PreMfaAuthUser must also accept mfa_verified=true");
+        assert!(
+            result.is_ok(),
+            "PreMfaAuthUser must also accept mfa_verified=true"
+        );
     }
 
     #[tokio::test]
     async fn test_pre_mfa_auth_user_redirects_to_login_when_no_session() {
-        let mut parts = unwrap_ok!(
-            HttpRequest::builder()
-                .body(axum::body::Body::empty())
-        )
-        .into_parts()
-        .0;
+        let mut parts = unwrap_ok!(HttpRequest::builder().body(axum::body::Body::empty()))
+            .into_parts()
+            .0;
 
         let result = PreMfaAuthUser::from_request_parts(&mut parts, &()).await;
         assert!(result.is_err());

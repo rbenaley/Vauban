@@ -231,7 +231,10 @@ impl Asset {
 
     /// Get connection string.
     pub fn connection_string(&self) -> String {
-        format!("{}@{}:{}", self.connection_username, self.hostname, self.port)
+        format!(
+            "{}@{}:{}",
+            self.connection_username, self.hostname, self.port
+        )
     }
 }
 

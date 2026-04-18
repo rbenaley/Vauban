@@ -68,7 +68,7 @@ impl IntoResponse for AppError {
             }
             AppError::Auth(msg) => (StatusCode::UNAUTHORIZED, msg),
             AppError::AuthRedirect => unreachable!(), // Handled above
-            AppError::MfaRedirect => unreachable!(),   // Handled above
+            AppError::MfaRedirect => unreachable!(),  // Handled above
             AppError::Authorization(msg) => (StatusCode::FORBIDDEN, msg),
             AppError::Validation(msg) => (StatusCode::BAD_REQUEST, msg),
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
@@ -523,8 +523,7 @@ mod tests {
 
     #[test]
     fn test_htmx_error_response_content() {
-        let (_status, html) =
-            htmx_error_response(StatusCode::BAD_REQUEST, "Validation failed");
+        let (_status, html) = htmx_error_response(StatusCode::BAD_REQUEST, "Validation failed");
         let body = html.0;
         assert!(body.contains("check the form fields"));
     }

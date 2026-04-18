@@ -371,11 +371,11 @@ pub fn poll_readable(fds: &[RawFd], timeout_ms: i32) -> Result<Vec<usize>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::messages::{
-        AccessResponse, AssetGroupInfo, ControlMessage, IpcPage, Message, ServiceStats,
-        DEFAULT_IPC_PAGE_LIMIT, MAX_IPC_PAGE_LIMIT,
-    };
     use crate::messages::AccessRuleInfo;
+    use crate::messages::{
+        AccessResponse, AssetGroupInfo, ControlMessage, DEFAULT_IPC_PAGE_LIMIT, IpcPage,
+        MAX_IPC_PAGE_LIMIT, Message, ServiceStats,
+    };
     use std::os::fd::AsRawFd;
 
     fn pad(n: usize) -> String {
@@ -423,9 +423,7 @@ mod tests {
             asset_group_id: 2,
             asset_group_uuid: pad(36),
             asset_group_name: pad(100),
-            allowed_protocols: (0..8)
-                .map(|i| format!("proto{i}-{}", pad(12)))
-                .collect(),
+            allowed_protocols: (0..8).map(|i| format!("proto{i}-{}", pad(12))).collect(),
             valid_from: Some(rfc.clone()),
             valid_until: Some(rfc.clone()),
             require_mfa: false,

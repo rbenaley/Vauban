@@ -706,18 +706,14 @@ mod tests {
 
         // Guard: skip only if codes collide by chance (1 in 1,000,000)
         if expired_code != current_code {
-            let verify_resp =
-                handle_mfa_verify(&keyrings, 3, &encrypted_secret, &expired_code);
+            let verify_resp = handle_mfa_verify(&keyrings, 3, &encrypted_secret, &expired_code);
             match verify_resp {
                 Message::VaultMfaVerifyResponse {
                     valid: false,
                     error: None,
                     ..
                 } => {}
-                other => panic!(
-                    "SEC-06: expired code must be rejected, got: {:?}",
-                    other
-                ),
+                other => panic!("SEC-06: expired code must be rejected, got: {:?}", other),
             }
         }
     }
