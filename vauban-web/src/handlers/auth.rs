@@ -27,30 +27,17 @@ use crate::models::auth_session::{AuthSession, NewAuthSession};
 use crate::models::user::AuthSource;
 use crate::models::user::User;
 use crate::schema::{auth_sessions, users::dsl::*};
-use crate::services::auth::AuthService;
+use crate::services::auth::{AuthService, is_encrypted_mfa_secret};
 use crate::templates::accounts::{MfaSetupTemplate, MfaVerifyTemplate};
 use crate::templates::base::BaseTemplate;
 
-/// Check whether a value looks like an encrypted ciphertext from vauban-vault.
-///
-/// Encrypted values have the format `"v{digit(s)}:{base64}"`.
-/// This is used for backward compatibility: plaintext secrets (pre-migration)
-/// are verified directly via `AuthService::verify_totp`, while encrypted
-/// secrets are sent to the vault for decryption + verification.
+/// Local alias preserved so the call sites below stay readable. The actual
+/// classification logic lives in [`crate::services::auth::is_encrypted_mfa_secret`]
+/// so the login flow and the step-up flow ([`crate::auth::step_up`]) stay in
+/// lockstep -- a divergence here is exactly what shipped issue #11.
+#[inline]
 fn is_encrypted(value: &str) -> bool {
-    if value.len() < 4 {
-        return false;
-    }
-    if !value.starts_with('v') {
-        return false;
-    }
-    let Some(colon_pos) = value.find(':') else {
-        return false;
-    };
-    if colon_pos < 2 {
-        return false;
-    }
-    value[1..colon_pos].chars().all(|c| c.is_ascii_digit())
+    is_encrypted_mfa_secret(value)
 }
 
 // is_htmx_request deduplicated - use crate::error::is_htmx_request
@@ -285,6 +272,20 @@ pub async fn login(
     let mfa_verified = if user.mfa_enabled {
         if let Some(code) = request.mfa_code {
             if let Some(secret) = &user.mfa_secret {
+                // Issue #11 hardening: refuse explicitly when the secret is
+                // encrypted (vault envelope) but the vault IPC is not
+                // available -- otherwise we would silently call
+                // `verify_totp` on the ciphertext and return "Invalid MFA
+                // code" forever.
+                if is_encrypted(secret) && state.vault_client.is_none() {
+                    tracing::error!(
+                        user_id = user.id,
+                        "API login MFA: secret is encrypted but vault client is not configured"
+                    );
+                    return Err(AppError::Auth(
+                        "MFA backend is temporarily unavailable.".to_string(),
+                    ));
+                }
                 // Verify TOTP via vault (encrypted secrets) or directly (plaintext, pre-migration)
                 let valid = if let Some(ref vault) = state.vault_client
                     && is_encrypted(secret)
@@ -845,6 +846,24 @@ pub async fn mfa_setup_submit(
     // Validate TOTP code
     // Verify via vault when available (encrypted secrets), or directly (plaintext, pre-migration)
     let code = form.totp_code.trim();
+    // Issue #11 hardening: if the stored secret is encrypted but the vault
+    // client is unavailable, refuse with an explicit "backend unavailable"
+    // message instead of silently calling `verify_totp` on the ciphertext
+    // (which would always return false and tell the operator their CORRECT
+    // code is wrong, looping them forever).
+    if is_encrypted(&secret) && state.vault_client.is_none() {
+        tracing::error!(
+            user_id,
+            "mfa setup verify: secret is encrypted but vault client is not configured"
+        );
+        return Ok(flash_redirect(
+            flash.error(
+                "MFA backend is temporarily unavailable. Please try again \
+                 in a moment, or contact an administrator if the problem persists.",
+            ),
+            "/mfa/setup",
+        ));
+    }
     let valid = if let Some(ref vault) = state.vault_client
         && is_encrypted(&secret)
     {
@@ -1054,6 +1073,23 @@ pub async fn mfa_verify_submit(
     // Validate TOTP code
     // Verify via vault when available (encrypted secrets), or directly (plaintext, pre-migration)
     let code = form.totp_code.trim();
+    // Issue #11 hardening: same "encrypted secret + no vault" guard as in
+    // the MFA setup flow above. Without this, an operator whose secret was
+    // enrolled through the vault but whose web process lost the vault IPC
+    // would be told indefinitely that their valid code is invalid.
+    if is_encrypted(&secret) && state.vault_client.is_none() {
+        tracing::error!(
+            user_id,
+            "mfa verify: secret is encrypted but vault client is not configured"
+        );
+        return Ok(flash_redirect(
+            flash.error(
+                "MFA backend is temporarily unavailable. Please try again \
+                 in a moment, or contact an administrator if the problem persists.",
+            ),
+            "/mfa/verify",
+        ));
+    }
     let valid = if let Some(ref vault) = state.vault_client
         && is_encrypted(&secret)
     {

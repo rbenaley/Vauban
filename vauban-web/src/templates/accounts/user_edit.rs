@@ -35,6 +35,12 @@ pub struct UserEditTemplate {
     pub can_manage_superusers: bool,
     /// Whether the current user can delete this user
     pub can_delete: bool,
+    /// Whether the OPERATOR (the currently logged-in user looking at this
+    /// page) has a usable TOTP factor enrolled. When `false`, password
+    /// rotation and user deletion are disabled in the UI with a banner
+    /// linking to `/accounts/mfa/setup`. The handler enforces the same
+    /// rule server-side (see `crate::auth::step_up`).
+    pub auth_user_has_mfa: bool,
 }
 
 #[cfg(test)]
@@ -89,6 +95,7 @@ mod tests {
             password_min_length: 12,
             can_manage_superusers: true,
             can_delete: true,
+            auth_user_has_mfa: true,
         };
 
         let result = template.render();
@@ -125,6 +132,7 @@ mod tests {
             password_min_length: 12,
             can_manage_superusers: false,
             can_delete: false,
+            auth_user_has_mfa: true,
         };
 
         let result = template.render();

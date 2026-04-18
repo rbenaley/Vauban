@@ -16,6 +16,57 @@ use totp_rs::{Algorithm as TotpAlgorithm, Secret as TotpSecret, TOTP};
 use crate::config::Config;
 use crate::error::{AppError, AppResult};
 
+/// Detect whether an `mfa_secret` value is a vauban-vault ciphertext.
+///
+/// vauban-vault wraps secrets in a versioned envelope of the form
+/// `"v{digit(s)}:{base64}"` (e.g. `"v1:Abc..."`). Plaintext secrets, on the
+/// other hand, are raw base32 strings produced by [`AuthService::generate_totp_secret`].
+///
+/// Returning `true` here means the caller MUST decrypt the value via
+/// [`crate::ipc::vault::VaultCryptoClient::mfa_verify`] before passing it to
+/// any local TOTP routine -- pushing the ciphertext through
+/// [`AuthService::verify_totp`] will silently always return `false` because
+/// `"v1:..."` is not valid base32, and the operator will see
+/// "Authenticator code is incorrect" no matter what they enter (issue #11
+/// bugfix).
+///
+/// This helper deliberately lives in the service layer (not the handlers)
+/// so the step-up flow and the login flow can share the exact same
+/// classification.
+pub fn is_encrypted_mfa_secret(value: &str) -> bool {
+    if value.len() < 4 || !value.starts_with('v') {
+        return false;
+    }
+    let Some(colon_pos) = value.find(':') else {
+        return false;
+    };
+    if colon_pos < 2 {
+        return false;
+    }
+    value[1..colon_pos].chars().all(|c| c.is_ascii_digit())
+}
+
+/// Outcome of a step-up TOTP verification with replay classification.
+///
+/// Returned by [`AuthService::verify_and_consume_totp`]. The
+/// `Accepted { window }` variant carries the time-step that was just
+/// consumed; the caller MUST persist it (typically on
+/// `users.last_totp_used_window`) before performing the side-effecting
+/// operation the step-up gates, so the same code cannot be replayed within
+/// its 30-second window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TotpVerification {
+    /// Code matches the current TOTP window AND has not been consumed yet.
+    Accepted { window: i64 },
+    /// Code matches the current TOTP window but a code from this window (or
+    /// later) has already been consumed by the same user. Refused per
+    /// RFC 6238 §5.2.
+    Replayed,
+    /// Code does not match the current window, the secret is malformed, or
+    /// the format is invalid.
+    Invalid,
+}
+
 /// JWT claims.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
@@ -215,6 +266,38 @@ impl AuthService {
         };
 
         totp.check_current(code).unwrap_or(false)
+    }
+
+    /// Verify a TOTP code AND classify it for replay protection.
+    ///
+    /// Used by the step-up authentication flow on sensitive operations
+    /// (e.g. password rotation in [`crate::handlers::web::users`]).
+    ///
+    /// Because `TOTP_SKEW = 0` a code is valid for exactly one 30-second
+    /// window; that window is `unix_seconds / TOTP_STEP`. We refuse any code
+    /// whose window is `<=` the last window already consumed by this user
+    /// (RFC 6238 §5.2: a single OTP MUST NOT be accepted twice).
+    ///
+    /// The caller is responsible for persisting the returned `window` on the
+    /// operator's row before performing the side-effecting operation, so two
+    /// concurrent step-up requests by the same operator within the same
+    /// 30-second window cannot both succeed.
+    pub fn verify_and_consume_totp(
+        secret: &str,
+        code: &str,
+        last_used_window: Option<i64>,
+    ) -> TotpVerification {
+        if !Self::verify_totp(secret, code) {
+            return TotpVerification::Invalid;
+        }
+        let now = chrono::Utc::now().timestamp();
+        let window = now / (TOTP_STEP as i64);
+        if let Some(last) = last_used_window
+            && window <= last
+        {
+            return TotpVerification::Replayed;
+        }
+        TotpVerification::Accepted { window }
     }
 
     /// Get current TOTP code (for testing/debugging).
@@ -808,6 +891,58 @@ mod tests {
         assert!(uri.starts_with("otpauth://totp/"));
         assert!(uri.contains("secret="));
         assert!(uri.contains("issuer="));
+    }
+
+    // ==================== is_encrypted_mfa_secret ====================
+    //
+    // This classification is what tells the step-up flow whether a secret
+    // must go through the vault or can be verified locally. A regression
+    // here would silently break password rotations in production (issue
+    // #11 bugfix), so we pin the behavior on every interesting shape.
+
+    #[test]
+    fn test_is_encrypted_mfa_secret_recognises_v1_envelope() {
+        assert!(is_encrypted_mfa_secret(
+            "v1:bWZhLWNpcGhlcnRleHQtZ29lcy1oZXJl"
+        ));
+    }
+
+    #[test]
+    fn test_is_encrypted_mfa_secret_recognises_multidigit_versions() {
+        assert!(is_encrypted_mfa_secret("v2:abc"));
+        assert!(is_encrypted_mfa_secret("v42:abc"));
+        assert!(is_encrypted_mfa_secret("v999:abc"));
+    }
+
+    #[test]
+    fn test_is_encrypted_mfa_secret_rejects_plaintext_base32() {
+        let (secret, _) = unwrap_ok!(AuthService::generate_totp_secret("plaintext", "VAUBAN"));
+        assert!(
+            !is_encrypted_mfa_secret(&secret),
+            "freshly generated base32 secret must NOT look like a vault envelope (regression: \
+             would route plaintext secrets through the vault and fail closed)"
+        );
+    }
+
+    #[test]
+    fn test_is_encrypted_mfa_secret_rejects_lookalikes() {
+        // Cases that vaguely look like the envelope but are NOT.
+        assert!(!is_encrypted_mfa_secret(""), "empty");
+        assert!(!is_encrypted_mfa_secret("v"), "too short");
+        assert!(!is_encrypted_mfa_secret("v1"), "no colon");
+        assert!(!is_encrypted_mfa_secret("v:abc"), "missing version digits");
+        assert!(
+            !is_encrypted_mfa_secret("vN1:abc"),
+            "non-digit version number"
+        );
+        assert!(
+            !is_encrypted_mfa_secret("V1:abc"),
+            "uppercase V is not the contract"
+        );
+        assert!(
+            !is_encrypted_mfa_secret("v1abc"),
+            "no colon means not an envelope"
+        );
     }
 
     // ==================== SEC-06 Regression Tests ====================

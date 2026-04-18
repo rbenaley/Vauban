@@ -13,5 +13,7 @@
 //! [`crate::templates::base::UserContext`] for details.
 
 pub mod permissions;
+pub mod step_up;
 
 pub use permissions::{PermissionContext, check_rbac};
+pub use step_up::{StepUpError, enforce_totp_step_up};

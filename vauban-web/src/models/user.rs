@@ -166,6 +166,12 @@ pub struct User {
     pub updated_at: DateTime<Utc>,
     pub is_deleted: bool,
     pub deleted_at: Option<DateTime<Utc>>,
+    /// Last TOTP time-step consumed by this user via the step-up flow.
+    /// `None` means no code has ever been consumed yet. Used to reject
+    /// replay of a valid code within its 30-second window. See
+    /// `services::auth::AuthService::verify_and_consume_totp`.
+    #[serde(skip_serializing)]
+    pub last_totp_used_window: Option<i64>,
 }
 
 /// New user for insertion.
@@ -346,6 +352,7 @@ mod tests {
             updated_at: Utc::now(),
             is_deleted: false,
             deleted_at: None,
+            last_totp_used_window: None,
         }
     }
 

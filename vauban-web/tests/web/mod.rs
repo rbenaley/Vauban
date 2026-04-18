@@ -23,3 +23,4 @@ pub mod responsive_templates_test;
 pub mod routing_test;
 pub mod session_pages_test;
 pub mod sidebar_menu_test;
+pub mod user_edit_test;

@@ -20,7 +20,12 @@ privsep = false
 
 [database]
 url = "postgresql://vauban_test:vauban_test@localhost/vauban_test"
-max_connections = 30
+# Bumped from 30 to 95 to keep the pool ahead of `cargo test`'s parallel
+# defaults. Each test typically holds a fixture connection AND triggers an
+# HTTP request whose middleware stack (auth + CSRF + audit + handler) acquires
+# 2-4 additional connections. With ~20 tests in flight on a multi-core box the
+# previous ceiling led to spurious "connection closed" / "/login" flake.
+max_connections = 95
 
 [logging]
 level = "warn"

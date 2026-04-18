@@ -199,6 +199,7 @@ diesel::table! {
         updated_at -> Timestamptz,
         is_deleted -> Bool,
         deleted_at -> Nullable<Timestamptz>,
+        last_totp_used_window -> Nullable<Int8>,
     }
 }
 

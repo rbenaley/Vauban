@@ -31,16 +31,80 @@ async fn get_user_uuid(conn: &mut AsyncPgConnection, user_id: i32) -> Uuid {
     )
 }
 
-/// Count rows in `asset_asset_groups` for a given asset and group.
-async fn count_asset_in_group(
+/// Create an admin (is_staff + is_superuser) WITH a freshly-generated TOTP
+/// secret enrolled. Returns `(user_id, uuid, username, mfa_secret_base32)`.
+///
+/// Required since 0.7.0 (issue #11) for any test that performs a sensitive
+/// operation (password rotation, user deletion) -- those handlers now route
+/// through `auth::step_up::enforce_totp_step_up` which refuses operators
+/// that don't have MFA enrolled.
+async fn create_admin_with_mfa_local(
+    app: &TestApp,
     conn: &mut AsyncPgConnection,
-    asset_id: i32,
-    group_id: i32,
-) -> i64 {
+    label: &str,
+) -> (i32, Uuid, String, String) {
+    use vauban_web::schema::users;
+    use vauban_web::services::auth::AuthService;
+
+    let username = unique_name(label);
+    let user_uuid = Uuid::new_v4();
+    let hash = unwrap_ok!(app.auth_service.hash_password("StableAdminPwd#2026!"));
+    let (mfa_secret, _) =
+        unwrap_ok!(AuthService::generate_totp_secret(&username, "VAUBAN-tests"));
+
+    let id: i32 = unwrap_ok!(
+        diesel::insert_into(users::table)
+            .values((
+                users::uuid.eq(user_uuid),
+                users::username.eq(&username),
+                users::email.eq(format!("{}@test.vauban.io", username)),
+                users::password_hash.eq(&hash),
+                users::is_active.eq(true),
+                users::is_staff.eq(true),
+                users::is_superuser.eq(true),
+                users::mfa_enabled.eq(true),
+                users::mfa_secret.eq(Some(&mfa_secret)),
+                users::auth_source.eq(AuthSource::Local),
+                users::preferences.eq(serde_json::json!({})),
+            ))
+            .returning(users::id)
+            .get_result::<i32>(conn)
+            .await
+    );
+    (id, user_uuid, username, mfa_secret)
+}
+
+/// Compute the TOTP code that the step-up flow will accept *right now* for
+/// the given base32 shared secret.
+fn current_totp_code_local(secret: &str) -> String {
+    use vauban_web::services::auth::AuthService;
+    AuthService::get_current_totp(secret).expect("TOTP code generation must not fail")
+}
+
+/// Reset `last_totp_used_window` to NULL so a subsequent step-up call may
+/// consume a code in the same 30-second window again. Used by tests that
+/// chain several deletions or rotations on a single operator within one
+/// window (e.g. cycle tests, double-delete idempotency).
+async fn reset_totp_replay_state_local(conn: &mut AsyncPgConnection, user_id: i32) {
+    use vauban_web::schema::users;
+    unwrap_ok!(
+        diesel::update(users::table.filter(users::id.eq(user_id)))
+            .set(users::last_totp_used_window.eq::<Option<i64>>(None))
+            .execute(conn)
+            .await
+    );
+}
+
+/// Count rows in `asset_asset_groups` for a given asset and group.
+async fn count_asset_in_group(conn: &mut AsyncPgConnection, asset_id: i32, group_id: i32) -> i64 {
     use vauban_web::schema::asset_asset_groups::dsl as aag;
     unwrap_ok!(
         aag::asset_asset_groups
-            .filter(aag::asset_id.eq(asset_id).and(aag::asset_group_id.eq(group_id)))
+            .filter(
+                aag::asset_id
+                    .eq(asset_id)
+                    .and(aag::asset_group_id.eq(group_id))
+            )
             .count()
             .get_result::<i64>(conn)
             .await
@@ -4122,19 +4186,19 @@ async fn test_user_delete_soft_deletes() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin_username = unique_name("admin_delete");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
-    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+    // Step-up MFA (issue #11): admin must have a TOTP factor to delete users.
+    let (_admin_id, admin_uuid, admin_username, mfa_secret) =
+        create_admin_with_mfa_local(app, &mut conn, "admin_delete").await;
     let token = app
         .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
         .await;
     let csrf_token = app.generate_csrf_token();
 
-    // Create a user to delete
     let target_username = unique_name("delete_target");
     let target_id = create_simple_user(&mut conn, &target_username).await;
     let target_uuid = get_user_uuid(&mut conn, target_id).await;
 
+    let totp = current_totp_code_local(&mfa_secret);
     let response = app
         .server
         .post(&format!("/accounts/users/{}/delete", target_uuid))
@@ -4142,7 +4206,10 @@ async fn test_user_delete_soft_deletes() {
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
         )
-        .form(&[("csrf_token", csrf_token.as_str())])
+        .form(&[
+            ("csrf_token", csrf_token.as_str()),
+            ("totp_code", totp.as_str()),
+        ])
         .await;
 
     let status = response.status_code().as_u16();
@@ -4170,9 +4237,8 @@ async fn test_user_delete_retires_username_and_email() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin_username = unique_name("admin_retire");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
-    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+    let (_admin_id, admin_uuid, admin_username, mfa_secret) =
+        create_admin_with_mfa_local(app, &mut conn, "admin_retire").await;
     let token = app
         .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
         .await;
@@ -4190,6 +4256,7 @@ async fn test_user_delete_retires_username_and_email() {
         .await
         .unwrap();
 
+    let totp = current_totp_code_local(&mfa_secret);
     let response = app
         .server
         .post(&format!("/accounts/users/{}/delete", target_uuid))
@@ -4197,7 +4264,10 @@ async fn test_user_delete_retires_username_and_email() {
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
         )
-        .form(&[("csrf_token", csrf_token.as_str())])
+        .form(&[
+            ("csrf_token", csrf_token.as_str()),
+            ("totp_code", totp.as_str()),
+        ])
         .await;
 
     let status = response.status_code().as_u16();
@@ -4252,9 +4322,8 @@ async fn test_user_create_succeeds_after_soft_delete_of_same_username() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin_username = unique_name("admin_reuse");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
-    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+    let (_admin_id, admin_uuid, admin_username, mfa_secret) =
+        create_admin_with_mfa_local(app, &mut conn, "admin_reuse").await;
     let token = app
         .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
         .await;
@@ -4275,13 +4344,17 @@ async fn test_user_create_succeeds_after_soft_delete_of_same_username() {
 
     let actual_email = format!("{}@test.vauban.io", actual_username);
 
+    let totp = current_totp_code_local(&mfa_secret);
     app.server
         .post(&format!("/accounts/users/{}/delete", target_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
         )
-        .form(&[("csrf_token", csrf_token.as_str())])
+        .form(&[
+            ("csrf_token", csrf_token.as_str()),
+            ("totp_code", totp.as_str()),
+        ])
         .await;
 
     // Now create a new user with the exact same username and email
@@ -4418,9 +4491,8 @@ async fn test_user_delete_preserves_record_for_audit() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin_username = unique_name("admin_audit");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
-    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+    let (_admin_id, admin_uuid, admin_username, mfa_secret) =
+        create_admin_with_mfa_local(app, &mut conn, "admin_audit").await;
     let token = app
         .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
         .await;
@@ -4430,13 +4502,17 @@ async fn test_user_delete_preserves_record_for_audit() {
     let target_id = create_simple_user(&mut conn, &target_username).await;
     let target_uuid = get_user_uuid(&mut conn, target_id).await;
 
+    let totp = current_totp_code_local(&mfa_secret);
     app.server
         .post(&format!("/accounts/users/{}/delete", target_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
         )
-        .form(&[("csrf_token", csrf_token.as_str())])
+        .form(&[
+            ("csrf_token", csrf_token.as_str()),
+            ("totp_code", totp.as_str()),
+        ])
         .await;
 
     // The record must remain in DB (not hard-deleted)
@@ -4466,9 +4542,8 @@ async fn test_user_update_can_use_username_freed_by_soft_delete() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin_username = unique_name("admin_upd_free");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
-    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+    let (admin_id, admin_uuid, admin_username, mfa_secret) =
+        create_admin_with_mfa_local(app, &mut conn, "admin_upd_free").await;
     let token = app
         .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
         .await;
@@ -4489,14 +4564,22 @@ async fn test_user_update_can_use_username_freed_by_soft_delete() {
 
     let freed_email = format!("{}@test.vauban.io", freed_username);
 
+    let del_totp = current_totp_code_local(&mfa_secret);
     app.server
         .post(&format!("/accounts/users/{}/delete", user_a_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
         )
-        .form(&[("csrf_token", csrf_token.as_str())])
+        .form(&[
+            ("csrf_token", csrf_token.as_str()),
+            ("totp_code", del_totp.as_str()),
+        ])
         .await;
+    // The username-rename below targets metadata only (no `password` field),
+    // so the update handler does NOT trigger step-up. We still reset the
+    // replay state to keep this test independent from the 30-second window.
+    reset_totp_replay_state_local(&mut conn, admin_id).await;
 
     // Create user B with a different name
     let user_b_name = unique_name("user_b");
@@ -4545,9 +4628,8 @@ async fn test_user_create_delete_create_cycle_works_multiple_times() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin_username = unique_name("admin_cycle");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
-    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+    let (admin_id, admin_uuid, admin_username, mfa_secret) =
+        create_admin_with_mfa_local(app, &mut conn, "admin_cycle").await;
     let token = app
         .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
         .await;
@@ -4592,10 +4674,13 @@ async fn test_user_create_delete_create_cycle_works_multiple_times() {
             .select((users::id, users::uuid))
             .first(&mut conn)
             .await
-            .unwrap_or_else(|_| panic!("Iteration {}: active user should exist",
-                iteration));
+            .unwrap_or_else(|_| panic!("Iteration {}: active user should exist", iteration));
 
-        // Soft-delete
+        // Soft-delete (step-up MFA, issue #11). The same TOTP code can only
+        // be consumed once per 30s window, so reset the operator's replay
+        // state before each iteration to allow re-using the current code.
+        reset_totp_replay_state_local(&mut conn, admin_id).await;
+        let totp = current_totp_code_local(&mfa_secret);
         let del_resp = app
             .server
             .post(&format!("/accounts/users/{}/delete", user_uuid))
@@ -4603,7 +4688,10 @@ async fn test_user_create_delete_create_cycle_works_multiple_times() {
                 COOKIE,
                 format!("access_token={}; __vauban_csrf={}", token, csrf_token),
             )
-            .form(&[("csrf_token", csrf_token.as_str())])
+            .form(&[
+                ("csrf_token", csrf_token.as_str()),
+                ("totp_code", totp.as_str()),
+            ])
             .await;
 
         let del_status = del_resp.status_code().as_u16();
@@ -4653,9 +4741,8 @@ async fn test_user_delete_already_deleted_returns_not_found() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin_username = unique_name("admin_2del");
-    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
-    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+    let (admin_id, admin_uuid, admin_username, mfa_secret) =
+        create_admin_with_mfa_local(app, &mut conn, "admin_2del").await;
     let token = app
         .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
         .await;
@@ -4666,13 +4753,17 @@ async fn test_user_delete_already_deleted_returns_not_found() {
     let target_uuid = get_user_uuid(&mut conn, target_id).await;
 
     // First delete - should succeed
+    let totp1 = current_totp_code_local(&mfa_secret);
     app.server
         .post(&format!("/accounts/users/{}/delete", target_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
         )
-        .form(&[("csrf_token", csrf_token.as_str())])
+        .form(&[
+            ("csrf_token", csrf_token.as_str()),
+            ("totp_code", totp1.as_str()),
+        ])
         .await;
 
     use vauban_web::schema::users;
@@ -4684,7 +4775,12 @@ async fn test_user_delete_already_deleted_returns_not_found() {
         .unwrap();
     assert!(is_deleted, "User should be soft-deleted after first delete");
 
-    // Second delete - should fail gracefully (user not found among active)
+    // Second delete - should fail gracefully (user not found among active).
+    // Reset replay state so the same 30s-window TOTP code can be consumed
+    // again, otherwise we'd be testing the replay guard instead of the
+    // already-deleted code path.
+    reset_totp_replay_state_local(&mut conn, admin_id).await;
+    let totp2 = current_totp_code_local(&mfa_secret);
     let response = app
         .server
         .post(&format!("/accounts/users/{}/delete", target_uuid))
@@ -4692,7 +4788,10 @@ async fn test_user_delete_already_deleted_returns_not_found() {
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
         )
-        .form(&[("csrf_token", csrf_token.as_str())])
+        .form(&[
+            ("csrf_token", csrf_token.as_str()),
+            ("totp_code", totp2.as_str()),
+        ])
         .await;
 
     let status = response.status_code().as_u16();

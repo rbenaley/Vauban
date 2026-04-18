@@ -87,13 +87,11 @@ pub async fn user_list(
         }
     }
 
-    let total_items: i64 = count_query
-        .count()
-        .get_result(&mut conn)
-        .await
-        .unwrap_or(0);
+    let total_items: i64 = count_query.count().get_result(&mut conn).await.unwrap_or(0);
 
-    let total_pages = ((total_items as f64) / (USERS_PER_PAGE as f64)).ceil().max(1.0) as i32;
+    let total_pages = ((total_items as f64) / (USERS_PER_PAGE as f64))
+        .ceil()
+        .max(1.0) as i32;
     let page = page.min(total_pages);
     let offset = ((page - 1) as i64) * USERS_PER_PAGE;
 
@@ -222,8 +220,23 @@ pub async fn user_detail(
     let flash = incoming_flash.flash();
 
     let user = Some(user_context_from_auth(&auth_user));
-    let base =
-        BaseTemplate::new("User Details".to_string(), user).with_current_path("/accounts/users");
+
+    // UX-22: forward incoming flash messages to the BaseTemplate so the
+    // PRG redirect target (this page) actually renders the success/error
+    // banner emitted by `update_user_web`. Without this, the cookie is
+    // present but the message is invisible to the administrator.
+    let flash_messages: Vec<crate::templates::base::FlashMessage> = incoming_flash
+        .messages()
+        .iter()
+        .map(|m| crate::templates::base::FlashMessage {
+            level: m.level.clone(),
+            message: m.message.clone(),
+        })
+        .collect();
+
+    let base = BaseTemplate::new("User Details".to_string(), user)
+        .with_current_path("/accounts/users")
+        .with_messages(flash_messages);
 
     // Load user from database
     let mut conn = match state.db_pool.get().await {
@@ -387,6 +400,14 @@ pub struct UpdateUserWebForm {
     pub username: String,
     pub email: String,
     pub password: Option<String>,
+    /// Step-up MFA proof: the *operator's own* current TOTP code, required
+    /// when (and only when) `password` is provided as a non-empty rotation
+    /// request. The operator MUST have an enrolled TOTP factor; there is
+    /// no password fallback. The code is verified against `auth_user.uuid`'s
+    /// `mfa_secret`, NOT against the target's, and is single-use within its
+    /// 30-second window (RFC 6238 §5.2 replay protection persisted via
+    /// `users.last_totp_used_window`). See [`crate::auth::step_up`].
+    pub totp_code: Option<String>,
     pub first_name: Option<String>,
     pub last_name: Option<String>,
     pub is_active: Option<String>,
@@ -698,9 +719,40 @@ pub async fn user_edit_form(
     // Sourced from the request-scoped PermissionContext (Casbin via middleware).
     let can_delete = perms.users_write && (!is_superuser || auth_user.is_superuser);
 
+    // Whether the OPERATOR (not the target) has a usable TOTP factor enrolled.
+    // Drives the enrollment banner in the template; a `false` value disables
+    // the password input and the delete button. The handlers enforce the same
+    // gate server-side via `crate::auth::step_up`.
+    let auth_user_has_mfa: bool = match uuid::Uuid::parse_str(&auth_user.uuid) {
+        Ok(op_uuid) => users::table
+            .filter(users::uuid.eq(op_uuid))
+            .filter(users::is_deleted.eq(false))
+            .select((users::mfa_enabled, users::mfa_secret))
+            .first::<(bool, Option<String>)>(&mut conn)
+            .await
+            .map(|(enabled, secret)| enabled && secret.is_some_and(|s| !s.is_empty()))
+            .unwrap_or(false),
+        Err(_) => false,
+    };
+
     let user = Some(user_context_from_auth(&auth_user));
-    let base =
-        BaseTemplate::new("Edit User".to_string(), user).with_current_path("/accounts/users");
+
+    // UX-22: forward incoming flash messages so password validation errors
+    // (e.g. "Password must be at least N characters") and CSRF / DB errors
+    // raised by `update_user_web` are actually displayed when the user is
+    // bounced back to the edit form.
+    let flash_messages: Vec<crate::templates::base::FlashMessage> = incoming_flash
+        .messages()
+        .iter()
+        .map(|m| crate::templates::base::FlashMessage {
+            level: m.level.clone(),
+            message: m.message.clone(),
+        })
+        .collect();
+
+    let base = BaseTemplate::new("Edit User".to_string(), user)
+        .with_current_path("/accounts/users")
+        .with_messages(flash_messages);
 
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
@@ -718,6 +770,7 @@ pub async fn user_edit_form(
         password_min_length,
         can_manage_superusers,
         can_delete,
+        auth_user_has_mfa,
     };
 
     match template.render() {
@@ -853,6 +906,31 @@ pub async fn update_user_web(
                     &format!("/accounts/users/{}/edit", user_uuid),
                 );
             }
+
+            // Step-up MFA: the OPERATOR (auth_user) MUST prove possession
+            // of their second factor before any password is rotated --
+            // their own or someone else's. This protects against hijacked
+            // browser sessions silently flipping credentials and, unlike a
+            // password re-prompt, works uniformly for federated accounts
+            // and is forward-compatible with Passkeys/itsme/eID. The code
+            // is single-use within its 30-second window so an intercepted
+            // code cannot be replayed on another sensitive op. See
+            // [`crate::auth::step_up`] for the full contract.
+            let totp_code = form.totp_code.as_deref().unwrap_or("");
+            let edit_url = format!("/accounts/users/{}/edit", user_uuid);
+            if let Err(err) =
+                crate::auth::enforce_totp_step_up(&state, &mut conn, &auth_user.uuid, totp_code)
+                    .await
+            {
+                tracing::info!(
+                    operator = %auth_user.uuid,
+                    target = %user_uuid,
+                    error = ?err,
+                    "update_user_web: step-up MFA rejected, refusing password rotation"
+                );
+                return flash_redirect(flash.error(err.flash_message()), &edit_url);
+            }
+
             let h = if let Some(ref client) = state.auth_ipc_client {
                 client.hash_password(password).await
             } else {
@@ -922,8 +1000,16 @@ pub async fn update_user_web(
             } else if !old_is_active && is_active {
                 reactivate_user(&state, user_id).await;
             }
+            // UX-22: emit a transactional confirmation that explicitly mentions
+            // the password when it was rotated, so administrators get an
+            // unambiguous signal that the credential change took effect.
+            let success_msg = if password_hash.is_some() {
+                "User and password updated successfully"
+            } else {
+                "User updated successfully"
+            };
             flash_redirect(
-                flash.success("User updated successfully"),
+                flash.success(success_msg),
                 &format!("/accounts/users/{}", user_uuid),
             )
         }
@@ -932,6 +1018,19 @@ pub async fn update_user_web(
             &format!("/accounts/users/{}/edit", user_uuid),
         ),
     }
+}
+
+/// Form payload for deleting a user.
+///
+/// Like password rotation, deletion is a sensitive operation gated by a
+/// fresh step-up TOTP proof from the operator (issue #11). The same
+/// single-use replay protection applies (`users.last_totp_used_window`).
+#[derive(Debug, serde::Deserialize)]
+pub struct DeleteUserForm {
+    pub csrf_token: String,
+    /// Step-up MFA proof, required. The operator MUST have an enrolled
+    /// TOTP factor; there is no fallback.
+    pub totp_code: Option<String>,
 }
 
 /// Delete user handler (POST /accounts/users/{uuid}/delete).
@@ -943,7 +1042,7 @@ pub async fn delete_user_web(
     incoming_flash: IncomingFlash,
     jar: CookieJar,
     axum::extract::Path(user_uuid): axum::extract::Path<String>,
-    Form(form): Form<DeleteAssetForm>,
+    Form(form): Form<DeleteUserForm>,
 ) -> Response {
     use crate::schema::users;
     use chrono::Utc;
@@ -1033,6 +1132,25 @@ pub async fn delete_user_web(
                 &format!("/accounts/users/{}", user_uuid),
             );
         }
+    }
+
+    // Step-up MFA: deletion is irreversible (modulo the soft-delete fence
+    // below) and therefore gated on a fresh TOTP proof from the OPERATOR,
+    // not the target. Same contract as password rotation in
+    // `update_user_web`. The proof is single-use across concurrent
+    // requests within its 30-second window.
+    let totp_code = form.totp_code.as_deref().unwrap_or("");
+    let detail_url = format!("/accounts/users/{}", user_uuid);
+    if let Err(err) =
+        crate::auth::enforce_totp_step_up(&state, &mut conn, &auth_user.uuid, totp_code).await
+    {
+        tracing::info!(
+            operator = %auth_user.uuid,
+            target = %user_uuid,
+            error = ?err,
+            "delete_user_web: step-up MFA rejected, refusing deletion"
+        );
+        return flash_redirect(flash.error(err.flash_message()), &detail_url);
     }
 
     // Soft-delete: mark as deleted and retire username/email so the UNIQUE
@@ -1943,11 +2061,7 @@ pub async fn admin_user_sessions(
         .inner_join(users::table.on(users::id.eq(auth_sessions::user_id)))
         .filter(auth_sessions::expires_at.gt(chrono::Utc::now()))
         .order(auth_sessions::created_at.desc())
-        .select((
-            AuthSession::as_select(),
-            users::username,
-            users::uuid,
-        ))
+        .select((AuthSession::as_select(), users::username, users::uuid))
         .load(&mut conn)
         .await
         .unwrap_or_default();
@@ -2045,27 +2159,23 @@ pub async fn deactivate_user(state: &AppState, user_id: i32, user_uuid: &str) {
                 now.format("%m"),
                 session_uuid_str,
             );
-            let _ = diesel::update(
-                proxy_sessions::table.filter(proxy_sessions::id.eq(session.id)),
-            )
-            .set((
-                proxy_sessions::status.eq("terminated"),
-                proxy_sessions::disconnected_at.eq(now),
-                proxy_sessions::is_recorded.eq(true),
-                proxy_sessions::recording_path.eq(&recording_path),
-            ))
-            .execute(&mut conn)
-            .await;
+            let _ = diesel::update(proxy_sessions::table.filter(proxy_sessions::id.eq(session.id)))
+                .set((
+                    proxy_sessions::status.eq("terminated"),
+                    proxy_sessions::disconnected_at.eq(now),
+                    proxy_sessions::is_recorded.eq(true),
+                    proxy_sessions::recording_path.eq(&recording_path),
+                ))
+                .execute(&mut conn)
+                .await;
         } else {
-            let _ = diesel::update(
-                proxy_sessions::table.filter(proxy_sessions::id.eq(session.id)),
-            )
-            .set((
-                proxy_sessions::status.eq("terminated"),
-                proxy_sessions::disconnected_at.eq(now),
-            ))
-            .execute(&mut conn)
-            .await;
+            let _ = diesel::update(proxy_sessions::table.filter(proxy_sessions::id.eq(session.id)))
+                .set((
+                    proxy_sessions::status.eq("terminated"),
+                    proxy_sessions::disconnected_at.eq(now),
+                ))
+                .execute(&mut conn)
+                .await;
         }
 
         match session.session_type {
@@ -2110,7 +2220,11 @@ pub async fn deactivate_user(state: &AppState, user_id: i32, user_uuid: &str) {
     broadcast_sessions_update(state, user_uuid, user_id).await;
     broadcast_admin_sessions_update(state).await;
 
-    tracing::info!(user_id = user_id, user_uuid = user_uuid, "User account deactivated: revoked all sessions and disabled API keys");
+    tracing::info!(
+        user_id = user_id,
+        user_uuid = user_uuid,
+        "User account deactivated: revoked all sessions and disabled API keys"
+    );
 }
 
 /// Reactivate a user account (SEC-07).
@@ -2131,7 +2245,10 @@ pub async fn reactivate_user(state: &AppState, user_id: i32) {
     .execute(&mut conn)
     .await;
 
-    tracing::info!(user_id = user_id, "User account reactivated: re-enabled API keys");
+    tracing::info!(
+        user_id = user_id,
+        "User account reactivated: re-enabled API keys"
+    );
 }
 
 /// Admin: revoke any user's auth session and force-logout their browser.
@@ -2231,21 +2348,13 @@ pub(crate) async fn broadcast_admin_sessions_update(state: &AppState) {
                 .inner_join(users::table.on(users::id.eq(auth_sessions::user_id)))
                 .filter(auth_sessions::expires_at.gt(chrono::Utc::now()))
                 .order(auth_sessions::created_at.desc())
-                .select((
-                    AuthSession::as_select(),
-                    users::username,
-                    users::uuid,
-                ))
+                .select((AuthSession::as_select(), users::username, users::uuid))
                 .load(&mut conn)
                 .await
                 .unwrap_or_default();
 
             let admin_uuids: Vec<String> = users::table
-                .filter(
-                    users::is_staff
-                        .eq(true)
-                        .or(users::is_superuser.eq(true)),
-                )
+                .filter(users::is_staff.eq(true).or(users::is_superuser.eq(true)))
                 .filter(users::is_deleted.eq(false))
                 .select(users::uuid)
                 .load::<uuid::Uuid>(&mut conn)
@@ -2325,9 +2434,15 @@ fn build_admin_sessions_html(
         };
 
         let (icon_bg, icon_color) = if is_current {
-            ("bg-green-100 dark:bg-green-900", "text-green-600 dark:text-green-400")
+            (
+                "bg-green-100 dark:bg-green-900",
+                "text-green-600 dark:text-green-400",
+            )
         } else {
-            ("bg-gray-100 dark:bg-gray-700", "text-gray-600 dark:text-gray-400")
+            (
+                "bg-gray-100 dark:bg-gray-700",
+                "text-gray-600 dark:text-gray-400",
+            )
         };
 
         let current_badge = if is_current {
@@ -2337,7 +2452,8 @@ fn build_admin_sessions_html(
         };
 
         let action_html = if is_current {
-            r#"<span class="text-xs text-gray-400 dark:text-gray-500">This session</span>"#.to_string()
+            r#"<span class="text-xs text-gray-400 dark:text-gray-500">This session</span>"#
+                .to_string()
         } else {
             format!(
                 r#"<form hx-post="/admin/sessions/{uuid}/revoke" hx-confirm="Are you sure you want to revoke this session for {username}? They will be logged out immediately." hx-target="closest li" hx-swap="outerHTML" x-data="csrf">

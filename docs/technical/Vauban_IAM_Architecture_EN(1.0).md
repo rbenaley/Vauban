@@ -23,6 +23,7 @@
 13. [Testing Strategy](#13-testing-strategy)
 14. [Architecture Decisions](#14-architecture-decisions)
 15. [Just-In-Time (JIT) Access Approval](#15-just-in-time-jit-access-approval)
+16. Appendices: [A — Login Flow](#appendix-a-complete-login-flow), [B — SSH Authorization Flow](#appendix-b-complete-ssh-connection-authorization-flow), [C — Workspace Structure](#appendix-c-workspace-structure-iam-related), [D — Step-Up MFA Flow](#appendix-d-step-up-mfa-flow-password-rotation)
 
 ---
 
@@ -54,6 +55,7 @@ The migration was driven by three goals:
 | 0.3.0 | Dedicated `vauban-auth` and `vauban-rbac` services | Privsep for auth + Casbin RBAC |
 | 0.4.0 | Rename `vauban-rbac` to `vauban-access`, add instance-level rules, DB isolation | Full IAM architecture |
 | 0.6.0 | Just-In-Time access approval, session duration enforcement | JIT workflow with `expires_at` |
+| 0.7.0 | Mandatory TOTP step-up on sensitive operations (issue #11) | Password rotation and user deletion gated by single-use operator TOTP, vault-aware dispatch |
 
 ### 1.4 Related Documents
 
@@ -232,6 +234,76 @@ The service follows the standard Vauban synchronous service pattern:
 | `shared` | IPC channel, messages, Capsicum wrappers |
 
 `vauban-auth` has **no database dependency** and **no async runtime**. It is purely synchronous and stateless.
+
+### 3.8 Step-Up Authentication for Sensitive Operations
+
+Since 0.7.0 (issue #11), a small set of high-impact operations require a **fresh proof of the operator's strongest enrolled second factor** in addition to a valid session — i.e. the "step-up" pattern (NIST SP 800-63B AAL2/3, RFC 9470 OAuth Step-Up).
+
+#### 3.8.1 Gated operations
+
+| Operation | Handler | Why it is gated |
+|-----------|---------|-----------------|
+| Rotate any user's password (incl. self) | `update_user_web` (POST `/accounts/users/{uuid}`) when the `password` field is non-empty | A stolen session cookie should not be enough to seize a target account. |
+| Delete a user (soft-delete) | `delete_user_web` (POST `/accounts/users/{uuid}/delete`) | Account destruction is irreversible from the operator UI. |
+
+Operations that only mutate non-credential metadata (e.g. toggling `is_active`, editing email) keep going through the regular RBAC path without step-up.
+
+#### 3.8.2 Policy choices
+
+- **TOTP-only** for now. Passkeys / ITSME / eID hooks land in a future release and will negotiate inside the same helper.
+- **No password fallback.** Operators without an enrolled TOTP factor (`mfa_enabled = false` or `mfa_secret IS NULL/''`) are refused outright with an actionable redirect to `/accounts/mfa/setup`. This avoids a downgrade attack where the attacker disables MFA first to revert to password re-auth.
+- **Single-use** within the 30-second TOTP window. The operator's last successfully consumed window is persisted on `users.last_totp_used_window` (BIGINT NULL) and any code matching that window OR an earlier one is refused with `CodeReplayed`. This implements RFC 6238 §5.2 against same-window replay.
+- **Operator, not target.** The TOTP code is verified against the *currently logged-in operator's* secret, never the target user's — so an attacker who learned a target's TOTP cannot use it to rotate that target's password through any hijacked admin session.
+
+#### 3.8.3 Service helper
+
+The logic lives in `vauban-web/src/auth/step_up.rs` as a single reusable function used by every gated handler:
+
+```rust
+pub async fn enforce_totp_step_up(
+    state: &AppState,
+    conn: &mut Conn,
+    operator_uuid_str: &str,
+    totp_code: &str,
+) -> Result<(), StepUpError>;
+```
+
+`StepUpError` is a closed enum mapped to a stable user-facing flash message:
+
+| Variant | Meaning | Flash copy |
+|---------|---------|-----------|
+| `OperatorIdentityMalformed` / `OperatorNotFound` | Stale or tampered session | "Could not verify your identity. Please log out and log back in." |
+| `MfaNotEnrolled` | Operator has no usable TOTP factor | "MFA enrollment required to perform this action. Enable MFA on your profile first." |
+| `CodeMissing` | Empty `totp_code` field | "Please enter your authenticator code to confirm this action." |
+| `CodeInvalid` | Code did not match the current window | "Authenticator code is incorrect." |
+| `CodeReplayed` | Code matched but its window was already consumed | "Authenticator code has already been used. Please wait for the next code from your authenticator app." |
+| `VaultUnavailable` / `VaultError` | Encrypted secret + missing/erroring `vault_client` | "MFA backend is temporarily unavailable. Please try again in a moment, or contact an administrator if the problem persists." |
+| `DatabaseError` | DB read or update failed | "Database error while verifying your identity. Please try again." |
+
+#### 3.8.4 Vault-aware dispatch
+
+`mfa_secret` may be stored in two shapes:
+
+| Shape | Origin | Verifier |
+|-------|--------|----------|
+| `<base32>` (plaintext) | Pre-vault enrolment, dev/test setups | `AuthService::verify_totp` (local) |
+| `v{digits}:<base64>` (vault envelope) | Production enrolment via `vauban-vault` | `VaultCryptoClient::mfa_verify` (IPC to vauban-vault) |
+
+The classifier `services::auth::is_encrypted_mfa_secret` is the **single source of truth** for that distinction; both the login-time MFA flow (`handlers::auth`) and the step-up flow (`auth::step_up`) delegate to it to prevent drift.
+
+Crucially, an encrypted secret submitted to a process where `state.vault_client = None` returns `StepUpError::VaultUnavailable` rather than silently falling back to `verify_totp` on the ciphertext (which would always reject the code and trap the operator forever). This was the root cause of the issue #11 production bug and is now guarded by source- and integration-level tests.
+
+#### 3.8.5 Caller contract
+
+```rust
+let mut conn = pool.get().await?;
+match enforce_totp_step_up(&state, &mut conn, auth_user.uuid(), &form.totp_code).await {
+    Ok(()) => { /* perform the side-effecting operation */ }
+    Err(e) => return Ok(flash_redirect(flash.error(e.flash_message()), back_url)),
+}
+```
+
+On `Ok(())` the operator's `last_totp_used_window` has already been advanced; the same code cannot be re-used by anyone, anywhere, until the next 30-second window opens.
 
 ---
 
@@ -640,7 +712,19 @@ User groups support both local and external sources:
 | `last_synced` | Timestamp of the last directory sync |
 | `parent_id` | Hierarchical group nesting (future) |
 
-### 7.4 access_rules Indexes
+### 7.4 users.last_totp_used_window (Step-Up Replay Protection)
+
+The `users` table is owned by `vauban-web` (not by `vauban-access`) and gained one additional column in 0.7.0 to back the step-up flow described in §3.8:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `last_totp_used_window` | `BIGINT NULL` | Last TOTP time-step (`unix_seconds / TOTP_STEP`) consumed by this user via the step-up flow. NULL means "never consumed". A code whose window is `<= last_totp_used_window` is rejected as `CodeReplayed` (RFC 6238 §5.2). |
+
+Migration: `vauban-db/migrations/20260418000000_users_last_totp_used_window`.
+
+The column is written exclusively by `auth::step_up::enforce_totp_step_up`; the value is opaque to the rest of the codebase and never surfaced through the API (`#[serde(skip_serializing)]` on the model).
+
+### 7.5 access_rules Indexes
 
 ```sql
 CREATE INDEX idx_access_rules_uuid ON access_rules(uuid);
@@ -1254,6 +1338,10 @@ unsafe {
 | Database injection | All queries use Diesel ORM with parameterized queries |
 | Privilege escalation | Services run as separate UIDs (903, 904); Capsicum prevents new resource acquisition |
 | IPC spoofing | Unix pipes are process-local; no network exposure |
+| Stolen session used to rotate a password or delete a user | Step-up TOTP enforced server-side via `auth::step_up::enforce_totp_step_up` (operator's own factor, single-use within the 30-second window — see §3.8) |
+| TOTP code intercepted and replayed within its 30-second window | `users.last_totp_used_window` persists the last consumed step; replay returns `StepUpError::CodeReplayed` (§3.8.2) |
+| MFA-disable downgrade attack | Step-up refuses operators whose `mfa_enabled = false` outright; no password fallback path exists |
+| MFA secret ciphertext fed to local verifier when vault is offline | Encrypted secret + missing `vault_client` returns explicit `VaultUnavailable` (§3.8.4) instead of silently failing as "Invalid code" |
 
 ### 12.2 Defense in Depth
 
@@ -1339,6 +1427,7 @@ Tests in `vauban-web/tests/`:
 | `web/access_control_web_test.rs` | Web UI access control enforcement |
 | `ipc/access_ipc_test.rs` | IPC client communication with vauban-access |
 | `security/security_test.rs` | RBAC guard enforcement across all endpoints |
+| `web/user_edit_test.rs` | UX-22 transactional flash + full step-up MFA matrix on password rotation and user deletion (happy paths, missing/empty/wrong/replayed code, no-MFA, target≠operator, encrypted-secret + vault unavailable — issue #11) |
 
 ---
 
@@ -1676,13 +1765,75 @@ sequenceDiagram
 │   │       ├── access_rule_create.rs
 │   │       ├── access_rule_detail.rs
 │   │       └── access_rule_edit.rs
+│   ├── src/auth/
+│   │   ├── mod.rs                  # Re-exports StepUpError + enforce_totp_step_up
+│   │   └── step_up.rs              # Reusable TOTP step-up helper (issue #11, §3.8)
+│   ├── tests/web/user_edit_test.rs # UX-22 + step-up MFA matrix (issue #11)
 │   └── migrations/
 │       ├── 20260311000000_access_rules/
 │       │   └── up.sql              # CREATE TABLE access_rules
 │       └── 20260312000000_drop_asset_group_fk/
 │           └── up.sql              # DROP FK for DB separation
+├── vauban-db/migrations/
+│   └── 20260418000000_users_last_totp_used_window/
+│       └── up.sql                  # ADD COLUMN users.last_totp_used_window (step-up replay protection)
 └── vauban-supervisor/src/
     └── config.rs                   # AuthConfig, AccessConfig
 ```
+
+---
+
+## Appendix D: Step-Up MFA Flow (Password Rotation)
+
+```mermaid
+sequenceDiagram
+    participant U as Operator Browser
+    participant W as vauban-web
+    participant SU as auth::step_up::enforce_totp_step_up
+    participant V as vauban-vault
+    participant DB as PostgreSQL (web)
+
+    U->>W: POST /accounts/users/{target}<br/>(form: password=..., totp_code=NNNNNN)
+    W->>SU: enforce_totp_step_up(operator_uuid, totp_code)
+
+    SU->>DB: SELECT id, mfa_enabled, mfa_secret,<br/>last_totp_used_window FROM users<br/>WHERE uuid=operator AND NOT is_deleted
+    DB-->>SU: row
+
+    alt mfa_enabled=false OR mfa_secret IS NULL/''
+        SU-->>W: Err(MfaNotEnrolled)
+        W-->>U: 303 → /accounts/users/{target}/edit<br/>flash: "MFA enrollment required..."
+    end
+
+    alt secret matches "v{digits}:..." (vault envelope)
+        alt state.vault_client is None
+            SU-->>W: Err(VaultUnavailable)
+            W-->>U: 303 + flash "MFA backend is temporarily unavailable..."
+        else vault present
+            SU->>V: VaultMfaVerify(encrypted_secret, totp_code)
+            V-->>SU: valid: bool
+        end
+    else plaintext base32 secret
+        Note over SU: AuthService::verify_totp(secret, code)
+    end
+
+    alt code invalid
+        SU-->>W: Err(CodeInvalid)
+        W-->>U: 303 + flash "Authenticator code is incorrect."
+    end
+
+    Note over SU: window = unix_seconds / TOTP_STEP
+    alt window <= last_totp_used_window
+        SU-->>W: Err(CodeReplayed)
+        W-->>U: 303 + flash "Authenticator code has already been used..."
+    end
+
+    SU->>DB: UPDATE users SET last_totp_used_window=window<br/>WHERE id=operator_id
+    SU-->>W: Ok(())
+
+    W->>W: Hash new password (vauban-auth)<br/>UPDATE users.password_hash
+    W-->>U: 303 → /accounts/users/{target}<br/>flash: "User and password updated successfully"
+```
+
+The same helper guards `delete_user_web`; only the redirect target and the gated side-effect (soft-delete vs. password update) change.
 
 ---
