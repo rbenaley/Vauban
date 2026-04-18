@@ -978,10 +978,12 @@ pub async fn asset_edit(
         asset,
     };
 
-    // Clear flash cookie after reading and return HTML
-    use crate::middleware::flash::ClearFlashCookie;
+    // Flash cookie cleanup is handled centrally by `flash_middleware`
+    // (see `vauban-web/src/middleware/flash.rs`): any request that
+    // arrived with a `__vauban_flash` cookie exits with a clearing
+    // Set-Cookie unless the handler itself just installed a fresh one.
     match template.render() {
-        Ok(html) => (ClearFlashCookie, Html(html)).into_response(),
+        Ok(html) => Html(html).into_response(),
         Err(_) => flash_redirect(flash.error("Failed to render page"), "/assets"),
     }
 }

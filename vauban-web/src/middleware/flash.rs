@@ -276,6 +276,14 @@ where
 }
 
 /// Response type that clears the flash cookie.
+///
+/// **Usually unnecessary**: `flash_middleware` already clears the
+/// cookie on every GET that arrived with one, so handlers do not have
+/// to remember this. Kept as a public API for the rare case where a
+/// handler wants to force the cleanup unconditionally (e.g. during
+/// logout, before the auth middleware drops the session). The
+/// middleware detects an existing `Set-Cookie` and skips its own
+/// cleanup, so combining the two is safe and produces a single header.
 pub struct ClearFlashCookie;
 
 impl IntoResponseParts for ClearFlashCookie {
@@ -304,14 +312,88 @@ impl IntoResponseParts for ClearFlashCookie {
 #[derive(Clone)]
 pub struct FlashSecretKey(pub Vec<u8>);
 
-/// Flash middleware that injects the secret key into request extensions.
+/// Flash middleware.
+///
+/// Two responsibilities:
+///
+/// 1. Inject the signing secret into request extensions so the
+///    `IncomingFlash` extractor can verify the cookie.
+/// 2. Enforce the **flash-once semantics**: if the incoming request
+///    carried a `__vauban_flash` cookie, the response MUST clear it,
+///    otherwise the browser keeps re-sending it for `max_age` seconds
+///    and the banner is re-rendered on every subsequent page load --
+///    including after logout, since the cookie outlives the session.
+///
+/// The clearing `Set-Cookie` is only appended when the handler did not
+/// itself set a fresh `__vauban_flash` cookie. This preserves the
+/// POST-Redirect-GET pattern: a POST handler calling `flash_redirect`
+/// installs a brand-new flash cookie and we leave it alone so the
+/// destination GET can render it once -- and that next request, in
+/// turn, will purge it.
+///
+/// Handlers that explicitly emit `ClearFlashCookie` continue to work:
+/// the middleware sees their `Set-Cookie: __vauban_flash=; Max-Age=0`
+/// and skips its own cleanup, so no duplicate header is produced.
 pub async fn flash_middleware(
     axum::extract::State(secret_key): axum::extract::State<FlashSecretKey>,
     mut request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
+    let had_flash_cookie = request_has_flash_cookie(&request);
     request.extensions_mut().insert(secret_key);
-    next.run(request).await
+
+    let mut response = next.run(request).await;
+
+    if had_flash_cookie && !response_sets_flash_cookie(&response) {
+        // Build the clearing cookie ourselves: same attributes as the
+        // ones produced by `flash_redirect` so the browser actually
+        // matches and overwrites the existing entry.
+        let cookie = Cookie::build((FLASH_COOKIE_NAME, ""))
+            .path("/")
+            .http_only(true)
+            .secure(true)
+            .same_site(SameSite::Lax)
+            .max_age(Duration::ZERO)
+            .build();
+        if let Ok(header_value) = cookie.to_string().parse() {
+            response
+                .headers_mut()
+                .append(axum::http::header::SET_COOKIE, header_value);
+        }
+    }
+
+    response
+}
+
+/// Whether the incoming request carries a `__vauban_flash` cookie.
+fn request_has_flash_cookie(request: &axum::extract::Request) -> bool {
+    request
+        .headers()
+        .get_all(axum::http::header::COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|s| s.split(';'))
+        .map(|s| s.trim())
+        .any(|c| {
+            c.split_once('=')
+                .is_some_and(|(name, _)| name.trim() == FLASH_COOKIE_NAME)
+        })
+}
+
+/// Whether the outgoing response already has a `Set-Cookie` for the
+/// flash cookie (either a fresh one from `flash_redirect` or a clearing
+/// one from `ClearFlashCookie`).
+fn response_sets_flash_cookie(response: &Response) -> bool {
+    response
+        .headers()
+        .get_all(axum::http::header::SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .any(|sc| {
+            // Set-Cookie format: `name=value; attr=...; ...`
+            sc.split_once('=')
+                .is_some_and(|(name, _)| name.trim() == FLASH_COOKIE_NAME)
+        })
 }
 
 /// Helper to create a flash and redirect response.
@@ -463,5 +545,158 @@ mod tests {
         let encoded = base64_encode(original);
         let decoded = base64_decode(&encoded);
         assert_eq!(decoded, Some(original.to_string()));
+    }
+
+    // -------------------------------------------------------------------
+    // Flash-once middleware semantics
+    //
+    // Regression coverage for the bug where the flash banner kept being
+    // re-rendered on every page (and after logout) for the cookie's full
+    // 30-second TTL because nothing ever cleared it.
+    // -------------------------------------------------------------------
+
+    use axum::{
+        Router,
+        body::Body,
+        http::{Request, StatusCode, header::SET_COOKIE},
+        middleware::from_fn_with_state,
+        routing::get,
+    };
+    use tower::ServiceExt; // for `oneshot`
+
+    fn make_app() -> Router {
+        let key = FlashSecretKey(b"test-secret-key".to_vec());
+
+        async fn echo() -> &'static str {
+            "ok"
+        }
+
+        async fn with_flash() -> Response {
+            let flash = Flash::new(b"test-secret-key").success("Saved!");
+            (flash, axum::response::Redirect::to("/echo")).into_response()
+        }
+
+        async fn manual_clear() -> Response {
+            (ClearFlashCookie, "ok").into_response()
+        }
+
+        Router::new()
+            .route("/echo", get(echo))
+            .route("/set", get(with_flash))
+            .route("/manual-clear", get(manual_clear))
+            .layer(from_fn_with_state(key, flash_middleware))
+    }
+
+    fn flash_set_cookies(headers: &axum::http::HeaderMap) -> Vec<String> {
+        headers
+            .get_all(SET_COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .filter(|sc| sc.starts_with(FLASH_COOKIE_NAME))
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    /// A request with no flash cookie MUST NOT trigger any cleanup
+    /// header: the middleware has nothing to clear and we don't want
+    /// stray `Set-Cookie` noise on every single page load.
+    #[tokio::test]
+    async fn middleware_does_not_clear_when_no_incoming_cookie() {
+        let app = make_app();
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/echo")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(flash_set_cookies(res.headers()).is_empty());
+    }
+
+    /// The core fix: a GET that arrives with a flash cookie MUST exit
+    /// with a `Set-Cookie: __vauban_flash=; Max-Age=0` so the browser
+    /// drops it on the very next request -- guaranteeing the banner is
+    /// rendered exactly once.
+    #[tokio::test]
+    async fn middleware_clears_incoming_flash_cookie_after_one_request() {
+        let app = make_app();
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/echo")
+                    .header(
+                        axum::http::header::COOKIE,
+                        format!("{}=anything.signature", FLASH_COOKIE_NAME),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let cookies = flash_set_cookies(res.headers());
+        assert_eq!(cookies.len(), 1, "expected exactly one clearing cookie");
+        assert!(
+            cookies[0].contains("Max-Age=0"),
+            "clearing cookie must use Max-Age=0, got: {}",
+            cookies[0]
+        );
+    }
+
+    /// PRG safeguard: when a POST handler installs a fresh flash via
+    /// `flash_redirect`, the middleware MUST NOT also append a clearing
+    /// header -- otherwise the destination GET would never see the
+    /// message. Only one Set-Cookie for the flash, and it must be the
+    /// fresh signed payload, not the empty clearing one.
+    #[tokio::test]
+    async fn middleware_does_not_clobber_freshly_set_flash_cookie() {
+        let app = make_app();
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/set")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let cookies = flash_set_cookies(res.headers());
+        assert_eq!(cookies.len(), 1, "exactly one __vauban_flash cookie expected");
+        assert!(
+            !cookies[0].contains("Max-Age=0"),
+            "the fresh flash must not be replaced by a clearing cookie: {}",
+            cookies[0]
+        );
+    }
+
+    /// Backwards compatibility with the handful of handlers that still
+    /// emit `ClearFlashCookie` explicitly: the middleware must detect
+    /// the existing Set-Cookie and skip its own cleanup, otherwise the
+    /// browser would receive two duplicate headers (harmless but ugly).
+    #[tokio::test]
+    async fn middleware_skips_when_handler_already_cleared() {
+        let app = make_app();
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/manual-clear")
+                    .header(
+                        axum::http::header::COOKIE,
+                        format!("{}=anything.signature", FLASH_COOKIE_NAME),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let cookies = flash_set_cookies(res.headers());
+        assert_eq!(
+            cookies.len(),
+            1,
+            "ClearFlashCookie + middleware must not emit duplicate headers"
+        );
     }
 }

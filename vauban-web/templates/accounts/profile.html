@@ -219,14 +219,183 @@
                     </div>
                     {% endif %}
 
+                    {# Self-service password rotation, gated on the local-account     #}
+                    {# branch (federated identities are owned by the upstream IdP)    #}
+                    {# AND on the operator's own MFA enrolment. The flow stays on     #}
+                    {# /accounts/profile via an inline Alpine.js modal -- the same    #}
+                    {# pattern as the JIT request / connection justification modals   #}
+                    {# (cf. templates/sessions/access_request_modal.html). The TOTP   #}
+                    {# proof is single-use within its 30-second window (RFC 6238 §5.2)#}
+                    {# and verified server-side by `crate::auth::enforce_totp_step_up`#}
                     <div class="border-t border-gray-200 dark:border-gray-700 pt-4">
                         {% if profile.auth_source == "local" %}
-                        <a href="/accounts/password/change" class="flex items-center text-sm font-medium text-vauban-600 hover:text-vauban-500 dark:text-vauban-400">
-                            <svg class="mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
-                            </svg>
-                            Change Password
-                        </a>
+                            {% if profile.mfa_enabled %}
+                            <div x-data="{ open: false, newPwd: '', confirmPwd: '', code: '' }">
+                                <button type="button"
+                                        @click="open = true; newPwd = ''; confirmPwd = ''; code = ''"
+                                        data-testid="change-password-trigger"
+                                        class="flex items-center text-sm font-medium text-vauban-600 hover:text-vauban-500 dark:text-vauban-400">
+                                    <svg class="mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
+                                    </svg>
+                                    Change Password
+                                </button>
+
+                                <div x-show="open" x-cloak
+                                     x-transition:enter="transition ease-out duration-200"
+                                     x-transition:enter-start="opacity-0"
+                                     x-transition:enter-end="opacity-100"
+                                     x-transition:leave="transition ease-in duration-150"
+                                     x-transition:leave-start="opacity-100"
+                                     x-transition:leave-end="opacity-0"
+                                     class="fixed inset-0 z-50 overflow-y-auto"
+                                     @keydown.escape.window="open = false">
+                                    <div class="flex min-h-full items-end justify-center p-4 text-center sm:items-center sm:p-0">
+                                        <div class="fixed inset-0 bg-gray-500/75 dark:bg-gray-900/75 transition-opacity" @click="open = false"></div>
+
+                                        <div x-show="open"
+                                             x-transition:enter="transition ease-out duration-200"
+                                             x-transition:enter-start="opacity-0 translate-y-4 sm:translate-y-0 sm:scale-95"
+                                             x-transition:enter-end="opacity-100 translate-y-0 sm:scale-100"
+                                             x-transition:leave="transition ease-in duration-150"
+                                             x-transition:leave-start="opacity-100 translate-y-0 sm:scale-100"
+                                             x-transition:leave-end="opacity-0 translate-y-4 sm:translate-y-0 sm:scale-95"
+                                             class="relative transform overflow-hidden rounded-lg bg-white dark:bg-gray-800 px-4 pb-4 pt-5 text-left shadow-xl transition-all sm:my-8 sm:w-full sm:max-w-lg sm:p-6">
+
+                                            <div class="absolute right-0 top-0 pr-4 pt-4">
+                                                <button type="button" @click="open = false"
+                                                        class="rounded-md bg-white dark:bg-gray-800 text-gray-400 hover:text-gray-500 dark:hover:text-gray-300">
+                                                    <span class="sr-only">Close</span>
+                                                    <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+                                                    </svg>
+                                                </button>
+                                            </div>
+
+                                            <div class="sm:flex sm:items-start">
+                                                <div class="mx-auto flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-full bg-vauban-100 dark:bg-vauban-900/50 sm:mx-0 sm:h-10 sm:w-10">
+                                                    <svg class="h-6 w-6 text-vauban-600 dark:text-vauban-400" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z"/>
+                                                    </svg>
+                                                </div>
+                                                <div class="mt-3 text-center sm:ml-4 sm:mt-0 sm:text-left flex-1">
+                                                    <h3 class="text-base font-semibold leading-6 text-gray-900 dark:text-white">
+                                                        Change Password
+                                                    </h3>
+                                                    <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                                                        Set a new password for <code>{{ profile.username }}</code>. Your current
+                                                        password is not required &mdash; instead, confirm with a code from
+                                                        <strong>your own</strong> authenticator app. The code is single-use.
+                                                    </p>
+
+                                                    <form method="post" action="/accounts/profile/password"
+                                                          x-data="csrf" class="mt-4 space-y-4">
+                                                        <input type="hidden" name="csrf_token" x-model="token" />
+
+                                                        {# Password-manager hint: iCloud Keychain (and most managers) only #}
+                                                        {# offer "Update saved password" when the form pairs a `username` #}
+                                                        {# field with `new-password` fields. WebKit deliberately ignores  #}
+                                                        {# `type="hidden"` and `display:none` for credential heuristics,  #}
+                                                        {# hence the visually-hidden but DOM-present text input below.    #}
+                                                        {# No `name` attribute => not submitted, so the handler keeps     #}
+                                                        {# trusting `auth_user.uuid` from the JWT, never the form body.   #}
+                                                        <input type="text"
+                                                               autocomplete="username"
+                                                               value="{{ profile.username }}"
+                                                               readonly
+                                                               tabindex="-1"
+                                                               aria-hidden="true"
+                                                               class="sr-only" />
+
+                                                        <div>
+                                                            <label for="cp_new_password" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                                                                New password <span class="text-red-500">*</span>
+                                                            </label>
+                                                            <input type="password" name="new_password" id="cp_new_password"
+                                                                   x-model="newPwd"
+                                                                   autocomplete="new-password"
+                                                                   minlength="{{ password_min_length }}"
+                                                                   required
+                                                                   class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
+                                                            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                                                                Minimum {{ password_min_length }} characters.
+                                                            </p>
+                                                        </div>
+
+                                                        <div>
+                                                            <label for="cp_confirm_password" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                                                                Confirm new password <span class="text-red-500">*</span>
+                                                            </label>
+                                                            <input type="password" name="confirm_password" id="cp_confirm_password"
+                                                                   x-model="confirmPwd"
+                                                                   autocomplete="new-password"
+                                                                   minlength="{{ password_min_length }}"
+                                                                   required
+                                                                   class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
+                                                            <template x-if="confirmPwd.length > 0 && newPwd !== confirmPwd">
+                                                                <p class="mt-1 text-xs text-red-600 dark:text-red-400">Passwords do not match.</p>
+                                                            </template>
+                                                        </div>
+
+                                                        <div>
+                                                            <label for="cp_totp_code" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                                                                Authenticator code <span class="text-red-500">*</span>
+                                                            </label>
+                                                            <input type="text" name="totp_code" id="cp_totp_code"
+                                                                   inputmode="numeric" autocomplete="one-time-code"
+                                                                   pattern="[0-9]{6}" maxlength="6" minlength="6"
+                                                                   x-model="code" required
+                                                                   class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm tracking-widest text-center font-mono">
+                                                            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                                                                6-digit code from your authenticator app. Single-use.
+                                                            </p>
+                                                        </div>
+
+                                                        <div class="mt-5 sm:mt-4 sm:flex sm:flex-row-reverse gap-3">
+                                                            <button type="submit"
+                                                                    :disabled="newPwd.length < {{ password_min_length }} || newPwd !== confirmPwd || code.length !== 6"
+                                                                    class="inline-flex w-full justify-center rounded-md bg-vauban-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-600 disabled:opacity-50 disabled:cursor-not-allowed sm:w-auto">
+                                                                Update password
+                                                            </button>
+                                                            <button type="button" @click="open = false"
+                                                                    class="mt-3 inline-flex w-full justify-center rounded-md bg-white dark:bg-gray-700 px-3 py-2 text-sm font-semibold text-gray-900 dark:text-white shadow-sm ring-1 ring-inset ring-gray-300 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600 sm:mt-0 sm:w-auto">
+                                                                Cancel
+                                                            </button>
+                                                        </div>
+                                                    </form>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            {% else %}
+                            {# MFA-not-enrolled: identical UX to the Edit User    #}
+                            {# banner so users get a single, recognisable message #}
+                            {# pointing them at /accounts/mfa to enable it.       #}
+                            <div class="rounded-md border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-3"
+                                 data-testid="change-password-mfa-required">
+                                <div class="flex items-start">
+                                    <div class="flex-shrink-0">
+                                        <svg class="h-5 w-5 text-amber-500 dark:text-amber-400" viewBox="0 0 20 20" fill="currentColor">
+                                            <path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd"/>
+                                        </svg>
+                                    </div>
+                                    <div class="ml-3 flex-1">
+                                        <p class="text-sm font-semibold text-amber-900 dark:text-amber-100">MFA enrollment required to change your password</p>
+                                        <p class="mt-1 text-sm text-amber-800 dark:text-amber-200">
+                                            For security, password changes require you to confirm with a code from your authenticator app.
+                                        </p>
+                                        <p class="mt-2">
+                                            <a href="/accounts/mfa" class="inline-flex items-center text-sm font-semibold text-amber-900 dark:text-amber-100 hover:underline">
+                                                Enable MFA on your profile
+                                                <svg class="ml-1 h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd"/></svg>
+                                            </a>
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+                            {% endif %}
                         {% else %}
                         <p class="text-sm text-gray-500 dark:text-gray-400">
                             Password is managed by {{ profile.auth_source|upper }}.

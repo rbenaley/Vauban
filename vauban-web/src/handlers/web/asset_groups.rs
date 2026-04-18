@@ -814,10 +814,10 @@ pub async fn asset_group_edit(
         group,
     };
 
-    // Clear flash cookie after reading and return HTML
-    use crate::middleware::flash::ClearFlashCookie;
+    // Flash cookie cleanup is handled centrally by `flash_middleware`
+    // (see `vauban-web/src/middleware/flash.rs`).
     match template.render() {
-        Ok(html) => (ClearFlashCookie, Html(html)).into_response(),
+        Ok(html) => Html(html).into_response(),
         Err(_) => flash_redirect(flash.error("Failed to render page"), "/assets/groups"),
     }
 }
@@ -983,9 +983,9 @@ pub async fn asset_group_create_form(
         .render()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
 
-    // Clear flash cookie after reading and return HTML
-    use crate::middleware::flash::ClearFlashCookie;
-    Ok((ClearFlashCookie, Html(html)))
+    // Flash cookie cleanup is handled centrally by `flash_middleware`
+    // (see `vauban-web/src/middleware/flash.rs`).
+    Ok(Html(html))
 }
 
 /// Form data for creating an asset group via web form.

@@ -1059,6 +1059,16 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             get(handlers::web::user_detail).post(handlers::web::update_user_web),
         )
         .route("/accounts/profile", get(handlers::web::profile))
+        // Self-service password rotation, opened from a modal on the profile
+        // page. Step-up TOTP enforced inside the handler (single-use within
+        // its 30-second window, RFC 6238 §5.2). No GET counterpart on
+        // purpose: the form is rendered inline by the profile template, so a
+        // direct GET would only encourage stray bookmarks to a non-existent
+        // page.
+        .route(
+            "/accounts/profile/password",
+            post(handlers::web::change_own_password_web),
+        )
         .route("/accounts/mfa", get(handlers::web::mfa_setup))
         // Issue #8: renamed from /accounts/sessions to disambiguate web
         // login sessions from bastion proxy sessions in the UI.

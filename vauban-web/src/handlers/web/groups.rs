@@ -274,10 +274,10 @@ pub async fn group_detail(
         csrf_token,
     };
 
-    // Clear flash cookie after reading and return HTML
-    use crate::middleware::flash::ClearFlashCookie;
+    // Flash cookie cleanup is handled centrally by `flash_middleware`
+    // (see `vauban-web/src/middleware/flash.rs`).
     match template.render() {
-        Ok(html) => (ClearFlashCookie, Html(html)).into_response(),
+        Ok(html) => Html(html).into_response(),
         Err(_) => flash_redirect(flash.error("Failed to render page"), "/accounts/groups"),
     }
 }

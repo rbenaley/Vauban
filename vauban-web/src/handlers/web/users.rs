@@ -2,6 +2,23 @@
 use super::*;
 use crate::models::user::AuthSource;
 
+/// Validate a candidate password against the configured minimum length.
+///
+/// Centralises both the length check and the user-facing error wording so
+/// the create-user, edit-user and self-rotation paths stay in lock-step
+/// with whatever `security.password_min_length` a deployment configures
+/// (the config file remains the single source of truth -- this helper
+/// only avoids re-typing the same `if … { format!(…) }` in every
+/// handler). The length policy itself is validated at boot in
+/// `config.rs` (must be `>= 8`).
+pub(crate) fn validate_password_length(pwd: &str, min_len: usize) -> Result<(), String> {
+    if pwd.len() < min_len {
+        Err(format!("Password must be at least {} characters", min_len))
+    } else {
+        Ok(())
+    }
+}
+
 pub async fn user_list(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
@@ -508,12 +525,10 @@ pub async fn create_user_web(
     }
 
     // Validate password length
-    let min_len = state.config.security.password_min_length;
-    if form.password.len() < min_len {
-        return flash_redirect(
-            flash.error(format!("Password must be at least {} characters", min_len)),
-            "/accounts/users/new",
-        );
+    if let Err(msg) =
+        validate_password_length(&form.password, state.config.security.password_min_length)
+    {
+        return flash_redirect(flash.error(msg), "/accounts/users/new");
     }
 
     let mut conn = match state.db_pool.get().await {
@@ -899,10 +914,11 @@ pub async fn update_user_web(
     // Validate and hash new password if provided
     let password_hash = if let Some(ref password) = form.password {
         if !password.is_empty() {
-            let min_len = state.config.security.password_min_length;
-            if password.len() < min_len {
+            if let Err(msg) =
+                validate_password_length(password, state.config.security.password_min_length)
+            {
                 return flash_redirect(
-                    flash.error(format!("Password must be at least {} characters", min_len)),
+                    flash.error(msg),
                     &format!("/accounts/users/{}/edit", user_uuid),
                 );
             }
@@ -1188,12 +1204,220 @@ pub async fn delete_user_web(
     }
 }
 
+/// Form data for the "Change Password" modal opened from `/accounts/profile`.
+///
+/// Unlike [`UpdateUserWebForm`], this is the *self-service* path: the user is
+/// rotating *their own* password without going through the Edit User screen
+/// (which is admin-oriented, gated on `users:write`, and asks for a lot of
+/// other fields). The flow stays on `/accounts/profile` thanks to a Post/
+/// Redirect/Get round-trip back to the same page with a flash banner; no
+/// separate `/accounts/password/change` page is rendered, the operator never
+/// loses their place.
+///
+/// Security model (mirrors issue #11 step-up applied to update_user_web):
+/// - The current password is **not** required. The proof of identity is the
+///   operator's own fresh TOTP code, which is single-use within its 30-second
+///   window (RFC 6238 §5.2 replay protection persisted via
+///   `users.last_totp_used_window`). This matches the same trade-off chosen
+///   for cross-user password rotation in `update_user_web`: a per-action
+///   second factor is strictly stronger than re-prompting a possibly-already-
+///   compromised password, and is forward-compatible with Passkeys/WebAuthn.
+/// - Operators without an enrolled TOTP factor are refused outright with an
+///   actionable link to `/accounts/mfa/setup`. There is no password fallback.
+/// - Federated accounts (LDAP/SAML/OIDC) refuse the rotation: their password
+///   lives in the upstream IdP, not in our `users.password_hash` column.
+#[derive(Debug, serde::Deserialize)]
+pub struct ChangeOwnPasswordForm {
+    pub csrf_token: String,
+    pub new_password: String,
+    pub confirm_password: String,
+    /// Step-up MFA proof: the operator's own current TOTP code, mandatory.
+    /// Verified against `auth_user.uuid`'s `mfa_secret`. Single-use within
+    /// its 30-second window. See [`crate::auth::step_up`].
+    pub totp_code: String,
+}
+
+/// Self-service password rotation handler (POST /accounts/profile/password).
+///
+/// Web-only: there is no API equivalent because callers that already hold an
+/// API key have a strictly weaker authentication context than a freshly-
+/// proven TOTP step-up; routing them through the same modal would be a
+/// downgrade. API password changes go through the admin path.
+///
+/// On success the response is always a 303 redirect back to
+/// `/accounts/profile` with a green flash, so refreshing the page after the
+/// rotation does not re-submit the form (defence against accidental
+/// double-rotation).
+pub async fn change_own_password_web(
+    State(state): State<AppState>,
+    auth_user: WebAuthUser,
+    incoming_flash: IncomingFlash,
+    jar: CookieJar,
+    Form(form): Form<ChangeOwnPasswordForm>,
+) -> Response {
+    use crate::schema::users;
+    use chrono::Utc;
+
+    let flash = incoming_flash.flash();
+    let profile_url = "/accounts/profile";
+
+    // CSRF (double-submit). Same shape as every other state-mutating handler
+    // in this module so the CSRF middleware contract stays uniform.
+    let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
+    let secret = state.config.secret_key.expose_secret().as_bytes();
+    if !crate::middleware::csrf::validate_double_submit(
+        secret,
+        csrf_cookie.map(|c| c.value()),
+        &form.csrf_token,
+    ) {
+        return flash_redirect(
+            flash.error("Invalid CSRF token. Please refresh the page and try again."),
+            profile_url,
+        );
+    }
+
+    // Confirmation match runs FIRST: it is a pure user-input mistake, no
+    // need to bother the database or the vault for it.
+    if form.new_password != form.confirm_password {
+        return flash_redirect(
+            flash.error("New password and confirmation do not match"),
+            profile_url,
+        );
+    }
+
+    // Length policy is loaded from config so deployments that tighten
+    // `security.password_min_length` get a single source of truth across the
+    // create-user, edit-user and self-rotation paths. The wording lives in
+    // `validate_password_length` so the three sites stay aligned.
+    if let Err(msg) =
+        validate_password_length(&form.new_password, state.config.security.password_min_length)
+    {
+        return flash_redirect(flash.error(msg), profile_url);
+    }
+
+    let mut conn = match state.db_pool.get().await {
+        Ok(conn) => conn,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Database connection error. Please try again."),
+                profile_url,
+            );
+        }
+    };
+
+    // Refuse federated accounts: their password is owned by the upstream IdP
+    // and rotating only the local hash would silently desynchronise the two
+    // and lock the user out the next time they log in via SSO. We look up
+    // the user by UUID from the JWT, not by the form, so a tampered request
+    // body cannot point us at someone else's row.
+    let parsed_uuid = match uuid::Uuid::parse_str(&auth_user.uuid) {
+        Ok(u) => u,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Could not verify your identity. Please log out and log back in."),
+                profile_url,
+            );
+        }
+    };
+    let me: Option<(i32, AuthSource)> = users::table
+        .filter(users::uuid.eq(parsed_uuid))
+        .filter(users::is_deleted.eq(false))
+        .select((users::id, users::auth_source))
+        .first(&mut conn)
+        .await
+        .optional()
+        .unwrap_or(None);
+    let (user_id, auth_source) = match me {
+        Some(t) => t,
+        None => {
+            return flash_redirect(
+                flash.error("Could not verify your identity. Please log out and log back in."),
+                profile_url,
+            );
+        }
+    };
+    if !matches!(auth_source, AuthSource::Local) {
+        return flash_redirect(
+            flash.error("Your password is managed by your identity provider and cannot be changed here."),
+            profile_url,
+        );
+    }
+
+    // Step-up MFA -- exact same contract as update_user_web (issue #11).
+    // The proof is single-use; rejecting here returns to /accounts/profile
+    // with a precise flash so the user knows what to fix (no enrolment vs
+    // wrong code vs replayed code vs vault unavailable).
+    if let Err(err) =
+        crate::auth::enforce_totp_step_up(&state, &mut conn, &auth_user.uuid, &form.totp_code)
+            .await
+    {
+        tracing::info!(
+            operator = %auth_user.uuid,
+            error = ?err,
+            "change_own_password_web: step-up MFA rejected, refusing self password rotation"
+        );
+        return flash_redirect(flash.error(err.flash_message()), profile_url);
+    }
+
+    // Hash through the auth-IPC client when configured (production path:
+    // Argon2 work happens out-of-process so the web tier stays responsive),
+    // otherwise fall back to the in-process AuthService used in tests.
+    let new_hash = if let Some(ref client) = state.auth_ipc_client {
+        client.hash_password(&form.new_password).await
+    } else {
+        state.auth_service.hash_password(&form.new_password)
+    };
+    let new_hash = match new_hash {
+        Ok(h) => h,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Failed to process password. Please try again."),
+                profile_url,
+            );
+        }
+    };
+
+    let now = Utc::now();
+    match diesel::update(users::table.filter(users::id.eq(user_id)))
+        .set((
+            users::password_hash.eq(&new_hash),
+            users::updated_at.eq(now),
+        ))
+        .execute(&mut conn)
+        .await
+    {
+        Ok(_) => {
+            tracing::info!(
+                operator = %auth_user.uuid,
+                "change_own_password_web: password rotated via self-service modal"
+            );
+            // Best-effort: zeroize the plaintext we still hold on the stack
+            // before returning. The Form<T> deserializer already moved the
+            // String out of the wire bytes, so this is the only copy we
+            // can reach.
+            let mut np = form.new_password;
+            np.zeroize();
+            let mut cp = form.confirm_password;
+            cp.zeroize();
+            flash_redirect(
+                flash.success("Password updated successfully"),
+                profile_url,
+            )
+        }
+        Err(_) => flash_redirect(
+            flash.error("Failed to update password. Please try again."),
+            profile_url,
+        ),
+    }
+}
+
 /// User profile page.
 pub async fn profile(
     State(state): State<AppState>,
     jar: axum_extra::extract::CookieJar,
     auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
+    incoming_flash: IncomingFlash,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::models::auth_session::AuthSession;
     use crate::models::user::User;
@@ -1296,8 +1520,24 @@ pub async fn profile(
         .collect();
 
     let user = Some(user_context_from_auth(&auth_user));
+
+    // Forward incoming flash messages so the change-password modal's
+    // PRG round-trip back to /accounts/profile actually renders the
+    // success/error banner. Without this, the signed cookie is set on
+    // the redirect response but the message never reaches the template
+    // and the user sees no feedback at all.
+    let flash_messages: Vec<crate::templates::base::FlashMessage> = incoming_flash
+        .messages()
+        .iter()
+        .map(|m| crate::templates::base::FlashMessage {
+            level: m.level.clone(),
+            message: m.message.clone(),
+        })
+        .collect();
+
     let base = BaseTemplate::new("My Profile".to_string(), user.clone())
-        .with_current_path("/accounts/profile");
+        .with_current_path("/accounts/profile")
+        .with_messages(flash_messages);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
             .await
@@ -1315,6 +1555,7 @@ pub async fn profile(
         sessions,
         current_session_token: current_token_hash,
         perms,
+        password_min_length: state.config.security.password_min_length,
     };
 
     let html = template

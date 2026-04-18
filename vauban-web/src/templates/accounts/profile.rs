@@ -83,6 +83,12 @@ pub struct ProfileTemplate {
     /// Casbin-backed permissions for the current user; gates UI elements like
     /// the "Edit" button (which requires `users:write`).
     pub perms: PermissionContext,
+    /// Minimum password length enforced by `security.password_min_length`.
+    /// Surfaced in the template so the "Change Password" modal renders the
+    /// same `minlength` HTML5 hint as the admin Edit User form, keeping
+    /// client-side validation in lockstep with the server-side check
+    /// performed by `change_own_password_web`.
+    pub password_min_length: usize,
 }
 
 #[cfg(test)]
@@ -174,6 +180,7 @@ mod tests {
             sessions: vec![create_test_session()],
             current_session_token: Some("token123".to_string()),
             perms: PermissionContext::default(),
+            password_min_length: 12,
         };
         assert_eq!(template.title, "Profile");
         assert!(template.user.is_some());
@@ -194,6 +201,7 @@ mod tests {
             sessions: Vec::new(),
             current_session_token: None,
             perms: PermissionContext::default(),
+            password_min_length: 12,
         };
         let result = template.render();
         assert!(result.is_ok());
@@ -414,6 +422,7 @@ mod tests {
             sessions: Vec::new(),
             current_session_token: None,
             perms: PermissionContext::default(),
+            password_min_length: 12,
         };
 
         let result = template.render();
@@ -459,6 +468,7 @@ mod tests {
             sessions,
             current_session_token: Some("token123".to_string()),
             perms: PermissionContext::default(),
+            password_min_length: 12,
         };
 
         let result = template.render();
@@ -488,6 +498,7 @@ mod tests {
             sessions: Vec::new(),
             current_session_token: None,
             perms: PermissionContext::default(),
+            password_min_length: 12,
         };
 
         let result = template.render();
@@ -515,6 +526,7 @@ mod tests {
             sessions: Vec::new(),
             current_session_token: None,
             perms: PermissionContext::default(),
+            password_min_length: 12,
         };
 
         let result = template.render();
@@ -543,6 +555,7 @@ mod tests {
             sessions: Vec::new(),
             current_session_token: None,
             perms: PermissionContext::default(),
+            password_min_length: 12,
         };
 
         let result = template.render();
@@ -571,6 +584,7 @@ mod tests {
             sessions: Vec::new(),
             current_session_token: None,
             perms: PermissionContext::default(),
+            password_min_length: 12,
         };
 
         let result = template.render();

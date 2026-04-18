@@ -557,6 +557,13 @@ fn build_test_router(state: AppState) -> Router {
         )
         // Account pages (profile, login sessions and API keys)
         .route("/accounts/profile", get(handlers::web::profile))
+        // Self-service password rotation modal handler (mirror production
+        // main.rs). POST-only on purpose: the form is rendered inline on
+        // /accounts/profile via Alpine.js modal.
+        .route(
+            "/accounts/profile/password",
+            post(handlers::web::change_own_password_web),
+        )
         // Issue #8: renamed routes (mirror production main.rs).
         .route(
             "/accounts/login-sessions",
