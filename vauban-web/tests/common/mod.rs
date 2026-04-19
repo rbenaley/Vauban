@@ -438,6 +438,11 @@ fn build_test_router(state: AppState) -> Router {
             post(handlers::web::delete_asset_web),
         )
         .route("/assets/new", get(handlers::web::asset_create_form))
+        // Issue #17: literal route MUST come before `/assets/{uuid}`.
+        .route(
+            "/assets/deleted",
+            get(handlers::web::asset_deleted_list),
+        )
         .route(
             "/assets",
             get(handlers::web::asset_list).post(handlers::web::create_asset_web),

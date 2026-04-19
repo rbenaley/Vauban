@@ -174,10 +174,29 @@ pub async fn create_asset(
         connection_username: "root".to_string(),
     };
 
+    // Issue #17: a UniqueViolation here means an active asset on the
+    // same (hostname, port, connection_username) triplet already
+    // exists. Return 409 Conflict with a stable, user-displayable
+    // message instead of the generic 500 the `?` operator would have
+    // produced. Tombstones are explicitly NOT counted (the partial
+    // unique index `idx_assets_hostname_port_username_active`
+    // -- see migration 20260330000000_add_connection_username and the
+    // explanatory COMMENT added in 20260420000000_assets_irreversible_delete --
+    // only covers active rows), so the only way to reach this branch
+    // is via a true active-vs-active collision.
     let asset: Asset = diesel::insert_into(assets)
         .values(&new_asset)
         .get_result(&mut conn)
-        .await?;
+        .await
+        .map_err(|e| match e {
+            diesel::result::Error::DatabaseError(
+                diesel::result::DatabaseErrorKind::UniqueViolation,
+                _,
+            ) => AppError::Conflict(
+                "An asset with this hostname, port and username already exists".to_string(),
+            ),
+            other => AppError::Database(other),
+        })?;
 
     for gid in group_ids {
         diesel::insert_into(aag::asset_asset_groups)

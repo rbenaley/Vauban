@@ -789,6 +789,131 @@ Redirect`):
 | `/accounts/sessions` | `/accounts/login-sessions` | User's own login sessions |
 | `/admin/sessions` | `/accounts/all-login-sessions` | Admin: every user's login sessions |
 
+### 7.7 assets Irreversible Deletion Invariant (Issue #17)
+
+The `assets` table (owned by `vauban-web`) holds the privileged
+targets that operators connect to via SSH or RDP. Each row carries a
+`connection_config` JSONB blob with the encrypted credential envelope
+(`password`, `private_key`, `passphrase` — see
+[Vauban_Vault_Architecture_EN(1.0).md](Vauban_Vault_Architecture_EN(1.0).md)
+§3 for the cryptographic format).
+
+The product's security policy (RG-ASS-04) states that **asset deletion
+is irreversible**: a soft-deleted row exists only as an audit
+tombstone, never to be reanimated. Recreating an asset on the same
+`(hostname, port, connection_username)` triplet always allocates a
+fresh UUID; the prior row is preserved with `is_deleted = true` and an
+empty `connection_config`. This closes the SEC-11 credential-carryover
+class of bugs at the schema level.
+
+The contract is enforced by **four coordinated invariants**, three of
+them structural (PostgreSQL itself rejects any violation), one
+operational (handler scrub for early UX feedback):
+
+```sql
+-- Migration: 20260420000000_assets_irreversible_delete
+
+-- I3: a tombstone MUST NOT carry secrets.
+ALTER TABLE assets ADD CONSTRAINT assets_tombstone_no_secrets
+    CHECK (NOT is_deleted OR connection_config = '{}'::jsonb);
+
+-- I4: is_deleted MUST NOT transition from true back to false.
+CREATE OR REPLACE FUNCTION assets_no_resurrection() RETURNS trigger AS $$
+BEGIN
+    IF OLD.is_deleted = true AND NEW.is_deleted = false THEN
+        RAISE EXCEPTION 'asset % is soft-deleted and cannot be restored '
+            '(issue #17 policy: delete is irreversible)', OLD.uuid
+            USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER assets_no_resurrection_trg
+    BEFORE UPDATE ON assets
+    FOR EACH ROW
+    WHEN (OLD.is_deleted IS DISTINCT FROM NEW.is_deleted)
+    EXECUTE FUNCTION assets_no_resurrection();
+
+-- Read-only projection used by application paths that should never
+-- see tombstones; the base table remains the source of truth so
+-- proxy_sessions.asset_id keeps resolving for audit.
+CREATE VIEW assets_active AS SELECT * FROM assets WHERE is_deleted = false;
+```
+
+| Invariant | Enforcement layer | Mechanism |
+|-----------|-------------------|-----------|
+| **I1** — At most one *active* row per `(hostname, port, connection_username)` triplet. | PostgreSQL (partial unique index) | `idx_assets_hostname_port_username_active` (introduced in `20260330000000_add_connection_username`, re-documented from `20260420000000_assets_irreversible_delete` via `COMMENT ON INDEX`). Tombstones are excluded from the index, so audit history is unbounded. |
+| **I2** — Arbitrarily many tombstones may coexist on the same triplet. | PostgreSQL (negative space of I1) | Direct consequence of the partial index: `WHERE is_deleted = false` excludes tombstones from uniqueness. |
+| **I3** — A tombstone MUST NOT carry credentials. | PostgreSQL (CHECK constraint) | `assets_tombstone_no_secrets`. SQLSTATE `23514` on violation. The migration includes a corrective `UPDATE assets SET connection_config = '{}'` for legacy tombstones predating the constraint. |
+| **I4** — `is_deleted` MUST NOT transition from `true` back to `false`. | PostgreSQL (BEFORE UPDATE trigger) | `assets_no_resurrection_trg`. Bypassing the trigger requires `session_replication_role = replica` (superuser only) and is reserved for explicit data migrations. |
+
+The contract is honoured by **three coordinated layers**:
+
+1. **At the database** — the CHECK constraint, partial unique index
+   and BEFORE UPDATE trigger above. They fire regardless of which
+   client issues the offending statement (Diesel, raw `psql`, future
+   ETL, compromised handler). This is the line-of-defence that
+   "battle-tests" the policy: see
+   `vauban-web/tests/web/assets_db_invariants_test.rs::test_i4_resurrection_blocked_via_raw_sql_bypassing_orm`,
+   which proves the trigger rejects `UPDATE`s issued via
+   `diesel::sql_query` (typed builder bypassed) and CTE-wrapped
+   variants alike.
+
+2. **At the handlers** — `vauban-web/src/handlers/web/assets.rs`:
+   - `create_asset_web` always issues a fresh `INSERT` with a brand-new
+     UUID; `UniqueViolation` (SQLSTATE `23505` on
+     `idx_assets_hostname_port_username_active`) surfaces as a friendly
+     flash error. The historical "reactivation" branch is gone.
+   - `delete_asset_web` scrubs `connection_config` to `{}` in the same
+     transaction that flips `is_deleted = true`. This is now
+     defence-in-depth (the CHECK constraint would reject the COMMIT
+     anyway), but kept so the intent is local-readable and
+     `proxy_sessions` rows attached to the asset transition cleanly
+     (`active → terminated`, `pending|connecting → orphaned`).
+   - `update_asset_web` filters on `is_deleted = false` early so an
+     operator editing a tombstoned asset gets a "not found / already
+     deleted" flash rather than the generic 500 the trigger would
+     otherwise produce.
+   - `vauban-web/src/handlers/api/assets.rs::create_asset` maps
+     `UniqueViolation` to `AppError::Conflict` (HTTP 409) so
+     automation can branch on it deterministically.
+
+3. **At the audit UI** — `GET /assets/deleted` (handler:
+   `asset_deleted_list_web`, template:
+   `vauban-web/templates/assets/asset_deleted_list.html`). Read-only,
+   admin-only (gated on `perms.assets_read`), paginated, with no
+   "restore" or "edit" affordance. The page deliberately avoids any
+   verb that would suggest the operation is reversible.
+
+**Foreign keys preserved across deletion.** The FK from
+`proxy_sessions.asset_id` to `assets(id)` continues to resolve after
+the soft-delete: the audit chain (who connected to which target,
+when, with which protocol) survives the asset's lifecycle. This is
+why the policy is "soft-delete + structural irreversibility" rather
+than "hard delete with a separate audit table" — it keeps the
+referential integrity story trivial.
+
+**Tests.** The full battle-test matrix lives in:
+
+| File | Scope |
+|------|-------|
+| `vauban-web/tests/web/assets_db_invariants_test.rs` | 8 SQL-pure tests (Diesel ORM bypassed) covering I1–I4, including the raw-SQL resurrection attempt. |
+| `vauban-web/tests/web/asset_irreversible_delete_test.rs` | 7 handler-level integration tests: fresh-UUID-after-delete, web 303 + flash on collision, API 409 on collision, edit-on-tombstone rejected, idempotent delete, 10-cycle stress (proves I1+I2 hold under churn), `proxy_sessions` FK survives soft-delete. |
+| `vauban-web/tests/web/asset_protocol_test.rs::test_soft_delete_purges_connection_config` | Defence-in-depth: the handler-level scrub is verified independently of the DB invariant. |
+
+**Future scaling note.** When the tombstone population materially
+exceeds the active set (~5×, or ~100k rows), the next structural step
+is to convert `assets` to a `PARTITION BY LIST (is_deleted)` table
+with separate partitions for active rows and tombstones. The exact
+triggers, partition layout and migration caveats (FK rewrite for
+`proxy_sessions.asset_id`, per-partition recreation of the partial
+unique index) are documented inline in
+`vauban-db/migrations/20260420000000_assets_irreversible_delete/up.sql`.
+The decision is to revisit this quarterly against
+`pg_stat_user_tables` and tombstone-count metrics rather than
+preemptively partition today.
+
 ---
 
 ## 8. IPC Protocol
@@ -1396,6 +1521,7 @@ unsafe {
 | TOTP code intercepted and replayed within its 30-second window | `users.last_totp_used_window` persists the last consumed step; replay returns `StepUpError::CodeReplayed` (§3.8.2) |
 | MFA-disable downgrade attack | Step-up refuses operators whose `mfa_enabled = false` outright; no password fallback path exists |
 | MFA secret ciphertext fed to local verifier when vault is offline | Encrypted secret + missing `vault_client` returns explicit `VaultUnavailable` (§3.8.4) instead of silently failing as "Invalid code" |
+| Resurrection of a previously deleted asset (credential carryover, SEC-11 / issue #17) | Soft-delete is structurally irreversible (§7.7): partial unique index excludes tombstones from active uniqueness, `assets_tombstone_no_secrets` CHECK forbids credentials in tombstones, `assets_no_resurrection_trg` BEFORE UPDATE trigger blocks `is_deleted: true → false` regardless of which client (Diesel, raw SQL, future ETL) issues the UPDATE |
 
 ### 12.2 Defense in Depth
 
@@ -1404,7 +1530,7 @@ Authorization is enforced at multiple layers:
 1. **Web middleware**: RBAC check via `AccessIpcClient::check_permission()` before handler execution
 2. **Web handler**: Instance-level access check via `AccessIpcClient::check_access()` before session creation
 3. **Proxy service**: Independent access check via direct IPC to `vauban-access` before protocol handshake
-4. **Database**: Row-level constraints (UNIQUE, FK, NOT NULL) prevent invalid data
+4. **Database**: Row-level constraints (UNIQUE, FK, NOT NULL) prevent invalid data, plus issue-specific structural invariants such as `auth_sessions` per-device uniqueness (§7.6) and the asset irreversible-delete contract — partial unique index, CHECK constraint, BEFORE UPDATE trigger (§7.7)
 
 ### 12.3 Fail-Closed Behavior
 

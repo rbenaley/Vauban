@@ -1161,6 +1161,13 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
         // Assets pages - GET for viewing, POST for form submission (PRG pattern)
         // Literal routes MUST come before parameterized routes
         .route("/assets/new", get(handlers::web::asset_create_form))
+        // Issue #17: read-only audit page for soft-deleted assets.
+        // MUST be declared before `/assets/{uuid}` so axum doesn't
+        // attempt to parse "deleted" as a UUID.
+        .route(
+            "/assets/deleted",
+            get(handlers::web::asset_deleted_list),
+        )
         .route(
             "/assets",
             get(handlers::web::asset_list).post(handlers::web::create_asset_web),

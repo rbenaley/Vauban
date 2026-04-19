@@ -1,5 +1,5 @@
 /// VAUBAN Web - Integration tests for asset-protocol coupling and the
-/// SEC-11 credential-carryover defence (issue #15).
+/// credential-handling contract of the create/edit/delete flow.
 ///
 /// **Background — Issue #15.** The asset create/edit form historically
 /// surfaced the SSH-shaped Authentication block (`Password` /
@@ -7,23 +7,33 @@
 /// regardless of the chosen `asset_type`. RDP only consumes username +
 /// password (+ optional Windows AD `domain`), so an operator could
 /// store an SSH key on an RDP row that the proxy would never use --
-/// dormant credential, no UI feedback. The audit also surfaced two
-/// related defects:
+/// dormant credential, no UI feedback. The audit also surfaced a
+/// related defect: `build_connection_config` branched on `auth_type`
+/// without consulting `asset_type`, so a tampered request that
+/// bypassed the UI persisted the private key encrypted-at-rest.
 ///
-/// 1. **No server-side enforcement** — `build_connection_config` branched
-///    on `auth_type` without consulting `asset_type`, so a tampered
-///    request that bypassed the UI persisted the private key
-///    encrypted-at-rest.
-/// 2. **SEC-11 carryover** — soft-deleting an asset did NOT scrub
-///    `connection_config`, and the reactivation branch in
-///    `create_asset_web` did NOT rewrite it. Recreating a row on the
-///    same `(hostname, port, username)` triplet silently inherited the
-///    old (potentially SSH-shaped) credentials.
+/// **Background — Issue #17 (SEC-11 follow-up).** Soft-delete + recreate
+/// on the same `(hostname, port, username)` triplet historically
+/// reactivated the prior row. Even after the credential-carryover patch
+/// (#15), recreating an asset still landed at the previous UUID, which
+/// violates the audit invariant that "delete is final" (RG-ASS-04).
+/// Issue #17 made deletion structurally irreversible: a fresh INSERT is
+/// always issued, the active triplet is enforced by the partial unique
+/// index `idx_assets_hostname_port_username_active` (originally
+/// introduced in 20260330000000_add_connection_username and
+/// re-documented from 20260420000000_assets_irreversible_delete), and a
+/// DB trigger `assets_no_resurrection_trg` rejects any attempt to flip
+/// `is_deleted` back to `false`. The reactivation branch and its
+/// associated `force_soft_delete_keeping_config` test helper are gone:
+/// the latter is no longer expressible because the
+/// `assets_tombstone_no_secrets` CHECK constraint forbids a tombstone
+/// from carrying a populated `connection_config`.
 ///
-/// This file covers all three defects with isolated, `#[serial]` tests
-/// using the existing fixture helpers.
+/// Tests covering the irreversible-delete semantics live in
+/// `asset_irreversible_delete_test.rs` (handler + integration) and
+/// `assets_db_invariants_test.rs` (raw-SQL guarantees).
 ///
-/// Test matrix:
+/// Test matrix in this file:
 ///
 /// **UI rendering (4 tests)** — verify the server-rendered HTML carries
 /// the right Alpine `x-show` wiring so the client toggle would correctly
@@ -44,12 +54,13 @@
 /// - `test_create_ssh_with_private_key_succeeds` (non-regression)
 /// - `test_create_rdp_with_domain_persists_in_connection_config`
 ///
-/// **SEC-11 carryover (3 tests)** — these wire the create/delete/recreate
-/// loop end-to-end and assert on the persisted `connection_config`.
+/// **Soft-delete scrub (1 test)** — `delete_asset_web` must purge
+/// `connection_config` to `{}`. This is now also enforced by the DB
+/// CHECK constraint, but we keep the integration test as
+/// defence-in-depth: it pins the handler contract independently of
+/// the DB invariant.
 ///
-/// - `test_reactivate_soft_deleted_replaces_connection_config`
 /// - `test_soft_delete_purges_connection_config`
-/// - `test_reactivate_flash_warns_about_credential_replacement`
 ///
 /// **Edit flow (1 test)**
 ///
@@ -137,24 +148,15 @@ async fn insert_asset_with_config(
     )
 }
 
-/// Mark an asset row as soft-deleted WITHOUT going through the web
-/// handler -- so we can build a row whose `connection_config` is the
-/// pre-fix shape (still populated). The web `delete_asset_web` handler
-/// would purge the column thanks to the SEC-11 fix; we deliberately
-/// skip that here to reproduce the historical bug surface.
-async fn force_soft_delete_keeping_config(conn: &mut AsyncPgConnection, asset_id: i32) {
-    let now = chrono::Utc::now();
-    unwrap_ok!(
-        diesel::update(assets::table.filter(assets::id.eq(asset_id)))
-            .set((
-                assets::is_deleted.eq(true),
-                assets::deleted_at.eq(now),
-                assets::updated_at.eq(now),
-            ))
-            .execute(conn)
-            .await
-    );
-}
+// Issue #17: the `force_soft_delete_keeping_config` helper that used
+// to live here is intentionally gone. Its purpose was to construct a
+// tombstone with a populated `connection_config` to reproduce the
+// pre-fix carryover bug surface. After issue #17, that state is
+// structurally impossible: `assets_tombstone_no_secrets` rejects any
+// UPDATE that sets `is_deleted = true` without scrubbing the column,
+// so the helper would only ever produce a CHECK violation. The
+// equivalent "DB rejects this" assertion lives in
+// `assets_db_invariants_test.rs::test_i3_purge_must_be_concurrent_with_soft_delete`.
 
 // =============================================================================
 // UI rendering -- 4 tests
@@ -532,91 +534,16 @@ async fn test_create_rdp_with_domain_persists_in_connection_config() {
 }
 
 // =============================================================================
-// SEC-11 carryover -- 3 tests
+// Soft-delete scrub -- 1 test (defence-in-depth alongside DB CHECK)
 // =============================================================================
 
-/// **The carryover scenario.** Set up a row that mimics a pre-fix
-/// SSH asset with a private key, soft-delete it WITHOUT scrubbing
-/// (using `force_soft_delete_keeping_config` -- the in-the-wild state
-/// before this commit), then POST `/assets` to recreate the same
-/// `(hostname, port, username)` triplet as RDP with a password. The
-/// reactivation branch MUST overwrite `connection_config` so the
-/// stale SSH key cannot resurface.
-#[tokio::test]
-#[serial]
-async fn test_reactivate_soft_deleted_replaces_connection_config() {
-    let app = TestApp::spawn().await;
-    let mut conn = app.get_conn().await;
-
-    let admin_name = unique_name("sec11_react_replace");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
-    let csrf = app.generate_csrf_token();
-
-    let hostname = format!("{}.sec11.test", unique_name("host"));
-    let username = "shared_user";
-
-    const STALE_KEY: &str = "STALE-SSH-PK-MUST-NOT-SURVIVE-REACTIVATION";
-    let pre_fix_config = serde_json::json!({
-        "username": username,
-        "auth_type": "private_key",
-        "private_key": STALE_KEY,
-    });
-    let original = insert_asset_with_config(
-        &mut conn,
-        &unique_name("sec11-orig"),
-        &hostname,
-        22,
-        AssetType::Ssh,
-        username,
-        pre_fix_config,
-    )
-    .await;
-    force_soft_delete_keeping_config(&mut conn, original.id).await;
-
-    let new_name = unique_name("sec11-reactivated");
-    let response = app
-        .server
-        .post("/assets")
-        .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
-        .form(&[
-            ("csrf_token", csrf.as_str()),
-            ("name", &new_name),
-            ("hostname", &hostname),
-            ("port", "22"),
-            ("asset_type", "rdp"),
-            ("status", "online"),
-            ("ssh_username", username),
-            ("ssh_password", "Replacement-Pwd-2026!"),
-        ])
-        .await;
-    let status = response.status_code().as_u16();
-    assert!(
-        status == 302 || status == 303,
-        "reactivation must redirect, got {}",
-        status
-    );
-
-    let reactivated = read_asset_by_uuid(&mut conn, original.uuid)
-        .await
-        .expect("row must still exist on its original UUID after reactivation");
-    assert!(!reactivated.is_deleted, "row must be reactivated");
-    let cfg = reactivated.connection_config.to_string();
-    assert!(
-        !cfg.contains(STALE_KEY),
-        "stale SSH key MUST NOT survive reactivation, got: {}",
-        cfg
-    );
-    assert!(
-        !cfg.contains("private_key"),
-        "private_key key MUST NOT survive reactivation as RDP, got: {}",
-        cfg
-    );
-    assert_eq!(reactivated.asset_type, AssetType::Rdp);
-}
-
 /// Soft-delete via the web handler MUST scrub `connection_config` to
-/// `{}` so the row cannot leak credentials even if reactivation is
-/// later skipped, or if an operator inspects the table directly.
+/// `{}` so the row cannot leak credentials even if an operator
+/// inspects the table directly. The DB-level CHECK constraint
+/// `assets_tombstone_no_secrets` enforces the same invariant
+/// independently; this test pins the handler contract so a future
+/// refactor that accidentally removes the scrub is caught at the
+/// integration boundary as well.
 #[tokio::test]
 #[serial]
 async fn test_soft_delete_purges_connection_config() {
@@ -665,92 +592,6 @@ async fn test_soft_delete_purges_connection_config() {
         serde_json::json!({}),
         "connection_config must be scrubbed to {{}} on soft-delete, got {}",
         after.connection_config
-    );
-}
-
-/// The reactivation flash MUST explicitly tell the operator that the
-/// previous credentials were replaced -- silent overwrite would defeat
-/// the whole point of surfacing the carryover risk to the human.
-#[tokio::test]
-#[serial]
-async fn test_reactivate_flash_warns_about_credential_replacement() {
-    let app = TestApp::spawn().await;
-    let mut conn = app.get_conn().await;
-
-    let admin_name = unique_name("sec11_flash");
-    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
-    let csrf = app.generate_csrf_token();
-
-    let hostname = format!("{}.flash.test", unique_name("host"));
-    let username = "flash_user";
-
-    let original = insert_asset_with_config(
-        &mut conn,
-        &unique_name("sec11-flash-orig"),
-        &hostname,
-        22,
-        AssetType::Ssh,
-        username,
-        serde_json::json!({"username": username, "auth_type": "password", "password": "old"}),
-    )
-    .await;
-    force_soft_delete_keeping_config(&mut conn, original.id).await;
-
-    let response = app
-        .server
-        .post("/assets")
-        .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
-        .form(&[
-            ("csrf_token", csrf.as_str()),
-            ("name", &unique_name("sec11-flash-react")),
-            ("hostname", &hostname),
-            ("port", "22"),
-            ("asset_type", "ssh"),
-            ("status", "online"),
-            ("ssh_username", username),
-            ("ssh_auth_type", "password"),
-            ("ssh_password", "new-password"),
-        ])
-        .await;
-    let status = response.status_code().as_u16();
-    assert!(
-        status == 302 || status == 303,
-        "reactivation must redirect, got {}",
-        status
-    );
-
-    let flash_cookie = response
-        .headers()
-        .get_all(SET_COOKIE)
-        .iter()
-        .filter_map(|c| c.to_str().ok())
-        .find(|c| c.contains("__vauban_flash"))
-        .expect("reactivation must set a flash cookie")
-        .to_string();
-
-    let location = response
-        .headers()
-        .get(LOCATION)
-        .and_then(|v| v.to_str().ok())
-        .expect("reactivation must redirect to detail page")
-        .to_string();
-
-    let cookie_header = format!(
-        "access_token={}; {}",
-        admin.token,
-        flash_cookie.split(';').next().unwrap_or("")
-    );
-    let detail_response = app
-        .server
-        .get(&location)
-        .add_header(COOKIE, cookie_header)
-        .await;
-
-    let body = detail_response.text();
-    assert!(
-        body.contains("reactivated") && body.contains("Previous credentials were replaced"),
-        "detail page must surface the replacement-warning flash, got body fragment:\n{}",
-        body.chars().take(2000).collect::<String>()
     );
 }
 

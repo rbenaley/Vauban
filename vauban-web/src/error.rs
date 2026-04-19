@@ -33,6 +33,14 @@ pub enum AppError {
     #[error("Not found: {0}")]
     NotFound(String),
 
+    /// 409 Conflict. Used for unique-constraint violations, idempotency
+    /// races and similar "the request is well-formed but conflicts with
+    /// the current state" cases. Surfaced as `409 Conflict` with the
+    /// caller-supplied message preserved -- callers are expected to
+    /// keep the message safe for end-user display.
+    #[error("Conflict: {0}")]
+    Conflict(String),
+
     #[error("Internal server error: {0}")]
     Internal(#[from] anyhow::Error),
 
@@ -72,6 +80,7 @@ impl IntoResponse for AppError {
             AppError::Authorization(msg) => (StatusCode::FORBIDDEN, msg),
             AppError::Validation(msg) => (StatusCode::BAD_REQUEST, msg),
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
+            AppError::Conflict(msg) => (StatusCode::CONFLICT, msg),
             AppError::Internal(e) => {
                 tracing::error!("Internal error: {}", e);
                 (

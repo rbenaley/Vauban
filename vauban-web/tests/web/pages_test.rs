@@ -6813,12 +6813,25 @@ async fn test_asset_create_without_checkboxes() {
     assert!(created.is_some(), "Asset should be created in database");
 }
 
+/// Issue #17 (SEC-11 follow-up): the historical reactivation test has
+/// been superseded by the irreversible-delete policy (RG-ASS-04).
+/// Creating a new asset on a triplet `(hostname, port, username)` that
+/// already carries a tombstone MUST allocate a fresh UUID -- the
+/// tombstone is preserved as audit evidence with `is_deleted = true`
+/// and a scrubbed `connection_config`. Any "restore" path is
+/// structurally forbidden by the `assets_no_resurrection_trg` trigger
+/// (see `vauban-db/migrations/20260420000000_assets_irreversible_delete`).
+///
+/// The dedicated handler-level coverage lives in
+/// `web::asset_irreversible_delete_test`; this test is the
+/// "smoke-test" version that we keep next to the legacy create-flow
+/// suite to make sure the obvious operator scenario keeps working.
 #[tokio::test]
-async fn test_asset_create_reactivates_soft_deleted() {
+async fn test_asset_create_after_tombstone_yields_fresh_uuid() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin_name = unique_name("asset_reactivator");
+    let admin_name = unique_name("asset_post_tombstone");
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
@@ -6827,15 +6840,13 @@ async fn test_asset_create_reactivates_soft_deleted() {
         .await;
     let csrf_token = app.generate_csrf_token();
 
-    // Create a unique hostname for this test
-    let asset_hostname = format!("{}.reactivate.test", unique_name("host"));
+    let asset_hostname = format!("{}.post-tombstone.test", unique_name("host"));
 
-    // First, create a soft-deleted asset directly in the database
     use vauban_web::schema::assets;
-    let original_uuid = uuid::Uuid::new_v4();
+    let tombstone_uuid = uuid::Uuid::new_v4();
     diesel::insert_into(assets::table)
         .values((
-            assets::uuid.eq(original_uuid),
+            assets::uuid.eq(tombstone_uuid),
             assets::name.eq("Old Deleted Asset"),
             assets::hostname.eq(&asset_hostname),
             assets::port.eq(22),
@@ -6843,22 +6854,14 @@ async fn test_asset_create_reactivates_soft_deleted() {
             assets::status.eq("offline"),
             assets::is_deleted.eq(true),
             assets::deleted_at.eq(chrono::Utc::now()),
+            assets::connection_username.eq("root"),
+            assets::connection_config.eq(serde_json::json!({})),
         ))
         .execute(&mut conn)
         .await
-        .expect("Failed to create soft-deleted asset");
+        .expect("Failed to insert tombstone (CHECK requires connection_config = {})");
 
-    // Verify asset is soft-deleted
-    let is_deleted: bool = assets::table
-        .filter(assets::uuid.eq(original_uuid))
-        .select(assets::is_deleted)
-        .first(&mut conn)
-        .await
-        .unwrap();
-    assert!(is_deleted, "Asset should initially be soft-deleted");
-
-    // Now try to create a new asset with the same hostname+port
-    let new_asset_name = "Reactivated Asset";
+    let new_asset_name = "Fresh Asset After Tombstone";
     let response = app
         .server
         .post("/assets")
@@ -6882,26 +6885,46 @@ async fn test_asset_create_reactivates_soft_deleted() {
     let status = response.status_code().as_u16();
     assert!(
         status == 302 || status == 303,
-        "Expected redirect after asset reactivation, got {}",
+        "Expected redirect after asset creation, got {}",
         status
     );
 
-    let reactivated: Option<(String, String, bool)> = assets::table
-        .filter(assets::uuid.eq(original_uuid))
-        .select((assets::name, assets::status, assets::is_deleted))
+    let tombstone_still_deleted: bool = assets::table
+        .filter(assets::uuid.eq(tombstone_uuid))
+        .select(assets::is_deleted)
         .first(&mut conn)
         .await
-        .optional()
         .unwrap();
+    assert!(
+        tombstone_still_deleted,
+        "the original tombstone MUST remain soft-deleted (irreversible-delete policy)"
+    );
 
-    assert!(reactivated.is_some(), "Asset should exist");
-    let (name, status, is_deleted) = reactivated.unwrap();
-    assert_eq!(name, new_asset_name, "Asset name should be updated");
-    assert_eq!(status, "online", "Asset status should be updated");
-    assert!(!is_deleted, "Asset should no longer be soft-deleted");
+    let fresh_uuid: uuid::Uuid = assets::table
+        .filter(assets::hostname.eq(&asset_hostname))
+        .filter(assets::port.eq(22))
+        .filter(assets::connection_username.eq("root"))
+        .filter(assets::is_deleted.eq(false))
+        .select(assets::uuid)
+        .first(&mut conn)
+        .await
+        .expect("a brand-new active row must exist on the triplet");
+    assert_ne!(
+        fresh_uuid, tombstone_uuid,
+        "create after tombstone MUST allocate a fresh UUID, not reactivate the old one"
+    );
 
-    // Verify there's only one asset with this hostname+port (reactivated, not a new one)
-    let count: i64 = assets::table
+    let active_count: i64 = assets::table
+        .filter(assets::hostname.eq(&asset_hostname))
+        .filter(assets::port.eq(22))
+        .filter(assets::is_deleted.eq(false))
+        .count()
+        .get_result(&mut conn)
+        .await
+        .unwrap();
+    assert_eq!(active_count, 1, "exactly one active row must exist on the triplet");
+
+    let total_count: i64 = assets::table
         .filter(assets::hostname.eq(&asset_hostname))
         .filter(assets::port.eq(22))
         .count()
@@ -6909,8 +6932,8 @@ async fn test_asset_create_reactivates_soft_deleted() {
         .await
         .unwrap();
     assert_eq!(
-        count, 1,
-        "Should only have one asset with this hostname+port"
+        total_count, 2,
+        "tombstone + fresh row must coexist (audit invariant)"
     );
 }
 

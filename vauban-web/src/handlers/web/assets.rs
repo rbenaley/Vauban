@@ -173,37 +173,7 @@ pub async fn create_asset_web(
         .filter(|s| !s.is_empty())
         .unwrap_or("root");
 
-    // Check if asset with same hostname+port+username already exists (active)
     use crate::schema::assets::dsl as a;
-    let existing_active: Option<i32> = a::assets
-        .filter(a::hostname.eq(form.hostname.trim()))
-        .filter(a::port.eq(form.port))
-        .filter(a::connection_username.eq(connection_username))
-        .filter(a::is_deleted.eq(false))
-        .select(a::id)
-        .first(&mut conn)
-        .await
-        .optional()
-        .unwrap_or(None);
-
-    if existing_active.is_some() {
-        return flash_redirect(
-            flash.error("An asset with this hostname, port and username already exists"),
-            "/assets/new",
-        );
-    }
-
-    // Check if a soft-deleted asset with same hostname+port+username exists - reactivate it
-    let existing_deleted: Option<(i32, ::uuid::Uuid)> = a::assets
-        .filter(a::hostname.eq(form.hostname.trim()))
-        .filter(a::port.eq(form.port))
-        .filter(a::connection_username.eq(connection_username))
-        .filter(a::is_deleted.eq(true))
-        .select((a::id, a::uuid))
-        .first(&mut conn)
-        .await
-        .optional()
-        .unwrap_or(None);
 
     let now = chrono::Utc::now();
 
@@ -212,10 +182,6 @@ pub async fn create_asset_web(
     let sanitized_description =
         sanitize_opt(form.description.as_ref().filter(|s| !s.is_empty()).cloned());
 
-    // Build the (encrypted) connection_config blob ONCE: every code path
-    // below (reactivation + fresh insert) needs an identical, protocol-
-    // aware payload. Doing it inline previously made it possible for the
-    // reactivation branch to skip the rewrite entirely (SEC-11).
     let mut connection_config = build_connection_config(
         parsed_asset_type,
         form.ssh_username.as_deref(),
@@ -233,43 +199,19 @@ pub async fn create_asset_web(
         return flash_redirect(flash.error("Failed to encrypt credentials"), "/assets/new");
     }
 
-    if let Some((deleted_id, deleted_uuid)) = existing_deleted {
-        // SEC-11: when reactivating a soft-deleted row we MUST overwrite
-        // `connection_config` with the freshly-submitted values. Without
-        // this, recreating an RDP asset on the same triplet as a
-        // soft-deleted SSH asset silently inherited the old encrypted
-        // private key, which the proxy would then attempt to use on the
-        // first session establishment.
-        let result = diesel::update(a::assets.filter(a::id.eq(deleted_id)))
-            .set((
-                a::name.eq(&sanitized_name),
-                a::asset_type.eq(parsed_asset_type),
-                a::status.eq(&form.status),
-                a::description.eq(&sanitized_description),
-                a::connection_config.eq(&connection_config),
-                a::connection_username.eq(connection_username),
-                a::is_deleted.eq(false),
-                a::deleted_at.eq(None::<chrono::DateTime<chrono::Utc>>),
-                a::updated_at.eq(now),
-            ))
-            .execute(&mut conn)
-            .await;
-
-        return match result {
-            Ok(_) => flash_redirect(
-                flash.success(format!(
-                    "Asset '{}' reactivated. Previous credentials were replaced with the values you submitted.",
-                    sanitized_name
-                )),
-                &format!("/assets/{}", deleted_uuid),
-            ),
-            Err(e) => {
-                tracing::error!("Failed to reactivate asset: {}", e);
-                flash_redirect(flash.error("Failed to reactivate asset"), "/assets/new")
-            }
-        };
-    }
-
+    // Issue #17: every create produces a fresh UUID. Soft-deleted rows
+    // sharing the same (hostname, port, username) triplet are tombstones
+    // (audit-only) and must NEVER be reactivated -- the
+    // `assets_no_resurrection_trg` trigger and the irreversible-delete
+    // policy (RG-ASS-04) make any other path a security regression.
+    //
+    // Uniqueness on the active triplet is enforced by the partial unique
+    // index `idx_assets_hostname_port_username_active` (introduced in
+    // 20260330000000_add_connection_username, re-documented from
+    // 20260420000000_assets_irreversible_delete). We let the DB be the
+    // source of truth: a UniqueViolation here means another active row
+    // already exists, which we surface as a friendly flash. Any other
+    // Diesel error is logged and reported generically.
     let new_uuid = ::uuid::Uuid::new_v4();
 
     let result = diesel::insert_into(a::assets)
@@ -294,6 +236,13 @@ pub async fn create_asset_web(
         Ok(_) => flash_redirect(
             flash.success(format!("Asset '{}' created successfully", sanitized_name)),
             &format!("/assets/{}", new_uuid),
+        ),
+        Err(diesel::result::Error::DatabaseError(
+            diesel::result::DatabaseErrorKind::UniqueViolation,
+            _,
+        )) => flash_redirect(
+            flash.error("An asset with this hostname, port and username already exists"),
+            "/assets/new",
         ),
         Err(e) => {
             tracing::error!("Failed to create asset: {}", e);
@@ -563,6 +512,146 @@ pub async fn asset_list(
         ],
         show_view_link: user_is_admin,
         require_justification: state.config.security.require_justification,
+    };
+
+    let html = template
+        .render()
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
+    Ok(Html(html))
+}
+
+/// Issue #17 — read-only audit page listing soft-deleted assets.
+///
+/// Gated on `perms.assets_read` (admin / staff). The page exposes
+/// strictly the audit-relevant columns -- no `connection_config`,
+/// no edit / restore / connect affordances -- because deletion is
+/// irreversible (RG-ASS-04) and tombstones carry `{}` as their
+/// `connection_config` by contract (`assets_tombstone_no_secrets`
+/// CHECK constraint, enforced at COMMIT time).
+pub async fn asset_deleted_list(
+    State(state): State<AppState>,
+    auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<impl IntoResponse, AppError> {
+    use crate::templates::accounts::user_list::Pagination;
+    use crate::templates::assets::{AssetDeletedListTemplate, DeletedAssetItem};
+
+    if !perms.assets_read {
+        return Err(AppError::Authorization(
+            "Only administrators can view the deleted assets audit page".to_string(),
+        ));
+    }
+
+    let user = Some(user_context_from_auth(&auth_user));
+    let base = BaseTemplate::new("Deleted Assets".to_string(), user.clone())
+        .with_current_path("/assets/deleted");
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        apply_sidebar_rbac(&state, &auth_user, base)
+            .await
+            .into_fields();
+
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+
+    let page: i32 = params
+        .get("page")
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(1)
+        .max(1);
+
+    let total_items: i64 = schema_assets::table
+        .filter(schema_assets::is_deleted.eq(true))
+        .count()
+        .get_result(&mut conn)
+        .await
+        .unwrap_or(0);
+    let total_pages = ((total_items as f64) / (ASSETS_PER_PAGE as f64))
+        .ceil()
+        .max(1.0) as i32;
+    let page = page.min(total_pages);
+    let offset = ((page - 1) as i64) * ASSETS_PER_PAGE;
+
+    #[allow(clippy::type_complexity)]
+    let rows: Vec<(
+        ::uuid::Uuid,
+        String,
+        String,
+        i32,
+        String,
+        AssetType,
+        Option<chrono::DateTime<chrono::Utc>>,
+        chrono::DateTime<chrono::Utc>,
+    )> = schema_assets::table
+        .filter(schema_assets::is_deleted.eq(true))
+        .select((
+            schema_assets::uuid,
+            schema_assets::name,
+            schema_assets::hostname,
+            schema_assets::port,
+            schema_assets::connection_username,
+            schema_assets::asset_type,
+            schema_assets::deleted_at,
+            schema_assets::created_at,
+        ))
+        // Most recent deletion first -- the audit reader almost
+        // always wants "what just disappeared".
+        .order(schema_assets::deleted_at.desc().nulls_last())
+        .then_order_by(schema_assets::name.asc())
+        .limit(ASSETS_PER_PAGE)
+        .offset(offset)
+        .load(&mut conn)
+        .await?;
+
+    let assets: Vec<DeletedAssetItem> = rows
+        .into_iter()
+        .map(
+            |(uuid, name, hostname, port, connection_username, asset_type, deleted_at, created_at)| {
+                DeletedAssetItem {
+                    uuid,
+                    name,
+                    hostname,
+                    port,
+                    connection_username,
+                    asset_type: asset_type.to_string(),
+                    deleted_at,
+                    created_at,
+                }
+            },
+        )
+        .collect();
+
+    let start_index = if total_items > 0 { offset + 1 } else { 0 };
+    let end_index = (offset + ASSETS_PER_PAGE).min(total_items);
+
+    let pagination = if total_items > 0 {
+        Some(Pagination {
+            current_page: page,
+            total_pages,
+            total_items: total_items as i32,
+            items_per_page: ASSETS_PER_PAGE as i32,
+            has_previous: page > 1,
+            has_next: page < total_pages,
+            start_index: start_index as i32,
+            end_index: end_index as i32,
+        })
+    } else {
+        None
+    };
+
+    let template = AssetDeletedListTemplate {
+        title,
+        user: user_ctx,
+        vauban,
+        messages,
+        language_code,
+        sidebar_content,
+        header_user,
+        assets,
+        pagination,
     };
 
     let html = template
@@ -1122,13 +1211,16 @@ pub async fn delete_asset_web(
     let result = conn
         .transaction::<_, diesel::result::Error, _>(|conn| {
             Box::pin(async move {
-                // SEC-11: scrub `connection_config` on soft-delete so a
-                // later reactivation (or any operator inspecting the
-                // row directly) cannot inherit stale credentials. The
-                // reactivation path also rewrites this column, but
-                // belt-and-suspenders matters here -- a row that lives
-                // in `is_deleted=true` for months should not carry an
-                // encrypted secret blob.
+                // Issue #17: scrub `connection_config` on soft-delete so
+                // a tombstone never carries credentials, even briefly.
+                // The DB enforces the same invariant via the
+                // `assets_tombstone_no_secrets` CHECK constraint -- this
+                // explicit write is now defence-in-depth, kept so the
+                // intent is local-readable and so any future code path
+                // that bypasses this handler is still rejected at COMMIT
+                // time. Resurrection of the tombstone is separately
+                // blocked by the `assets_no_resurrection_trg` trigger
+                // (RG-ASS-04: delete is irreversible).
                 diesel::update(a::assets.filter(a::id.eq(asset_id)))
                     .set((
                         a::is_deleted.eq(true),
@@ -1295,7 +1387,14 @@ pub async fn update_asset_web(
     use crate::schema::assets::dsl as a;
     use chrono::Utc;
 
-    // First, get the existing asset to preserve unchanged values
+    // First, get the existing asset to preserve unchanged values.
+    //
+    // Issue #17: filtering on `is_deleted = false` here makes the
+    // edit page report 404 on a tombstone, which is the correct UX
+    // signal (the asset is gone, RG-ASS-04 says delete is
+    // irreversible). The DB-level `assets_no_resurrection_trg`
+    // trigger is the actual security guarantee -- this filter is the
+    // friendly UX closing the door earlier.
     let existing: Result<crate::models::asset::Asset, _> = a::assets
         .filter(a::uuid.eq(asset_uuid))
         .filter(a::is_deleted.eq(false))

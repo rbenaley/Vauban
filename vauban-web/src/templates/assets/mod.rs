@@ -4,6 +4,7 @@ pub mod access_rule_detail;
 pub mod access_rule_edit;
 pub mod asset_connect;
 pub mod asset_create;
+pub mod asset_deleted_list;
 pub mod asset_detail;
 pub mod asset_edit;
 /// VAUBAN Web - Assets templates.
@@ -20,6 +21,7 @@ pub use access_rule_detail::{AccessRuleDetailData, AccessRuleDetailTemplate};
 pub use access_rule_edit::{AccessRuleEdit, AccessRuleEditTemplate};
 pub use asset_connect::AssetConnectTemplate;
 pub use asset_create::{AssetCreateForm, AssetCreateTemplate};
+pub use asset_deleted_list::{AssetDeletedListTemplate, DeletedAssetItem};
 pub use asset_detail::AssetDetailTemplate;
 pub use asset_edit::AssetEditTemplate;
 pub use asset_list::AssetListTemplate;
