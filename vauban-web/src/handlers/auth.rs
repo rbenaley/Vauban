@@ -272,75 +272,97 @@ pub async fn login(
         return Ok((jar.add(cookie), response).into_response());
     }
 
-    // API flow: handle MFA inline (legacy behavior for M2M compatibility)
-    // Note: This is a temporary inconsistency - API users can bypass MFA setup requirement.
-    // This will be addressed when MFA moves to vauban-auth service.
-    let mfa_verified = if user.mfa_enabled {
-        if let Some(code) = request.mfa_code {
-            if let Some(secret) = &user.mfa_secret {
-                // Issue #11 hardening: refuse explicitly when the secret is
-                // encrypted (vault envelope) but the vault IPC is not
-                // available -- otherwise we would silently call
-                // `verify_totp` on the ciphertext and return "Invalid MFA
-                // code" forever.
-                if is_encrypted(secret) && state.vault_client.is_none() {
-                    tracing::error!(
-                        user_id = user.id,
-                        "API login MFA: secret is encrypted but vault client is not configured"
-                    );
-                    return Err(AppError::Auth(
-                        "MFA backend is temporarily unavailable.".to_string(),
-                    ));
-                }
-                // Verify TOTP via vault (encrypted secrets) or directly (plaintext, pre-migration)
-                let valid = if let Some(ref vault) = state.vault_client
-                    && is_encrypted(secret)
-                {
-                    vault
-                        .mfa_verify(secret, &code)
-                        .await
-                        .map_err(|e| AppError::Auth(format!("MFA verification error: {}", e)))?
-                } else {
-                    // Direct verification: dev mode without vault, or plaintext secret (pre-migration)
-                    AuthService::verify_totp(secret, &code)
-                };
-                if valid {
-                    // Encrypt-on-read: progressively migrate plaintext MFA secrets
-                    if let Some(ref vault) = state.vault_client
-                        && !is_encrypted(secret)
-                        && let Ok(encrypted) = vault.encrypt("mfa", secret).await
-                    {
-                        diesel::update(users.find(user.id))
-                            .set(mfa_secret.eq(Some(&encrypted)))
-                            .execute(&mut conn)
-                            .await
-                            .ok(); // Best-effort migration
-                        tracing::info!(
-                            user_id = user.id,
-                            "Migrated plaintext MFA secret to encrypted (encrypt-on-read)"
-                        );
-                    }
-                    true
-                } else {
-                    return Err(AppError::Auth("Invalid MFA code".to_string()));
-                }
+    // SECURITY (Finding #2 remediation): MFA is mandatory for API login.
+    //
+    // Previously, accounts without MFA configured received a fully trusted
+    // session token from this endpoint -- a policy bypass for a bastion
+    // that mints credentials for privileged access. We now fail closed:
+    // if MFA is not enabled on the account, the API refuses the login and
+    // directs the caller to the web flow (which walks the user through
+    // TOTP enrolment via `/mfa/setup`). Service accounts that need M2M
+    // auth must use a dedicated mechanism (API keys or mTLS), not this
+    // password endpoint.
+    if !user.mfa_enabled {
+        tracing::warn!(
+            user_id = user.id,
+            username = %user.username,
+            "API login refused: MFA not configured for account"
+        );
+        return Err(AppError::Authorization(
+            "MFA setup is required before API login. Please complete MFA enrolment via \
+             the web interface at /mfa/setup, then retry."
+                .to_string(),
+        ));
+    }
+
+    // From here we know MFA is enabled. Verify the TOTP code.
+    let mfa_verified = if let Some(code) = request.mfa_code {
+        if let Some(secret) = &user.mfa_secret {
+            // Issue #11 hardening: refuse explicitly when the secret is
+            // encrypted (vault envelope) but the vault IPC is not
+            // available -- otherwise we would silently call
+            // `verify_totp` on the ciphertext and return "Invalid MFA
+            // code" forever.
+            if is_encrypted(secret) && state.vault_client.is_none() {
+                tracing::error!(
+                    user_id = user.id,
+                    "API login MFA: secret is encrypted but vault client is not configured"
+                );
+                return Err(AppError::Auth(
+                    "MFA backend is temporarily unavailable.".to_string(),
+                ));
+            }
+            // Verify TOTP via vault (encrypted secrets) or directly (plaintext, pre-migration)
+            let valid = if let Some(ref vault) = state.vault_client
+                && is_encrypted(secret)
+            {
+                vault
+                    .mfa_verify(secret, &code)
+                    .await
+                    .map_err(|e| AppError::Auth(format!("MFA verification error: {}", e)))?
             } else {
-                return Err(AppError::Auth("MFA configuration error".to_string()));
+                // Direct verification: dev mode without vault, or plaintext secret (pre-migration)
+                AuthService::verify_totp(secret, &code)
+            };
+            if valid {
+                // Encrypt-on-read: progressively migrate plaintext MFA secrets
+                if let Some(ref vault) = state.vault_client
+                    && !is_encrypted(secret)
+                    && let Ok(encrypted) = vault.encrypt("mfa", secret).await
+                {
+                    diesel::update(users.find(user.id))
+                        .set(mfa_secret.eq(Some(&encrypted)))
+                        .execute(&mut conn)
+                        .await
+                        .ok(); // Best-effort migration
+                    tracing::info!(
+                        user_id = user.id,
+                        "Migrated plaintext MFA secret to encrypted (encrypt-on-read)"
+                    );
+                }
+                true
+            } else {
+                return Err(AppError::Auth("Invalid MFA code".to_string()));
             }
         } else {
-            // MFA required but no code provided
-            return Ok(Json(LoginResponse {
-                access_token: String::new(),
-                refresh_token: String::new(),
-                user: user.to_dto(),
-                mfa_required: true,
-            })
-            .into_response());
+            // mfa_enabled=true but no secret -- corrupted state
+            tracing::error!(
+                user_id = user.id,
+                "MFA configuration inconsistency: mfa_enabled=true but mfa_secret is NULL"
+            );
+            return Err(AppError::Auth("MFA configuration error".to_string()));
         }
     } else {
-        // MFA not enabled - API login proceeds without MFA
-        // (temporary inconsistency: API users don't need to set up MFA)
-        true
+        // MFA enabled but no code provided: surface as `mfa_required`.
+        // Note: the response carries no token -- the client must replay the
+        // login with the TOTP code in `mfa_code` to receive one.
+        return Ok(Json(LoginResponse {
+            access_token: String::new(),
+            refresh_token: String::new(),
+            user: user.to_dto(),
+            mfa_required: true,
+        })
+        .into_response());
     };
 
     // Generate tokens (API flow with MFA verified)
@@ -1865,5 +1887,114 @@ mod tests {
         assert!(is_encrypted("v0:x"));
         // Very large version number
         assert!(is_encrypted("v12345:data"));
+    }
+
+    // ==================== API Login MFA Enforcement Tests (Finding #2) ==========
+    //
+    // These structural tests guard the fix for the historical "API users
+    // can bypass MFA setup" finding. The bug was a single `else` branch
+    // that silently set `mfa_verified = true` when `user.mfa_enabled` was
+    // false. The tests below scan the production source so a regression
+    // (e.g. someone re-introducing the M2M shortcut) is caught at
+    // compile/test time.
+
+    /// Helper: extract the body of `pub async fn login(` (the API login
+    /// handler) from the production source, stopping at the next public
+    /// item or the test module.
+    fn login_handler_source() -> &'static str {
+        let full = include_str!("auth.rs");
+        // Strip the test module specifically -- there are other `#[cfg(test)]`
+        // attributes earlier in the file (on imports), so we can't naively
+        // split on the first `#[cfg(test)]`.
+        let prod = full
+            .find("#[cfg(test)]\nmod tests")
+            .map(|i| &full[..i])
+            .unwrap_or(full);
+        // Disambiguate from `login_web`: we want the bare `pub async fn login(`.
+        let needle = "pub async fn login(";
+        let start = prod.find(needle).expect("login API handler must exist");
+        let after = &prod[start..];
+        // Stop at the next `pub async fn ` (login_web, logout, etc.).
+        let end = after[needle.len()..]
+            .find("pub async fn ")
+            .map(|o| needle.len() + o)
+            .unwrap_or(after.len());
+        &after[..end]
+    }
+
+    /// The historical bypass shipped these literal comments. Their
+    /// presence is the smoking gun for a regression.
+    #[test]
+    fn test_api_login_does_not_carry_legacy_bypass_comments() {
+        let body = login_handler_source();
+        for needle in [
+            "API users don't need to set up MFA",
+            "API login proceeds without MFA",
+            "temporary inconsistency",
+            "legacy behavior for M2M compatibility",
+        ] {
+            assert!(
+                !body.contains(needle),
+                "API login handler still carries the legacy bypass comment: {:?}. \
+                 The bypass branch must be removed; reject API login when \
+                 mfa_enabled is false.",
+                needle
+            );
+        }
+    }
+
+    /// The bypass shape was:
+    ///     } else {
+    ///         // ...
+    ///         true
+    ///     };
+    /// after a `if user.mfa_enabled { ... }`. We now require an explicit
+    /// fail-closed return on the !mfa_enabled path.
+    #[test]
+    fn test_api_login_rejects_account_without_mfa() {
+        let body = login_handler_source();
+        // The new code must contain the explicit early-return for accounts
+        // without MFA. We assert on a stable substring of the new error.
+        assert!(
+            body.contains("MFA setup is required before API login"),
+            "API login handler must explicitly reject accounts that have \
+             not completed MFA setup with a clear error message"
+        );
+        // Defence in depth: the new code must check `!user.mfa_enabled`
+        // and call `AppError::Authorization`.
+        assert!(
+            body.contains("!user.mfa_enabled"),
+            "API login handler must branch on `!user.mfa_enabled` to fail closed"
+        );
+        assert!(
+            body.contains("AppError::Authorization"),
+            "API login handler must return AppError::Authorization (403) \
+             for accounts without MFA, not silently mint a trusted token"
+        );
+    }
+
+    /// The strongest invariant: there must be **no** literal `true` value
+    /// being assigned to a variable named `mfa_verified` anywhere in the
+    /// API login handler. The only valid sources of `mfa_verified = true`
+    /// are (a) successful TOTP verification (computed at runtime) and
+    /// (b) the post-MFA step-up handlers (which live in a different
+    /// function and are explicitly tested).
+    #[test]
+    fn test_api_login_never_hardcodes_mfa_verified_true() {
+        let body = login_handler_source();
+        // Forbid the exact literal that was the bypass.
+        assert!(
+            !body.contains("mfa_verified = true"),
+            "API login handler must not hardcode `mfa_verified = true`. \
+             Only successful TOTP verification may set it."
+        );
+        // Also forbid the historical short form `_ => true,` style on this
+        // path: the bypass `else { true }` shape.
+        let normalized: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            !normalized.contains("} else { true }"),
+            "API login handler must not contain `}} else {{ true }}` on the \
+             MFA path -- this was the historical bypass shape."
+        );
     }
 }

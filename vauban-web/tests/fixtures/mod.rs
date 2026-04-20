@@ -226,6 +226,105 @@ pub async fn create_mfa_user(
     }
 }
 
+/// Test user data with the raw MFA secret exposed so the caller can compute
+/// a valid TOTP code at request time.
+pub struct TestUserWithMfa {
+    pub user: User,
+    pub password: String,
+    /// JWT with `mfa_verified=true` -- ready for direct API auth.
+    pub token: String,
+    /// Base32-encoded TOTP secret. Use [`current_totp_for`] to derive the
+    /// code that the API login endpoint will accept right now.
+    pub mfa_secret: String,
+}
+
+/// Create a regular (non-admin) user with MFA enabled and return the raw
+/// MFA secret so the caller can drive `/api/v1/auth/login` end-to-end.
+///
+/// Designed for tests that exercise the API login flow after the
+/// "Finding #2" remediation, which refuses API logins for accounts
+/// without MFA configured.
+pub async fn create_test_user_with_mfa(
+    conn: &mut AsyncPgConnection,
+    auth_service: &AuthService,
+    username: &str,
+) -> TestUserWithMfa {
+    create_user_with_mfa_internal(conn, auth_service, username, false, false).await
+}
+
+/// Create an admin (is_staff + is_superuser) user with MFA enabled.
+pub async fn create_admin_user_with_mfa(
+    conn: &mut AsyncPgConnection,
+    auth_service: &AuthService,
+    username: &str,
+) -> TestUserWithMfa {
+    create_user_with_mfa_internal(conn, auth_service, username, true, true).await
+}
+
+async fn create_user_with_mfa_internal(
+    conn: &mut AsyncPgConnection,
+    auth_service: &AuthService,
+    username: &str,
+    is_staff: bool,
+    is_superuser: bool,
+) -> TestUserWithMfa {
+    let password = "MfaPassword123!";
+    let password_hash = unwrap_ok!(auth_service.hash_password(password));
+    let user_uuid = Uuid::new_v4();
+    let (mfa_secret, _) = unwrap_ok!(AuthService::generate_totp_secret(username, "VAUBAN-tests"));
+
+    let new_user = NewUser {
+        uuid: user_uuid,
+        username: username.to_string(),
+        email: format!("{}@test.vauban.io", username),
+        password_hash,
+        first_name: Some("Test".to_string()),
+        last_name: Some("WithMfa".to_string()),
+        phone: None,
+        is_active: true,
+        is_staff,
+        is_superuser,
+        is_service_account: false,
+        mfa_enabled: true,
+        mfa_enforced: false,
+        mfa_secret: Some(mfa_secret.clone()),
+        preferences: serde_json::json!({}),
+        auth_source: AuthSource::Local,
+        external_id: None,
+    };
+
+    let user: User = unwrap_ok!(
+        diesel::insert_into(users::table)
+            .values(&new_user)
+            .get_result(conn)
+            .await
+    );
+
+    // Token with MFA verified -- mirrors what the login endpoint mints
+    // after a successful TOTP check.
+    let token = unwrap_ok!(auth_service.generate_access_token(
+        &user.uuid.to_string(),
+        &user.username,
+        true,
+        is_staff,
+        is_superuser,
+    ));
+    create_session_for_token(conn, user.id, &token).await;
+
+    TestUserWithMfa {
+        user,
+        password: password.to_string(),
+        token,
+        mfa_secret,
+    }
+}
+
+/// Compute the TOTP code that `/api/v1/auth/login` will accept right now
+/// for the given base32-encoded shared secret.
+pub fn current_totp_for(mfa_secret: &str) -> String {
+    unwrap_some!(AuthService::get_current_totp(mfa_secret))
+}
+
 /// Test asset data.
 pub struct TestAsset {
     pub asset: Asset,

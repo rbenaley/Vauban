@@ -6,26 +6,32 @@ use serde_json::json;
 use serial_test::serial;
 
 use crate::common::{TestApp, assertions::*, test_db, unwrap_ok};
-use crate::fixtures::{create_mfa_user, create_test_user, unique_name};
+use crate::fixtures::{
+    create_mfa_user, create_test_user, create_test_user_with_mfa, current_totp_for, unique_name,
+};
 
 /// Test successful login with valid credentials.
+///
+/// Per Finding #2 remediation, API login requires MFA configured on the
+/// account; a fresh TOTP code must be sent alongside username/password.
 #[tokio::test]
 #[serial]
 async fn test_login_success() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    // Setup: create test user
+    // Setup: create test user with MFA enabled
     let username = unique_name("test_login");
-    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
+    let test_user = create_test_user_with_mfa(&mut conn, &app.auth_service, &username).await;
 
-    // Execute: POST /api/v1/auth/login
+    // Execute: POST /api/v1/auth/login with a valid TOTP code
     let response = app
         .server
         .post("/api/v1/auth/login")
         .json(&json!({
             "username": username,
-            "password": test_user.password
+            "password": test_user.password,
+            "mfa_code": current_totp_for(&test_user.mfa_secret),
         }))
         .await;
 
@@ -35,6 +41,47 @@ async fn test_login_success() {
     assert_json_has_field(&response, "user");
 
     // Cleanup
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Finding #2 regression: API login MUST refuse accounts that do not
+/// have MFA configured (the historical bypass minted a fully MFA-trusted
+/// token in this case). The expected response is 403 with a message
+/// directing the caller to the web MFA setup flow.
+#[tokio::test]
+#[serial]
+async fn test_login_refused_when_mfa_not_configured() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let username = unique_name("test_no_mfa");
+    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
+
+    let response = app
+        .server
+        .post("/api/v1/auth/login")
+        .json(&json!({
+            "username": username,
+            "password": test_user.password,
+        }))
+        .await;
+
+    assert_status(&response, 403);
+    let body: serde_json::Value = response.json();
+    let msg = body
+        .get("error")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert!(
+        msg.contains("MFA setup is required"),
+        "error must direct user to web MFA setup, got: {}",
+        msg
+    );
+    assert!(
+        body.get("access_token").is_none(),
+        "no token must be issued when MFA is not configured"
+    );
+
     test_db::cleanup(&mut conn).await;
 }
 

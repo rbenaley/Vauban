@@ -264,39 +264,61 @@ fn handle_message(channel: &IpcChannel, state: &mut ServiceState, msg: Message) 
     match msg {
         Message::Control(ctrl) => handle_control(channel, state, ctrl),
 
+        // SECURITY: `AuthRequest` is a legacy IPC verb whose end-to-end logic
+        // (credential lookup + lockout + session minting) was never implemented
+        // in this service. Returning `Success` here would be a complete
+        // authentication bypass for any caller that wires this verb up. We
+        // fail closed -- the supported flow is `AuthVerifyPassword`
+        // (and `AuthHashPassword` for hash creation), which `vauban-web`
+        // already uses. If you need a higher-level verb, design it
+        // explicitly; do not re-enable this branch.
         Message::AuthRequest {
             request_id,
             username,
             credential: _,
             source_ip,
         } => {
-            info!("Auth request for user {} from {}", username, source_ip);
+            warn!(
+                request_id,
+                %source_ip,
+                user = %username,
+                "Refusing AuthRequest: this IPC verb is not implemented; use AuthVerifyPassword"
+            );
             state.requests_processed += 1;
+            state.requests_failed += 1;
 
-            // TODO: Actual authentication logic
-            let result = AuthResult::Success {
-                user_id: username.clone(),
-                session_id: "placeholder-session".to_string(),
-                roles: vec!["user".to_string()],
+            let response = Message::AuthResponse {
+                request_id,
+                result: AuthResult::Failure {
+                    reason: "auth.request_not_implemented".to_string(),
+                },
             };
-
-            let response = Message::AuthResponse { request_id, result };
             channel.send(&response)?;
             Ok(())
         }
 
+        // SECURITY: same rationale as `AuthRequest` -- the inline MFA
+        // verification path was a stub that always returned success. Real
+        // TOTP verification happens in `vauban-vault` via `VaultMfaVerify`,
+        // and the high-level orchestration lives in `vauban-web`. We fail
+        // closed so a stray caller cannot silently bypass MFA.
         Message::MfaVerify {
             request_id,
-            challenge_id: _,
+            challenge_id,
             code: _,
         } => {
+            warn!(
+                request_id,
+                %challenge_id,
+                "Refusing MfaVerify: this IPC verb is not implemented; use VaultMfaVerify"
+            );
             state.requests_processed += 1;
+            state.requests_failed += 1;
 
-            // TODO: Actual MFA verification
             let response = Message::MfaVerifyResponse {
                 request_id,
-                success: true,
-                session_id: Some("placeholder-session".to_string()),
+                success: false,
+                session_id: None,
             };
             channel.send(&response)?;
             Ok(())
@@ -491,12 +513,18 @@ mod tests {
 
     // ==================== handle_message Tests ====================
 
+    /// Regression test for the placeholder `AuthRequest` handler.
+    ///
+    /// Historically this stub returned `AuthResult::Success` for any input,
+    /// which would have been a complete authentication bypass for any caller
+    /// that wired the verb up. The handler must now fail closed with a
+    /// machine-readable reason. This test guards against re-introducing
+    /// the bypass.
     #[test]
-    fn test_handle_message_auth_request() {
+    fn test_handle_message_auth_request_fails_closed() {
         let (web, auth) = IpcChannel::pair().unwrap();
         let mut state = test_state();
 
-        // Send auth request
         let request = Message::AuthRequest {
             request_id: 1,
             username: "testuser".to_string(),
@@ -506,25 +534,37 @@ mod tests {
 
         handle_message(&auth, &mut state, request).unwrap();
 
-        // Verify request was processed
+        // Failure must still be counted -- it is a refused request.
         assert_eq!(state.requests_processed, 1);
+        assert_eq!(state.requests_failed, 1);
 
-        // Read response
         let response: Message = web.recv().unwrap();
-        if let Message::AuthResponse { request_id, result } = response {
-            assert_eq!(request_id, 1);
-            assert!(matches!(result, AuthResult::Success { .. }));
-        } else {
-            panic!("Expected AuthResponse");
+        match response {
+            Message::AuthResponse {
+                request_id,
+                result: AuthResult::Failure { reason },
+            } => {
+                assert_eq!(request_id, 1);
+                assert_eq!(
+                    reason, "auth.request_not_implemented",
+                    "Failure reason must be the documented error code"
+                );
+            }
+            other => panic!("Expected AuthResponse with Failure, got {:?}", other),
         }
     }
 
+    /// Regression test for the placeholder `MfaVerify` handler.
+    ///
+    /// Historically this stub returned `success: true` with a placeholder
+    /// session id. The handler must now fail closed (no success, no
+    /// session id) so a stray caller cannot bypass MFA. Real MFA
+    /// verification lives in `vauban-vault` (`VaultMfaVerify`).
     #[test]
-    fn test_handle_message_mfa_verify() {
+    fn test_handle_message_mfa_verify_fails_closed() {
         let (web, auth) = IpcChannel::pair().unwrap();
         let mut state = test_state();
 
-        // Send MFA verify request
         let request = Message::MfaVerify {
             request_id: 2,
             challenge_id: "chal123".to_string(),
@@ -533,22 +573,82 @@ mod tests {
 
         handle_message(&auth, &mut state, request).unwrap();
 
-        // Verify request was processed
         assert_eq!(state.requests_processed, 1);
+        assert_eq!(state.requests_failed, 1);
 
-        // Read response
         let response: Message = web.recv().unwrap();
-        if let Message::MfaVerifyResponse {
-            request_id,
-            success,
-            session_id,
-        } = response
-        {
-            assert_eq!(request_id, 2);
-            assert!(success);
-            assert!(session_id.is_some());
-        } else {
-            panic!("Expected MfaVerifyResponse");
+        match response {
+            Message::MfaVerifyResponse {
+                request_id,
+                success,
+                session_id,
+            } => {
+                assert_eq!(request_id, 2);
+                assert!(!success, "Stub MFA verify must NEVER return success");
+                assert!(
+                    session_id.is_none(),
+                    "Stub MFA verify must NEVER mint a session id"
+                );
+            }
+            other => panic!("Expected MfaVerifyResponse, got {:?}", other),
+        }
+    }
+
+    /// Even with arbitrary inputs (empty username, all-zero credentials,
+    /// empty MFA code), the stubs must always fail. This is a defence
+    /// in depth against future refactors that might "trust" certain inputs.
+    #[test]
+    fn test_auth_stubs_never_succeed_for_any_input() {
+        let (web, auth) = IpcChannel::pair().unwrap();
+        let mut state = test_state();
+
+        let inputs = vec![
+            ("", b"".to_vec()),
+            ("admin", b"admin".to_vec()),
+            ("root", vec![0u8; 32]),
+            ("\0\0\0", vec![0xFFu8; 256]),
+        ];
+        for (i, (user, cred)) in inputs.into_iter().enumerate() {
+            let req = Message::AuthRequest {
+                request_id: 1000 + i as u64,
+                username: user.to_string(),
+                credential: cred,
+                source_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            };
+            handle_message(&auth, &mut state, req).unwrap();
+            let response: Message = web.recv().unwrap();
+            match response {
+                Message::AuthResponse {
+                    result: AuthResult::Success { .. },
+                    ..
+                } => panic!("AuthRequest stub must never return Success"),
+                Message::AuthResponse {
+                    result: AuthResult::Failure { .. },
+                    ..
+                } => {}
+                other => panic!("Unexpected response: {:?}", other),
+            }
+        }
+
+        for (i, code) in ["", "000000", "999999", "abcdef"].iter().enumerate() {
+            let req = Message::MfaVerify {
+                request_id: 2000 + i as u64,
+                challenge_id: format!("chal-{}", i),
+                code: code.to_string(),
+            };
+            handle_message(&auth, &mut state, req).unwrap();
+            let response: Message = web.recv().unwrap();
+            match response {
+                Message::MfaVerifyResponse {
+                    success: true, ..
+                } => panic!("MfaVerify stub must never return success"),
+                Message::MfaVerifyResponse {
+                    success: false,
+                    session_id,
+                    ..
+                } => assert!(session_id.is_none()),
+                other => panic!("Unexpected response: {:?}", other),
+            }
         }
     }
 
@@ -828,6 +928,48 @@ mod tests {
         assert!(
             source.contains("AuthHashPassword"),
             "handle_message must handle AuthHashPassword"
+        );
+    }
+
+    /// Source-level guard against re-introducing the `AuthRequest`/
+    /// `MfaVerify` stub bypass. We scan the production source for the
+    /// telltale return shapes from the old stubs.
+    #[test]
+    fn test_source_does_not_mint_placeholder_session() {
+        let source = prod_source();
+        assert!(
+            !source.contains("placeholder-session"),
+            "production code must not mint placeholder sessions \
+             (this string was the historical stub bypass)"
+        );
+    }
+
+    /// `vauban-auth` must never mint `AuthResult::Success` itself: that would
+    /// mean the service pretends to authenticate without going through the
+    /// real password verification flow (`AuthVerifyPassword`). The high-level
+    /// orchestration that turns a successful password check into a session
+    /// lives in `vauban-web`, not here.
+    #[test]
+    fn test_production_code_never_constructs_auth_result_success() {
+        let source = prod_source();
+        assert!(
+            !source.contains("AuthResult::Success"),
+            "production code must never construct AuthResult::Success \
+             (only verify primitives are exposed by this service)"
+        );
+    }
+
+    /// `vauban-auth` must never return a positive `MfaVerifyResponse`: real
+    /// TOTP verification lives in `vauban-vault` (`VaultMfaVerify`). If a
+    /// caller sends `MfaVerify` to this service it must fail closed.
+    #[test]
+    fn test_production_code_never_returns_mfa_verify_success() {
+        let source = prod_source();
+        // We allow the literal `success: false` (the explicit fail-closed
+        // response). We forbid `success: true` anywhere in production code.
+        assert!(
+            !source.contains("success: true"),
+            "production code must never return MfaVerifyResponse with success=true"
         );
     }
 }

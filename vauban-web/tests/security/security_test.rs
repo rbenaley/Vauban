@@ -27,9 +27,11 @@ use diesel_async::RunQueryDsl;
 
 use crate::common::{TestApp, assertions::*, test_db, unwrap_ok, unwrap_some};
 use crate::fixtures::{
-    create_admin_user, create_simple_admin_user, create_simple_rdp_asset, create_simple_ssh_asset,
-    create_simple_user, create_test_api_key, create_test_auth_session, create_test_rdp_asset,
-    create_test_session_with_uuid, create_test_ssh_asset, create_test_user, unique_name,
+    create_admin_user, create_admin_user_with_mfa, create_simple_admin_user,
+    create_simple_rdp_asset, create_simple_ssh_asset, create_simple_user, create_test_api_key,
+    create_test_auth_session, create_test_rdp_asset, create_test_session_with_uuid,
+    create_test_ssh_asset, create_test_user, create_test_user_with_mfa, current_totp_for,
+    unique_name,
 };
 
 /// Helper to get user UUID from user_id.
@@ -1182,6 +1184,9 @@ async fn test_secure_cookie_settings() {
 }
 
 /// Test session fixation protection.
+///
+/// Per Finding #2 remediation, API login requires MFA configured on the
+/// account; we use an MFA-enabled fixture and a valid TOTP code.
 #[tokio::test]
 #[serial]
 async fn test_session_fixation_protection() {
@@ -1189,14 +1194,15 @@ async fn test_session_fixation_protection() {
     let mut conn = app.get_conn().await;
 
     let username = unique_name("test_session");
-    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
+    let test_user = create_test_user_with_mfa(&mut conn, &app.auth_service, &username).await;
 
     let response = app
         .server
         .post("/api/v1/auth/login")
         .json(&json!({
             "username": username,
-            "password": test_user.password
+            "password": test_user.password,
+            "mfa_code": current_totp_for(&test_user.mfa_secret),
         }))
         .await;
 
@@ -1214,6 +1220,9 @@ async fn test_session_fixation_protection() {
 }
 
 /// Test JWT token expiration.
+///
+/// Per Finding #2 remediation, API login requires MFA; we use an
+/// MFA-enabled admin fixture and a valid TOTP code.
 #[tokio::test]
 #[serial]
 async fn test_jwt_expiration() {
@@ -1222,14 +1231,15 @@ async fn test_jwt_expiration() {
 
     // Use admin user since /api/v1/accounts requires staff/superuser
     let username = unique_name("test_jwt_exp");
-    let test_user = create_admin_user(&mut conn, &app.auth_service, &username).await;
+    let test_user = create_admin_user_with_mfa(&mut conn, &app.auth_service, &username).await;
 
     let response = app
         .server
         .post("/api/v1/auth/login")
         .json(&json!({
             "username": username,
-            "password": test_user.password
+            "password": test_user.password,
+            "mfa_code": current_totp_for(&test_user.mfa_secret),
         }))
         .await;
 
@@ -1695,7 +1705,11 @@ async fn test_connect_ssh_accepts_valid_csrf_token() {
 // MFA Security Tests
 // =============================================================================
 
-/// Test MFA enforcement.
+/// Finding #2 regression: API login MUST refuse accounts without MFA
+/// configured (it used to silently mint a fully MFA-trusted token).
+///
+/// This test was historically permissive (accepted 200 OR 401); after the
+/// remediation it asserts the strict policy: 403 with no token.
 #[tokio::test]
 #[serial]
 async fn test_mfa_enforcement() {
@@ -1705,22 +1719,26 @@ async fn test_mfa_enforcement() {
     let username = unique_name("test_mfa_enforce");
     let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
 
-    // Login without MFA code (for non-MFA user, should succeed)
     let response = app
         .server
         .post("/api/v1/auth/login")
         .json(&json!({
             "username": username,
-            "password": test_user.password
+            "password": test_user.password,
         }))
         .await;
 
-    // Should succeed or require MFA verification
-    let status = response.status_code().as_u16();
+    assert_eq!(
+        response.status_code().as_u16(),
+        403,
+        "API login MUST refuse accounts without MFA configured (Finding #2). \
+         Got body: {}",
+        response.text()
+    );
+    let body: serde_json::Value = response.json();
     assert!(
-        status == 200 || status == 401,
-        "Expected 200 or 401, got {}",
-        status
+        body.get("access_token").is_none(),
+        "Refused login must not include a token in the response body"
     );
 
     test_db::cleanup(&mut conn).await;
@@ -2274,7 +2292,8 @@ async fn test_login_ignores_spoofed_xff_header() {
     let mut conn = app.get_conn().await;
 
     let username = unique_name("test_xff_login");
-    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
+    // Per Finding #2 remediation, API login requires MFA.
+    let test_user = create_test_user_with_mfa(&mut conn, &app.auth_service, &username).await;
 
     // Attempt login with a spoofed X-Forwarded-For header
     let response = app
@@ -2286,7 +2305,8 @@ async fn test_login_ignores_spoofed_xff_header() {
         )
         .json(&json!({
             "username": username,
-            "password": test_user.password
+            "password": test_user.password,
+            "mfa_code": current_totp_for(&test_user.mfa_secret),
         }))
         .await;
 

@@ -32,7 +32,7 @@ use tracing::{debug, error, info, trace, warn};
 use crate::utils::format_duration;
 
 use crate::AppState;
-use crate::middleware::auth::AuthUser;
+use crate::middleware::auth::{AuthUser, WsAuthUser};
 use crate::services::broadcast::WsChannel;
 use crate::services::connections::WsConnectionGuard;
 
@@ -96,6 +96,27 @@ pub async fn ws_connection_limit(
             return StatusCode::UNAUTHORIZED.into_response();
         }
     };
+
+    // SECURITY: layer 1 of WebSocket MFA enforcement.
+    //
+    // This middleware runs on **every** /ws/* route (see `ws_limit_layer`
+    // in main.rs), so rejecting pre-MFA tokens here protects the entire
+    // WebSocket surface even before per-handler extractors run. We reject
+    // with 403 (no redirect): WS clients cannot follow HTML redirects, and
+    // returning a redirect would mask the rejection.
+    if !user.mfa_verified {
+        warn!(
+            user = %user.username,
+            uuid = %user.uuid,
+            path = %request.uri().path(),
+            "WebSocket connection refused: token has mfa_verified=false"
+        );
+        return (
+            StatusCode::FORBIDDEN,
+            "MFA verification required for WebSocket access",
+        )
+            .into_response();
+    }
 
     // Try to acquire a connection slot
     match state.ws_counter.try_acquire(&user.uuid).await {
@@ -213,6 +234,22 @@ pub async fn ws_session_guard(
         }
     };
 
+    // SECURITY: layer 2 of WebSocket MFA enforcement.
+    //
+    // `ws_connection_limit` (layer 1) already rejects pre-MFA tokens for
+    // every /ws/* route, but we re-check here as defence in depth. If a
+    // future refactor moves session-bound routes outside the
+    // `ws_limit_layer`, this guard still blocks the bypass.
+    if !user.mfa_verified {
+        warn!(
+            user = %user.username,
+            uuid = %user.uuid,
+            path = %request.uri().path(),
+            "ws_session_guard: rejecting pre-MFA token"
+        );
+        return axum::http::StatusCode::FORBIDDEN.into_response();
+    }
+
     // Extract session ID from the last path segment
     // Routes: /ws/terminal/{session_id} and /ws/session/{id}
     let path = request.uri().path().to_string();
@@ -244,9 +281,12 @@ const PING_INTERVAL_SECS: u64 = 30;
 pub async fn dashboard_ws(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
-    user: AuthUser,
+    // SECURITY: layer 3 of WebSocket MFA enforcement. `WsAuthUser` rejects
+    // pre-MFA tokens with 403 (no redirect) -- see `middleware::auth::WsAuthUser`.
+    user: WsAuthUser,
     ws_guard: WsGuard,
 ) -> impl IntoResponse {
+    let user = user.0;
     info!(user = %user.username, "Dashboard WebSocket connection requested");
     ws.on_upgrade(move |socket| handle_dashboard_socket(socket, state, user, ws_guard))
 }
@@ -549,9 +589,11 @@ pub async fn session_ws(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
     Path(session_id): Path<String>,
-    user: AuthUser,
+    // SECURITY: see `middleware::auth::WsAuthUser`.
+    user: WsAuthUser,
     ws_guard: WsGuard,
 ) -> impl IntoResponse {
+    let user = user.0;
     info!(
         user = %user.username,
         session_id = %session_id,
@@ -652,9 +694,11 @@ pub async fn notifications_ws(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
     jar: CookieJar,
-    user: AuthUser,
+    // SECURITY: see `middleware::auth::WsAuthUser`.
+    user: WsAuthUser,
     ws_guard: WsGuard,
 ) -> impl IntoResponse {
+    let user = user.0;
     info!(user = %user.username, "Notifications WebSocket connection requested");
 
     // Compute token_hash from access_token cookie for personalized session identification
@@ -789,9 +833,11 @@ async fn handle_notifications_socket(
 pub async fn active_sessions_ws(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
-    user: AuthUser,
+    // SECURITY: see `middleware::auth::WsAuthUser`.
+    user: WsAuthUser,
     ws_guard: WsGuard,
 ) -> impl IntoResponse {
+    let user = user.0;
     info!(user = %user.username, "Active sessions list WebSocket connection requested");
     ws.on_upgrade(move |socket| handle_active_sessions_socket(socket, state, user, ws_guard))
 }
@@ -1015,9 +1061,11 @@ pub(crate) async fn fetch_active_sessions_list(
 pub async fn session_list_ws(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
-    user: AuthUser,
+    // SECURITY: see `middleware::auth::WsAuthUser`.
+    user: WsAuthUser,
     ws_guard: WsGuard,
 ) -> impl IntoResponse {
+    let user = user.0;
     info!(user = %user.username, "Session list WebSocket connection requested");
     ws.on_upgrade(move |socket| handle_session_list_socket(socket, state, user, ws_guard))
 }
@@ -1284,9 +1332,11 @@ pub async fn terminal_ws(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
     Path(session_id): Path<String>,
-    user: AuthUser,
+    // SECURITY: see `middleware::auth::WsAuthUser`.
+    user: WsAuthUser,
     ws_guard: WsGuard,
 ) -> impl IntoResponse {
+    let user = user.0;
     info!(
         user = %user.username,
         session_id = %session_id,
@@ -1617,9 +1667,11 @@ pub async fn rdp_ws(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
     Path(session_id): Path<String>,
-    user: AuthUser,
+    // SECURITY: see `middleware::auth::WsAuthUser`.
+    user: WsAuthUser,
     ws_guard: WsGuard,
 ) -> impl IntoResponse {
+    let user = user.0;
     info!(
         user = %user.username,
         session_id = %session_id,
@@ -3059,6 +3111,145 @@ mod tests {
         assert!(
             has_else_branch,
             "RDP handler must always mark session as disconnected, even when recording is disabled"
+        );
+    }
+
+    // ==================== WebSocket MFA Enforcement Tests ====================
+    //
+    // These tests guard the three layers of WebSocket MFA enforcement.
+    // A regression in any of them would let a pre-MFA token open a
+    // WebSocket connection (the historical Finding #3 bypass).
+
+    /// Source-level guard: every public WebSocket handler in this file MUST
+    /// take `WsAuthUser` (not `AuthUser`). The list is derived from the
+    /// `pub async fn ..._ws(` pattern, so adding a new handler automatically
+    /// puts it under guard.
+    #[test]
+    fn test_no_ws_handler_uses_raw_auth_user() {
+        let source = include_str!("websocket.rs");
+        // Strip the test module so we only inspect production handlers.
+        let prod = source.find("#[cfg(test)]").map(|i| &source[..i]).unwrap_or(source);
+
+        // Extract a balanced parenthesised slice starting at byte index
+        // `start` of `s` (which must point at '('). Returns the slice
+        // including both the opening and the matching closing paren.
+        fn balanced_parens(s: &str, start: usize) -> &str {
+            let bytes = s.as_bytes();
+            assert_eq!(bytes[start], b'(');
+            let mut depth = 0i32;
+            for (i, &b) in bytes[start..].iter().enumerate() {
+                match b {
+                    b'(' => depth += 1,
+                    b')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return &s[start..start + i + 1];
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            panic!("unbalanced parentheses starting at byte {}", start);
+        }
+
+        let handler_pattern = "pub async fn ";
+        let mut offset = 0;
+        let mut handler_count = 0;
+        while let Some(pos) = prod[offset..].find(handler_pattern) {
+            let abs = offset + pos;
+            let after = &prod[abs..];
+            let paren_open_rel = after.find('(').expect("function header must contain '('");
+            let header_name = &after[handler_pattern.len()..paren_open_rel];
+            // Advance past this match for the next loop iteration.
+            offset = abs + paren_open_rel + 1;
+
+            // Only enforce on `_ws` handlers (not middlewares like
+            // ws_session_guard or helpers like ws_connection_limit).
+            if !header_name.ends_with("_ws") {
+                continue;
+            }
+
+            let signature = balanced_parens(after, paren_open_rel);
+
+            assert!(
+                !signature.contains(": AuthUser"),
+                "WebSocket handler `{}` must not accept raw `AuthUser` -- use `WsAuthUser` so \
+                 pre-MFA tokens are rejected at the extractor boundary. Signature was:\n{}",
+                header_name,
+                signature
+            );
+            assert!(
+                signature.contains(": WsAuthUser"),
+                "WebSocket handler `{}` must accept `WsAuthUser`. Signature was:\n{}",
+                header_name,
+                signature
+            );
+            handler_count += 1;
+        }
+
+        // Sanity check: we expect at least the historical 7 handlers
+        // (dashboard, session, notifications, active_sessions, session_list,
+        // terminal, rdp). If this drops below 7 it likely means the
+        // signature pattern changed and the test is no longer scanning.
+        assert!(
+            handler_count >= 7,
+            "expected at least 7 _ws handlers under guard, found {}",
+            handler_count
+        );
+    }
+
+    /// `ws_connection_limit` middleware MUST reject pre-MFA tokens (layer 1).
+    /// This test inspects the source so we don't accidentally drop the check.
+    #[test]
+    fn test_ws_connection_limit_rejects_pre_mfa() {
+        let source = include_str!("websocket.rs");
+        let fn_start = source
+            .find("pub async fn ws_connection_limit")
+            .expect("ws_connection_limit must exist");
+        // Stop at the next pub item or the test module.
+        let after = &source[fn_start..];
+        let next_item = after[20..]
+            .find("\npub ")
+            .map(|o| 20 + o)
+            .unwrap_or(after.len());
+        let cfg_test = after.find("#[cfg(test)]").unwrap_or(after.len());
+        let end = next_item.min(cfg_test);
+        let fn_body = &after[..end];
+
+        assert!(
+            fn_body.contains("mfa_verified"),
+            "ws_connection_limit MUST check `mfa_verified` to reject pre-MFA tokens"
+        );
+        assert!(
+            fn_body.contains("FORBIDDEN"),
+            "ws_connection_limit MUST return 403 FORBIDDEN for pre-MFA tokens \
+             (no redirect: WS clients cannot follow HTML redirects)"
+        );
+    }
+
+    /// `ws_session_guard` middleware MUST reject pre-MFA tokens (layer 2).
+    #[test]
+    fn test_ws_session_guard_rejects_pre_mfa() {
+        let source = include_str!("websocket.rs");
+        let fn_start = source
+            .find("pub async fn ws_session_guard")
+            .expect("ws_session_guard must exist");
+        let after = &source[fn_start..];
+        let next_item = after[20..]
+            .find("\npub ")
+            .map(|o| 20 + o)
+            .unwrap_or(after.len());
+        let cfg_test = after.find("#[cfg(test)]").unwrap_or(after.len());
+        let end = next_item.min(cfg_test);
+        let fn_body = &after[..end];
+
+        assert!(
+            fn_body.contains("mfa_verified"),
+            "ws_session_guard MUST check `mfa_verified` (defence in depth: layer 2)"
+        );
+        assert!(
+            fn_body.contains("FORBIDDEN"),
+            "ws_session_guard MUST return 403 FORBIDDEN for pre-MFA tokens"
         );
     }
 }

@@ -13,7 +13,7 @@ use crate::common::{TestApp, unwrap_ok};
 use crate::fixtures::{
     create_auth_session_with_token, create_expired_api_key, create_expired_auth_session,
     create_simple_admin_user, create_simple_user, create_test_api_key, create_test_auth_session,
-    create_test_user, unique_name,
+    create_test_user, create_test_user_with_mfa, current_totp_for, unique_name,
 };
 use axum::http::header::{COOKIE, USER_AGENT};
 use diesel::{ExpressionMethods, QueryDsl};
@@ -1603,6 +1603,7 @@ async fn test_login_broadcasts_new_session() {
     use std::time::Duration as StdDuration;
     use tokio::time::timeout;
     use vauban_web::schema::users;
+    use vauban_web::services::auth::AuthService;
     use vauban_web::services::broadcast::WsChannel;
 
     let app = TestApp::spawn().await;
@@ -1618,6 +1619,12 @@ async fn test_login_broadcasts_new_session() {
         .hash_password(password)
         .expect("Password hashing should succeed");
 
+    // Per Finding #2 remediation, API login requires MFA configured on
+    // the account. Generate a TOTP secret so we can include a valid code
+    // in the login payload below.
+    let (mfa_secret, _) =
+        AuthService::generate_totp_secret(&username, "VAUBAN-tests").expect("totp secret");
+
     // Create user with this password hash
     let user_uuid = Uuid::new_v4();
     diesel::insert_into(users::table)
@@ -1629,6 +1636,8 @@ async fn test_login_broadcasts_new_session() {
             users::is_active.eq(true),
             users::is_staff.eq(false),
             users::is_superuser.eq(false),
+            users::mfa_enabled.eq(true),
+            users::mfa_secret.eq(Some(mfa_secret.clone())),
             users::auth_source.eq(AuthSource::Local),
             users::preferences.eq(serde_json::json!({})),
         ))
@@ -1646,7 +1655,8 @@ async fn test_login_broadcasts_new_session() {
         .post("/api/v1/auth/login")
         .json(&serde_json::json!({
             "username": username,
-            "password": password
+            "password": password,
+            "mfa_code": current_totp_for(&mfa_secret),
         }))
         .await;
 
@@ -2453,7 +2463,8 @@ async fn test_login_keeps_sessions_for_different_user_agents() {
     let mut conn = app.get_conn().await;
 
     let username = unique_name("dedup_diff_device");
-    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
+    // Per Finding #2 remediation, API login requires MFA on the account.
+    let test_user = create_test_user_with_mfa(&mut conn, &app.auth_service, &username).await;
     let user_id = test_user.user.id;
 
     let baseline = count_auth_sessions(&mut conn, user_id).await;
@@ -2470,11 +2481,15 @@ async fn test_login_keeps_sessions_for_different_user_agents() {
         .json(&json!({
             "username": username,
             "password": test_user.password,
+            "mfa_code": current_totp_for(&test_user.mfa_secret),
         }))
         .await;
     assert_eq!(r1.status_code().as_u16(), 200);
 
-    // Second login -- pretend we are on Windows Firefox.
+    // Second login -- pretend we are on Windows Firefox. Use a fresh
+    // TOTP code computed at this moment (verifies that two distinct
+    // codes within the same TOTP window are both accepted, which is
+    // expected since `generate_access_token` does not consume the code).
     let r2 = app
         .server
         .post("/api/v1/auth/login")
@@ -2486,6 +2501,7 @@ async fn test_login_keeps_sessions_for_different_user_agents() {
         .json(&json!({
             "username": username,
             "password": test_user.password,
+            "mfa_code": current_totp_for(&test_user.mfa_secret),
         }))
         .await;
     assert_eq!(r2.status_code().as_u16(), 200);

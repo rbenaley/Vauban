@@ -75,6 +75,53 @@ where
     }
 }
 
+/// WebSocket authentication extractor.
+///
+/// Requires both a valid session AND completed MFA verification.
+///
+/// Unlike [`WebAuthUser`], this extractor does **not** redirect to
+/// `/mfa/verify` because WebSocket clients cannot follow HTML redirects.
+/// Pre-MFA tokens are rejected with `403 Forbidden`; missing tokens with
+/// `401 Unauthorized`. The HTTP upgrade therefore fails cleanly and the
+/// WebSocket is never opened.
+///
+/// This extractor is the third (innermost) layer of WebSocket MFA
+/// enforcement. The other two layers are the [`super::super::handlers::websocket::ws_connection_limit`]
+/// middleware (applied to every `/ws/*` route) and the
+/// [`super::super::handlers::websocket::ws_session_guard`] middleware
+/// (applied to session-bound routes). All three must reject pre-MFA
+/// tokens so that a regression in any single layer does not unlock the
+/// other two.
+#[derive(Debug, Clone)]
+pub struct WsAuthUser(pub AuthUser);
+
+impl std::ops::Deref for WsAuthUser {
+    type Target = AuthUser;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<S> FromRequestParts<S> for WsAuthUser
+where
+    S: Send + Sync,
+{
+    type Rejection = AppError;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        match parts.extensions.get::<AuthUser>().cloned() {
+            Some(user) if user.mfa_verified => Ok(WsAuthUser(user)),
+            Some(_) => Err(AppError::Authorization(
+                "MFA verification required for WebSocket access".to_string(),
+            )),
+            None => Err(AppError::Auth(
+                "Authentication required for WebSocket access".to_string(),
+            )),
+        }
+    }
+}
+
 /// Pre-MFA web authentication extractor.
 /// Requires a valid session but does NOT require MFA verification.
 /// Use ONLY for MFA setup/verify pages and logout -- never for regular app pages.
@@ -861,6 +908,100 @@ mod tests {
         assert_eq!(
             unwrap_ok!(unwrap_some!(err_response.headers().get("location")).to_str()),
             "/login"
+        );
+    }
+
+    // ==================== WsAuthUser MFA Enforcement Tests ====================
+    //
+    // These tests guard the third (innermost) layer of the WebSocket MFA
+    // defence. A regression here would let a pre-MFA token open any
+    // WebSocket whose handler accepts `WsAuthUser`. See `ws_session_guard`
+    // and `ws_connection_limit` for the other two layers.
+
+    #[test]
+    fn test_ws_auth_user_deref() {
+        let auth_user = create_test_user();
+        let ws_user = WsAuthUser(auth_user.clone());
+        assert_eq!(ws_user.uuid, auth_user.uuid);
+        assert_eq!(ws_user.username, auth_user.username);
+    }
+
+    #[test]
+    fn test_ws_auth_user_clone() {
+        let auth_user = create_test_user();
+        let ws_user = WsAuthUser(auth_user);
+        let cloned = ws_user.clone();
+        assert_eq!(ws_user.uuid, cloned.uuid);
+    }
+
+    #[tokio::test]
+    async fn test_ws_auth_user_accepts_mfa_verified_session() {
+        let mfa_user = AuthUser {
+            uuid: "uuid".to_string(),
+            username: "user".to_string(),
+            mfa_verified: true,
+            is_superuser: false,
+            is_staff: false,
+        };
+
+        let mut parts = unwrap_ok!(HttpRequest::builder().body(axum::body::Body::empty()))
+            .into_parts()
+            .0;
+        parts.extensions.insert(mfa_user);
+
+        let result = WsAuthUser::from_request_parts(&mut parts, &()).await;
+        assert!(result.is_ok(), "WsAuthUser must accept mfa_verified=true");
+    }
+
+    /// Critical regression test: a pre-MFA token must NEVER unlock a
+    /// WebSocket. The historical bug let `mfa_verified=false` tokens
+    /// reach `/ws/dashboard`, `/ws/notifications`, etc.
+    #[tokio::test]
+    async fn test_ws_auth_user_rejects_pre_mfa_with_403_no_redirect() {
+        let pre_mfa_user = AuthUser {
+            uuid: "uuid".to_string(),
+            username: "user".to_string(),
+            mfa_verified: false,
+            is_superuser: false,
+            is_staff: false,
+        };
+
+        let mut parts = unwrap_ok!(HttpRequest::builder().body(axum::body::Body::empty()))
+            .into_parts()
+            .0;
+        parts.extensions.insert(pre_mfa_user);
+
+        let result = WsAuthUser::from_request_parts(&mut parts, &()).await;
+        assert!(
+            result.is_err(),
+            "WsAuthUser must reject pre-MFA tokens"
+        );
+        let err_response = result.unwrap_err().into_response();
+        assert_eq!(
+            err_response.status(),
+            StatusCode::FORBIDDEN,
+            "Pre-MFA WS rejection must be 403 (not a 303 redirect): WS clients \
+             cannot follow HTML redirects so a redirect would mask the rejection"
+        );
+        assert!(
+            err_response.headers().get("location").is_none(),
+            "WsAuthUser must NEVER emit a Location header (no redirect for WS)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ws_auth_user_rejects_no_session_with_401() {
+        let mut parts = unwrap_ok!(HttpRequest::builder().body(axum::body::Body::empty()))
+            .into_parts()
+            .0;
+
+        let result = WsAuthUser::from_request_parts(&mut parts, &()).await;
+        assert!(result.is_err());
+        let err_response = result.unwrap_err().into_response();
+        assert_eq!(err_response.status(), StatusCode::UNAUTHORIZED);
+        assert!(
+            err_response.headers().get("location").is_none(),
+            "WsAuthUser must NEVER emit a Location header (no redirect for WS)"
         );
     }
 }
