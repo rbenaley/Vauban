@@ -1,7 +1,8 @@
-/// VAUBAN Web - IPC clients module.
-///
-/// Provides clients for inter-process communication with Vauban services
-/// (auth, access, vault, audit, proxy-ssh, proxy-rdp) via Unix pipes created by the supervisor.
+//! VAUBAN Web - IPC clients module.
+//!
+//! Provides clients for inter-process communication with Vauban services
+//! (auth, access, vault, audit, proxy-ssh, proxy-rdp) via Unix pipes created
+//! by the supervisor.
 pub mod access;
 pub mod admin;
 pub mod auth;

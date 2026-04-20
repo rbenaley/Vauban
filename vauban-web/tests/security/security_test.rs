@@ -3570,6 +3570,137 @@ async fn test_terminal_ws_invalid_session_id_returns_400() {
     );
 }
 
+// ==================== HTML terminal_page IDOR (issue: post-MFA audit #7) ====================
+//
+// The HTML wrapper at `GET /sessions/terminal/{session_id}` used to be
+// served to any authenticated user that knew (or guessed) a session UUID.
+// The underlying WebSocket data path is gated by `ws_session_guard`, but
+// the HTML probe alone could be used to enumerate valid session UUIDs by
+// distinguishing 200 vs error responses. The fix calls
+// `verify_session_ownership` and collapses every failure mode into a single
+// opaque 404 so non-owners cannot tell "no such session" from "session
+// belongs to someone else".
+
+/// Helper: send a GET request to the SSH terminal HTML page using the
+/// same cookie scheme as a real browser session.
+async fn terminal_page_request(
+    app: &TestApp,
+    session_uuid: &str,
+    token: &str,
+) -> axum_test::TestResponse {
+    app.server
+        .get(&format!("/sessions/terminal/{}", session_uuid))
+        .add_header(header::COOKIE, format!("access_token={}", token))
+        .await
+}
+
+/// Regression (anti-IDOR): another user's terminal page must collapse to 404,
+/// never 403/200, so probing cannot enumerate session UUIDs.
+#[tokio::test]
+#[serial]
+async fn test_terminal_page_404_for_other_users_session() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let owner = create_test_user(&mut conn, &app.auth_service, &unique_name("tp_owner")).await;
+    let attacker =
+        create_test_user(&mut conn, &app.auth_service, &unique_name("tp_attacker")).await;
+
+    let asset_id =
+        create_simple_ssh_asset(&mut conn, &unique_name("tp_asset_a"), owner.user.id).await;
+    let (_session_id, session_uuid) =
+        create_test_session_with_uuid(&mut conn, owner.user.id, asset_id, "ssh", "active").await;
+
+    drop(conn);
+
+    let response = terminal_page_request(app, &session_uuid.to_string(), &attacker.token).await;
+    let status = response.status_code().as_u16();
+    assert_eq!(
+        status, 404,
+        "terminal_page must return 404 (not 403, not 200) when the requester \
+         does not own the session, got {}",
+        status
+    );
+}
+
+/// Regression (anti-IDOR): a random/non-existent session UUID must also
+/// return 404, identical to the "owned by someone else" response above.
+#[tokio::test]
+#[serial]
+async fn test_terminal_page_404_for_nonexistent_session() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let user = create_test_user(&mut conn, &app.auth_service, &unique_name("tp_user")).await;
+
+    drop(conn);
+
+    let fake_uuid = uuid::Uuid::new_v4();
+    let response = terminal_page_request(app, &fake_uuid.to_string(), &user.token).await;
+    let status = response.status_code().as_u16();
+    assert_eq!(
+        status, 404,
+        "terminal_page must return 404 for unknown session UUIDs, got {}",
+        status
+    );
+}
+
+/// Regression: the legitimate session owner still receives the terminal
+/// HTML wrapper. Without this the IDOR fix would be a regression for normal
+/// users.
+#[tokio::test]
+#[serial]
+async fn test_terminal_page_renders_for_owner() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let owner =
+        create_test_user(&mut conn, &app.auth_service, &unique_name("tp_owner_ok")).await;
+    let asset_id =
+        create_simple_ssh_asset(&mut conn, &unique_name("tp_asset_b"), owner.user.id).await;
+    let (_session_id, session_uuid) =
+        create_test_session_with_uuid(&mut conn, owner.user.id, asset_id, "ssh", "active").await;
+
+    drop(conn);
+
+    let response = terminal_page_request(app, &session_uuid.to_string(), &owner.token).await;
+    let status = response.status_code().as_u16();
+    assert_eq!(
+        status, 200,
+        "Session owner must receive the terminal HTML wrapper, got {}",
+        status
+    );
+}
+
+/// Regression (anti-IDOR): the response body of the 404 returned for a
+/// non-owner must NOT leak the requested session UUID. Otherwise an attacker
+/// could still confirm hits via response correlation.
+#[tokio::test]
+#[serial]
+async fn test_terminal_page_404_does_not_leak_session_uuid() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let owner =
+        create_test_user(&mut conn, &app.auth_service, &unique_name("tp_owner_nl")).await;
+    let attacker =
+        create_test_user(&mut conn, &app.auth_service, &unique_name("tp_attacker_nl")).await;
+    let asset_id =
+        create_simple_ssh_asset(&mut conn, &unique_name("tp_asset_nl"), owner.user.id).await;
+    let (_session_id, session_uuid) =
+        create_test_session_with_uuid(&mut conn, owner.user.id, asset_id, "ssh", "active").await;
+
+    drop(conn);
+
+    let response = terminal_page_request(app, &session_uuid.to_string(), &attacker.token).await;
+    let body = response.text();
+    assert!(
+        !body.contains(&session_uuid.to_string()),
+        "404 response body must not echo the requested session UUID \
+         (information disclosure)"
+    );
+}
+
 // ==================== CSP unsafe-inline Removal ====================
 //
 // stated that `'unsafe-inline'` in script-src and `'unsafe-eval'` in the CSP

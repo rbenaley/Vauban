@@ -1198,3 +1198,71 @@ fn test_compute_updated_blank_username_keeps_existing() {
         "whitespace-only username input must preserve stored value"
     );
 }
+
+// ============================================================================
+// SECURITY: Structural guard for `terminal_page` ownership check.
+// ============================================================================
+//
+// Plugs the IDOR found in the post-MFA security audit: the SSH terminal HTML
+// wrapper used to be served to any authenticated user that knew (or guessed)
+// a session UUID, even though the actual WebSocket data path is gated by
+// `ws_session_guard`. This test ensures the HTML handler keeps the explicit
+// `verify_session_ownership` invocation that collapses every failure mode
+// into a single opaque 404 response.
+
+/// Locate the body of `terminal_page` in the source of `ssh.rs`. Bails if
+/// the function is renamed (which is also a useful signal: someone needs to
+/// re-anchor the test).
+fn terminal_page_source() -> &'static str {
+    let full = include_str!("ssh.rs");
+    let start = full
+        .find("pub async fn terminal_page(")
+        .expect("terminal_page handler must exist in handlers/web/ssh.rs");
+    let after = &full[start..];
+    // Find the matching closing `}` of the function. The function is followed
+    // in the file by the next `pub async fn` (or end-of-file), so we cut at
+    // whichever comes first to scope the assertion to the body.
+    let end = after
+        .find("\npub async fn ")
+        .or_else(|| after.find("\npub fn "))
+        .unwrap_or(after.len());
+    &after[..end]
+}
+
+#[test]
+fn test_terminal_page_source_calls_verify_session_ownership() {
+    let body = terminal_page_source();
+    assert!(
+        body.contains("verify_session_ownership"),
+        "terminal_page must call verify_session_ownership before rendering \
+         (anti-IDOR defense at the HTML layer)"
+    );
+}
+
+#[test]
+fn test_terminal_page_source_collapses_to_not_found() {
+    let body = terminal_page_source();
+    assert!(
+        body.contains("AppError::NotFound"),
+        "terminal_page must collapse every ownership failure to AppError::NotFound \
+         so probing cannot enumerate session UUIDs"
+    );
+    assert!(
+        !body.contains("StatusCode::FORBIDDEN"),
+        "terminal_page must not return 403 for ownership failures (would confirm \
+         that the session exists). Use AppError::NotFound instead."
+    );
+}
+
+#[test]
+fn test_terminal_page_source_no_longer_carries_legacy_todo() {
+    let body = terminal_page_source();
+    let forbidden = format!(
+        "{} Verify {} {} via IPC or {}",
+        "// TODO:", "session", "exists and belongs to user", "database"
+    );
+    assert!(
+        !body.contains(&forbidden),
+        "terminal_page must not still carry the legacy TODO that admitted the IDOR"
+    );
+}

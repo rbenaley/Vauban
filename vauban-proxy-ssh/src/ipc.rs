@@ -1,8 +1,6 @@
 //! Async IPC clients for communication with other Vauban services.
 
 pub use crate::error::{IpcError, IpcResult};
-use crate::session::SshCredential;
-use secrecy::SecretString;
 use shared::ipc::IpcChannel;
 use shared::messages::Message;
 use std::io;
@@ -158,82 +156,13 @@ impl RbacClient {
     }
 }
 
-/// Client for Vault credential retrieval.
-/// Will be used when Vault integration is implemented.
-#[allow(dead_code)]
-pub struct VaultClient {
-    channel: AsyncIpcChannel,
-    next_request_id: AtomicU64,
-}
-
-#[allow(dead_code)]
-impl VaultClient {
-    /// Create a new Vault client.
-    pub fn new(channel: IpcChannel) -> io::Result<Self> {
-        Ok(Self {
-            channel: AsyncIpcChannel::new(channel)?,
-            next_request_id: AtomicU64::new(1),
-        })
-    }
-
-    /// Get SSH credential for an asset.
-    pub async fn get_credential(&self, asset_id: &str) -> IpcResult<Option<SshCredential>> {
-        let request_id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
-
-        debug!(
-            request_id = request_id,
-            asset_id = asset_id,
-            "Requesting SSH credential from Vault"
-        );
-
-        // Send request
-        let request = Message::VaultGetCredential {
-            request_id,
-            asset_id: asset_id.to_string(),
-            credential_type: "ssh".to_string(),
-        };
-        self.channel.send(&request)?;
-
-        // Wait for response
-        loop {
-            let response = self.channel.recv().await?;
-            match response {
-                Message::VaultCredentialResponse {
-                    request_id: resp_id,
-                    credential,
-                } if resp_id == request_id => {
-                    debug!(
-                        request_id = request_id,
-                        found = credential.is_some(),
-                        "Vault response received"
-                    );
-
-                    // Parse credential bytes into SshCredential
-                    // For now, assume it's a password (TODO: implement proper credential parsing)
-                    let ssh_cred = credential.map(|data| {
-                        // Try to parse as UTF-8 password first
-                        if let Ok(password) = String::from_utf8(data.clone()) {
-                            SshCredential::Password(SecretString::from(password))
-                        } else {
-                            // Treat as binary key (PEM encoded)
-                            SshCredential::PrivateKey {
-                                key_pem: SecretString::from(
-                                    String::from_utf8_lossy(&data).to_string(),
-                                ),
-                                passphrase: None,
-                            }
-                        }
-                    });
-
-                    return Ok(ssh_cred);
-                }
-                _ => {
-                    warn!("Received unexpected message while waiting for Vault response");
-                }
-            }
-        }
-    }
-}
+// SECURITY: A `VaultClient` lived here that emitted a legacy "get credential
+// by id" IPC verb and silently mapped the resulting `Ok(None)` to "no
+// credential available". That verb has been removed from `shared::messages`
+// because it could be (mis)interpreted as "no credential needed -> allow the
+// connection". Credential retrieval will be reintroduced via the
+// encrypted-transit verbs (`VaultEncrypt` / `VaultDecrypt`) once the Vault
+// integration is wired through the supervisor.
 
 /// Client for sending audit events.
 /// Will be used when Audit integration is implemented.
@@ -310,7 +239,8 @@ impl AuditClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use secrecy::ExposeSecret;
+    use crate::session::SshCredential;
+    use secrecy::{ExposeSecret, SecretString};
 
     #[test]
     fn test_set_nonblocking() {

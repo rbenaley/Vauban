@@ -1,4 +1,11 @@
-/// VAUBAN Web - Services module.
+//! VAUBAN Web - Services module.
+//!
+//! SECURITY: a `vault` submodule used to live here exposing a `VaultService`
+//! whose `list_credentials` silently returned an empty `Vec`. It was dead
+//! code (no caller ever instantiated `VaultService`), and the underlying
+//! `ipc::clients::VaultClient` it wrapped has also been removed. Any future
+//! credential-listing logic must go through encrypted-transit verbs in
+//! [`crate::ipc::vault::VaultCryptoClient`].
 pub mod access;
 pub mod asset_membership;
 pub mod auth;
@@ -6,7 +13,6 @@ pub mod broadcast;
 pub mod connections;
 pub mod rate_limit;
 pub mod rbac;
-pub mod vault;
 
 pub use access::*;
 pub use asset_membership::*;
@@ -15,4 +21,3 @@ pub use broadcast::*;
 pub use connections::*;
 pub use rate_limit::*;
 pub use rbac::*;
-pub use vault::*;

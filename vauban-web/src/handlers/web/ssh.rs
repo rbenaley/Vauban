@@ -1084,23 +1084,50 @@ pub async fn verify_ssh_host_key(
 /// Terminal page for SSH sessions.
 ///
 /// GET /sessions/terminal/{session_id}
+///
+/// SECURITY: Verifies session ownership against the database before rendering
+/// the HTML wrapper. Any failure (unknown session, terminated session, session
+/// owned by another user, database error) collapses to a single `404 Not
+/// Found` response so an attacker cannot distinguish "session does not exist"
+/// from "session exists but belongs to someone else" by probing the URL space.
+/// The underlying `terminal_ws` handler also enforces ownership via
+/// `ws_session_guard`, so this is a defense-in-depth check at the HTML layer.
 pub async fn terminal_page(
     State(state): State<AppState>,
     incoming_flash: IncomingFlash,
     auth_user: WebAuthUser,
     axum::extract::Path(session_id): axum::extract::Path<String>,
 ) -> Response {
+    use crate::error::AppError;
     use crate::templates::base::BaseTemplate;
     use crate::templates::sessions::TerminalTemplate;
 
     let flash = incoming_flash.flash();
 
-    // Validate session_id format (should be a UUID)
+    // Validate session_id format (should be a UUID). Invalid UUIDs are user
+    // input errors, not access control violations, so we keep the original
+    // flash redirect (no information disclosure here: the format is checked
+    // before any database lookup).
     if uuid::Uuid::parse_str(&session_id).is_err() {
         return flash_redirect(flash.error("Invalid session identifier"), "/assets");
     }
 
-    // TODO: Verify session exists and belongs to user via IPC or database
+    // SECURITY (anti-IDOR): verify the session belongs to the authenticated
+    // user (or is admin-monitorable) before rendering anything. We collapse
+    // every failure mode into a single opaque 404 so that an unauthenticated
+    // probe cannot use the response to enumerate valid session UUIDs.
+    if let Err(status) =
+        crate::handlers::websocket::verify_session_ownership(&state, &session_id, &auth_user.0)
+            .await
+    {
+        tracing::warn!(
+            session_id = %session_id,
+            user = %auth_user.username,
+            status = %status.as_u16(),
+            "terminal_page denied (collapsed to 404)"
+        );
+        return AppError::NotFound("Session not found".to_string()).into_response();
+    }
 
     let user = Some(user_context_from_auth(&auth_user));
 

@@ -616,29 +616,17 @@ pub enum Message {
         result: RbacResult,
     },
 
-    // ========== Vault (Auth/Proxy -> Vault) ==========
-    VaultGetSecret {
-        request_id: u64,
-        path: String,
-    },
-    VaultSecretResponse {
-        request_id: u64,
-        /// Encrypted secret data, None if not found.
-        data: Option<Vec<u8>>,
-    },
-
-    VaultGetCredential {
-        request_id: u64,
-        asset_id: String,
-        credential_type: String,
-    },
-    VaultCredentialResponse {
-        request_id: u64,
-        /// Encrypted credential, None if not found.
-        credential: Option<Vec<u8>>,
-    },
-
     // ========== Vault Crypto (Any service -> Vault) ==========
+    //
+    // SECURITY: Earlier revisions defined `VaultGetSecret` / `VaultGetCredential`
+    // (and their `*Response` counterparts) as legacy fail-open placeholders that
+    // returned `data: None` / `credential: None` silently. They were removed in
+    // the post-MFA security pass because:
+    //   1. No production code path consumed them.
+    //   2. A future caller that interpreted `Ok(None)` as "no credential needed"
+    //      would silently bypass authentication for the affected asset.
+    // All credential / secret access must go through the encrypted-transit verbs
+    // below (`VaultEncrypt` / `VaultDecrypt` / `VaultMfa*`).
     /// Encrypt plaintext with a named key domain.
     VaultEncrypt {
         request_id: u64,
@@ -1138,10 +1126,6 @@ impl Message {
             | Message::AuthHashPasswordResponse { request_id, .. }
             | Message::RbacCheck { request_id, .. }
             | Message::RbacResponse { request_id, .. }
-            | Message::VaultGetSecret { request_id, .. }
-            | Message::VaultSecretResponse { request_id, .. }
-            | Message::VaultGetCredential { request_id, .. }
-            | Message::VaultCredentialResponse { request_id, .. }
             | Message::VaultEncrypt { request_id, .. }
             | Message::VaultEncryptResponse { request_id, .. }
             | Message::VaultDecrypt { request_id, .. }
@@ -1461,31 +1445,37 @@ mod tests {
         assert_eq!(msg.request_id(), Some(200));
     }
 
+    /// SECURITY (regression): the legacy fail-open Vault verbs
+    /// (`VaultGetSecret`, `VaultGetCredential`, and their `*Response`
+    /// counterparts) MUST NOT come back. Reconstruct the forbidden tokens at
+    /// runtime so this test never matches against itself.
     #[test]
-    fn test_message_vault_get_secret() {
-        let msg = Message::VaultGetSecret {
-            request_id: 300,
-            path: "/secrets/db/password".to_string(),
-        };
-        assert_eq!(msg.request_id(), Some(300));
-    }
-
-    #[test]
-    fn test_message_vault_secret_response_with_data() {
-        let msg = Message::VaultSecretResponse {
-            request_id: 300,
-            data: Some(vec![0xDE, 0xAD, 0xBE, 0xEF]),
-        };
-        assert_eq!(msg.request_id(), Some(300));
-    }
-
-    #[test]
-    fn test_message_vault_secret_response_not_found() {
-        let msg = Message::VaultSecretResponse {
-            request_id: 301,
-            data: None,
-        };
-        assert_eq!(msg.request_id(), Some(301));
+    fn test_messages_do_not_define_legacy_vault_variants() {
+        let source = include_str!("messages.rs");
+        let prefix = "Vault";
+        for suffix in [
+            "GetSecret",
+            "SecretResponse",
+            "GetCredential",
+            "CredentialResponse",
+        ] {
+            let forbidden = format!("{}{}", prefix, suffix);
+            let needle = format!("{} {{", forbidden);
+            assert!(
+                !source.contains(&needle),
+                "shared/messages.rs must not redefine the legacy Vault variant `{}` \
+                 (it returned data/credential: None silently and was removed for \
+                 security; use VaultEncrypt/VaultDecrypt/VaultMfa* instead)",
+                forbidden
+            );
+            let pat_id = format!("Message::{} {{ request_id, .. }}", forbidden);
+            assert!(
+                !source.contains(&pat_id),
+                "shared/messages.rs must not include the legacy Vault variant `{}` \
+                 in the request_id() match (it should not exist at all)",
+                forbidden
+            );
+        }
     }
 
     #[test]

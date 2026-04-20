@@ -145,8 +145,14 @@ pub async fn ws_connection_limit(
 /// - The session's `user_id` matches the authenticated user's UUID
 /// - OR the user is staff/superuser (admin monitoring)
 ///
-/// Returns `Err(StatusCode)` otherwise.
-async fn verify_session_ownership(
+/// Returns `Err(StatusCode)` otherwise (`NOT_FOUND`, `GONE`, `FORBIDDEN`,
+/// `BAD_REQUEST`, or `INTERNAL_SERVER_ERROR`).
+///
+/// SECURITY: exposed at `pub(crate)` so non-WebSocket handlers (e.g.
+/// `handlers::web::ssh::terminal_page`) can perform the same ownership
+/// check before serving HTML wrappers, plugging the IDOR found in the
+/// post-MFA security audit.
+pub(crate) async fn verify_session_ownership(
     state: &AppState,
     session_uuid_str: &str,
     user: &AuthUser,

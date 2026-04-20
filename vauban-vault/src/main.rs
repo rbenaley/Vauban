@@ -397,34 +397,20 @@ fn handle_vault_request(
             transit::handle_mfa_get_secret(&state.keyrings, request_id, &encrypted_secret)
         }
 
-        // Legacy vault messages (placeholder responses)
-        Message::VaultGetSecret { request_id, path } => {
-            info!("Legacy vault get secret: {}", path);
-            state.requests_processed += 1;
-            Message::VaultSecretResponse {
-                request_id,
-                data: None,
-            }
-        }
-
-        Message::VaultGetCredential {
-            request_id,
-            asset_id,
-            credential_type,
-        } => {
-            info!(
-                "Legacy vault get credential: {} ({})",
-                asset_id, credential_type
-            );
-            state.requests_processed += 1;
-            Message::VaultCredentialResponse {
-                request_id,
-                credential: None,
-            }
-        }
-
+        // SECURITY: Earlier revisions of this file accepted two legacy
+        // "get-by-id" vault verbs that returned `data: None` /
+        // `credential: None` silently as placeholder responses. They have
+        // been removed from `shared::messages` entirely (see the security
+        // audit follow-up to the AuthRequest/MfaVerify hardening) because a
+        // future caller could have interpreted `Ok(None)` as "no credential
+        // needed for this asset" and bypassed authentication. All vault
+        // traffic must now go through the encrypted-transit verbs
+        // (`VaultEncrypt` / `VaultDecrypt` / `VaultMfa*`) handled above. Any
+        // other message reaches the catch-all arm below, which fail-closes by
+        // dropping the request without sending a response.
         _ => {
-            warn!("Unexpected message type in vault");
+            warn!("Unexpected message type in vault (refusing fail-closed)");
+            state.requests_failed += 1;
             return Ok(());
         }
     };
@@ -625,25 +611,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_handle_legacy_vault_get_secret() {
-        let (client, service) = IpcChannel::pair().unwrap();
-        let mut state = test_state();
-
-        let msg = Message::VaultGetSecret {
-            request_id: 99,
-            path: "/secrets/db".to_string(),
-        };
-        handle_vault_request(&service, &mut state, msg).unwrap();
-
-        let response = client.recv().unwrap();
-        if let Message::VaultSecretResponse { data: None, .. } = response {
-            // Legacy returns None
-        } else {
-            panic!("Expected VaultSecretResponse with None data");
-        }
-    }
-
     // ==================== Structural Regression Tests ====================
 
     /// Helper: Extract production code (before #[cfg(test)]).
@@ -697,6 +664,57 @@ mod tests {
         assert!(
             handle_ctrl_source.contains("shutdown_requested = true"),
             "handle_control must set shutdown_requested = true on Shutdown"
+        );
+    }
+
+    /// SECURITY: the legacy fail-open Vault handlers MUST NOT come back.
+    /// Reconstruct the forbidden tokens at runtime so this test never matches
+    /// against itself.
+    #[test]
+    fn test_source_does_not_contain_legacy_vault_handlers() {
+        let source = prod_source();
+        let prefix = "Vault";
+        for suffix in [
+            "GetSecret",
+            "SecretResponse",
+            "GetCredential",
+            "CredentialResponse",
+        ] {
+            let forbidden = format!("Message::{}{}", prefix, suffix);
+            assert!(
+                !source.contains(&forbidden),
+                "vauban-vault production code must not reference the legacy \
+                 verb `{}` (it returned data/credential: None silently and \
+                 was removed for security; encrypted-transit verbs only)",
+                forbidden
+            );
+        }
+
+        let banner = format!("{} vault {} ({})", "Legacy", "messages", "placeholder responses");
+        assert!(
+            !source.contains(&banner),
+            "vauban-vault production code must not carry the legacy \
+             placeholder-responses banner comment"
+        );
+    }
+
+    /// SECURITY: handle_vault_request must fail-closed on unknown variants
+    /// (no response sent, requests_failed incremented).
+    #[test]
+    fn test_handle_vault_request_fail_closed_branch() {
+        let source = prod_source();
+        let start = source
+            .find("fn handle_vault_request")
+            .expect("handle_vault_request must exist");
+        let body = &source[start..];
+        assert!(
+            body.contains("refusing fail-closed"),
+            "handle_vault_request must contain a fail-closed catch-all that \
+             refuses to respond to unknown verbs"
+        );
+        assert!(
+            body.contains("requests_failed"),
+            "handle_vault_request fail-closed branch must increment requests_failed"
         );
     }
 }

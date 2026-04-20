@@ -1,31 +1,36 @@
-/// VAUBAN Web - IPC clients for communicating with Vauban services.
-///
-/// These clients use Unix pipes for inter-process communication with
-/// the privilege-separated Vauban services (auth, rbac, vault, audit).
-///
-/// The canonical Casbin-backed RBAC client is
-/// [`crate::ipc::AccessIpcClient`] and its presence is mandatory at
-/// vauban-web startup (see `init_access_client`).
+//! VAUBAN Web - IPC clients for communicating with Vauban services.
+//!
+//! These clients use Unix pipes for inter-process communication with
+//! the privilege-separated Vauban services (auth, access, vault, audit).
+//!
+//! The canonical Casbin-backed RBAC client is
+//! [`crate::ipc::AccessIpcClient`] and its presence is mandatory at
+//! vauban-web startup (see `init_access_client`).
+//!
+//! SECURITY: a `VaultClient` lived here that exposed an async
+//! `list_credentials(...) -> Ok(vec![])` placeholder. It was removed in the
+//! post-MFA security pass: a future caller could have interpreted the empty
+//! list as "no credential exists for this asset" and silently bypassed
+//! credential checks. Vault traffic must go through the encrypted-transit
+//! verbs in [`crate::ipc::vault::VaultCryptoClient`].
+
 use std::time::Duration;
-use tracing::warn;
 
-use crate::config::Config;
-use crate::error::AppResult;
-
-/// IPC client for communicating with Vauban services.
+/// IPC client placeholder for communicating with Vauban services.
 ///
 /// In the privsep architecture, vauban-web communicates with other services
-/// (auth, rbac, audit) via Unix pipes created by the supervisor.
+/// via Unix pipes created by the supervisor. Concrete clients
+/// ([`crate::ipc::AccessIpcClient`], [`crate::ipc::AuthIpcClient`],
+/// [`crate::ipc::VaultCryptoClient`], ...) wrap their own
+/// [`shared::ipc::IpcChannel`]; this type only exists as a typed handle for
+/// code paths that have not yet been wired to a concrete service and must
+/// be replaced before they are used in production.
 pub struct IpcClient {
-    // TODO: IPC channel file descriptors will be passed by the supervisor
     _placeholder: (),
 }
 
 impl IpcClient {
-    /// Create a new IPC client.
-    ///
-    /// In production, the file descriptors are passed by the supervisor.
-    /// For now, this is a placeholder that allows the code to compile.
+    /// Create a new IPC client placeholder.
     pub fn new() -> Self {
         Self { _placeholder: () }
     }
@@ -34,32 +39,6 @@ impl IpcClient {
 impl Default for IpcClient {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-/// Vault service client.
-///
-/// Communicates with vauban-vault via Unix pipe.
-pub struct VaultClient {
-    #[allow(dead_code)]
-    client: IpcClient,
-}
-
-impl VaultClient {
-    pub async fn new(_config: &Config) -> AppResult<Self> {
-        // In production, IPC channels are passed by the supervisor
-        Ok(Self {
-            client: IpcClient::new(),
-        })
-    }
-
-    /// List credentials.
-    ///
-    /// TODO: Implement actual IPC communication with vauban-vault.
-    pub async fn list_credentials(&self, _asset_id: Option<&str>) -> AppResult<Vec<String>> {
-        // TODO: Send VaultGetCredential message via IPC pipe
-        warn!("Vault list_credentials called but IPC not yet implemented");
-        Ok(vec![])
     }
 }
 
@@ -149,6 +128,38 @@ mod tests {
         assert!(
             !source.contains(&forbidden_cfg),
             "ipc/clients.rs must not carry debug-gated RBAC fallbacks"
+        );
+    }
+
+    /// SECURITY: the legacy fail-open Vault placeholder client must not come
+    /// back. Reconstruct the forbidden tokens at runtime so this test never
+    /// matches against itself.
+    #[test]
+    fn test_silent_vault_placeholder_client_has_been_removed() {
+        let source = include_str!("clients.rs");
+
+        let forbidden_struct = format!("pub {} {}", "struct", "VaultClient");
+        assert!(
+            !source.contains(&forbidden_struct),
+            "ipc/clients.rs must not redefine the legacy `VaultClient` placeholder \
+             (it returned `Ok(vec![])` silently from `list_credentials` and was \
+             removed for security; use VaultCryptoClient instead)"
+        );
+
+        let forbidden_fn = format!(
+            "{} {}(",
+            "async fn",
+            "list_credentials"
+        );
+        assert!(
+            !source.contains(&forbidden_fn),
+            "ipc/clients.rs must not expose any `list_credentials` stub returning Ok(vec![])"
+        );
+
+        let forbidden_body = format!("{} {}", "Ok(", "vec![])");
+        assert!(
+            !source.contains(&forbidden_body),
+            "ipc/clients.rs must not return an empty Vec silently from any IPC client"
         );
     }
 }

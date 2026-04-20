@@ -13,7 +13,7 @@ use crate::common::{TestApp, unwrap_ok};
 use crate::fixtures::{
     create_auth_session_with_token, create_expired_api_key, create_expired_auth_session,
     create_simple_admin_user, create_simple_user, create_test_api_key, create_test_auth_session,
-    create_test_user, create_test_user_with_mfa, current_totp_for, unique_name,
+    create_test_user_with_mfa, current_totp_for, unique_name,
 };
 use axum::http::header::{COOKIE, USER_AGENT};
 use diesel::{ExpressionMethods, QueryDsl};
@@ -1271,48 +1271,20 @@ async fn test_revoked_session_token_becomes_invalid() {
 
 #[tokio::test]
 async fn test_session_created_on_login() {
-    use vauban_web::schema::{auth_sessions, users};
+    use vauban_web::schema::auth_sessions;
 
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    // Create user with known password
+    // Per Finding #2 remediation, the API login endpoint refuses accounts
+    // that do not have MFA configured. We therefore mint an MFA-enabled
+    // user and submit the matching TOTP code below.
     let username = unique_name("login_session_user");
-    let password = "test_password_123!";
+    let test_user = create_test_user_with_mfa(&mut conn, &app.auth_service, &username).await;
+    let user_id = test_user.user.id;
 
-    // Hash the password properly
-    let password_hash = app
-        .auth_service
-        .hash_password(password)
-        .expect("Password hashing should succeed");
-
-    // Create user with this password hash
-    let user_uuid = Uuid::new_v4();
-    diesel::insert_into(users::table)
-        .values((
-            users::uuid.eq(user_uuid),
-            users::username.eq(&username),
-            users::email.eq(format!("{}@test.local", username)),
-            users::password_hash.eq(&password_hash),
-            users::is_active.eq(true),
-            users::is_staff.eq(false),
-            users::is_superuser.eq(false),
-            users::auth_source.eq(AuthSource::Local),
-            users::preferences.eq(serde_json::json!({})),
-        ))
-        .execute(&mut conn)
-        .await
-        .expect("User creation should succeed");
-
-    // Get user_id
-    let user_id: i32 = users::table
-        .filter(users::uuid.eq(user_uuid))
-        .select(users::id)
-        .first(&mut conn)
-        .await
-        .expect("User should exist");
-
-    // Count sessions for THIS USER before login
+    // Count sessions for THIS USER before login (baseline includes the
+    // bootstrap session inserted by `create_test_user_with_mfa`).
     let sessions_before: i64 = auth_sessions::table
         .filter(auth_sessions::user_id.eq(user_id))
         .count()
@@ -1320,13 +1292,14 @@ async fn test_session_created_on_login() {
         .await
         .unwrap_or(0);
 
-    // Attempt login with correct password
+    // Attempt login with correct password + valid TOTP code.
     let response = app
         .server
         .post("/api/v1/auth/login")
         .json(&serde_json::json!({
             "username": username,
-            "password": password
+            "password": test_user.password,
+            "mfa_code": current_totp_for(&test_user.mfa_secret),
         }))
         .await;
 
@@ -2406,10 +2379,11 @@ async fn test_login_purges_previous_session_for_same_device() {
     let mut conn = app.get_conn().await;
 
     let username = unique_name("dedup_same_device");
-    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
+    // Per Finding #2 remediation, API login requires MFA on the account.
+    let test_user = create_test_user_with_mfa(&mut conn, &app.auth_service, &username).await;
     let user_id = test_user.user.id;
 
-    // Snapshot baseline: `create_test_user` inserts a bootstrap session.
+    // Snapshot baseline: `create_test_user_with_mfa` inserts a bootstrap session.
     let baseline = count_auth_sessions(&mut conn, user_id).await;
 
     // First real login.
@@ -2420,6 +2394,7 @@ async fn test_login_purges_previous_session_for_same_device() {
         .json(&json!({
             "username": username,
             "password": test_user.password,
+            "mfa_code": current_totp_for(&test_user.mfa_secret),
         }))
         .await;
     assert_eq!(r1.status_code().as_u16(), 200);
@@ -2442,6 +2417,7 @@ async fn test_login_purges_previous_session_for_same_device() {
         .json(&json!({
             "username": username,
             "password": test_user.password,
+            "mfa_code": current_totp_for(&test_user.mfa_secret),
         }))
         .await;
     assert_eq!(r2.status_code().as_u16(), 200);

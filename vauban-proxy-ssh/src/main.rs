@@ -727,7 +727,7 @@ async fn handle_web_message(
             });
         }
 
-        // Handle responses from other services (RBAC, Vault)
+        // Handle responses from other services (RBAC, Vault, ...)
         Message::RbacResponse { request_id, result } => {
             debug!(
                 request_id = request_id,
@@ -737,18 +737,14 @@ async fn handle_web_message(
             state.increment_processed();
         }
 
-        Message::VaultCredentialResponse {
-            request_id,
-            credential,
-        } => {
-            debug!(
-                request_id = request_id,
-                found = credential.is_some(),
-                "Vault credential response received"
-            );
-            state.increment_processed();
-        }
-
+        // SECURITY: a legacy "vault credential response" arm used to live
+        // here that logged the response without enforcing any policy. The
+        // corresponding IPC verb has been removed from `shared::messages`
+        // (post-MFA security pass) because its sibling "get credential by
+        // id" verb returned `credential: None` silently and could have been
+        // misinterpreted as "no credential needed -> allow". When credential
+        // retrieval is reintroduced it must go through the encrypted-transit
+        // verbs (`VaultEncrypt` / `VaultDecrypt`).
         _ => {
             debug!(?msg, "Ignoring unexpected message type");
         }
