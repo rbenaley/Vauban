@@ -204,7 +204,7 @@ flowchart LR
 
 > **Defense-in-depth note.** Since the AccessGuard rollout (April 2026,
 > commit `feat(proxy-rdp): wire AccessGuard for defense-in-depth RBAC
-> re-check`), `vauban-proxy-rdp` independently re-checks authorisation
+> re-check`), `vauban-proxy-rdp` independently re-checks authorization
 > against `vauban-access` (via `AccessRequest::CheckAccessByUuid`)
 > before opening any upstream RDP session. The re-check runs **inside
 > a `tokio::spawn` body**, with a hard 10-second timeout, and is
@@ -228,7 +228,7 @@ sequenceDiagram
     U->>W: Click "Connect" on RDP asset
     W->>W: Load asset from PostgreSQL
 
-    Note over W,AC: Layer 1 — UI-side authorisation gate
+    Note over W,AC: Layer 1 — UI-side authorization gate
     W->>AC: AccessRequest::CheckAccess(user_id, group_id, "rdp")
     AC-->>W: AccessChecked(allowed: true, ...)
 
@@ -773,7 +773,7 @@ This prevents environment inspection attacks (e.g., `/proc/PID/environ` on Linux
 ### 11.5 Defense-in-Depth RBAC Re-check (`shared::access_guard`)
 
 `vauban-proxy-rdp` does **not** trust the verdict from `vauban-web` to
-authorise an upstream RDP connection. On every `RdpSessionOpen`, it
+authorize an upstream RDP connection. On every `RdpSessionOpen`, it
 issues an independent `AccessRequest::CheckAccessByUuid` directly to
 `vauban-access` via the shared `shared::access_guard` module:
 

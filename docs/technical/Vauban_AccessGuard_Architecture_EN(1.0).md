@@ -24,14 +24,14 @@
 
 ### 1.1 Purpose
 
-`shared::access_guard` is the single, factorised, fail-closed gate that
+`shared::access_guard` is the single, factorized, fail-closed gate that
 every Vauban proxy (`vauban-proxy-ssh`, `vauban-proxy-rdp`, future VNC
 and industrial-protocol proxies) runs against `vauban-access` before
 opening an upstream session, regardless of any verdict already produced
 by `vauban-web`.
 
 It implements the **defense-in-depth RBAC re-check** layer of the IAM
-authorisation model:
+authorization model:
 
 ```mermaid
 flowchart LR
@@ -235,7 +235,7 @@ The single entry point on the session-open hot path. Contract:
   gate;
 - Increments exactly one `AccessGuardMetrics` callback per call;
 - Returns one of four `AccessDecision` variants — only `Granted` may be
-  treated as authorisation.
+  treated as authorization.
 
 ### 3.4 Verdict — `AccessDecision`
 
@@ -252,7 +252,7 @@ impl AccessDecision {
 }
 ```
 
-| Variant | Caller behaviour | Metric | User-facing message |
+| Variant | Caller behavior | Metric | User-facing message |
 |---------|------------------|--------|---------------------|
 | `Granted` | proceed with credential lookup + upstream connect | `record_granted` | terminal / RDP viewer |
 | `Denied` | abort, generic "Access denied" | `record_denied` | "Access denied" |
@@ -360,7 +360,7 @@ Order matters:
 | # | Step | Reason |
 |---|------|--------|
 | 1 | `from_env` BEFORE sandbox | env access is restricted under Capsicum; the supervisor-provided FDs must be opened pre-sealing |
-| 2 | sandbox enrolment of `access_wiring.fds` | otherwise the dispatcher cannot read |
+| 2 | sandbox enrollment of `access_wiring.fds` | otherwise the dispatcher cannot read |
 | 3 | `spawn_dispatcher` AFTER tokio | the dispatcher is `tokio::spawn`'d |
 
 ### 4.2 Per-session sequence
@@ -438,7 +438,7 @@ re-check.
   release if the metric warrants it, but it must be opt-in and
   observable.
 - **No retry inside `authorize`.** A single timeout with a clean
-  fail-closed verdict beats opaque retry behaviour. Retries are the
+  fail-closed verdict beats opaque retry behavior. Retries are the
   caller's concern.
 - **No fallback path.** If `vauban-access` is unreachable, the bastion
   refuses sessions. This is the entire point of the gate.
@@ -534,7 +534,7 @@ The proxy:
 2. Implements `AccessGuardMetrics` on its own `ServiceState`.
 3. Calls `AccessGuard::from_env(PROTOCOL_VNC, state)` **before**
    Capsicum sealing.
-4. Enrols `access_wiring.fds` in the Capsicum sandbox.
+4. Enrolls `access_wiring.fds` in the Capsicum sandbox.
 5. Calls `access_guard.spawn_dispatcher()` after the tokio runtime is
    up.
 6. In its session-open handler, runs `authorize` inside a

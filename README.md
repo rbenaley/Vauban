@@ -115,7 +115,7 @@ The supervisor reads `config/default.toml`, forks all 7 child processes, sets up
 ## Configuration
 
 VAUBAN uses two distinct configuration strategies depending on how the binary
-is compiled. The build profile (`--release` or not) determines the behaviour
+is compiled. The build profile (`--release` or not) determines the behavior
 **at compile time** -- there is no runtime switch.
 
 ### Build Profiles

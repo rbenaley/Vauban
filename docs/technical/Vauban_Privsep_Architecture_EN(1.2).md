@@ -263,7 +263,7 @@ Key contracts owned by the module:
   exactly one of four metrics callbacks per call.
 - **`AccessDecision`** — 4-variant enum (`Granted | Denied | Timeout |
   BackendError`) with **no `Default` impl** so a forgotten gate cannot
-  silently authorise.
+  silently authorize.
 
 The full API, threat model, RAII pending-map fix, type-system
 invariants, 30+ test inventory, and per-proxy wiring cookbook are

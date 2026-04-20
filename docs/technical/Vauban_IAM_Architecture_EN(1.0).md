@@ -140,7 +140,7 @@ Both services participate in the supervisor's pipe topology:
 | `proxy-ssh` <-> `access` | Bidirectional | **Implemented** (defense-in-depth re-check) | Session authorization re-check before SSH connect — see [Vauban_AccessGuard_Architecture_EN(1.0).md](Vauban_AccessGuard_Architecture_EN(1.0).md) |
 | `proxy-rdp` <-> `access` | Bidirectional | **Implemented** (defense-in-depth re-check) | Session authorization re-check before RDP connect — see [Vauban_AccessGuard_Architecture_EN(1.0).md](Vauban_AccessGuard_Architecture_EN(1.0).md) |
 
-> **Defense-in-depth model.** Both proxies (`vauban-proxy-ssh` and `vauban-proxy-rdp`) independently re-check authorization against `vauban-access` (via `AccessRequest::CheckAccessByUuid`) before opening any upstream session, regardless of any verdict already produced by `vauban-web`. The shared module `shared::access_guard` factorises this gate so every current and future proxy (VNC, industrial protocols) consumes the same fail-closed code path. A compromised or buggy `vauban-web` therefore cannot grant sessions that the authoritative `vauban-access` would deny. The complete API, threat model, RAII pending-map fix, type-system invariants, and 30+ test inventory are documented in [Vauban_AccessGuard_Architecture_EN(1.0).md](Vauban_AccessGuard_Architecture_EN(1.0).md).
+> **Defense-in-depth model.** Both proxies (`vauban-proxy-ssh` and `vauban-proxy-rdp`) independently re-check authorization against `vauban-access` (via `AccessRequest::CheckAccessByUuid`) before opening any upstream session, regardless of any verdict already produced by `vauban-web`. The shared module `shared::access_guard` factorizes this gate so every current and future proxy (VNC, industrial protocols) consumes the same fail-closed code path. A compromised or buggy `vauban-web` therefore cannot grant sessions that the authoritative `vauban-access` would deny. The complete API, threat model, RAII pending-map fix, type-system invariants, and 30+ test inventory are documented in [Vauban_AccessGuard_Architecture_EN(1.0).md](Vauban_AccessGuard_Architecture_EN(1.0).md).
 
 ---
 
@@ -288,8 +288,8 @@ pub async fn enforce_totp_step_up(
 
 | Shape | Origin | Verifier |
 |-------|--------|----------|
-| `<base32>` (plaintext) | Pre-vault enrolment, dev/test setups | `AuthService::verify_totp` (local) |
-| `v{digits}:<base64>` (vault envelope) | Production enrolment via `vauban-vault` | `VaultCryptoClient::mfa_verify` (IPC to vauban-vault) |
+| `<base32>` (plaintext) | Pre-vault enrollment, dev/test setups | `AuthService::verify_totp` (local) |
+| `v{digits}:<base64>` (vault envelope) | Production enrollment via `vauban-vault` | `VaultCryptoClient::mfa_verify` (IPC to vauban-vault) |
 
 The classifier `services::auth::is_encrypted_mfa_secret` is the **single source of truth** for that distinction; both the login-time MFA flow (`handlers::auth`) and the step-up flow (`auth::step_up`) delegate to it to prevent drift.
 
@@ -760,7 +760,7 @@ CREATE INDEX idx_auth_sessions_last_activity
 |--------|-----------------------|
 | `user_id` | Identifies the human/service account. |
 | `device_info` | Browser fingerprint derived from `User-Agent` by `AuthSession::parse_device_info`. **Made `NOT NULL DEFAULT 'Unknown browser'`** so the index is deterministic even when the UA is missing or unparseable. |
-| `ip_address` | Resolved client IP after honouring trusted proxies (`extract_client_ip`). |
+| `ip_address` | Resolved client IP after honoring trusted proxies (`extract_client_ip`). |
 
 The invariant is enforced by **three coordinated layers**:
 
@@ -850,12 +850,12 @@ CREATE VIEW assets_active AS SELECT * FROM assets WHERE is_deleted = false;
 | **I3** — A tombstone MUST NOT carry credentials. | PostgreSQL (CHECK constraint) | `assets_tombstone_no_secrets`. SQLSTATE `23514` on violation. The migration includes a corrective `UPDATE assets SET connection_config = '{}'` for legacy tombstones predating the constraint. |
 | **I4** — `is_deleted` MUST NOT transition from `true` back to `false`. | PostgreSQL (BEFORE UPDATE trigger) | `assets_no_resurrection_trg`. Bypassing the trigger requires `session_replication_role = replica` (superuser only) and is reserved for explicit data migrations. |
 
-The contract is honoured by **three coordinated layers**:
+The contract is honored by **three coordinated layers**:
 
 1. **At the database** — the CHECK constraint, partial unique index
    and BEFORE UPDATE trigger above. They fire regardless of which
    client issues the offending statement (Diesel, raw `psql`, future
-   ETL, compromised handler). This is the line-of-defence that
+   ETL, compromised handler). This is the line-of-defense that
    "battle-tests" the policy: see
    `vauban-web/tests/web/assets_db_invariants_test.rs::test_i4_resurrection_blocked_via_raw_sql_bypassing_orm`,
    which proves the trigger rejects `UPDATE`s issued via
@@ -869,7 +869,7 @@ The contract is honoured by **three coordinated layers**:
      flash error. The historical "reactivation" branch is gone.
    - `delete_asset_web` scrubs `connection_config` to `{}` in the same
      transaction that flips `is_deleted = true`. This is now
-     defence-in-depth (the CHECK constraint would reject the COMMIT
+     defense-in-depth (the CHECK constraint would reject the COMMIT
      anyway), but kept so the intent is local-readable and
      `proxy_sessions` rows attached to the asset transition cleanly
      (`active → terminated`, `pending|connecting → orphaned`).
@@ -902,7 +902,7 @@ referential integrity story trivial.
 |------|-------|
 | `vauban-web/tests/web/assets_db_invariants_test.rs` | 8 SQL-pure tests (Diesel ORM bypassed) covering I1–I4, including the raw-SQL resurrection attempt. |
 | `vauban-web/tests/web/asset_irreversible_delete_test.rs` | 7 handler-level integration tests: fresh-UUID-after-delete, web 303 + flash on collision, API 409 on collision, edit-on-tombstone rejected, idempotent delete, 10-cycle stress (proves I1+I2 hold under churn), `proxy_sessions` FK survives soft-delete. |
-| `vauban-web/tests/web/asset_protocol_test.rs::test_soft_delete_purges_connection_config` | Defence-in-depth: the handler-level scrub is verified independently of the DB invariant. |
+| `vauban-web/tests/web/asset_protocol_test.rs::test_soft_delete_purges_connection_config` | Defense-in-depth: the handler-level scrub is verified independently of the DB invariant. |
 
 **Future scaling note.** When the tombstone population materially
 exceeds the active set (~5×, or ~100k rows), the next structural step
@@ -1381,7 +1381,7 @@ detects:
 
 | Concern | Old pattern (`is_staff \|\| is_superuser`) | New pattern (`PermissionContext`) |
 |---|---|---|
-| Custom Casbin policy (e.g. `role:custom` with `users:write` only) | Ignored: UI hides the action even though the server allows it (or vice-versa) | Honoured: UI mirrors the exact server gate |
+| Custom Casbin policy (e.g. `role:custom` with `users:write` only) | Ignored: UI hides the action even though the server allows it (or vice-versa) | Honored: UI mirrors the exact server gate |
 | Number of round-trips per request | 1 per template branch + 1 per handler check | 1 parallel join per request, regardless of branch count |
 | Test coverage | Required redundant `is_staff` flips in fixtures | Single `PermissionContext::default()` plus targeted overrides |
 | Drift between server and template | Frequent: easy to gate one but forget the other | Impossible: same struct is consulted on both sides |
