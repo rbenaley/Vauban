@@ -1029,8 +1029,11 @@ async fn test_edit_form_does_not_leak_stored_credential_into_html() {
             .collect::<String>()
     );
     assert!(
-        body.contains("Leave blank to keep current password"),
-        "edit form must surface the option-A hint when a password is on file"
+        body.contains("Leave blank to keep current secret"),
+        "edit form must surface the option-A hint when a credential is on \
+         file. Wording was updated alongside the credential-neutral \
+         input rebrand (Password -> Secret) — see \
+         ASSET-CREDS-NO-SAVE-PROMPT-20260420."
     );
 }
 

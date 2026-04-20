@@ -858,10 +858,14 @@ pub async fn remove_group_member_web(
     auth_user: WebAuthUser,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     axum::extract::Path((group_uuid_str, user_uuid_str)): axum::extract::Path<(String, String)>,
     Form(form): Form<DeleteAssetForm>,
 ) -> Response {
     let flash = incoming_flash.flash();
+
+    // BUG-12 / issue #19: HTMX-driven flow uses HX-Redirect — see
+    // `htmx_or_flash_redirect` for the rationale.
 
     // CSRF validation
     let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
@@ -871,7 +875,8 @@ pub async fn remove_group_member_web(
         csrf_cookie.map(|c| c.value()),
         &form.csrf_token,
     ) {
-        return flash_redirect(
+        return htmx_or_flash_redirect(
+            &headers,
             flash.error("Invalid CSRF token. Please refresh the page and try again."),
             &format!("/accounts/groups/{}", group_uuid_str),
         );
@@ -879,7 +884,8 @@ pub async fn remove_group_member_web(
 
     // Permission check
     if !auth_user.is_superuser && !auth_user.is_staff {
-        return flash_redirect(
+        return htmx_or_flash_redirect(
+            &headers,
             flash.error("You do not have permission to manage group members"),
             "/accounts/groups",
         );
@@ -888,7 +894,8 @@ pub async fn remove_group_member_web(
     let user_uuid = match ::uuid::Uuid::parse_str(&user_uuid_str) {
         Ok(uuid) => uuid,
         Err(_) => {
-            return flash_redirect(
+            return htmx_or_flash_redirect(
+                &headers,
                 flash.error("Invalid user identifier"),
                 &format!("/accounts/groups/{}", group_uuid_str),
             );
@@ -899,14 +906,19 @@ pub async fn remove_group_member_web(
     let group_info = match client.get_vauban_group(&group_uuid_str).await {
         Ok(g) => g,
         Err(_) => {
-            return flash_redirect(flash.error("Group not found"), "/accounts/groups");
+            return htmx_or_flash_redirect(
+                &headers,
+                flash.error("Group not found"),
+                "/accounts/groups",
+            );
         }
     };
 
     let mut conn = match state.db_pool.get().await {
         Ok(conn) => conn,
         Err(_) => {
-            return flash_redirect(
+            return htmx_or_flash_redirect(
+                &headers,
                 flash.error("Database connection error. Please try again."),
                 &format!("/accounts/groups/{}", group_uuid_str),
             );
@@ -924,7 +936,8 @@ pub async fn remove_group_member_web(
     let user_id = match user_id {
         Some(id) => id,
         None => {
-            return flash_redirect(
+            return htmx_or_flash_redirect(
+                &headers,
                 flash.error("User not found"),
                 &format!("/accounts/groups/{}", group_uuid_str),
             );
@@ -932,11 +945,13 @@ pub async fn remove_group_member_web(
     };
 
     match client.remove_group_member(group_info.id, user_id).await {
-        Ok(_) => flash_redirect(
+        Ok(_) => htmx_or_flash_redirect(
+            &headers,
             flash.success("Member removed successfully"),
             &format!("/accounts/groups/{}", group_uuid_str),
         ),
-        Err(_) => flash_redirect(
+        Err(_) => htmx_or_flash_redirect(
+            &headers,
             flash.error("Failed to remove member. Please try again."),
             &format!("/accounts/groups/{}", group_uuid_str),
         ),
@@ -951,10 +966,14 @@ pub async fn delete_vauban_group_web(
     auth_user: WebAuthUser,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
     Form(form): Form<DeleteAssetForm>,
 ) -> Response {
     let flash = incoming_flash.flash();
+
+    // BUG-12 / issue #19: HTMX-driven flow uses HX-Redirect — see
+    // `htmx_or_flash_redirect` for the rationale.
 
     // CSRF validation
     let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
@@ -964,7 +983,8 @@ pub async fn delete_vauban_group_web(
         csrf_cookie.map(|c| c.value()),
         &form.csrf_token,
     ) {
-        return flash_redirect(
+        return htmx_or_flash_redirect(
+            &headers,
             flash.error("Invalid CSRF token. Please refresh the page and try again."),
             &format!("/accounts/groups/{}", uuid_str),
         );
@@ -972,7 +992,8 @@ pub async fn delete_vauban_group_web(
 
     // Only superuser can delete groups
     if !auth_user.is_superuser {
-        return flash_redirect(
+        return htmx_or_flash_redirect(
+            &headers,
             flash.error("Only superusers can delete groups"),
             "/accounts/groups",
         );
@@ -980,7 +1001,8 @@ pub async fn delete_vauban_group_web(
 
     let client = &state.access_client;
     match client.delete_vauban_group(&uuid_str).await {
-        Ok(_) => flash_redirect(
+        Ok(_) => htmx_or_flash_redirect(
+            &headers,
             flash.success("Group deleted successfully"),
             "/accounts/groups",
         ),
@@ -993,7 +1015,11 @@ pub async fn delete_vauban_group_web(
             } else {
                 "Failed to delete group. Please try again."
             };
-            flash_redirect(flash.error(msg), &format!("/accounts/groups/{}", uuid_str))
+            htmx_or_flash_redirect(
+                &headers,
+                flash.error(msg),
+                &format!("/accounts/groups/{}", uuid_str),
+            )
         }
     }
 }

@@ -1136,16 +1136,27 @@ pub async fn asset_edit(
 /// Delete asset handler (Web form with PRG pattern).
 ///
 /// Soft-deletes the asset and updates related approvals/sessions.
+//
+// Axum extractors are positional and we just added `headers` to gate the
+// HX-Redirect dialect (BUG-12 / issue #19). Splitting the handler purely
+// for the arg count would obscure the linear delete flow; `allow` is the
+// right trade-off here.
+#[allow(clippy::too_many_arguments)]
 pub async fn delete_asset_web(
     State(state): State<AppState>,
     _auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
     Form(form): Form<DeleteAssetForm>,
 ) -> Response {
     let flash = incoming_flash.flash();
+
+    // BUG-12 / issue #19: HTMX-driven delete flows need `HX-Redirect` rather than
+    // the native 303 — see `htmx_or_flash_redirect` for the why. Both code paths
+    // still set the same flash cookie so the destination page surfaces the message.
 
     let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
     let secret = state.config.secret_key.expose_secret().as_bytes();
@@ -1154,14 +1165,16 @@ pub async fn delete_asset_web(
         csrf_cookie.map(|c| c.value()),
         &form.csrf_token,
     ) {
-        return flash_redirect(
+        return htmx_or_flash_redirect(
+            &headers,
             flash.error("Invalid CSRF token. Please refresh the page and try again."),
             &format!("/assets/{}", uuid_str),
         );
     }
 
     if !perms.assets_write {
-        return flash_redirect(
+        return htmx_or_flash_redirect(
+            &headers,
             flash.error("You do not have permission to delete assets"),
             &format!("/assets/{}", uuid_str),
         );
@@ -1170,14 +1183,19 @@ pub async fn delete_asset_web(
     let asset_uuid = match ::uuid::Uuid::parse_str(&uuid_str) {
         Ok(uuid) => uuid,
         Err(_) => {
-            return flash_redirect(flash.error("Invalid asset identifier"), "/assets");
+            return htmx_or_flash_redirect(
+                &headers,
+                flash.error("Invalid asset identifier"),
+                "/assets",
+            );
         }
     };
 
     let mut conn = match state.db_pool.get().await {
         Ok(conn) => conn,
         Err(_) => {
-            return flash_redirect(
+            return htmx_or_flash_redirect(
+                &headers,
                 flash.error("Database connection error. Please try again."),
                 &format!("/assets/{}", asset_uuid),
             );
@@ -1197,10 +1215,15 @@ pub async fn delete_asset_web(
     {
         Ok(id) => id,
         Err(diesel::result::Error::NotFound) => {
-            return flash_redirect(flash.error("Asset not found or already deleted"), "/assets");
+            return htmx_or_flash_redirect(
+                &headers,
+                flash.error("Asset not found or already deleted"),
+                "/assets",
+            );
         }
         Err(_) => {
-            return flash_redirect(
+            return htmx_or_flash_redirect(
+                &headers,
                 flash.error("Failed to delete asset. Please try again."),
                 &format!("/assets/{}", asset_uuid),
             );
@@ -1263,9 +1286,14 @@ pub async fn delete_asset_web(
                 tracing::error!("Failed to orphan approvals after delete: {}", err);
             }
 
-            flash_redirect(flash.success("Asset deleted successfully"), "/assets")
+            htmx_or_flash_redirect(
+                &headers,
+                flash.success("Asset deleted successfully"),
+                "/assets",
+            )
         }
-        Err(_) => flash_redirect(
+        Err(_) => htmx_or_flash_redirect(
+            &headers,
             flash.error("Failed to delete asset. Please try again."),
             &format!("/assets/{}", asset_uuid),
         ),

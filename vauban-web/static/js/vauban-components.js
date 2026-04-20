@@ -10,6 +10,67 @@ document.addEventListener('alpine:init', function () {
     // Global store for connection justification modal (SEC-03)
     Alpine.store('justificationModal', { show: false });
 
+    // Global store for the styled delete-confirmation modal (BUG-12 / issue #19).
+    //
+    // Why a store and not a `Alpine.data` component?
+    //   The modal is a singleton rendered ONCE in base.html, but every
+    //   destructive form scattered across the templates needs to open it.
+    //   A store gives us one instance + global access via `$store`.
+    //
+    // How it integrates with HTMX:
+    //   Each destructive form attaches `@htmx:confirm.prevent` that calls
+    //   `$store.deleteConfirm.openWith({ title, message, sourceEvent: $event })`.
+    //   `htmx:confirm` is the official HTMX hook for async confirmation flows
+    //   (https://htmx.org/events/#htmx:confirm). Calling preventDefault on the
+    //   listener stops HTMX's default `window.confirm()` action; calling
+    //   `event.detail.issueRequest(true)` later (from `confirm()` below)
+    //   tells HTMX to proceed *without* re-firing the confirmation chain.
+    //
+    // The `true` argument is critical (BUG-12 follow-up). HTMX's
+    // `issueRequest(skipConfirmation)` checks `skipConfirmation !== true &&
+    // question` before sending the request — if `hx-confirm` is set on the
+    // form (it is, as our defense-in-depth fallback) and we call
+    // `issueRequest()` with no arg, HTMX re-prompts via `window.confirm()`.
+    // The user then sees BOTH the styled Alpine modal *and* a native
+    // browser dialog. Passing `true` skips that second prompt while keeping
+    // the `hx-confirm` attribute available for the JS-off / Alpine-broken
+    // fallback path.
+    //
+    // Fallback when this store fails to register (Alpine asset 404, JS off,
+    // or a CSP that strips inline event handlers): the form still carries
+    // a plain `hx-confirm` attribute, so HTMX falls back to a native
+    // `window.confirm()` dialog instead of silently destroying data.
+    Alpine.store('deleteConfirm', {
+        open: false,
+        title: '',
+        message: '',
+        confirmLabel: 'Delete',
+        sourceEvent: null,
+        openWith: function (opts) {
+            this.title = (opts && opts.title) || 'Confirm';
+            this.message = (opts && opts.message) || 'Are you sure?';
+            this.confirmLabel = (opts && opts.confirmLabel) || 'Delete';
+            this.sourceEvent = (opts && opts.sourceEvent) || null;
+            this.open = true;
+        },
+        confirm: function () {
+            // Snapshot the source event before clearing state so a stray
+            // re-render can't null it out mid-flight.
+            var ev = this.sourceEvent;
+            this.open = false;
+            this.sourceEvent = null;
+            if (ev && ev.detail && typeof ev.detail.issueRequest === 'function') {
+                // `true` = skipConfirmation: bypass HTMX's `hx-confirm`
+                // re-prompt. See block comment above.
+                ev.detail.issueRequest(true);
+            }
+        },
+        cancel: function () {
+            this.open = false;
+            this.sourceEvent = null;
+        }
+    });
+
     // CSRF helper: reads token from cookie and keeps inputs synced
     Alpine.data('csrf', function () {
         return {

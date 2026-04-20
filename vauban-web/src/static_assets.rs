@@ -95,6 +95,17 @@ pub static STATIC_FILES: &[StaticAsset] = &[
         content: include_bytes!("../static/css/asciinema-player.css"),
         content_type: "text/css; charset=utf-8",
     },
+    // ── Fonts ─────────────────────────────────────────────────────────────
+    // text-security-disc.woff2: maps every glyph to "•" so a plain
+    // <input type="text"> can be visually masked without setting
+    // type="password" (which would re-arm Safari/Chrome credential
+    // heuristics).  Source: https://github.com/noppa/text-security
+    // License: SIL Open Font License 1.1 (see THIRD_PARTY_LICENSES.md).
+    StaticAsset {
+        path: "fonts/text-security-disc.woff2",
+        content: include_bytes!("../static/fonts/text-security-disc.woff2"),
+        content_type: "font/woff2",
+    },
 ];
 
 /// Look up an embedded static asset by its relative path.

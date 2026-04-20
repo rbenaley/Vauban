@@ -54,7 +54,19 @@
          section (port defaults) AND the Authentication section
          (asset_type-driven auth_type / private_key / domain visibility)
          share the same `assetType` source of truth. -->
+    {# ===== Browser credential-prompt suppression =====
+       Asset secrets belong to the target system, not to the operator.
+       The form therefore renders sensitive inputs with opaque names
+       (vbn_account / vbn_secret / vbn_secret_phrase) and type="text"
+       so neither Safari nor Chrome offers to save / generate a password
+       in the operator's keychain. The @submit handler below restores
+       the real server-side names (data-real-name -> name) right before
+       the browser serialises the form -- per HTML spec, listeners run
+       synchronously inside the submit event, before the default action,
+       so the POST payload still uses ssh_username / ssh_password /
+       ssh_passphrase and the backend is unaware of the renaming. #}
     <form action="/assets" method="POST" class="space-y-6"
+          @submit="$el.querySelectorAll('[data-real-name]').forEach(function (el) { el.name = el.dataset.realName })"
           x-data="{
               defaults: { ssh: 22, rdp: 3389 },
               usernameDefaults: { ssh: 'root', rdp: 'Administrator' },
@@ -136,12 +148,18 @@
             <div class="px-4 py-5 sm:p-6 space-y-6">
                 <div class="grid grid-cols-1 gap-6 sm:grid-cols-2">
                     <div>
-                        <label for="ssh_username" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Username</label>
-                        <input type="text" name="ssh_username" id="ssh_username"
+                        {# DOM-level name/id are opaque (vbn_account); the
+                           form's @submit handler swaps the name back to
+                           ssh_username just before submit. Hides the
+                           "username field" signal from Safari/Chrome
+                           login-form heuristics. #}
+                        <label for="vbn_account" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Account Name</label>
+                        <input type="text" name="vbn_account" id="vbn_account"
+                               data-real-name="ssh_username"
                                x-model="username"
                                :placeholder="usernameDefaults[assetType] || 'root'"
                                class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
-                        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Default: <code>root</code> for SSH, <code>Administrator</code> for RDP. Override as needed.</p>
+                        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Account on the target system. Default: <code>root</code> for SSH, <code>Administrator</code> for RDP. Override as needed.</p>
                     </div>
                     <!-- Authentication Type selector: SSH only.
                          RDP cannot use private-key auth (rejected
@@ -156,17 +174,24 @@
                     </div>
                 </div>
 
-                <!-- Password field: shown for RDP (always) and for SSH
-                     when auth_type=password. -->
+                <!-- Secret field: shown for RDP (always) and for SSH
+                     when auth_type=password. Rendered as <input type="text">
+                     with an opaque name/id so browsers do not detect a
+                     credential field. The typed value is intentionally
+                     visible -- there is no native <input type="password">
+                     because that would re-trigger Save Password / Generate
+                     Password prompts in Safari + Chrome. -->
                 <div x-show="assetType === 'rdp' || authType === 'password'" x-cloak>
-                    <label for="ssh_password" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                        Password <span x-show="assetType === 'rdp' || authType === 'password'" class="text-red-500">*</span>
+                    <label for="vbn_secret" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                        Secret <span x-show="assetType === 'rdp' || authType === 'password'" class="text-red-500">*</span>
                     </label>
-                    <input type="password" name="ssh_password" id="ssh_password"
+                    <input type="text" name="vbn_secret" id="vbn_secret"
+                           data-real-name="ssh_password"
                            class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
+                           autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
                            :required="assetType === 'rdp' || authType === 'password'"
-                           placeholder="Enter password">
-                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Password for authentication. Required for RDP and for SSH password authentication.</p>
+                           placeholder="Enter secret">
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Secret used to authenticate against the target system. Required for RDP and for SSH password authentication.</p>
                 </div>
 
                 <!-- Private key fields: SSH only AND auth_type=private_key. -->
@@ -184,9 +209,13 @@
                         <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Paste the full private key content (PEM or OpenSSH format). Required for SSH key-based authentication.</p>
                     </div>
                     <div>
-                        <label for="ssh_passphrase" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Passphrase (optional)</label>
-                        <input type="password" name="ssh_passphrase" id="ssh_passphrase"
+                        {# Same opaque-name + visual-mask pattern as the
+                           main secret field above. #}
+                        <label for="vbn_secret_phrase" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Key Passphrase (optional)</label>
+                        <input type="text" name="vbn_secret_phrase" id="vbn_secret_phrase"
+                               data-real-name="ssh_passphrase"
                                class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
+                               autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
                                placeholder="Key passphrase (if encrypted)">
                         <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Leave empty if the private key is not encrypted</p>
                     </div>

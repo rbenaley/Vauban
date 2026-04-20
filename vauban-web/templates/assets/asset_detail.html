@@ -98,9 +98,26 @@
                 </svg>
                 Edit
             </a>
-            <form method="post"
-                  action="/assets/{{ asset.uuid }}/delete"
-                  hx-confirm="Are you sure you want to delete this asset?"
+            {# BUG-12 / issue #19: HTMX-driven delete with styled-modal confirmation. #}
+            {# `hx-post` is what makes `hx-confirm` and `htmx:confirm` actually fire — #}
+            {# the prior `method="post" action="..."` form was a native submit, so #}
+            {# `hx-confirm` was decorative and the destructive POST went through on #}
+            {# a single click. The `hx-confirm` attribute below is intentionally kept #}
+            {# as a defense-in-depth fallback (HTMX falls back to `window.confirm()` #}
+            {# if the Alpine store is unavailable). Resource-name strings live in #}
+            {# `data-confirm-*` attributes so askama's HTML-escape covers them and #}
+            {# they never enter a JS-parsed string context (no template-literal injection). #}
+            <form hx-post="/assets/{{ asset.uuid }}/delete"
+                  hx-confirm="Delete asset '{{ asset.name }}' ({{ asset.hostname }})? This cannot be undone."
+                  data-confirm-title="Delete asset"
+                  data-confirm-message="Delete asset '{{ asset.name }}' ({{ asset.hostname }})?&#10;Vauban deletes are structurally final — there is no restore."
+                  data-confirm-label="Delete asset"
+                  @htmx:confirm.prevent="$store.deleteConfirm.openWith({
+                      title: $el.dataset.confirmTitle,
+                      message: $el.dataset.confirmMessage,
+                      confirmLabel: $el.dataset.confirmLabel,
+                      sourceEvent: $event
+                  })"
                   x-data="csrf">
                 <input type="hidden" name="csrf_token" x-model="token" />
                 <button type="submit"

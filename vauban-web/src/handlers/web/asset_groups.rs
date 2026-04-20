@@ -613,16 +613,25 @@ pub struct RemoveAssetFromGroupForm {
 }
 
 /// Handle removing an asset from a group.
+//
+// Axum extractors are positional and `headers` was added to gate the
+// HX-Redirect dialect (BUG-12 / issue #19). Splitting purely for the arg
+// count would obscure the linear remove flow.
+#[allow(clippy::too_many_arguments)]
 pub async fn asset_group_remove_asset(
     State(state): State<AppState>,
     _auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
     Form(form): Form<RemoveAssetFromGroupForm>,
 ) -> Response {
     let flash = incoming_flash.flash();
+
+    // BUG-12 / issue #19: HTMX-driven flow uses HX-Redirect — see
+    // `htmx_or_flash_redirect` for the rationale.
 
     // CSRF validation
     let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
@@ -631,14 +640,16 @@ pub async fn asset_group_remove_asset(
         csrf_cookie.map(|c| c.value()),
         &form.csrf_token,
     ) {
-        return flash_redirect(
+        return htmx_or_flash_redirect(
+            &headers,
             flash.error("Invalid CSRF token. Please refresh the page and try again."),
             &format!("/assets/groups/{}", uuid_str),
         );
     }
 
     if !perms.groups_write {
-        return flash_redirect(
+        return htmx_or_flash_redirect(
+            &headers,
             flash.error("Only administrators can manage asset group membership"),
             &format!("/assets/groups/{}", uuid_str),
         );
@@ -648,7 +659,11 @@ pub async fn asset_group_remove_asset(
     let group_uuid = match ::uuid::Uuid::parse_str(&uuid_str) {
         Ok(uuid) => uuid,
         Err(_) => {
-            return flash_redirect(flash.error("Invalid group identifier"), "/assets/groups");
+            return htmx_or_flash_redirect(
+                &headers,
+                flash.error("Invalid group identifier"),
+                "/assets/groups",
+            );
         }
     };
 
@@ -656,7 +671,8 @@ pub async fn asset_group_remove_asset(
     let asset_uuid = match ::uuid::Uuid::parse_str(&form.asset_uuid) {
         Ok(uuid) => uuid,
         Err(_) => {
-            return flash_redirect(
+            return htmx_or_flash_redirect(
+                &headers,
                 flash.error("Invalid asset identifier"),
                 &format!("/assets/groups/{}", group_uuid),
             );
@@ -666,7 +682,8 @@ pub async fn asset_group_remove_asset(
     let mut conn = match state.db_pool.get().await {
         Ok(conn) => conn,
         Err(_) => {
-            return flash_redirect(
+            return htmx_or_flash_redirect(
+                &headers,
                 flash.error("Database connection error. Please try again."),
                 &format!("/assets/groups/{}", group_uuid),
             );
@@ -686,10 +703,15 @@ pub async fn asset_group_remove_asset(
     {
         Ok(id) => id,
         Err(diesel::result::Error::NotFound) => {
-            return flash_redirect(flash.error("Asset group not found"), "/assets/groups");
+            return htmx_or_flash_redirect(
+                &headers,
+                flash.error("Asset group not found"),
+                "/assets/groups",
+            );
         }
         Err(_) => {
-            return flash_redirect(
+            return htmx_or_flash_redirect(
+                &headers,
                 flash.error("Database error. Please try again."),
                 &format!("/assets/groups/{}", group_uuid),
             );
@@ -705,13 +727,15 @@ pub async fn asset_group_remove_asset(
     {
         Ok(id) => id,
         Err(diesel::result::Error::NotFound) => {
-            return flash_redirect(
+            return htmx_or_flash_redirect(
+                &headers,
                 flash.error("Asset not found"),
                 &format!("/assets/groups/{}", group_uuid),
             );
         }
         Err(_) => {
-            return flash_redirect(
+            return htmx_or_flash_redirect(
+                &headers,
                 flash.error("Database error. Please try again."),
                 &format!("/assets/groups/{}", group_uuid),
             );
@@ -727,7 +751,8 @@ pub async fn asset_group_remove_asset(
     .await;
 
     match deleted {
-        Ok(0) => flash_redirect(
+        Ok(0) => htmx_or_flash_redirect(
+            &headers,
             flash.error("Asset was not a member of this group"),
             &format!("/assets/groups/{}", group_uuid),
         ),
@@ -736,12 +761,14 @@ pub async fn asset_group_remove_asset(
                 .set(a::updated_at.eq(chrono::Utc::now()))
                 .execute(&mut conn)
                 .await;
-            flash_redirect(
+            htmx_or_flash_redirect(
+                &headers,
                 flash.success("Asset removed from group successfully"),
                 &format!("/assets/groups/{}", group_uuid),
             )
         }
-        Err(_) => flash_redirect(
+        Err(_) => htmx_or_flash_redirect(
+            &headers,
             flash.error("Failed to remove asset from group. Please try again."),
             &format!("/assets/groups/{}", group_uuid),
         ),
@@ -1083,16 +1110,25 @@ pub struct DeleteAssetGroupForm {
 /// Delete asset group handler (Web form with PRG pattern).
 ///
 /// Hard-deletes the asset group and its asset associations.
+//
+// Axum extractors are positional and `headers` was added to gate the
+// HX-Redirect dialect (BUG-12 / issue #19). Splitting purely for the arg
+// count would obscure the linear delete flow.
+#[allow(clippy::too_many_arguments)]
 pub async fn delete_asset_group_web(
     State(state): State<AppState>,
     _auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
     Form(form): Form<DeleteAssetGroupForm>,
 ) -> Response {
     let flash = incoming_flash.flash();
+
+    // BUG-12 / issue #19: HTMX-driven flow uses HX-Redirect — see
+    // `htmx_or_flash_redirect` for the rationale.
 
     // CSRF validation
     let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
@@ -1101,14 +1137,16 @@ pub async fn delete_asset_group_web(
         csrf_cookie.map(|c| c.value()),
         &form.csrf_token,
     ) {
-        return flash_redirect(
+        return htmx_or_flash_redirect(
+            &headers,
             flash.error("Invalid CSRF token"),
             &format!("/assets/groups/{}", uuid_str),
         );
     }
 
     if !perms.groups_write {
-        return flash_redirect(
+        return htmx_or_flash_redirect(
+            &headers,
             flash.error("Only administrators can delete asset groups"),
             "/assets/groups",
         );
@@ -1116,7 +1154,11 @@ pub async fn delete_asset_group_web(
 
     // Validate UUID
     if ::uuid::Uuid::parse_str(&uuid_str).is_err() {
-        return flash_redirect(flash.error("Invalid group identifier"), "/assets/groups");
+        return htmx_or_flash_redirect(
+            &headers,
+            flash.error("Invalid group identifier"),
+            "/assets/groups",
+        );
     }
 
     let client = &state.access_client;
@@ -1125,14 +1167,19 @@ pub async fn delete_asset_group_web(
         let group_info = match client.get_asset_group(&uuid_str).await {
             Ok(info) => info,
             Err(_) => {
-                return flash_redirect(flash.error("Asset group not found"), "/assets/groups");
+                return htmx_or_flash_redirect(
+                    &headers,
+                    flash.error("Asset group not found"),
+                    "/assets/groups",
+                );
             }
         };
         let mut conn = match state.db_pool.get().await {
             Ok(c) => c,
             Err(e) => {
                 tracing::error!("Database connection error: {}", e);
-                return flash_redirect(
+                return htmx_or_flash_redirect(
+                    &headers,
                     flash.error("Database connection error"),
                     &format!("/assets/groups/{}", uuid_str),
                 );
@@ -1150,13 +1197,15 @@ pub async fn delete_asset_group_web(
     };
 
     match result {
-        Ok(group_name) => flash_redirect(
+        Ok(group_name) => htmx_or_flash_redirect(
+            &headers,
             flash.success(format!("Asset group '{}' deleted successfully", group_name)),
             "/assets/groups",
         ),
         Err(e) => {
             tracing::error!("Failed to delete asset group: {}", e);
-            flash_redirect(
+            htmx_or_flash_redirect(
+                &headers,
                 flash.error("Failed to delete asset group"),
                 &format!("/assets/groups/{}", uuid_str),
             )

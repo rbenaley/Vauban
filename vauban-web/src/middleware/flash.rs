@@ -407,6 +407,41 @@ pub fn flash_redirect(flash: Flash, location: &str) -> Response {
     (flash, axum::response::Redirect::to(location)).into_response()
 }
 
+/// Same as [`flash_redirect`] but speaks the right dialect for HTMX-driven
+/// requests (BUG-12 / GitHub issue #19).
+///
+/// Plain HTML forms get a 303 + `Location` (the original PRG flow). HTMX
+/// requests carry the `HX-Request: true` header — for those we set the same
+/// flash cookie but answer with `200 OK` + `HX-Redirect: <location>`, which
+/// tells HTMX to perform a *full-page* navigation client-side. Returning a
+/// 303 to an HTMX request would otherwise be silently followed by `fetch`
+/// and swapped into the form's default target (`this`), producing the
+/// jarring "form replaced by the redirected page" UX we want to avoid.
+///
+/// The flash cookie is set in both code paths so the destination page shows
+/// the success/error message regardless of which dialect the client speaks.
+pub fn htmx_or_flash_redirect(
+    headers: &axum::http::HeaderMap,
+    flash: Flash,
+    location: &str,
+) -> Response {
+    if headers.get("HX-Request").is_some() {
+        // axum's tuple `IntoResponse` impls expect `(StatusCode, ...parts, body)`.
+        // Flash and the headers array are both `IntoResponseParts`.
+        return (
+            axum::http::StatusCode::OK,
+            flash,
+            [(
+                axum::http::header::HeaderName::from_static("hx-redirect"),
+                location,
+            )],
+            "",
+        )
+            .into_response();
+    }
+    flash_redirect(flash, location)
+}
+
 // Base64 encoding/decoding helpers (URL-safe)
 fn base64_encode(data: &str) -> String {
     use base64::Engine;

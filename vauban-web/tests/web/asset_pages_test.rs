@@ -1218,3 +1218,368 @@ async fn test_asset_list_ws_trigger_present() {
 
     test_db::cleanup(&mut conn).await;
 }
+
+// =============================================================================
+// Asset secret-input contract — browser credential prompt suppression
+// =============================================================================
+//
+// Asset credentials (account name, secret, key passphrase) are credentials
+// for the TARGET system, not for the operator. We must therefore prevent
+// browsers (especially Safari + Chrome) from offering to save / generate
+// a password in the operator's keychain — that would leak asset secrets
+// outside Vauban's RBAC + audit perimeter.
+//
+// The defense, applied to /assets/new and /assets/{uuid}/edit:
+//   1. Visible labels are credential-neutral ("Account Name" / "Secret"
+//      / "Key Passphrase"), never "Username" / "Password".
+//   2. <input type="text"> instead of <input type="password"> — this
+//      removes the strongest single autofill signal.
+//   3. name= and id= attributes are opaque (vbn_account / vbn_secret /
+//      vbn_secret_phrase) so name-based heuristics fail.
+//   4. Each field carries data-real-name="ssh_*" so the form's @submit
+//      Alpine handler restores the real server-side name synchronously
+//      before the browser serialises the form (per HTML spec, listeners
+//      run before the default action — the POST payload is unchanged).
+//   5. The Secret field is visually masked with the OFL-1.1 web font
+//      `text-security-disc.woff2` via a CSS attribute selector
+//      (`input[data-real-name="ssh_password"]`) — no dedicated class on
+//      the input, no `-webkit-text-security` (works on Firefox too).
+//      Account Name and Key Passphrase remain in clear text.
+//
+// Anti-regression marker: ASSET-CREDS-NO-SAVE-PROMPT-20260420.
+
+/// Window size around a tag location used for attribute scanning. Inputs
+/// in our templates rarely span more than a few hundred bytes when fully
+/// inlined; 800 leaves comfortable slack for placeholder text.
+const SECRET_INPUT_WINDOW: usize = 800;
+
+/// Assert the secret-input contract for a single field on `body`.
+///
+/// - `dom_name`: the opaque HTML name/id used to hide the field from
+///   browser heuristics (e.g. `vbn_secret`).
+/// - `real_name`: the server-side name carried by `data-real-name=` and
+///   restored at submit time (e.g. `ssh_password`).
+/// - `expected_label`: the visible label text (e.g. `Secret`).
+fn assert_secret_input_contract(
+    body: &str,
+    dom_name: &str,
+    real_name: &str,
+    expected_label: &str,
+    context: &str,
+) {
+    // 1. The static HTML must NOT carry name="ssh_*" anywhere as a
+    //    real attribute. Note: data-real-name="ssh_*" contains the
+    //    substring `name="ssh_*"` — the leading space prefix in the
+    //    needle excludes that case (data-real-name is preceded by `-`,
+    //    real `name=` attributes are always preceded by whitespace on
+    //    an HTML input tag).
+    let raw_name_needle = format!(" name=\"{}\"", real_name);
+    assert!(
+        !body.contains(&raw_name_needle),
+        "{}: rendered HTML must NOT carry `name=\"{}\"` as a real \
+         attribute — browsers (Safari/Chrome) trigger Save Password / \
+         Generate Password prompts when they recognise credential-shaped \
+         names. The real name MUST live only in `data-real-name=\"{}\"` \
+         (ASSET-CREDS-NO-SAVE-PROMPT-20260420).",
+        context, real_name, real_name
+    );
+    let raw_id_needle = format!(" id=\"{}\"", real_name);
+    assert!(
+        !body.contains(&raw_id_needle),
+        "{}: rendered HTML must NOT carry `id=\"{}\"` — same heuristic \
+         risk as name=. Use the opaque `vbn_*` id and aria/label \
+         relations instead (ASSET-CREDS-NO-SAVE-PROMPT-20260420).",
+        context, real_name
+    );
+
+    // 2. The opaque DOM input must exist with the right name + id +
+    //    data-real-name attribute, all in the same input tag.
+    let dom_needle = format!("name=\"{}\"", dom_name);
+    let pos = body.find(&dom_needle).unwrap_or_else(|| {
+        panic!(
+            "{}: missing input with `name=\"{}\"` — secret fields must \
+             carry the opaque DOM name; the @submit handler restores the \
+             real server-side name at submit time \
+             (ASSET-CREDS-NO-SAVE-PROMPT-20260420).",
+            context, dom_name
+        )
+    });
+    let win_start = pos.saturating_sub(200);
+    let win_end = (pos + SECRET_INPUT_WINDOW).min(body.len());
+    let window = &body[win_start..win_end];
+
+    // 3. type="text" — never type="password" (the strongest single
+    //    autofill signal). The typed value is intentionally visible.
+    assert!(
+        window.contains("type=\"text\""),
+        "{}: input `name=\"{}\"` must use `type=\"text\"` to avoid \
+         browser credential autofill \
+         (ASSET-CREDS-NO-SAVE-PROMPT-20260420). Window:\n{}",
+        context,
+        dom_name,
+        window
+    );
+    assert!(
+        !window.contains("type=\"password\""),
+        "{}: input `name=\"{}\"` must NOT be `type=\"password\"` \
+         (ASSET-CREDS-NO-SAVE-PROMPT-20260420). Window:\n{}",
+        context,
+        dom_name,
+        window
+    );
+
+    // 4. data-real-name carries the server-side name.
+    let dra_needle = format!("data-real-name=\"{}\"", real_name);
+    assert!(
+        window.contains(&dra_needle),
+        "{}: input `name=\"{}\"` must carry `data-real-name=\"{}\"` so \
+         the form's @submit handler can restore the server-side name \
+         (ASSET-CREDS-NO-SAVE-PROMPT-20260420). Window:\n{}",
+        context,
+        dom_name,
+        real_name,
+        window
+    );
+
+    // 5. id= matches dom_name and the visible <label for=...> binds to
+    //    that opaque id (a11y must not regress).
+    let id_needle = format!("id=\"{}\"", dom_name);
+    assert!(
+        window.contains(&id_needle),
+        "{}: input `name=\"{}\"` must also carry the matching opaque \
+         `id=\"{}\"` so the visible <label for=...> can bind to it \
+         (ASSET-CREDS-NO-SAVE-PROMPT-20260420). Window:\n{}",
+        context,
+        dom_name,
+        dom_name,
+        window
+    );
+    let label_needle = format!("for=\"{}\"", dom_name);
+    assert!(
+        body.contains(&label_needle),
+        "{}: missing <label for=\"{}\">. Without a label binding the \
+         field is invisible to screen readers \
+         (ASSET-CREDS-NO-SAVE-PROMPT-20260420).",
+        context, dom_name
+    );
+
+    // 6. Visible label text matches the expected credential-neutral
+    //    wording. We anchor on `for="vbn_*"` so there is no ambiguity
+    //    with other labels on the page.
+    let label_marker = format!("for=\"{}\"", dom_name);
+    let lbl_pos = body.find(&label_marker).expect("label needle checked above");
+    let lbl_end = (lbl_pos + 400).min(body.len());
+    let lbl_window = &body[lbl_pos..lbl_end];
+    assert!(
+        lbl_window.contains(expected_label),
+        "{}: <label for=\"{}\"> must contain visible text `{}` (got \
+         window:\n{}).",
+        context,
+        dom_name,
+        expected_label,
+        lbl_window
+    );
+}
+
+/// Assert the form-level @submit handler that swaps `data-real-name`
+/// back to `name` synchronously inside the submit event. Without it,
+/// the server would receive opaque names and reject the form.
+fn assert_form_submit_swap(body: &str, form_action_substr: &str, context: &str) {
+    let pos = body.find(form_action_substr).unwrap_or_else(|| {
+        panic!(
+            "{}: form action `{}` not found in rendered HTML",
+            context, form_action_substr
+        )
+    });
+    let win_end = (pos + 1000).min(body.len());
+    let form_tag = &body[pos..win_end];
+    assert!(
+        form_tag.contains("data-real-name") && form_tag.contains("@submit"),
+        "{}: <form> must declare an @submit handler that rewrites \
+         `data-real-name` -> `name` before the browser serialises the \
+         form. Without the swap, the server would receive opaque names \
+         (vbn_*) and the form would fail validation \
+         (ASSET-CREDS-NO-SAVE-PROMPT-20260420). Window:\n{}",
+        context,
+        form_tag
+    );
+}
+
+/// /assets/new — every secret field carries the opaque-name + swap
+/// contract; visible labels are credential-neutral.
+#[tokio::test]
+#[serial]
+async fn test_asset_create_form_uses_credential_neutral_inputs() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("asset_create_neutral");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+
+    let response = app
+        .server
+        .get("/assets/new")
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+
+    assert_form_submit_swap(&body, "action=\"/assets\"", "asset create form");
+
+    // All three fields share the same opaque-name + swap contract.
+    for (dom_name, real_name, expected_label) in [
+        ("vbn_account", "ssh_username", "Account Name"),
+        ("vbn_secret", "ssh_password", "Secret"),
+        ("vbn_secret_phrase", "ssh_passphrase", "Key Passphrase"),
+    ] {
+        assert_secret_input_contract(
+            &body,
+            dom_name,
+            real_name,
+            expected_label,
+            &format!("asset create form ({})", expected_label),
+        );
+    }
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// /assets/{uuid}/edit — same contract as the create form. Edit is the
+/// path most likely to trigger Save Password prompts because operators
+/// rotate secrets there.
+#[tokio::test]
+#[serial]
+async fn test_asset_edit_form_uses_credential_neutral_inputs() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("asset_edit_neutral");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+
+    let asset = create_test_ssh_asset(&mut conn, &unique_name("edit-neutral-asset")).await;
+
+    let response = app
+        .server
+        .get(&format!("/assets/{}/edit", asset.asset.uuid))
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+
+    let action = format!("action=\"/assets/{}/edit\"", asset.asset.uuid);
+    assert_form_submit_swap(&body, &action, "asset edit form");
+
+    for (dom_name, real_name, expected_label) in [
+        ("vbn_account", "ssh_username", "Account Name"),
+        ("vbn_secret", "ssh_password", "Secret"),
+        ("vbn_secret_phrase", "ssh_passphrase", "Key Passphrase"),
+    ] {
+        assert_secret_input_contract(
+            &body,
+            dom_name,
+            real_name,
+            expected_label,
+            &format!("asset edit form ({})", expected_label),
+        );
+    }
+
+    test_db::cleanup(&mut conn).await;
+}
+
+// =============================================================================
+// Asset Secret — visual masking via OFL-1.1 web font
+// =============================================================================
+//
+// The Secret field is `<input type="text">`, which means the typed value
+// would otherwise be rendered in clear. We layer a glyph-substitution font
+// (text-security-disc.woff2 — every glyph maps to "•") via a pure CSS
+// attribute selector on `data-real-name="ssh_password"`.  No class on the
+// input, no `-webkit-text-security`: the HTML stays untouched and Firefox
+// gets the same masking as Safari/Chrome.
+//
+// Three regression-guard invariants:
+//
+//   A. The font is registered in `static_assets.rs` (otherwise the binary
+//      can't serve it and the @font-face URL 404s in production).
+//   B. `vauban.css` declares both the @font-face block AND the attribute
+//      selector that applies it.  A revert that drops either side leaves
+//      the secret visible in clear.
+//   C. The masking is scoped to the secret field only — Account Name and
+//      Key Passphrase MUST remain unmasked (we do not want a user to
+//      mistake "Account Name" for a secret-grade field).
+//
+// Anti-regression marker: ASSET-SECRET-VISUAL-MASK-20260420.
+
+/// A. + B. — font is registered and CSS wires it to the right selector.
+#[test]
+fn test_secret_input_visual_mask_is_wired() {
+    use vauban_web::static_assets::lookup;
+
+    // A. The font asset is compiled into the binary and served as woff2.
+    let font = lookup("fonts/text-security-disc.woff2").expect(
+        "text-security-disc.woff2 must be registered in static_assets::STATIC_FILES \
+         — without it the @font-face URL returns 404 and the Secret field renders \
+         in clear (ASSET-SECRET-VISUAL-MASK-20260420).",
+    );
+    assert_eq!(
+        font.content_type, "font/woff2",
+        "text-security-disc.woff2 must be served with `font/woff2` content-type \
+         (ASSET-SECRET-VISUAL-MASK-20260420)."
+    );
+    assert!(
+        font.content.len() > 1000,
+        "text-security-disc.woff2 looks truncated ({} bytes); expected ~2 KB \
+         (ASSET-SECRET-VISUAL-MASK-20260420).",
+        font.content.len()
+    );
+    // woff2 magic bytes: "wOF2" (0x77 0x4F 0x46 0x32).
+    assert_eq!(
+        &font.content[..4],
+        b"wOF2",
+        "text-security-disc.woff2 magic bytes mismatch — file is corrupted \
+         or replaced with the wrong format (ASSET-SECRET-VISUAL-MASK-20260420)."
+    );
+
+    // B. The CSS declares the @font-face AND the attribute selector that
+    //    applies it. Both must be present for the masking to work.
+    let css = include_str!("../../static/css/vauban.css");
+    assert!(
+        css.contains("@font-face") && css.contains("text-security-disc"),
+        "vauban.css must declare @font-face for `text-security-disc` \
+         (ASSET-SECRET-VISUAL-MASK-20260420)."
+    );
+    assert!(
+        css.contains("/static/fonts/text-security-disc.woff2"),
+        "vauban.css @font-face must point at /static/fonts/text-security-disc.woff2 \
+         (ASSET-SECRET-VISUAL-MASK-20260420)."
+    );
+    assert!(
+        css.contains("input[data-real-name=\"ssh_password\"]"),
+        "vauban.css must apply `text-security-disc` to \
+         `input[data-real-name=\"ssh_password\"]` — without this selector \
+         the font is loaded but never used (ASSET-SECRET-VISUAL-MASK-20260420)."
+    );
+}
+
+/// C. — masking is scoped to the secret field only.
+#[test]
+fn test_secret_input_visual_mask_is_scoped_to_password() {
+    let css = include_str!("../../static/css/vauban.css");
+
+    // The masking must NOT leak onto username (Account Name) or passphrase.
+    // If a future refactor broadens the selector, the secret would visually
+    // collide with adjacent fields and confuse operators.
+    assert!(
+        !css.contains("input[data-real-name=\"ssh_username\"]"),
+        "vauban.css must NOT apply masking to ssh_username (Account Name is \
+         intentionally readable) (ASSET-SECRET-VISUAL-MASK-20260420)."
+    );
+    assert!(
+        !css.contains("input[data-real-name=\"ssh_passphrase\"]"),
+        "vauban.css must NOT apply masking to ssh_passphrase (Key Passphrase \
+         is intentionally readable in this iteration) \
+         (ASSET-SECRET-VISUAL-MASK-20260420)."
+    );
+}

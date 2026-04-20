@@ -69,10 +69,23 @@
                 </svg>
                 Edit
             </a>
-            <form action="/assets/groups/{{ group.uuid }}/delete" method="POST" class="inline">
+            {# BUG-12 / issue #19: HTMX-driven delete with styled-modal confirmation. #}
+            {# `hx-confirm` was previously on the button (outside HTMX's verb chain) #}
+            {# so it never fired — moved onto the form together with the new `hx-post`. #}
+            <form hx-post="/assets/groups/{{ group.uuid }}/delete"
+                  hx-confirm="Delete asset group '{{ group.name }}'? Assets in this group will be unlinked but not deleted."
+                  data-confirm-title="Delete asset group"
+                  data-confirm-message="Delete asset group '{{ group.name }}'?&#10;Assets in this group are unlinked from it but kept (each asset still exists individually). The group itself is gone for good."
+                  data-confirm-label="Delete group"
+                  @htmx:confirm.prevent="$store.deleteConfirm.openWith({
+                      title: $el.dataset.confirmTitle,
+                      message: $el.dataset.confirmMessage,
+                      confirmLabel: $el.dataset.confirmLabel,
+                      sourceEvent: $event
+                  })"
+                  class="inline">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
                 <button type="submit"
-                        hx-confirm="Are you sure you want to delete this asset group? Assets in this group will be unlinked but not deleted."
                         class="inline-flex items-center rounded-md bg-red-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-red-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-600">
                     <svg class="-ml-0.5 mr-1.5 h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
                         <path fill-rule="evenodd" d="M8.75 1A2.75 2.75 0 006 3.75v.443c-.795.077-1.584.176-2.365.298a.75.75 0 10.23 1.482l.149-.022.841 10.518A2.75 2.75 0 007.596 19h4.807a2.75 2.75 0 002.742-2.53l.841-10.519.149.023a.75.75 0 00.23-1.482A41.03 41.03 0 0014 4.193V3.75A2.75 2.75 0 0011.25 1h-2.5zM10 4c.84 0 1.673.025 2.5.075V3.75c0-.69-.56-1.25-1.25-1.25h-2.5c-.69 0-1.25.56-1.25 1.25v.325C8.327 4.025 9.16 4 10 4zM8.58 7.72a.75.75 0 00-1.5.06l.3 7.5a.75.75 0 101.5-.06l-.3-7.5zm4.34.06a.75.75 0 10-1.5-.06l-.3 7.5a.75.75 0 101.5.06l.3-7.5z" clip-rule="evenodd"/>
@@ -174,11 +187,23 @@
                         <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium {{ asset.status_class() }}">
                             {{ asset.status }}
                         </span>
-                        <form action="/assets/groups/{{ group.uuid }}/remove-asset" method="POST" class="inline">
+                        {# BUG-12 / issue #19: HTMX-driven removal with styled-modal confirmation. #}
+                        {# Reversible operation (re-add the asset); message reflects that. #}
+                        <form hx-post="/assets/groups/{{ group.uuid }}/remove-asset"
+                              hx-confirm="Remove asset '{{ asset.name }}' ({{ asset.hostname }}) from group '{{ group.name }}'?"
+                              data-confirm-title="Remove asset from group"
+                              data-confirm-message="Remove asset '{{ asset.name }}' ({{ asset.hostname }}) from group '{{ group.name }}'?&#10;The asset itself is preserved and can be re-added to this group later."
+                              data-confirm-label="Remove asset"
+                              @htmx:confirm.prevent="$store.deleteConfirm.openWith({
+                                  title: $el.dataset.confirmTitle,
+                                  message: $el.dataset.confirmMessage,
+                                  confirmLabel: $el.dataset.confirmLabel,
+                                  sourceEvent: $event
+                              })"
+                              class="inline">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
                             <input type="hidden" name="asset_uuid" value="{{ asset.uuid }}" />
                             <button type="submit"
-                                    hx-confirm="Are you sure you want to remove '{{ asset.name }}' from this group?"
                                     class="inline-flex items-center rounded-md bg-red-50 dark:bg-red-900/20 px-2 py-1 text-xs font-medium text-red-700 dark:text-red-400 ring-1 ring-inset ring-red-600/10 dark:ring-red-400/20 hover:bg-red-100 dark:hover:bg-red-900/40">
                                 <svg class="-ml-0.5 mr-1 h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
                                     <path fill-rule="evenodd" d="M4 10a.75.75 0 01.75-.75h10.5a.75.75 0 010 1.5H4.75A.75.75 0 014 10z" clip-rule="evenodd"/>

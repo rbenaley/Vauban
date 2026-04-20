@@ -30,3 +30,33 @@
 .error-container:not(:empty) {
     display: block;
 }
+
+/* ────────────────────────────────────────────────────────────────────────
+   Visual masking for the asset Secret input.
+
+   The credential field is rendered as <input type="text"> with an opaque
+   name (vbn_secret) so neither Safari nor Chrome offer to save / generate
+   a password in the operator's keychain.  To still hide the typed value
+   on screen, every glyph is rendered as "•" via a custom font.
+
+   We intentionally:
+     - target the input by its data-real-name attribute (no dedicated
+       class, no -webkit-text-security) so the HTML stays untouched;
+     - scope the rule to ssh_password only (not ssh_username / ssh_passphrase);
+     - keep monospace as a fallback if the woff2 fails to load -- the
+       worst case is a clear-text secret on screen, which matches the
+       behaviour we already accept on Firefox without the font.
+
+   Font: text-security-disc.woff2, https://github.com/noppa/text-security
+   License: SIL Open Font License 1.1 (see THIRD_PARTY_LICENSES.md). */
+@font-face {
+    font-family: 'text-security-disc';
+    src: url('/static/fonts/text-security-disc.woff2') format('woff2');
+    font-display: swap;
+    font-weight: normal;
+    font-style: normal;
+}
+input[data-real-name="ssh_password"] {
+    font-family: 'text-security-disc', monospace;
+    letter-spacing: 0.125em;
+}

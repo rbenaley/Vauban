@@ -64,7 +64,16 @@
     <!-- Flash messages are displayed in base.html -->
 
     <!-- Edit Form - Native HTML form with PRG pattern -->
-    <form action="/assets/{{ asset.uuid }}/edit" method="POST" class="space-y-6" x-data="csrf">
+    {# ===== Browser credential-prompt suppression =====
+       See asset_create.html for the full rationale. Sensitive inputs
+       carry opaque names (vbn_account / vbn_secret / vbn_secret_phrase)
+       and the @submit handler restores the real server-side names
+       (data-real-name -> name) right before the browser serialises the
+       form, so the backend still receives ssh_username / ssh_password
+       / ssh_passphrase. #}
+    <form action="/assets/{{ asset.uuid }}/edit" method="POST" class="space-y-6"
+          @submit="$el.querySelectorAll('[data-real-name]').forEach(function (el) { el.name = el.dataset.realName })"
+          x-data="csrf">
     <input type="hidden" name="csrf_token" x-model="token" />
 
         <!-- Connection Details -->
@@ -130,12 +139,15 @@
             <div class="px-4 py-5 sm:p-6 space-y-6">
                 <div class="grid grid-cols-1 gap-6 sm:grid-cols-2">
                     <div>
-                        <label for="ssh_username" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Username</label>
-                        <input type="text" name="ssh_username" id="ssh_username"
+                        {# Opaque DOM name/id; the form's @submit handler
+                           restores name="ssh_username" before submit. #}
+                        <label for="vbn_account" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Account Name</label>
+                        <input type="text" name="vbn_account" id="vbn_account"
+                               data-real-name="ssh_username"
                                value="{{ asset.ssh_username }}"
                                class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
                                placeholder="root">
-                        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">SSH/RDP username for authentication</p>
+                        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Account on the target system, used for authentication.</p>
                     </div>
                     <!-- Authentication Type selector: SSH only.
                          Hidden for RDP because the proxy only consumes
@@ -151,20 +163,27 @@
                     </div>
                 </div>
 
-                <!-- Password field: shown for RDP (always) and for SSH
+                <!-- Secret field: shown for RDP (always) and for SSH
                      when auth_type=password. The input is intentionally
                      rendered EMPTY -- we never round-trip the stored
                      ciphertext through the browser (defense in depth +
                      UX: a 200+ dot field is confusing). The handler
-                     preserves the existing password when the operator
-                     leaves this blank (option A semantic). -->
+                     preserves the existing secret when the operator
+                     leaves this blank (option A semantic).
+                     Rendered as <input type="text"> with opaque name/id
+                     so browsers do not detect a credential field. The
+                     typed value is intentionally visible -- there is no
+                     native <input type="password"> because that would
+                     re-trigger Save Password / Generate Password prompts. -->
                 <div x-show="assetType === 'rdp' || authType === 'password'" x-cloak>
-                    <label for="ssh_password" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Password</label>
-                    <input type="password" name="ssh_password" id="ssh_password"
+                    <label for="vbn_secret" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Secret</label>
+                    <input type="text" name="vbn_secret" id="vbn_secret"
+                           data-real-name="ssh_password"
                            class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
-                           placeholder="{% if asset.has_password %}Leave blank to keep current password{% else %}Enter password{% endif %}">
+                           autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
+                           placeholder="{% if asset.has_password %}Leave blank to keep current secret{% else %}Enter secret{% endif %}">
                     <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                        {% if asset.has_password %}A password is currently stored. Leave this field blank to keep it, or type a new value to replace it.{% else %}No password on file. A value is required to use this asset.{% endif %}
+                        {% if asset.has_password %}A secret is currently stored. Leave this field blank to keep it, or type a new value to replace it.{% else %}No secret on file. A value is required to use this asset.{% endif %}
                     </p>
                 </div>
 
@@ -185,9 +204,13 @@
                         </p>
                     </div>
                     <div>
-                        <label for="ssh_passphrase" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Passphrase (optional)</label>
-                        <input type="password" name="ssh_passphrase" id="ssh_passphrase"
+                        {# Same opaque-name + visual-mask pattern as the
+                           main secret field above. #}
+                        <label for="vbn_secret_phrase" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Key Passphrase (optional)</label>
+                        <input type="text" name="vbn_secret_phrase" id="vbn_secret_phrase"
+                               data-real-name="ssh_passphrase"
                                class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
+                               autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
                                placeholder="{% if asset.has_passphrase %}Leave blank to keep current passphrase{% else %}Key passphrase (if encrypted){% endif %}">
                         <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
                             {% if asset.has_passphrase %}A passphrase is currently stored. Leave this field blank to keep it, or type a new value to replace it.{% else %}Leave empty if the private key is not encrypted.{% endif %}

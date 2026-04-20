@@ -19,6 +19,7 @@ pub mod asset_irreversible_delete_test;
 pub mod asset_protocol_test;
 pub mod assets_db_invariants_test;
 pub mod dashboard_pages_test;
+pub mod delete_confirm_flow_test;
 pub mod jit_access_test;
 pub mod mfa_test;
 pub mod pages_test;

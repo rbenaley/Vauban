@@ -46,8 +46,20 @@
                 </svg>
                 Edit
             </a>
-            <form method="post" action="/accounts/groups/{{ group.uuid }}/delete"
-                  hx-confirm="Are you sure you want to delete this group? This action cannot be undone.">
+            {# BUG-12 / issue #19: HTMX-driven delete with styled-modal confirmation. #}
+            {# Resource-name strings live in `data-confirm-*` attributes (HTML-escaped #}
+            {# by askama), so they never enter a JS-parsed string context. #}
+            <form hx-post="/accounts/groups/{{ group.uuid }}/delete"
+                  hx-confirm="Delete account group '{{ group.name }}'? This cannot be undone."
+                  data-confirm-title="Delete account group"
+                  data-confirm-message="Delete account group '{{ group.name }}'?&#10;Members are unassigned from the group but their user accounts are not deleted. The group itself is gone for good."
+                  data-confirm-label="Delete group"
+                  @htmx:confirm.prevent="$store.deleteConfirm.openWith({
+                      title: $el.dataset.confirmTitle,
+                      message: $el.dataset.confirmMessage,
+                      confirmLabel: $el.dataset.confirmLabel,
+                      sourceEvent: $event
+                  })">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
                 <button type="submit"
                         class="inline-flex items-center rounded-md bg-red-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-red-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-600">
@@ -169,8 +181,20 @@
                         </div>
                     </div>
                     <div class="flex items-center gap-2 sm:flex-shrink-0">
-                        <form method="post" action="/accounts/groups/{{ group.uuid }}/members/{{ member.uuid }}/remove"
-                              hx-confirm="Remove {{ member.username }} from this group?">
+                        {# BUG-12 / issue #19: HTMX-driven remove with styled-modal confirmation. #}
+                        {# Membership removal is reversible (re-add the user), unlike group #}
+                        {# deletion above — message wording reflects that. #}
+                        <form hx-post="/accounts/groups/{{ group.uuid }}/members/{{ member.uuid }}/remove"
+                              hx-confirm="Remove '{{ member.username }}' from group '{{ group.name }}'?"
+                              data-confirm-title="Remove member"
+                              data-confirm-message="Remove '{{ member.username }}' from group '{{ group.name }}'?&#10;The user account is preserved and can be re-added to this group later."
+                              data-confirm-label="Remove member"
+                              @htmx:confirm.prevent="$store.deleteConfirm.openWith({
+                                  title: $el.dataset.confirmTitle,
+                                  message: $el.dataset.confirmMessage,
+                                  confirmLabel: $el.dataset.confirmLabel,
+                                  sourceEvent: $event
+                              })">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
                             <button type="submit"
                                     class="text-sm text-red-600 hover:text-red-900 dark:text-red-400 dark:hover:text-red-300">

@@ -79,6 +79,10 @@
         <div id="force-logout"></div>
     </div>
 
+    {# Singleton styled delete-confirmation modal — opened by HTMX forms via #}
+    {# `Alpine.store('deleteConfirm').openWith(...)` from `@htmx:confirm.prevent`. #}
+    {% include "partials/delete_confirm_modal.html" %}
+
     <!-- Notifications toast -->
     <div class="fixed bottom-2 left-2 right-2 sm:bottom-4 sm:right-4 sm:left-auto z-50 space-y-2 sm:w-96 sm:max-w-md" aria-live="polite">
         <template x-for="notification in notifications" :key="notification.id">
