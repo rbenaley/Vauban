@@ -369,6 +369,26 @@ pub enum AccessRequest {
         asset_group_ids: Vec<i32>,
         protocol: String,
     },
+
+    /// SECURITY: UUID-addressed authorization check for callers that have no
+    /// database access (e.g. `vauban-proxy-ssh` running under Capsicum, which
+    /// receives `Message::SshSessionOpen { user_id: <uuid>, asset_id: <uuid> }`
+    /// directly from `vauban-web` and must re-verify the request before
+    /// opening the upstream SSH connection -- defense-in-depth so a
+    /// compromised vauban-web cannot single-handedly authorise an SSH
+    /// session). vauban-access resolves the UUIDs to internal `i32` ids and
+    /// then runs the same `CheckAccess` policy as the i32-addressed verb.
+    /// Fail-closed: any DB lookup error or unknown UUID yields
+    /// `AccessChecked { allowed: false }`.
+    ///
+    /// MUST stay LAST in this enum to preserve the bincode discriminant
+    /// indices of the existing variants (wire compatibility with already
+    /// deployed peers).
+    CheckAccessByUuid {
+        user_uuid: String,
+        asset_uuid: String,
+        protocol: String,
+    },
 }
 
 /// Access control response from vauban-access.
@@ -4049,6 +4069,15 @@ mod tests {
                 AccessRequest::CheckAccessMulti {
                     user_id: 1,
                     asset_group_ids: vec![1],
+                    protocol: "ssh".into(),
+                },
+            ),
+            (
+                "CheckAccessByUuid",
+                25,
+                AccessRequest::CheckAccessByUuid {
+                    user_uuid: "u".into(),
+                    asset_uuid: "a".into(),
                     protocol: "ssh".into(),
                 },
             ),

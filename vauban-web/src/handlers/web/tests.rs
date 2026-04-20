@@ -1266,3 +1266,98 @@ fn test_terminal_page_source_no_longer_carries_legacy_todo() {
         "terminal_page must not still carry the legacy TODO that admitted the IDOR"
     );
 }
+
+// ============================================================================
+// SECURITY: Structural guard for connect_ssh / connect_rdp access-rule policy.
+// ============================================================================
+//
+// Both handlers used to short-circuit the access_rule lookup for superusers
+// and staff:
+//
+//     if !auth_user.is_superuser && !auth_user.is_staff { ... }
+//
+// That bypass was retired alongside the proxy-side defense-in-depth re-check
+// (CheckAccessByUuid in vauban-access). The two layers now apply the EXACT
+// same policy -- if vauban-web waved a session through here while the proxy
+// correctly demanded a rule, the user would see "Access denied" with no
+// recourse. The guards below catch any reintroduction of the bypass.
+
+fn connect_ssh_source() -> &'static str {
+    let full = include_str!("ssh.rs");
+    let start = full
+        .find("pub async fn connect_ssh(")
+        .expect("connect_ssh handler must exist in handlers/web/ssh.rs");
+    let after = &full[start..];
+    let end = after
+        .find("\npub async fn ")
+        .or_else(|| after.find("\npub fn "))
+        .unwrap_or(after.len());
+    &after[..end]
+}
+
+fn connect_rdp_source() -> &'static str {
+    let full = include_str!("rdp.rs");
+    let start = full
+        .find("pub async fn connect_rdp(")
+        .expect("connect_rdp handler must exist in handlers/web/rdp.rs");
+    let after = &full[start..];
+    let end = after
+        .find("\npub async fn ")
+        .or_else(|| after.find("\npub fn "))
+        .unwrap_or(after.len());
+    &after[..end]
+}
+
+#[test]
+fn test_connect_ssh_no_longer_bypasses_access_rules_for_privileged_users() {
+    let body = connect_ssh_source();
+    // Reject every spelling of the bypass we used to ship.
+    let forbidden = [
+        "if !auth_user.is_superuser && !auth_user.is_staff",
+        "if !auth_user.is_staff && !auth_user.is_superuser",
+        "auth_user.is_superuser || auth_user.is_staff",
+        "auth_user.is_staff || auth_user.is_superuser",
+    ];
+    for pat in forbidden {
+        assert!(
+            !body.contains(pat),
+            "connect_ssh MUST NOT short-circuit the access_rule check on \
+             is_superuser / is_staff (`{}` reintroduced). The proxy-ssh \
+             RBAC re-check would otherwise deny the session and the user \
+             would get 'Access denied' with no recourse. See \
+             docs/runbooks/ipc_topology_debugging.md.",
+            pat
+        );
+    }
+    assert!(
+        body.contains("can_access_asset"),
+        "connect_ssh must still call services::access::can_access_asset for \
+         every user (the policy lookup itself stays; only the bypass is gone)"
+    );
+}
+
+#[test]
+fn test_connect_rdp_no_longer_bypasses_access_rules_for_privileged_users() {
+    let body = connect_rdp_source();
+    let forbidden = [
+        "if !auth_user.is_superuser && !auth_user.is_staff",
+        "if !auth_user.is_staff && !auth_user.is_superuser",
+        "auth_user.is_superuser || auth_user.is_staff",
+        "auth_user.is_staff || auth_user.is_superuser",
+    ];
+    for pat in forbidden {
+        assert!(
+            !body.contains(pat),
+            "connect_rdp MUST NOT short-circuit the access_rule check on \
+             is_superuser / is_staff (`{}` reintroduced). Same rationale as \
+             connect_ssh: both layers (web + proxy) must apply identical \
+             policy. See docs/runbooks/ipc_topology_debugging.md.",
+            pat
+        );
+    }
+    assert!(
+        body.contains("can_access_asset"),
+        "connect_rdp must still call services::access::can_access_asset for \
+         every user (the policy lookup itself stays; only the bypass is gone)"
+    );
+}

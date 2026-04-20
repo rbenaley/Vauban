@@ -37,3 +37,4 @@ uuid = { version = "1.11", features = ["v4", "serde"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }
+serde_json = { workspace = true }

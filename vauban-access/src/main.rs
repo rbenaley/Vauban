@@ -101,7 +101,20 @@ fn run_service() -> Result<()> {
     let policy_path = std::env::var("VAUBAN_ACCESS_POLICY_PATH").ok();
     let database_url = std::env::var("VAUBAN_DATABASE_URL").ok();
 
+    // Bind every TOPOLOGY incoming peer that the supervisor declares to
+    // reach Access. If we miss one, that peer's writes silently sit in the
+    // kernel pipe buffer forever -- callers timeout, fail-closed denials
+    // appear, and the symptom is invisible from the access logs (no recv,
+    // no log). vauban-supervisor exports VAUBAN_<PEER>_IPC_READ/WRITE for
+    // every TOPOLOGY edge ending at Access; we MUST poll all of them.
+    //
+    // Pre-existing bug: only "WEB" used to be wired, which was harmless
+    // until vauban-proxy-ssh started issuing CheckAccessByUuid requests
+    // (security audit finding #6). Now wired exhaustively.
     let web_channel = parse_topology_channel("WEB");
+    let proxy_ssh_channel = parse_topology_channel("PROXY_SSH");
+    let proxy_rdp_channel = parse_topology_channel("PROXY_RDP");
+    let auth_channel = parse_topology_channel("AUTH");
 
     // SAFETY: We are the only thread at this point, no concurrent access.
     unsafe {
@@ -112,6 +125,12 @@ fn run_service() -> Result<()> {
         std::env::remove_var("VAUBAN_DATABASE_URL");
         std::env::remove_var("VAUBAN_WEB_IPC_READ");
         std::env::remove_var("VAUBAN_WEB_IPC_WRITE");
+        std::env::remove_var("VAUBAN_PROXY_SSH_IPC_READ");
+        std::env::remove_var("VAUBAN_PROXY_SSH_IPC_WRITE");
+        std::env::remove_var("VAUBAN_PROXY_RDP_IPC_READ");
+        std::env::remove_var("VAUBAN_PROXY_RDP_IPC_WRITE");
+        std::env::remove_var("VAUBAN_AUTH_IPC_READ");
+        std::env::remove_var("VAUBAN_AUTH_IPC_WRITE");
     }
 
     let supervisor_channel = unsafe { IpcChannel::from_raw_fds(ipc_read_fd, ipc_write_fd) };
@@ -150,6 +169,21 @@ fn run_service() -> Result<()> {
         all_fds.push(ch.write_fd());
         peer_channels.push(("web", ch));
     }
+    if let Some(ref ch) = proxy_ssh_channel {
+        all_fds.push(ch.read_fd());
+        all_fds.push(ch.write_fd());
+        peer_channels.push(("proxy_ssh", ch));
+    }
+    if let Some(ref ch) = proxy_rdp_channel {
+        all_fds.push(ch.read_fd());
+        all_fds.push(ch.write_fd());
+        peer_channels.push(("proxy_rdp", ch));
+    }
+    if let Some(ref ch) = auth_channel {
+        all_fds.push(ch.read_fd());
+        all_fds.push(ch.write_fd());
+        peer_channels.push(("auth", ch));
+    }
 
     let db_fd = if db_pool.is_some() {
         database_url
@@ -161,9 +195,42 @@ fn run_service() -> Result<()> {
     };
     capsicum::setup_service_sandbox(&all_fds, db_fd).context("Failed to setup sandbox")?;
 
+    let attached_peer_names: Vec<&str> = peer_channels.iter().map(|(n, _)| *n).collect();
+
+    // SECURITY / LIVENESS: When running under vauban-supervisor (the only
+    // supported production mode), TOPOLOGY declares 4 incoming edges to
+    // Service::Access. If even ONE of them is silently absent, that peer's
+    // CheckAccess* requests pile up in the kernel pipe buffer, callers hit
+    // the RBAC timeout, fail-closed denials reach end users, and the symptom
+    // is invisible from access logs (no recv -> no log line). We refuse to
+    // proceed in that asymmetric state -- the supervisor will respawn us
+    // and surface the topology mismatch in its own logs.
+    //
+    // We detect "running under supervisor" by the presence of at least one
+    // peer channel: pure dev mode (manually launched, no env vars) keeps 0
+    // peers and is allowed but completely useless for RBAC -- the operator
+    // is on their own.
+    const EXPECTED_PEER_COUNT: usize = 4; // web, proxy_ssh, proxy_rdp, auth
+    if !peer_channels.is_empty() && peer_channels.len() != EXPECTED_PEER_COUNT {
+        let attached: Vec<&str> = attached_peer_names.clone();
+        anyhow::bail!(
+            "vauban-access TOPOLOGY mismatch: expected {} incoming peers \
+             (web, proxy_ssh, proxy_rdp, auth) but got {}: {:?}. Refusing \
+             to start in an asymmetric state -- callers from missing peers \
+             would silently time out at the RBAC layer. Check that vauban-\
+             supervisor exports VAUBAN_<PEER>_IPC_READ/WRITE for every \
+             TOPOLOGY edge ending at Access.",
+            EXPECTED_PEER_COUNT,
+            peer_channels.len(),
+            attached
+        );
+    }
+
     info!(
-        "Entered Capsicum sandbox, starting main loop ({} peer channels)",
-        peer_channels.len()
+        peers = ?attached_peer_names,
+        peer_count = peer_channels.len(),
+        expected_peer_count = EXPECTED_PEER_COUNT,
+        "Entered Capsicum sandbox, starting main loop"
     );
 
     let mut state = ServiceState {
@@ -919,5 +986,95 @@ mod tests {
             handle_ctrl_source.contains("shutdown_requested = true"),
             "handle_control must set shutdown_requested = true on Shutdown"
         );
+    }
+
+    #[test]
+    fn test_access_main_binds_all_topology_incoming_peers() {
+        // POST-INCIDENT REGRESSION GUARD: vauban-supervisor's TOPOLOGY
+        // declares 4 incoming edges to Service::Access -- web, auth,
+        // proxy_ssh, proxy_rdp. vauban-access MUST bind every one of
+        // them; if any peer is missed, that peer's writes pile up in
+        // the kernel pipe buffer, callers timeout, and the symptom is
+        // invisible from the access logs (no recv -> no log).
+        //
+        // The exact bug: only "WEB" used to be wired. proxy_ssh's
+        // CheckAccessByUuid requests timed out at 5s and crashed the
+        // proxy under supervisor's unresponsive-restart watchdog.
+        // Found via security-audit finding #6 follow-up.
+        //
+        // Triple-defense (the grep alone is fragile):
+        //   1. parse_topology_channel(<SUFFIX>) must appear,
+        //   2. the channel must be assigned to a non-underscore binding
+        //      so it isn't dropped immediately,
+        //   3. peer_channels.push(("<lower>", ch)) must appear so the
+        //      main_loop poll set actually watches its read_fd.
+        let source = prod_source();
+        for peer_suffix in ["WEB", "PROXY_SSH", "PROXY_RDP", "AUTH"] {
+            let lower = peer_suffix.to_lowercase();
+            let parse_needle = format!("parse_topology_channel(\"{}\")", peer_suffix);
+            assert!(
+                source.contains(&parse_needle),
+                "vauban-access MUST call {} (TOPOLOGY incoming edge from {})",
+                parse_needle,
+                lower,
+            );
+            // Reject `let _xxx = parse_topology_channel(...)` patterns
+            // (underscore-prefix bindings get dropped immediately, which
+            // would silently re-introduce the bug).
+            let drop_pattern = format!("let _{}_channel = parse_topology_channel", lower);
+            assert!(
+                !source.contains(&drop_pattern),
+                "Channel for {} is parsed into an underscore-prefixed binding \
+                 ({}) which Rust drops immediately. The pipe is closed before \
+                 main_loop ever polls it. Use a normal binding instead.",
+                lower,
+                drop_pattern,
+            );
+            // The channel must be inserted into peer_channels with the
+            // right name string so main_loop polls its read_fd.
+            let push_needle = format!("peer_channels.push((\"{}\"", lower);
+            assert!(
+                source.contains(&push_needle),
+                "Channel {} parsed but never inserted into peer_channels: \
+                 main_loop will not poll its FD",
+                lower
+            );
+        }
+        // The constant that the boot-time check uses MUST stay aligned
+        // with the actual peer count.
+        assert!(
+            source.contains("EXPECTED_PEER_COUNT: usize = 4"),
+            "EXPECTED_PEER_COUNT must reflect the 4 TOPOLOGY incoming peers"
+        );
+        assert!(
+            source.contains("anyhow::bail!")
+                && source.contains("TOPOLOGY mismatch"),
+            "vauban-access must bail! at boot when peer_count drifts from \
+             EXPECTED_PEER_COUNT (asymmetric topology = silent timeouts)"
+        );
+    }
+
+    #[test]
+    fn test_access_main_remove_var_for_all_peers() {
+        // Hygiene: every VAUBAN_<PEER>_IPC_* env var that we read MUST
+        // be cleared before children spawn or sandbox closes -- otherwise
+        // raw FDs leak into descendant address spaces (information
+        // disclosure / sandbox bypass risk).
+        let source = prod_source();
+        for peer_suffix in ["WEB", "PROXY_SSH", "PROXY_RDP", "AUTH"] {
+            for direction in ["READ", "WRITE"] {
+                let needle = format!(
+                    "remove_var(\"VAUBAN_{}_IPC_{}\")",
+                    peer_suffix, direction
+                );
+                assert!(
+                    source.contains(&needle),
+                    "vauban-access must remove env var VAUBAN_{}_IPC_{} \
+                     after reading it (FD-leak hygiene)",
+                    peer_suffix,
+                    direction
+                );
+            }
+        }
     }
 }

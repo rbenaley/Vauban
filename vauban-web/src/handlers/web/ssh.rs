@@ -268,10 +268,21 @@ pub async fn connect_ssh(
         }
     };
 
-    // Access rule enforcement: non-admin users must have a matching access rule
-    let mut jit_justification: Option<String> = None;
-    let mut jit_max_duration: Option<i32> = None;
-    if !auth_user.is_superuser && !auth_user.is_staff {
+    // Access rule enforcement: EVERY user must have a matching access rule,
+    // including superusers and staff. The historical privileged-user bypass
+    // was removed alongside the proxy-ssh defense-in-depth re-check (RBAC-by-
+    // UUID): if vauban-web silently waved a session through here while
+    // vauban-access correctly demanded an access_rule, the proxy would deny
+    // the SshSessionOpen and the user would see "Access denied" with no
+    // recourse. Both layers now apply the exact same policy.
+    //
+    // Operational consequence: the bootstrap superuser MUST create at least
+    // one access_rule for itself before opening any SSH session. See
+    // docs/runbooks/ipc_topology_debugging.md for the rationale and the
+    // recommended bootstrap rule.
+    let jit_justification: Option<String>;
+    let jit_max_duration: Option<i32>;
+    {
         let access_result = crate::services::access::can_access_asset(
             &state.access_client,
             &mut conn,
@@ -348,6 +359,7 @@ pub async fn connect_ssh(
                 }
             }
         } else {
+            jit_justification = None;
             jit_max_duration = access_result.max_session_duration;
         }
     }

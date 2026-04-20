@@ -1681,7 +1681,15 @@ async fn test_connect_ssh_accepts_valid_csrf_token() {
         .await;
 
     // Should NOT fail on CSRF validation.
-    // It will fail on "SSH proxy not available" which is expected in test env.
+    //
+    // Historically this test asserted we reached the "SSH proxy not available"
+    // branch, because the superuser bypass let the request skip past the
+    // access_rule check and fall through to the proxy lookup. Since the
+    // bypass was removed (CheckAccessByUuid alignment), every user --
+    // including the bootstrap admin -- is gated by the access_rule check
+    // first. We therefore now assert the request progressed past CSRF
+    // validation by reaching either the access-rule denial or the proxy
+    // lookup; both prove the CSRF token was accepted.
     let body = response.text();
     assert!(
         !body.contains("CSRF") && !body.contains("csrf"),
@@ -1689,12 +1697,14 @@ async fn test_connect_ssh_accepts_valid_csrf_token() {
         body
     );
 
-    // Verify we get the expected "SSH proxy not available" error (not CSRF error)
-    let has_proxy_error =
-        body.contains("SSH proxy") || body.contains("proxy") || body.contains("not available");
+    let progressed_past_csrf = body.contains("No access rule")
+        || body.contains("SSH proxy")
+        || body.contains("proxy")
+        || body.contains("not available");
     assert!(
-        has_proxy_error,
-        "With valid CSRF, should reach SSH proxy check. Got: {}",
+        progressed_past_csrf,
+        "With valid CSRF, request must progress past CSRF validation \
+         (either to access-rule denial or proxy lookup). Got: {}",
         body
     );
 

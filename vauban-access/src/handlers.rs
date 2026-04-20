@@ -13,7 +13,9 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::db::{DbConnection, DbPool};
-use crate::schema::{access_rules, asset_groups, user_groups, vauban_groups};
+use crate::schema::{
+    access_rules, asset_asset_groups, asset_groups, assets, user_groups, users, vauban_groups,
+};
 
 type AccessRuleRow = (
     Uuid,
@@ -83,6 +85,12 @@ pub async fn handle_access_request(pool: &DbPool, request: AccessRequest) -> Acc
             asset_group_ids,
             protocol,
         } => handle_check_access_multi(&mut conn, user_id, &asset_group_ids, &protocol).await,
+
+        AccessRequest::CheckAccessByUuid {
+            user_uuid,
+            asset_uuid,
+            protocol,
+        } => handle_check_access_by_uuid(&mut conn, &user_uuid, &asset_uuid, &protocol).await,
 
         AccessRequest::ListAccessibleGroups { user_id, page } => {
             handle_list_accessible_groups(&mut conn, user_id, page).await
@@ -413,6 +421,157 @@ async fn handle_check_access_multi(
         }
         Err(e) => AccessResponse::Error(format!("Failed to check access multi: {e}")),
     }
+}
+
+/// SECURITY: UUID-addressed authorization check used by services that have no
+/// database connection of their own (typically `vauban-proxy-ssh` running
+/// under Capsicum). The proxy receives `Message::SshSessionOpen { user_id:
+/// <uuid>, asset_id: <uuid> }` directly from `vauban-web` and must re-verify
+/// the request before opening the upstream SSH connection -- defense-in-depth
+/// so that a compromised vauban-web cannot single-handedly authorise an SSH
+/// session.
+///
+/// Fail-closed semantics: any failure path (UUID parse error, unknown user,
+/// inactive user, deleted asset, asset belonging to no group, DB error)
+/// returns `AccessChecked { allowed: false, ... }` rather than `Error(...)`,
+/// so the proxy can treat the response as a clean denial without having to
+/// distinguish "policy says no" from "infrastructure error". The diagnostic
+/// detail still surfaces in logs at `warn` level.
+async fn handle_check_access_by_uuid(
+    conn: &mut DbConnection,
+    user_uuid: &str,
+    asset_uuid: &str,
+    protocol: &str,
+) -> AccessResponse {
+    let denied = || {
+        AccessResponse::AccessChecked(AccessCheckResult {
+            allowed: false,
+            require_mfa: false,
+            require_approval: false,
+            max_session_duration: None,
+        })
+    };
+
+    let user_uuid_parsed = match Uuid::parse_str(user_uuid) {
+        Ok(u) => u,
+        Err(e) => {
+            warn!(user_uuid, error = %e, protocol, "CheckAccessByUuid: invalid user uuid");
+            return denied();
+        }
+    };
+    let asset_uuid_parsed = match Uuid::parse_str(asset_uuid) {
+        Ok(u) => u,
+        Err(e) => {
+            warn!(asset_uuid, error = %e, protocol, "CheckAccessByUuid: invalid asset uuid");
+            return denied();
+        }
+    };
+
+    let user_id: i32 = match users::table
+        .filter(users::uuid.eq(user_uuid_parsed))
+        .filter(users::is_active.eq(true))
+        .select(users::id)
+        .first::<i32>(conn)
+        .await
+    {
+        Ok(id) => id,
+        Err(diesel::result::Error::NotFound) => {
+            warn!(user_uuid, protocol, "CheckAccessByUuid: unknown or inactive user");
+            return denied();
+        }
+        Err(e) => {
+            warn!(user_uuid, error = %e, "CheckAccessByUuid: db error resolving user");
+            return denied();
+        }
+    };
+
+    let asset_id: i32 = match assets::table
+        .filter(assets::uuid.eq(asset_uuid_parsed))
+        .filter(assets::is_deleted.eq(false))
+        .select(assets::id)
+        .first::<i32>(conn)
+        .await
+    {
+        Ok(id) => id,
+        Err(diesel::result::Error::NotFound) => {
+            warn!(asset_uuid, protocol, "CheckAccessByUuid: unknown or deleted asset");
+            return denied();
+        }
+        Err(e) => {
+            warn!(asset_uuid, error = %e, "CheckAccessByUuid: db error resolving asset");
+            return denied();
+        }
+    };
+
+    let asset_group_ids: Vec<i32> = match asset_asset_groups::table
+        .filter(asset_asset_groups::asset_id.eq(asset_id))
+        .select(asset_asset_groups::asset_group_id)
+        .load::<i32>(conn)
+        .await
+    {
+        Ok(ids) => ids,
+        Err(e) => {
+            warn!(
+                asset_uuid, asset_id, error = %e,
+                "CheckAccessByUuid: db error loading asset groups"
+            );
+            return denied();
+        }
+    };
+
+    if asset_group_ids.is_empty() {
+        info!(
+            asset_uuid, asset_id, protocol,
+            "CheckAccessByUuid denied: asset belongs to no asset_group"
+        );
+        return denied();
+    }
+
+    let multi = handle_check_access_multi(conn, user_id, &asset_group_ids, protocol).await;
+    let entries = match multi {
+        AccessResponse::AccessCheckedMulti(entries) => entries,
+        AccessResponse::Error(e) => {
+            warn!(user_uuid, asset_uuid, protocol, error = %e, "CheckAccessByUuid: multi-check error");
+            return denied();
+        }
+        _ => {
+            warn!(user_uuid, asset_uuid, protocol, "CheckAccessByUuid: unexpected multi-check response");
+            return denied();
+        }
+    };
+
+    let allowed = entries.iter().any(|e| e.result.allowed);
+    if !allowed {
+        info!(
+            user_uuid, asset_uuid, protocol,
+            "CheckAccessByUuid denied: no granting access_rule"
+        );
+        return denied();
+    }
+
+    let granting: Vec<&AccessCheckResult> = entries
+        .iter()
+        .filter_map(|e| e.result.allowed.then_some(&e.result))
+        .collect();
+
+    let require_mfa = granting.iter().any(|r| r.require_mfa);
+    let require_approval = granting.iter().any(|r| r.require_approval);
+    let max_session_duration = granting
+        .iter()
+        .filter_map(|r| r.max_session_duration)
+        .min();
+
+    info!(
+        user_uuid, asset_uuid, protocol, require_mfa, require_approval,
+        "CheckAccessByUuid granted"
+    );
+
+    AccessResponse::AccessChecked(AccessCheckResult {
+        allowed: true,
+        require_mfa,
+        require_approval,
+        max_session_duration,
+    })
 }
 
 async fn handle_list_accessible_groups(
@@ -1496,6 +1655,7 @@ mod tests {
     use diesel_async::pooled_connection::AsyncDieselConnectionManager;
     use diesel_async::pooled_connection::deadpool::Pool;
     use diesel_async::{AsyncPgConnection, RunQueryDsl};
+    use uuid::Uuid;
     use shared::messages::{
         AccessRequest, AccessResponse, AccessRuleData, AccessRuleInfo, AccessibleGroupEntry,
         AssetGroupInfo, DEFAULT_IPC_PAGE_LIMIT, IpcPage, IpcPageParams, MAX_IPC_PAGE_LIMIT,
@@ -2876,5 +3036,493 @@ mod tests {
         for g in &groups {
             cleanup_asset_group(&pool, &g.uuid).await;
         }
+    }
+
+    // ==================== CheckAccessByUuid ====================
+
+    async fn user_uuid(pool: &DbPool, user_id: i32) -> String {
+        let mut conn = pool.get().await.unwrap();
+        users::table
+            .filter(users::id.eq(user_id))
+            .select(users::uuid)
+            .first::<Uuid>(&mut conn)
+            .await
+            .unwrap()
+            .to_string()
+    }
+
+    async fn insert_test_asset(pool: &DbPool, name: &str) -> (i32, String) {
+        let mut conn = pool.get().await.unwrap();
+        use crate::schema::assets;
+        let asset_uuid = Uuid::new_v4();
+        let id: i32 = diesel::insert_into(assets::table)
+            .values((
+                assets::uuid.eq(asset_uuid),
+                assets::name.eq(name),
+                assets::hostname.eq("ssh.test.local"),
+                assets::port.eq(22),
+                assets::asset_type.eq("server"),
+                assets::status.eq("active"),
+                assets::connection_config.eq(serde_json::json!({})),
+                assets::is_deleted.eq(false),
+                assets::connection_username.eq("root"),
+            ))
+            .returning(assets::id)
+            .get_result::<i32>(&mut conn)
+            .await
+            .unwrap();
+        (id, asset_uuid.to_string())
+    }
+
+    async fn link_asset_to_group(pool: &DbPool, asset_id: i32, asset_group_id: i32) {
+        let mut conn = pool.get().await.unwrap();
+        use crate::schema::asset_asset_groups;
+        diesel::insert_into(asset_asset_groups::table)
+            .values((
+                asset_asset_groups::asset_id.eq(asset_id),
+                asset_asset_groups::asset_group_id.eq(asset_group_id),
+            ))
+            .on_conflict_do_nothing()
+            .execute(&mut conn)
+            .await
+            .unwrap();
+    }
+
+    async fn cleanup_asset(pool: &DbPool, asset_id: i32) {
+        let mut conn = pool.get().await.unwrap();
+        use crate::schema::{asset_asset_groups, assets};
+        let _ = diesel::delete(
+            asset_asset_groups::table.filter(asset_asset_groups::asset_id.eq(asset_id)),
+        )
+        .execute(&mut conn)
+        .await;
+        let _ = diesel::delete(assets::table.filter(assets::id.eq(asset_id)))
+            .execute(&mut conn)
+            .await;
+    }
+
+    fn assert_denied(resp: &AccessResponse) {
+        match resp {
+            AccessResponse::AccessChecked(r) => assert!(
+                !r.allowed,
+                "expected fail-closed denial AccessChecked {{ allowed: false, .. }}, got allowed=true"
+            ),
+            other => panic!(
+                "expected fail-closed AccessChecked {{ allowed: false }}, got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_check_access_by_uuid_invalid_user_uuid_denied() {
+        let pool = test_pool().await;
+        let resp = handle_access_request(
+            &pool,
+            AccessRequest::CheckAccessByUuid {
+                user_uuid: "not-a-uuid".to_string(),
+                asset_uuid: Uuid::new_v4().to_string(),
+                protocol: "ssh".to_string(),
+            },
+        )
+        .await;
+        assert_denied(&resp);
+    }
+
+    #[tokio::test]
+    async fn test_check_access_by_uuid_invalid_asset_uuid_denied() {
+        let pool = test_pool().await;
+        let resp = handle_access_request(
+            &pool,
+            AccessRequest::CheckAccessByUuid {
+                user_uuid: Uuid::new_v4().to_string(),
+                asset_uuid: "also-not-a-uuid".to_string(),
+                protocol: "ssh".to_string(),
+            },
+        )
+        .await;
+        assert_denied(&resp);
+    }
+
+    #[tokio::test]
+    async fn test_check_access_by_uuid_unknown_user_denied() {
+        let pool = test_pool().await;
+        let resp = handle_access_request(
+            &pool,
+            AccessRequest::CheckAccessByUuid {
+                user_uuid: Uuid::new_v4().to_string(),
+                asset_uuid: Uuid::new_v4().to_string(),
+                protocol: "ssh".to_string(),
+            },
+        )
+        .await;
+        assert_denied(&resp);
+    }
+
+    #[tokio::test]
+    async fn test_check_access_by_uuid_unknown_asset_denied() {
+        let pool = test_pool().await;
+        let user_id = ensure_test_user(&pool).await;
+        let user_uuid = user_uuid(&pool, user_id).await;
+        let resp = handle_access_request(
+            &pool,
+            AccessRequest::CheckAccessByUuid {
+                user_uuid,
+                asset_uuid: Uuid::new_v4().to_string(),
+                protocol: "ssh".to_string(),
+            },
+        )
+        .await;
+        assert_denied(&resp);
+    }
+
+    #[tokio::test]
+    async fn test_check_access_by_uuid_asset_in_no_group_denied() {
+        let pool = test_pool().await;
+        let user_id = ensure_test_user(&pool).await;
+        let user_uuid = user_uuid(&pool, user_id).await;
+        let (asset_id, asset_uuid) =
+            insert_test_asset(&pool, &unique_name("asset_no_group")).await;
+
+        let resp = handle_access_request(
+            &pool,
+            AccessRequest::CheckAccessByUuid {
+                user_uuid,
+                asset_uuid,
+                protocol: "ssh".to_string(),
+            },
+        )
+        .await;
+        assert_denied(&resp);
+
+        cleanup_asset(&pool, asset_id).await;
+    }
+
+    #[tokio::test]
+    async fn test_check_access_by_uuid_inactive_user_denied() {
+        let pool = test_pool().await;
+        let username = unique_name("inactive_uuid_user");
+        let mut conn = pool.get().await.unwrap();
+        let email = format!("{username}@test.local");
+        let user_id: i32 = diesel::insert_into(users::table)
+            .values((
+                users::username.eq(&username),
+                users::email.eq(&email),
+                users::password_hash.eq("nologin"),
+                users::is_superuser.eq(false),
+                users::is_staff.eq(false),
+                users::is_active.eq(false),
+            ))
+            .returning(users::id)
+            .get_result::<i32>(&mut conn)
+            .await
+            .unwrap();
+        drop(conn);
+
+        let user_uuid = user_uuid(&pool, user_id).await;
+        let resp = handle_access_request(
+            &pool,
+            AccessRequest::CheckAccessByUuid {
+                user_uuid,
+                asset_uuid: Uuid::new_v4().to_string(),
+                protocol: "ssh".to_string(),
+            },
+        )
+        .await;
+        assert_denied(&resp);
+    }
+
+    #[tokio::test]
+    async fn test_check_access_by_uuid_deleted_asset_denied() {
+        let pool = test_pool().await;
+        let user_id = ensure_test_user(&pool).await;
+        let user_uuid = user_uuid(&pool, user_id).await;
+
+        let mut conn = pool.get().await.unwrap();
+        use crate::schema::assets;
+        let asset_uuid = Uuid::new_v4();
+        let asset_id: i32 = diesel::insert_into(assets::table)
+            .values((
+                assets::uuid.eq(asset_uuid),
+                assets::name.eq(unique_name("deleted_asset")),
+                assets::hostname.eq("ssh.test.local"),
+                assets::port.eq(22),
+                assets::asset_type.eq("server"),
+                assets::status.eq("active"),
+                assets::connection_config.eq(serde_json::json!({})),
+                assets::is_deleted.eq(true),
+                assets::connection_username.eq("root"),
+            ))
+            .returning(assets::id)
+            .get_result::<i32>(&mut conn)
+            .await
+            .unwrap();
+        drop(conn);
+
+        let resp = handle_access_request(
+            &pool,
+            AccessRequest::CheckAccessByUuid {
+                user_uuid,
+                asset_uuid: asset_uuid.to_string(),
+                protocol: "ssh".to_string(),
+            },
+        )
+        .await;
+        assert_denied(&resp);
+
+        cleanup_asset(&pool, asset_id).await;
+    }
+
+    #[tokio::test]
+    async fn test_check_access_by_uuid_allowed_full_chain() {
+        let pool = test_pool().await;
+        let user_id = ensure_test_user(&pool).await;
+        let user_uuid_str = user_uuid(&pool, user_id).await;
+
+        let ug = create_test_vauban_group(&pool, &unique_name("ug_uuid_chain")).await;
+        let ag = create_test_asset_group(&pool, &unique_name("ag_uuid_chain")).await;
+        handle_access_request(
+            &pool,
+            AccessRequest::AddGroupMember {
+                group_id: ug.id,
+                user_id,
+            },
+        )
+        .await;
+        let rule = create_test_rule(
+            &pool,
+            &unique_name("uuid_chain_rule"),
+            ug.id,
+            ag.id,
+            vec!["ssh"],
+        )
+        .await;
+        let (asset_id, asset_uuid_str) =
+            insert_test_asset(&pool, &unique_name("asset_uuid_chain")).await;
+        link_asset_to_group(&pool, asset_id, ag.id).await;
+
+        let resp = handle_access_request(
+            &pool,
+            AccessRequest::CheckAccessByUuid {
+                user_uuid: user_uuid_str.clone(),
+                asset_uuid: asset_uuid_str.clone(),
+                protocol: "ssh".to_string(),
+            },
+        )
+        .await;
+        match resp {
+            AccessResponse::AccessChecked(r) => assert!(r.allowed, "ssh must be allowed"),
+            other => panic!("Expected AccessChecked, got {:?}", other),
+        }
+
+        // Wrong protocol must still deny -- the access_rule above only grants
+        // ssh, so an rdp probe on the same user/asset must yield allowed=false
+        // (and NOT bubble up an Error).
+        let resp = handle_access_request(
+            &pool,
+            AccessRequest::CheckAccessByUuid {
+                user_uuid: user_uuid_str,
+                asset_uuid: asset_uuid_str,
+                protocol: "rdp".to_string(),
+            },
+        )
+        .await;
+        assert_denied(&resp);
+
+        cleanup_asset(&pool, asset_id).await;
+        handle_access_request(
+            &pool,
+            AccessRequest::RemoveGroupMember {
+                group_id: ug.id,
+                user_id,
+            },
+        )
+        .await;
+        cleanup_rule(&pool, &rule.uuid).await;
+        cleanup_asset_group(&pool, &ag.uuid).await;
+        cleanup_vauban_group(&pool, &ug.uuid).await;
+    }
+
+    /// SECURITY POLICY: handle_check_access_by_uuid MUST NOT bypass the
+    /// access_rule lookup for superusers or staff. Both layers
+    /// (vauban-web::handlers::web::ssh and the proxy-ssh re-check) now
+    /// apply the EXACT same policy -- no privileged-user shortcut. If
+    /// this test fails, somebody re-introduced the bypass and the proxy
+    /// will start denying sessions that vauban-web waved through.
+    #[tokio::test]
+    async fn test_check_access_by_uuid_superuser_without_rule_is_denied() {
+        let pool = test_pool().await;
+        let username = unique_name("super_no_rule");
+        let mut conn = pool.get().await.unwrap();
+        let email = format!("{username}@test.local");
+        let user_id: i32 = diesel::insert_into(users::table)
+            .values((
+                users::username.eq(&username),
+                users::email.eq(&email),
+                users::password_hash.eq("nologin"),
+                users::is_superuser.eq(true),
+                users::is_staff.eq(true),
+                users::is_active.eq(true),
+            ))
+            .returning(users::id)
+            .get_result::<i32>(&mut conn)
+            .await
+            .unwrap();
+        drop(conn);
+
+        let user_uuid_str = user_uuid(&pool, user_id).await;
+        let (asset_id, asset_uuid_str) =
+            insert_test_asset(&pool, &unique_name("super_no_rule_asset")).await;
+
+        let resp = handle_access_request(
+            &pool,
+            AccessRequest::CheckAccessByUuid {
+                user_uuid: user_uuid_str,
+                asset_uuid: asset_uuid_str,
+                protocol: "ssh".to_string(),
+            },
+        )
+        .await;
+        assert_denied(&resp);
+
+        cleanup_asset(&pool, asset_id).await;
+    }
+
+    /// END-TO-END WIRE TEST: proves that a CheckAccessByUuid request
+    /// serialised by a proxy-ssh-shaped caller round-trips through a
+    /// real Unix pipe + bincode + handle_access_request + a real
+    /// PostgreSQL pool, and the AccessResponse decodes correctly on
+    /// the way back. This is the test that would have caught the
+    /// "vauban-access never reads the proxy_ssh pipe" bug if it had
+    /// existed at the time, AND would catch any future bincode
+    /// variant-index drift between AccessRequest and AccessResponse
+    /// across the proxy-ssh / vauban-access boundary.
+    #[tokio::test]
+    async fn test_check_access_by_uuid_full_wire_roundtrip() {
+        use shared::ipc::IpcChannel;
+        use shared::messages::Message;
+        use std::time::Duration;
+
+        // We can't use nix here (vauban-access doesn't depend on it).
+        // libc::pipe is portable enough for a unit test on macOS/Linux.
+        fn make_pipe() -> (i32, i32) {
+            let mut fds = [0i32; 2];
+            let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
+            assert_eq!(rc, 0, "libc::pipe() failed");
+            (fds[0], fds[1])
+        }
+
+        let pool = test_pool().await;
+        let user_id = ensure_test_user(&pool).await;
+        let user_uuid_str = user_uuid(&pool, user_id).await;
+        let ug = create_test_vauban_group(&pool, &unique_name("ug_wire")).await;
+        let ag = create_test_asset_group(&pool, &unique_name("ag_wire")).await;
+        handle_access_request(
+            &pool,
+            AccessRequest::AddGroupMember {
+                group_id: ug.id,
+                user_id,
+            },
+        )
+        .await;
+        let rule = create_test_rule(
+            &pool,
+            &unique_name("wire_rule"),
+            ug.id,
+            ag.id,
+            vec!["ssh"],
+        )
+        .await;
+        let (asset_id, asset_uuid_str) =
+            insert_test_asset(&pool, &unique_name("asset_wire")).await;
+        link_asset_to_group(&pool, asset_id, ag.id).await;
+
+        // Build a paired pipe -- proxy side writes, access side reads.
+        let (a_read, a_write) = make_pipe();
+        let (b_read, b_write) = make_pipe();
+        let proxy_side = unsafe { IpcChannel::from_raw_fds(a_read, b_write) };
+        let access_side = unsafe { IpcChannel::from_raw_fds(b_read, a_write) };
+
+        // Stand up a minimal vauban-access dispatch loop on the access
+        // side: read one Message, dispatch, reply. We deliberately do
+        // NOT call run_service() here (it owns the runtime / capsicum)
+        // -- we only exercise the message contract.
+        let pool_for_server = pool.clone();
+        let server = tokio::task::spawn(async move {
+            let (access_side, req) = tokio::task::spawn_blocking(move || {
+                let req = access_side.recv().expect("access recv");
+                (access_side, req)
+            })
+            .await
+            .unwrap();
+            let (request_id, request) = match req {
+                Message::AccessRequest { request_id, request } => (request_id, request),
+                other => panic!("expected AccessRequest, got {:?}", other),
+            };
+            let response = handle_access_request(&pool_for_server, request).await;
+            let reply = Message::AccessResponse { request_id, response };
+            tokio::task::spawn_blocking(move || {
+                access_side.send(&reply).expect("access send");
+            })
+            .await
+            .unwrap();
+        });
+
+        // Proxy side: send the request, await the reply.
+        let request_id: u64 = 0xCAFEBABE;
+        let req = Message::AccessRequest {
+            request_id,
+            request: AccessRequest::CheckAccessByUuid {
+                user_uuid: user_uuid_str.clone(),
+                asset_uuid: asset_uuid_str.clone(),
+                protocol: "ssh".to_string(),
+            },
+        };
+        let reply = tokio::task::spawn_blocking(move || {
+            proxy_side.send(&req).expect("proxy send");
+            proxy_side.recv().expect("proxy recv reply")
+        })
+        .await
+        .unwrap();
+
+        // 5s is generous for an in-memory dispatch with a warm pool.
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("server task should complete within 5s")
+            .unwrap();
+
+        match reply {
+            Message::AccessResponse {
+                request_id: rid,
+                response: AccessResponse::AccessChecked(r),
+            } => {
+                assert_eq!(rid, request_id, "request_id must round-trip verbatim");
+                assert!(
+                    r.allowed,
+                    "user is in vauban_group, asset is in asset_group, \
+                     access_rule grants ssh -> must be allowed"
+                );
+            }
+            other => panic!(
+                "expected AccessResponse(AccessChecked), got {:?} -- if this \
+                 changed, AccessRequest/AccessResponse bincode variant \
+                 indices may have drifted between proxy-ssh and vauban-\
+                 access; both must be rebuilt together",
+                other
+            ),
+        }
+
+        cleanup_asset(&pool, asset_id).await;
+        handle_access_request(
+            &pool,
+            AccessRequest::RemoveGroupMember {
+                group_id: ug.id,
+                user_id,
+            },
+        )
+        .await;
+        cleanup_rule(&pool, &rule.uuid).await;
+        cleanup_asset_group(&pool, &ag.uuid).await;
+        cleanup_vauban_group(&pool, &ug.uuid).await;
     }
 }

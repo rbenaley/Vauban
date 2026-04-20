@@ -149,10 +149,19 @@ async fn test_web_ssh_connect_wrong_protocol_denied() {
     test_db::cleanup(&mut conn).await;
 }
 
-/// Superuser bypasses access rules for SSH connect.
+/// SECURITY: superusers MUST NOT bypass access_rule enforcement for SSH.
+///
+/// The historical "superuser bypass" was retired alongside the proxy-ssh
+/// defense-in-depth re-check (CheckAccessByUuid). Both layers
+/// (vauban-web::handlers::web::ssh::connect_ssh and the proxy-side
+/// CheckAccessByUuid) now apply the EXACT same policy. Allowing the bypass
+/// here while the proxy enforces the rule produced the regression where
+/// every superuser-initiated SSH session resulted in "Access denied" with
+/// no recourse. This test inverts the legacy assertion and locks the new,
+/// strict policy in place. See docs/runbooks/ipc_topology_debugging.md.
 #[tokio::test]
 #[serial]
-async fn test_web_ssh_connect_superuser_bypass() {
+async fn test_web_ssh_connect_superuser_requires_access_rule() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
@@ -178,8 +187,9 @@ async fn test_web_ssh_connect_superuser_bypass() {
 
     let body = response.text();
     assert!(
-        !body.contains("No access rule"),
-        "Superuser should bypass access rules for SSH"
+        body.contains("No access rule") || body.contains("showToast"),
+        "Superuser MUST be denied SSH connect when no access_rule grants it \
+         (no privileged-user bypass): {body}"
     );
 
     test_db::cleanup(&mut conn).await;
