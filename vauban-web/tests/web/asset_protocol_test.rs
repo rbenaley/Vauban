@@ -1033,3 +1033,398 @@ async fn test_edit_form_does_not_leak_stored_credential_into_html() {
         "edit form must surface the option-A hint when a password is on file"
     );
 }
+
+// =============================================================================
+// SEC-12 / GitHub issue #20 — host-key state survives edit
+//
+// These tests exercise the structural invariant that POST /assets/{uuid}/edit
+// MUST NOT silently drop fields the form does not expose. Before the fix,
+// `update_asset_web` rebuilt `connection_config` from scratch via
+// `build_connection_config` and only patched back password/private_key/
+// passphrase via `merge_preserved_credentials`, which destroyed:
+//
+//   1. `ssh_host_key` (the pinned public key) — host-key pinning gone,
+//      next connection silently re-pins whatever the server offers (TOFU bypass).
+//   2. `ssh_host_key_fingerprint` (the SHA256 cache) — operator UI shows
+//      "No Host Key Stored" after an unrelated edit.
+//   3. `ssh_host_key_mismatch` (the MITM block flag) — set by
+//      verify_ssh_host_key on a suspected attack; cleared by an unrelated
+//      edit, which silently re-enables connections to the suspect host.
+//
+// The fix uses `compute_updated_connection_config` (overlay on existing).
+// Anti-regression marker: SEC-12-EDIT-PRESERVE-20260420.
+// =============================================================================
+
+/// CARDINAL: a description-only edit MUST preserve `ssh_host_key`,
+/// `ssh_host_key_fingerprint` AND the `ssh_host_key_mismatch` block flag.
+/// A regression here means an unrelated UI tweak silently destroys
+/// host-key pinning AND clears any pending MITM block.
+#[tokio::test]
+#[serial]
+async fn test_edit_ssh_description_only_preserves_full_host_key_state() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("sec12_desc_edit");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+    let csrf = app.generate_csrf_token();
+
+    let hostname = format!("{}.host-key-keep.test", unique_name("host"));
+    const HOST_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINSEC12KEEPMEACROSSEDIT20260420";
+    const FINGERPRINT: &str = "SHA256:SEC12KEEPMEACROSSEDIT20260420aaaaaaaaaaaaaaaaaaaaaa";
+    const STORED_PWD: &str = "STORED-PWD-SEC12-20260420";
+
+    let asset = insert_asset_with_config(
+        &mut conn,
+        &unique_name("ssh-host-key-keep"),
+        &hostname,
+        22,
+        AssetType::Ssh,
+        "alice",
+        serde_json::json!({
+            "username": "alice",
+            "auth_type": "password",
+            "password": STORED_PWD,
+            "ssh_host_key": HOST_KEY,
+            "ssh_host_key_fingerprint": FINGERPRINT,
+            "ssh_host_key_mismatch": true,
+        }),
+    )
+    .await;
+
+    let response = app
+        .server
+        .post(&format!("/assets/{}/edit", asset.uuid))
+        .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
+        .form(&[
+            ("csrf_token", csrf.as_str()),
+            ("name", &asset.name),
+            ("hostname", &hostname),
+            ("port", "22"),
+            ("status", "online"),
+            ("ssh_username", "alice"),
+            ("ssh_auth_type", "password"),
+            ("ssh_password", ""), // option A: keep stored password
+            ("description", "operator only changed the description -- SEC-12"),
+        ])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 302 || status == 303,
+        "description-only edit must succeed, got {}",
+        status
+    );
+
+    let after = read_asset_by_uuid(&mut conn, asset.uuid)
+        .await
+        .expect("row must still exist after edit");
+
+    assert_eq!(
+        after.connection_config.get("ssh_host_key").and_then(|v| v.as_str()),
+        Some(HOST_KEY),
+        "SEC-12 regression: ssh_host_key was wiped by an unrelated edit. \
+         Full config after edit: {}",
+        after.connection_config
+    );
+    assert_eq!(
+        after.connection_config.get("ssh_host_key_fingerprint").and_then(|v| v.as_str()),
+        Some(FINGERPRINT),
+        "SEC-12 regression: ssh_host_key_fingerprint was wiped by an unrelated edit"
+    );
+    assert_eq!(
+        after.connection_config.get("ssh_host_key_mismatch").and_then(|v| v.as_bool()),
+        Some(true),
+        "SEC-12 regression: ssh_host_key_mismatch flag was cleared by an unrelated edit \
+         (this would silently re-allow connections to a suspected MITM target)"
+    );
+    // And the stored password survived too (option A, defended by
+    // test_edit_rdp_with_blank_password_preserves_existing for RDP).
+    let cfg_str = after.connection_config.to_string();
+    assert!(
+        cfg_str.contains(STORED_PWD),
+        "blank-password edit must preserve stored ciphertext, got: {}",
+        cfg_str
+    );
+}
+
+/// Rotating a credential (non-empty password input) MUST still preserve
+/// the host-key pinning. The two operations are orthogonal and the edit
+/// form has no input for host-key state.
+#[tokio::test]
+#[serial]
+async fn test_edit_ssh_password_rotation_preserves_host_key_pinning() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("sec12_rotate_pwd");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+    let csrf = app.generate_csrf_token();
+
+    let hostname = format!("{}.rotate-keep-key.test", unique_name("host"));
+    const HOST_KEY: &str = "ssh-rsa AAAAB3SEC12ROTATE20260420";
+    const FINGERPRINT: &str = "SHA256:SEC12ROTATEPWDKEEPHOSTKEY20260420bbbbbbbbbbb";
+    const NEW_PWD: &str = "ROTATED-PWD-SEC12-20260420";
+
+    let asset = insert_asset_with_config(
+        &mut conn,
+        &unique_name("ssh-rotate-keep-key"),
+        &hostname,
+        22,
+        AssetType::Ssh,
+        "alice",
+        serde_json::json!({
+            "username": "alice",
+            "auth_type": "password",
+            "password": "OLD-PWD-MUST-BE-GONE",
+            "ssh_host_key": HOST_KEY,
+            "ssh_host_key_fingerprint": FINGERPRINT,
+        }),
+    )
+    .await;
+
+    let response = app
+        .server
+        .post(&format!("/assets/{}/edit", asset.uuid))
+        .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
+        .form(&[
+            ("csrf_token", csrf.as_str()),
+            ("name", &asset.name),
+            ("hostname", &hostname),
+            ("port", "22"),
+            ("status", "online"),
+            ("ssh_username", "alice"),
+            ("ssh_auth_type", "password"),
+            ("ssh_password", NEW_PWD),
+        ])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(status == 302 || status == 303, "edit must succeed, got {}", status);
+
+    let after = read_asset_by_uuid(&mut conn, asset.uuid).await.unwrap();
+
+    assert_eq!(
+        after.connection_config.get("ssh_host_key").and_then(|v| v.as_str()),
+        Some(HOST_KEY),
+        "SEC-12 regression: ssh_host_key was wiped by a credential rotation"
+    );
+    assert_eq!(
+        after.connection_config.get("ssh_host_key_fingerprint").and_then(|v| v.as_str()),
+        Some(FINGERPRINT),
+        "SEC-12 regression: ssh_host_key_fingerprint was wiped by a credential rotation"
+    );
+    let cfg_str = after.connection_config.to_string();
+    assert!(
+        !cfg_str.contains("OLD-PWD-MUST-BE-GONE"),
+        "old password sentinel must be evicted, got: {}",
+        cfg_str
+    );
+    if !cfg_str.contains("\"v1:") {
+        assert!(
+            cfg_str.contains(NEW_PWD),
+            "new password must be persisted (plaintext path), got: {}",
+            cfg_str
+        );
+    }
+}
+
+/// Switching `auth_type` from password to private_key persists the new
+/// credential AND preserves the host-key pinning. Mirrors the unit test
+/// `test_compute_updated_ssh_switch_to_private_key` at the HTTP layer.
+#[tokio::test]
+#[serial]
+async fn test_edit_ssh_switch_auth_type_preserves_host_key_pinning() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("sec12_switch_auth");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+    let csrf = app.generate_csrf_token();
+
+    let hostname = format!("{}.switch-keep-key.test", unique_name("host"));
+    const HOST_KEY: &str = "ecdsa-sha2-nistp256 AAAAESEC12SWITCH20260420";
+    const FINGERPRINT: &str = "SHA256:SEC12SWITCHAUTHTYPE20260420ccccccccccccccccccc";
+    const NEW_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\nSEC12-NEW-KEY-20260420\n-----END OPENSSH PRIVATE KEY-----";
+
+    let asset = insert_asset_with_config(
+        &mut conn,
+        &unique_name("ssh-switch-keep-key"),
+        &hostname,
+        22,
+        AssetType::Ssh,
+        "alice",
+        serde_json::json!({
+            "username": "alice",
+            "auth_type": "password",
+            "password": "WAS-USING-PASSWORD",
+            "ssh_host_key": HOST_KEY,
+            "ssh_host_key_fingerprint": FINGERPRINT,
+        }),
+    )
+    .await;
+
+    let response = app
+        .server
+        .post(&format!("/assets/{}/edit", asset.uuid))
+        .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
+        .form(&[
+            ("csrf_token", csrf.as_str()),
+            ("name", &asset.name),
+            ("hostname", &hostname),
+            ("port", "22"),
+            ("status", "online"),
+            ("ssh_username", "alice"),
+            ("ssh_auth_type", "private_key"),
+            ("ssh_private_key", NEW_KEY),
+        ])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(status == 302 || status == 303, "edit must succeed, got {}", status);
+
+    let after = read_asset_by_uuid(&mut conn, asset.uuid).await.unwrap();
+
+    assert_eq!(
+        after.connection_config.get("ssh_host_key").and_then(|v| v.as_str()),
+        Some(HOST_KEY),
+        "SEC-12 regression: ssh_host_key was wiped by an auth_type switch"
+    );
+    assert_eq!(
+        after.connection_config.get("ssh_host_key_fingerprint").and_then(|v| v.as_str()),
+        Some(FINGERPRINT),
+        "SEC-12 regression: ssh_host_key_fingerprint was wiped by an auth_type switch"
+    );
+    assert_eq!(
+        after.connection_config.get("auth_type").and_then(|v| v.as_str()),
+        Some("private_key"),
+    );
+}
+
+/// Companion to the SEC-12 SSH tests: an edit that doesn't touch RDP-only
+/// fields must preserve the stored Windows AD `domain`. Before the fix,
+/// `build_connection_config` only emitted `domain` when the form re-sent
+/// it (which it does in the browser, but a non-browser client or a JS-off
+/// session could omit it), so editing such a row from a stripped-down
+/// client silently wiped the domain. The new "absent ⇒ keep" semantic
+/// closes that hole.
+#[tokio::test]
+#[serial]
+async fn test_edit_rdp_absent_domain_preserves_stored_domain() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("sec12_rdp_keep_dom");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+    let csrf = app.generate_csrf_token();
+
+    let hostname = format!("{}.rdp-keep-domain.test", unique_name("host"));
+    const DOMAIN: &str = "CORP-SEC12-20260420";
+    const STORED_PWD: &str = "RDP-PWD-KEEP-DOMAIN-20260420";
+
+    let asset = insert_asset_with_config(
+        &mut conn,
+        &unique_name("rdp-keep-domain"),
+        &hostname,
+        3389,
+        AssetType::Rdp,
+        "Administrator",
+        serde_json::json!({
+            "username": "Administrator",
+            "password": STORED_PWD,
+            "domain": DOMAIN,
+        }),
+    )
+    .await;
+
+    // Submit an edit that omits `rdp_domain` entirely (simulates a
+    // non-browser client or a future stripped-down quick-edit form).
+    let response = app
+        .server
+        .post(&format!("/assets/{}/edit", asset.uuid))
+        .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
+        .form(&[
+            ("csrf_token", csrf.as_str()),
+            ("name", &asset.name),
+            ("hostname", &hostname),
+            ("port", "3389"),
+            ("status", "maintenance"),
+            ("ssh_username", "Administrator"),
+            ("ssh_password", ""),
+            ("description", "domain field intentionally absent from the request body"),
+        ])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(status == 302 || status == 303, "edit must succeed, got {}", status);
+
+    let after = read_asset_by_uuid(&mut conn, asset.uuid).await.unwrap();
+    assert_eq!(
+        after.connection_config.get("domain").and_then(|v| v.as_str()),
+        Some(DOMAIN),
+        "absent rdp_domain field MUST preserve stored domain, got config: {}",
+        after.connection_config
+    );
+    let cfg_str = after.connection_config.to_string();
+    assert!(
+        cfg_str.contains(STORED_PWD),
+        "stored RDP password must round-trip on a domain-preserving edit, got: {}",
+        cfg_str
+    );
+}
+
+/// Companion: an explicit blank `rdp_domain` (operator deliberately
+/// emptied the visible input) DOES clear the stored domain. This is the
+/// only legitimate way to remove a domain via the UI.
+#[tokio::test]
+#[serial]
+async fn test_edit_rdp_explicit_blank_domain_clears_stored_domain() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("sec12_rdp_clr_dom");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+    let csrf = app.generate_csrf_token();
+
+    let hostname = format!("{}.rdp-clear-domain.test", unique_name("host"));
+    let asset = insert_asset_with_config(
+        &mut conn,
+        &unique_name("rdp-clear-domain"),
+        &hostname,
+        3389,
+        AssetType::Rdp,
+        "Administrator",
+        serde_json::json!({
+            "username": "Administrator",
+            "password": "ANY-PWD",
+            "domain": "CORP",
+        }),
+    )
+    .await;
+
+    let response = app
+        .server
+        .post(&format!("/assets/{}/edit", asset.uuid))
+        .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
+        .form(&[
+            ("csrf_token", csrf.as_str()),
+            ("name", &asset.name),
+            ("hostname", &hostname),
+            ("port", "3389"),
+            ("status", "online"),
+            ("ssh_username", "Administrator"),
+            ("ssh_password", ""),
+            ("rdp_domain", ""), // explicit clear
+        ])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(status == 302 || status == 303, "edit must succeed, got {}", status);
+
+    let after = read_asset_by_uuid(&mut conn, asset.uuid).await.unwrap();
+    assert!(
+        after.connection_config.get("domain").is_none(),
+        "explicit blank rdp_domain MUST clear stored domain, got config: {}",
+        after.connection_config
+    );
+}

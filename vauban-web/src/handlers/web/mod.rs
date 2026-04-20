@@ -393,42 +393,155 @@ pub(crate) fn build_connection_config(
     serde_json::Value::Object(config)
 }
 
-/// Preserve credential fields from `existing` into `new_config` when
-/// the operator did not resubmit them.
+/// Compute the new `connection_config` for an asset UPDATE, starting
+/// from the existing row and overlaying ONLY the fields the operator
+/// explicitly re-submitted via the edit form.
 ///
-/// Implements the "edit-form option A" semantic: an empty input on
-/// the edit page means "keep the value we have", not "wipe to empty".
-/// Without this, an operator who edits an asset just to change its
-/// description would silently destroy the stored credentials, because
-/// `build_connection_config` only emits keys for non-empty form
-/// fields.
+/// # Why not `build_connection_config` + a narrow patch-back?
 ///
-/// Only credential fields are preservable here: `username` lives in
-/// its dedicated `connection_username` column, and `domain` is a
-/// regular text input that the operator can clear deliberately
-/// (preserving an empty submit would prevent removing a domain).
+/// `build_connection_config` was designed for the CREATE flow: it
+/// emits a fresh JSON object containing only the fields present on
+/// the form. Reusing it for UPDATE forces a "rebuild from scratch
+/// then patch back the few fields we care about" pattern, which is
+/// fundamentally fragile: every field that the edit form does NOT
+/// re-render (today: the entire SSH host-key state — `ssh_host_key`,
+/// `ssh_host_key_fingerprint`, `ssh_host_key_mismatch`) is silently
+/// dropped on every edit.
 ///
-/// The copied JSON value can be plaintext or vault ciphertext; the
-/// downstream `encrypt_connection_config` call leaves already-
-/// encrypted strings alone via `is_encrypted`, so a round-trip stays
-/// idempotent.
-pub(crate) fn merge_preserved_credentials(
-    new_config: &mut serde_json::Value,
+/// In security terms this destroys host-key pinning (next connection
+/// re-pins whatever the server offers, defeating the TOFU guarantee)
+/// AND clears any `ssh_host_key_mismatch=true` block previously set
+/// by `verify_ssh_host_key` on a suspected MITM — without
+/// confirmation, without audit, even when the operator only meant
+/// to fix a typo in the description. See GitHub issue #20.
+///
+/// The fix here is structural: start from `existing` and overlay,
+/// instead of build-from-scratch and patch-back. Any field absent
+/// from the form (whether because we don't render it today, or
+/// because a future schema migration adds a new key) round-trips
+/// untouched by construction.
+///
+/// # Form-field semantics (matches `asset_edit.html`)
+///
+/// - `username`, `auth_type`: **present-but-empty ⇒ keep existing**
+///   (option A; the form always renders these inputs).
+/// - `password`, `private_key`, `passphrase`: **present-but-empty ⇒
+///   keep existing** (option A; the stored ciphertext is never
+///   round-tripped through the browser, so the input is intentionally
+///   rendered blank with a "Leave blank to keep current" hint).
+/// - `domain` (RDP): **`Some("")` ⇒ clear it** (it's a regular text
+///   input the operator can deliberately empty to remove a domain);
+///   **`None` ⇒ keep existing** (defensive: a non-browser client
+///   may not send the field at all).
+///
+/// # Cross-protocol cleanup (defense in depth)
+///
+/// - SSH ⇒ strip `domain` (RDP-only).
+/// - RDP ⇒ strip `auth_type`, `private_key`, `passphrase` (SSH-only).
+///
+/// This mirrors the protocol-purity guarantee `build_connection_config`
+/// provided behind `validate_auth_inputs`: a tampered request that
+/// smuggles cross-protocol fields cannot persist them.
+///
+/// # Encryption
+///
+/// Plaintext credentials inserted here are encrypted downstream by
+/// `encrypt_connection_config`; existing ciphertext copied from
+/// `existing` round-trips untouched via `is_encrypted`, so a
+/// description-only edit does not re-encrypt (and therefore does not
+/// rotate) any credential.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn compute_updated_connection_config(
     existing: &serde_json::Value,
-) {
-    const PRESERVABLE: [&str; 3] = ["password", "private_key", "passphrase"];
-    let (Some(new_obj), Some(existing_obj)) =
-        (new_config.as_object_mut(), existing.as_object())
-    else {
-        return;
+    asset_type: crate::models::asset::AssetType,
+    username: Option<&str>,
+    auth_type: Option<&str>,
+    password: Option<&str>,
+    private_key: Option<&str>,
+    passphrase: Option<&str>,
+    domain: Option<&str>,
+) -> serde_json::Value {
+    use crate::models::asset::AssetType;
+
+    // Start from the existing config so any field NOT mentioned below
+    // (notably `ssh_host_key`, `ssh_host_key_fingerprint`,
+    // `ssh_host_key_mismatch`, plus any forward-compat keys we don't
+    // yet know about) round-trips untouched.
+    let mut obj = existing.as_object().cloned().unwrap_or_default();
+
+    let trimmed_nonempty = |o: Option<&str>| {
+        o.map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
     };
-    for field in &PRESERVABLE {
-        if !new_obj.contains_key(*field)
-            && let Some(v) = existing_obj.get(*field).filter(|v| !v.is_null())
-        {
-            new_obj.insert((*field).to_string(), v.clone());
+
+    // username: option A (blank or absent ⇒ keep existing).
+    if let Some(u) = trimmed_nonempty(username) {
+        obj.insert("username".to_string(), serde_json::Value::String(u));
+    }
+
+    match asset_type {
+        AssetType::Ssh => {
+            // RDP-only field must not exist on an SSH row.
+            obj.remove("domain");
+
+            // auth_type: option A.
+            if let Some(at) = trimmed_nonempty(auth_type) {
+                obj.insert("auth_type".to_string(), serde_json::Value::String(at));
+            }
+
+            // password / private_key / passphrase: option A.
+            // Non-empty values are inserted as plaintext here and
+            // encrypted downstream by `encrypt_connection_config`.
+            if let Some(p) = password.filter(|s| !s.is_empty()) {
+                obj.insert(
+                    "password".to_string(),
+                    serde_json::Value::String(p.to_string()),
+                );
+            }
+            if let Some(pk) = private_key.filter(|s| !s.is_empty()) {
+                obj.insert(
+                    "private_key".to_string(),
+                    serde_json::Value::String(pk.to_string()),
+                );
+            }
+            if let Some(pp) = passphrase.filter(|s| !s.is_empty()) {
+                obj.insert(
+                    "passphrase".to_string(),
+                    serde_json::Value::String(pp.to_string()),
+                );
+            }
+        }
+        AssetType::Rdp => {
+            // SSH-only fields must not exist on an RDP row.
+            obj.remove("auth_type");
+            obj.remove("private_key");
+            obj.remove("passphrase");
+
+            // password: option A.
+            if let Some(p) = password.filter(|s| !s.is_empty()) {
+                obj.insert(
+                    "password".to_string(),
+                    serde_json::Value::String(p.to_string()),
+                );
+            }
+
+            // domain: `Some("")` ⇒ clear; `None` ⇒ keep existing.
+            if let Some(d) = domain {
+                let trimmed = d.trim();
+                if trimmed.is_empty() {
+                    obj.remove("domain");
+                } else {
+                    obj.insert(
+                        "domain".to_string(),
+                        serde_json::Value::String(trimmed.to_string()),
+                    );
+                }
+            }
         }
     }
+
+    serde_json::Value::Object(obj)
 }
 
 /// Encrypt credential fields in a connection_config JSON via vault.

@@ -1067,7 +1067,7 @@ pub async fn asset_edit(
     // the value itself (encrypted or plaintext). The edit form renders
     // empty inputs with "Leave blank to keep current" hints; the
     // handler then preserves the stored value when the operator
-    // submits a blank field (option A, see `merge_preserved_credentials`).
+    // submits a blank field (option A, see `compute_updated_connection_config`).
     let has_secret = |key: &str| {
         asset_connection_config
             .get(key)
@@ -1465,7 +1465,18 @@ pub async fn update_asset_web(
         return flash_redirect(flash.error(msg), &format!("/assets/{}/edit", asset_uuid));
     }
 
-    let mut connection_config = build_connection_config(
+    // Compute the new connection_config by overlaying the form fields
+    // on the existing row. This preserves by construction every field
+    // the edit form does NOT expose — most importantly the SSH
+    // host-key state (`ssh_host_key`, `ssh_host_key_fingerprint`,
+    // `ssh_host_key_mismatch`), whose silent erasure on every edit
+    // was the root cause of GitHub issue #20.
+    //
+    // The function also implements the "blank input ⇒ keep existing"
+    // semantic for credentials (option A), so a description-only
+    // edit does not wipe the stored password / private key / passphrase.
+    let mut connection_config = compute_updated_connection_config(
+        &existing.connection_config,
         existing.asset_type,
         form.ssh_username.as_deref(),
         form.ssh_auth_type.as_deref(),
@@ -1474,13 +1485,6 @@ pub async fn update_asset_web(
         form.ssh_passphrase.as_deref(),
         form.rdp_domain.as_deref(),
     );
-
-    // Option A: a blank password / private_key / passphrase input on
-    // the edit form means "keep what we already have", not "wipe it".
-    // The merge happens BEFORE encryption so the existing ciphertext
-    // (already in `connection_config`) round-trips untouched via
-    // `is_encrypted` inside `encrypt_connection_config`.
-    merge_preserved_credentials(&mut connection_config, &existing.connection_config);
 
     // Encrypt credential fields via vault when available
     if let Some(ref vault) = state.vault_client

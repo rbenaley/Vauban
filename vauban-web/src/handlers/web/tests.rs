@@ -797,3 +797,404 @@ fn test_connect_ssh_response_all_none() {
     assert!(response.session_id.is_none());
     assert!(response.error.is_none());
 }
+
+// ============================================================================
+// compute_updated_connection_config tests (GitHub issue #20 anti-regression)
+//
+// These tests guard the structural invariant that the asset edit endpoint
+// MUST NOT silently drop any connection_config field that the form does
+// not expose — most importantly the SSH host-key state. They are written
+// to fail loudly if anyone reverts to the old build-from-scratch +
+// patch-back pattern that destroyed host-key pinning on every edit.
+// ============================================================================
+
+use crate::models::asset::AssetType;
+
+/// Convenience: build a fully-loaded SSH `existing` config carrying every
+/// field a long-lived production row may accumulate, including the three
+/// host-key fields the edit form never re-renders.
+fn ssh_existing_full() -> serde_json::Value {
+    serde_json::json!({
+        "username": "alice",
+        "auth_type": "password",
+        "password": "v1:CIPHERTEXT_PWD_BASE64",
+        "ssh_host_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINxxx",
+        "ssh_host_key_fingerprint": "SHA256:LEAciqhwf3pPt2W0KXEAfnShujeNpV0pyBtPbINd224",
+        "ssh_host_key_mismatch": true,
+    })
+}
+
+fn rdp_existing_full() -> serde_json::Value {
+    serde_json::json!({
+        "username": "Administrator",
+        "password": "v1:CIPHERTEXT_RDP_PWD_BASE64",
+        "domain": "CORP",
+    })
+}
+
+/// Description-only edit on an SSH asset: the form re-submits username
+/// and auth_type with their current values and leaves password blank.
+/// Every field — credentials AND host-key state — must round-trip.
+#[test]
+fn test_compute_updated_ssh_description_only_preserves_everything() {
+    let existing = ssh_existing_full();
+    let new = compute_updated_connection_config(
+        &existing,
+        AssetType::Ssh,
+        Some("alice"),    // username re-submitted unchanged
+        Some("password"), // auth_type re-submitted unchanged
+        Some(""),         // password input rendered blank
+        Some(""),         // private_key input (hidden) blank
+        Some(""),         // passphrase input (hidden) blank
+        Some(""),         // rdp_domain input (hidden, alpine x-show=false) sent blank
+    );
+    assert_eq!(
+        new, existing,
+        "a description-only edit MUST be a no-op on connection_config; \
+         got {new} vs existing {existing}"
+    );
+}
+
+/// The cardinal anti-regression: host-key, fingerprint and mismatch flag
+/// MUST survive every plausible edit-form submission shape.
+#[test]
+fn test_compute_updated_ssh_host_key_state_always_preserved() {
+    let existing = ssh_existing_full();
+
+    /// (label, username, auth_type, password, private_key, passphrase)
+    type EditFormCase = (
+        &'static str,
+        Option<&'static str>,
+        Option<&'static str>,
+        Option<&'static str>,
+        Option<&'static str>,
+        Option<&'static str>,
+    );
+
+    // Matrix of plausible operator actions on the edit form.
+    let cases: &[EditFormCase] = &[
+        ("blank everything",     Some(""),       Some(""),            Some(""),    Some(""),    Some("")),
+        ("rotate password",      Some("alice"),  Some("password"),    Some("NEW"), Some(""),    Some("")),
+        ("switch to private_key",Some("alice"),  Some("private_key"), Some(""),    Some("KEY"), Some("")),
+        ("change username",      Some("bob"),    Some("password"),    Some(""),    Some(""),    Some("")),
+        ("change auth_type only",Some("alice"),  Some("private_key"), Some(""),    Some(""),    Some("")),
+        ("None for all options", None,           None,                None,        None,        None),
+    ];
+
+    for (label, username, auth_type, password, private_key, passphrase) in cases {
+        let new = compute_updated_connection_config(
+            &existing,
+            AssetType::Ssh,
+            *username,
+            *auth_type,
+            *password,
+            *private_key,
+            *passphrase,
+            None,
+        );
+        let obj = new.as_object().unwrap_or_else(|| panic!("[{label}] new config is not an object: {new}"));
+        assert_eq!(
+            obj.get("ssh_host_key"),
+            existing.get("ssh_host_key"),
+            "[{label}] ssh_host_key MUST be preserved across edit",
+        );
+        assert_eq!(
+            obj.get("ssh_host_key_fingerprint"),
+            existing.get("ssh_host_key_fingerprint"),
+            "[{label}] ssh_host_key_fingerprint MUST be preserved across edit",
+        );
+        assert_eq!(
+            obj.get("ssh_host_key_mismatch"),
+            existing.get("ssh_host_key_mismatch"),
+            "[{label}] ssh_host_key_mismatch flag MUST be preserved across edit \
+             (otherwise an unrelated edit silently clears a MITM block)",
+        );
+    }
+}
+
+/// Non-empty password on the form MUST replace the stored ciphertext
+/// (otherwise we couldn't rotate credentials).
+#[test]
+fn test_compute_updated_ssh_new_password_replaces_existing() {
+    let existing = ssh_existing_full();
+    let new = compute_updated_connection_config(
+        &existing,
+        AssetType::Ssh,
+        Some("alice"),
+        Some("password"),
+        Some("NEW-PLAINTEXT-PWD"),
+        Some(""),
+        Some(""),
+        None,
+    );
+    assert_eq!(
+        new.get("password").and_then(|v| v.as_str()),
+        Some("NEW-PLAINTEXT-PWD"),
+        "non-empty password input MUST replace existing"
+    );
+    // And host-key state still preserved.
+    assert_eq!(new.get("ssh_host_key"), existing.get("ssh_host_key"));
+}
+
+/// Blank password on the form MUST keep the stored ciphertext (option A).
+#[test]
+fn test_compute_updated_ssh_blank_password_keeps_existing() {
+    let existing = ssh_existing_full();
+    let new = compute_updated_connection_config(
+        &existing,
+        AssetType::Ssh,
+        Some("alice"),
+        Some("password"),
+        Some(""), // operator left it blank
+        Some(""),
+        Some(""),
+        None,
+    );
+    assert_eq!(
+        new.get("password"),
+        existing.get("password"),
+        "blank password input MUST preserve stored ciphertext (option A)"
+    );
+}
+
+/// Switching auth_type to private_key persists the new private_key and
+/// passphrase, while preserving the host-key state. Per the agreed
+/// "minimal" scope, the now-irrelevant `password` ciphertext is left in
+/// place rather than stripped (separate concern, tracked elsewhere).
+#[test]
+fn test_compute_updated_ssh_switch_to_private_key() {
+    let existing = ssh_existing_full();
+    let new = compute_updated_connection_config(
+        &existing,
+        AssetType::Ssh,
+        Some("alice"),
+        Some("private_key"),
+        Some(""),
+        Some("-----BEGIN OPENSSH PRIVATE KEY-----\nFAKE\n-----END OPENSSH PRIVATE KEY-----"),
+        Some("passphrase-secret"),
+        None,
+    );
+    assert_eq!(
+        new.get("auth_type").and_then(|v| v.as_str()),
+        Some("private_key"),
+    );
+    assert!(new.get("private_key").and_then(|v| v.as_str()).unwrap().contains("FAKE"));
+    assert_eq!(
+        new.get("passphrase").and_then(|v| v.as_str()),
+        Some("passphrase-secret"),
+    );
+    assert_eq!(new.get("ssh_host_key"), existing.get("ssh_host_key"));
+    assert_eq!(
+        new.get("ssh_host_key_fingerprint"),
+        existing.get("ssh_host_key_fingerprint"),
+    );
+}
+
+/// SSH rows must never persist a `domain` (RDP-only field). If a previous
+/// state machine bug leaked one in, an edit cleans it up.
+#[test]
+fn test_compute_updated_ssh_strips_domain() {
+    let mut existing = ssh_existing_full();
+    existing
+        .as_object_mut()
+        .unwrap()
+        .insert("domain".to_string(), serde_json::Value::String("LEAKED".to_string()));
+    let new = compute_updated_connection_config(
+        &existing,
+        AssetType::Ssh,
+        Some("alice"),
+        Some("password"),
+        Some(""),
+        Some(""),
+        Some(""),
+        Some("CORP"), // even if a tampered request smuggles domain, ignore on SSH
+    );
+    assert!(
+        new.get("domain").is_none(),
+        "SSH row must never carry a domain field, got {new}"
+    );
+}
+
+/// Forward-compatibility: any unknown key already present in `existing`
+/// (e.g. added by a future schema migration) must round-trip untouched.
+/// This protects the next "ssh_host_key"-class field from the same bug.
+#[test]
+fn test_compute_updated_preserves_unknown_forward_compat_keys() {
+    let mut existing = ssh_existing_full();
+    existing.as_object_mut().unwrap().insert(
+        "future_field_we_dont_know_about".to_string(),
+        serde_json::json!({"nested": [1, 2, 3]}),
+    );
+    let new = compute_updated_connection_config(
+        &existing,
+        AssetType::Ssh,
+        Some("alice"),
+        Some("password"),
+        Some(""),
+        Some(""),
+        Some(""),
+        None,
+    );
+    assert_eq!(
+        new.get("future_field_we_dont_know_about"),
+        existing.get("future_field_we_dont_know_about"),
+        "unknown keys must round-trip untouched (forward compatibility)"
+    );
+}
+
+/// Description-only edit on an RDP asset: domain, password and username
+/// all round-trip. `auth_type=password` is a legacy artifact some seeded
+/// rows carry — it gets stripped because it's SSH-only by design.
+#[test]
+fn test_compute_updated_rdp_description_only_preserves_credentials_and_domain() {
+    let existing = rdp_existing_full();
+    let new = compute_updated_connection_config(
+        &existing,
+        AssetType::Rdp,
+        Some("Administrator"),
+        None,     // RDP form does not render auth_type
+        Some(""), // password rendered blank
+        None,
+        None,
+        Some("CORP"), // domain re-submitted unchanged
+    );
+    assert_eq!(new.get("password"), existing.get("password"));
+    assert_eq!(new.get("domain").and_then(|v| v.as_str()), Some("CORP"));
+    assert_eq!(
+        new.get("username").and_then(|v| v.as_str()),
+        Some("Administrator"),
+    );
+}
+
+/// `Some("")` for `rdp_domain` means the operator deliberately emptied
+/// the visible input ⇒ remove the stored domain.
+#[test]
+fn test_compute_updated_rdp_blank_domain_clears_stored() {
+    let existing = rdp_existing_full();
+    let new = compute_updated_connection_config(
+        &existing,
+        AssetType::Rdp,
+        Some("Administrator"),
+        None,
+        Some(""),
+        None,
+        None,
+        Some(""), // explicit clear
+    );
+    assert!(
+        new.get("domain").is_none(),
+        "explicit blank domain submission must clear the stored value"
+    );
+    // Password still preserved.
+    assert_eq!(new.get("password"), existing.get("password"));
+}
+
+/// `None` for `rdp_domain` (field absent from the request body) must NOT
+/// clear the stored domain — only an explicit `Some("")` does.
+#[test]
+fn test_compute_updated_rdp_absent_domain_keeps_stored() {
+    let existing = rdp_existing_full();
+    let new = compute_updated_connection_config(
+        &existing,
+        AssetType::Rdp,
+        Some("Administrator"),
+        None,
+        Some(""),
+        None,
+        None,
+        None, // field absent
+    );
+    assert_eq!(
+        new.get("domain").and_then(|v| v.as_str()),
+        Some("CORP"),
+        "absent rdp_domain field must preserve stored domain"
+    );
+}
+
+/// New non-empty domain replaces existing.
+#[test]
+fn test_compute_updated_rdp_new_domain_replaces() {
+    let existing = rdp_existing_full();
+    let new = compute_updated_connection_config(
+        &existing,
+        AssetType::Rdp,
+        Some("Administrator"),
+        None,
+        Some(""),
+        None,
+        None,
+        Some("NEWCORP"),
+    );
+    assert_eq!(new.get("domain").and_then(|v| v.as_str()), Some("NEWCORP"));
+}
+
+/// RDP defense-in-depth: SSH-only fields smuggled in the existing row
+/// (e.g. via the "UPDATE assets SET connection_config = jsonb_set..."
+/// incident from issue #20 follow-up) must be stripped on edit.
+#[test]
+fn test_compute_updated_rdp_strips_ssh_only_fields() {
+    let mut existing = rdp_existing_full();
+    let obj = existing.as_object_mut().unwrap();
+    obj.insert("auth_type".to_string(), serde_json::Value::String("password".to_string()));
+    obj.insert("private_key".to_string(), serde_json::Value::String("LEAKED-KEY".to_string()));
+    obj.insert("passphrase".to_string(), serde_json::Value::String("LEAKED-PP".to_string()));
+
+    let new = compute_updated_connection_config(
+        &existing,
+        AssetType::Rdp,
+        Some("Administrator"),
+        Some("private_key"), // tampered: try to smuggle SSH auth_type
+        Some(""),
+        Some("ALSO-LEAKED"),  // tampered: try to smuggle private_key
+        Some("ALSO-LEAKED2"), // tampered: try to smuggle passphrase
+        None,
+    );
+    assert!(new.get("auth_type").is_none(), "auth_type must be stripped on RDP");
+    assert!(new.get("private_key").is_none(), "private_key must be stripped on RDP");
+    assert!(new.get("passphrase").is_none(), "passphrase must be stripped on RDP");
+}
+
+/// Defensive: an existing row that somehow isn't a JSON object (legacy
+/// data corruption, manual SQL with wrong type) must not panic. The
+/// function falls back to building a fresh object from form input.
+#[test]
+fn test_compute_updated_handles_non_object_existing() {
+    let bogus = serde_json::Value::String("not-an-object".to_string());
+    let new = compute_updated_connection_config(
+        &bogus,
+        AssetType::Ssh,
+        Some("alice"),
+        Some("password"),
+        Some("PWD"),
+        None,
+        None,
+        None,
+    );
+    let obj = new.as_object().expect("fallback must produce a JSON object");
+    assert_eq!(obj.get("username").and_then(|v| v.as_str()), Some("alice"));
+    assert_eq!(obj.get("auth_type").and_then(|v| v.as_str()), Some("password"));
+    assert_eq!(obj.get("password").and_then(|v| v.as_str()), Some("PWD"));
+    // No host-key state to preserve in this degenerate case.
+    assert!(obj.get("ssh_host_key").is_none());
+}
+
+/// Username is option A: blank input keeps the existing JSON username.
+#[test]
+fn test_compute_updated_blank_username_keeps_existing() {
+    let existing = ssh_existing_full();
+    let new = compute_updated_connection_config(
+        &existing,
+        AssetType::Ssh,
+        Some("   "), // whitespace-only
+        Some("password"),
+        Some(""),
+        Some(""),
+        Some(""),
+        None,
+    );
+    assert_eq!(
+        new.get("username").and_then(|v| v.as_str()),
+        Some("alice"),
+        "whitespace-only username input must preserve stored value"
+    );
+}
