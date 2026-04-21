@@ -31,10 +31,13 @@ mod session_manager;
 
 use anyhow::{Context, Result};
 use error::SessionError;
-use ipc::{AccessRbacClient, AsyncIpcChannel};
+use ipc::AsyncIpcChannel;
 use secrecy::SecretString;
 use session::{SessionConfig, SshCredential, fetch_host_key};
 use session_manager::SessionManager;
+use shared::access_guard::{
+    AccessGuard, AccessGuardMetrics, AccessGuardWiring, PROTOCOL_SSH,
+};
 use shared::capsicum;
 use shared::ipc::{IpcChannel, recv_fd};
 use shared::messages::{ControlMessage, Message, ServiceStats};
@@ -43,9 +46,8 @@ use std::os::unix::io::{OwnedFd, RawFd};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tokio::sync::{Mutex, mpsc};
-use tokio::time::timeout;
 use tracing::{debug, error, info, warn};
 
 /// Service runtime state (shared across async tasks).
@@ -137,11 +139,11 @@ impl ServiceState {
         self.requests_failed.fetch_add(1, Ordering::SeqCst);
     }
 
-    fn increment_rbac_timeout(&self) {
-        self.rbac_recheck_timeouts.fetch_add(1, Ordering::SeqCst);
-        self.requests_failed.fetch_add(1, Ordering::SeqCst);
-    }
-
+    /// Read the cumulative count of RBAC re-check timeouts since boot.
+    /// Surfaced via Pong logs and on the Prometheus exporter once we wire
+    /// it up; kept on ServiceState rather than hidden inside AccessGuard
+    /// so SREs can grab it without an extra IPC round-trip.
+    #[allow(dead_code)] // observability hook; reachable from supervisor diagnostics
     fn rbac_timeout_count(&self) -> u64 {
         self.rbac_recheck_timeouts.load(Ordering::SeqCst)
     }
@@ -154,6 +156,45 @@ impl ServiceState {
             active_connections: active_sessions,
             pending_requests: 0,
         }
+    }
+}
+
+// Wire ServiceState into the shared AccessGuard so its grant/deny/timeout/
+// ipc-error counters land on the same atomics that feed our Pong stats.
+//
+// SECURITY/OBSERVABILITY: each variant lands on a distinct atomic so an
+// operator can tell "policy denied" from "vauban-access wedged" from "RBAC
+// IPC broken" by reading /metrics or the Pong log alone, without having
+// to grep raw logs.
+impl AccessGuardMetrics for ServiceState {
+    fn record_granted(&self) {
+        // No-op on the failed counter; the success path will eventually
+        // call `increment_processed` when the SSH session actually opens.
+    }
+
+    fn record_denied(&self) {
+        // Policy denial: still a "request failure" from the proxy's view
+        // (the client's session-open did not succeed) but we do NOT want
+        // to inflate the dedicated rbac_recheck_timeouts gauge -- that
+        // one signals "vauban-access health", not "user lacks rights".
+        self.requests_failed.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn record_timeout(&self) {
+        // Distinguished metric: a non-zero value means vauban-access is
+        // wedged or saturated. Operators MUST react (scale the access
+        // tier, bounce the dispatcher) rather than treating it as a
+        // routine policy denial.
+        self.rbac_recheck_timeouts.fetch_add(1, Ordering::SeqCst);
+        self.requests_failed.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn record_ipc_error(&self) {
+        // Transport-level failure (broken pipe, malformed reply). Same
+        // user-visible outcome as a timeout (fail-closed denial) but
+        // surfaces a different operational signal: the IPC pipe itself
+        // is broken, supervisor restart will likely recreate it.
+        self.requests_failed.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -238,27 +279,9 @@ async fn run_service() -> Result<()> {
         None
     };
 
-    // SECURITY: Mandatory access pipe to vauban-access. Without this client
-    // the proxy cannot re-verify SSH session opens, so we refuse to start
-    // (fail-closed boot) rather than silently degrading to "trust whatever
-    // vauban-web sent us". The supervisor wires `ProxySsh -> Access` in its
-    // TOPOLOGY and exports VAUBAN_ACCESS_IPC_READ / VAUBAN_ACCESS_IPC_WRITE.
-    let access_read_fd: RawFd = std::env::var("VAUBAN_ACCESS_IPC_READ")
-        .context(
-            "VAUBAN_ACCESS_IPC_READ not set - vauban-proxy-ssh requires an access IPC pipe \
-             (refusing to start; sessions cannot be authorised without it)",
-        )?
-        .parse()
-        .context("Invalid VAUBAN_ACCESS_IPC_READ")?;
-    let access_write_fd: RawFd = std::env::var("VAUBAN_ACCESS_IPC_WRITE")
-        .context(
-            "VAUBAN_ACCESS_IPC_WRITE not set - vauban-proxy-ssh requires an access IPC pipe \
-             (refusing to start; sessions cannot be authorised without it)",
-        )?
-        .parse()
-        .context("Invalid VAUBAN_ACCESS_IPC_WRITE")?;
-
     // SAFETY: We clear environment variables immediately after reading.
+    // Note: VAUBAN_ACCESS_IPC_READ / WRITE are consumed (and removed)
+    // inside AccessGuard::from_env below.
     unsafe {
         std::env::remove_var("VAUBAN_IPC_READ");
         std::env::remove_var("VAUBAN_IPC_WRITE");
@@ -268,8 +291,6 @@ async fn run_service() -> Result<()> {
         std::env::remove_var("VAUBAN_RECORDING_ENABLED");
         std::env::remove_var("VAUBAN_AUDIT_IPC_READ");
         std::env::remove_var("VAUBAN_AUDIT_IPC_WRITE");
-        std::env::remove_var("VAUBAN_ACCESS_IPC_READ");
-        std::env::remove_var("VAUBAN_ACCESS_IPC_WRITE");
     }
 
     // Create IPC channels
@@ -298,13 +319,26 @@ async fn run_service() -> Result<()> {
     let web_async =
         AsyncIpcChannel::new(web_channel).context("Failed to create async web channel")?;
 
-    // SECURITY: Initialise the Access RBAC client BEFORE entering the
-    // Capsicum sandbox so that any setup-time failure terminates the
-    // service (fail-closed boot). Once `process_incoming` is spawned, the
-    // client is ready to multiplex concurrent CheckAccessByUuid checks.
-    let access_client = AccessRbacClient::new(access_read_fd, access_write_fd)
-        .context("Failed to create access IPC client (RBAC re-check pipe)")?;
-    info!("Access RBAC client initialised");
+    // Initialise state up front so AccessGuard can borrow it as its
+    // metrics sink (each grant/deny/timeout/ipc-error lands on
+    // ServiceState atomics; see AccessGuardMetrics impl above).
+    let state = Arc::new(ServiceState::default());
+
+    // SECURITY: Initialise the AccessGuard BEFORE entering the Capsicum
+    // sandbox so that any setup-time failure (missing env, invalid fd)
+    // terminates the service (fail-closed boot). The shared module
+    // consumes VAUBAN_ACCESS_IPC_READ / WRITE here and removes them
+    // from the env. Returned wiring exposes the FDs for Capsicum and
+    // the Arc<AccessGuard> we share across per-session spawns.
+    let access_wiring: AccessGuardWiring =
+        AccessGuard::from_env(PROTOCOL_SSH, Arc::clone(&state) as Arc<dyn AccessGuardMetrics>)
+            .context(
+                "Failed to wire AccessGuard from env (VAUBAN_ACCESS_IPC_READ / \
+                 VAUBAN_ACCESS_IPC_WRITE) - vauban-proxy-ssh requires an access IPC pipe \
+                 (refusing to start; sessions cannot be authorised without it)",
+            )?;
+    let access_guard = Arc::clone(&access_wiring.guard);
+    info!("AccessGuard initialised (defense-in-depth RBAC re-check)");
 
     let audit_channel = audit_fds.map(|(r, w)| {
         let ch = unsafe { IpcChannel::from_raw_fds(r, w) };
@@ -314,15 +348,16 @@ async fn run_service() -> Result<()> {
 
     info!("Resources opened, preparing to enter sandbox");
 
-    // Collect IPC file descriptors for sandboxing (read/write pipes)
+    // Collect IPC file descriptors for sandboxing (read/write pipes).
+    // The AccessGuard FDs come from access_wiring.fds (shared module
+    // owns the env parsing now).
     let mut ipc_fds = vec![
         supervisor_read_fd,
         supervisor_write_fd,
         web_read_fd,
         web_write_fd,
-        access_read_fd,
-        access_write_fd,
     ];
+    ipc_fds.extend_from_slice(&access_wiring.fds);
     if let Some((r, w)) = audit_fds {
         ipc_fds.push(r);
         ipc_fds.push(w);
@@ -341,25 +376,16 @@ async fn run_service() -> Result<()> {
 
     info!("Entered Capsicum sandbox, starting main loop");
 
-    // Initialize state and session manager
-    let state = Arc::new(ServiceState::default());
+    // Initialize session manager (state was created above so AccessGuard
+    // could borrow it as its metrics sink).
     let sessions = Arc::new(SessionManager::new());
 
-    // SECURITY: Spawn the access RBAC dispatcher. Without this task the
-    // proxy would deadlock on every CheckAccessByUuid; surfacing the task's
-    // exit at error level lets ops detect that the service is now unable to
-    // authorise sessions (every check_access_by_uuid will hang on its
-    // oneshot receiver). We do NOT panic the runtime here -- the supervisor
-    // is responsible for restarting us.
-    {
-        let access_client_for_dispatch = Arc::clone(&access_client);
-        tokio::spawn(async move {
-            if let Err(e) = access_client_for_dispatch.process_incoming().await {
-                error!(error = %e, "Access RBAC dispatcher exited; future SSH session opens will fail-closed on timeout");
-            }
-        });
-        info!("Access RBAC dispatcher started");
-    }
+    // SECURITY: Spawn the AccessGuard dispatcher. Without this task,
+    // every authorize() call would hit RBAC_RECHECK_TIMEOUT (10s) and
+    // fail closed -- the proxy would still be safe but useless. The
+    // shared module logs at error level when the dispatcher exits, so
+    // operators can detect the degraded state without re-grepping logs.
+    let _dispatcher_handle = access_guard.spawn_dispatcher();
 
     let audit_tx: Option<mpsc::Sender<Message>> = audit_channel.map(|ch| {
         let (tx, mut rx) = mpsc::channel::<Message>(512);
@@ -387,7 +413,7 @@ async fn run_service() -> Result<()> {
         (web_tx, web_rx),
         fd_passing,
         audit_tx,
-        access_client,
+        access_guard,
     )
     .await
 }
@@ -401,7 +427,7 @@ async fn main_loop(
     web_mpsc: (mpsc::Sender<Message>, mpsc::Receiver<Message>),
     fd_passing: Option<Arc<FdPassingState>>,
     audit_tx: Option<mpsc::Sender<Message>>,
-    access_client: Arc<AccessRbacClient>,
+    access_guard: Arc<AccessGuard>,
 ) -> Result<()> {
     let (web_tx, mut web_rx) = web_mpsc;
     info!("Main event loop started");
@@ -480,7 +506,7 @@ async fn main_loop(
                             msg,
                             pending_connections.clone(),
                             audit_tx.clone(),
-                            Arc::clone(&access_client),
+                            Arc::clone(&access_guard),
                         ).await {
                             warn!(error = %e, "Error handling web message");
                             state.increment_failed();
@@ -564,7 +590,7 @@ async fn handle_web_message(
     msg: Message,
     pending_connections: Option<PendingConnections>,
     audit_tx: Option<mpsc::Sender<Message>>,
-    access_client: Arc<AccessRbacClient>,
+    access_guard: Arc<AccessGuard>,
 ) -> Result<()> {
     match msg {
         Message::SshSessionOpen {
@@ -675,107 +701,48 @@ async fn handle_web_message(
                 expected_host_key,
             };
 
-            // Spawn session creation in a separate task to avoid blocking the main loop.
-            // This allows the service to continue responding to heartbeats during
-            // potentially slow SSH connections AND during the defense-in-depth
-            // RBAC re-check (see below). If we did the re-check inline, any IPC
-            // hang against vauban-access would freeze the main loop, miss
-            // supervisor heartbeats, and trigger an unresponsive-restart.
+            // Spawn session creation in a separate task to avoid blocking
+            // the main loop. This allows the service to continue
+            // responding to heartbeats during potentially slow SSH
+            // connections AND during the defense-in-depth RBAC re-check.
+            // If we did the re-check inline, any IPC hang against
+            // vauban-access would freeze the main loop, miss supervisor
+            // heartbeats, and trigger an unresponsive-restart (see
+            // docs/runbooks/ipc_topology_debugging.md for the prod
+            // incident this design prevents).
             let sessions_clone = Arc::clone(&sessions);
             let state_clone = Arc::clone(&state);
             let response_tx_clone = response_tx.clone();
-            let access_client_clone = Arc::clone(&access_client);
+            let access_guard_clone = Arc::clone(&access_guard);
             let rbac_user = config.user_id.clone();
             let rbac_asset = config.asset_id.clone();
 
             tokio::spawn(async move {
-                // SECURITY: Defense-in-depth RBAC re-check.
+                // SECURITY: Defense-in-depth RBAC re-check via the shared
+                // AccessGuard. vauban-web has already evaluated
+                // authorisation before emitting SshSessionOpen, but we
+                // cannot blindly trust that gate -- a compromised or
+                // buggy web tier must not be able to single-handedly
+                // authorise an outbound SSH connection. AccessGuard
+                // enforces RBAC_RECHECK_TIMEOUT internally, increments
+                // the matching ServiceState atomic via the
+                // AccessGuardMetrics impl, and never returns Result.
                 //
-                // vauban-web has already evaluated authorisation before emitting
-                // SshSessionOpen, but we cannot blindly trust that gate -- a
-                // compromised or buggy web tier must not be able to single-
-                // handedly authorise an outbound SSH connection. Re-verify with
-                // vauban-access (the canonical policy holder) before doing
-                // anything credential-related.
-                //
-                // Hard timeout: if vauban-access does not respond within
-                // RBAC_RECHECK_TIMEOUT we fail closed. Without this guard a
-                // wedged access tier (dead pipe, saturated DB pool, code
-                // panic) would leave this task pending forever, leak the
-                // session slot, and never emit a SshSessionOpened response
-                // to the client.
-                //
-                // Fail-closed: any error path -- explicit policy denial,
-                // backend Error response, IPC transport failure, timeout --
-                // collapses to a generic "denied" SshSessionOpened reply.
-                // We never expose the distinction to the client because
-                // doing so would let a probe distinguish "asset exists but
-                // I can't reach it" from "asset doesn't exist"
-                // (information disclosure).
-                // Bumped from 5s to 10s after first soak: handle_check_access_by_uuid
-                // does 3 sequential DB queries on a current_thread runtime in
-                // vauban-access; under DB load the median is ~50ms but a p99
-                // tail of 1-2s is realistic. 10s leaves us comfortably below
-                // the supervisor's ~20s heartbeat threshold while still
-                // failing closed long before any user-visible spinner stalls
-                // forever. If rbac_recheck_timeouts ever climbs in prod,
-                // scale up vauban-access (multi-thread runtime / connection
-                // pool) rather than nudging this further up.
-                const RBAC_RECHECK_TIMEOUT: Duration = Duration::from_secs(10);
-                let rbac_outcome = timeout(
-                    RBAC_RECHECK_TIMEOUT,
-                    access_client_clone.check_access_by_uuid(&rbac_user, &rbac_asset, "ssh"),
-                )
-                .await;
-
-                let allowed = match rbac_outcome {
-                    Ok(Ok(true)) => {
-                        debug!(
-                            session_id = %session_id, user_id = %rbac_user, asset_id = %rbac_asset,
-                            "RBAC re-check granted SSH session"
-                        );
-                        true
-                    }
-                    Ok(Ok(false)) => {
-                        warn!(
-                            session_id = %session_id, user_id = %rbac_user, asset_id = %rbac_asset,
-                            "RBAC re-check denied SSH session (policy)"
-                        );
-                        false
-                    }
-                    Ok(Err(e)) => {
-                        error!(
-                            session_id = %session_id, user_id = %rbac_user, asset_id = %rbac_asset,
-                            error = %e,
-                            "RBAC re-check IPC error - denying fail-closed"
-                        );
-                        false
-                    }
-                    Err(_elapsed) => {
-                        state_clone.increment_rbac_timeout();
-                        error!(
-                            session_id = %session_id, user_id = %rbac_user, asset_id = %rbac_asset,
-                            timeout_secs = RBAC_RECHECK_TIMEOUT.as_secs(),
-                            cumulative_rbac_timeouts = state_clone.rbac_timeout_count(),
-                            "RBAC re-check timed out - denying fail-closed (vauban-access \
-                             may be wedged or saturated; check its peer attachment count \
-                             and DB pool health)"
-                        );
-                        // Already incremented requests_failed inside
-                        // increment_rbac_timeout(); skip the generic
-                        // increment_failed() in the !allowed branch below.
-                        let _ = response_tx_clone.send(Message::SshSessionOpened {
-                            request_id,
-                            session_id,
-                            success: false,
-                            error: Some("Access denied".to_string()),
-                        });
-                        return;
-                    }
-                };
-
-                if !allowed {
-                    state_clone.increment_failed();
+                // Fail-closed: any non-Granted variant collapses to the
+                // generic "Access denied" reply. We never expose the
+                // distinction (Denied / Timeout / BackendError) to the
+                // client because doing so would let a probe distinguish
+                // "asset exists but I can't reach it" from "asset
+                // doesn't exist" (information disclosure).
+                let decision = access_guard_clone
+                    .authorize(&rbac_user, &rbac_asset)
+                    .await;
+                if !decision.is_granted() {
+                    debug!(
+                        session_id = %session_id, user_id = %rbac_user,
+                        asset_id = %rbac_asset, ?decision,
+                        "RBAC re-check denied SSH session"
+                    );
                     let _ = response_tx_clone.send(Message::SshSessionOpened {
                         request_id,
                         session_id,
@@ -784,6 +751,10 @@ async fn handle_web_message(
                     });
                     return;
                 }
+                debug!(
+                    session_id = %session_id, user_id = %rbac_user, asset_id = %rbac_asset,
+                    "RBAC re-check granted SSH session"
+                );
 
                 match sessions_clone
                     .create_session(config, web_tx, audit_tx)
@@ -1122,46 +1093,65 @@ mod tests {
     // if any future change re-introduces the legacy "trust whatever
     // vauban-web sent" behaviour, ensuring the bypass identified in the
     // post-MFA security audit cannot silently come back.
+    //
+    // Most of the heavy lifting now lives in shared::access_guard (so
+    // vauban-proxy-rdp and future protocol proxies can share the exact
+    // same fail-closed semantics). The tests below focus on the WIRING
+    // inside this binary: env wiring, sandbox enrolment, dispatcher
+    // spawn, and the handler call site.
 
     #[test]
-    fn test_proxy_ssh_initialises_access_rbac_client() {
+    fn test_proxy_ssh_initialises_access_guard_from_env() {
         let source = prod_source();
         assert!(
-            source.contains("AccessRbacClient::new"),
-            "proxy-ssh must construct an AccessRbacClient at startup"
-        );
-        assert!(
-            source.contains("VAUBAN_ACCESS_IPC_READ")
-                && source.contains("VAUBAN_ACCESS_IPC_WRITE"),
-            "proxy-ssh must read access IPC fds from supervisor env vars"
+            source.contains("AccessGuard::from_env(PROTOCOL_SSH"),
+            "proxy-ssh boot must construct AccessGuard via shared::access_guard::AccessGuard::\
+             from_env(PROTOCOL_SSH, ...). The shared helper enforces the fail-closed boot \
+             contract (missing/invalid env -> error) and the env-removal SAFETY invariant; \
+             rolling our own here would risk drift from vauban-proxy-rdp."
         );
     }
 
     #[test]
     fn test_proxy_ssh_access_env_fail_closed_boot() {
         let source = prod_source();
+        // The shared helper attaches its own MissingEnvVar / InvalidEnvVar
+        // diagnostics. We additionally surface a context() string so that
+        // an SRE seeing the supervisor-side spawn failure can identify
+        // *which* peer pipe is missing without having to dig into the
+        // shared crate's error type.
         assert!(
-            source.contains("VAUBAN_ACCESS_IPC_READ not set"),
-            "proxy-ssh boot must fail with a clear error if the access IPC \
-             read fd is not provided (fail-closed boot, no degraded mode)"
+            source.contains("VAUBAN_ACCESS_IPC_READ")
+                && source.contains("VAUBAN_ACCESS_IPC_WRITE"),
+            "proxy-ssh boot must mention both VAUBAN_ACCESS_IPC_READ and \
+             VAUBAN_ACCESS_IPC_WRITE in its from_env context() so SREs can \
+             grep the failure without reading shared crate sources"
         );
         assert!(
-            source.contains("VAUBAN_ACCESS_IPC_WRITE not set"),
-            "proxy-ssh boot must fail with a clear error if the access IPC \
-             write fd is not provided (fail-closed boot, no degraded mode)"
+            source.contains("refusing to start"),
+            "proxy-ssh boot must explicitly state that it refuses to start \
+             without an access pipe (fail-closed boot, no degraded mode)"
         );
     }
 
     #[test]
-    fn test_proxy_ssh_access_env_vars_cleaned() {
+    fn test_proxy_ssh_access_env_vars_consumed_by_shared_module() {
+        // The shared::access_guard::from_env helper consumes (removes)
+        // VAUBAN_ACCESS_IPC_READ / WRITE from env after parsing them, so
+        // they cannot leak to children spawned later. We assert that
+        // proxy-ssh does NOT itself remove_var these (would be a double
+        // remove, harmless, but signals intent drift).
         let source = prod_source();
         assert!(
-            source.contains("remove_var(\"VAUBAN_ACCESS_IPC_READ\")"),
-            "proxy-ssh must clean VAUBAN_ACCESS_IPC_READ from env after read"
+            !source.contains("remove_var(\"VAUBAN_ACCESS_IPC_READ\")"),
+            "proxy-ssh must NOT remove VAUBAN_ACCESS_IPC_READ itself; the \
+             shared AccessGuard::from_env helper owns that step. Duplicating \
+             it here means someone is bypassing the shared contract."
         );
         assert!(
-            source.contains("remove_var(\"VAUBAN_ACCESS_IPC_WRITE\")"),
-            "proxy-ssh must clean VAUBAN_ACCESS_IPC_WRITE from env after read"
+            !source.contains("remove_var(\"VAUBAN_ACCESS_IPC_WRITE\")"),
+            "proxy-ssh must NOT remove VAUBAN_ACCESS_IPC_WRITE itself; the \
+             shared AccessGuard::from_env helper owns that step."
         );
     }
 
@@ -1169,8 +1159,11 @@ mod tests {
     fn test_proxy_ssh_access_fds_in_sandbox() {
         let source = prod_source();
         assert!(
-            source.contains("access_read_fd") && source.contains("access_write_fd"),
-            "Access RBAC FDs must be retained inside the Capsicum ipc_fds set"
+            source.contains("ipc_fds.extend_from_slice(&access_wiring.fds)"),
+            "Access pipe FDs returned by AccessGuard::from_env (in \
+             access_wiring.fds) MUST be enrolled in the Capsicum ipc_fds \
+             set; otherwise the shared dispatcher will be killed on the \
+             first read after sandbox entry."
         );
     }
 
@@ -1178,33 +1171,33 @@ mod tests {
     fn test_proxy_ssh_access_dispatcher_spawned() {
         let source = prod_source();
         assert!(
-            source.contains(".process_incoming()"),
-            "Access RBAC client dispatcher must be spawned (process_incoming) \
-             so concurrent CheckAccessByUuid responses can be demultiplexed"
+            source.contains("access_guard.spawn_dispatcher()"),
+            "Access RBAC dispatcher MUST be spawned via \
+             access_guard.spawn_dispatcher() exactly once at boot. Without \
+             this call, every authorize() invocation will hit \
+             RBAC_RECHECK_TIMEOUT and fail closed (the proxy stays safe but \
+             becomes useless)."
         );
     }
 
     #[test]
-    fn test_proxy_ssh_session_open_calls_rbac_recheck() {
+    fn test_proxy_ssh_session_open_calls_authorize() {
         let source = prod_source();
         // The whole-file scope is fine here: there is only one call site
-        // for check_access_by_uuid in production code (the SshSessionOpen
-        // handler). If a future refactor ever moves it elsewhere, this
-        // assertion plus the dispatcher-spawn one (above) still guarantee
-        // that the call exists somewhere reachable from main_loop.
+        // for `.authorize(` in production code (the SshSessionOpen
+        // handler). If a future refactor ever moves it elsewhere, the
+        // dispatcher-spawn check above still guarantees the wiring is
+        // alive somewhere reachable from main_loop.
         assert!(
-            source.contains(".check_access_by_uuid(&rbac_user, &rbac_asset, \"ssh\")"),
+            source.contains(".authorize(&rbac_user, &rbac_asset)"),
             "SshSessionOpen handler MUST call \
-             check_access_by_uuid(&rbac_user, &rbac_asset, \"ssh\") inside \
+             access_guard.authorize(&rbac_user, &rbac_asset).await inside \
              the spawned task (defense-in-depth RBAC re-check); see security \
              audit finding #6"
         );
-        // Policy-deny, IPC-error, and timeout branches must ALL collapse
-        // to the same generic message so that probing cannot distinguish
-        // "user lacks ssh on this asset" from "RBAC service is down" or
-        // "RBAC service is hung". One literal in the spawn body covers
-        // every fail-closed path, but we still want at least one
-        // occurrence reachable from this handler.
+        // Policy-deny, IPC-error, and timeout branches all collapse to
+        // the same generic message inside `if !decision.is_granted()`.
+        // We expect exactly one occurrence in the SshSessionOpen handler.
         let access_denied_count = source.matches("\"Access denied\"").count();
         assert!(
             access_denied_count >= 1,
@@ -1215,24 +1208,27 @@ mod tests {
     }
 
     #[test]
-    fn test_proxy_ssh_rbac_recheck_runs_inside_spawn() {
-        // SECURITY / LIVENESS: the RBAC re-check MUST live inside the
+    fn test_proxy_ssh_authorize_runs_inside_spawn() {
+        // SECURITY / LIVENESS: the authorize() call MUST live inside the
         // `tokio::spawn` block that drives create_session, NOT inline in
-        // the select! arm. If it were inline, an unresponsive vauban-access
-        // (dead pipe, saturated DB pool, code panic) would freeze the
-        // main_loop, miss supervisor heartbeats, and trigger an
-        // unresponsive-restart. That regression actually shipped once;
-        // this guard prevents it from happening again.
+        // the select! arm. If it were inline, an unresponsive
+        // vauban-access (dead pipe, saturated DB pool, code panic) would
+        // freeze the main_loop, miss supervisor heartbeats, and trigger
+        // an unresponsive-restart. That regression actually shipped
+        // once; this guard prevents it from happening again. The hard
+        // timeout itself is enforced inside shared::access_guard
+        // (RBAC_RECHECK_TIMEOUT) and tested there; we only check the
+        // call-site discipline here.
         let source = prod_source();
         let spawn_idx = source
             .find("tokio::spawn(async move {")
             .expect("SshSessionOpen handler must spawn create_session in a task");
         let check_idx = source
-            .find(".check_access_by_uuid(&rbac_user, &rbac_asset, \"ssh\")")
-            .expect("RBAC re-check call site must exist");
+            .find(".authorize(&rbac_user, &rbac_asset)")
+            .expect("AccessGuard.authorize call site must exist");
         assert!(
             check_idx > spawn_idx,
-            "RBAC re-check MUST run inside the tokio::spawn body (after the \
+            "AccessGuard.authorize MUST run inside the tokio::spawn body (after the \
              `tokio::spawn(async move {{` line) so that a slow/wedged \
              vauban-access cannot block the main loop and trigger a \
              supervisor unresponsive-restart"
@@ -1240,30 +1236,24 @@ mod tests {
     }
 
     #[test]
-    fn test_proxy_ssh_rbac_recheck_has_hard_timeout() {
-        // SECURITY / LIVENESS: without a timeout, a hung vauban-access
-        // would leave the spawned task pending forever, leaking the
-        // session slot and never returning a SshSessionOpened response
-        // to the client (front-end spinner forever). Enforce a hard
-        // bound + fail-closed.
+    fn test_proxy_ssh_metrics_wired_to_access_guard() {
+        // ServiceState implements AccessGuardMetrics so that grant /
+        // deny / timeout / ipc-error counters end up on the same atomics
+        // that feed the Pong stats. If anyone removes the impl block,
+        // operators lose visibility into vauban-access health from the
+        // SSH proxy's standpoint.
         let source = prod_source();
         assert!(
-            source.contains("RBAC_RECHECK_TIMEOUT")
-                && source.contains("Duration::from_secs(10)"),
-            "RBAC re-check MUST be wrapped in a hard timeout \
-             (RBAC_RECHECK_TIMEOUT = Duration::from_secs(10)) with fail-closed \
-             on Elapsed; see post-incident hardening note"
+            source.contains("impl AccessGuardMetrics for ServiceState"),
+            "ServiceState MUST implement AccessGuardMetrics so the shared \
+             AccessGuard's grant/deny/timeout/ipc-error counters feed our \
+             ServiceStats. Removing this impl breaks operability."
         );
         assert!(
-            source.contains("rbac_recheck_timeouts") && source.contains("increment_rbac_timeout"),
-            "RBAC re-check timeouts MUST be counted in a dedicated atomic so \
-             operators can distinguish 'access wedged' from 'policy denied' \
-             without re-grepping logs; see ServiceState::rbac_recheck_timeouts"
-        );
-        assert!(
-            source.contains("RBAC re-check timed out - denying fail-closed"),
-            "RBAC re-check timeout branch MUST log explicitly and fall through \
-             to the generic Access-denied reply (fail-closed)"
+            source.contains("rbac_recheck_timeouts.fetch_add"),
+            "ServiceState::record_timeout MUST increment rbac_recheck_timeouts \
+             (the dedicated atomic) so SREs can distinguish 'access wedged' \
+             from 'policy denied' from the Pong stats alone."
         );
     }
 

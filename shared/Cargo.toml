@@ -21,9 +21,27 @@ zeroize.workspace = true
 # Binary serialization for IPC
 bincode = { version = "2.0", features = ["serde"] }
 
+# Optional: only pulled in by services that need the AccessGuard module
+# (every protocol proxy: vauban-proxy-ssh, vauban-proxy-rdp, future
+# vauban-proxy-vnc, etc.). Crates that only consume the IPC types and
+# Capsicum wrappers (vauban-vault, vauban-audit, vauban-auth) MUST stay
+# tokio-free, so this is gated behind the `access-guard` feature.
+tokio = { workspace = true, optional = true }
+
+[features]
+default = []
+# Enables the shared::access_guard module (defense-in-depth RBAC re-check
+# against vauban-access). Requires a tokio runtime in the consuming
+# binary. Activate this feature in every protocol proxy that opens
+# upstream sessions on behalf of a user.
+access-guard = ["dep:tokio"]
+
 # Capsicum bindings for FreeBSD
 [target.'cfg(target_os = "freebsd")'.dependencies]
 capsicum = "0.4"
 
 [dev-dependencies]
 tempfile = "3"
+# AccessGuard tests need real tokio + nix pipes. Keep this in dev-deps
+# so a default-feature build of the consumer doesn't pay for it.
+tokio = { workspace = true, features = ["test-util", "macros", "rt"] }

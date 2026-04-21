@@ -22,4 +22,11 @@ pub mod ipc;
 pub mod messages;
 pub mod totp;
 
+// Defense-in-depth RBAC re-check helper. Pulled in by every protocol
+// proxy (vauban-proxy-ssh, vauban-proxy-rdp, ...) that opens upstream
+// sessions on behalf of a user. Behind a feature flag because it brings
+// in a tokio dependency that vault/audit/auth must not pay for.
+#[cfg(feature = "access-guard")]
+pub mod access_guard;
+
 pub use messages::{ControlMessage, Message, ServiceStats};
