@@ -43,7 +43,12 @@ Vauban provides secure access to both SSH and RDP targets. While SSH sessions st
 
 ### 1.3 Scope
 
-This document covers the internal architecture of the RDP session subsystem spanning three crates: `vauban-proxy-rdp` (RDP protocol and encoding), `vauban-web` (WebSocket relay and IPC client), and the frontend Alpine.js component (canvas rendering and input capture). It is a companion to the [Privilege Separation Architecture](Vauban_Privsep_Architecture_EN(1.1).md) which describes the overall system design.
+This document covers the internal architecture of the RDP session subsystem spanning three crates: `vauban-proxy-rdp` (RDP protocol and encoding), `vauban-web` (WebSocket relay and IPC client), and the frontend Alpine.js component (canvas rendering and input capture). It is a companion to:
+
+- [Privilege Separation Architecture](Vauban_Privsep_Architecture_EN(1.2).md) — overall system design (pipe topology, Capsicum sandboxing, supervisor)
+- [IAM Architecture](Vauban_IAM_Architecture_EN(1.0).md) — Casbin RBAC, instance-level access rules, JIT approval workflow
+- [AccessGuard Architecture](Vauban_AccessGuard_Architecture_EN(1.0).md) — defense-in-depth RBAC re-check module (`shared::access_guard`) consumed by `vauban-proxy-rdp` on every `RdpSessionOpen` (see §4.1 and §11.5)
+- [Runbook: Debugging the IPC Pipe Topology](../runbooks/ipc_topology_debugging.md) — operational triage for `rbac_recheck_timeouts` and `proxy-rdp <-> access` failures
 
 ---
 
@@ -197,10 +202,24 @@ flowchart LR
 
 ### 4.1 End-to-End Flow
 
+> **Defense-in-depth note.** Since the AccessGuard rollout (April 2026,
+> commit `feat(proxy-rdp): wire AccessGuard for defense-in-depth RBAC
+> re-check`), `vauban-proxy-rdp` independently re-checks authorisation
+> against `vauban-access` (via `AccessRequest::CheckAccessByUuid`)
+> before opening any upstream RDP session. The re-check runs **inside
+> a `tokio::spawn` body**, with a hard 10-second timeout, and is
+> implemented in the shared `shared::access_guard` module — the
+> identical code path also gates `vauban-proxy-ssh` and every future
+> proxy. A verdict from `vauban-web` is necessary but not sufficient
+> for the proxy to open the upstream session. Full module
+> documentation:
+> [Vauban_AccessGuard_Architecture_EN(1.0).md](Vauban_AccessGuard_Architecture_EN(1.0).md).
+
 ```mermaid
 sequenceDiagram
     participant U as User Browser
     participant W as vauban-web
+    participant AC as vauban-access
     participant S as vauban-supervisor
     participant P as vauban-proxy-rdp
     participant V as vauban-vault
@@ -208,6 +227,10 @@ sequenceDiagram
 
     U->>W: Click "Connect" on RDP asset
     W->>W: Load asset from PostgreSQL
+
+    Note over W,AC: Layer 1 — UI-side authorisation gate
+    W->>AC: AccessRequest::CheckAccess(user_id, group_id, "rdp")
+    AC-->>W: AccessChecked(allowed: true, ...)
 
     Note over W,V: Credential Decryption
     W->>V: VaultDecrypt(domain="credentials", ciphertext)
@@ -221,12 +244,24 @@ sequenceDiagram
     S->>W: TcpConnectResponse(success)
 
     Note over W,P: Session Setup
-    W->>P: RdpSessionOpen(session_id, username, password, ...)
-    P->>P: Retrieve pre-connected FD
-    P->>T: RDP Handshake (TLS + CredSSP)
-    T->>P: Session Active (desktop 1280x720)
-    P->>W: RdpSessionOpened(success, 1280, 720)
-    W->>U: Redirect to /sessions/rdp/{id}
+    W->>P: RdpSessionOpen(session_id, user_uuid, asset_uuid, username, password, ...)
+
+    rect rgb(255, 240, 220)
+    Note over P,AC: Layer 2 — Defense-in-depth RBAC re-check (shared::access_guard, inside tokio::spawn, 10s hard timeout, fail-closed)
+    P->>AC: AccessRequest::CheckAccessByUuid(user_uuid, asset_uuid, "rdp")
+    AC-->>P: AccessChecked(allowed: true) | Error | (no reply -> Timeout)
+    end
+
+    alt AccessGuard verdict != Granted
+        P-->>W: RdpSessionOpened(success=false, error="Access denied")
+        W-->>U: Flash error / 403
+    else AccessGuard verdict == Granted
+        P->>P: Retrieve pre-connected FD
+        P->>T: RDP Handshake (TLS + CredSSP)
+        T->>P: Session Active (desktop 1280x720)
+        P->>W: RdpSessionOpened(success, 1280, 720)
+        W->>U: Redirect to /sessions/rdp/{id}
+    end
 
     Note over U,W: WebSocket Established
     U->>W: WebSocket connect wss://host/ws/rdp/{id}
@@ -465,7 +500,7 @@ sequenceDiagram
 
 ### 8.1 RDP Message Types
 
-All messages are serialized using **bincode** and sent over Unix pipes (see [Privsep Architecture, Section 4](Vauban_Privsep_Architecture_EN(1.1).md#4-ipc-protocol)):
+All messages are serialized using **bincode** and sent over Unix pipes (see [Privsep Architecture, Section 4](Vauban_Privsep_Architecture_EN(1.2).md#4-ipc-protocol)):
 
 ```mermaid
 flowchart LR
@@ -707,6 +742,14 @@ After entering capability mode, `vauban-proxy-rdp` can only:
 | Communicate with supervisor | Yes | Pre-opened IPC pipe |
 | Communicate with vault | Yes | Pre-opened IPC pipe |
 | Communicate with audit | Yes | Pre-opened IPC pipe |
+| Communicate with vauban-access (RBAC re-check) | Yes | Pre-opened IPC pipe enrolled via `AccessGuardWiring::fds` (see §11.5) |
+
+The RBAC re-check pipe FDs are obtained from
+`shared::access_guard::AccessGuard::from_env(...)` BEFORE the sandbox
+seals, then enrolled via `AccessGuardWiring::fds` into
+`setup_service_sandbox_extended(...)`. After `cap_enter()` the proxy
+can read/write the access pipe but cannot acquire any new resource —
+the dispatcher and `authorize()` calls run entirely on pre-opened FDs.
 
 ### 11.4 Environment Variable Hygiene
 
@@ -720,10 +763,43 @@ unsafe {
     std::env::remove_var("VAUBAN_WEB_IPC_WRITE");
     std::env::remove_var("VAUBAN_FD_PASSING_SOCKET");
     std::env::remove_var("VAUBAN_RDP_VIDEO_BITRATE_BPS");
+    std::env::remove_var("VAUBAN_ACCESS_IPC_READ");   // consumed by AccessGuard::from_env
+    std::env::remove_var("VAUBAN_ACCESS_IPC_WRITE");  // consumed by AccessGuard::from_env
 }
 ```
 
 This prevents environment inspection attacks (e.g., `/proc/PID/environ` on Linux, `ps eww` on FreeBSD).
+
+### 11.5 Defense-in-Depth RBAC Re-check (`shared::access_guard`)
+
+`vauban-proxy-rdp` does **not** trust the verdict from `vauban-web` to
+authorise an upstream RDP connection. On every `RdpSessionOpen`, it
+issues an independent `AccessRequest::CheckAccessByUuid` directly to
+`vauban-access` via the shared `shared::access_guard` module:
+
+| Property | Value |
+|----------|-------|
+| Module | `shared::access_guard` (feature `access-guard`) |
+| Constructor | `AccessGuard::from_env(PROTOCOL_RDP, state)` (boot fail-closed if env var missing) |
+| Hot-path call | `access_guard_clone.authorize(&user_uuid, &asset_uuid).await` |
+| Wraps in | `tokio::spawn` (the proxy's main loop must NEVER block on the re-check) |
+| Hard timeout | 10 s (`shared::access_guard::RBAC_RECHECK_TIMEOUT`) |
+| Return type | `AccessDecision` — never `Result` (no `?`-fail-open path) |
+| Variants | `Granted` (proceed) \| `Denied` \| `Timeout` \| `BackendError(_)` (all collapse to `"Access denied"` to the user) |
+| Metrics callbacks | `record_granted` / `record_denied` / `record_timeout` / `record_ipc_error` on `ServiceState` (see `impl AccessGuardMetrics for ServiceState` in `vauban-proxy-rdp/src/main.rs`) |
+
+The pattern is **identical** to `vauban-proxy-ssh`'s wiring; the only
+differences are `PROTOCOL_RDP` vs `PROTOCOL_SSH` and the response
+message variant (`RdpSessionOpened { success: false, error: Some("Access denied") }`
+vs `SshSessionOpened`).
+
+The full module API, threat model, the RAII pending-map fix that
+prevents resource leaks under timeout / cancellation, the type-system
+invariants, and the 30+ test inventory are documented in
+[Vauban_AccessGuard_Architecture_EN(1.0).md](Vauban_AccessGuard_Architecture_EN(1.0).md).
+Operational triage of `rbac_recheck_timeouts` and the `proxy-rdp <->
+access` pipe is in
+[docs/runbooks/ipc_topology_debugging.md](../runbooks/ipc_topology_debugging.md).
 
 ---
 

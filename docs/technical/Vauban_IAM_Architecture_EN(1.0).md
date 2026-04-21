@@ -62,6 +62,8 @@ The migration was driven by three goals:
 - [Vauban_Privsep_Architecture_EN(1.2).md](Vauban_Privsep_Architecture_EN(1.2).md) -- Pipe topology, Capsicum sandboxing, supervisor architecture
 - [Vauban_Vault_Architecture_EN(1.0).md](Vauban_Vault_Architecture_EN(1.0).md) -- Secrets management (MFA secrets, credential encryption)
 - [Vauban_RDP_Architecture_EN(1.0).md](Vauban_RDP_Architecture_EN(1.0).md) -- RDP proxy implementation
+- [Vauban_AccessGuard_Architecture_EN(1.0).md](Vauban_AccessGuard_Architecture_EN(1.0).md) -- Defense-in-depth RBAC re-check (`shared::access_guard`) shared by every proxy
+- [docs/runbooks/ipc_topology_debugging.md](../runbooks/ipc_topology_debugging.md) -- Operational runbook for the proxy <-> access pipe / RBAC re-check failure mode
 
 ---
 
@@ -135,10 +137,10 @@ Both services participate in the supervisor's pipe topology:
 | `web` <-> `auth` | Bidirectional | Implemented | Password verify/hash requests |
 | `web` <-> `access` | Bidirectional | Implemented | RBAC checks + access rule CRUD + access evaluation |
 | `auth` <-> `access` | Bidirectional | Future | Role verification during authentication |
-| `proxy-ssh` <-> `access` | Bidirectional | Future | Session authorization before SSH connect |
-| `proxy-rdp` <-> `access` | Bidirectional | Future | Session authorization before RDP connect |
+| `proxy-ssh` <-> `access` | Bidirectional | **Implemented** (defense-in-depth re-check) | Session authorization re-check before SSH connect — see [Vauban_AccessGuard_Architecture_EN(1.0).md](Vauban_AccessGuard_Architecture_EN(1.0).md) |
+| `proxy-rdp` <-> `access` | Bidirectional | **Implemented** (defense-in-depth re-check) | Session authorization re-check before RDP connect — see [Vauban_AccessGuard_Architecture_EN(1.0).md](Vauban_AccessGuard_Architecture_EN(1.0).md) |
 
-> **Note:** Currently, only the `web <-> auth` and `web <-> access` pipes are implemented. The proxy and cross-service pipes are planned for a future version. Proxy services currently rely on `vauban-web` to perform access checks before brokering connections.
+> **Defense-in-depth model.** Both proxies (`vauban-proxy-ssh` and `vauban-proxy-rdp`) independently re-check authorization against `vauban-access` (via `AccessRequest::CheckAccessByUuid`) before opening any upstream session, regardless of any verdict already produced by `vauban-web`. The shared module `shared::access_guard` factorises this gate so every current and future proxy (VNC, industrial protocols) consumes the same fail-closed code path. A compromised or buggy `vauban-web` therefore cannot grant sessions that the authoritative `vauban-access` would deny. The complete API, threat model, RAII pending-map fix, type-system invariants, and 30+ test inventory are documented in [Vauban_AccessGuard_Architecture_EN(1.0).md](Vauban_AccessGuard_Architecture_EN(1.0).md).
 
 ---
 
@@ -1529,7 +1531,7 @@ Authorization is enforced at multiple layers:
 
 1. **Web middleware**: RBAC check via `AccessIpcClient::check_permission()` before handler execution
 2. **Web handler**: Instance-level access check via `AccessIpcClient::check_access()` before session creation
-3. **Proxy service**: Independent access check via direct IPC to `vauban-access` before protocol handshake
+3. **Proxy service**: Independent re-check via the shared `shared::access_guard` module — `AccessGuard::authorize()` issues `AccessRequest::CheckAccessByUuid` directly to `vauban-access` from inside a `tokio::spawn` body with a 10-second hard timeout, fails closed on every non-Granted variant (Denied / Timeout / BackendError), and runs in **every** proxy (`vauban-proxy-ssh`, `vauban-proxy-rdp`, future VNC / industrial). A compromised `vauban-web` therefore cannot grant sessions that the authoritative `vauban-access` would deny. Full module documentation: [Vauban_AccessGuard_Architecture_EN(1.0).md](Vauban_AccessGuard_Architecture_EN(1.0).md).
 4. **Database**: Row-level constraints (UNIQUE, FK, NOT NULL) prevent invalid data, plus issue-specific structural invariants such as `auth_sessions` per-device uniqueness (§7.6) and the asset irreversible-delete contract — partial unique index, CHECK constraint, BEFORE UPDATE trigger (§7.7)
 
 ### 12.3 Fail-Closed Behavior
@@ -1539,6 +1541,9 @@ Authorization is enforced at multiple layers:
 | `vauban-auth` unreachable | Login fails (password cannot be verified) |
 | `vauban-access` unreachable (RBAC) | Release: all actions denied; Debug: all actions allowed |
 | `vauban-access` unreachable (access rules) | Connection denied (fail-closed) |
+| `vauban-access` silent / wedged at proxy re-check | `AccessGuard` raises `AccessDecision::Timeout` after 10 s, proxy returns `"Access denied"` to the client, `rbac_recheck_timeouts` counter increments — see [runbook](../runbooks/ipc_topology_debugging.md) |
+| `vauban-access` ships an unknown `AccessResponse` variant on the re-check pipe | `AccessGuard` collapses to `AccessDecision::Denied` (fail-closed); structurally tested |
+| `vauban-access` replies after the proxy already timed out, OR forges a `request_id` | Dispatcher drops the orphan response; the late reply cannot contaminate any subsequent `authorize()` call |
 | Database connection lost in `vauban-access` | `AccessResponse::Error` returned; web shows error page |
 | Invalid Casbin policy file | Service fails to start; supervisor does not respawn indefinitely |
 
@@ -1865,6 +1870,14 @@ sequenceDiagram
 
 ## Appendix B: Complete SSH Connection Authorization Flow
 
+This flow now includes the **defense-in-depth RBAC re-check** performed
+by `vauban-proxy-ssh` against `vauban-access` via the shared
+`shared::access_guard` module (see
+[Vauban_AccessGuard_Architecture_EN(1.0).md](Vauban_AccessGuard_Architecture_EN(1.0).md)
+for the API, threat model, and tests). The re-check is independent of
+the UI-side gate — a verdict from `vauban-web` is necessary but not
+sufficient for the proxy to open the upstream session.
+
 ```mermaid
 sequenceDiagram
     participant U as User Browser
@@ -1877,7 +1890,7 @@ sequenceDiagram
 
     U->>W: Click "Connect SSH" on asset (asset_id, group_id)
 
-    Note over W,AC: Instance-level access check
+    Note over W,AC: Layer 1 — UI-side instance-level access check
     W->>AC: AccessRequest::CheckAccess(user_id, group_id, "ssh")
     AC->>W: AccessChecked(allowed: true, require_mfa: false)
 
@@ -1892,14 +1905,42 @@ sequenceDiagram
     S->>W: TcpConnectResponse(success)
 
     Note over W,P: SSH session setup
-    W->>P: SshSessionOpen(session_id, credentials, host_key)
-    P->>V: VaultGetCredential(asset_id)
-    V->>P: VaultCredentialResponse(ssh_key)
-    P->>T: SSH handshake (over pre-connected socket)
-    P->>W: SshSessionOpened(success)
+    W->>P: SshSessionOpen(session_id, user_uuid, asset_uuid, host_key)
 
-    W->>U: Redirect to /sessions/terminal/{id}
+    rect rgb(255, 240, 220)
+    Note over P,AC: Layer 2 — Defense-in-depth RBAC re-check (shared::access_guard, in tokio::spawn, 10s hard timeout)
+    P->>AC: AccessRequest::CheckAccessByUuid(user_uuid, asset_uuid, "ssh")
+    AC->>P: AccessChecked(allowed: true) | Error | (no reply -> Timeout)
+    end
+
+    alt AccessGuard verdict != Granted
+        P->>W: SshSessionOpened(success=false, error="Access denied")
+        W->>U: Flash error / 403
+    else AccessGuard verdict == Granted
+        P->>V: VaultGetCredential(asset_id)
+        V->>P: VaultCredentialResponse(ssh_key)
+        P->>T: SSH handshake (over pre-connected socket)
+        P->>W: SshSessionOpened(success=true)
+        W->>U: Redirect to /sessions/terminal/{id}
+    end
 ```
+
+> **Why two checks for the same policy?** Layer 1 gates the UI (no
+> useless TCP brokering for denied users; correct redirects). Layer 2
+> is the authoritative gate — a compromised `vauban-web` cannot
+> instruct the proxy to open a session that `vauban-access` would
+> deny. The same `access_rules` table answers both questions; there is
+> no historical superuser/staff bypass on either layer (see
+> [docs/runbooks/ipc_topology_debugging.md §6](../runbooks/ipc_topology_debugging.md)
+> for the bootstrap procedure).
+>
+> **RDP follows the identical pattern.** Replace `vauban-proxy-ssh` ->
+> `vauban-proxy-rdp`, `SshSessionOpen` -> `RdpSessionOpen`,
+> `SshSessionOpened` -> `RdpSessionOpened`, and `protocol = "ssh"` ->
+> `protocol = "rdp"`. The `shared::access_guard` module is
+> protocol-agnostic by design — see
+> [Vauban_AccessGuard_Architecture_EN(1.0).md §9](Vauban_AccessGuard_Architecture_EN(1.0).md)
+> for the cookbook to wire any future proxy (VNC, Modbus, OPC-UA, ...).
 
 ---
 

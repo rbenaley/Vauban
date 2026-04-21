@@ -64,6 +64,9 @@ Vauban consists of 8 processes:
 
 - [Vauban_RDP_Architecture_EN(1.0).md](Vauban_RDP_Architecture_EN(1.0).md) -- RDP implementation details (H.264 encoding, WebCodecs, dynamic resolution, security design)
 - [Vauban_Vault_Architecture_EN(1.0).md](Vauban_Vault_Architecture_EN(1.0).md) -- Vault secrets management and HSM integration
+- [Vauban_IAM_Architecture_EN(1.0).md](Vauban_IAM_Architecture_EN(1.0).md) -- Identity & access management (`vauban-auth`, `vauban-access`, Casbin RBAC, instance-level access rules, JIT)
+- [Vauban_AccessGuard_Architecture_EN(1.0).md](Vauban_AccessGuard_Architecture_EN(1.0).md) -- Defense-in-depth RBAC re-check module (`shared::access_guard`) consumed by every proxy on the `proxy-* <-> access` pipes
+- [docs/runbooks/ipc_topology_debugging.md](../runbooks/ipc_topology_debugging.md) -- Operational runbook for the IPC topology / RBAC re-check failure mode
 
 ### 2.2 Architecture Diagram
 
@@ -164,10 +167,10 @@ Services communicate directly via Unix pipes in a partial mesh topology. This av
 | `web` | `proxy-rdp` | RDP session data (bidirectional) |
 | `auth` | `access` | Role verification during auth |
 | `auth` | `vault` | LDAP/OIDC credentials |
-| `proxy-ssh` | `access` | Session authorization |
+| `proxy-ssh` | `access` | Defense-in-depth RBAC re-check (`shared::access_guard`, see §3.5) |
 | `proxy-ssh` | `vault` | SSH key injection |
 | `proxy-ssh` | `audit` | Session recording |
-| `proxy-rdp` | `access` | Session authorization |
+| `proxy-rdp` | `access` | Defense-in-depth RBAC re-check (`shared::access_guard`, see §3.5) |
 | `proxy-rdp` | `vault` | Windows credentials |
 | `proxy-rdp` | `audit` | Video capture |
 | `web` | `vault` | Encrypt/decrypt secrets |
@@ -215,6 +218,59 @@ for conn in TOPOLOGY {
     pipes.insert((conn.from, conn.to), (from_channel, to_channel));
 }
 ```
+
+### 3.5 Shared Defense-in-Depth Gate (`shared::access_guard`)
+
+The `proxy-ssh -> access` and `proxy-rdp -> access` edges in the
+matrix above are **not** consumed ad-hoc by each proxy. They are
+funneled through a single shared, feature-gated module —
+`shared::access_guard` — that every current and future proxy (VNC,
+industrial protocols) MUST use to re-check authorization against
+`vauban-access` before opening any upstream session, regardless of
+any verdict already produced by `vauban-web`.
+
+```mermaid
+flowchart LR
+    Sup[vauban-supervisor]
+    SSH["vauban-proxy-ssh<br/>(uses shared::access_guard)"]
+    RDP["vauban-proxy-rdp<br/>(uses shared::access_guard)"]
+    Future["future proxies (VNC, Modbus, ...)<br/>(uses shared::access_guard)"]
+    Acc[vauban-access]
+
+    Sup --|"VAUBAN_ACCESS_IPC_{READ,WRITE}<br/>per-proxy"|--> SSH
+    Sup --|"VAUBAN_ACCESS_IPC_{READ,WRITE}<br/>per-proxy"|--> RDP
+    Sup --|"VAUBAN_ACCESS_IPC_{READ,WRITE}<br/>per-proxy"|--> Future
+    SSH --|"AccessRequest::CheckAccessByUuid<br/>(via shared::access_guard, 10s timeout, fail-closed)"|--> Acc
+    RDP --|"AccessRequest::CheckAccessByUuid<br/>(via shared::access_guard, 10s timeout, fail-closed)"|--> Acc
+    Future --|"AccessRequest::CheckAccessByUuid<br/>(via shared::access_guard, 10s timeout, fail-closed)"|--> Acc
+```
+
+Key contracts owned by the module:
+
+- **`AccessGuard::from_env(protocol, metrics)`** — fail-closed boot;
+  refuses to start the proxy if `VAUBAN_ACCESS_IPC_{READ,WRITE}` are
+  missing or invalid.
+- **`AccessGuardWiring`** — `#[must_use]` bundle carrying the FDs to
+  enrol in Capsicum and the `Arc<AccessGuard>` to share across
+  per-session spawns.
+- **`AccessGuard::spawn_dispatcher()`** — single background task that
+  demultiplexes responses by `request_id` (with RAII cleanup of the
+  pending map on every exit path: success, timeout, caller-cancel,
+  send-error).
+- **`AccessGuard::authorize(user_uuid, asset_uuid) -> AccessDecision`**
+  — single hot-path entry point. NEVER returns `Result` (no `?`-fail-
+  open). Hard 10 s timeout (`RBAC_RECHECK_TIMEOUT`). Increments
+  exactly one of four metrics callbacks per call.
+- **`AccessDecision`** — 4-variant enum (`Granted | Denied | Timeout |
+  BackendError`) with **no `Default` impl** so a forgotten gate cannot
+  silently authorise.
+
+The full API, threat model, RAII pending-map fix, type-system
+invariants, 30+ test inventory, and per-proxy wiring cookbook are
+documented in
+[Vauban_AccessGuard_Architecture_EN(1.0).md](Vauban_AccessGuard_Architecture_EN(1.0).md).
+Operational triage of the `proxy-* <-> access` failure mode is in
+[docs/runbooks/ipc_topology_debugging.md](../runbooks/ipc_topology_debugging.md).
 
 ---
 
