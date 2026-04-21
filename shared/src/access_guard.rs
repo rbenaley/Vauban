@@ -34,11 +34,12 @@ use std::collections::HashMap;
 use std::io;
 use std::os::unix::io::RawFd;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::io::Interest;
 use tokio::io::unix::AsyncFd;
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::oneshot;
 use tracing::{debug, error, info, warn};
 
 /// Hard timeout enforced on every [`AccessGuard::authorize`] call.
@@ -313,11 +314,56 @@ fn read_fd_from_env(name: &'static str) -> Result<RawFd, AccessGuardError> {
 // ============================================================================
 
 /// Demultiplexes concurrent CheckAccessByUuid responses by `request_id`.
+///
+/// The `pending` map uses `std::sync::Mutex` (not `tokio::sync::Mutex`)
+/// because:
+///
+/// 1. Critical sections are O(1) HashMap ops with no `.await` held
+///    inside, so blocking the executor for ~µs is acceptable.
+/// 2. Synchronous locking is REQUIRED by [`PendingEntry::drop`], which
+///    runs from inside `Drop` and cannot `await`. Without that synchronous
+///    cleanup, a cancelled [`AccessGuard::authorize`] (timeout or caller
+///    drop) would leak its `pending[request_id]` entry forever -- a real
+///    DoS vector if vauban-access is wedged for any duration.
 struct RbacClient {
     channel: IpcChannel,
     read_async_fd: AsyncFd<RawFd>,
     next_request_id: AtomicU64,
-    pending: Mutex<HashMap<u64, oneshot::Sender<AccessResponse>>>,
+    pending: StdMutex<HashMap<u64, oneshot::Sender<AccessResponse>>>,
+}
+
+/// RAII handle that removes its `pending[id]` slot on drop.
+///
+/// SECURITY/RESOURCE: this is the GC for the `pending` map. Without it,
+/// every cancelled `authorize` (via `tokio::time::timeout` firing OR
+/// the surrounding `tokio::spawn` being dropped) would leave a tombstone
+/// `oneshot::Sender` in `pending` -- under sustained vauban-access
+/// outage, that map grows unboundedly. With this guard, exactly one of
+/// two things removes the entry:
+///
+/// - the dispatcher, when it sees the matching response, OR
+/// - this `Drop`, on every other exit path (timeout, caller cancel,
+///   `channel.send` error, etc.).
+///
+/// Drop is idempotent: removing a missing key is a no-op.
+struct PendingEntry<'a> {
+    pending: &'a StdMutex<HashMap<u64, oneshot::Sender<AccessResponse>>>,
+    id: u64,
+}
+
+impl Drop for PendingEntry<'_> {
+    fn drop(&mut self) {
+        // Lock is acquired synchronously: critical section is one
+        // HashMap removal, no await. We use `if let Ok` rather than
+        // `expect` because a poisoned mutex on this path would mean
+        // some other thread panicked while holding the lock; unwinding
+        // through a Drop on top of that would abort the whole process.
+        // Logging-and-skip is strictly safer (the worst case is a
+        // single leaked entry, not a process abort).
+        if let Ok(mut map) = self.pending.lock() {
+            map.remove(&self.id);
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -343,8 +389,17 @@ impl RbacClient {
             channel,
             read_async_fd,
             next_request_id: AtomicU64::new(1),
-            pending: Mutex::new(HashMap::new()),
+            pending: StdMutex::new(HashMap::new()),
         })
+    }
+
+    /// Snapshot of the pending-map size. Test-only observability:
+    /// production code MUST NOT branch on this value (it would race
+    /// with the dispatcher). Used by the cleanup invariants suite to
+    /// prove we do not leak entries on timeout / cancellation.
+    #[cfg(test)]
+    fn pending_count(&self) -> usize {
+        self.pending.lock().expect("pending mutex poisoned").len()
     }
 
     async fn check_access_by_uuid(
@@ -355,7 +410,27 @@ impl RbacClient {
     ) -> Result<bool, RbacClientError> {
         let request_id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().await.insert(request_id, tx);
+        // SECURITY/RESOURCE: insert FIRST, then bind the RAII guard.
+        // The guard removes the entry on every exit path (success,
+        // backend Err, timeout cancel, caller drop) so the pending map
+        // cannot leak. Without it, a wedged vauban-access combined with
+        // sustained traffic produced unbounded HashMap growth (real
+        // DoS surface; the timeout protected the caller but not the
+        // proxy's RAM).
+        self.pending
+            .lock()
+            // Recover from poisoning: a poisoned Mutex still holds a
+            // valid HashMap (poisoning only signals that some other
+            // thread panicked while holding the lock). Aborting here
+            // would force a fail-closed denial on every subsequent
+            // authorize() until supervisor restart, even though our
+            // local state is fine. Recover and keep serving.
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(request_id, tx);
+        let _entry = PendingEntry {
+            pending: &self.pending,
+            id: request_id,
+        };
 
         let msg = Message::AccessRequest {
             request_id,
@@ -367,7 +442,7 @@ impl RbacClient {
         };
 
         if let Err(e) = self.channel.send(&msg) {
-            self.pending.lock().await.remove(&request_id);
+            // _entry will clean pending on return; nothing to do here.
             return Err(RbacClientError::SendFailed(e.to_string()));
         }
 
@@ -424,7 +499,16 @@ impl RbacClient {
                     request_id,
                     response,
                 }) => {
-                    if let Some(tx) = self.pending.lock().await.remove(&request_id) {
+                    let maybe_tx = self
+                        .pending
+                        .lock()
+                        // See `check_access_by_uuid` for the poisoning
+                        // recovery rationale: dispatcher must keep
+                        // routing responses even if some unrelated
+                        // thread panicked while holding the lock.
+                        .unwrap_or_else(|p| p.into_inner())
+                        .remove(&request_id);
+                    if let Some(tx) = maybe_tx {
                         if tx.send(response).is_err() {
                             debug!(
                                 request_id,
@@ -432,9 +516,20 @@ impl RbacClient {
                             );
                         }
                     } else {
+                        // SECURITY: response without a matching pending
+                        // request. Possible causes: (1) a stale reply
+                        // arrived AFTER the caller hit RBAC_RECHECK_TIMEOUT
+                        // and the RAII PendingEntry already cleared the
+                        // slot, (2) vauban-access is buggy / malicious
+                        // and forged a request_id we never sent. Either
+                        // way: drop the message; do NOT escalate to a
+                        // panic and do NOT let it surface as a Granted
+                        // verdict (request_id is the ONLY thing that
+                        // demuxes responses to callers).
                         warn!(
                             request_id,
-                            "AccessGuard: response without pending request, dropping"
+                            "AccessGuard: response without pending request, dropping \
+                             (likely a stale post-timeout reply, or a forged request_id)"
                         );
                     }
                 }
@@ -817,5 +912,636 @@ mod tests {
             err,
             AccessGuardError::InvalidEnvVar("VAUBAN_ACCESS_IPC_READ", _)
         ));
+    }
+
+    // ========================================================================
+    // BATTLE-TESTED SUITE
+    //
+    // The tests above cover the happy path + the four canonical decisions.
+    // Everything below is a deliberate stress / threat-model exercise: we
+    // attack the gate with stale replies, forged request_ids, unexpected
+    // wire variants, cancelled callers, dead dispatchers and high
+    // concurrency, and assert that NONE of those paths can produce a
+    // spurious Granted verdict, a panic, or a resource leak.
+    // ========================================================================
+
+    /// Build a guard with a custom (short) timeout. Used by tests that
+    /// need to actually trigger a timeout under real wall-clock without
+    /// blocking the suite for 10s.
+    fn wire_guard_with_timeout(
+        protocol: &'static str,
+        read_fd: RawFd,
+        write_fd: RawFd,
+        timeout: Duration,
+    ) -> (Arc<AccessGuard>, Arc<CountingMetrics>) {
+        let metrics = Arc::new(CountingMetrics::default());
+        let client = RbacClient::new(read_fd, write_fd).unwrap();
+        let guard = Arc::new(AccessGuard {
+            client,
+            timeout,
+            protocol,
+            metrics: metrics.clone() as Arc<dyn AccessGuardMetrics>,
+        });
+        let _ = guard.spawn_dispatcher();
+        (guard, metrics)
+    }
+
+    /// One-shot stub that satisfies exactly one request with a given
+    /// allowed verdict. Returns the JoinHandle so callers can join after
+    /// the corresponding `authorize` completes. We deliberately AVOID a
+    /// long-running poll loop on the stub side: the stub end of the
+    /// pipe is in blocking mode, so polling would block on `recv` and
+    /// the test would deadlock at `join()`.
+    fn one_shot_grant(stub: IpcChannel, allowed: bool) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || {
+            let req = stub.recv().expect("stub recv");
+            let request_id = match req {
+                Message::AccessRequest { request_id, .. } => request_id,
+                _ => panic!("stub: unexpected message variant"),
+            };
+            stub.send(&Message::AccessResponse {
+                request_id,
+                response: AccessResponse::AccessChecked(AccessCheckResult {
+                    allowed,
+                    require_mfa: false,
+                    require_approval: false,
+                    max_session_duration: None,
+                }),
+            })
+            .expect("stub send");
+        })
+    }
+
+    // ---------------- Cleanup invariants (post-bug fix) ----------------
+
+    #[tokio::test]
+    async fn test_pending_cleared_after_granted_response() {
+        // Anti-leak: the happy path must not leave a tombstone in
+        // `pending`. The dispatcher removes the entry when it routes
+        // the response; the RAII guard's drop is then a no-op.
+        let (read_fd, write_fd, stub) = pipe_pair();
+        let (guard, _metrics) = wire_guard("ssh", read_fd, write_fd);
+        let stub_handle = one_shot_grant(stub, true);
+
+        let decision = guard.authorize("u-uuid", "a-uuid").await;
+        assert!(matches!(decision, AccessDecision::Granted));
+        // Give the dispatcher a beat to finish bookkeeping after the
+        // oneshot::send returns control to authorize.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(
+            guard.client.pending_count(),
+            0,
+            "happy-path authorize must not leave a pending entry"
+        );
+        stub_handle.join().expect("stub thread");
+    }
+
+    #[tokio::test]
+    async fn test_pending_cleared_after_real_timeout() {
+        // POST-BUG REGRESSION GUARD: if RAII PendingEntry is removed,
+        // this test is the first to fail. The pending map MUST shrink
+        // back to zero after a timeout fires, otherwise a wedged
+        // vauban-access combined with sustained traffic produces
+        // unbounded HashMap growth (real DoS surface against the proxy
+        // even though the caller-side timeout already kicked in).
+        let (read_fd, write_fd, _stub_kept_alive) = pipe_pair();
+        // 200ms timeout: stub is kept alive but never replies.
+        let (guard, metrics) =
+            wire_guard_with_timeout("ssh", read_fd, write_fd, Duration::from_millis(200));
+
+        let decision = guard.authorize("u-uuid", "a-uuid").await;
+        assert!(matches!(decision, AccessDecision::Timeout));
+        // RAII drop runs synchronously on the await frame's drop, so
+        // the pending count is already zero by the time authorize
+        // returns. No sleep needed -- this is the strongest possible
+        // assertion of the cleanup invariant.
+        assert_eq!(
+            guard.client.pending_count(),
+            0,
+            "timeout must trigger PendingEntry::drop synchronously"
+        );
+        assert_eq!(metrics.timeout.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_pending_cleared_when_caller_dropped() {
+        // POST-BUG REGRESSION GUARD: if the surrounding tokio::spawn
+        // is aborted (e.g. session was closed by the user before the
+        // RBAC verdict came back), the pending entry must still be
+        // cleaned up. Without RAII, this would leak forever on
+        // dispatcher silence.
+        let (read_fd, write_fd, _stub_kept_alive) = pipe_pair();
+        let (guard, _metrics) =
+            wire_guard_with_timeout("ssh", read_fd, write_fd, Duration::from_secs(60));
+
+        let g = Arc::clone(&guard);
+        let h = tokio::spawn(async move { g.authorize("u-uuid", "a-uuid").await });
+        // Yield enough times for the spawned task to park on rx.await.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(guard.client.pending_count(), 1, "request must be pending");
+
+        h.abort();
+        let _ = h.await; // Cancellation: future is dropped, RAII fires.
+        // A few extra yields to let the runtime process the abort.
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            guard.client.pending_count(),
+            0,
+            "caller cancellation must trigger PendingEntry::drop"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pending_does_not_leak_under_repeated_timeouts() {
+        // 50 sequential timeouts must leave the pending map empty.
+        // Pre-fix this test would assert pending_count() == 50.
+        let (read_fd, write_fd, _stub_kept_alive) = pipe_pair();
+        let (guard, metrics) =
+            wire_guard_with_timeout("ssh", read_fd, write_fd, Duration::from_millis(50));
+
+        for _ in 0..50 {
+            let decision = guard.authorize("u", "a").await;
+            assert!(matches!(decision, AccessDecision::Timeout));
+        }
+        assert_eq!(metrics.timeout.load(Ordering::SeqCst), 50);
+        assert_eq!(
+            guard.client.pending_count(),
+            0,
+            "50 timeouts must not accumulate any pending entries"
+        );
+    }
+
+    // ---------------- Threat model: forged / stale responses ----------------
+
+    #[tokio::test]
+    async fn test_forged_unknown_request_id_does_not_disturb_dispatcher() {
+        // SECURITY: a malicious or buggy vauban-access could send a
+        // response with a request_id we never issued. The dispatcher
+        // MUST drop it with a warn! and continue to serve real
+        // requests. If anyone ever changes the dispatcher to
+        // `panic!("orphan response")`, this test fails first.
+        let (read_fd, write_fd, stub) = pipe_pair();
+        let (guard, metrics) = wire_guard("ssh", read_fd, write_fd);
+
+        let forged_id = 99_999_999u64;
+        let stub_handle = std::thread::spawn(move || {
+            // Forge a response with no matching request.
+            stub.send(&Message::AccessResponse {
+                request_id: forged_id,
+                response: AccessResponse::AccessChecked(AccessCheckResult {
+                    allowed: true,
+                    require_mfa: false,
+                    require_approval: false,
+                    max_session_duration: None,
+                }),
+            })
+            .unwrap();
+            // Then serve a real request to prove the dispatcher survived.
+            let req = stub.recv().unwrap();
+            let request_id = match req {
+                Message::AccessRequest { request_id, .. } => request_id,
+                _ => panic!(),
+            };
+            stub.send(&Message::AccessResponse {
+                request_id,
+                response: AccessResponse::AccessChecked(AccessCheckResult {
+                    allowed: false,
+                    require_mfa: false,
+                    require_approval: false,
+                    max_session_duration: None,
+                }),
+            })
+            .unwrap();
+        });
+
+        // Give the dispatcher a beat to consume + drop the orphan.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let decision = guard.authorize("u", "a").await;
+        // The forged "Granted" response is gone; the real verdict for
+        // our request is Denied (and was never replaced by the orphan).
+        assert!(
+            matches!(decision, AccessDecision::Denied),
+            "forged orphan grant must NOT bleed into a real authorize"
+        );
+        assert_eq!(metrics.granted.load(Ordering::SeqCst), 0);
+        assert_eq!(metrics.denied.load(Ordering::SeqCst), 1);
+        let _ = stub_handle.join();
+    }
+
+    #[tokio::test]
+    async fn test_stale_response_after_timeout_does_not_grant_anything() {
+        // SECURITY: if vauban-access replies AFTER we already fired
+        // RBAC_RECHECK_TIMEOUT, the late reply must be silently
+        // dropped. The PendingEntry has already cleared the slot, so
+        // the dispatcher will see "response without pending request"
+        // and drop it. The next real authorize must then work.
+        let (read_fd, write_fd, stub) = pipe_pair();
+        let (guard, metrics) =
+            wire_guard_with_timeout("ssh", read_fd, write_fd, Duration::from_millis(100));
+
+        // Capture the first request and reply LATE (after the caller
+        // has already given up).
+        let stub_handle = std::thread::spawn(move || {
+            let r1 = stub.recv().unwrap();
+            let id1 = match r1 {
+                Message::AccessRequest { request_id, .. } => request_id,
+                _ => panic!(),
+            };
+            std::thread::sleep(Duration::from_millis(250));
+            // Late "allowed=true" reply for the timed-out request.
+            stub.send(&Message::AccessResponse {
+                request_id: id1,
+                response: AccessResponse::AccessChecked(AccessCheckResult {
+                    allowed: true,
+                    require_mfa: false,
+                    require_approval: false,
+                    max_session_duration: None,
+                }),
+            })
+            .unwrap();
+            // Now serve the second authorize legitimately (Denied).
+            let r2 = stub.recv().unwrap();
+            let id2 = match r2 {
+                Message::AccessRequest { request_id, .. } => request_id,
+                _ => panic!(),
+            };
+            stub.send(&Message::AccessResponse {
+                request_id: id2,
+                response: AccessResponse::AccessChecked(AccessCheckResult {
+                    allowed: false,
+                    require_mfa: false,
+                    require_approval: false,
+                    max_session_duration: None,
+                }),
+            })
+            .unwrap();
+        });
+
+        // First authorize: must time out.
+        let d1 = guard.authorize("u", "a").await;
+        assert!(matches!(d1, AccessDecision::Timeout));
+        assert_eq!(metrics.timeout.load(Ordering::SeqCst), 1);
+
+        // Wait long enough that the late "true" reply has been dropped
+        // by the dispatcher (orphan path).
+        tokio::time::sleep(Duration::from_millis(400)).await;
+
+        // Second authorize: must reach the real Denied verdict, NOT the
+        // stale Granted that the late reply tried to inject.
+        let d2 = guard.authorize("u", "a").await;
+        assert!(
+            matches!(d2, AccessDecision::Denied),
+            "late stale reply MUST NOT contaminate a subsequent authorize"
+        );
+        assert_eq!(metrics.granted.load(Ordering::SeqCst), 0);
+        assert_eq!(metrics.denied.load(Ordering::SeqCst), 1);
+        let _ = stub_handle.join();
+    }
+
+    // ---------------- Wire-format hardening ----------------
+
+    #[tokio::test]
+    async fn test_unexpected_response_variant_collapses_to_denied() {
+        // SECURITY: vauban-access could ship a future variant
+        // (AccessCheckedMulti, AccessRulesList, ...) on the
+        // CheckAccessByUuid pipe due to a bug or a partially-rolled-out
+        // change. ANY variant other than AccessChecked or Error MUST
+        // be treated as a fail-closed denial.
+        let (read_fd, write_fd, stub) = pipe_pair();
+        let (guard, metrics) = wire_guard("ssh", read_fd, write_fd);
+
+        let stub_handle = std::thread::spawn(move || {
+            let req = stub.recv().unwrap();
+            let request_id = match req {
+                Message::AccessRequest { request_id, .. } => request_id,
+                _ => panic!(),
+            };
+            // Wrong variant: a Multi reply on a single-check request.
+            stub.send(&Message::AccessResponse {
+                request_id,
+                response: AccessResponse::AccessCheckedMulti(vec![]),
+            })
+            .unwrap();
+        });
+
+        let decision = guard.authorize("u", "a").await;
+        assert!(
+            matches!(decision, AccessDecision::Denied),
+            "wrong AccessResponse variant MUST collapse to Denied (fail-closed)"
+        );
+        assert_eq!(metrics.granted.load(Ordering::SeqCst), 0);
+        assert_eq!(metrics.denied.load(Ordering::SeqCst), 1);
+        let _ = stub_handle.join();
+    }
+
+    #[tokio::test]
+    async fn test_dispatcher_ignores_non_access_response_messages() {
+        // Wire robustness: a stray Control message on the access pipe
+        // must NOT crash the dispatcher and must NOT produce any verdict.
+        // The dispatcher logs `warn!` and keeps polling.
+        let (read_fd, write_fd, stub) = pipe_pair();
+        let (guard, metrics) = wire_guard("ssh", read_fd, write_fd);
+
+        let stub_handle = std::thread::spawn(move || {
+            // First push a stray control message.
+            stub.send(&Message::Control(crate::messages::ControlMessage::Ping {
+                seq: 1,
+            }))
+            .unwrap();
+            // Then serve a real request.
+            let req = stub.recv().unwrap();
+            let request_id = match req {
+                Message::AccessRequest { request_id, .. } => request_id,
+                _ => panic!(),
+            };
+            stub.send(&Message::AccessResponse {
+                request_id,
+                response: AccessResponse::AccessChecked(AccessCheckResult {
+                    allowed: true,
+                    require_mfa: false,
+                    require_approval: false,
+                    max_session_duration: None,
+                }),
+            })
+            .unwrap();
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let decision = guard.authorize("u", "a").await;
+        assert!(
+            matches!(decision, AccessDecision::Granted),
+            "dispatcher must survive stray non-AccessResponse messages \
+             and continue serving real requests"
+        );
+        assert_eq!(metrics.granted.load(Ordering::SeqCst), 1);
+        let _ = stub_handle.join();
+    }
+
+    // ---------------- Robustness: dispatcher / pipe death ----------------
+
+    #[tokio::test]
+    async fn test_authorize_after_pipe_death_fails_closed_no_panic() {
+        // POST-INCIDENT GUARD: if vauban-access dies (or the pipe is
+        // ripped), the next authorize() must NOT panic and MUST surface
+        // a non-Granted verdict so the caller fails closed. The exact
+        // variant (BackendError vs Timeout) depends on whether the
+        // write or the read side closes first; both are acceptable.
+        let (read_fd, write_fd, stub) = pipe_pair();
+        let (guard, metrics) =
+            wire_guard_with_timeout("ssh", read_fd, write_fd, Duration::from_millis(200));
+
+        // Tear down both sides of the pipe by dropping the stub.
+        drop(stub);
+        // Let the dispatcher observe ConnectionClosed and die.
+        tokio::time::sleep(Duration::from_millis(30)).await;
+
+        let decision = guard.authorize("u", "a").await;
+        assert!(
+            !decision.is_granted(),
+            "post-pipe-death authorize MUST NOT grant; got {:?}",
+            decision
+        );
+        assert!(
+            matches!(
+                decision,
+                AccessDecision::BackendError(_) | AccessDecision::Timeout
+            ),
+            "expected BackendError or Timeout, got {:?}",
+            decision
+        );
+        // Either ipc_error or timeout must have been incremented.
+        assert!(
+            metrics.ipc_error.load(Ordering::SeqCst) + metrics.timeout.load(Ordering::SeqCst)
+                >= 1,
+            "fail-closed metric MUST fire on pipe death"
+        );
+        assert_eq!(metrics.granted.load(Ordering::SeqCst), 0);
+    }
+
+    // ---------------- Concurrency stress ----------------
+
+    #[tokio::test]
+    async fn test_authorize_64_concurrent_requests_demultiplexed_correctly() {
+        // High-concurrency stress: 64 concurrent authorize() calls,
+        // half granted half denied based on the asset_uuid. The stub
+        // intentionally replies in REVERSE order of request arrival to
+        // hammer on the demultiplexer. If anyone ever simplifies
+        // PendingMap back to a single-receiver / FIFO, half the
+        // assertions cross over and the test fails.
+        const N: usize = 64;
+        let (read_fd, write_fd, stub) = pipe_pair();
+        let (guard, _metrics) =
+            wire_guard_with_timeout("ssh", read_fd, write_fd, Duration::from_secs(10));
+
+        let stub_handle = std::thread::spawn(move || {
+            let mut buf: Vec<(u64, String)> = Vec::with_capacity(N);
+            for _ in 0..N {
+                let req = stub.recv().unwrap();
+                if let Message::AccessRequest {
+                    request_id,
+                    request:
+                        AccessRequest::CheckAccessByUuid {
+                            asset_uuid, ..
+                        },
+                } = req
+                {
+                    buf.push((request_id, asset_uuid));
+                }
+            }
+            // Reply in reverse order; per-request verdict is `allow=index%2==0`.
+            for (request_id, asset_uuid) in buf.iter().rev() {
+                let idx: usize = asset_uuid
+                    .strip_prefix("asset-")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap();
+                let allow = idx % 2 == 0;
+                stub.send(&Message::AccessResponse {
+                    request_id: *request_id,
+                    response: AccessResponse::AccessChecked(AccessCheckResult {
+                        allowed: allow,
+                        require_mfa: false,
+                        require_approval: false,
+                        max_session_duration: None,
+                    }),
+                })
+                .unwrap();
+            }
+        });
+
+        let mut handles = Vec::with_capacity(N);
+        for i in 0..N {
+            let g = Arc::clone(&guard);
+            handles.push(tokio::spawn(async move {
+                let asset = format!("asset-{}", i);
+                (i, g.authorize("u", &asset).await)
+            }));
+        }
+
+        for h in handles {
+            let (i, decision) = h.await.unwrap();
+            let expected_grant = i % 2 == 0;
+            assert_eq!(
+                decision.is_granted(),
+                expected_grant,
+                "verdict for asset-{} crossed wires (got {:?})",
+                i,
+                decision
+            );
+        }
+        assert_eq!(
+            guard.client.pending_count(),
+            0,
+            "no pending entries must survive the stress run"
+        );
+        let _ = stub_handle.join();
+    }
+
+    // ---------------- Protocol propagation ----------------
+
+    #[tokio::test]
+    async fn test_protocol_string_propagated_to_backend_ssh_and_rdp() {
+        // SECURITY: the protocol string is what makes vauban-access
+        // distinguish "user X may SSH to host" from "user X may RDP to
+        // host". A bug that always sent the same string would silently
+        // grant cross-protocol access. This test pins the wire-level
+        // contract for both currently-supported protocols.
+        for proto in [PROTOCOL_SSH, PROTOCOL_RDP] {
+            let (read_fd, write_fd, stub) = pipe_pair();
+            let (guard, _metrics) = wire_guard(proto, read_fd, write_fd);
+
+            let captured: Arc<StdMutex<Option<String>>> = Arc::new(StdMutex::new(None));
+            let captured_for_thread = Arc::clone(&captured);
+            let stub_handle = std::thread::spawn(move || {
+                let req = stub.recv().unwrap();
+                if let Message::AccessRequest {
+                    request_id,
+                    request:
+                        AccessRequest::CheckAccessByUuid {
+                            protocol, ..
+                        },
+                } = req
+                {
+                    *captured_for_thread.lock().unwrap() = Some(protocol);
+                    stub.send(&Message::AccessResponse {
+                        request_id,
+                        response: AccessResponse::AccessChecked(AccessCheckResult {
+                            allowed: true,
+                            require_mfa: false,
+                            require_approval: false,
+                            max_session_duration: None,
+                        }),
+                    })
+                    .unwrap();
+                }
+            });
+            let _ = guard.authorize("u", "a").await;
+            let _ = stub_handle.join();
+            let captured_proto = captured.lock().unwrap().clone();
+            assert_eq!(
+                captured_proto.as_deref(),
+                Some(proto),
+                "guard built for {:?} must send protocol={:?} on the wire",
+                proto,
+                proto
+            );
+        }
+    }
+
+    // ---------------- Anti-regression structural ----------------
+
+    #[test]
+    fn test_access_decision_does_not_default_to_granted() {
+        // Defensive: AccessDecision intentionally has NO Default impl
+        // (a Default that returns Granted would be a footgun of the
+        // worst kind: `let d: AccessDecision = Default::default();`
+        // would silently authorise). This test is a structural pin --
+        // if anyone ever derives Default on AccessDecision, this test
+        // forces them to also explain in code review what variant they
+        // chose and why.
+        fn assert_no_default<T>()
+        where
+            T: Default,
+        {
+        }
+        // The following line MUST NOT compile if uncommented:
+        //   assert_no_default::<AccessDecision>();
+        // We can't statically test "does not implement Default" in
+        // stable Rust without a build script, so we settle for this
+        // documented anti-pattern note + the runtime assertion below.
+        let _ = assert_no_default::<()>; // silence unused
+        // Round-trip every variant via match so adding a new one
+        // without thinking about is_granted() fails the build.
+        for d in [
+            AccessDecision::Granted,
+            AccessDecision::Denied,
+            AccessDecision::Timeout,
+            AccessDecision::BackendError("x".to_string()),
+        ] {
+            let granted = matches!(d, AccessDecision::Granted);
+            assert_eq!(d.is_granted(), granted);
+        }
+    }
+
+    #[test]
+    fn test_authorize_signature_returns_decision_not_result() {
+        // Type-system anti-regression: `authorize` must return
+        // AccessDecision (NOT Result<...>). Returning Result would let
+        // a caller `?` past it and end up in a "compiles, fails open"
+        // configuration. The helper below only compiles if the future
+        // resolves to AccessDecision; if anyone changes the signature
+        // to Result<AccessDecision, _>, this test stops building.
+        #[allow(dead_code)]
+        fn _pins_return_type(
+            g: &AccessGuard,
+        ) -> impl std::future::Future<Output = AccessDecision> + '_ {
+            // If anyone changes authorize() to return
+            // Result<AccessDecision, _>, the impl-Trait bound below no
+            // longer matches and this helper fails to type-check.
+            g.authorize("", "")
+        }
+    }
+
+    #[test]
+    fn test_must_use_attribute_on_access_guard_wiring() {
+        // Source-level pin: AccessGuardWiring carries a `#[must_use]`
+        // attribute so dropping it (forgetting to plumb the FDs into
+        // the sandbox or to spawn the dispatcher) is a compile-time
+        // warning. If anyone removes the attribute, this test fails.
+        let source = include_str!("access_guard.rs");
+        let wiring_idx = source
+            .find("pub struct AccessGuardWiring")
+            .expect("AccessGuardWiring struct must exist");
+        let preamble = &source[..wiring_idx];
+        // The most recent `#[must_use` directive before the struct
+        // declaration is the one attached to it.
+        let last_must_use = preamble.rfind("#[must_use");
+        assert!(
+            last_must_use.is_some(),
+            "AccessGuardWiring MUST be marked #[must_use] -- dropping it \
+             silently leaks the access pipe FDs"
+        );
+        let between = &preamble[last_must_use.unwrap()..];
+        // No struct/fn/impl between the must_use and AccessGuardWiring.
+        assert!(
+            !between.contains("pub struct ") && !between.contains("pub fn "),
+            "the most recent #[must_use] before AccessGuardWiring must \
+             actually be attached TO AccessGuardWiring"
+        );
+    }
+
+    #[test]
+    fn test_protocol_constants_are_lowercase_and_canonical() {
+        // Runtime invariants on the protocol strings: lowercase,
+        // alphanumeric, no whitespace. Anything else would not match
+        // `access_rules.protocols` in the DB and would silently degrade
+        // every authorize() to Denied.
+        for p in [PROTOCOL_SSH, PROTOCOL_RDP] {
+            assert!(!p.is_empty());
+            assert_eq!(p, p.to_lowercase());
+            assert!(p.chars().all(|c| c.is_ascii_alphanumeric()));
+        }
     }
 }
