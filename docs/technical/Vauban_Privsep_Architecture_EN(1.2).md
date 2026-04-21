@@ -237,12 +237,12 @@ flowchart LR
     Future["future proxies (VNC, Modbus, ...)<br/>(uses shared::access_guard)"]
     Acc[vauban-access]
 
-    Sup --|"VAUBAN_ACCESS_IPC_{READ,WRITE}<br/>per-proxy"|--> SSH
-    Sup --|"VAUBAN_ACCESS_IPC_{READ,WRITE}<br/>per-proxy"|--> RDP
-    Sup --|"VAUBAN_ACCESS_IPC_{READ,WRITE}<br/>per-proxy"|--> Future
-    SSH --|"AccessRequest::CheckAccessByUuid<br/>(via shared::access_guard, 10s timeout, fail-closed)"|--> Acc
-    RDP --|"AccessRequest::CheckAccessByUuid<br/>(via shared::access_guard, 10s timeout, fail-closed)"|--> Acc
-    Future --|"AccessRequest::CheckAccessByUuid<br/>(via shared::access_guard, 10s timeout, fail-closed)"|--> Acc
+    Sup -->|"VAUBAN_ACCESS_IPC_{READ,WRITE}<br/>per-proxy"| SSH
+    Sup -->|"VAUBAN_ACCESS_IPC_{READ,WRITE}<br/>per-proxy"| RDP
+    Sup -->|"VAUBAN_ACCESS_IPC_{READ,WRITE}<br/>per-proxy"| Future
+    SSH -->|"AccessRequest::CheckAccessByUuid<br/>(via shared::access_guard, 10s timeout, fail-closed)"| Acc
+    RDP -->|"AccessRequest::CheckAccessByUuid<br/>(via shared::access_guard, 10s timeout, fail-closed)"| Acc
+    Future -->|"AccessRequest::CheckAccessByUuid<br/>(via shared::access_guard, 10s timeout, fail-closed)"| Acc
 ```
 
 Key contracts owned by the module:

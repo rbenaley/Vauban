@@ -162,13 +162,13 @@ documents.
 ```mermaid
 flowchart LR
     subgraph shared["shared crate (feature: access-guard)"]
-        AG[AccessGuard]
-        AGW[AccessGuardWiring<br/>#must_use]
+        AG["AccessGuard"]
+        AGW["AccessGuardWiring<br/>(must_use)"]
         AGM["AccessGuardMetrics<br/>(trait)"]
-        AD[AccessDecision<br/>4 variants]
-        AC[AccessGuardError]
+        AD["AccessDecision<br/>4 variants"]
+        AC["AccessGuardError"]
         RC["RbacClient<br/>(internal)"]
-        PE["PendingEntry<'a><br/>(RAII, internal)"]
+        PE["PendingEntry<br/>(RAII, internal)"]
     end
 
     subgraph proxy_ssh["vauban-proxy-ssh"]
@@ -186,7 +186,7 @@ flowchart LR
 
     subgraph access["vauban-access"]
         H["handle_check_access_by_uuid"]
-        DB[(PostgreSQL<br/>access_rules)]
+        DB[("PostgreSQL<br/>access_rules")]
     end
 
     TOPO --> ENV
@@ -194,11 +194,11 @@ flowchart LR
     AG --> RC
     RC --> PE
     AG --> AGW
-    AGM <-.implements.- SSH_STATE
-    AGM <-.implements.- RDP_STATE
+    SSH_STATE -. implements .-> AGM
+    RDP_STATE -. implements .-> AGM
     SSH_STATE --> AG
     RDP_STATE --> AG
-    AG -- "CheckAccessByUuid (IPC)" --> H
+    AG -->|"CheckAccessByUuid (IPC)"| H
     H --> DB
 ```
 
