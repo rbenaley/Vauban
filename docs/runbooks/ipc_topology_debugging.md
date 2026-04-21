@@ -3,7 +3,8 @@
 **Audience:** on-call SRE / platform engineers
 **Trigger:** SSH or RDP sessions silently fail with `Access denied`,
 `vauban-supervisor` logs `<service> is unresponsive, forcing restart`,
-or `vauban-proxy-ssh` logs `RBAC re-check timed out - denying fail-closed`.
+or `vauban-proxy-ssh` / `vauban-proxy-rdp` logs `RBAC re-check timed
+out - denying fail-closed`.
 
 This document captures the post-incident knowledge from the
 `CheckAccessByUuid` regression: a single missing TOPOLOGY edge in
@@ -43,11 +44,11 @@ This is the failure mode the runbook below addresses.
 
 | Symptom                                                              | Likely cause                                                  |
 | -------------------------------------------------------------------- | ------------------------------------------------------------- |
-| `RBAC re-check timed out - denying fail-closed` (proxy_ssh)          | `vauban-access` not polling its `proxy_ssh -> access` edge    |
+| `RBAC re-check timed out - denying fail-closed` (proxy_ssh / proxy_rdp) | `vauban-access` not polling its `proxy_<x> -> access` edge    |
 | `<svc> is unresponsive, forcing restart` (supervisor watchdog)       | Child's main loop blocked on a synchronous IPC call           |
-| `cumulative_rbac_timeouts` keeps climbing in proxy_ssh logs          | Access tier is wedged or saturated (DB / runtime)             |
+| `rbac_recheck_timeouts` keeps climbing in proxy_ssh / proxy_rdp logs | Access tier is wedged or saturated (DB / runtime)             |
 | `vauban-access TOPOLOGY mismatch` panic at boot                      | A peer env var was not exported by the supervisor             |
-| `Access denied` for **every** user in the web UI, no DB writes       | Same as #1 above (look one layer up in proxy_ssh)             |
+| `Access denied` for **every** user in the web UI, no DB writes       | Same as #1 above (look one layer up in the relevant proxy)    |
 
 ---
 
@@ -61,8 +62,11 @@ journalctl -u vauban-supervisor -n 100 --no-pager | grep -E 'unresponsive|Restar
 journalctl -u vauban-supervisor -n 200 --no-pager | grep -E 'vauban-access.*peers='
 # Expected:  peers=["web", "auth", "proxy_ssh", "proxy_rdp"]  peer_count=4
 
-# 3. Look at the proxy_ssh tier's RBAC timeout counter
-journalctl -u vauban-supervisor -n 200 --no-pager | grep -E 'cumulative_rbac_timeouts|RBAC re-check'
+# 3. Look at the proxy_ssh AND proxy_rdp RBAC timeout counters.
+# Both proxies share the same shared::access_guard module, so the
+# log shape is identical -- just the prefix differs.
+journalctl -u vauban-supervisor -n 200 --no-pager \
+    | grep -E 'rbac_recheck_timeouts|RBAC re-check'
 ```
 
 If `peers=` is missing one of the 4 entries OR `peer_count != 4`,
@@ -103,8 +107,8 @@ explicitly rejects this pattern.
 
 ### 4.3 vauban-access overloaded (genuine saturation)
 
-If `cumulative_rbac_timeouts` rises in proxy_ssh logs but the
-TOPOLOGY is correct, the access tier itself is too slow:
+If `rbac_recheck_timeouts` rises in proxy_ssh / proxy_rdp logs but
+the TOPOLOGY is correct, the access tier itself is too slow:
 
 - Check DB pool exhaustion: `vauban-access` uses a deadpool with
   a small max_size. Look for `Pool exhausted` warnings.
@@ -112,13 +116,15 @@ TOPOLOGY is correct, the access tier itself is too slow:
   (any `WHERE` over `events` without a covering index, e.g.).
 - If sustained, consider promoting `vauban-access` to a
   multi-thread tokio runtime OR adding a small in-memory TTL
-  cache (~1s) of `(user_uuid, asset_uuid, protocol) -> bool` in
-  `vauban-proxy-ssh::AccessRbacClient`.
+  cache (~1s) of `(user_uuid, asset_uuid, protocol) -> bool`
+  inside `shared::access_guard::AccessGuard` (single change, both
+  proxies benefit).
 
-The hard timeout (`RBAC_RECHECK_TIMEOUT = Duration::from_secs(10)`)
-is the safety net, not the remediation. Adjusting it upward is a
-last resort -- the supervisor's heartbeat threshold is roughly 20s,
-so going beyond ~15s starts cascading restarts again.
+The hard timeout (`shared::access_guard::RBAC_RECHECK_TIMEOUT =
+Duration::from_secs(10)`) is the safety net, not the remediation.
+Adjusting it upward is a last resort -- the supervisor's heartbeat
+threshold is roughly 20s, so going beyond ~15s starts cascading
+restarts again.
 
 ---
 
@@ -198,5 +204,15 @@ bootstrap rule, or do it manually as above.
 - `vauban-access/src/handlers.rs::handle_check_access_by_uuid` - server-side authoritative RBAC (no superuser bypass)
 - `vauban-web/src/handlers/web/ssh.rs::connect_ssh`   - web-side gate (no superuser bypass either)
 - `vauban-web/src/handlers/web/rdp.rs::connect_rdp`   - same for RDP
-- `vauban-proxy-ssh/src/main.rs` (RBAC_RECHECK_TIMEOUT) - timeout + counter
-- `vauban-proxy-ssh/src/ipc.rs::AccessRbacClient`     - request demultiplexing
+- `shared/src/access_guard.rs`                        - **the** defense-in-depth
+  RBAC re-check module shared by every proxy (SSH, RDP, future VNC / industrial)
+- `shared/src/access_guard.rs::RBAC_RECHECK_TIMEOUT`  - shared 10s hard timeout
+- `shared/src/access_guard.rs::AccessGuard::authorize` - single fail-closed entry point
+- `vauban-proxy-ssh/src/main.rs` (PROTOCOL_SSH wiring) - SSH consumer of AccessGuard
+- `vauban-proxy-rdp/src/main.rs` (PROTOCOL_RDP wiring) - RDP consumer of AccessGuard
+
+If you are wiring a new proxy (VNC, Modbus, ...): add it to TOPOLOGY,
+bump `EXPECTED_PEER_COUNT` in `vauban-access`, then in the new proxy
+crate enable the `shared = { features = ["access-guard"] }` flag and
+call `AccessGuard::from_env(PROTOCOL_<X>, state)` at boot. That is the
+**only** supported path; do NOT re-implement an in-crate RBAC client.

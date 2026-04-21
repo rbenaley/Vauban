@@ -22,8 +22,11 @@ print_stdout   = "deny"
 print_stderr   = "deny"
 
 [dependencies]
-# Shared IPC and sandboxing utilities
-shared = { path = "../shared" }
+# Shared IPC and sandboxing utilities. The `access-guard` feature is
+# mandatory: it brings in shared::access_guard, which re-verifies every
+# RdpSessionOpen against vauban-access (defense-in-depth RBAC re-check,
+# symmetric to vauban-proxy-ssh).
+shared = { path = "../shared", features = ["access-guard"] }
 
 # Core dependencies
 libc = "0.2"
