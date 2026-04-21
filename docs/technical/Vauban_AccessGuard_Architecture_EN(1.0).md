@@ -36,11 +36,14 @@ It implements the **defense-in-depth RBAC re-check** layer of the IAM
 authorisation model documented in
 [Vauban_IAM_Architecture_EN(1.0).md](Vauban_IAM_Architecture_EN(1.0).md):
 
-```
-  ┌────────────┐   1. UI gate    ┌─────────────┐   2. Re-check    ┌──────────────┐
-  │ vauban-web ├────────────────►│ vauban-access├◄─────────────────┤ vauban-proxy │
-  └────────────┘  CheckAccess     └─────────────┘  CheckAccessByUuid│   (any)      │
-                                                                    └──────────────┘
+```mermaid
+flowchart LR
+    Web["vauban-web"]
+    Access["vauban-access"]
+    Proxy["vauban-proxy<br/>(SSH / RDP / VNC / ...)"]
+
+    Web -->|"1. UI gate<br/>CheckAccess"| Access
+    Proxy -->|"2. Re-check<br/>CheckAccessByUuid"| Access
 ```
 
 A successful response from `vauban-web -> vauban-access` is **not**
