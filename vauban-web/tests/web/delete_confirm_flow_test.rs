@@ -38,7 +38,8 @@
 use crate::common::{TestApp, assertions::*, test_db};
 use crate::fixtures::{
     add_user_to_vauban_group, create_simple_user, create_test_asset_group,
-    create_test_asset_in_group, create_test_ssh_asset, create_test_vauban_group, unique_name,
+    create_test_asset_in_group, create_test_ssh_asset, create_test_vauban_group,
+    grant_user_full_access_to_new_group, unique_name,
 };
 use axum::http::header::{COOKIE, LOCATION};
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
@@ -101,19 +102,38 @@ async fn lookup_user_uuid(conn: &mut AsyncPgConnection, user_id: i32) -> Uuid {
 async fn test_asset_detail_delete_form_is_htmx_driven() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
-    let token = admin_token(app, "bug12_html_asset_delete").await;
 
-    let asset = create_test_ssh_asset(&mut conn, &unique_name("bug12-asset-detail")).await;
+    // Materialize the admin manually so we have its `user_id` and can wire
+    // up the access_rule that asset_detail now requires for ALL users
+    // (the historical "is_superuser / is_staff" bypass was removed).
+    use crate::fixtures::create_simple_admin_user;
+    let label = "bug12_html_asset_delete";
+    let admin_id = create_simple_admin_user(&mut conn, label).await;
+    let admin_uuid = lookup_user_uuid(&mut conn, admin_id).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), label, true, true)
+        .await;
+
+    let ag = grant_user_full_access_to_new_group(
+        &mut conn,
+        admin_id,
+        &unique_name("bug12_asset_detail"),
+        &["ssh"],
+    )
+    .await;
+    let asset_name = unique_name("bug12-asset-detail");
+    let asset_id = create_test_asset_in_group(&mut conn, &asset_name, admin_id, &ag).await;
+    let asset_uuid = crate::fixtures::get_asset_uuid(&mut conn, asset_id).await;
 
     let response = app
         .server
-        .get(&format!("/assets/{}", asset.asset.uuid))
+        .get(&format!("/assets/{}", asset_uuid))
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
     assert_status(&response, 200);
 
     let body = response.text();
-    let endpoint = format!("/assets/{}/delete", asset.asset.uuid);
+    let endpoint = format!("/assets/{}/delete", asset_uuid);
 
     assert!(
         body.contains(&format!("hx-post=\"{}\"", endpoint)),
@@ -133,9 +153,9 @@ async fn test_asset_detail_delete_form_is_htmx_driven() {
         "form must carry data-confirm-title for the styled modal"
     );
     assert!(
-        body.contains(&asset.asset.name),
+        body.contains(&asset_name),
         "modal copy must name the resource (asset name '{}')",
-        asset.asset.name
+        asset_name
     );
     assert!(
         body.contains("@htmx:confirm.prevent"),

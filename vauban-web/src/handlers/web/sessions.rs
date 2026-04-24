@@ -1228,8 +1228,16 @@ pub async fn submit_access_request(
         }
     };
 
-    // Access rule check
-    let access_result = if !auth_user.is_superuser && !auth_user.is_staff {
+    // Access rule check — applied uniformly to EVERY user, including
+    // superusers and staff. The previous else-branch hardcoded
+    // `require_mfa: true, require_approval: true` for privileged users,
+    // which was never visible to the rendering layer (`assets.rs` was
+    // simultaneously hiding the MFA field for the same user) and produced
+    // the visible "MFA code is required (6 digits)" failure when an
+    // approval-protected asset was opened by a superuser. All three
+    // surfaces (asset_detail, asset_list, submit_access_request) now
+    // consult the same `vauban-access` policy.
+    let access_result = {
         let result = crate::services::access::can_access_asset(
             &state.access_client,
             &mut conn,
@@ -1248,13 +1256,6 @@ pub async fn submit_access_request(
             );
         }
         result
-    } else {
-        crate::services::access::AccessCheckResult {
-            allowed: true,
-            require_mfa: true,
-            require_approval: true,
-            max_session_duration: None,
-        }
     };
 
     // MFA verification (if required)

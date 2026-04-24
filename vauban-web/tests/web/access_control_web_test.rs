@@ -15,7 +15,8 @@ use crate::fixtures::{
     add_user_to_vauban_group, create_admin_user, create_expired_access_rule,
     create_inactive_access_rule, create_test_access_rule, create_test_asset_group,
     create_test_asset_in_group, create_test_asset_in_group_with_type, create_test_user,
-    create_test_vauban_group, get_asset_uuid, unique_name,
+    create_test_vauban_group, get_asset_uuid, grant_user_full_access_to_new_group,
+    unique_name,
 };
 
 // =============================================================================
@@ -431,7 +432,15 @@ async fn test_web_asset_detail_allowed_with_access_rule() {
 
     let admin_name = unique_name("w_det_ok_adm");
     let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
-    let ag = create_test_asset_group(&mut conn, &unique_name("w-det-ok-ag")).await;
+    // Even admins now require an access_rule (no more superuser bypass) —
+    // see handlers::web::tests anti-regression suite.
+    let ag = grant_user_full_access_to_new_group(
+        &mut conn,
+        admin.user.id,
+        &unique_name("w-det-ok"),
+        &["ssh"],
+    )
+    .await;
     let asset_id =
         create_test_asset_in_group(&mut conn, "w-det-ok-asset", admin.user.id, &ag).await;
     let asset_uuid = get_asset_uuid(&mut conn, asset_id).await;
@@ -452,7 +461,11 @@ async fn test_web_asset_detail_allowed_with_access_rule() {
     test_db::cleanup(&mut conn).await;
 }
 
-/// Superuser can view any asset detail without access rules.
+/// Superuser without an access_rule MUST be denied (no more privileged-user
+/// bypass). The asset_detail handler now routes ALL users through the same
+/// `services::access::list_accessible_asset_ids` filter that
+/// `connect_ssh` / `connect_rdp` already enforce, so the previous "blue
+/// Connect button on an unreachable asset" inconsistency cannot happen.
 #[tokio::test]
 #[serial]
 async fn test_web_asset_detail_superuser_bypass() {
@@ -472,7 +485,9 @@ async fn test_web_asset_detail_superuser_bypass() {
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .await;
 
-    assert_status(&response, 200);
+    // Admin has no access_rule for this asset_group → flash redirect to
+    // /assets, exactly like a regular user would experience.
+    assert_status(&response, 303);
 
     test_db::cleanup(&mut conn).await;
 }

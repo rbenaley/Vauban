@@ -285,43 +285,41 @@ pub async fn asset_list(
         .unwrap_or(1)
         .max(1);
 
-    // Resolve user internal ID for non-admin users (used for access filtering + approval queries)
-    let user_internal_id: Option<i32> = if !auth_user.is_superuser && !auth_user.is_staff {
-        let uid: i32 = crate::schema::users::table
-            .filter(
-                crate::schema::users::uuid
-                    .eq(::uuid::Uuid::parse_str(&auth_user.uuid).unwrap_or_default()),
-            )
-            .select(crate::schema::users::id)
-            .first(&mut conn)
-            .await
-            .map_err(|_| AppError::Authorization("User not found".to_string()))?;
-        Some(uid)
-    } else {
-        None
-    };
-
-    // Resolve accessible asset IDs once for non-admin users
-    let accessible_ids: Option<Vec<i32>> = if let Some(uid) = user_internal_id {
-        let ids = crate::services::access::list_accessible_asset_ids(
-            &state.access_client,
-            &mut conn,
-            uid,
+    // Resolve user internal ID for ALL users (incl. superuser/staff) so that
+    // the listing, the per-row "Request Access" badge, and the connect
+    // handler all consult the same access policy. The historical
+    // privileged-user bypass produced a UI that pretended access rules
+    // didn't apply to admins, while the connect handler (since febd388)
+    // and `submit_access_request` enforced them anyway — manifesting as
+    // a blue "Connect" button that, on submit, was rejected with a
+    // bogus "MFA code is required" prompt.
+    let user_internal_id: i32 = crate::schema::users::table
+        .filter(
+            crate::schema::users::uuid
+                .eq(::uuid::Uuid::parse_str(&auth_user.uuid).unwrap_or_default()),
         )
-        .await?;
-        Some(ids)
-    } else {
-        None
-    };
+        .select(crate::schema::users::id)
+        .first(&mut conn)
+        .await
+        .map_err(|_| AppError::Authorization("User not found".to_string()))?;
+
+    // Resolve accessible asset IDs once for everyone, including superusers.
+    // The bootstrap superuser MUST own at least one access_rule for itself
+    // (the Vauban admin runbook covers this); otherwise its asset list will
+    // legitimately be empty, mirroring what the proxy would enforce.
+    let accessible_ids: Vec<i32> = crate::services::access::list_accessible_asset_ids(
+        &state.access_client,
+        &mut conn,
+        user_internal_id,
+    )
+    .await?;
 
     // Build count query with the same filters
     let mut count_query = schema_assets::table
         .filter(schema_assets::is_deleted.eq(false))
         .into_boxed();
 
-    if let Some(ref ids) = accessible_ids {
-        count_query = count_query.filter(schema_assets::id.eq_any(ids.clone()));
-    }
+    count_query = count_query.filter(schema_assets::id.eq_any(accessible_ids.clone()));
     if let Some(ref search) = search_filter
         && !search.is_empty()
     {
@@ -359,9 +357,7 @@ pub async fn asset_list(
         .filter(schema_assets::is_deleted.eq(false))
         .into_boxed();
 
-    if let Some(ref ids) = accessible_ids {
-        query = query.filter(schema_assets::id.eq_any(ids.clone()));
-    }
+    query = query.filter(schema_assets::id.eq_any(accessible_ids.clone()));
     if let Some(ref search) = search_filter
         && !search.is_empty()
     {
@@ -405,7 +401,11 @@ pub async fn asset_list(
 
     let displayed_asset_ids: Vec<i32> = db_assets.iter().map(|(id, ..)| *id).collect();
 
-    let (approval_set, approved_set) = if let Some(uid) = user_internal_id {
+    // Compute the approval / approved sets for ALL users (incl. superusers).
+    // Skipping this step for admins is what made the row render the blue
+    // "Connect" button on assets that actually require approval — see the
+    // top-of-handler comment.
+    let (approval_set, approved_set) = {
         use crate::schema::{access_rules, asset_asset_groups, user_groups};
 
         let approval_ids: Vec<i32> = access_rules::table
@@ -416,7 +416,7 @@ pub async fn asset_list(
             .inner_join(
                 user_groups::table.on(user_groups::group_id.eq(access_rules::user_group_id)),
             )
-            .filter(user_groups::user_id.eq(uid))
+            .filter(user_groups::user_id.eq(user_internal_id))
             .filter(access_rules::is_active.eq(true))
             .filter(access_rules::require_approval.eq(true))
             .filter(asset_asset_groups::asset_id.eq_any(&displayed_asset_ids))
@@ -427,7 +427,7 @@ pub async fn asset_list(
             .unwrap_or_default();
 
         let approved_ids: Vec<i32> = proxy_sessions::table
-            .filter(proxy_sessions::user_id.eq(uid))
+            .filter(proxy_sessions::user_id.eq(user_internal_id))
             .filter(proxy_sessions::status.eq("approved"))
             .filter(
                 proxy_sessions::expires_at
@@ -444,11 +444,6 @@ pub async fn asset_list(
         let a_set: std::collections::HashSet<i32> = approval_ids.into_iter().collect();
         let p_set: std::collections::HashSet<i32> = approved_ids.into_iter().collect();
         (a_set, p_set)
-    } else {
-        (
-            std::collections::HashSet::new(),
-            std::collections::HashSet::new(),
-        )
     };
 
     let asset_items: Vec<AssetListItem> = db_assets
@@ -786,23 +781,29 @@ pub async fn asset_detail(
 
     let asset_name = asset_model.name.clone();
 
-    // Instance-level access control: non-admin users must have an access rule
-    if !auth_user.is_superuser && !auth_user.is_staff {
-        let user_internal_id: i32 = match crate::schema::users::table
-            .filter(
-                crate::schema::users::uuid
-                    .eq(::uuid::Uuid::parse_str(&auth_user.uuid).unwrap_or_default()),
-            )
-            .select(crate::schema::users::id)
-            .first(&mut conn)
-            .await
-        {
-            Ok(id) => id,
-            Err(_) => return flash_redirect(flash.error("Access denied"), "/assets"),
-        };
+    // Instance-level access control: EVERY user must have a matching access
+    // rule, including superusers and staff. Removing the historical
+    // privileged-user bypass aligns this view with the policy that
+    // `connect_ssh`/`connect_rdp` actually enforce (commit febd388):
+    // otherwise the UI would dangle a "Connect" button at admins for an
+    // asset that the proxy will refuse on the same access-rule check,
+    // surfacing as the inconsistent flow that produced the spurious
+    // "MFA code is required" prompt for superusers. The bootstrap
+    // superuser MUST own at least one access_rule for itself.
+    let user_internal_id: i32 = match crate::schema::users::table
+        .filter(
+            crate::schema::users::uuid
+                .eq(::uuid::Uuid::parse_str(&auth_user.uuid).unwrap_or_default()),
+        )
+        .select(crate::schema::users::id)
+        .first(&mut conn)
+        .await
+    {
+        Ok(id) => id,
+        Err(_) => return flash_redirect(flash.error("Access denied"), "/assets"),
+    };
 
-        let asset_internal_id = asset_model.id;
-
+    {
         let accessible_ids = crate::services::access::list_accessible_asset_ids(
             &state.access_client,
             &mut conn,
@@ -811,61 +812,50 @@ pub async fn asset_detail(
         .await
         .unwrap_or_default();
 
-        if !accessible_ids.contains(&asset_internal_id) {
+        if !accessible_ids.contains(&asset_model.id) {
             return flash_redirect(flash.error("Access denied"), "/assets");
         }
     }
 
-    // Determine JIT flags from access rules for the current user
-    let (require_approval, require_mfa_from_rule, has_approved_session) =
-        if !auth_user.is_superuser && !auth_user.is_staff {
-            let user_internal_id: i32 = crate::schema::users::table
+    // Determine JIT flags from access rules using the SAME policy the
+    // connect handler will re-apply. No superuser bypass: see the
+    // comment above for the rationale.
+    let (require_approval, require_mfa_from_rule, has_approved_session) = {
+        let access_result = crate::services::access::can_access_asset(
+            &state.access_client,
+            &mut conn,
+            user_internal_id,
+            asset_model.id,
+            asset_model.asset_type.as_str(),
+        )
+        .await
+        .unwrap_or_else(|_| crate::services::access::AccessCheckResult::denied());
+
+        let approved = if access_result.require_approval {
+            use crate::schema::proxy_sessions;
+            proxy_sessions::table
+                .filter(proxy_sessions::user_id.eq(user_internal_id))
+                .filter(proxy_sessions::asset_id.eq(asset_model.id))
+                .filter(proxy_sessions::status.eq("approved"))
                 .filter(
-                    crate::schema::users::uuid
-                        .eq(::uuid::Uuid::parse_str(&auth_user.uuid).unwrap_or_default()),
+                    proxy_sessions::expires_at
+                        .is_null()
+                        .or(proxy_sessions::expires_at.gt(diesel::dsl::now)),
                 )
-                .select(crate::schema::users::id)
-                .first(&mut conn)
+                .select(proxy_sessions::uuid)
+                .first::<::uuid::Uuid>(&mut conn)
                 .await
-                .unwrap_or(0);
-
-            let access_result = crate::services::access::can_access_asset(
-                &state.access_client,
-                &mut conn,
-                user_internal_id,
-                asset_model.id,
-                asset_model.asset_type.as_str(),
-            )
-            .await
-            .unwrap_or_else(|_| crate::services::access::AccessCheckResult::denied());
-
-            let approved = if access_result.require_approval {
-                use crate::schema::proxy_sessions;
-                proxy_sessions::table
-                    .filter(proxy_sessions::user_id.eq(user_internal_id))
-                    .filter(proxy_sessions::asset_id.eq(asset_model.id))
-                    .filter(proxy_sessions::status.eq("approved"))
-                    .filter(
-                        proxy_sessions::expires_at
-                            .is_null()
-                            .or(proxy_sessions::expires_at.gt(diesel::dsl::now)),
-                    )
-                    .select(proxy_sessions::uuid)
-                    .first::<::uuid::Uuid>(&mut conn)
-                    .await
-                    .is_ok()
-            } else {
-                false
-            };
-
-            (
-                access_result.require_approval,
-                access_result.require_mfa,
-                approved,
-            )
+                .is_ok()
         } else {
-            (false, false, false)
+            false
         };
+
+        (
+            access_result.require_approval,
+            access_result.require_mfa,
+            approved,
+        )
+    };
 
     // Extract SSH host key fingerprint and mismatch status from connection_config
     let asset_connection_config = &asset_model.connection_config;

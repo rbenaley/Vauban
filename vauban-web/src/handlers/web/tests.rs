@@ -1361,3 +1361,174 @@ fn test_connect_rdp_no_longer_bypasses_access_rules_for_privileged_users() {
          every user (the policy lookup itself stays; only the bypass is gone)"
     );
 }
+
+// ============================================================================
+// SECURITY: Structural guard for the rendering / request-submission surfaces
+// that decide whether a user sees the orange "Request Access" button or the
+// blue "Connect" button, and whether `submit_access_request` enforces MFA.
+// ============================================================================
+//
+// Three layers used to disagree on whether superusers / staff are subject to
+// access rules:
+//
+//   1. `asset_detail` and `asset_list` (handlers/web/assets.rs) used to
+//      hardcode `require_approval = false` and `require_mfa = false` for
+//      privileged users, rendering a blue "Connect" button on assets that
+//      actually required approval.
+//   2. `connect_ssh` / `connect_rdp` (since febd388) correctly consult the
+//      real policy and redirect to `/#request-access` when approval is
+//      required.
+//   3. `submit_access_request` (handlers/web/sessions.rs) used to force
+//      `require_mfa: true, require_approval: true` for privileged users in
+//      its else-branch, demanding a 6-digit code that the rendering layer
+//      had simultaneously hidden.
+//
+// The combination produced the visible failure: a superuser clicked a blue
+// "Connect" button on an approval-protected asset, was redirected to the
+// access-request modal (with no MFA field, because `asset.require_mfa` was
+// false), submitted a justification, and got "MFA code is required (6
+// digits)" from the backend. The fix unifies the three surfaces on a single
+// `vauban-access` policy lookup. The guards below catch any regression.
+
+fn asset_detail_source() -> &'static str {
+    let full = include_str!("assets.rs");
+    let start = full
+        .find("pub async fn asset_detail(")
+        .expect("asset_detail handler must exist in handlers/web/assets.rs");
+    let after = &full[start..];
+    let end = after
+        .find("\npub async fn ")
+        .or_else(|| after.find("\npub fn "))
+        .unwrap_or(after.len());
+    &after[..end]
+}
+
+fn asset_list_source() -> &'static str {
+    let full = include_str!("assets.rs");
+    let start = full
+        .find("pub async fn asset_list(")
+        .expect("asset_list handler must exist in handlers/web/assets.rs");
+    let after = &full[start..];
+    let end = after
+        .find("\npub async fn ")
+        .or_else(|| after.find("\npub fn "))
+        .unwrap_or(after.len());
+    &after[..end]
+}
+
+fn submit_access_request_source() -> &'static str {
+    let full = include_str!("sessions.rs");
+    let start = full
+        .find("pub async fn submit_access_request(")
+        .expect("submit_access_request handler must exist in handlers/web/sessions.rs");
+    let after = &full[start..];
+    let end = after
+        .find("\npub async fn ")
+        .or_else(|| after.find("\npub fn "))
+        .unwrap_or(after.len());
+    &after[..end]
+}
+
+const FORBIDDEN_PRIV_BYPASSES: &[&str] = &[
+    "if !auth_user.is_superuser && !auth_user.is_staff",
+    "if !auth_user.is_staff && !auth_user.is_superuser",
+    "auth_user.is_superuser || auth_user.is_staff",
+    "auth_user.is_staff || auth_user.is_superuser",
+];
+
+#[test]
+fn test_asset_detail_no_longer_bypasses_access_rules_for_privileged_users() {
+    let body = asset_detail_source();
+    for pat in FORBIDDEN_PRIV_BYPASSES {
+        assert!(
+            !body.contains(pat),
+            "asset_detail MUST NOT short-circuit the access_rule lookup on \
+             is_superuser / is_staff (`{}` reintroduced). The rendering layer \
+             must agree with connect_ssh/connect_rdp and submit_access_request \
+             on whether the user needs to request approval, otherwise the UI \
+             will show a blue 'Connect' button on an approval-protected asset \
+             and the backend will then reject the submission with a bogus \
+             'MFA code is required' error.",
+            pat
+        );
+    }
+    assert!(
+        body.contains("can_access_asset"),
+        "asset_detail must call services::access::can_access_asset for every \
+         user so that `require_approval` / `require_mfa` reflect the real \
+         policy"
+    );
+    assert!(
+        body.contains("list_accessible_asset_ids"),
+        "asset_detail must call services::access::list_accessible_asset_ids \
+         for every user so the instance-level access filter applies uniformly"
+    );
+}
+
+#[test]
+fn test_asset_list_no_longer_bypasses_access_rules_for_privileged_users() {
+    let body = asset_list_source();
+    for pat in FORBIDDEN_PRIV_BYPASSES {
+        assert!(
+            !body.contains(pat),
+            "asset_list MUST NOT short-circuit the access_rule lookup on \
+             is_superuser / is_staff (`{}` reintroduced). The per-row \
+             `requires_request` flag must be computed from the real policy so \
+             the orange 'Request Access' button appears for every user that \
+             needs approval, including admins.",
+            pat
+        );
+    }
+    assert!(
+        body.contains("list_accessible_asset_ids"),
+        "asset_list must call services::access::list_accessible_asset_ids for \
+         every user so the listing is filtered by the same policy the \
+         connect handler enforces"
+    );
+}
+
+#[test]
+fn test_submit_access_request_no_longer_hardcodes_mfa_for_privileged_users() {
+    let body = submit_access_request_source();
+    for pat in FORBIDDEN_PRIV_BYPASSES {
+        assert!(
+            !body.contains(pat),
+            "submit_access_request MUST NOT special-case is_superuser / \
+             is_staff (`{}` reintroduced). The previous else-branch \
+             hardcoded `require_mfa: true` and `require_approval: true` for \
+             privileged users, demanding a 6-digit MFA code that the \
+             rendering layer had simultaneously hidden — producing the \
+             visible 'MFA code is required (6 digits)' regression.",
+            pat
+        );
+    }
+    assert!(
+        body.contains("can_access_asset"),
+        "submit_access_request must call services::access::can_access_asset \
+         for every user (no privileged-user shortcut) so that MFA is only \
+         demanded when the access rule actually requires it"
+    );
+    // Defensive: catch the exact struct-literal shape of the inverted
+    // superuser bypass (bug #21). We strip line-comments first so the
+    // doc-comment on this very fix doesn't trip the assertion.
+    let code_only: String = body
+        .lines()
+        .map(|line| {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") {
+                ""
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !code_only.contains("require_mfa: true")
+            || !code_only.contains("require_approval: true"),
+        "submit_access_request must not hardcode \
+         `AccessCheckResult {{ require_mfa: true, require_approval: true, .. }}` \
+         (the inverted superuser bypass that produced the spurious MFA prompt). \
+         Always derive these flags from `services::access::can_access_asset`."
+    );
+}

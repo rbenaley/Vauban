@@ -15,7 +15,8 @@ use crate::fixtures::{
     add_user_to_vauban_group, create_admin_user, create_approved_session, create_simple_admin_user,
     create_simple_ssh_asset, create_simple_user, create_test_access_rule_with_constraints,
     create_test_asset_group, create_test_asset_in_group, create_test_rdp_asset,
-    create_test_ssh_asset, create_test_vauban_group, unique_name,
+    create_test_ssh_asset, create_test_vauban_group, grant_user_full_access_to_new_group,
+    unique_name,
 };
 
 // =============================================================================
@@ -690,9 +691,19 @@ async fn test_asset_list_pagination_with_many_assets() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_admin_uuid(&mut conn, admin_id).await;
 
+    // The previous "is_superuser / is_staff" listing-bypass is gone; admins
+    // now require an access_rule to see an asset, like every other user.
+    let ag = grant_user_full_access_to_new_group(
+        &mut conn,
+        admin_id,
+        &unique_name("pg_many"),
+        &["ssh"],
+    )
+    .await;
+
     for i in 0..35 {
         let name = unique_name(&format!("pg_asset_{:03}", i));
-        create_simple_ssh_asset(&mut conn, &name, admin_id).await;
+        create_test_asset_in_group(&mut conn, &name, admin_id, &ag).await;
     }
 
     let token = app
@@ -734,9 +745,17 @@ async fn test_asset_list_page_2() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_admin_uuid(&mut conn, admin_id).await;
 
+    let ag = grant_user_full_access_to_new_group(
+        &mut conn,
+        admin_id,
+        &unique_name("pg_p2"),
+        &["ssh"],
+    )
+    .await;
+
     for i in 0..35 {
         let name = unique_name(&format!("pg2_asset_{:03}", i));
-        create_simple_ssh_asset(&mut conn, &name, admin_id).await;
+        create_test_asset_in_group(&mut conn, &name, admin_id, &ag).await;
     }
 
     let token = app
@@ -883,10 +902,18 @@ async fn test_asset_list_showing_counter_accurate() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_admin_uuid(&mut conn, admin_id).await;
 
+    let ag = grant_user_full_access_to_new_group(
+        &mut conn,
+        admin_id,
+        &unique_name("pg_cnt"),
+        &["ssh"],
+    )
+    .await;
+
     let search_tag = unique_name("pgcnt");
     for i in 0..35 {
         let name = format!("{}_asset_{:03}", search_tag, i);
-        create_simple_ssh_asset(&mut conn, &name, admin_id).await;
+        create_test_asset_in_group(&mut conn, &name, admin_id, &ag).await;
     }
 
     let token = app
@@ -1079,7 +1106,12 @@ async fn test_asset_button_shows_connect_after_approval() {
     test_db::cleanup(&mut conn).await;
 }
 
-/// Admin user should always see "Connect" even if approval rules exist.
+/// Admin user is now subject to the same access rules as any other user
+/// (the historical "always Connect for admins" bypass was removed).
+/// When the matching rule has `require_approval = true`, an admin must
+/// see the orange "Request" button — exactly like a regular user — so
+/// the UI does not lie about what `connect_ssh` / `connect_rdp` will
+/// enforce.
 #[tokio::test]
 #[serial]
 async fn test_asset_button_shows_connect_for_admin() {
@@ -1092,6 +1124,7 @@ async fn test_asset_button_shows_connect_for_admin() {
 
     let ug_uuid = create_test_vauban_group(&mut conn, "btn_ug_adm").await;
     let ag_uuid = create_test_asset_group(&mut conn, &unique_name("btn_ag_adm")).await;
+    add_user_to_vauban_group(&mut conn, admin_id, &ug_uuid).await;
     let _asset_id =
         create_test_asset_in_group(&mut conn, &unique_name("btn_asset_adm"), admin_id, &ag_uuid)
             .await;
@@ -1102,7 +1135,7 @@ async fn test_asset_button_shows_connect_for_admin() {
         &ag_uuid,
         &["ssh"],
         false,
-        true,
+        true, // require_approval
         Some(900),
     )
     .await;
@@ -1120,12 +1153,10 @@ async fn test_asset_button_shows_connect_for_admin() {
     assert_status(&response, 200);
     let body = response.text();
     assert!(
-        body.contains("Connect"),
-        "admin should always see Connect button"
-    );
-    assert!(
-        !body.contains("#request-access"),
-        "admin should not see Request link"
+        body.contains("#request-access"),
+        "admin must see the Request link when the matching rule requires \
+         approval — no more privileged-user shortcut to a blue Connect \
+         button on an approval-protected asset."
     );
 
     test_db::cleanup(&mut conn).await;

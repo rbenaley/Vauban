@@ -1307,6 +1307,27 @@ pub async fn create_expired_auth_session(
 // Access Rule fixtures
 // =============================================================================
 
+/// Bootstrap a fresh user-group + asset-group + (no-MFA, no-approval)
+/// access-rule for `user_id` and return the asset-group UUID. Subsequent
+/// assets must be inserted with `create_test_asset_in_group` (or its `_type`
+/// variant) using the returned UUID for them to be visible to the user.
+///
+/// Required because the historical "is_superuser / is_staff" listing-bypass
+/// was removed: every user (including admins) must now have an access_rule
+/// to see / open an asset, mirroring what the proxy enforces.
+pub async fn grant_user_full_access_to_new_group(
+    conn: &mut AsyncPgConnection,
+    user_id: i32,
+    name_hint: &str,
+    protocols: &[&str],
+) -> Uuid {
+    let ug = create_test_vauban_group(conn, &format!("{}-ug", name_hint)).await;
+    let ag = create_test_asset_group(conn, &format!("{}-ag", name_hint)).await;
+    add_user_to_vauban_group(conn, user_id, &ug).await;
+    create_test_access_rule(conn, &ug, &ag, protocols).await;
+    ag
+}
+
 /// Create a test access rule linking a user group to an asset group.
 pub async fn create_test_access_rule(
     conn: &mut AsyncPgConnection,
