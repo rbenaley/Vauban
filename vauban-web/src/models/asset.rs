@@ -221,6 +221,11 @@ pub struct AssetGroup {
     pub updated_at: DateTime<Utc>,
     pub is_deleted: bool,
     pub deleted_at: Option<DateTime<Utc>>,
+    /// Discriminator for ordinary user-managed groups (`"static"`) vs.
+    /// system-managed virtual groups (`"all"` and any future variant).
+    /// See [`shared::messages::ALL_ASSETS_GROUP_UUID`] and the
+    /// `20260424000000_virtual_asset_group_all` migration.
+    pub kind: String,
 }
 
 impl Asset {
@@ -668,6 +673,7 @@ mod tests {
             updated_at: Utc::now(),
             is_deleted: false,
             deleted_at: None,
+            kind: "static".to_string(),
         };
 
         let debug_str = format!("{:?}", group);
@@ -691,6 +697,7 @@ mod tests {
             updated_at: Utc::now(),
             is_deleted: false,
             deleted_at: None,
+            kind: "static".to_string(),
         };
 
         let cloned = group.clone();
@@ -714,6 +721,7 @@ mod tests {
             updated_at: Utc::now(),
             is_deleted: false,
             deleted_at: None,
+            kind: "static".to_string(),
         };
 
         let json = unwrap_ok!(serde_json::to_string(&group));

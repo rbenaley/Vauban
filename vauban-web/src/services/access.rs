@@ -58,9 +58,27 @@ pub async fn list_accessible_asset_ids(
         }
     };
 
+    let virtual_id = crate::services::virtual_group::virtual_asset_group_id();
     let mut all_ids = Vec::new();
     for entry in entries {
         if entry.protocols.is_empty() {
+            continue;
+        }
+        // Special-case the virtual "All assets" group: instead of joining
+        // through `asset_asset_groups` (which has zero rows for the
+        // virtual id, by trigger invariant), enumerate every non-deleted
+        // asset that matches one of the rule's allowed protocols. Same
+        // soft-delete and protocol semantics as a static rule, just with
+        // a dynamic membership.
+        if entry.asset_group_id == virtual_id {
+            let ids: Vec<i32> = assets::table
+                .filter(assets::is_deleted.eq(false))
+                .filter(assets::asset_type.eq_any(&entry.protocols))
+                .select(assets::id)
+                .load(conn)
+                .await
+                .map_err(AppError::Database)?;
+            all_ids.extend(ids);
             continue;
         }
         let ids: Vec<i32> = assets::table
@@ -112,12 +130,22 @@ pub async fn can_access_asset(
             _ => AppError::Database(e),
         })?;
 
-    let asset_group_ids: Vec<i32> = asset_asset_groups::table
+    let mut asset_group_ids: Vec<i32> = asset_asset_groups::table
         .filter(asset_asset_groups::asset_id.eq(asset_id))
         .select(asset_asset_groups::asset_group_id)
         .load(conn)
         .await
         .map_err(AppError::Database)?;
+
+    // Defense-in-depth: always include the virtual "All assets" id so a
+    // rule on the virtual group is considered even for orphan assets
+    // (those that belong to no static group). vauban-access also adds
+    // the virtual id symmetrically in `handle_check_access_by_uuid`, so
+    // the proxy-side AccessGuard re-check stays in lock-step.
+    let virtual_id = crate::services::virtual_group::virtual_asset_group_id();
+    if !asset_group_ids.contains(&virtual_id) {
+        asset_group_ids.push(virtual_id);
+    }
 
     if asset_group_ids.is_empty() {
         return Ok(AccessCheckResult::denied());

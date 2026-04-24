@@ -71,6 +71,8 @@ diesel::table! {
         updated_at -> Timestamptz,
         is_deleted -> Bool,
         deleted_at -> Nullable<Timestamptz>,
+        #[max_length = 16]
+        kind -> Varchar,
     }
 }
 

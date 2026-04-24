@@ -4,10 +4,19 @@ use askama::Template;
 use crate::templates::base::{FlashMessage, UserContext, VaubanConfig};
 
 /// Select option for user groups and asset groups dropdowns.
+///
+/// `is_virtual` is set to `true` only for the singleton "All assets" virtual
+/// asset group. The template uses it to render a "Virtual" badge so the
+/// operator distinguishes it from a regular static group, and to surface a
+/// dynamic asset count.
 #[derive(Debug, Clone)]
 pub struct GroupOption {
     pub id: i32,
     pub name: String,
+    pub is_virtual: bool,
+    /// Optional dynamic asset count, only populated for virtual asset
+    /// groups (where membership is resolved at decision time, not stored).
+    pub virtual_asset_count: Option<i64>,
 }
 
 /// Form data for access rule creation (pre-populated on validation error).
@@ -86,9 +95,25 @@ mod tests {
         let opt = GroupOption {
             id: 1,
             name: "Test Group".to_string(),
+            is_virtual: false,
+            virtual_asset_count: None,
         };
         assert_eq!(opt.id, 1);
         assert_eq!(opt.name, "Test Group");
+        assert!(!opt.is_virtual);
+        assert!(opt.virtual_asset_count.is_none());
+    }
+
+    #[test]
+    fn test_group_option_virtual() {
+        let opt = GroupOption {
+            id: 99,
+            name: "All assets".to_string(),
+            is_virtual: true,
+            virtual_asset_count: Some(42),
+        };
+        assert!(opt.is_virtual);
+        assert_eq!(opt.virtual_asset_count, Some(42));
     }
 
     #[test]
@@ -116,10 +141,14 @@ mod tests {
             user_groups: vec![GroupOption {
                 id: 1,
                 name: "Users".to_string(),
+                is_virtual: false,
+                virtual_asset_count: None,
             }],
             asset_groups: vec![GroupOption {
                 id: 1,
                 name: "Servers".to_string(),
+                is_virtual: false,
+                virtual_asset_count: None,
             }],
         };
         let html = template

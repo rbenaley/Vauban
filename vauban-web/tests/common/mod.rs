@@ -99,6 +99,20 @@ impl TestApp {
             None, 1000, // High limit for tests
         ));
 
+        // Initialize vauban-web's virtual-group OnceLock so the
+        // web-side resolver in `services::access` knows the virtual
+        // "All assets" id. Without this call,
+        // `list_accessible_asset_ids` and `can_access_asset` would
+        // never recognize the special-case row in tests.
+        {
+            let mut conn = unwrap_ok!(db_pool.get().await);
+            if let Err(e) = vauban_web::services::virtual_group::init_or_die(&mut conn).await {
+                eprintln!(
+                    "test app: failed to init vauban-web virtual_group OnceLock: {e:?}"
+                );
+            }
+        }
+
         // Spawn the in-process vauban-access service (real Casbin enforcer
         // + real IPC pipes). vauban-web requires a live `access_client` now
         // that the standalone fallback has been removed.
@@ -845,6 +859,17 @@ pub mod ipc_test_service {
         };
 
         let enforcer = load_test_enforcer(&rt);
+
+        // Initialize vauban-access's virtual-group OnceLock from the test
+        // database. The handlers that special-case the "All assets"
+        // virtual group rely on this resolved id, so without this call
+        // policy-resolution tests would silently fall back to the
+        // UNINITIALIZED_VIRTUAL_ID sentinel and miss every virtual rule.
+        if let Err(e) = rt.block_on(vauban_access::virtual_group::init_or_die(&pool)) {
+            eprintln!(
+                "test access service: failed to init virtual_group OnceLock: {e:?}"
+            );
+        }
 
         loop {
             match channel.recv() {

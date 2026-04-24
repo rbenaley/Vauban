@@ -241,6 +241,26 @@ pub struct VaubanGroupInfo {
     pub member_count: i64,
 }
 
+/// Reserved UUID of the singleton "All assets" virtual asset group.
+///
+/// Mnemonic: the suffix `…0a11` reads as "all". The row is seeded by the
+/// `20260424000000_virtual_asset_group_all` migration with `kind = "all"`,
+/// guarded by Postgres triggers (no membership rows, no mutation, no
+/// deletion), and resolved at access-decision time to every non-deleted
+/// asset (subject to the rule's `allowed_protocols` filter).
+///
+/// `vauban-access` and `vauban-web` both load the row's internal `id` once
+/// at boot via `OnceLock` and fail loud if it is missing.
+pub const ALL_ASSETS_GROUP_UUID: &str = "00000000-0000-0000-0000-000000000a11";
+
+/// Marker value used by [`AssetGroupInfo::kind`] for ordinary user-managed
+/// groups. The DB CHECK constraint pins the same vocabulary.
+pub const ASSET_GROUP_KIND_STATIC: &str = "static";
+
+/// Marker value used by [`AssetGroupInfo::kind`] for the virtual "All
+/// assets" singleton.
+pub const ASSET_GROUP_KIND_ALL: &str = "all";
+
 /// Info about an asset group.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssetGroupInfo {
@@ -253,6 +273,16 @@ pub struct AssetGroupInfo {
     pub icon: String,
     pub created_at: String,
     pub updated_at: String,
+    /// Discriminator: [`ASSET_GROUP_KIND_STATIC`] for ordinary groups,
+    /// [`ASSET_GROUP_KIND_ALL`] for the virtual "All assets" singleton.
+    /// Defaulted via `serde(default)` so older serialized payloads still
+    /// deserialize as static groups (forward-compatible IPC shape).
+    #[serde(default = "default_asset_group_kind")]
+    pub kind: String,
+}
+
+fn default_asset_group_kind() -> String {
+    ASSET_GROUP_KIND_STATIC.to_string()
 }
 
 /// Minimal group info for form dropdowns.
@@ -261,6 +291,17 @@ pub struct GroupOption {
     pub id: i32,
     pub uuid: String,
     pub name: String,
+    /// Discriminator for ordinary user-managed groups
+    /// ([`ASSET_GROUP_KIND_STATIC`]) vs. system-managed virtual groups
+    /// (e.g. [`ASSET_GROUP_KIND_ALL`]). Defaulted via `serde(default)` so
+    /// older payloads still deserialize as static groups.
+    ///
+    /// Only the access-rule editor's asset-group dropdown ever surfaces
+    /// virtual groups (and renders a "Virtual" badge accordingly); every
+    /// other dropdown caller leaves [`AccessRequest::ListAssetGroupOptions::include_virtual`]
+    /// at its default `false` so virtual groups stay hidden.
+    #[serde(default = "default_asset_group_kind")]
+    pub kind: String,
 }
 
 /// Default page size for IPC list requests when `limit` is 0.
@@ -364,6 +405,15 @@ pub enum AccessRequest {
     },
     ListAssetGroups {
         page: IpcPageParams,
+        /// When `true`, virtual asset groups (e.g. "All assets") are
+        /// included in the result alongside ordinary static groups; only
+        /// the access-rule editor opts in. Every other call site (asset-
+        /// group index, dropdowns scoped to user-managed groups, etc.)
+        /// must leave this `false`.
+        ///
+        /// `serde(default)` keeps older serialized payloads compatible.
+        #[serde(default)]
+        include_virtual: bool,
     },
     UpdateAssetGroup {
         uuid: String,
@@ -382,6 +432,13 @@ pub enum AccessRequest {
     },
     ListAssetGroupOptions {
         page: IpcPageParams,
+        /// When `true`, virtual asset groups (e.g. "All assets") are
+        /// included in the dropdown payload alongside ordinary static
+        /// groups. Only the access-rule create/edit editor opts in.
+        ///
+        /// `serde(default)` keeps older callers binary-compatible.
+        #[serde(default)]
+        include_virtual: bool,
     },
 
     CheckAccessMulti {
@@ -3837,7 +3894,10 @@ mod tests {
             AccessRequest::GetAssetGroup {
                 uuid: "u".to_string(),
             },
-            AccessRequest::ListAssetGroups { page: p },
+            AccessRequest::ListAssetGroups {
+                page: p,
+                include_virtual: false,
+            },
             AccessRequest::UpdateAssetGroup {
                 uuid: "u".to_string(),
                 name: "ag".to_string(),
@@ -3850,7 +3910,10 @@ mod tests {
                 uuid: "u".to_string(),
             },
             AccessRequest::ListUserGroupOptions { page: p },
-            AccessRequest::ListAssetGroupOptions { page: p },
+            AccessRequest::ListAssetGroupOptions {
+                page: p,
+                include_virtual: false,
+            },
         ];
         assert_eq!(requests.len(), 25);
         for req in requests {
@@ -3943,6 +4006,7 @@ mod tests {
                 icon: "server".to_string(),
                 created_at: "now".to_string(),
                 updated_at: "now".to_string(),
+                kind: ASSET_GROUP_KIND_STATIC.to_string(),
             })),
             AccessResponse::AssetGroupPage(IpcPage {
                 items: vec![],
@@ -4132,7 +4196,10 @@ mod tests {
             (
                 "ListAssetGroups",
                 19,
-                AccessRequest::ListAssetGroups { page: p },
+                AccessRequest::ListAssetGroups {
+                    page: p,
+                    include_virtual: false,
+                },
             ),
             (
                 "UpdateAssetGroup",
@@ -4159,7 +4226,10 @@ mod tests {
             (
                 "ListAssetGroupOptions",
                 23,
-                AccessRequest::ListAssetGroupOptions { page: p },
+                AccessRequest::ListAssetGroupOptions {
+                    page: p,
+                    include_virtual: false,
+                },
             ),
             (
                 "CheckAccessMulti",

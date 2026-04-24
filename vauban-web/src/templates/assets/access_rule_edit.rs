@@ -98,10 +98,14 @@ mod tests {
             user_groups: vec![GroupOption {
                 id: 1,
                 name: "Users".to_string(),
+                is_virtual: false,
+                virtual_asset_count: None,
             }],
             asset_groups: vec![GroupOption {
                 id: 2,
                 name: "Servers".to_string(),
+                is_virtual: false,
+                virtual_asset_count: None,
             }],
         };
         let result = template.render();

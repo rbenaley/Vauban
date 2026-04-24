@@ -771,7 +771,37 @@ lock; the inner `HashMap` is still valid, and turning poisoning into a
 permanent denial-for-everyone would reduce availability without
 improving security.
 
-### 7.3 Type-system invariants
+### 7.3 Virtual "All assets" group resolution
+
+`AccessGuard` is the proxy-side re-check for a per-(user, asset, protocol)
+verdict. The decision it receives from `vauban-access` covers every
+matching `access_rules` row, including rows that target the
+**virtual "All assets" group** — a system-managed singleton in
+`asset_groups` (`kind = 'all'`, reserved UUID
+`00000000-0000-0000-0000-000000000a11`) whose membership is dynamic
+rather than recorded in `asset_asset_groups`.
+
+The shape of the decision does not change; the resolution path
+upstream of `AccessGuard` does:
+
+| Property | Behaviour |
+|----------|-----------|
+| **Dynamic property** | The virtual group resolves at decision time to `SELECT id FROM assets WHERE is_deleted = false`; an asset created after a virtual rule is still covered on the next `CheckAccessByUuid`. |
+| **Soft-delete eviction** | Soft-deleted assets are excluded from the resolution set (same `is_deleted` filter as static-rule resolution). |
+| **Protocol filter** | The rule's `allowed_protocols` is honoured exactly as for static rules: a virtual rule with `allowed_protocols = ['ssh']` does NOT grant RDP. |
+| **OR-aggregation across overlapping rules** | When a virtual rule overlaps a static rule on the same asset, the verdict's `require_mfa`, `require_approval`, and `allowed` flags are OR-aggregated. The conservative bit wins: an MFA-required static rule cannot be undermined by a no-MFA virtual rule. |
+| **`min` aggregation on session duration** | `max_session_duration` is the per-rule cap; the per-asset cap is the **minimum** across all matching rules (virtual + static). Tightest cap wins. |
+| **Inactivity / time bounds** | `is_active = false` and `valid_until < now()` exclude the virtual rule from the candidate set, identically to static rules. |
+
+The upshot for `AccessGuard`: every property the gate already enforces
+for static rules (fail-closed on absence of a rule, fail-closed on the
+denied verdict, defense-in-depth re-check) applies unchanged when the
+verdict was produced via a virtual rule. The Tier 3 policy-resolution
+suite asserts this parity end-to-end (`p30_accessguard_parity_for_virtual_rule`,
+`p31_accessguard_denies_wrong_protocol_on_virtual_rule`) for both SSH
+and RDP proxies.
+
+### 7.4 Type-system invariants
 
 The module leans on Rust's type system to make fail-open configurations
 either unrepresentable or unattainable through casual refactors:

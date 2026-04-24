@@ -600,7 +600,35 @@ let matching_rules = access_rules::table
 
 All CRUD operations in `vauban-access` use the Diesel DSL exclusively. The only raw SQL fragments are the `valid_from`/`valid_until` time window checks, which use `sql::<SqlBool>` because Diesel does not have a native DSL expression for `IS NULL OR column <= NOW()` in a single filter.
 
-### 6.5 Accessible Groups Listing
+### 6.5 Virtual "All assets" Group
+
+For policies that should apply to *every* asset without forcing the operator to maintain a manual catch-all asset group, Vauban exposes a single, system-managed virtual group named **"All assets"**. It lives as a real row in `asset_groups` (so existing FKs and IPC payloads continue to work unchanged) but carries `kind = 'all'` and the reserved UUID `00000000-0000-0000-0000-000000000a11`.
+
+```mermaid
+flowchart LR
+    AccessRule["access_rules row<br/>asset_group_id = ALL_ID"]
+    VirtualRow["asset_groups row<br/>kind='all', reserved UUID<br/>(only ONE in the table)"]
+    NoMembers["asset_asset_groups<br/>(forbidden: trigger raises)"]
+    LiveAssets["assets WHERE is_deleted=false<br/>(resolved at decision time)"]
+
+    AccessRule --> VirtualRow
+    VirtualRow -.->|"has zero rows<br/>(invariant)"| NoMembers
+    VirtualRow -.->|"resolves dynamically<br/>at check time"| LiveAssets
+```
+
+| Property | Behaviour |
+|----------|-----------|
+| **Visibility** | Hidden from the asset-group index, the detail page, and every CRUD endpoint. The access-rule editor is the only UI that surfaces it (with a "Virtual — N assets" badge above the static groups). |
+| **Membership** | Cannot be added to or removed from. `asset_asset_groups` rows pointing at the virtual group are blocked by the `block_membership_on_virtual_groups` BEFORE INSERT/UPDATE trigger. |
+| **Mutation** | Cannot be renamed, recoloured, soft-deleted, or hard-deleted. The `block_mutation_on_virtual_groups` BEFORE UPDATE/DELETE trigger raises on every attempt. |
+| **Singleton invariant** | A partial UNIQUE index `uniq_asset_groups_kind_singleton` on `kind WHERE kind <> 'static'` guarantees there is at most one virtual row. |
+| **Boot-time resolution** | Both `vauban-access` and `vauban-web` resolve the row's internal `id` once at boot via a `OnceLock` and refuse to serve traffic if the row is missing or carries the wrong `kind`. |
+| **Dynamic membership** | At decision time, the resolver expands the virtual group to `SELECT id FROM assets WHERE is_deleted = false [AND asset_type IN protocols]`. New assets become visible on the very next access check; soft-deleted assets are evicted. |
+| **Aggregation** | Overlapping virtual + static rules combine OR (`require_mfa`, `require_approval`, `allowed`) and `min` (`max_session_duration`). The conservative bit always wins. |
+
+The defense-in-depth chain — DB triggers + boot-time invariant + UI gating + IPC contract (`AssetGroupInfo.kind`, `ListAssetGroups.include_virtual`) — is documented end-to-end in [`docs/runbooks/virtual_asset_group.md`](../runbooks/virtual_asset_group.md), which also covers the recovery procedure.
+
+### 6.6 Accessible Groups Listing
 
 For the asset list UI, `vauban-access` can return all asset groups a user has access to, along with the allowed protocols for each:
 

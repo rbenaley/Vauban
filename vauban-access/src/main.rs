@@ -18,7 +18,7 @@
 //! - Policy evaluation and caching
 //! - Authorization decisions
 
-use vauban_access::{db, handlers};
+use vauban_access::{db, handlers, virtual_group};
 
 use anyhow::{Context, Result};
 use casbin::prelude::*;
@@ -187,6 +187,15 @@ fn run_service() -> Result<()> {
             "Database pool ready ({} connections pre-established)",
             pool_size
         );
+        // SECURITY (boot invariant): the singleton virtual "All assets"
+        // group MUST exist BEFORE we close the sandbox. If it is missing,
+        // every cryptographic / RBAC path that tries to OR-aggregate a
+        // virtual rule would silently degrade to "no virtual rule applies",
+        // which is a fail-closed behavior (no spurious grant) but masks a
+        // serious DB-state corruption. We refuse to serve traffic in that
+        // state. Recovery: re-run the migration (it's ON CONFLICT-safe).
+        rt.block_on(virtual_group::init_or_die(&pool))
+            .context("Boot-time virtual group invariant check failed")?;
         Some(pool)
     } else {
         warn!("VAUBAN_DATABASE_URL not set, running without database (dev mode)");

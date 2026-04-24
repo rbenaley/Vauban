@@ -448,6 +448,7 @@ mod tests {
             icon: pad(50),
             created_at: rfc.clone(),
             updated_at: rfc,
+            kind: pad(16),
         }
     }
 

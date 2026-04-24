@@ -221,6 +221,37 @@ impl AccessIpcClient {
         }
     }
 
+    /// Re-runs the same RBAC policy check that the proxy-side
+    /// [`shared::access_guard::AccessGuard`] runs at session-open
+    /// time, by sending [`AccessReq::CheckAccessByUuid`] over IPC.
+    ///
+    /// SECURITY: this is the same IPC payload AccessGuard sends, so
+    /// any decision returned here is identical to what the proxy
+    /// would obtain. Used by tests to assert parity, and available
+    /// to other callers that need a UUID-keyed verdict without
+    /// going through the full AccessGuard demultiplexer.
+    pub async fn check_access_by_uuid(
+        &self,
+        user_uuid: &str,
+        asset_uuid: &str,
+        protocol: &str,
+    ) -> AppResult<AccessCheckResult> {
+        let resp = self
+            .send_access_request(AccessReq::CheckAccessByUuid {
+                user_uuid: user_uuid.to_string(),
+                asset_uuid: asset_uuid.to_string(),
+                protocol: protocol.to_string(),
+            })
+            .await?;
+        match resp {
+            AccessResp::AccessChecked(result) => Ok(result),
+            AccessResp::Error(e) => Err(AppError::Ipc(e)),
+            _ => Err(AppError::Ipc(
+                "unexpected response for CheckAccessByUuid".into(),
+            )),
+        }
+    }
+
     pub async fn list_accessible_groups(
         &self,
         user_id: i32,
@@ -505,10 +536,30 @@ impl AccessIpcClient {
         }
     }
 
+    /// List user-managed asset groups (the default UI surface).
+    ///
+    /// Virtual asset groups (e.g. "All assets") are NEVER included by this
+    /// path; if a caller needs them — currently only the access-rule
+    /// editor — it must use [`Self::list_asset_groups_with_virtual`].
     pub async fn list_asset_groups(&self) -> AppResult<Vec<AssetGroupInfo>> {
+        self.list_asset_groups_inner(false).await
+    }
+
+    /// Same as [`Self::list_asset_groups`] but virtual asset groups are
+    /// included. Reserved for the access-rule editor and for boundary
+    /// tests that pin the virtual-group exclusion semantics.
+    pub async fn list_asset_groups_with_virtual(&self) -> AppResult<Vec<AssetGroupInfo>> {
+        self.list_asset_groups_inner(true).await
+    }
+
+    async fn list_asset_groups_inner(
+        &self,
+        include_virtual: bool,
+    ) -> AppResult<Vec<AssetGroupInfo>> {
         self.drain_pages(
             |offset| AccessReq::ListAssetGroups {
                 page: ipc_page(offset),
+                include_virtual,
             },
             |resp| match resp {
                 AccessResp::AssetGroupPage(p) => Ok(p),
@@ -562,7 +613,28 @@ impl AccessIpcClient {
 
     // === Support ===
 
+    /// Load user/asset group options for ordinary dropdowns.
+    ///
+    /// Virtual asset groups stay hidden. The access-rule editor uses
+    /// [`Self::get_group_options_with_virtual`] instead.
     pub async fn get_group_options(&self) -> AppResult<(Vec<GroupOption>, Vec<GroupOption>)> {
+        self.get_group_options_inner(false).await
+    }
+
+    /// Same as [`Self::get_group_options`] but virtual asset groups are
+    /// included in the asset-group list. Reserved for the access-rule
+    /// create/edit forms — every other call site MUST use the plain
+    /// `get_group_options`.
+    pub async fn get_group_options_with_virtual(
+        &self,
+    ) -> AppResult<(Vec<GroupOption>, Vec<GroupOption>)> {
+        self.get_group_options_inner(true).await
+    }
+
+    async fn get_group_options_inner(
+        &self,
+        include_virtual: bool,
+    ) -> AppResult<(Vec<GroupOption>, Vec<GroupOption>)> {
         let user_groups = self
             .drain_pages(
                 |offset| AccessReq::ListUserGroupOptions {
@@ -579,6 +651,7 @@ impl AccessIpcClient {
             .drain_pages(
                 |offset| AccessReq::ListAssetGroupOptions {
                     page: ipc_page(offset),
+                    include_virtual,
                 },
                 |resp| match resp {
                     AccessResp::AssetGroupOptionsPage(p) => Ok(p),

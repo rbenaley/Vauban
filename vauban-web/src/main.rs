@@ -509,6 +509,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await;
 
+    // SECURITY (boot invariant): the singleton "All assets" virtual group
+    // MUST exist before we serve traffic. Without it, list_accessible_asset_ids
+    // and can_access_asset would silently degrade (every virtual rule would
+    // have no effect), making policy evaluation diverge from vauban-access's
+    // own view -- the proxy-side AccessGuard would then disagree with the
+    // UI-side decision, which is a hard "fail loud" condition.
+    {
+        let mut conn = db_pool.get().await.map_err(|e| {
+            eprintln!("Failed to acquire DB connection for virtual-group boot check: {}", e);
+            e
+        })?;
+        vauban_web::services::virtual_group::init_or_die(&mut conn)
+            .await
+            .map_err(|e| {
+                eprintln!(
+                    "Boot-time virtual 'All assets' group invariant check failed: {}. \
+                     Re-run migration 20260424000000_virtual_asset_group_all to recover.",
+                    e
+                );
+                e
+            })?;
+    }
+
     // Register DB pool and Tokio handle with supervisor for admin command processing.
     // The supervisor IPC thread (sync) uses block_on(handle) to run async DB ops.
     if let Some(ref sup) = supervisor_client {

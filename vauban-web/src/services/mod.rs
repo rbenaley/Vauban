@@ -13,6 +13,7 @@ pub mod broadcast;
 pub mod connections;
 pub mod rate_limit;
 pub mod rbac;
+pub mod virtual_group;
 
 pub use access::*;
 pub use asset_membership::*;

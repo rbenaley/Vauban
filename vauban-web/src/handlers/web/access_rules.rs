@@ -6,7 +6,59 @@ use crate::templates::assets::{
     AccessRuleCreateForm, AccessRuleCreateTemplate, AccessRuleDetailData, AccessRuleDetailTemplate,
     AccessRuleEdit, AccessRuleEditTemplate, GroupOption,
 };
-use shared::messages::{AccessRuleData, GroupOption as IpcGroupOption};
+use shared::messages::{AccessRuleData, GroupOption as IpcGroupOption, ASSET_GROUP_KIND_ALL};
+
+/// Map IPC `GroupOption`s into template `GroupOption`s for the access-rule
+/// editor. Virtual asset groups (`kind == "all"`) are flagged with
+/// `is_virtual = true`, so the template can render the "Virtual" badge and
+/// the dynamic asset count, and ordered FIRST in the dropdown so they
+/// stand out from regular static groups.
+///
+/// `dynamic_asset_count` is the live count of non-deleted assets, only
+/// attached to entries flagged `is_virtual`. Pass `None` for user-group
+/// dropdowns (which never contain virtual entries today).
+fn map_group_options(
+    opts: Vec<IpcGroupOption>,
+    dynamic_asset_count: Option<i64>,
+) -> Vec<GroupOption> {
+    let mut mapped: Vec<GroupOption> = opts
+        .into_iter()
+        .map(|g| {
+            let is_virtual = g.kind == ASSET_GROUP_KIND_ALL;
+            GroupOption {
+                id: g.id,
+                name: g.name,
+                is_virtual,
+                virtual_asset_count: if is_virtual { dynamic_asset_count } else { None },
+            }
+        })
+        .collect();
+    mapped.sort_by(|a, b| match (a.is_virtual, b.is_virtual) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+    });
+    mapped
+}
+
+/// Best-effort fetch of the dynamic asset count for the virtual "All
+/// assets" group: `SELECT count(*) FROM assets WHERE is_deleted = false`.
+///
+/// Returns `None` on DB error: the badge is informational only, the
+/// access rule still applies correctly thanks to the boot-time-resolved
+/// virtual id, so a transient failure must not crash the editor.
+async fn live_virtual_asset_count(state: &AppState) -> Option<i64> {
+    use crate::schema::assets::dsl as a;
+    use diesel::prelude::*;
+    use diesel_async::RunQueryDsl;
+    let mut conn = state.db_pool.get().await.ok()?;
+    a::assets
+        .filter(a::is_deleted.eq(false))
+        .count()
+        .get_result::<i64>(&mut conn)
+        .await
+        .ok()
+}
 
 // ============================================================================
 // Form structs
@@ -299,21 +351,9 @@ pub async fn access_rule_create_form(
     }
 
     let client = &state.access_client;
-    let (user_groups, asset_groups) = match client.get_group_options().await {
-        Ok((ug, ag)) => (
-            ug.into_iter()
-                .map(|g: IpcGroupOption| GroupOption {
-                    id: g.id,
-                    name: g.name,
-                })
-                .collect(),
-            ag.into_iter()
-                .map(|g: IpcGroupOption| GroupOption {
-                    id: g.id,
-                    name: g.name,
-                })
-                .collect(),
-        ),
+    let virtual_count = live_virtual_asset_count(&state).await;
+    let (user_groups, asset_groups) = match client.get_group_options_with_virtual().await {
+        Ok((ug, ag)) => (map_group_options(ug, None), map_group_options(ag, virtual_count)),
         Err(e) => {
             tracing::error!("IPC error loading group options: {}", e);
             return flash_redirect(flash.error("Failed to load groups"), "/assets/access");
@@ -481,10 +521,11 @@ pub async fn access_rule_edit(
     }
 
     let client = &state.access_client;
+    let virtual_count = live_virtual_asset_count(&state).await;
     let (rule_edit, rule_name, user_groups, asset_groups) = {
         let (rule_fut, groups_fut) = (
             client.get_access_rule(&uuid_str),
-            client.get_group_options(),
+            client.get_group_options_with_virtual(),
         );
         let (rule_res, groups_res) = tokio::join!(rule_fut, groups_fut);
 
@@ -500,20 +541,7 @@ pub async fn access_rule_edit(
         };
 
         let (ug, ag) = match groups_res {
-            Ok((a, b)) => (
-                a.into_iter()
-                    .map(|g: IpcGroupOption| GroupOption {
-                        id: g.id,
-                        name: g.name,
-                    })
-                    .collect(),
-                b.into_iter()
-                    .map(|g: IpcGroupOption| GroupOption {
-                        id: g.id,
-                        name: g.name,
-                    })
-                    .collect(),
-            ),
+            Ok((a, b)) => (map_group_options(a, None), map_group_options(b, virtual_count)),
             Err(e) => {
                 tracing::error!("IPC error loading group options: {}", e);
                 return flash_redirect(flash.error("Failed to load groups"), "/assets/access");

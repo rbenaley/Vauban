@@ -17,4 +17,5 @@
 
 pub mod db;
 pub mod handlers;
+pub mod virtual_group;
 pub use vauban_db::schema;

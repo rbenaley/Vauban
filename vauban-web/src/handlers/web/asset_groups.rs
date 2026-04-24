@@ -12,6 +12,26 @@ fn format_rfc3339_date(s: &str, fmt: &str) -> String {
         .unwrap_or_else(|| s.to_string())
 }
 
+/// Returns `true` if the given UUID string matches the singleton virtual
+/// "All assets" group. Comparison is done in canonical lowercase hyphenated
+/// form via `Uuid::parse_str`, so input case / whitespace cannot bypass it.
+///
+/// Defense-in-depth: every asset-group mutation handler MUST short-circuit
+/// when this returns true. The DB triggers (`block_membership_on_virtual_groups`
+/// and `block_mutation_on_virtual_groups`) catch what slips through, but
+/// surfacing a clear 403 + flash message is much friendlier than a generic
+/// "trigger raised" error bubbling up from Diesel.
+fn is_virtual_asset_group_uuid(uuid_str: &str) -> bool {
+    use shared::messages::ALL_ASSETS_GROUP_UUID;
+    match (
+        ::uuid::Uuid::parse_str(uuid_str),
+        ::uuid::Uuid::parse_str(ALL_ASSETS_GROUP_UUID),
+    ) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
 /// Asset group list page.
 pub async fn asset_group_list(
     State(state): State<AppState>,
@@ -120,6 +140,13 @@ pub async fn asset_group_detail(
 
     if ::uuid::Uuid::parse_str(&uuid_str).is_err() {
         return flash_redirect(flash.error("Invalid group identifier"), "/assets/groups");
+    }
+
+    // Virtual "All assets" group is system-managed and never directly
+    // browsable: present it as not found so it stays invisible in the
+    // asset-groups index.
+    if is_virtual_asset_group_uuid(&uuid_str) {
+        return flash_redirect(flash.error("Asset group not found"), "/assets/groups");
     }
 
     let client = &state.access_client;
@@ -242,6 +269,16 @@ pub async fn asset_group_add_asset_form(
     if !perms.groups_write {
         return Err(AppError::Authorization(
             "Only administrators can manage asset group membership".to_string(),
+        ));
+    }
+
+    // Virtual "All assets" group is system-managed: membership cannot be
+    // mutated, the form has no purpose. The DB trigger
+    // `block_membership_on_virtual_groups` would also reject the underlying
+    // INSERT, but failing here is friendlier and avoids a useless render.
+    if is_virtual_asset_group_uuid(&uuid_str) {
+        return Err(AppError::Authorization(
+            "The 'All assets' virtual group is system-managed and cannot be modified".to_string(),
         ));
     }
 
@@ -453,6 +490,15 @@ pub async fn asset_group_add_asset(
         return flash_redirect(flash.error("Invalid group identifier"), "/assets/groups");
     }
 
+    // Defense-in-depth on top of the DB trigger: refuse to even attempt
+    // attaching assets to the virtual "All assets" group.
+    if is_virtual_asset_group_uuid(&uuid_str) {
+        return flash_redirect(
+            flash.error("Cannot add assets to the 'All assets' virtual group (system-managed)"),
+            "/assets/groups",
+        );
+    }
+
     // Check if any assets were selected
     if form.asset_uuids.is_empty() {
         return flash_redirect(
@@ -655,6 +701,17 @@ pub async fn asset_group_remove_asset(
         );
     }
 
+    // Defense-in-depth on top of the DB trigger: the virtual "All assets"
+    // group has no membership rows by invariant, so a remove is nonsense.
+    if is_virtual_asset_group_uuid(&uuid_str) {
+        return htmx_or_flash_redirect(
+            &headers,
+            flash
+                .error("Cannot remove assets from the 'All assets' virtual group (system-managed)"),
+            "/assets/groups",
+        );
+    }
+
     // Parse group UUID (for redirect)
     let group_uuid = match ::uuid::Uuid::parse_str(&uuid_str) {
         Ok(uuid) => uuid,
@@ -792,6 +849,14 @@ pub async fn asset_group_edit(
         );
     }
 
+    // Virtual "All assets" group is system-managed: present it as not found
+    // so it cannot be edited. The DB trigger
+    // `block_mutation_on_virtual_groups` would also reject the underlying
+    // UPDATE, but failing here is friendlier.
+    if is_virtual_asset_group_uuid(&uuid_str) {
+        return flash_redirect(flash.error("Asset group not found"), "/assets/groups");
+    }
+
     let user = Some(user_context_from_auth(&auth_user));
 
     // Convert incoming flash messages to template FlashMessages
@@ -890,6 +955,16 @@ pub async fn update_asset_group(
         return flash_redirect(
             flash.error("Only administrators can modify asset groups"),
             &format!("/assets/groups/{}", uuid_str),
+        );
+    }
+
+    // Defense-in-depth on top of the DB trigger
+    // `block_mutation_on_virtual_groups`: refuse to even attempt updating
+    // the singleton virtual "All assets" group.
+    if is_virtual_asset_group_uuid(&uuid_str) {
+        return flash_redirect(
+            flash.error("Cannot modify the 'All assets' virtual group (system-managed)"),
+            "/assets/groups",
         );
     }
 
@@ -1148,6 +1223,17 @@ pub async fn delete_asset_group_web(
         return htmx_or_flash_redirect(
             &headers,
             flash.error("Only administrators can delete asset groups"),
+            "/assets/groups",
+        );
+    }
+
+    // Defense-in-depth on top of the DB trigger
+    // `block_mutation_on_virtual_groups`: refuse to even attempt deleting
+    // the singleton virtual "All assets" group.
+    if is_virtual_asset_group_uuid(&uuid_str) {
+        return htmx_or_flash_redirect(
+            &headers,
+            flash.error("Cannot delete the 'All assets' virtual group (system-managed)"),
             "/assets/groups",
         );
     }

@@ -82,7 +82,11 @@
                         <select name="asset_group_id" id="asset_group_id" required
                                 class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
                             {% for group in asset_groups %}
+                            {% if group.is_virtual %}
+                            <option value="{{ group.id }}" {% if rule.asset_group_id == group.id %}selected{% endif %} data-virtual="true">{{ group.name }} — Virtual{% match group.virtual_asset_count %}{% when Some with (n) %} ({{ n }} assets){% when None %}{% endmatch %}</option>
+                            {% else %}
                             <option value="{{ group.id }}" {% if rule.asset_group_id == group.id %}selected{% endif %}>{{ group.name }}</option>
+                            {% endif %}
                             {% endfor %}
                         </select>
                     </div>

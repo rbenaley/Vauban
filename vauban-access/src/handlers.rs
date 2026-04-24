@@ -160,7 +160,10 @@ pub async fn handle_access_request(pool: &DbPool, request: AccessRequest) -> Acc
             .await
         }
         AccessRequest::GetAssetGroup { uuid } => handle_get_asset_group(&mut conn, &uuid).await,
-        AccessRequest::ListAssetGroups { page } => handle_list_asset_groups(&mut conn, page).await,
+        AccessRequest::ListAssetGroups {
+            page,
+            include_virtual,
+        } => handle_list_asset_groups(&mut conn, page, include_virtual).await,
         AccessRequest::UpdateAssetGroup {
             uuid,
             name,
@@ -187,9 +190,10 @@ pub async fn handle_access_request(pool: &DbPool, request: AccessRequest) -> Acc
         AccessRequest::ListUserGroupOptions { page } => {
             handle_list_user_group_options(&mut conn, page).await
         }
-        AccessRequest::ListAssetGroupOptions { page } => {
-            handle_list_asset_group_options(&mut conn, page).await
-        }
+        AccessRequest::ListAssetGroupOptions {
+            page,
+            include_virtual,
+        } => handle_list_asset_group_options(&mut conn, page, include_virtual).await,
 
         // SECURITY: minting requires the cryptographic key, which lives
         // in `main.rs`. The variant MUST be intercepted before it
@@ -443,10 +447,27 @@ async fn handle_check_access_multi(
     asset_group_ids: &[i32],
     protocol: &str,
 ) -> AccessResponse {
+    // Always pull in any rule on the singleton virtual "All assets" group
+    // (kind='all'). Such a rule covers EVERY asset the user could query,
+    // so we OR-aggregate its constraints into every requested group's
+    // verdict below. The protocol/validity filters still apply -- a
+    // virtual rule scoped to ssh does NOT grant rdp.
+    //
+    // virtual_group_id == UNINITIALIZED_VIRTUAL_ID before boot resolution
+    // (or when running in dev mode without a DB seed). It cannot match any
+    // real row, so every code path degrades cleanly to "no virtual rule
+    // applies" -- which is the safe fail-closed default (no spurious
+    // grant; user keeps whatever static rules they had).
+    let virtual_id = crate::virtual_group::virtual_asset_group_id();
+    let mut search_ids: Vec<i32> = asset_group_ids.to_vec();
+    if !search_ids.contains(&virtual_id) {
+        search_ids.push(virtual_id);
+    }
+
     let rows = access_rules::table
         .inner_join(user_groups::table.on(user_groups::group_id.eq(access_rules::user_group_id)))
         .filter(user_groups::user_id.eq(user_id))
-        .filter(access_rules::asset_group_id.eq_any(asset_group_ids))
+        .filter(access_rules::asset_group_id.eq_any(&search_ids))
         .filter(access_rules::is_active.eq(true))
         .filter(sql::<SqlBool>(
             "(valid_from IS NULL OR valid_from <= NOW())",
@@ -467,26 +488,48 @@ async fn handle_check_access_multi(
     match rows {
         Ok(results) => {
             let mut group_map: HashMap<i32, Vec<(bool, bool, Option<i32>)>> = HashMap::new();
+            let mut virtual_rules: Vec<(bool, bool, Option<i32>)> = Vec::new();
             for (ag_id, mfa, just, dur) in results {
-                group_map.entry(ag_id).or_default().push((mfa, just, dur));
+                if ag_id == virtual_id {
+                    virtual_rules.push((mfa, just, dur));
+                } else {
+                    group_map.entry(ag_id).or_default().push((mfa, just, dur));
+                }
             }
 
             let entries: Vec<AccessCheckResultEntry> = asset_group_ids
                 .iter()
                 .map(|&ag_id| {
-                    let result = match group_map.get(&ag_id) {
-                        Some(rules) if !rules.is_empty() => AccessCheckResult {
+                    // Combine static rules for this group with every
+                    // virtual rule (which by definition matches every
+                    // asset). The OR/min semantics is identical to what
+                    // the existing code does for overlapping static
+                    // rules -- virtual rules just join the candidate set.
+                    let static_rules = group_map.get(&ag_id);
+                    let any_rule_applies =
+                        static_rules.is_some_and(|r| !r.is_empty()) || !virtual_rules.is_empty();
+                    let result = if any_rule_applies {
+                        let combined = static_rules
+                            .into_iter()
+                            .flatten()
+                            .chain(virtual_rules.iter());
+                        let combined: Vec<&(bool, bool, Option<i32>)> = combined.collect();
+                        AccessCheckResult {
                             allowed: true,
-                            require_mfa: rules.iter().any(|(mfa, _, _)| *mfa),
-                            require_approval: rules.iter().any(|(_, just, _)| *just),
-                            max_session_duration: rules.iter().filter_map(|(_, _, dur)| *dur).min(),
-                        },
-                        _ => AccessCheckResult {
+                            require_mfa: combined.iter().any(|(mfa, _, _)| *mfa),
+                            require_approval: combined.iter().any(|(_, just, _)| *just),
+                            max_session_duration: combined
+                                .iter()
+                                .filter_map(|(_, _, dur)| *dur)
+                                .min(),
+                        }
+                    } else {
+                        AccessCheckResult {
                             allowed: false,
                             require_mfa: false,
                             require_approval: false,
                             max_session_duration: None,
-                        },
+                        }
                     };
                     AccessCheckResultEntry {
                         asset_group_id: ag_id,
@@ -581,7 +624,7 @@ async fn handle_check_access_by_uuid(
         }
     };
 
-    let asset_group_ids: Vec<i32> = match asset_asset_groups::table
+    let mut asset_group_ids: Vec<i32> = match asset_asset_groups::table
         .filter(asset_asset_groups::asset_id.eq(asset_id))
         .select(asset_asset_groups::asset_group_id)
         .load::<i32>(conn)
@@ -597,10 +640,22 @@ async fn handle_check_access_by_uuid(
         }
     };
 
+    // Defense-in-depth: ALWAYS append the virtual "All assets" id so that
+    // an orphan asset (member of no static group) is still reachable when
+    // the user has a virtual rule. The aggregation in
+    // `handle_check_access_multi` already OR-aggregates every virtual rule
+    // into every requested group's verdict; this push ensures we still
+    // call into it (instead of taking the empty-list early-return path
+    // below) when the only rule that grants access is a virtual one.
+    let virtual_id = crate::virtual_group::virtual_asset_group_id();
+    if !asset_group_ids.contains(&virtual_id) {
+        asset_group_ids.push(virtual_id);
+    }
+
     if asset_group_ids.is_empty() {
         info!(
             asset_uuid, asset_id, protocol,
-            "CheckAccessByUuid denied: asset belongs to no asset_group"
+            "CheckAccessByUuid denied: asset belongs to no asset_group (and no virtual fallback)"
         );
         return denied();
     }
@@ -1474,6 +1529,11 @@ async fn handle_create_asset_group(
                 icon,
                 created_at: created_at.to_rfc3339(),
                 updated_at: updated_at.to_rfc3339(),
+                // CreateAssetGroup is the user-facing path; only static
+                // groups can be minted this way. The virtual "All assets"
+                // row is system-seeded by migration and protected by the
+                // trigger -- it can never be created via this handler.
+                kind: shared::messages::ASSET_GROUP_KIND_STATIC.to_string(),
             }))
         }
         Err(e) => AccessResponse::AssetGroup(Err(format!("Failed to create asset group: {}", e))),
@@ -1498,6 +1558,7 @@ async fn handle_get_asset_group(conn: &mut DbConnection, uuid_str: &str) -> Acce
             asset_groups::icon,
             asset_groups::created_at,
             asset_groups::updated_at,
+            asset_groups::kind,
         ))
         .first::<(
             i32,
@@ -1509,11 +1570,12 @@ async fn handle_get_asset_group(conn: &mut DbConnection, uuid_str: &str) -> Acce
             String,
             chrono::DateTime<Utc>,
             chrono::DateTime<Utc>,
+            String,
         )>(conn)
         .await;
 
     match result {
-        Ok((id, uuid, name, slug, description, color, icon, created_at, updated_at)) => {
+        Ok((id, uuid, name, slug, description, color, icon, created_at, updated_at, kind)) => {
             AccessResponse::AssetGroup(Ok(AssetGroupInfo {
                 id,
                 uuid: uuid.to_string(),
@@ -1524,17 +1586,36 @@ async fn handle_get_asset_group(conn: &mut DbConnection, uuid_str: &str) -> Acce
                 icon,
                 created_at: created_at.to_rfc3339(),
                 updated_at: updated_at.to_rfc3339(),
+                kind,
             }))
         }
         Err(e) => AccessResponse::AssetGroup(Err(format!("Asset group not found: {}", e))),
     }
 }
 
-async fn handle_list_asset_groups(conn: &mut DbConnection, page: IpcPageParams) -> AccessResponse {
+async fn handle_list_asset_groups(
+    conn: &mut DbConnection,
+    page: IpcPageParams,
+    include_virtual: bool,
+) -> AccessResponse {
+    use shared::messages::ASSET_GROUP_KIND_STATIC;
+
     let (base_limit, offset) = normalize_ipc_page(page);
     let fetch = base_limit.saturating_add(1);
-    let result = asset_groups::table
+
+    // Always exclude virtual groups by default. The access-rule editor is
+    // currently the only legitimate caller that opts in to seeing them
+    // (`include_virtual = true`). Defense-in-depth: even if a UI handler
+    // forgets to filter, virtual groups never leak into ordinary group
+    // lists.
+    let mut query = asset_groups::table
         .filter(asset_groups::is_deleted.eq(false))
+        .into_boxed();
+    if !include_virtual {
+        query = query.filter(asset_groups::kind.eq(ASSET_GROUP_KIND_STATIC));
+    }
+
+    let result = query
         .order(asset_groups::name.asc())
         .then_order_by(asset_groups::id.asc())
         .select((
@@ -1547,6 +1628,7 @@ async fn handle_list_asset_groups(conn: &mut DbConnection, page: IpcPageParams) 
             asset_groups::icon,
             asset_groups::created_at,
             asset_groups::updated_at,
+            asset_groups::kind,
         ))
         .limit(fetch)
         .offset(offset)
@@ -1560,6 +1642,7 @@ async fn handle_list_asset_groups(conn: &mut DbConnection, page: IpcPageParams) 
             String,
             chrono::DateTime<Utc>,
             chrono::DateTime<Utc>,
+            String,
         )>(conn)
         .await;
 
@@ -1572,7 +1655,18 @@ async fn handle_list_asset_groups(conn: &mut DbConnection, page: IpcPageParams) 
             let infos: Vec<AssetGroupInfo> = rows
                 .into_iter()
                 .map(
-                    |(id, uuid, name, slug, description, color, icon, created_at, updated_at)| {
+                    |(
+                        id,
+                        uuid,
+                        name,
+                        slug,
+                        description,
+                        color,
+                        icon,
+                        created_at,
+                        updated_at,
+                        kind,
+                    )| {
                         AssetGroupInfo {
                             id,
                             uuid: uuid.to_string(),
@@ -1583,6 +1677,7 @@ async fn handle_list_asset_groups(conn: &mut DbConnection, page: IpcPageParams) 
                             icon,
                             created_at: created_at.to_rfc3339(),
                             updated_at: updated_at.to_rfc3339(),
+                            kind,
                         }
                     },
                 )
@@ -1680,6 +1775,12 @@ async fn handle_list_user_group_options(
                     id,
                     uuid: uuid.to_string(),
                     name,
+                    // vauban_groups have no `kind` column today; the field
+                    // exists on `GroupOption` only to surface virtual
+                    // *asset* groups in the editor dropdown. Tag every
+                    // user-group option as static so downstream rendering
+                    // never accidentally shows a "Virtual" badge here.
+                    kind: shared::messages::ASSET_GROUP_KIND_STATIC.to_string(),
                 })
                 .collect();
             AccessResponse::UserGroupOptionsPage(IpcPage { items, has_more })
@@ -1691,17 +1792,34 @@ async fn handle_list_user_group_options(
 async fn handle_list_asset_group_options(
     conn: &mut DbConnection,
     page: IpcPageParams,
+    include_virtual: bool,
 ) -> AccessResponse {
+    use shared::messages::ASSET_GROUP_KIND_STATIC;
+
     let (base_limit, offset) = normalize_ipc_page(page);
     let fetch = base_limit.saturating_add(1);
-    let asset_group_rows = asset_groups::table
+
+    // Same fail-closed default as `handle_list_asset_groups`: virtual
+    // groups stay hidden unless the caller explicitly opts in.
+    let mut query = asset_groups::table
         .filter(asset_groups::is_deleted.eq(false))
+        .into_boxed();
+    if !include_virtual {
+        query = query.filter(asset_groups::kind.eq(ASSET_GROUP_KIND_STATIC));
+    }
+
+    let asset_group_rows = query
         .order(asset_groups::name.asc())
         .then_order_by(asset_groups::id.asc())
-        .select((asset_groups::id, asset_groups::uuid, asset_groups::name))
+        .select((
+            asset_groups::id,
+            asset_groups::uuid,
+            asset_groups::name,
+            asset_groups::kind,
+        ))
         .limit(fetch)
         .offset(offset)
-        .load::<(i32, Uuid, String)>(conn)
+        .load::<(i32, Uuid, String, String)>(conn)
         .await;
 
     match asset_group_rows {
@@ -1712,10 +1830,11 @@ async fn handle_list_asset_group_options(
             }
             let items = ag_rows
                 .into_iter()
-                .map(|(id, uuid, name)| GroupOption {
+                .map(|(id, uuid, name, kind)| GroupOption {
                     id,
                     uuid: uuid.to_string(),
                     name,
+                    kind,
                 })
                 .collect();
             AccessResponse::AssetGroupOptionsPage(IpcPage { items, has_more })
@@ -1779,7 +1898,10 @@ mod tests {
         let mut ids: Vec<i32> = collect_paged(
             pool,
             page_limit,
-            |p| AccessRequest::ListAssetGroups { page: p },
+            |p| AccessRequest::ListAssetGroups {
+                page: p,
+                include_virtual: false,
+            },
             |r| match r {
                 AccessResponse::AssetGroupPage(p) => p,
                 other => panic!("expected AssetGroupPage, got {:?}", other),
@@ -1928,7 +2050,10 @@ mod tests {
         let mut ids: Vec<i32> = collect_paged(
             pool,
             page_limit,
-            |p| AccessRequest::ListAssetGroupOptions { page: p },
+            |p| AccessRequest::ListAssetGroupOptions {
+                page: p,
+                include_virtual: false,
+            },
             |r| match r {
                 AccessResponse::AssetGroupOptionsPage(p) => p,
                 other => panic!("expected AssetGroupOptionsPage, got {:?}", other),
@@ -2311,7 +2436,14 @@ mod tests {
     async fn test_list_asset_groups() {
         let pool = test_pool().await;
         let resp =
-            handle_access_request(&pool, AccessRequest::ListAssetGroups { page: page0() }).await;
+            handle_access_request(
+                &pool,
+                AccessRequest::ListAssetGroups {
+                    page: page0(),
+                    include_virtual: false,
+                },
+            )
+            .await;
         match resp {
             AccessResponse::AssetGroupPage(_) => {}
             other => panic!("Expected AssetGroupPage, got {:?}", other),
@@ -2343,6 +2475,7 @@ mod tests {
                     limit: 50,
                     offset: 9_000_000,
                 },
+                include_virtual: false,
             },
         )
         .await;
@@ -2779,7 +2912,10 @@ mod tests {
         }
         let resp = handle_access_request(
             &pool,
-            AccessRequest::ListAssetGroupOptions { page: page0() },
+            AccessRequest::ListAssetGroupOptions {
+                page: page0(),
+                include_virtual: false,
+            },
         )
         .await;
         match resp {
@@ -2820,6 +2956,7 @@ mod tests {
                     limit: 10,
                     offset: 999_999,
                 },
+                include_virtual: false,
             },
         )
         .await;
@@ -2840,6 +2977,7 @@ mod tests {
                     limit: 0,
                     offset: 0,
                 },
+                include_virtual: false,
             },
         )
         .await;
@@ -2865,6 +3003,7 @@ mod tests {
                     limit: over_max,
                     offset: 0,
                 },
+                include_virtual: false,
             },
         )
         .await;
@@ -2884,7 +3023,10 @@ mod tests {
         let items = collect_paged(
             &test_pool().await,
             10,
-            |p| AccessRequest::ListAssetGroups { page: p },
+            |p| AccessRequest::ListAssetGroups {
+                page: p,
+                include_virtual: false,
+            },
             |r| match r {
                 AccessResponse::AssetGroupPage(_) => IpcPage {
                     items: Vec::<AssetGroupInfo>::new(),
@@ -3095,6 +3237,7 @@ mod tests {
                     limit: 3,
                     offset: 0,
                 },
+                include_virtual: false,
             },
         )
         .await;
