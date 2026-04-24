@@ -2028,6 +2028,7 @@ fn test_ssh_request_debug_does_not_leak_password() {
         private_key: None,
         passphrase: None,
         expected_host_key: None,
+        session_token: Vec::new(),
     };
 
     let debug_str = format!("{:?}", request);
@@ -2067,6 +2068,7 @@ fn test_ssh_request_debug_does_not_leak_private_key() {
         )),
         passphrase: Some(SecretString::from("key-unlock-phrase".to_string())),
         expected_host_key: None,
+        session_token: Vec::new(),
     };
 
     let debug_str = format!("{:?}", request);
@@ -2107,6 +2109,7 @@ fn test_ssh_request_debug_none_secrets_show_none() {
         private_key: None,
         passphrase: None,
         expected_host_key: None,
+        session_token: Vec::new(),
     };
 
     let debug_str = format!("{:?}", request);
@@ -8083,5 +8086,128 @@ async fn test_sec04_csrf_error_distinct() {
         !body.contains("Invalid credentials"),
         "SEC-04: CSRF error should NOT show 'Invalid credentials': {}",
         body
+    );
+}
+
+// ==================== Cryptographic session-token gate (web tier) ====================
+//
+// SECURITY: vauban-web MUST mint a fresh cryptographic session token
+// on every session-open request and thread it through the supervisor's
+// TCP broker AND the protocol-proxy SshSessionOpen / RdpSessionOpen
+// IPC. Without this, a compromised vauban-web could open sessions on
+// behalf of arbitrary users (web is the only tier that holds session
+// state in memory, so it is the highest-value compromise target).
+//
+// These tests are anti-regression guards on the WIRING in vauban-web.
+// They are deliberately string-based (rather than runtime) because
+// a runtime test would require spinning the full IPC stack; static
+// asserts on the source catch the regression at PR-review time.
+
+#[test]
+fn test_access_client_exposes_issue_session_token() {
+    let source = include_str!("../../src/ipc/access.rs");
+    assert!(
+        source.contains("pub async fn issue_session_token("),
+        "AccessIpcClient MUST expose issue_session_token so handlers \
+         can mint a fresh token on every session-open. Removing this \
+         method silently disables the cryptographic gate."
+    );
+    assert!(
+        source.contains("AccessReq::IssueSessionToken"),
+        "issue_session_token MUST send an AccessReq::IssueSessionToken \
+         IPC message to vauban-access (the only minter)."
+    );
+    assert!(
+        source.contains("AccessResp::SessionTokenIssued"),
+        "issue_session_token MUST recognize the SessionTokenIssued \
+         success variant and return the token bytes."
+    );
+    assert!(
+        source.contains("AccessResp::SessionTokenDenied"),
+        "issue_session_token MUST recognize the SessionTokenDenied \
+         fail-closed variant and surface a generic 'Access denied' \
+         to the user (no fingerprinting of policy vs minter errors)."
+    );
+}
+
+#[test]
+fn test_ssh_handler_mints_token_before_session_open() {
+    let source = include_str!("../../src/handlers/web/ssh.rs");
+    let mint_idx = source.find(".issue_session_token(").expect(
+        "vauban-web SSH handler MUST mint a session token via \
+         AccessIpcClient::issue_session_token before opening a session.",
+    );
+    let request_idx = source.find("SshSessionOpenRequest {").expect(
+        "vauban-web SSH handler MUST construct a SshSessionOpenRequest",
+    );
+    assert!(
+        mint_idx < request_idx,
+        "issue_session_token MUST be called BEFORE SshSessionOpenRequest \
+         is built so the token can be threaded into the request and \
+         into the supervisor's request_tcp_connect."
+    );
+    assert!(
+        source.contains("session_token: session_token_bytes"),
+        "vauban-web SSH handler MUST set SshSessionOpenRequest.\
+         session_token to the freshly minted token bytes."
+    );
+}
+
+#[test]
+fn test_rdp_handler_mints_token_before_session_open() {
+    let source = include_str!("../../src/handlers/web/rdp.rs");
+    let mint_idx = source.find(".issue_session_token(").expect(
+        "vauban-web RDP handler MUST mint a session token via \
+         AccessIpcClient::issue_session_token before opening a session.",
+    );
+    let request_idx = source.find("RdpSessionOpenRequest {").expect(
+        "vauban-web RDP handler MUST construct a RdpSessionOpenRequest",
+    );
+    assert!(
+        mint_idx < request_idx,
+        "issue_session_token MUST be called BEFORE RdpSessionOpenRequest \
+         is built."
+    );
+    assert!(
+        source.contains("session_token: session_token_bytes"),
+        "vauban-web RDP handler MUST set RdpSessionOpenRequest.\
+         session_token to the freshly minted token bytes."
+    );
+}
+
+#[test]
+fn test_supervisor_client_request_tcp_connect_takes_session_token() {
+    let source = include_str!("../../src/ipc/supervisor.rs");
+    assert!(
+        source.contains("session_token: Vec<u8>"),
+        "SupervisorClient::request_tcp_connect MUST accept a \
+         session_token parameter so the supervisor's TCP broker can \
+         crypto-verify before any DNS/connect work."
+    );
+    assert!(
+        source.contains("Message::TcpConnectRequest {")
+            && source.contains("session_token,"),
+        "SupervisorClient::request_tcp_connect MUST forward the \
+         session_token into Message::TcpConnectRequest."
+    );
+}
+
+#[test]
+fn test_host_key_fetch_path_is_crypto_gated() {
+    let source = include_str!("../../src/ipc/proxy_ssh.rs");
+    assert!(
+        source.contains("HostKeyFetchIdentity"),
+        "fetch_host_key MUST require a HostKeyFetchIdentity (with \
+         AccessIpcClient + user_uuid + asset_uuid) when a supervisor \
+         is set, so the host-key fetch path is crypto-gated like \
+         every other supervisor TCP-broker call. Without this, a \
+         compromised vauban-web could enumerate the internal network \
+         via SshFetchHostKey."
+    );
+    assert!(
+        source.contains(".issue_session_token("),
+        "fetch_host_key MUST call issue_session_token to mint a token \
+         for the synthetic 'fetch-hostkey-{{request_id}}' session before \
+         calling the supervisor's TCP broker."
     );
 }

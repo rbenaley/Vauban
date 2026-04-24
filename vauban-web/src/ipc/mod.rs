@@ -16,6 +16,8 @@ pub use access::AccessIpcClient;
 pub use auth::AuthIpcClient;
 pub use clients::*;
 pub use proxy_rdp::{ProxyRdpClient, RdpSessionOpenRequest, RdpSessionOpened};
-pub use proxy_ssh::{ProxySshClient, SshSessionOpenRequest, SshSessionOpened};
+pub use proxy_ssh::{
+    HostKeyFetchIdentity, ProxySshClient, SshSessionOpenRequest, SshSessionOpened,
+};
 pub use supervisor::{SupervisorClient, TlsCertData};
 pub use vault::VaultCryptoClient;

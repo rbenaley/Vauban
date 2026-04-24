@@ -8,6 +8,8 @@ use shared::messages::{
     AccessRuleInfo, AccessibleGroupEntry, AssetGroupInfo, DEFAULT_IPC_PAGE_LIMIT, GroupOption,
     IpcPage, IpcPageParams, MAX_IPC_PAGE_LIMIT, VaubanGroupInfo,
 };
+use shared::session_token::{SessionToken, SessionTokenParams, TokenKey};
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::collections::HashMap;
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -187,6 +189,82 @@ pub async fn handle_access_request(pool: &DbPool, request: AccessRequest) -> Acc
         }
         AccessRequest::ListAssetGroupOptions { page } => {
             handle_list_asset_group_options(&mut conn, page).await
+        }
+
+        // SECURITY: minting requires the cryptographic key, which lives
+        // in `main.rs`. The variant MUST be intercepted before it
+        // reaches this dispatch (see `handle_message` in `main.rs`).
+        // Falling through to here means a programmer error in the
+        // routing layer; we collapse to `SessionTokenDenied` rather
+        // than panicking so a misconfigured build still fails closed
+        // instead of opening a session.
+        AccessRequest::IssueSessionToken { .. } => {
+            warn!(
+                "IssueSessionToken reached handle_access_request dispatch; \
+                 routing bug in vauban-access main loop. Fail-closed deny."
+            );
+            AccessResponse::SessionTokenDenied
+        }
+    }
+}
+
+/// SECURITY: mint a cryptographic session token after re-running the
+/// instance-level access check. This is the issuer side of the
+/// session-token gate that the supervisor and the protocol proxies
+/// later verify before opening sockets and upstream sessions.
+///
+/// Fail-closed semantics: every error path collapses to
+/// [`AccessResponse::SessionTokenDenied`]. The variant is intentionally
+/// indistinguishable from a policy-denied reply so a probe cannot
+/// fingerprint whether the issue is policy, DB, or minter.
+pub async fn handle_issue_session_token(
+    pool: &DbPool,
+    key: &TokenKey,
+    params: SessionTokenParams,
+) -> AccessResponse {
+    let mut conn = match pool.get().await {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(error = %e, "IssueSessionToken: DB connection error, deny");
+            return AccessResponse::SessionTokenDenied;
+        }
+    };
+
+    // Re-run the same authorization the proxy will demand. We intentionally
+    // call the existing checker so a future policy refinement automatically
+    // tightens the issuer too.
+    let check = handle_check_access_by_uuid(
+        &mut conn,
+        &params.user_uuid,
+        &params.asset_uuid,
+        &params.protocol,
+    )
+    .await;
+    let allowed = matches!(
+        check,
+        AccessResponse::AccessChecked(AccessCheckResult { allowed: true, .. })
+    );
+    if !allowed {
+        info!(
+            user_uuid = %params.user_uuid,
+            asset_uuid = %params.asset_uuid,
+            protocol = %params.protocol,
+            session_id = %params.session_id,
+            "IssueSessionToken denied: policy check failed"
+        );
+        return AccessResponse::SessionTokenDenied;
+    }
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let token = SessionToken::mint(key, now, params);
+    match token.to_bytes() {
+        Ok(bytes) => AccessResponse::SessionTokenIssued { token: bytes },
+        Err(e) => {
+            warn!(error = ?e, "IssueSessionToken: serialization failure, deny");
+            AccessResponse::SessionTokenDenied
         }
     }
 }

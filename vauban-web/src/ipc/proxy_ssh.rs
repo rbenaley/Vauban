@@ -55,6 +55,13 @@ pub struct SshSessionOpenRequest {
     /// Expected SSH host key in OpenSSH format (e.g. "ssh-ed25519 AAAA...").
     /// If set, the proxy verifies the server key matches before continuing.
     pub expected_host_key: Option<String>,
+    /// Cryptographic session token (BLAKE3-keyed MAC) issued by
+    /// vauban-access, verified by vauban-proxy-ssh BEFORE
+    /// `AccessGuard::authorize`. The token binds
+    /// `(user_uuid, asset_uuid, "ssh", session_id)` so a compromised
+    /// vauban-web cannot piggy-back another user's session here.
+    /// See `docs/technical/Vauban_AccessGuard_Architecture_EN(1.0).md` §3.
+    pub session_token: Vec<u8>,
 }
 
 impl std::fmt::Debug for SshSessionOpenRequest {
@@ -91,6 +98,23 @@ impl std::fmt::Debug for SshSessionOpenRequest {
             )
             .finish()
     }
+}
+
+/// Identity binding required to crypto-gate the host-key fetch path.
+///
+/// When `vauban-web` is running with a supervisor (Capsicum sandboxed
+/// mode), the supervisor's TCP broker only accepts connect requests
+/// that carry a fresh session token issued by `vauban-access`.
+/// [`ProxySshClient::fetch_host_key`] derives a synthetic
+/// `session_id` per request and asks `access_client` to mint the
+/// token bound to `(user_uuid, asset_uuid, "ssh", host, port,
+/// Service::ProxySsh, session_id)` -- the same policy as a real
+/// session-open. Without this, a compromised vauban-web could use
+/// the host-key fetch endpoint to enumerate the internal network.
+pub struct HostKeyFetchIdentity<'a> {
+    pub access_client: &'a super::AccessIpcClient,
+    pub user_uuid: &'a str,
+    pub asset_uuid: &'a str,
 }
 
 /// Response from opening an SSH session.
@@ -245,6 +269,7 @@ impl ProxySshClient {
                 .passphrase
                 .map(|s| SensitiveString::new(s.expose_secret().to_string())),
             expected_host_key: request.expected_host_key,
+            session_token: request.session_token,
         };
 
         self.channel
@@ -321,6 +346,7 @@ impl ProxySshClient {
         host: &str,
         port: u16,
         supervisor: Option<&super::SupervisorClient>,
+        identity: Option<HostKeyFetchIdentity<'_>>,
     ) -> AppResult<(String, String)> {
         let request_id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
 
@@ -336,7 +362,31 @@ impl ProxySshClient {
         // proxy.  The supervisor performs DNS resolution + TCP connect
         // and passes the socket FD to the SSH proxy via SCM_RIGHTS.
         if let Some(sv) = supervisor {
+            let identity = identity.ok_or_else(|| {
+                AppError::Ipc(
+                    "fetch_host_key: identity is required when supervisor is set \
+                     (the TCP broker is crypto-gated; a session token must be minted)"
+                        .to_string(),
+                )
+            })?;
             let fetch_session_id = format!("fetch-hostkey-{}", request_id);
+            // SECURITY: the supervisor's TCP broker is crypto-gated:
+            // every connect requires a fresh session token issued by
+            // vauban-access. The host-key fetch path is no exception
+            // -- without this gate a compromised vauban-web could use
+            // SshFetchHostKey to enumerate the internal network.
+            let session_token = identity
+                .access_client
+                .issue_session_token(shared::session_token::SessionTokenParams {
+                    session_id: fetch_session_id.clone(),
+                    user_uuid: identity.user_uuid.to_string(),
+                    asset_uuid: identity.asset_uuid.to_string(),
+                    protocol: "ssh".to_string(),
+                    host: host.to_string(),
+                    port,
+                    target_service: shared::messages::Service::ProxySsh,
+                })
+                .await?;
             debug!(
                 request_id = request_id,
                 fetch_session_id = %fetch_session_id,
@@ -348,6 +398,7 @@ impl ProxySshClient {
                     host,
                     port,
                     shared::messages::Service::ProxySsh,
+                    session_token,
                 )
                 .await
             {
@@ -570,6 +621,7 @@ mod tests {
             private_key: None,
             passphrase: None,
             expected_host_key: None,
+            session_token: Vec::new(),
         }
     }
 
@@ -669,6 +721,7 @@ mod tests {
             )),
             passphrase: Some(SecretString::from("key-passphrase".to_string())),
             expected_host_key: None,
+            session_token: Vec::new(),
         };
 
         assert_eq!(request.auth_type, "private_key");

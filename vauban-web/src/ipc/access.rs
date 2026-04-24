@@ -160,6 +160,45 @@ impl AccessIpcClient {
         }
     }
 
+    /// Request a cryptographic session token from vauban-access for a
+    /// pending session-open. Used by the SSH/RDP/TCP-broker flows so
+    /// that vauban-supervisor and the proxies can re-verify the
+    /// authorization decision without having to trust vauban-web's
+    /// in-memory state. See `docs/technical/Vauban_AccessGuard_Architecture_EN(1.0).md` §3.
+    ///
+    /// Fail-closed: returns `Err(AppError::Forbidden)` for any
+    /// non-`SessionTokenIssued` reply (denied, IPC error, malformed
+    /// response). Callers MUST surface the same generic
+    /// "Access denied" message to the user regardless of the cause --
+    /// distinguishing "policy denied" from "minter is broken" would
+    /// let a probe fingerprint the bastion.
+    pub async fn issue_session_token(
+        &self,
+        params: shared::session_token::SessionTokenParams,
+    ) -> AppResult<Vec<u8>> {
+        let resp = self
+            .send_access_request(AccessReq::IssueSessionToken {
+                user_uuid: params.user_uuid,
+                asset_uuid: params.asset_uuid,
+                protocol: params.protocol,
+                host: params.host,
+                port: params.port,
+                target_service: params.target_service,
+                session_id: params.session_id,
+            })
+            .await?;
+        match resp {
+            AccessResp::SessionTokenIssued { token } => Ok(token),
+            AccessResp::SessionTokenDenied => {
+                Err(AppError::Authorization("Access denied".to_string()))
+            }
+            AccessResp::Error(e) => Err(AppError::Ipc(e)),
+            _ => Err(AppError::Ipc(
+                "unexpected response for IssueSessionToken".to_string(),
+            )),
+        }
+    }
+
     pub async fn check_access_multi(
         &self,
         user_id: i32,

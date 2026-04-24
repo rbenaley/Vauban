@@ -28,6 +28,18 @@ bincode = { version = "2.0", features = ["serde"] }
 # tokio-free, so this is gated behind the `access-guard` feature.
 tokio = { workspace = true, optional = true }
 
+# Cryptographic dependencies for the optional `session-token` module.
+# Only services on the session-open hot path (vauban-access mints,
+# vauban-supervisor and the proxies verify) need these; the others
+# (vault, audit, auth) MUST stay free of crypto deps to keep their
+# attack surface minimal.
+blake3 = { workspace = true, optional = true }
+secrecy = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+rand = { version = "0.8", optional = true }
+subtle = { version = "2.5", optional = true }
+uuid = { version = "1.11", features = ["v4", "serde"], optional = true }
+
 [features]
 default = []
 # Enables the shared::access_guard module (defense-in-depth RBAC re-check
@@ -35,6 +47,12 @@ default = []
 # binary. Activate this feature in every protocol proxy that opens
 # upstream sessions on behalf of a user.
 access-guard = ["dep:tokio"]
+# Enables the shared::session_token module (cryptographic gate that
+# binds every TcpConnectRequest / SessionOpen to a fresh access-signed
+# decision). Activate this feature in vauban-access (mints), vauban-
+# supervisor and every protocol proxy (verify). vauban-web does NOT
+# need this feature -- it only transports an opaque byte vector.
+session-token = ["dep:blake3", "dep:secrecy", "dep:base64", "dep:rand", "dep:subtle", "dep:uuid"]
 
 # Capsicum bindings for FreeBSD
 [target.'cfg(target_os = "freebsd")'.dependencies]
@@ -45,3 +63,12 @@ tempfile = "3"
 # AccessGuard tests need real tokio + nix pipes. Keep this in dev-deps
 # so a default-feature build of the consumer doesn't pay for it.
 tokio = { workspace = true, features = ["test-util", "macros", "rt"] }
+# session_token unit tests pull blake3, base64, secrecy, rand, subtle,
+# uuid in the test binary even when the `session-token` feature is not
+# the default for the workspace consumers.
+blake3 = { workspace = true }
+base64 = { workspace = true }
+secrecy = { workspace = true }
+rand = "0.8"
+subtle = "2.5"
+uuid = { version = "1.11", features = ["v4", "serde"] }

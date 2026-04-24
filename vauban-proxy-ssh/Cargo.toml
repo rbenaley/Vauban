@@ -14,7 +14,7 @@ workspace = true
 # Shared IPC and sandboxing utilities. The `access-guard` feature is
 # mandatory: it brings in shared::access_guard, which re-verifies every
 # SshSessionOpen against vauban-access (defense-in-depth RBAC re-check).
-shared = { workspace = true, features = ["access-guard"] }
+shared = { workspace = true, features = ["access-guard", "session-token"] }
 
 # Core dependencies
 libc.workspace = true

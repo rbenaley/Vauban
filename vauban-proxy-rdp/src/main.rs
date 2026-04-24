@@ -27,6 +27,7 @@ mod session_manager;
 mod video_encoder;
 
 use anyhow::{Context, Result};
+use shared::session_token::proxy_gate as session_token_gate;
 use ipc::AsyncIpcChannel;
 use session::SessionConfig;
 use session_manager::SessionManager;
@@ -269,6 +270,20 @@ async fn run_service() -> Result<()> {
     } else {
         None
     };
+
+    // SECURITY: load and CLEAR the session-token MAC key BEFORE any
+    // other thread is spawned, BEFORE Capsicum closes us out of env
+    // mutation, and BEFORE we accept any session-open. Mirrors
+    // vauban-proxy-ssh: in production, vauban-supervisor MUST set
+    // VAUBAN_SESSION_TOKEN_KEY for proxy_rdp; absence is a fatal boot
+    // error so that the proxy never opens an RDP session without
+    // crypto-gating it.
+    session_token_gate::init_from_env().context(
+        "Failed to load VAUBAN_SESSION_TOKEN_KEY - vauban-proxy-rdp \
+         requires the cryptographic session-token key (refusing to \
+         start; sessions cannot be cryptographically gated without it)",
+    )?;
+    info!("session-token MAC key loaded (BLAKE3-keyed)");
 
     // SAFETY: Single thread at this point, no concurrent env access.
     // Note: VAUBAN_ACCESS_IPC_READ / WRITE are consumed (and removed)
@@ -565,6 +580,7 @@ async fn handle_web_message(
             domain,
             desktop_width,
             desktop_height,
+            session_token,
         } => {
             debug!(
                 session_id = %session_id,
@@ -572,6 +588,28 @@ async fn handle_web_message(
                 asset_host = %asset_host,
                 "RDP session open request"
             );
+
+            // SECURITY: cryptographic session-token gate. See
+            // vauban-proxy-ssh::handle_web_message for the full
+            // rationale; same contract here.
+            if !session_token_gate::verify_proxy(
+                &session_token,
+                &user_id,
+                &asset_id,
+                "rdp",
+                &session_id,
+            ) {
+                let response = Message::RdpSessionOpened {
+                    request_id,
+                    session_id,
+                    success: false,
+                    desktop_width: 0,
+                    desktop_height: 0,
+                    error: Some("Access denied".to_string()),
+                };
+                let _ = response_tx.send(response);
+                return Ok(());
+            }
 
             if state.draining.load(Ordering::SeqCst) {
                 let response = Message::RdpSessionOpened {
@@ -1135,6 +1173,82 @@ mod tests {
         assert!(
             source.contains("let pending_connections = fd_passing"),
             "pending_connections must be actively used in main_loop"
+        );
+    }
+
+    // ==================== Cryptographic session-token gate ====================
+    //
+    // SECURITY: vauban-proxy-rdp MUST verify the BLAKE3-keyed session
+    // token on every RdpSessionOpen BEFORE the AccessGuard re-check.
+    // Mirrors vauban-proxy-ssh: the token is the only proof that
+    // vauban-access (not a compromised vauban-web) authorized the
+    // EXACT (user, asset, "rdp", session_id) tuple. These tests pin
+    // the wiring so the gate cannot silently regress.
+
+    #[test]
+    fn test_proxy_rdp_loads_session_token_key_at_boot() {
+        let source = prod_source();
+        assert!(
+            source.contains("session_token_gate::init_from_env()"),
+            "proxy-rdp boot MUST call session_token_gate::init_from_env() \
+             so the BLAKE3 MAC key is loaded BEFORE Capsicum closes us \
+             out of env mutation."
+        );
+        let init_idx = source
+            .find("session_token_gate::init_from_env()")
+            .expect("init_from_env call must exist");
+        let cap_enter_idx = source
+            .find("capsicum::setup_service_sandbox")
+            .expect("Capsicum sandbox setup must exist");
+        assert!(
+            init_idx < cap_enter_idx,
+            "session_token_gate::init_from_env() MUST run BEFORE \
+             capsicum::setup_service_sandbox."
+        );
+    }
+
+    #[test]
+    fn test_proxy_rdp_session_open_verifies_session_token_first() {
+        let source = prod_source();
+        let handler_start = source
+            .find("Message::RdpSessionOpen {")
+            .expect("RdpSessionOpen handler must exist");
+        let handler = &source[handler_start..];
+        let verify_idx = handler
+            .find("session_token_gate::verify_proxy(")
+            .expect("RdpSessionOpen handler MUST call session_token_gate::verify_proxy.");
+        let authorize_idx = handler
+            .find("access_guard_clone.authorize(")
+            .expect("AccessGuard.authorize call site must exist inside the handler");
+        assert!(
+            verify_idx < authorize_idx,
+            "session_token_gate::verify_proxy MUST run BEFORE \
+             AccessGuard.authorize."
+        );
+    }
+
+    #[test]
+    fn test_proxy_rdp_session_token_gate_uses_shared_module() {
+        // Anti-regression guard: the proxy MUST consume the shared
+        // `shared::session_token::proxy_gate` module instead of an
+        // in-crate copy. Forking the gate into a per-proxy file is the
+        // exact DRY violation we eliminated when factoring it into
+        // `shared`. A reviewer who reintroduces a private module must
+        // see this test fail.
+        let source = prod_source();
+        assert!(
+            source.contains("shared::session_token::proxy_gate"),
+            "proxy-rdp main.rs MUST consume \
+             `shared::session_token::proxy_gate` (the single, \
+             factorized cryptographic gate). Re-implementing it \
+             locally defeats the whole point of the shared crate and \
+             risks divergence between protocol proxies."
+        );
+        assert!(
+            !source.contains("\nmod session_token_gate;"),
+            "proxy-rdp main.rs MUST NOT declare a private \
+             `session_token_gate` module — the shared module is the \
+             single source of truth."
         );
     }
 }

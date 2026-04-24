@@ -30,6 +30,10 @@ pub struct RdpSessionOpenRequest {
     pub domain: Option<String>,
     pub desktop_width: u16,
     pub desktop_height: u16,
+    /// Cryptographic session token (BLAKE3-keyed MAC) issued by
+    /// vauban-access, verified by vauban-proxy-rdp BEFORE
+    /// `AccessGuard::authorize`. Mirrors `SshSessionOpenRequest`.
+    pub session_token: Vec<u8>,
 }
 
 impl std::fmt::Debug for RdpSessionOpenRequest {
@@ -185,6 +189,7 @@ impl ProxyRdpClient {
             domain: request.domain,
             desktop_width: request.desktop_width,
             desktop_height: request.desktop_height,
+            session_token: request.session_token,
         };
 
         self.channel
@@ -434,6 +439,7 @@ mod tests {
             domain: Some("WORKGROUP".to_string()),
             desktop_width: 1280,
             desktop_height: 720,
+            session_token: Vec::new(),
         }
     }
 
@@ -927,6 +933,7 @@ mod tests {
             domain: None,
             desktop_width: 1280,
             desktop_height: 720,
+            session_token: Vec::new(),
         };
         assert_eq!(request.asset_host, "serveur.example.com");
     }
@@ -950,6 +957,7 @@ mod tests {
             domain: Some(String::new()),
             desktop_width: 1280,
             desktop_height: 720,
+            session_token: Vec::new(),
         };
         assert_eq!(request.domain.as_deref(), Some(""));
     }

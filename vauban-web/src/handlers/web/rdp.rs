@@ -299,6 +299,33 @@ pub async fn connect_rdp(
         }
     }
 
+    // SECURITY: ask vauban-access to mint a cryptographic session
+    // token. See web/ssh.rs for full rationale.
+    let session_token_bytes = match state
+        .access_client
+        .issue_session_token(shared::session_token::SessionTokenParams {
+            session_id: session_id.clone(),
+            user_uuid: auth_user.uuid.clone(),
+            asset_uuid: asset_uuid.to_string(),
+            protocol: "rdp".to_string(),
+            host: hostname.clone(),
+            port: rdp_port,
+            target_service: shared::messages::Service::ProxyRdp,
+        })
+        .await
+    {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            tracing::warn!(
+                session_id = %session_id,
+                user = %auth_user.username,
+                error = %e,
+                "Session-token mint denied; refusing to open RDP session"
+            );
+            return htmx_error_response("Access denied");
+        }
+    };
+
     // If supervisor is available (sandboxed mode), request TCP connection brokering.
     // The supervisor performs DNS resolution and TCP connect, then passes the FD
     // to the RDP proxy via SCM_RIGHTS. This enables Capsicum sandboxed operation.
@@ -316,6 +343,7 @@ pub async fn connect_rdp(
                 &hostname,
                 rdp_port,
                 shared::messages::Service::ProxyRdp,
+                session_token_bytes.clone(),
             )
             .await
         {
@@ -350,6 +378,7 @@ pub async fn connect_rdp(
         domain: stored_domain,
         desktop_width: 1280,
         desktop_height: 720,
+        session_token: session_token_bytes,
     };
 
     // Request the proxy to open the RDP session

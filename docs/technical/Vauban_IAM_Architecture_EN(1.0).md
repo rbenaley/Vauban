@@ -135,12 +135,14 @@ Both services participate in the supervisor's pipe topology:
 | Pipe | Direction | Status | Purpose |
 |------|-----------|--------|---------|
 | `web` <-> `auth` | Bidirectional | Implemented | Password verify/hash requests |
-| `web` <-> `access` | Bidirectional | Implemented | RBAC checks + access rule CRUD + access evaluation |
+| `web` <-> `access` | Bidirectional | Implemented | RBAC checks + access rule CRUD + access evaluation + cryptographic session-token mint (`IssueSessionToken`) |
 | `auth` <-> `access` | Bidirectional | Future | Role verification during authentication |
 | `proxy-ssh` <-> `access` | Bidirectional | **Implemented** (defense-in-depth re-check) | Session authorization re-check before SSH connect — see [Vauban_AccessGuard_Architecture_EN(1.0).md](Vauban_AccessGuard_Architecture_EN(1.0).md) |
 | `proxy-rdp` <-> `access` | Bidirectional | **Implemented** (defense-in-depth re-check) | Session authorization re-check before RDP connect — see [Vauban_AccessGuard_Architecture_EN(1.0).md](Vauban_AccessGuard_Architecture_EN(1.0).md) |
 
 > **Defense-in-depth model.** Both proxies (`vauban-proxy-ssh` and `vauban-proxy-rdp`) independently re-check authorization against `vauban-access` (via `AccessRequest::CheckAccessByUuid`) before opening any upstream session, regardless of any verdict already produced by `vauban-web`. The shared module `shared::access_guard` factorizes this gate so every current and future proxy (VNC, industrial protocols) consumes the same fail-closed code path. A compromised or buggy `vauban-web` therefore cannot grant sessions that the authoritative `vauban-access` would deny. The complete API, threat model, RAII pending-map fix, type-system invariants, and 30+ test inventory are documented in [Vauban_AccessGuard_Architecture_EN(1.0).md](Vauban_AccessGuard_Architecture_EN(1.0).md).
+>
+> **Cryptographic session-token gate.** A complementary cryptographic layer closes the residual gaps that pure RBAC re-checks cannot close on their own (UUID swap from a compromised web tier, supervisor TCP broker used as an unauthenticated network probe). `vauban-access` is the sole minter of short-lived, BLAKE3-keyed session tokens (`AccessRequest::IssueSessionToken`); `vauban-supervisor` verifies them before any DNS / `connect(2)`; both proxies verify them before `AccessGuard.authorize()`. Format, mint / verify flow, key dissemination, anti-replay, and a detailed threat-model argumentation live in [Vauban_AccessGuard_Architecture_EN(1.0).md §6](Vauban_AccessGuard_Architecture_EN(1.0).md#6-cryptographic-session-token-gate).
 
 ---
 

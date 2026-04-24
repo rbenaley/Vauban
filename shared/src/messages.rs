@@ -90,6 +90,26 @@ pub enum Service {
     ProxyRdp,
 }
 
+impl Service {
+    /// Stable on-the-wire discriminant used by `shared::session_token` to
+    /// bind a [`SessionToken`](crate::session_token::SessionToken) to its
+    /// target service. Values MUST stay frozen across releases; appending
+    /// a new service is fine, renumbering an existing one is a wire
+    /// break.
+    pub const fn as_token_discriminant(self) -> u8 {
+        match self {
+            Service::Supervisor => 0,
+            Service::Web => 1,
+            Service::Auth => 2,
+            Service::Access => 3,
+            Service::Vault => 4,
+            Service::Audit => 5,
+            Service::ProxySsh => 6,
+            Service::ProxyRdp => 7,
+        }
+    }
+}
+
 /// Control messages between supervisor and services.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ControlMessage {
@@ -381,13 +401,40 @@ pub enum AccessRequest {
     /// Fail-closed: any DB lookup error or unknown UUID yields
     /// `AccessChecked { allowed: false }`.
     ///
-    /// MUST stay LAST in this enum to preserve the bincode discriminant
-    /// indices of the existing variants (wire compatibility with already
-    /// deployed peers).
+    /// MUST stay near the END of this enum to preserve the bincode
+    /// discriminant indices of the existing variants (wire compatibility
+    /// with already deployed peers). New variants must be appended after
+    /// this one rather than inserted in the middle.
     CheckAccessByUuid {
         user_uuid: String,
         asset_uuid: String,
         protocol: String,
+    },
+
+    /// SECURITY: Mint a cryptographic session token attesting that
+    /// vauban-access has just authorised the (user, asset, protocol,
+    /// host, port, target_service, session_id) tuple. The supervisor
+    /// will verify the token before performing the TCP connect, and
+    /// the proxy will verify it before invoking
+    /// `shared::access_guard::AccessGuard::authorize`.
+    ///
+    /// Issued by vauban-web on the session-open path, after Layer 1
+    /// (`CheckAccess`) succeeds. The handler in vauban-access re-runs
+    /// the same policy as `CheckAccessByUuid` then mints a
+    /// `shared::session_token::SessionToken` (BLAKE3 keyed MAC). The
+    /// caller MUST treat any non-`SessionTokenIssued` response as a
+    /// fail-closed denial.
+    ///
+    /// Wire compatibility: appended after `CheckAccessByUuid`. New
+    /// variants MUST keep being appended at the end.
+    IssueSessionToken {
+        user_uuid: String,
+        asset_uuid: String,
+        protocol: String,
+        host: String,
+        port: u16,
+        target_service: Service,
+        session_id: String,
     },
 }
 
@@ -417,6 +464,22 @@ pub enum AccessResponse {
     Error(String),
 
     AccessCheckedMulti(Vec<AccessCheckResultEntry>),
+
+    /// Successful response to `AccessRequest::IssueSessionToken`. The
+    /// payload is the bincode-serialized `shared::session_token::SessionToken`
+    /// (kept as `Vec<u8>` so the wire-format module sits cleanly behind
+    /// its own feature flag and `messages.rs` does not need to depend on
+    /// the crypto stack).
+    SessionTokenIssued { token: Vec<u8> },
+
+    /// Fail-closed reply to `AccessRequest::IssueSessionToken`. Returned
+    /// either when the policy denies the request or when token minting
+    /// fails for any reason (DB error, malformed UUID, key not loaded,
+    /// ...). The caller MUST surface the same generic "Access denied"
+    /// reply regardless of the underlying cause -- distinguishing
+    /// "policy denied" from "minter is broken" would let a probe
+    /// fingerprint the bastion.
+    SessionTokenDenied,
 }
 
 /// Seed user data for admin commands.
@@ -786,6 +849,13 @@ pub enum Message {
         /// If set, the proxy MUST verify the server key matches before continuing.
         /// If None, host key verification is skipped (insecure, logged as warning).
         expected_host_key: Option<String>,
+        /// SECURITY: Bincode-serialized `shared::session_token::SessionToken`
+        /// minted by vauban-access. The proxy MUST verify this token
+        /// (user_uuid, asset_uuid, protocol = "ssh", session_id) before
+        /// invoking `AccessGuard::authorize`. Empty vector or any
+        /// verification failure MUST collapse to a fail-closed denial.
+        /// See `docs/technical/Vauban_AccessGuard_Architecture_EN(1.0).md` §3.
+        session_token: Vec<u8>,
     },
 
     /// Response confirming session opened or error.
@@ -864,6 +934,13 @@ pub enum Message {
         desktop_width: u16,
         /// Requested desktop height in pixels.
         desktop_height: u16,
+        /// SECURITY: Bincode-serialized `shared::session_token::SessionToken`
+        /// minted by vauban-access. The proxy MUST verify this token
+        /// (user_uuid, asset_uuid, protocol = "rdp", session_id) before
+        /// invoking `AccessGuard::authorize`. Empty vector or any
+        /// verification failure MUST collapse to a fail-closed denial.
+        /// See `docs/technical/Vauban_AccessGuard_Architecture_EN(1.0).md` §3.
+        session_token: Vec<u8>,
     },
 
     /// Response confirming RDP session opened or error.
@@ -1097,6 +1174,13 @@ pub enum Message {
         port: u16,
         /// Target service that will receive the FD (e.g., Service::ProxySsh, Service::ProxyRdp).
         target_service: Service,
+        /// SECURITY: Bincode-serialized `shared::session_token::SessionToken`.
+        /// The supervisor MUST verify this token (host, port, target_service,
+        /// session_id) before performing DNS resolution and `connect()`. An
+        /// empty vector or any verification failure MUST collapse to a
+        /// fail-closed denial in `handle_tcp_connect_request`. See
+        /// `docs/technical/Vauban_AccessGuard_Architecture_EN(1.0).md` §3.
+        session_token: Vec<u8>,
     },
 
     /// Response from supervisor after establishing (or failing) TCP connection.
@@ -1638,6 +1722,7 @@ mod tests {
             private_key: None,
             passphrase: None,
             expected_host_key: Some("ssh-ed25519 AAAA...".to_string()),
+            session_token: Vec::new(),
         };
         assert_eq!(msg.request_id(), Some(500));
 
@@ -1792,6 +1877,7 @@ mod tests {
                 private_key: None,
                 passphrase: None,
                 expected_host_key: None,
+                session_token: Vec::new(),
             },
             Message::SshSessionOpened {
                 request_id: 1,
@@ -1831,6 +1917,7 @@ mod tests {
             host: "example.com".to_string(),
             port: 22,
             target_service: Service::ProxySsh,
+            session_token: Vec::new(),
         };
         assert_eq!(msg.request_id(), Some(600));
 
@@ -1842,6 +1929,7 @@ mod tests {
             host,
             port,
             target_service,
+            ..
         } = deserialized
         {
             assert_eq!(request_id, 600);
@@ -1913,6 +2001,7 @@ mod tests {
                 host: "192.168.1.100".to_string(),
                 port: 22,
                 target_service: Service::ProxySsh,
+                session_token: Vec::new(),
             },
             Message::TcpConnectRequest {
                 request_id: 2,
@@ -1920,6 +2009,7 @@ mod tests {
                 host: "rdp-server.internal".to_string(),
                 port: 3389,
                 target_service: Service::ProxyRdp,
+                session_token: Vec::new(),
             },
             Message::TcpConnectResponse {
                 request_id: 1,
@@ -2038,6 +2128,7 @@ mod tests {
             private_key: None,
             passphrase: None,
             expected_host_key: Some("ssh-ed25519 AAAA...test".to_string()),
+            session_token: Vec::new(),
         };
 
         let serialized = serialize(&msg);
@@ -2327,6 +2418,7 @@ mod tests {
             private_key: None,
             passphrase: None,
             expected_host_key: None,
+            session_token: Vec::new(),
         };
 
         let serialized = serialize(&msg);
@@ -2357,6 +2449,7 @@ mod tests {
             domain: Some("WORKGROUP".to_string()),
             desktop_width: 1920,
             desktop_height: 1080,
+            session_token: Vec::new(),
         };
         assert_eq!(msg.request_id(), Some(700));
 
@@ -2405,6 +2498,7 @@ mod tests {
             domain: None,
             desktop_width: 1280,
             desktop_height: 720,
+            session_token: Vec::new(),
         };
 
         let serialized = serialize(&msg);
@@ -2800,6 +2894,7 @@ mod tests {
                 domain: Some("DOMAIN".to_string()),
                 desktop_width: 1280,
                 desktop_height: 720,
+                session_token: Vec::new(),
             },
             Message::RdpSessionOpened {
                 request_id: 1,
@@ -2900,6 +2995,7 @@ mod tests {
             domain: None,
             desktop_width: 1280,
             desktop_height: 720,
+            session_token: Vec::new(),
         };
         let debug = format!("{:?}", msg);
         assert!(
@@ -3497,6 +3593,7 @@ mod tests {
             private_key: Some(SensitiveString::new("-----BEGIN KEY-----".to_string())),
             passphrase: Some(SensitiveString::new("my-passphrase".to_string())),
             expected_host_key: None,
+            session_token: Vec::new(),
         };
         let debug = format!("{:?}", msg);
         assert!(
@@ -3534,6 +3631,7 @@ mod tests {
             private_key: None,
             passphrase: None,
             expected_host_key: None,
+            session_token: Vec::new(),
         };
         let serialized = serialize(&msg);
         let deserialized: Message = deserialize(&serialized);

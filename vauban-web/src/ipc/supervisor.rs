@@ -167,6 +167,7 @@ impl SupervisorClient {
         host: &str,
         port: u16,
         target_service: Service,
+        session_token: Vec<u8>,
     ) -> Result<TcpConnectResult, String> {
         let request_id = self.inner.next_request_id.fetch_add(1, Ordering::SeqCst);
 
@@ -197,6 +198,7 @@ impl SupervisorClient {
             host: host.to_string(),
             port,
             target_service,
+            session_token,
         };
 
         if let Err(e) = self.inner.channel.send(&msg) {

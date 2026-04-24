@@ -13,10 +13,11 @@
 3. [Public API](#3-public-api)
 4. [Lifecycle](#4-lifecycle)
 5. [Threat Model](#5-threat-model)
-6. [Design Notes](#6-design-notes)
-7. [Adding a New Proxy](#7-adding-a-new-proxy)
-8. [Observability](#8-observability)
-9. [Related Documents](#9-related-documents)
+6. [Cryptographic Session-Token Gate](#6-cryptographic-session-token-gate)
+7. [Design Notes](#7-design-notes)
+8. [Adding a New Proxy](#8-adding-a-new-proxy)
+9. [Observability](#9-observability)
+10. [Related Documents](#10-related-documents)
 
 ---
 
@@ -31,16 +32,26 @@ opening an upstream session, regardless of any verdict already produced
 by `vauban-web`.
 
 It implements the **defense-in-depth RBAC re-check** layer of the IAM
-authorization model:
+authorization model. A second, complementary layer — the
+**cryptographic session-token gate** described in
+[§6](#6-cryptographic-session-token-gate) — closes the residual gap
+that pure RBAC re-checks cannot close on their own (UUID swap from a
+compromised web tier, supervisor TCP broker used as a network probe).
+The two layers are designed together and ship together; this document
+covers both.
 
 ```mermaid
 flowchart LR
     Web["vauban-web"]
     Access["vauban-access"]
+    Sup["vauban-supervisor<br/>(TCP broker)"]
     Proxy["vauban-proxy<br/>(SSH / RDP / VNC / ...)"]
 
     Web -->|"1. UI gate<br/>CheckAccess"| Access
-    Proxy -->|"2. Re-check<br/>CheckAccessByUuid"| Access
+    Web -->|"2. Token mint<br/>IssueSessionToken"| Access
+    Web -->|"3. TCP brokering<br/>(token-bound)"| Sup
+    Web -->|"4. SessionOpen<br/>(token-bound)"| Proxy
+    Proxy -->|"5. Re-check<br/>CheckAccessByUuid"| Access
 ```
 
 A successful response from `vauban-web -> vauban-access` is **not**
@@ -68,7 +79,11 @@ This document describes:
   `spawn_dispatcher` → per-session `authorize`),
 - The threat model the module defends against,
 - The design choices that make fail-open configurations
-  unrepresentable.
+  unrepresentable,
+- The complementary cryptographic session-token gate
+  (`shared::session_token`), its format, mint / verify flow, key
+  dissemination, and the threat classes it closes that an RBAC
+  re-check alone cannot.
 
 It does NOT describe:
 
@@ -100,13 +115,19 @@ sequenceDiagram
     W->>AC: AccessRequest::CheckAccess(user_id, group_id, protocol)
     AC-->>W: AccessChecked(allowed: true, ...)
 
+    Note over W,AC: Layer 1bis — Cryptographic token mint (see §6)
+    W->>AC: AccessRequest::IssueSessionToken(...)
+    AC-->>W: SessionTokenIssued(token_bytes)
+
     Note over W,S: TCP brokering (Capsicum, FD passing)
-    W->>S: TcpConnectRequest(...)
+    W->>S: TcpConnectRequest(host, port, ..., token_bytes)
+    S->>S: SessionToken::verify_bytes (Verifier::Supervisor)
     S->>T: connect()
     S->>P: send_fd(socket) via SCM_RIGHTS
 
     Note over W,P: Session-open IPC
-    W->>P: SshSessionOpen / RdpSessionOpen(user_uuid, asset_uuid, ...)
+    W->>P: SshSessionOpen / RdpSessionOpen(user_uuid, asset_uuid, ..., token_bytes)
+    P->>P: session_token_gate::verify_proxy
 
     rect rgb(255, 240, 220)
     Note over P,AC: Layer 2 — Defense-in-depth RBAC re-check (this module)
@@ -443,11 +464,282 @@ re-check.
 - **No fallback path.** If `vauban-access` is unreachable, the bastion
   refuses sessions. This is the entire point of the gate.
 
+### 5.4 What `AccessGuard` alone does NOT defend against
+
+The defense-in-depth re-check is necessary, but it is not
+sufficient. The proxy receives `(user_uuid, asset_uuid)` from
+`vauban-web` over the session-open IPC and verifies that pair against
+`vauban-access`. Two attack classes survive a clean re-check verdict:
+
+**(a) Session piggyback / UUID swap from a compromised `vauban-web`.**
+The web tier resolves the user identity from a session cookie, but it
+is also the tier most exposed to the network and the largest attack
+surface in the bastion. A compromised `vauban-web` could send a
+perfectly well-formed `SshSessionOpen { user_uuid: U_target,
+asset_uuid: A_target }` for a `(U_target, A_target)` pair that
+genuinely *is* allowed by Casbin policy — but for which **the live
+HTTP session does not belong to `U_target`**. The proxy's RBAC
+re-check answers "is `U_target` allowed on `A_target`?" with `Granted`
+in good faith, because that is the only question it can ask. The
+attacker has piggybacked on a valid policy edge.
+
+**(b) Network enumeration via the supervisor's TCP broker.** The
+supervisor's TCP brokering primitive (`TcpConnectRequest`) is the only
+component in the privsep topology with the right to `connect(2)`
+arbitrary `(host, port)` tuples — the proxies are sealed under
+Capsicum and cannot reach the network themselves. If `vauban-web` is
+compromised, the broker becomes an unauthenticated network probe
+inside the trusted side of the bastion: the attacker can iterate over
+internal address space and discover live hosts long before any
+`AccessGuard` check is reached, because brokering happens *before* the
+session-open IPC the proxy validates.
+
+Both classes share the same root cause: the messages crossing the
+internal IPC boundary carry **only declarative identifiers**, with no
+proof that the corresponding `(user, asset, host, port, protocol)`
+tuple was actually approved by `vauban-access` for *this specific*
+session opening. The cryptographic session-token gate described in
+[§6](#6-cryptographic-session-token-gate) closes that gap by attaching
+a short-lived, MAC-bound proof of authorization to every brokered
+connection and every session-open IPC. With the token in place, both
+the supervisor's TCP broker and the proxy's `AccessGuard` are
+re-anchored on the same authoritative decision made by
+`vauban-access`, and neither can be tricked by a compromised
+`vauban-web` into acting on declarative identifiers alone.
+
 ---
 
-## 6. Design Notes
+## 6. Cryptographic Session-Token Gate
 
-### 6.1 Pending-map cleanup (RAII)
+### 6.1 Purpose and complementarity with `AccessGuard`
+
+`AccessGuard` answers the policy question: *is this `(user, asset,
+protocol)` triple allowed?* It does so authoritatively by querying
+`vauban-access`. What it cannot answer — by construction, because the
+proxy only sees the IPC payload from `vauban-web` — is the *binding*
+question: *does this specific session opening correspond to a real,
+unrevoked, in-flight authorization that `vauban-access` actually
+issued for the live HTTP session, against the exact target the
+supervisor is being asked to broker?*
+
+The cryptographic session-token gate adds that missing binding. It is
+**not** a replacement for `AccessGuard`; it is a complementary layer
+that:
+
+- proves to the supervisor's TCP broker that the requested `(host,
+  port, protocol, target_service)` tuple was just blessed by
+  `vauban-access` for a specific session,
+- proves to the proxy that the `(user_uuid, asset_uuid, protocol)`
+  triple it is about to RBAC-re-check was issued by `vauban-access`
+  for a specific session, before `AccessGuard` even touches the IPC
+  pipe,
+- collapses fail-closed in the same way as `AccessGuard` (single,
+  uniform `"Access denied"` user-facing string).
+
+### 6.2 Token format
+
+A session token is a fixed-layout, deterministic byte sequence
+authenticated with a BLAKE3 keyed MAC over its full body. The
+client-side payload (browser, web tier) never sees or handles tokens —
+they are minted, transported, and verified entirely between trusted
+backend services.
+
+| Field | Width | Role |
+|-------|-------|------|
+| `version` | 1 byte | Wire-format version. Mismatched versions fail-closed. |
+| `session_id` | length-prefixed `&str` | Logical session identifier (HTTP session for user-initiated sessions; synthetic `fetch-hostkey-{request_id}` for the host-key fetch path). Used as the anti-replay key. |
+| `user_uuid` | length-prefixed `&str` | The principal `vauban-access` authorized. |
+| `asset_uuid` | length-prefixed `&str` | The asset `vauban-access` authorized. |
+| `protocol` | length-prefixed `&str` | One of `PROTOCOL_*`. |
+| `host` | length-prefixed `&str` | The exact destination the supervisor is asked to dial. |
+| `port` | 2 bytes | The exact destination port. |
+| `target_service` | 1 byte discriminant | The service the supervisor must hand the FD to. |
+| `issued_at` | 8 bytes | Mint timestamp (Unix seconds). |
+| `expires_at` | 8 bytes | `issued_at + TOKEN_TTL_SECONDS` (short, single-digit minutes). |
+| `nonce` | `NONCE_LENGTH` bytes | `OsRng`-generated; (`session_id`, `nonce`) is the anti-replay key. |
+| `mac` | `MAC_LENGTH` bytes | BLAKE3 keyed MAC over the deterministic encoding of all preceding fields. |
+
+The MAC is computed with a domain-separated input prefix to prevent
+any cross-protocol collision with other BLAKE3 use sites.
+
+### 6.3 Verifier roles
+
+Different verification points must enforce different field bindings,
+because a compromised `vauban-web` can lie about *different* facts
+depending on which IPC it tampers with:
+
+| Verifier | Bound fields (in addition to MAC + freshness + anti-replay) |
+|----------|--------------------------------------------------------------|
+| `Verifier::Supervisor` | `host`, `port`, `protocol`, `target_service`, `session_id` — the broker only knows where it is being asked to connect. |
+| `Verifier::Proxy` | `user_uuid`, `asset_uuid`, `protocol`, `session_id` — the proxy only knows the principal/asset pair the session-open claims. |
+
+Splitting the verifier role this way is itself a defense: even if the
+attacker controls one IPC, the field they would need to forge is
+checked at a *different* hop where they have no leverage.
+
+### 6.4 Mint / verify flow
+
+```mermaid
+sequenceDiagram
+    participant U as User Browser
+    participant W as vauban-web
+    participant AC as vauban-access
+    participant S as vauban-supervisor
+    participant P as vauban-proxy-* (SSH or RDP)
+
+    U->>W: Click "Connect"
+    W->>AC: AccessRequest::CheckAccess(user, asset, protocol)
+    AC-->>W: AccessChecked(allowed: true)
+
+    rect rgb(220, 235, 255)
+    Note over W,AC: Layer 0 — token mint
+    W->>AC: AccessRequest::IssueSessionToken(user, asset,<br/>protocol, host, port, target_service, session_id)
+    AC->>AC: re-run policy check
+    AC-->>W: AccessResponse::SessionTokenIssued(token_bytes)
+    end
+
+    rect rgb(255, 240, 220)
+    Note over W,S: Layer 1 — supervisor verifies before DNS / connect
+    W->>S: TcpConnectRequest(host, port, target_service, token_bytes)
+    S->>S: SessionToken::verify_bytes(Verifier::Supervisor)
+    S->>S: replay_cache.record(session_id, nonce)
+    S->>S: getaddrinfo + TcpStream::connect
+    S->>P: send_fd(socket) via SCM_RIGHTS
+    end
+
+    rect rgb(255, 240, 220)
+    Note over W,P: Layer 2 — proxy verifies before AccessGuard
+    W->>P: SshSessionOpen / RdpSessionOpen(user, asset, ..., token_bytes)
+    P->>P: session_token_gate::verify_proxy(...)
+    P->>P: replay_cache.record(session_id, nonce)
+    end
+
+    Note over P,AC: Layer 3 — defense-in-depth RBAC re-check
+    P->>AC: AccessRequest::CheckAccessByUuid(user, asset, protocol)
+    AC-->>P: AccessChecked(allowed: true)
+```
+
+Layer 0 (mint) is gated by the same Casbin policy as `AccessGuard`'s
+re-check, but it is performed *once per session opening*, by the only
+service that holds the MAC key in addition to the policy: `vauban-access`.
+Layers 1 and 2 each re-anchor a different boundary on that single mint
+decision; Layer 3 (`AccessGuard`) remains in place as the
+authoritative re-check on the policy itself.
+
+### 6.5 Key dissemination
+
+The MAC key is 32 bytes of `OsRng` material, generated once by
+`vauban-supervisor` at boot and published to the four services that
+need it (`vauban-supervisor` itself, `vauban-access`, `vauban-proxy-ssh`,
+`vauban-proxy-rdp`) through the `VAUBAN_SESSION_TOKEN_KEY_*` environment
+variables, exactly like the existing `VAUBAN_ACCESS_IPC_*` channel.
+
+```mermaid
+flowchart LR
+    Sup["vauban-supervisor<br/>OsRng → 32 bytes"]
+    Sup -->|env var| AccLoad["vauban-access<br/>TokenKey::from_env"]
+    Sup -->|env var| SupSelf["vauban-supervisor<br/>TokenKey::from_env"]
+    Sup -->|env var| PsshLoad["vauban-proxy-ssh<br/>session_token_gate::init_from_env"]
+    Sup -->|env var| PrdpLoad["vauban-proxy-rdp<br/>session_token_gate::init_from_env"]
+    AccLoad -.->|mints| Tok((Session Token))
+    Tok -.->|verifies| SupSelf
+    Tok -.->|verifies| PsshLoad
+    Tok -.->|verifies| PrdpLoad
+```
+
+The same boot-order invariant as `AccessGuard` applies: each consumer
+calls `TokenKey::from_env` (or its proxy wrapper
+`shared::session_token::proxy_gate::init_from_env`) **before**
+Capsicum sealing, because reading and clearing the env var is
+impossible once the process is in capability mode. `vauban-web`
+deliberately does **not** hold the key — it cannot mint, only request
+mints from `vauban-access`.
+
+For the same reason `AccessGuard` is a single shared module, the
+proxy-side cryptographic gate is factorized into
+`shared::session_token::proxy_gate` and consumed verbatim by
+`vauban-proxy-ssh`, `vauban-proxy-rdp`, and any future protocol
+proxy. Anti-regression structural tests in each proxy assert that no
+private re-implementation may sneak back in.
+
+### 6.6 Anti-replay
+
+Each verifier (supervisor, SSH proxy, RDP proxy) maintains a private,
+in-memory LRU cache of recently seen `(session_id, nonce)` pairs,
+bounded by `MAX_ENTRIES` (4096) and aged out by token TTL plus a
+small clock-skew tolerance. The first verification of a token records
+the pair; any subsequent verification with the same pair fails-closed.
+The cache implementation lives in `shared::session_token::replay_cache`
+and is consumed identically by the supervisor (mounted directly) and
+by the proxies (mounted indirectly through
+`shared::session_token::proxy_gate`).
+
+Replay caches are deliberately **per-process and not shared**: cross-
+service replay is already prevented by the verifier role splitting
+fields differently (a token replayed at the SSH proxy after being
+consumed at the supervisor still encodes a `host`/`port` the proxy
+does not check, and vice versa). Sharing a cache across services would
+add coupling without security benefit.
+
+### 6.7 Threat model — what the token gate adds
+
+The crypto gate composes with `AccessGuard` to defend against the
+attack classes called out in [§5.4](#54-what-accessguard-alone-does-not-defend-against):
+
+| Threat | Mitigation |
+|--------|------------|
+| Compromised `vauban-web` opens sessions on behalf of arbitrary users with valid policy edges (UUID swap) | Proxy `Verifier::Proxy` rejects any `(user_uuid, asset_uuid, session_id)` triple not blessed by `vauban-access` for this session |
+| Compromised `vauban-web` uses the supervisor's TCP broker as an unauthenticated network probe | Supervisor `Verifier::Supervisor` rejects any `(host, port, target_service, session_id)` tuple not blessed by `vauban-access` for this session |
+| Replayed legitimate token (recording + replaying a captured IPC) | Per-verifier LRU cache keyed by `(session_id, nonce)` |
+| Stale token (long-running compromise of the IPC path) | `expires_at` fail-closed comparison with `CLOCK_SKEW_TOLERANCE_SECONDS` budget |
+| Cross-protocol token confusion (an SSH-issued token replayed at the RDP proxy) | `protocol` field is bound by both verifier roles |
+| Cross-target token confusion (a token for `host_a:22` replayed at `host_b:22`) | `host`, `port`, `target_service` are bound by `Verifier::Supervisor` |
+| Cross-MAC confusion (BLAKE3 used elsewhere in the codebase) | Domain-separated MAC input prefix |
+| Forged token without the key | BLAKE3 keyed MAC over deterministic encoding; constant-time comparison |
+| Token theft via env var leak to a child process | `from_env` clears the env var after parsing, exactly like `AccessGuard` |
+| Token minting from a compromised non-`vauban-access` service | Only `vauban-access` holds the key for minting; supervisor and proxies hold it solely to verify |
+| Host-key fetch path bypassing the gate | `fetch_host_key` mints its own short-lived token under a synthetic `fetch-hostkey-{request_id}` session id and threads it through the broker |
+
+Argued in detail:
+
+- **UUID swap closure.** Without the token, a compromised `vauban-web`
+  needs only to know two valid UUIDs and a valid policy edge between
+  them to ride the proxy's `AccessGuard` `Granted` verdict and open a
+  shell as any user. With the token, that same payload now requires a
+  *fresh*, *MAC-bound* attestation that `vauban-access` agreed to mint
+  for those exact UUIDs in the context of the live session — which a
+  compromised `vauban-web` cannot produce. The blast radius of a web
+  compromise drops from "any policy edge in the system" to "only what
+  `vauban-access` would approve for the user `vauban-web` is logged in
+  as".
+
+- **Broker-as-probe closure.** Without the token, the supervisor's TCP
+  broker is the only network primitive on the trusted side and accepts
+  any `(host, port)` from `vauban-web`. With the token, the broker
+  refuses to dial anything `vauban-access` did not pre-approve,
+  closing the lateral-movement reconnaissance path that previously
+  existed inside the bastion's own privsep boundary.
+
+- **Replay closure.** The combination of short TTL, MAC over a
+  random nonce, and per-verifier LRU cache means that an attacker who
+  records a legitimate session-open IPC cannot re-use it to open a
+  second session, even within the TTL window.
+
+- **Defense-in-defense.** A failure mode of any single layer
+  (`AccessGuard` mis-wired, broker bug, web compromise) does not
+  collapse the other two. The three layers (token mint, token verify,
+  RBAC re-check) all answer the same authoritative question and must
+  all agree before an upstream socket is touched.
+
+What the gate explicitly does **not** defend against is unchanged
+from §5.2: a compromised `vauban-supervisor` (the TCB), a compromised
+`vauban-access` (the only minter), or a compromised target server.
+
+---
+
+## 7. Design Notes
+
+### 7.1 Pending-map cleanup (RAII)
 
 The dispatcher and the caller race for the same pending entry: the
 dispatcher removes it when a response arrives; the caller removes it
@@ -463,7 +755,7 @@ no-op; if it loses (timeout / cancel) the RAII drop performs the
 removal. The pending map is therefore strictly bounded by the number of
 in-flight requests at any instant, regardless of failure mode.
 
-### 6.2 Choice of `std::sync::Mutex` for the pending map
+### 7.2 Choice of `std::sync::Mutex` for the pending map
 
 The pending map is wrapped in `std::sync::Mutex`, not `tokio::sync::Mutex`,
 for two reasons:
@@ -479,7 +771,7 @@ lock; the inner `HashMap` is still valid, and turning poisoning into a
 permanent denial-for-everyone would reduce availability without
 improving security.
 
-### 6.3 Type-system invariants
+### 7.3 Type-system invariants
 
 The module leans on Rust's type system to make fail-open configurations
 either unrepresentable or unattainable through casual refactors:
@@ -494,27 +786,27 @@ either unrepresentable or unattainable through casual refactors:
 
 ---
 
-## 7. Adding a New Proxy
+## 8. Adding a New Proxy
 
 The cookbook for a new protocol (VNC, Modbus, OPC-UA, …) re-uses the
 shared module verbatim — an in-crate RBAC client must not be
 re-implemented.
 
-### 7.1 Supervisor
+### 8.1 Supervisor
 
 In `vauban-supervisor`, declare a TOPOLOGY edge
 `Service::ProxyVnc -> Service::Access`. The supervisor will create the
 pipe and export `VAUBAN_ACCESS_IPC_READ` / `VAUBAN_ACCESS_IPC_WRITE` to
 the new proxy.
 
-### 7.2 vauban-access
+### 8.2 vauban-access
 
 Bind the new peer in `vauban-access::run_service`, bump the expected
 peer count for the boot-time topology check, and update the
 corresponding structural test
 (`test_access_main_binds_all_topology_incoming_peers`).
 
-### 7.3 shared crate
+### 8.3 shared crate
 
 Add the canonical protocol constant:
 
@@ -526,25 +818,33 @@ The string must match `access_rules.protocols` in the database. The
 existing protocol-constant tests pin the casing and the DB-string
 mapping.
 
-### 7.4 Proxy crate
+### 8.4 Proxy crate
 
 The proxy:
 
-1. Declares `shared = { path = "../shared", features = ["access-guard"] }`.
+1. Declares `shared = { path = "../shared", features = ["access-guard", "session-token"] }`.
 2. Implements `AccessGuardMetrics` on its own `ServiceState`.
-3. Calls `AccessGuard::from_env(PROTOCOL_VNC, state)` **before**
+3. Brings the shared cryptographic gate into scope:
+   `use shared::session_token::proxy_gate as session_token_gate;`
+4. Calls `session_token_gate::init_from_env()` **before** Capsicum
+   sealing (loads the BLAKE3 MAC key and prepares the per-proxy
+   anti-replay cache).
+5. Calls `AccessGuard::from_env(PROTOCOL_VNC, state)` **before**
    Capsicum sealing.
-4. Enrolls `access_wiring.fds` in the Capsicum sandbox.
-5. Calls `access_guard.spawn_dispatcher()` after the tokio runtime is
+6. Enrolls `access_wiring.fds` in the Capsicum sandbox.
+7. Calls `access_guard.spawn_dispatcher()` after the tokio runtime is
    up.
-6. In its session-open handler, runs `authorize` inside a
+8. In its session-open handler, calls
+   `session_token_gate::verify_proxy(&token, &user, &asset, PROTOCOL_VNC, &session_id)`
+   first, fail-closes on `false`, then runs `authorize` inside a
    `tokio::spawn` body and treats anything other than
    `AccessDecision::Granted` as `"Access denied"`.
 
-`vauban-proxy-rdp/src/main.rs` is the canonical reference
-implementation for steps 2–6.
+The new proxy adds **zero** lines of crypto code — every byte of the
+gate lives in `shared`. `vauban-proxy-rdp/src/main.rs` is the
+canonical reference implementation for steps 2–8.
 
-### 7.5 Runbook update
+### 8.5 Runbook update
 
 Bump the expected peer count in
 [`docs/runbooks/ipc_topology_debugging.md`](../runbooks/ipc_topology_debugging.md)
@@ -552,9 +852,9 @@ and add the new proxy to its symptoms table.
 
 ---
 
-## 8. Observability
+## 9. Observability
 
-### 8.1 Metrics
+### 9.1 Metrics
 
 Each proxy's `ServiceState` exposes the four counters routed by
 `AccessGuardMetrics` through its existing health endpoint:
@@ -570,7 +870,7 @@ The relative balance of these counters is the primary health signal of
 the gate; absolute values are meaningful only relative to total session
 attempts.
 
-### 8.2 Logs
+### 9.2 Logs
 
 `AccessGuard` log lines are structured and prefixed with the protocol:
 
@@ -582,7 +882,7 @@ ERROR  protocol="ssh" timeout_secs=10           AccessGuard timeout - denying fa
 ERROR  protocol="rdp" error="…"                 AccessGuard IPC error - denying fail-closed
 ```
 
-### 8.3 Boot-time signals
+### 9.3 Boot-time signals
 
 On startup, every proxy logs:
 
@@ -606,9 +906,9 @@ runbook.
 
 ---
 
-## 9. Related Documents
+## 10. Related Documents
 
-### 9.1 Internal
+### 10.1 Internal
 
 - [`Vauban_IAM_Architecture_EN(1.0).md`](Vauban_IAM_Architecture_EN(1.0).md)
   — IAM model (Casbin RBAC + instance-level access rules) enforced by
@@ -621,14 +921,29 @@ runbook.
 - [`docs/runbooks/ipc_topology_debugging.md`](../runbooks/ipc_topology_debugging.md)
   — operational runbook for the topology / RBAC re-check failure mode.
 
-### 9.2 Source of truth
+### 10.2 Source of truth
 
 - `shared/src/access_guard.rs` — module + tests
-- `shared/Cargo.toml` — `access-guard` feature flag
+- `shared/src/session_token/mod.rs` — `SessionToken`, `TokenKey`,
+  `Verifier`, `TokenError` (wire-format primitives + tier-1 unit tests)
+- `shared/src/session_token/replay_cache.rs` — bounded, TTL-aware
+  anti-replay LRU shared by every verifier (supervisor + proxies)
+- `shared/src/session_token/proxy_gate.rs` — single, factorized
+  proxy-boundary gate (`init_from_env`, `verify_proxy`) consumed
+  verbatim by every protocol proxy
+- `shared/Cargo.toml` — `access-guard` and `session-token` feature flags
 - `vauban-proxy-ssh/src/main.rs`, `vauban-proxy-rdp/src/main.rs` —
-  consumers
+  consumers (both gates) via
+  `use shared::session_token::proxy_gate as session_token_gate`
 - `vauban-access/src/handlers.rs::handle_check_access_by_uuid` —
   authoritative server-side handler
+- `vauban-access/src/handlers.rs::handle_issue_session_token` — token
+  minter
 - `vauban-supervisor/src/main.rs::TOPOLOGY` — edge declarations
+- `vauban-supervisor/src/main.rs::handle_tcp_connect_request` —
+  supervisor-side token verification before DNS / connect (uses
+  `shared::session_token::replay_cache::ReplayCache`)
+- `vauban-web/src/ipc/access.rs::issue_session_token` — web-tier mint
+  request
 
 ---

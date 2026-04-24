@@ -30,6 +30,7 @@ mod session;
 mod session_manager;
 
 use anyhow::{Context, Result};
+use shared::session_token::proxy_gate as session_token_gate;
 use error::SessionError;
 use ipc::AsyncIpcChannel;
 use secrecy::SecretString;
@@ -278,6 +279,19 @@ async fn run_service() -> Result<()> {
     } else {
         None
     };
+
+    // SECURITY: load and CLEAR the session-token MAC key BEFORE any
+    // other thread is spawned, BEFORE Capsicum closes us out of env
+    // mutation, and BEFORE we accept any session-open. Without it the
+    // proxy would have to fail-closed on every SshSessionOpen, which
+    // is correct but useless: in production the supervisor MUST set
+    // VAUBAN_SESSION_TOKEN_KEY for proxy_ssh.
+    session_token_gate::init_from_env().context(
+        "Failed to load VAUBAN_SESSION_TOKEN_KEY - vauban-proxy-ssh \
+         requires the cryptographic session-token key (refusing to \
+         start; sessions cannot be cryptographically gated without it)",
+    )?;
+    info!("session-token MAC key loaded (BLAKE3-keyed)");
 
     // SAFETY: We clear environment variables immediately after reading.
     // Note: VAUBAN_ACCESS_IPC_READ / WRITE are consumed (and removed)
@@ -608,6 +622,7 @@ async fn handle_web_message(
             private_key,
             passphrase,
             expected_host_key,
+            session_token,
         } => {
             debug!(
                 session_id = %session_id,
@@ -616,6 +631,31 @@ async fn handle_web_message(
                 auth_type = %auth_type,
                 "SSH session open request"
             );
+
+            // SECURITY: cryptographic session-token gate. Verifies the
+            // BLAKE3-keyed MAC, freshness window, anti-replay nonce, and
+            // field-bindings (user_uuid, asset_uuid, protocol, session_id)
+            // against the token vauban-access minted. A compromised
+            // vauban-web cannot piggy-back another user's session here
+            // because the (user, asset) tuple inside the MAC won't match
+            // the SshSessionOpen fields. Fail-closed deny on any error.
+            // See docs/technical/Vauban_AccessGuard_Architecture_EN(1.0).md §3.
+            if !session_token_gate::verify_proxy(
+                &session_token,
+                &user_id,
+                &asset_id,
+                "ssh",
+                &session_id,
+            ) {
+                let response = Message::SshSessionOpened {
+                    request_id,
+                    session_id,
+                    success: false,
+                    error: Some("Access denied".to_string()),
+                };
+                let _ = response_tx.send(response);
+                return Ok(());
+            }
 
             // Check if we're draining
             if state.draining.load(Ordering::SeqCst) {
@@ -1268,6 +1308,91 @@ mod tests {
             "Legacy 'TODO: Check RBAC authorization' placeholder must NOT \
              reappear in proxy-ssh main.rs (bypass risk: see security audit \
              finding #6 re-opening if removed)"
+        );
+    }
+
+    // ==================== Cryptographic session-token gate ====================
+    //
+    // SECURITY: vauban-proxy-ssh MUST verify the BLAKE3-keyed session
+    // token on every SshSessionOpen BEFORE the AccessGuard re-check
+    // and BEFORE any upstream connection work. The token is the only
+    // proof we have that vauban-access (not a compromised vauban-web)
+    // authorized the EXACT (user, asset, "ssh", session_id) tuple
+    // about to flow through this proxy. These tests pin the wiring so
+    // the gate cannot silently regress.
+
+    #[test]
+    fn test_proxy_ssh_loads_session_token_key_at_boot() {
+        let source = prod_source();
+        assert!(
+            source.contains("session_token_gate::init_from_env()"),
+            "proxy-ssh boot MUST call session_token_gate::init_from_env() \
+             so the BLAKE3 MAC key is loaded BEFORE Capsicum closes us \
+             out of env mutation. Removing this call disables the \
+             cryptographic gate and lets a compromised vauban-web open \
+             arbitrary sessions."
+        );
+        let init_idx = source
+            .find("session_token_gate::init_from_env()")
+            .expect("init_from_env call must exist");
+        let cap_enter_idx = source
+            .find("capsicum::setup_service_sandbox")
+            .expect("Capsicum sandbox setup must exist");
+        assert!(
+            init_idx < cap_enter_idx,
+            "session_token_gate::init_from_env() MUST run BEFORE \
+             capsicum::setup_service_sandbox. After Capsicum mode is \
+             entered, env mutation is impossible and TokenKey::from_env \
+             will panic on the remove_var step."
+        );
+    }
+
+    #[test]
+    fn test_proxy_ssh_session_open_verifies_session_token_first() {
+        let source = prod_source();
+        let handler_start = source
+            .find("Message::SshSessionOpen {")
+            .expect("SshSessionOpen handler must exist");
+        let handler = &source[handler_start..];
+        let verify_idx = handler.find("session_token_gate::verify_proxy(").expect(
+            "SshSessionOpen handler MUST call session_token_gate::verify_proxy. \
+             Without this, a compromised vauban-web could forge any \
+             SshSessionOpen and bypass cryptographic authorization.",
+        );
+        let authorize_idx = handler.find(".authorize(&rbac_user, &rbac_asset)").expect(
+            "AccessGuard.authorize call site must exist inside the handler",
+        );
+        assert!(
+            verify_idx < authorize_idx,
+            "session_token_gate::verify_proxy MUST run BEFORE \
+             AccessGuard.authorize. Crypto gate is the cheap, \
+             local-only check; running it first means a forged token \
+             never costs us an IPC round-trip to vauban-access."
+        );
+    }
+
+    #[test]
+    fn test_proxy_ssh_session_token_gate_uses_shared_module() {
+        // Anti-regression guard: the proxy MUST consume the shared
+        // `shared::session_token::proxy_gate` module instead of an
+        // in-crate copy. Forking the gate into a per-proxy file is the
+        // exact DRY violation we eliminated when factoring it into
+        // `shared`. A reviewer who reintroduces a private module must
+        // see this test fail.
+        let source = prod_source();
+        assert!(
+            source.contains("shared::session_token::proxy_gate"),
+            "proxy-ssh main.rs MUST consume \
+             `shared::session_token::proxy_gate` (the single, \
+             factorized cryptographic gate). Re-implementing it locally \
+             defeats the whole point of the shared crate and risks \
+             divergence between protocol proxies."
+        );
+        assert!(
+            !source.contains("\nmod session_token_gate;"),
+            "proxy-ssh main.rs MUST NOT declare a private \
+             `session_token_gate` module — the shared module is the \
+             single source of truth."
         );
     }
 }

@@ -32,13 +32,16 @@ use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
 use nix::unistd::{ForkResult, Gid, Pid, Uid, execv, fork, setgid, setuid};
 use shared::ipc::{IpcChannel, poll_readable, send_fd, socketpair_for_fd_passing};
 use shared::messages::{ControlMessage, Message, SensitiveString, Service, ServiceStats};
+use shared::session_token::{SESSION_TOKEN_KEY_ENV, SessionToken, TokenKey, Verifier};
+use shared::session_token::replay_cache::ReplayCache;
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::net::ToSocketAddrs;
 use std::os::unix::io::{AsRawFd, OwnedFd, RawFd};
 use std::process::ExitCode;
+use std::sync::{Mutex, OnceLock};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info, warn};
 use zeroize::Zeroize;
 
@@ -78,6 +81,32 @@ enum AdminSubcommand {
 /// Using a static AtomicBool because the signal handler runs in a separate thread
 /// and needs to communicate with the watchdog loop without shared references.
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// Process-global cryptographic session-token MAC key.
+///
+/// Initialized exactly once in [`run_supervisor`] before any child is
+/// spawned. Used by:
+/// - The respawn paths to disseminate the base64 form via
+///   [`SESSION_TOKEN_KEY_ENV`] to access/proxy_ssh/proxy_rdp restarts.
+/// - [`handle_tcp_connect_request`] to verify the token presented by
+///   vauban-web before performing DNS+connect.
+///
+/// Stored as a `OnceLock` rather than a parameter so the value does not
+/// have to be threaded through every spawn/respawn/watchdog callsite,
+/// each of which is called from many places. The supervisor owns the
+/// only `TokenKey` instance in the whole bastion at the time of
+/// generation; children get only the base64 transport.
+static SESSION_TOKEN_KEY: OnceLock<TokenKey> = OnceLock::new();
+
+/// Process-global anti-replay cache for verified session tokens.
+///
+/// Initialized lazily in [`handle_tcp_connect_request`] so unit tests
+/// of unrelated supervisor functions do not pay for it.
+static SESSION_TOKEN_REPLAY_CACHE: OnceLock<Mutex<ReplayCache>> = OnceLock::new();
+
+fn session_token_replay_cache() -> &'static Mutex<ReplayCache> {
+    SESSION_TOKEN_REPLAY_CACHE.get_or_init(|| Mutex::new(ReplayCache::new()))
+}
 
 /// Runtime state for a running child service.
 struct ChildState {
@@ -313,6 +342,41 @@ fn main() -> ExitCode {
     }
 }
 
+/// Service keys whose binaries need the cryptographic session-token
+/// MAC key disseminated via [`SESSION_TOKEN_KEY_ENV`]:
+///
+/// - `access`: mints session tokens.
+/// - `proxy_ssh`, `proxy_rdp`: verify session tokens before invoking
+///   `AccessGuard`.
+///
+/// vauban-web is intentionally excluded: it is a transport for opaque
+/// token bytes only; giving it the key would let a compromised web
+/// forge tokens.
+fn service_needs_session_token_key(service_key: &str) -> bool {
+    matches!(service_key, "access" | "proxy_ssh" | "proxy_rdp")
+}
+
+/// Build the per-service environment variable list, including the
+/// session-token MAC key for the services that need it.
+///
+/// SECURITY: the returned vector contains the base64-encoded secret
+/// for one ENV slot only when the service is on the allowlist. The
+/// vector is consumed by `spawn_child` and dropped at the end of the
+/// fork; the supervisor never adds the variable to its own
+/// environment.
+fn service_env_with_token(
+    config: &SupervisorConfig,
+    service_key: &str,
+) -> Vec<(String, String)> {
+    let mut env = config.service_env_vars(service_key);
+    if service_needs_session_token_key(service_key)
+        && let Some(key) = SESSION_TOKEN_KEY.get()
+    {
+        env.push((SESSION_TOKEN_KEY_ENV.to_string(), key.to_base64()));
+    }
+    env
+}
+
 fn run_supervisor() -> Result<()> {
     // Load configuration
     let config = SupervisorConfig::load_auto().context("Failed to load configuration")?;
@@ -330,6 +394,23 @@ fn run_supervisor() -> Result<()> {
 
     // Setup signal handlers
     setup_signal_handlers()?;
+
+    // Generate the cryptographic session-token MAC key.
+    //
+    // SECURITY: this key signs every session-open authorization. It is
+    // generated once at supervisor boot, kept in an in-memory
+    // SecretBox (zeroized on drop), disseminated to vauban-access and
+    // the protocol proxies via VAUBAN_SESSION_TOKEN_KEY (set per child
+    // env, never set on the supervisor's own environment), and used
+    // by the supervisor itself to verify TcpConnectRequest tokens
+    // before DNS+connect. See
+    // `docs/technical/Vauban_AccessGuard_Architecture_EN(1.0).md` §3.
+    SESSION_TOKEN_KEY
+        .set(TokenKey::generate())
+        .map_err(|_| anyhow::anyhow!("session-token MAC key already initialized"))?;
+    info!("Generated session-token MAC key (32 bytes, BLAKE3-keyed)");
+    // Touch the replay cache so the first verification path is hot.
+    let _ = session_token_replay_cache();
 
     // Create all IPC pipe pairs for the mesh topology
     let pipes = create_pipe_topology()?;
@@ -447,7 +528,7 @@ fn run_supervisor() -> Result<()> {
         let fd_passing_child_fd =
             service.and_then(|s| fd_passing_sockets.get(&s).map(|fps| fps.child_socket_fd));
 
-        let svc_env = config.service_env_vars(service_key);
+        let svc_env = service_env_with_token(&config, service_key);
         match spawn_child(
             &binary_path,
             uid,
@@ -1323,7 +1404,7 @@ fn respawn_service(
         (None, None)
     };
 
-    let svc_env = config.service_env_vars(&state.service_key);
+    let svc_env = service_env_with_token(config, &state.service_key);
     match spawn_child(
         &binary_path,
         uid,
@@ -1551,7 +1632,7 @@ fn respawn_linked_group(
                 (None, None)
             };
 
-            let svc_env = config.service_env_vars(service_key);
+            let svc_env = service_env_with_token(config, service_key);
             match spawn_child(
                 &binary_path,
                 uid,
@@ -1640,22 +1721,116 @@ fn service_to_key(service: Service) -> &'static str {
     }
 }
 
-/// Handle a TcpConnectRequest from vauban-web.
-///
-/// This function:
-/// 1. Performs DNS resolution on the target host
-/// 2. Establishes a TCP connection to the target
-/// 3. Sends the connected socket FD to the target proxy service via SCM_RIGHTS
-/// 4. Sends a TcpConnectResponse back to the requesting service (web)
-fn handle_tcp_connect_request(
+/// Wire payload of a [`Message::TcpConnectRequest`], grouped into a
+/// single struct so the handler signature stays under
+/// `clippy::too_many_arguments` and so that adding or renaming a wire
+/// field touches one place instead of every test constructor.
+struct TcpConnectPayload {
     request_id: u64,
     session_id: String,
     host: String,
     port: u16,
     target_service: Service,
+    session_token: Vec<u8>,
+}
+
+/// Handle a TcpConnectRequest from vauban-web.
+///
+/// This function:
+/// 0. Verifies the cryptographic session token in the
+///    [`Verifier::Supervisor`] role and rejects replays via the
+///    process-global anti-replay cache. ANY failure collapses to a
+///    fail-closed `TcpConnectResponse { success: false }` and the FD
+///    is never opened.
+/// 1. Performs DNS resolution on the target host
+/// 2. Establishes a TCP connection to the target
+/// 3. Sends the connected socket FD to the target proxy service via SCM_RIGHTS
+/// 4. Sends a TcpConnectResponse back to the requesting service (web)
+fn handle_tcp_connect_request(
+    payload: TcpConnectPayload,
     requesting_channel: &IpcChannel,
     children: &HashMap<String, ChildState>,
 ) {
+    let TcpConnectPayload {
+        request_id,
+        session_id,
+        host,
+        port,
+        target_service,
+        session_token,
+    } = payload;
+    // === Cryptographic gate (fail-closed before any side-effect) ===
+    //
+    // SECURITY: this MUST run before DNS, before connect(), before FD
+    // passing. A compromised vauban-web that bypasses its own
+    // AccessGuard collapses here because it cannot mint a valid token
+    // without the BLAKE3 key (which it never receives).
+    let key = match SESSION_TOKEN_KEY.get() {
+        Some(k) => k,
+        None => {
+            error!(
+                "TcpConnectRequest received before SESSION_TOKEN_KEY init; \
+                 fail-closed deny"
+            );
+            let response = Message::TcpConnectResponse {
+                request_id,
+                session_id,
+                success: false,
+                error: Some("supervisor not ready".to_string()),
+            };
+            let _ = requesting_channel.send(&response);
+            return;
+        }
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let verifier = Verifier::Supervisor {
+        host: host.clone(),
+        port,
+        target_service: target_service.as_token_discriminant(),
+        session_id: session_id.clone(),
+    };
+    let token = match SessionToken::verify_bytes(&session_token, key, now, &verifier) {
+        Ok(t) => t,
+        Err(e) => {
+            warn!(
+                session_id = %session_id,
+                target = ?target_service,
+                "session token rejected: {e}; fail-closed deny"
+            );
+            let response = Message::TcpConnectResponse {
+                request_id,
+                session_id,
+                success: false,
+                error: Some("Access denied".to_string()),
+            };
+            let _ = requesting_channel.send(&response);
+            return;
+        }
+    };
+    // Anti-replay: a valid token presented twice within its TTL is a
+    // replay (or a duplicate from a buggy web). Either way we deny.
+    if !session_token_replay_cache()
+        .lock()
+        .map(|mut c| c.record(&token.session_id, &token.nonce))
+        .unwrap_or(false)
+    {
+        warn!(
+            session_id = %session_id,
+            "session token replay detected; fail-closed deny"
+        );
+        let response = Message::TcpConnectResponse {
+            request_id,
+            session_id,
+            success: false,
+            error: Some("Access denied".to_string()),
+        };
+        let _ = requesting_channel.send(&response);
+        return;
+    }
+
     // Convert target service to service key
     let target_key = match target_service {
         Service::ProxySsh => "proxy_ssh",
@@ -1971,17 +2146,21 @@ fn process_service_messages(children: &HashMap<String, ChildState>, recording_st
                         host,
                         port,
                         target_service,
+                        session_token,
                     }) => {
                         info!(
                             "Received TcpConnectRequest from {} for {}:{} -> {:?}",
                             service_key, host, port, target_service
                         );
                         handle_tcp_connect_request(
-                            request_id,
-                            session_id,
-                            host,
-                            port,
-                            target_service,
+                            TcpConnectPayload {
+                                request_id,
+                                session_id,
+                                host,
+                                port,
+                                target_service,
+                                session_token,
+                            },
                             &state.channel,
                             children,
                         );
@@ -3156,6 +3335,7 @@ mod tests {
             host: "example.com".to_string(),
             port: 22,
             target_service: Service::ProxySsh,
+            session_token: Vec::new(),
         };
         sender.send(&msg).unwrap();
 
@@ -3167,6 +3347,7 @@ mod tests {
             host,
             port,
             target_service,
+            session_token: _,
         } = received
         {
             assert_eq!(request_id, 42);
@@ -3678,6 +3859,109 @@ mod tests {
         assert!(
             linked_fn.contains("send_tls_cert_provision"),
             "respawn_linked_group must call send_tls_cert_provision for web"
+        );
+    }
+
+    // ==================== Cryptographic session-token gate ====================
+    //
+    // SECURITY: vauban-supervisor MUST verify the BLAKE3-keyed session
+    // token on every TcpConnectRequest BEFORE DNS resolution and TCP
+    // connect. The supervisor is the ONLY process allowed to open
+    // outbound TCP sockets in the privsep model; without this gate, a
+    // compromised vauban-web could enumerate the internal network or
+    // pivot through the supervisor's connect() primitive. These tests
+    // pin the wiring so the gate cannot silently regress.
+
+    #[test]
+    fn test_supervisor_generates_session_token_key_at_boot() {
+        let source = supervisor_prod_source();
+        assert!(
+            source.contains("TokenKey::generate("),
+            "supervisor MUST generate the BLAKE3 MAC key with \
+             TokenKey::generate(OsRng) during boot. Removing this \
+             call disables the cryptographic gate workspace-wide."
+        );
+        assert!(
+            source.contains("SESSION_TOKEN_KEY"),
+            "supervisor MUST stash the generated key in the \
+             SESSION_TOKEN_KEY OnceLock so the TCP broker and the \
+             dissemination helper can reach it."
+        );
+    }
+
+    #[test]
+    fn test_supervisor_disseminates_session_token_key_to_consumers() {
+        let source = supervisor_prod_source();
+        assert!(
+            source.contains("fn service_needs_session_token_key("),
+            "supervisor MUST gate dissemination via \
+             service_needs_session_token_key (whitelist of access / \
+             proxy_ssh / proxy_rdp). Broader dissemination expands \
+             the key's blast radius."
+        );
+        assert!(
+            source.contains("SESSION_TOKEN_KEY_ENV"),
+            "supervisor MUST inject SESSION_TOKEN_KEY_ENV into the \
+             child environment for whitelisted services."
+        );
+    }
+
+    #[test]
+    fn test_supervisor_tcp_broker_verifies_token_before_connect() {
+        let source = supervisor_prod_source();
+        let handler_start = source
+            .find("fn handle_tcp_connect_request(")
+            .expect("handle_tcp_connect_request must exist");
+        let handler = &source[handler_start..];
+        let handler_end = handler
+            .find("\nfn ")
+            .or_else(|| handler.find("\nasync fn "))
+            .unwrap_or(handler.len());
+        let handler = &handler[..handler_end];
+        let verify_idx = handler.find("SessionToken::verify_bytes(").expect(
+            "handle_tcp_connect_request MUST call SessionToken::verify_bytes \
+             before any DNS / connect work. Without this, the TCP broker \
+             trusts whatever vauban-web sent.",
+        );
+        let dns_idx = handler.find(".to_socket_addrs()").expect(
+            "handle_tcp_connect_request MUST perform DNS resolution \
+             via to_socket_addrs",
+        );
+        let connect_idx = handler.find("TcpStream::connect_timeout(").expect(
+            "handle_tcp_connect_request MUST call TcpStream::connect_timeout",
+        );
+        assert!(
+            verify_idx < dns_idx,
+            "SessionToken::verify_bytes MUST run BEFORE DNS resolution. \
+             Otherwise the supervisor performs a lookup on attacker-\
+             controlled hostnames before any auth check."
+        );
+        assert!(
+            verify_idx < connect_idx,
+            "SessionToken::verify_bytes MUST run BEFORE TcpStream::\
+             connect_timeout. The supervisor's connect() is the only \
+             outbound network primitive in the privsep model; running \
+             it on a forged request defeats the whole gate."
+        );
+    }
+
+    #[test]
+    fn test_supervisor_tcp_broker_records_replay() {
+        let source = supervisor_prod_source();
+        let handler_start = source
+            .find("fn handle_tcp_connect_request(")
+            .expect("handle_tcp_connect_request must exist");
+        let handler = &source[handler_start..];
+        let handler_end = handler
+            .find("\nfn ")
+            .or_else(|| handler.find("\nasync fn "))
+            .unwrap_or(handler.len());
+        let handler = &handler[..handler_end];
+        assert!(
+            handler.contains("session_token_replay_cache"),
+            "handle_tcp_connect_request MUST consult the replay cache \
+             so a captured-but-still-fresh token cannot be reused for \
+             multiple connects (DoS / pivot amplifier)."
         );
     }
 }

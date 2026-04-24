@@ -24,7 +24,10 @@ use anyhow::{Context, Result};
 use casbin::prelude::*;
 use shared::capsicum;
 use shared::ipc::{IpcChannel, poll_readable};
-use shared::messages::{AccessResponse, ControlMessage, Message, RbacResult, ServiceStats};
+use shared::messages::{
+    AccessRequest, AccessResponse, ControlMessage, Message, RbacResult, ServiceStats,
+};
+use shared::session_token::TokenKey;
 use std::os::unix::io::RawFd;
 use std::process::ExitCode;
 use std::time::Instant;
@@ -48,6 +51,11 @@ struct ServiceState {
     /// Tokio runtime for running async DB queries in the sync main loop.
     /// Created once at startup; None only in tests without DB.
     rt: Option<tokio::runtime::Runtime>,
+    /// BLAKE3 keyed-MAC key for minting session tokens.
+    /// Loaded from `VAUBAN_SESSION_TOKEN_KEY` (set by vauban-supervisor)
+    /// at boot, BEFORE entering the Capsicum sandbox. None only in
+    /// tests or when running standalone without the supervisor.
+    session_token_key: Option<TokenKey>,
 }
 
 impl Default for ServiceState {
@@ -61,6 +69,7 @@ impl Default for ServiceState {
             enforcer: None,
             db_pool: None,
             rt: None,
+            session_token_key: None,
         }
     }
 }
@@ -115,6 +124,31 @@ fn run_service() -> Result<()> {
     let proxy_ssh_channel = parse_topology_channel("PROXY_SSH");
     let proxy_rdp_channel = parse_topology_channel("PROXY_RDP");
     let auth_channel = parse_topology_channel("AUTH");
+
+    // SECURITY: load and CLEAR the session-token MAC key before any
+    // other env access or thread spawn. `TokenKey::from_env` removes
+    // the variable internally so descendants and the rest of the
+    // process never see the secret in their env.
+    //
+    // The key is mandatory in production (it is what binds every
+    // session-open to a fresh authorization). We tolerate its absence
+    // here only when running without the supervisor (dev / unit
+    // tests), and surface that as a `warn!` so the operator knows
+    // session-token issuance is dead in this mode.
+    let session_token_key = match TokenKey::from_env() {
+        Ok(k) => {
+            info!("Loaded session-token MAC key from environment");
+            Some(k)
+        }
+        Err(e) => {
+            warn!(
+                error = %e,
+                "VAUBAN_SESSION_TOKEN_KEY not loaded; IssueSessionToken \
+                 requests will fail-closed (dev mode without supervisor?)"
+            );
+            None
+        }
+    };
 
     // SAFETY: We are the only thread at this point, no concurrent access.
     unsafe {
@@ -237,6 +271,7 @@ fn run_service() -> Result<()> {
         enforcer,
         db_pool,
         rt: Some(rt),
+        session_token_key,
         ..ServiceState::default()
     };
     main_loop(&supervisor_channel, &peer_channels, &mut state)
@@ -431,9 +466,43 @@ fn handle_message(channel: &IpcChannel, state: &mut ServiceState, msg: Message) 
             state.requests_processed += 1;
 
             let response = match (&state.db_pool, &state.rt) {
-                (Some(pool), Some(rt)) => {
-                    rt.block_on(handlers::handle_access_request(pool, request))
-                }
+                (Some(pool), Some(rt)) => match request {
+                    // SECURITY: IssueSessionToken needs the MAC key; route
+                    // it to the dedicated handler instead of the generic
+                    // dispatch. Any path that fails to obtain the key
+                    // collapses to SessionTokenDenied (fail-closed).
+                    AccessRequest::IssueSessionToken {
+                        user_uuid,
+                        asset_uuid,
+                        protocol,
+                        host,
+                        port,
+                        target_service,
+                        session_id,
+                    } => match &state.session_token_key {
+                        Some(key) => rt.block_on(handlers::handle_issue_session_token(
+                            pool,
+                            key,
+                            shared::session_token::SessionTokenParams {
+                                session_id,
+                                user_uuid,
+                                asset_uuid,
+                                protocol,
+                                host,
+                                port,
+                                target_service,
+                            },
+                        )),
+                        None => {
+                            warn!(
+                                "IssueSessionToken request received but no \
+                                 MAC key loaded; fail-closed deny"
+                            );
+                            AccessResponse::SessionTokenDenied
+                        }
+                    },
+                    other => rt.block_on(handlers::handle_access_request(pool, other)),
+                },
                 _ => {
                     warn!("AccessRequest received but no DB pool available");
                     AccessResponse::Error("Database not configured".to_string())

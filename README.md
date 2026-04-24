@@ -63,7 +63,7 @@ Detailed technical architecture documents are available in [`docs/technical/`](d
 | [ACME TLS Certificate Architecture](docs/technical/Vauban_ACME_TLS_Architecture_EN(1.0).md) | Automatic certificate renewal, TLS-ALPN-01, zero-downtime rotation |
 | [Session Recording Architecture](docs/technical/Vauban_Recording_Architecture_EN(1.2).md) | RDP segmented fMP4 + SSH asciicast v2 recording, input redaction, DASH/asciinema playback |
 | [IAM Architecture](docs/technical/Vauban_IAM_Architecture_EN(1.0).md) | Two-layer authorization (Casbin RBAC + instance-level access rules), Argon2id auth service |
-| [AccessGuard Architecture](docs/technical/Vauban_AccessGuard_Architecture_EN(1.0).md) | Shared `shared::access_guard` defense-in-depth RBAC re-check gate (every proxy re-confirms the verdict against `vauban-access`, fail-closed, 10s timeout, RAII pending-map) |
+| [AccessGuard Architecture](docs/technical/Vauban_AccessGuard_Architecture_EN(1.0).md) | Shared `shared::access_guard` defense-in-depth RBAC re-check gate (fail-closed, 10s timeout, RAII pending-map) |
 
 ## Security Model
 

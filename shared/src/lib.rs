@@ -29,4 +29,12 @@ pub mod totp;
 #[cfg(feature = "access-guard")]
 pub mod access_guard;
 
+// Cryptographic session-token gate (BLAKE3-keyed MAC binding every
+// session-open to a fresh access decision). Pulled in by vauban-access
+// (mints), vauban-supervisor and the protocol proxies (verify).
+// vauban-web does NOT enable this feature -- it transports the token
+// as opaque bytes.
+#[cfg(feature = "session-token")]
+pub mod session_token;
+
 pub use messages::{ControlMessage, Message, ServiceStats};

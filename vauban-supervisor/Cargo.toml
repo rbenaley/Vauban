@@ -11,7 +11,10 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-shared.workspace = true
+# `session-token` enables the cryptographic session-token gate (key
+# generation at boot, env-var dissemination to children, MAC verification
+# in handle_tcp_connect_request before DNS+connect). Required.
+shared = { workspace = true, features = ["session-token"] }
 libc.workspace = true
 nix.workspace = true
 tracing.workspace = true

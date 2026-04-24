@@ -553,9 +553,22 @@ pub async fn fetch_ssh_host_key_api(
 
     // In sandboxed mode (Capsicum), the supervisor brokers the TCP
     // connection and passes the FD to the SSH proxy via SCM_RIGHTS.
+    // The supervisor's TCP broker is crypto-gated; see
+    // `HostKeyFetchIdentity` in `vauban_web::ipc::proxy_ssh`.
     let supervisor_ref = state.supervisor.as_deref();
+    let asset_uuid_str_for_token = asset_uuid.to_string();
+    let identity = crate::ipc::HostKeyFetchIdentity {
+        access_client: state.access_client.as_ref(),
+        user_uuid: &user.uuid,
+        asset_uuid: &asset_uuid_str_for_token,
+    };
     let (host_key, fingerprint) = proxy_client
-        .fetch_host_key(&asset.hostname, asset.port as u16, supervisor_ref)
+        .fetch_host_key(
+            &asset.hostname,
+            asset.port as u16,
+            supervisor_ref,
+            Some(identity),
+        )
         .await?;
 
     // Detect key change

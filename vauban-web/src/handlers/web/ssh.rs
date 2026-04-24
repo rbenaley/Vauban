@@ -555,6 +555,50 @@ pub async fn connect_ssh(
         }
     }
 
+    // SECURITY: ask vauban-access to mint a cryptographic session
+    // token. The token binds (user, asset, "ssh", session_id) and is
+    // signed with the supervisor-held BLAKE3 key. Both
+    // vauban-supervisor (TCP broker) and vauban-proxy-ssh
+    // (SshSessionOpen handler) will re-verify it without trusting any
+    // state vauban-web holds in memory. Fail-closed on any error: a
+    // generic "Access denied" reply is returned regardless of cause.
+    // See docs/technical/Vauban_AccessGuard_Architecture_EN(1.0).md §3.
+    let session_token_bytes = match state
+        .access_client
+        .issue_session_token(shared::session_token::SessionTokenParams {
+            session_id: session_id.clone(),
+            user_uuid: auth_user.uuid.clone(),
+            asset_uuid: asset.uuid.to_string(),
+            protocol: "ssh".to_string(),
+            host: asset.hostname.clone(),
+            port: asset.port as u16,
+            target_service: shared::messages::Service::ProxySsh,
+        })
+        .await
+    {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            tracing::warn!(
+                session_id = %session_id,
+                user = %auth_user.username,
+                asset = %asset.name,
+                error = %e,
+                "Session-token mint denied; refusing to open SSH session"
+            );
+            let msg = "Access denied";
+            if is_htmx {
+                return htmx_error_response(msg);
+            }
+            return Json(ConnectSshResponse {
+                success: false,
+                session_id: None,
+                redirect_url: None,
+                error: Some(msg.to_string()),
+            })
+            .into_response();
+        }
+    };
+
     // Build SSH session open request
     let request = crate::ipc::SshSessionOpenRequest {
         session_id: session_id.clone(),
@@ -570,6 +614,7 @@ pub async fn connect_ssh(
         private_key,
         passphrase,
         expected_host_key,
+        session_token: session_token_bytes.clone(),
     };
 
     // If supervisor is available (sandboxed mode), request TCP connection brokering.
@@ -589,6 +634,7 @@ pub async fn connect_ssh(
                 &asset.hostname,
                 asset.port as u16,
                 shared::messages::Service::ProxySsh,
+                session_token_bytes.clone(),
             )
             .await
         {
@@ -839,9 +885,22 @@ pub async fn fetch_ssh_host_key(
     // Fetch host key via proxy.
     // In sandboxed mode (Capsicum), the supervisor brokers the TCP
     // connection and passes the FD to the SSH proxy via SCM_RIGHTS.
+    // The supervisor's TCP broker is crypto-gated; see
+    // `HostKeyFetchIdentity` in `vauban_web::ipc::proxy_ssh`.
     let supervisor_ref = state.supervisor.as_deref();
+    let asset_uuid_str_for_token = asset_uuid.to_string();
+    let identity = crate::ipc::HostKeyFetchIdentity {
+        access_client: state.access_client.as_ref(),
+        user_uuid: &auth_user.uuid,
+        asset_uuid: &asset_uuid_str_for_token,
+    };
     let (host_key, fingerprint) = match proxy_client
-        .fetch_host_key(&asset.hostname, asset.port as u16, supervisor_ref)
+        .fetch_host_key(
+            &asset.hostname,
+            asset.port as u16,
+            supervisor_ref,
+            Some(identity),
+        )
         .await
     {
         Ok(result) => result,
@@ -1030,8 +1089,19 @@ pub async fn verify_ssh_host_key(
     };
 
     let supervisor_ref = state.supervisor.as_deref();
+    let uuid_str_for_token = asset_uuid.to_string();
+    let identity = crate::ipc::HostKeyFetchIdentity {
+        access_client: state.access_client.as_ref(),
+        user_uuid: &_auth_user.uuid,
+        asset_uuid: &uuid_str_for_token,
+    };
     match proxy_client
-        .fetch_host_key(&asset.hostname, asset.port as u16, supervisor_ref)
+        .fetch_host_key(
+            &asset.hostname,
+            asset.port as u16,
+            supervisor_ref,
+            Some(identity),
+        )
         .await
     {
         Ok((remote_key, remote_fingerprint)) => {

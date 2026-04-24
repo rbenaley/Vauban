@@ -26,7 +26,7 @@ print_stderr   = "deny"
 # mandatory: it brings in shared::access_guard, which re-verifies every
 # RdpSessionOpen against vauban-access (defense-in-depth RBAC re-check,
 # symmetric to vauban-proxy-ssh).
-shared = { path = "../shared", features = ["access-guard"] }
+shared = { path = "../shared", features = ["access-guard", "session-token"] }
 
 # Core dependencies
 libc = "0.2"

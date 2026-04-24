@@ -590,6 +590,8 @@ The supervisor acts as a **connection broker** for sandboxed proxies:
 
 This approach maintains the OpenSSH-style privilege separation model: sandboxed processes handle protocol logic while privileged operations (network access) remain in the supervisor.
 
+> **Cryptographic gating of the broker.** Every `TcpConnectRequest` carries a short-lived, BLAKE3-keyed session token minted by `vauban-access`. Before any DNS resolution or `connect(2)`, the supervisor verifies the token against the `(host, port, target_service, session_id)` tuple actually being requested and rejects unverified or replayed tokens fail-closed. This prevents a compromised `vauban-web` from using the broker as an unauthenticated network probe inside the trusted side of the bastion. Token format, mint flow, key dissemination (via `VAUBAN_SESSION_TOKEN_KEY_*`), and the detailed threat-model argumentation live in [Vauban_AccessGuard_Architecture_EN(1.0).md §6](Vauban_AccessGuard_Architecture_EN(1.0).md#6-cryptographic-session-token-gate).
+
 #### 5.6.3 Architecture Diagram (SSH)
 
 ```mermaid
