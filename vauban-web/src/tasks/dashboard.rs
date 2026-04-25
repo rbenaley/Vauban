@@ -7,7 +7,6 @@ use diesel_async::RunQueryDsl;
 /// Background tasks that push dashboard updates via WebSocket.
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::time::interval;
 use tracing::{error, info, trace};
 
 use crate::utils::format_duration;
@@ -33,185 +32,178 @@ const SESSIONS_INTERVAL_SECS: u64 = 10;
 const ACTIVITY_INTERVAL_SECS: u64 = 30;
 
 /// Start all dashboard update tasks.
+///
+/// Spawn is delegated to `shared::tasks::spawn_periodic` so every
+/// dashboard ticker shares the same naming, tracing and lifecycle
+/// (skip-first-tick semantics, Handle-based spawn).
 pub async fn start_dashboard_tasks(broadcast: BroadcastService, db_pool: DbPool) {
     let broadcast = Arc::new(broadcast);
     let db_pool = Arc::new(db_pool);
+    let handle = tokio::runtime::Handle::current();
 
-    // Spawn stats updater
-    let broadcast_clone = Arc::clone(&broadcast);
-    let db_clone = Arc::clone(&db_pool);
-    tokio::spawn(async move {
-        stats_updater(broadcast_clone, db_clone).await;
-    });
+    // Helper: build the per-tick closure for an updater that takes
+    // (broadcast, db_pool). Captures the Arcs by clone-on-tick so the
+    // spawned task keeps owning fresh handles for every iteration.
+    macro_rules! spawn_dashboard_task {
+        ($name:literal, $period:expr, $body:ident) => {{
+            let b = Arc::clone(&broadcast);
+            let p = Arc::clone(&db_pool);
+            shared::tasks::spawn_periodic(&handle, $name, $period, move || {
+                let b = Arc::clone(&b);
+                let p = Arc::clone(&p);
+                async move {
+                    $body(b, p).await;
+                }
+            });
+        }};
+    }
 
-    // Spawn active sessions updater
-    let broadcast_clone = Arc::clone(&broadcast);
-    let db_clone = Arc::clone(&db_pool);
-    tokio::spawn(async move {
-        sessions_updater(broadcast_clone, db_clone).await;
-    });
-
-    // Spawn recent activity updater
-    let broadcast_clone = Arc::clone(&broadcast);
-    let db_clone = Arc::clone(&db_pool);
-    tokio::spawn(async move {
-        activity_updater(broadcast_clone, db_clone).await;
-    });
-
-    // Spawn session list updater (for /sessions page real-time updates)
-    let broadcast_clone = Arc::clone(&broadcast);
-    let db_clone = Arc::clone(&db_pool);
-    tokio::spawn(async move {
-        session_list_updater(broadcast_clone, db_clone).await;
-    });
+    spawn_dashboard_task!(
+        "dashboard_stats",
+        Duration::from_secs(STATS_INTERVAL_SECS),
+        stats_pass
+    );
+    spawn_dashboard_task!(
+        "dashboard_sessions",
+        Duration::from_secs(SESSIONS_INTERVAL_SECS),
+        sessions_pass
+    );
+    spawn_dashboard_task!(
+        "dashboard_activity",
+        Duration::from_secs(ACTIVITY_INTERVAL_SECS),
+        activity_pass
+    );
+    spawn_dashboard_task!(
+        "dashboard_session_list",
+        Duration::from_secs(SESSIONS_INTERVAL_SECS),
+        session_list_pass
+    );
 
     info!("Dashboard background tasks started");
 }
 
-/// Task that pushes stats updates.
-async fn stats_updater(broadcast: Arc<BroadcastService>, db_pool: Arc<DbPool>) {
-    let mut ticker = interval(Duration::from_secs(STATS_INTERVAL_SECS));
-
-    loop {
-        ticker.tick().await;
-
-        match fetch_stats(&db_pool).await {
-            Ok(stats) => {
-                let template = StatsWidget { stats };
-                match template.render() {
-                    Ok(html) => {
-                        let msg = WsMessage::new("ws-stats", html);
-                        if broadcast
-                            .send(&WsChannel::DashboardStats, msg)
-                            .await
-                            .is_err()
-                        {
-                            trace!("No subscribers for stats channel");
-                        }
-                    }
-                    Err(e) => error!(error = %e, "Failed to render stats widget"),
-                }
-            }
-            Err(e) => error!(error = %e, "Failed to fetch stats"),
-        }
-    }
-}
-
-/// Task that pushes active sessions updates.
-async fn sessions_updater(broadcast: Arc<BroadcastService>, db_pool: Arc<DbPool>) {
-    let mut ticker = interval(Duration::from_secs(SESSIONS_INTERVAL_SECS));
-
-    loop {
-        ticker.tick().await;
-
-        // Update dashboard widget (ActiveSessions channel)
-        match fetch_active_sessions(&db_pool).await {
-            Ok(sessions) => {
-                let template = ActiveSessionsWidget { sessions };
-                match template.render() {
-                    Ok(html) => {
-                        let msg = WsMessage::new("ws-active-sessions", html);
-                        if broadcast
-                            .send(&WsChannel::ActiveSessions, msg)
-                            .await
-                            .is_err()
-                        {
-                            trace!("No subscribers for sessions channel");
-                        }
-                    }
-                    Err(e) => error!(error = %e, "Failed to render sessions widget"),
-                }
-            }
-            Err(e) => error!(error = %e, "Failed to fetch active sessions"),
-        }
-
-        // Update full active sessions list page (ActiveSessionsList channel)
-        match fetch_active_sessions_full(&db_pool).await {
-            Ok(sessions) => {
-                // Send stats update
-                let stats_widget = ActiveListStatsWidget {
-                    sessions: sessions.clone(),
-                };
-                if let Ok(html) = stats_widget.render() {
-                    let msg = WsMessage::new("ws-sessions-stats", html);
+/// One pass: fetch + broadcast stats. Driven by the shared periodic
+/// scheduler.
+async fn stats_pass(broadcast: Arc<BroadcastService>, db_pool: Arc<DbPool>) {
+    match fetch_stats(&db_pool).await {
+        Ok(stats) => {
+            let template = StatsWidget { stats };
+            match template.render() {
+                Ok(html) => {
+                    let msg = WsMessage::new("ws-stats", html);
                     if broadcast
-                        .send(&WsChannel::ActiveSessionsList, msg)
+                        .send(&WsChannel::DashboardStats, msg)
                         .await
                         .is_err()
                     {
-                        trace!("No subscribers for sessions list stats channel");
+                        trace!("No subscribers for stats channel");
                     }
                 }
+                Err(e) => error!(error = %e, "Failed to render stats widget"),
+            }
+        }
+        Err(e) => error!(error = %e, "Failed to fetch stats"),
+    }
+}
 
-                // Send list content update
-                let content_widget = ActiveListContentWidget { sessions };
-                if let Ok(html) = content_widget.render() {
-                    let msg = WsMessage::new("ws-sessions-list", html);
+/// One pass: fetch + broadcast active sessions (dashboard widget +
+/// full sessions list page).
+async fn sessions_pass(broadcast: Arc<BroadcastService>, db_pool: Arc<DbPool>) {
+    // Update dashboard widget (ActiveSessions channel)
+    match fetch_active_sessions(&db_pool).await {
+        Ok(sessions) => {
+            let template = ActiveSessionsWidget { sessions };
+            match template.render() {
+                Ok(html) => {
+                    let msg = WsMessage::new("ws-active-sessions", html);
                     if broadcast
-                        .send(&WsChannel::ActiveSessionsList, msg)
+                        .send(&WsChannel::ActiveSessions, msg)
                         .await
                         .is_err()
                     {
-                        trace!("No subscribers for sessions list content channel");
+                        trace!("No subscribers for sessions channel");
                     }
                 }
+                Err(e) => error!(error = %e, "Failed to render sessions widget"),
             }
-            Err(e) => error!(error = %e, "Failed to fetch active sessions for list page"),
         }
+        Err(e) => error!(error = %e, "Failed to fetch active sessions"),
+    }
+
+    // Update full active sessions list page (ActiveSessionsList channel)
+    match fetch_active_sessions_full(&db_pool).await {
+        Ok(sessions) => {
+            // Send stats update
+            let stats_widget = ActiveListStatsWidget {
+                sessions: sessions.clone(),
+            };
+            if let Ok(html) = stats_widget.render() {
+                let msg = WsMessage::new("ws-sessions-stats", html);
+                if broadcast
+                    .send(&WsChannel::ActiveSessionsList, msg)
+                    .await
+                    .is_err()
+                {
+                    trace!("No subscribers for sessions list stats channel");
+                }
+            }
+
+            // Send list content update
+            let content_widget = ActiveListContentWidget { sessions };
+            if let Ok(html) = content_widget.render() {
+                let msg = WsMessage::new("ws-sessions-list", html);
+                if broadcast
+                    .send(&WsChannel::ActiveSessionsList, msg)
+                    .await
+                    .is_err()
+                {
+                    trace!("No subscribers for sessions list content channel");
+                }
+            }
+        }
+        Err(e) => error!(error = %e, "Failed to fetch active sessions for list page"),
     }
 }
 
-/// Task that pushes recent activity updates.
-async fn activity_updater(broadcast: Arc<BroadcastService>, db_pool: Arc<DbPool>) {
-    let mut ticker = interval(Duration::from_secs(ACTIVITY_INTERVAL_SECS));
-
-    loop {
-        ticker.tick().await;
-
-        match fetch_recent_activity(&db_pool).await {
-            Ok(activities) => {
-                let template = RecentActivityWidget { activities };
-                match template.render() {
-                    Ok(html) => {
-                        let msg = WsMessage::new("ws-recent-activity", html);
-                        if broadcast
-                            .send(&WsChannel::RecentActivity, msg)
-                            .await
-                            .is_err()
-                        {
-                            trace!("No subscribers for activity channel");
-                        }
+/// One pass: fetch + broadcast recent activity.
+async fn activity_pass(broadcast: Arc<BroadcastService>, db_pool: Arc<DbPool>) {
+    match fetch_recent_activity(&db_pool).await {
+        Ok(activities) => {
+            let template = RecentActivityWidget { activities };
+            match template.render() {
+                Ok(html) => {
+                    let msg = WsMessage::new("ws-recent-activity", html);
+                    if broadcast
+                        .send(&WsChannel::RecentActivity, msg)
+                        .await
+                        .is_err()
+                    {
+                        trace!("No subscribers for activity channel");
                     }
-                    Err(e) => error!(error = %e, "Failed to render activity widget"),
                 }
+                Err(e) => error!(error = %e, "Failed to render activity widget"),
             }
-            Err(e) => error!(error = %e, "Failed to fetch recent activity"),
         }
+        Err(e) => error!(error = %e, "Failed to fetch recent activity"),
     }
 }
 
-/// Task that pushes session list updates (for /sessions page).
-async fn session_list_updater(broadcast: Arc<BroadcastService>, db_pool: Arc<DbPool>) {
-    let mut ticker = interval(Duration::from_secs(SESSIONS_INTERVAL_SECS));
-
-    loop {
-        ticker.tick().await;
-
-        match fetch_session_list(&db_pool).await {
-            Ok(sessions) => {
-                let widget = SessionListContentWidget {
-                    sessions,
-                    show_view_link: true,
-                };
-                if let Ok(html) = widget.render() {
-                    let msg = WsMessage::new("ws-session-list-content", html);
-                    if broadcast.send(&WsChannel::SessionsList, msg).await.is_err() {
-                        trace!("No subscribers for session list channel");
-                    }
+/// One pass: fetch + broadcast the session list (for the /sessions page).
+async fn session_list_pass(broadcast: Arc<BroadcastService>, db_pool: Arc<DbPool>) {
+    match fetch_session_list(&db_pool).await {
+        Ok(sessions) => {
+            let widget = SessionListContentWidget {
+                sessions,
+                show_view_link: true,
+            };
+            if let Ok(html) = widget.render() {
+                let msg = WsMessage::new("ws-session-list-content", html);
+                if broadcast.send(&WsChannel::SessionsList, msg).await.is_err() {
+                    trace!("No subscribers for session list channel");
                 }
             }
-            Err(e) => error!(error = %e, "Failed to fetch session list"),
         }
+        Err(e) => error!(error = %e, "Failed to fetch session list"),
     }
 }
 
@@ -592,7 +584,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_interval_creation() {
-        let mut ticker = interval(Duration::from_secs(STATS_INTERVAL_SECS));
+        let mut ticker = tokio::time::interval(Duration::from_secs(STATS_INTERVAL_SECS));
         // First tick is immediate
         ticker.tick().await;
         assert_eq!(ticker.period(), Duration::from_secs(STATS_INTERVAL_SECS));
