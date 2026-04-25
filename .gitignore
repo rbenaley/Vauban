@@ -25,7 +25,11 @@ Thumbs.db
 # Database
 *.db
 *.sqlite
-migrations
+# Only the root-level `migrations` symlink (-> vauban-db/migrations) is
+# ignored; the real migration source under vauban-db/migrations/ MUST be
+# tracked so deployments stay reproducible. The leading `/` anchors the
+# pattern to the repo root.
+/migrations
 
 # Logs
 *.log

@@ -1,0 +1,5 @@
+ALTER TABLE assets ADD COLUMN last_seen TIMESTAMPTZ;
+ALTER TABLE assets ADD COLUMN default_credential_id VARCHAR(36);
+ALTER TABLE assets ADD COLUMN os_version VARCHAR(50);
+ALTER TABLE assets ADD COLUMN os_type VARCHAR(50);
+ALTER TABLE assets ADD COLUMN ip_address INET;
