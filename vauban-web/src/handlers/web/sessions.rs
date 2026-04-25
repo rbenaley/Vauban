@@ -849,12 +849,33 @@ pub async fn approval_list(
 
     use crate::schema::users;
 
+    // Resolve the viewer's DB id once so we can:
+    //   1. Exclude own pending requests from the main paginated list
+    //      (the viewer cannot decide them anyway — separation of
+    //      duties is enforced both in `vauban-access` and at the DB
+    //      layer via the `approval_separation_of_duties` /
+    //      `rejection_separation_of_duties` CHECK constraints).
+    //   2. List those own pending requests in a dedicated read-only
+    //      block so the operator can still see them at a glance.
+    let viewer_uuid = ::uuid::Uuid::parse_str(&auth_user.uuid)
+        .map_err(|_| AppError::Internal(anyhow::anyhow!("invalid auth uuid")))?;
+    let viewer_db_id: Option<i32> = users::table
+        .filter(users::uuid.eq(viewer_uuid))
+        .select(users::id)
+        .first::<i32>(&mut conn)
+        .await
+        .optional()
+        .map_err(AppError::Database)?;
+
     let mut count_query = proxy_sessions::table
         .filter(proxy_sessions::justification.is_not_null())
         .into_boxed();
 
     if let Some(ref status) = status_filter {
         count_query = count_query.filter(proxy_sessions::status.eq(status));
+    }
+    if let Some(id) = viewer_db_id {
+        count_query = count_query.filter(proxy_sessions::user_id.ne(id));
     }
 
     let total_items: i64 = count_query.count().get_result(&mut conn).await.unwrap_or(0);
@@ -870,6 +891,9 @@ pub async fn approval_list(
 
     if let Some(ref status) = status_filter {
         list_query = list_query.filter(proxy_sessions::status.eq(status));
+    }
+    if let Some(id) = viewer_db_id {
+        list_query = list_query.filter(proxy_sessions::user_id.ne(id));
     }
 
     #[allow(clippy::type_complexity)]
@@ -931,10 +955,82 @@ pub async fn approval_list(
                         created_at: created_at.format("%b %d, %Y %H:%M").to_string(),
                         status,
                         max_session_duration,
+                        is_own: false,
                     }
                 },
             )
             .collect();
+
+    // Own pending requests: shown read-only under their own header.
+    // We always pull them (no status filter) because a "Rejected"
+    // filter on the main list shouldn't hide the operator's still-
+    // pending personal requests — they're a separate concern.
+    let own_pending: Vec<crate::templates::sessions::approval_list::ApprovalListItem> =
+        if let Some(id) = viewer_db_id {
+            #[allow(clippy::type_complexity)]
+            let rows: Vec<(
+                uuid::Uuid,
+                String,
+                String,
+                String,
+                String,
+                Option<String>,
+                ipnetwork::IpNetwork,
+                chrono::DateTime<chrono::Utc>,
+                String,
+                Option<i32>,
+            )> = proxy_sessions::table
+                .inner_join(schema_assets::table)
+                .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
+                .filter(proxy_sessions::justification.is_not_null())
+                .filter(proxy_sessions::status.eq("pending"))
+                .filter(proxy_sessions::user_id.eq(id))
+                .select((
+                    proxy_sessions::uuid,
+                    users::username,
+                    schema_assets::hostname,
+                    schema_assets::asset_type,
+                    proxy_sessions::session_type,
+                    proxy_sessions::justification,
+                    proxy_sessions::client_ip,
+                    proxy_sessions::created_at,
+                    proxy_sessions::status,
+                    proxy_sessions::max_session_duration,
+                ))
+                .order(proxy_sessions::created_at.desc())
+                .limit(50)
+                .load(&mut conn)
+                .await
+                .unwrap_or_default();
+            rows.into_iter()
+                .map(|(
+                    uuid,
+                    username,
+                    asset_name,
+                    asset_type,
+                    session_type,
+                    justification,
+                    client_ip,
+                    created_at,
+                    status,
+                    max_session_duration,
+                )| crate::templates::sessions::approval_list::ApprovalListItem {
+                    uuid: uuid.to_string(),
+                    username,
+                    asset_name,
+                    asset_type,
+                    session_type,
+                    justification,
+                    client_ip: client_ip.ip().to_string(),
+                    created_at: created_at.format("%b %d, %Y %H:%M").to_string(),
+                    status,
+                    max_session_duration,
+                    is_own: true,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
 
     let pagination = if total_pages > 1 {
         Some(crate::templates::sessions::approval_list::Pagination {
@@ -957,6 +1053,7 @@ pub async fn approval_list(
         sidebar_content,
         header_user,
         approvals,
+        own_pending,
         pagination,
         status_filter,
     };
@@ -1025,6 +1122,7 @@ pub async fn approval_detail(
         chrono::DateTime<chrono::Utc>,
         bool,
         Option<i32>,
+        ::uuid::Uuid,
     ) = match proxy_sessions::table
         .inner_join(schema_assets::table)
         .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
@@ -1044,6 +1142,7 @@ pub async fn approval_detail(
             proxy_sessions::created_at,
             proxy_sessions::is_recorded,
             proxy_sessions::max_session_duration,
+            users::uuid,
         ))
         .first(&mut conn)
         .await
@@ -1078,7 +1177,10 @@ pub async fn approval_detail(
         created_at,
         is_recorded,
         max_session_duration,
+        requester_uuid,
     ) = approval_row;
+
+    let is_own = requester_uuid.to_string() == auth_user.uuid;
 
     let approval = crate::templates::sessions::approval_detail::ApprovalDetail {
         uuid: a_uuid.to_string(),
@@ -1095,6 +1197,7 @@ pub async fn approval_detail(
         created_at: created_at.format("%b %d, %Y %H:%M").to_string(),
         is_recorded,
         max_session_duration,
+        is_own,
     };
 
     let base = BaseTemplate::new("Approval Request".to_string(), user.clone())
@@ -1391,15 +1494,38 @@ pub async fn submit_access_request(
     }
 }
 
+/// Form for an admin reject decision. The optional `reason` is recorded
+/// in the audit trail and surfaced to the requester so they understand
+/// why their request was denied.
+#[derive(Debug, serde::Deserialize)]
+pub struct RejectForm {
+    pub csrf_token: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
 /// Approve an access request.
 ///
 /// POST /sessions/approvals/{uuid}/approve
+///
+/// SECURITY: this handler is intentionally thin. It validates CSRF,
+/// resolves the request context (client IP, user agent, request id)
+/// and then delegates the policy check + audit-log insert to
+/// `vauban-access` over IPC, in a single Diesel transaction. No
+/// SQL UPDATE happens in vauban-web, which would otherwise re-open
+/// the door to bypassing the SoD CHECK constraints with a stray
+/// `UPDATE proxy_sessions` (Tier-7 structural pin guards against
+/// re-introducing one).
+#[allow(clippy::too_many_arguments)]
 pub async fn approve_access_request(
     State(state): State<AppState>,
     incoming_flash: IncomingFlash,
     auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
+    client_addr: crate::middleware::ClientAddr,
+    extensions: axum::Extension<crate::middleware::audit::RequestId>,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
     Form(form): Form<ApproveForm>,
 ) -> AppResult<Response> {
@@ -1431,153 +1557,45 @@ pub async fn approve_access_request(
         }
     };
 
-    let session_uuid = ::uuid::Uuid::parse_str(&uuid_str)
-        .map_err(|_| AppError::Validation("Invalid request identifier".to_string()))?;
+    let outcome = dispatch_approval_decision(
+        &state,
+        &auth_user,
+        &headers,
+        &client_addr,
+        &extensions.0,
+        &uuid_str,
+        shared::messages::ApprovalDecisionKind::Approve,
+        duration_override,
+        None,
+    )
+    .await?;
 
-    let mut conn = state
-        .db_pool
-        .get()
-        .await
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
-
-    let admin_uuid = ::uuid::Uuid::parse_str(&auth_user.uuid)
-        .map_err(|_| AppError::Validation("Invalid admin identifier".to_string()))?;
-
-    let admin_id: i32 = crate::schema::users::table
-        .filter(crate::schema::users::uuid.eq(admin_uuid))
-        .select(crate::schema::users::id)
-        .first(&mut conn)
-        .await
-        .map_err(|_| AppError::NotFound("Admin user not found".to_string()))?;
-
-    let now = chrono::Utc::now();
-
-    // Determine the effective max_session_duration: admin override takes priority,
-    // otherwise fall back to the value copied from access rules at request time.
-    let effective_duration: Option<i32> = if duration_override.is_some() {
-        duration_override
-    } else {
-        proxy_sessions::table
-            .filter(proxy_sessions::uuid.eq(session_uuid))
-            .select(proxy_sessions::max_session_duration)
-            .first::<Option<i32>>(&mut conn)
-            .await
-            .ok()
-            .flatten()
-    };
-
-    // Compute expires_at so the approval itself has a bounded validity window.
-    // The user must connect before this deadline; the cleanup task will expire
-    // stale approved sessions.
-    let approval_expires_at =
-        effective_duration.map(|secs| now + chrono::Duration::seconds(secs as i64));
-
-    let updated = if let Some(seconds) = duration_override {
-        diesel::update(
-            proxy_sessions::table
-                .filter(proxy_sessions::uuid.eq(session_uuid))
-                .filter(proxy_sessions::status.eq("pending")),
-        )
-        .set((
-            proxy_sessions::status.eq("approved"),
-            proxy_sessions::approved_by_id.eq(Some(admin_id)),
-            proxy_sessions::approved_at.eq(Some(now)),
-            proxy_sessions::max_session_duration.eq(Some(seconds)),
-            proxy_sessions::expires_at.eq(approval_expires_at),
-            proxy_sessions::updated_at.eq(now),
-        ))
-        .execute(&mut conn)
-        .await
-        .map_err(AppError::Database)?
-    } else {
-        diesel::update(
-            proxy_sessions::table
-                .filter(proxy_sessions::uuid.eq(session_uuid))
-                .filter(proxy_sessions::status.eq("pending")),
-        )
-        .set((
-            proxy_sessions::status.eq("approved"),
-            proxy_sessions::approved_by_id.eq(Some(admin_id)),
-            proxy_sessions::approved_at.eq(Some(now)),
-            proxy_sessions::expires_at.eq(approval_expires_at),
-            proxy_sessions::updated_at.eq(now),
-        ))
-        .execute(&mut conn)
-        .await
-        .map_err(AppError::Database)?
-    };
-
-    if updated == 0 {
-        return Err(AppError::NotFound(
-            "Request not found or already processed".to_string(),
-        ));
-    }
-
-    if let Some(secs) = duration_override {
-        tracing::info!(
-            session_uuid = %session_uuid,
-            approved_by = %auth_user.username,
-            duration_override_seconds = secs,
-            "JIT access request approved with duration override"
-        );
-    } else {
-        tracing::info!(
-            session_uuid = %session_uuid,
-            approved_by = %auth_user.username,
-            "JIT access request approved"
-        );
-    }
-
-    // Notify the requester
-    let requester_id: Option<i32> = proxy_sessions::table
-        .filter(proxy_sessions::uuid.eq(session_uuid))
-        .select(proxy_sessions::user_id)
-        .first(&mut conn)
-        .await
-        .ok();
-
-    if let Some(uid) = requester_id {
-        let user_uuid_str: Option<String> = crate::schema::users::table
-            .filter(crate::schema::users::id.eq(uid))
-            .select(crate::schema::users::uuid)
-            .first::<::uuid::Uuid>(&mut conn)
-            .await
-            .ok()
-            .map(|u| u.to_string());
-
-        if let Some(ref uuid_s) = user_uuid_str {
-            let _ = state
-                .broadcast
-                .send(
-                    &crate::services::broadcast::WsChannel::Notifications,
-                    crate::services::broadcast::WsMessage::new(
-                        "jit-notification",
-                        format!(
-                            r#"{{"type":"request_approved","session_uuid":"{}","user_uuid":"{}"}}"#,
-                            session_uuid, uuid_s
-                        ),
-                    ),
-                )
-                .await;
-        }
-    }
-
-    broadcast_approval_badge(&state).await;
-
-    Ok(Redirect::to(&format!("/sessions/approvals/{}", uuid_str)).into_response())
+    Ok(approval_outcome_to_response(
+        flash,
+        &uuid_str,
+        outcome,
+        "Access request approved",
+    ))
 }
 
 /// Reject an access request.
 ///
 /// POST /sessions/approvals/{uuid}/reject
+#[allow(clippy::too_many_arguments)]
 pub async fn reject_access_request(
     State(state): State<AppState>,
+    incoming_flash: IncomingFlash,
     auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
+    client_addr: crate::middleware::ClientAddr,
+    extensions: axum::Extension<crate::middleware::audit::RequestId>,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
-    Form(form): Form<CsrfOnlyForm>,
+    Form(form): Form<RejectForm>,
 ) -> AppResult<Response> {
+    let flash = incoming_flash.flash();
+
     let secret = state.config.secret_key.expose_secret().as_bytes();
     let csrf_cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
     if !crate::middleware::csrf::validate_double_submit(
@@ -1594,77 +1612,186 @@ pub async fn reject_access_request(
         ));
     }
 
-    let session_uuid = ::uuid::Uuid::parse_str(&uuid_str)
+    let reason = form
+        .reason
+        .as_deref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let outcome = dispatch_approval_decision(
+        &state,
+        &auth_user,
+        &headers,
+        &client_addr,
+        &extensions.0,
+        &uuid_str,
+        shared::messages::ApprovalDecisionKind::Reject,
+        None,
+        reason,
+    )
+    .await?;
+
+    Ok(approval_outcome_to_response(
+        flash,
+        &uuid_str,
+        outcome,
+        "Access request rejected",
+    ))
+}
+
+/// Outcome from `dispatch_approval_decision`, returned to keep the
+/// HTTP-shape mapping in a single place (`approval_outcome_to_response`).
+///
+/// Fields on `Recorded` are kept even when unread by the response
+/// mapper -- Tier-3 tests assert against them via `match` arms, and
+/// the structured info is also useful when a future caller wants to
+/// surface the audit-log id back to the user.
+#[allow(dead_code)]
+enum ApprovalOutcome {
+    Recorded {
+        audit_log_id: i64,
+        requester_id: Option<i32>,
+        session_uuid: ::uuid::Uuid,
+        decision: shared::messages::ApprovalDecisionKind,
+    },
+    Denied(shared::messages::ApprovalDenyReason),
+}
+
+/// Common path for approve/reject:
+///   1. Resolve trusted-proxy client IP, user agent, request id.
+///   2. Send `RecordApprovalDecision` over IPC.
+///   3. On success, push WS notifications and the badge OOB swap.
+///
+/// Centralised so a future `cancel`-by-admin or `expire`-by-admin verb
+/// reuses the exact same audit semantics. The thin web handlers stay
+/// HTTP-focused (CSRF, RBAC, form parsing, redirect).
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_approval_decision(
+    state: &AppState,
+    auth_user: &WebAuthUser,
+    headers: &axum::http::HeaderMap,
+    client_addr: &crate::middleware::ClientAddr,
+    request_id: &crate::middleware::audit::RequestId,
+    uuid_str: &str,
+    decision: shared::messages::ApprovalDecisionKind,
+    duration_override_seconds: Option<i32>,
+    decision_reason: Option<String>,
+) -> AppResult<ApprovalOutcome> {
+    let session_uuid = ::uuid::Uuid::parse_str(uuid_str)
         .map_err(|_| AppError::Validation("Invalid request identifier".to_string()))?;
 
-    let mut conn = state
-        .db_pool
-        .get()
-        .await
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+    let trusted = state.config.security.parsed_trusted_proxies();
+    let resolved_ip =
+        crate::middleware::resolve_client_ip(headers, client_addr.addr().ip(), &trusted);
 
-    let updated = diesel::update(
-        proxy_sessions::table
-            .filter(proxy_sessions::uuid.eq(session_uuid))
-            .filter(proxy_sessions::status.eq("pending")),
-    )
-    .set((
-        proxy_sessions::status.eq("rejected"),
-        proxy_sessions::updated_at.eq(chrono::Utc::now()),
-    ))
-    .execute(&mut conn)
-    .await
-    .map_err(AppError::Database)?;
+    let user_agent = headers
+        .get("user-agent")
+        .and_then(|h| h.to_str().ok())
+        .map(|s| s.to_string());
 
-    if updated == 0 {
-        return Err(AppError::NotFound(
-            "Request not found or already processed".to_string(),
-        ));
-    }
+    let outcome = state
+        .access_client
+        .record_approval_decision(
+            &auth_user.uuid,
+            uuid_str,
+            decision,
+            duration_override_seconds,
+            decision_reason,
+            Some(resolved_ip.to_string()),
+            user_agent,
+            Some(request_id.0.clone()),
+        )
+        .await?;
 
-    tracing::info!(
-        session_uuid = %session_uuid,
-        rejected_by = %auth_user.username,
-        "JIT access request rejected"
-    );
+    match outcome {
+        Ok(audit_log_id) => {
+            // Resolve the requester for the WS notification (best-effort,
+            // does not block the response).
+            let requester_id = if let Ok(mut conn) = state.db_pool.get().await {
+                proxy_sessions::table
+                    .filter(proxy_sessions::uuid.eq(session_uuid))
+                    .select(proxy_sessions::user_id)
+                    .first::<i32>(&mut conn)
+                    .await
+                    .ok()
+            } else {
+                None
+            };
 
-    // Notify the requester
-    let requester_id: Option<i32> = proxy_sessions::table
-        .filter(proxy_sessions::uuid.eq(session_uuid))
-        .select(proxy_sessions::user_id)
-        .first(&mut conn)
-        .await
-        .ok();
-
-    if let Some(uid) = requester_id {
-        let user_uuid_str: Option<String> = crate::schema::users::table
-            .filter(crate::schema::users::id.eq(uid))
-            .select(crate::schema::users::uuid)
-            .first::<::uuid::Uuid>(&mut conn)
-            .await
-            .ok()
-            .map(|u| u.to_string());
-
-        if let Some(ref uuid_s) = user_uuid_str {
-            let _ = state
-                .broadcast
-                .send(
-                    &crate::services::broadcast::WsChannel::Notifications,
-                    crate::services::broadcast::WsMessage::new(
-                        "jit-notification",
-                        format!(
-                            r#"{{"type":"request_rejected","session_uuid":"{}","user_uuid":"{}"}}"#,
-                            session_uuid, uuid_s
+            // Notify the requester. Failure here is non-fatal -- the audit
+            // row is already durable.
+            if let Some(uid) = requester_id
+                && let Ok(mut conn) = state.db_pool.get().await
+                && let Ok(req_uuid) = crate::schema::users::table
+                    .filter(crate::schema::users::id.eq(uid))
+                    .select(crate::schema::users::uuid)
+                    .first::<::uuid::Uuid>(&mut conn)
+                    .await
+            {
+                let kind_str = match decision {
+                    shared::messages::ApprovalDecisionKind::Approve => "request_approved",
+                    shared::messages::ApprovalDecisionKind::Reject => "request_rejected",
+                };
+                let _ = state
+                    .broadcast
+                    .send(
+                        &crate::services::broadcast::WsChannel::Notifications,
+                        crate::services::broadcast::WsMessage::new(
+                            "jit-notification",
+                            format!(
+                                r#"{{"type":"{}","session_uuid":"{}","user_uuid":"{}"}}"#,
+                                kind_str, session_uuid, req_uuid
+                            ),
                         ),
-                    ),
-                )
-                .await;
+                    )
+                    .await;
+            }
+
+            broadcast_approval_badge(state).await;
+
+            tracing::info!(
+                session_uuid = %session_uuid,
+                actor = %auth_user.username,
+                decision = ?decision,
+                audit_log_id,
+                "JIT access request decision recorded via IPC"
+            );
+
+            Ok(ApprovalOutcome::Recorded {
+                audit_log_id,
+                requester_id,
+                session_uuid,
+                decision,
+            })
+        }
+        Err(reason) => {
+            tracing::info!(
+                session_uuid = %session_uuid,
+                actor = %auth_user.username,
+                decision = ?decision,
+                deny_reason = ?reason,
+                "JIT access request decision denied (separation of duties / state)"
+            );
+            Ok(ApprovalOutcome::Denied(reason))
         }
     }
+}
 
-    broadcast_approval_badge(&state).await;
-
-    Ok(Redirect::to(&format!("/sessions/approvals/{}", uuid_str)).into_response())
+fn approval_outcome_to_response(
+    flash: crate::middleware::flash::Flash,
+    uuid_str: &str,
+    outcome: ApprovalOutcome,
+    success_message: &str,
+) -> Response {
+    let detail_url = format!("/sessions/approvals/{}", uuid_str);
+    match outcome {
+        ApprovalOutcome::Recorded { .. } => {
+            flash_redirect(flash.success(success_message), &detail_url)
+        }
+        ApprovalOutcome::Denied(reason) => {
+            flash_redirect(flash.error(reason.as_message()), &detail_url)
+        }
+    }
 }
 
 /// Broadcast an OOB update for the sidebar approval badge.

@@ -1283,6 +1283,10 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             get(handlers::web::serve_segment),
         )
         .route("/sessions/{id}", get(handlers::web::session_detail))
+        .route(
+            "/audit/approvals",
+            get(handlers::web::approval_audit_list),
+        )
         .route("/sessions/approvals", get(handlers::web::approval_list))
         .route(
             "/sessions/approvals/{uuid}",

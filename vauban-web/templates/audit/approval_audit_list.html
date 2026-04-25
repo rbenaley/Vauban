@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+
+{% block title %}Approval Audit Log - {{ vauban.brand_name }}{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <div class="md:flex md:items-center md:justify-between">
+        <div class="min-w-0 flex-1">
+            <h2 class="text-xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-2xl lg:text-3xl sm:tracking-tight">
+                Approval Audit Log
+            </h2>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                Append-only record of every JIT approval/rejection decision.
+                Snapshot of actor, requester, and asset at the moment of the
+                decision; rows are tamper-resistant (DB trigger blocks
+                <code>UPDATE</code> and <code>DELETE</code>).
+            </p>
+        </div>
+    </div>
+
+    <!-- Filters -->
+    <div class="bg-white dark:bg-gray-800 shadow rounded-lg p-4">
+        <form method="get" class="grid gap-4 sm:grid-cols-2 lg:grid-cols-6 items-end">
+            <div>
+                <label for="actor" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Actor</label>
+                <input type="text" name="actor" id="actor"
+                       value="{% if let Some(v) = filters.actor.as_ref() %}{{ v }}{% endif %}"
+                       class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
+            </div>
+            <div>
+                <label for="requester" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Requester</label>
+                <input type="text" name="requester" id="requester"
+                       value="{% if let Some(v) = filters.requester.as_ref() %}{{ v }}{% endif %}"
+                       class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
+            </div>
+            <div>
+                <label for="asset" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Asset</label>
+                <input type="text" name="asset" id="asset"
+                       value="{% if let Some(v) = filters.asset.as_ref() %}{{ v }}{% endif %}"
+                       class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
+            </div>
+            <div>
+                <label for="decision" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Decision</label>
+                <select name="decision" id="decision"
+                        class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
+                    <option value="">All</option>
+                    <option value="approve" {% if filters.decision.as_deref() == Some("approve") %}selected{% endif %}>Approved</option>
+                    <option value="reject" {% if filters.decision.as_deref() == Some("reject") %}selected{% endif %}>Rejected</option>
+                </select>
+            </div>
+            <div>
+                <label for="from_date" class="block text-sm font-medium text-gray-700 dark:text-gray-300">From</label>
+                <input type="date" name="from_date" id="from_date"
+                       value="{% if let Some(v) = filters.from_date.as_ref() %}{{ v }}{% endif %}"
+                       class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
+            </div>
+            <div>
+                <label for="to_date" class="block text-sm font-medium text-gray-700 dark:text-gray-300">To</label>
+                <input type="date" name="to_date" id="to_date"
+                       value="{% if let Some(v) = filters.to_date.as_ref() %}{{ v }}{% endif %}"
+                       class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
+            </div>
+            <div class="sm:col-span-2 lg:col-span-6 flex justify-end">
+                <button type="submit"
+                        class="rounded-md bg-vauban-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500">
+                    Apply filters
+                </button>
+            </div>
+        </form>
+    </div>
+
+    {% if rows.is_empty() %}
+    <div class="bg-white dark:bg-gray-800 shadow rounded-lg p-8 text-center text-sm text-gray-500 dark:text-gray-400">
+        No audit entries matching these filters.
+    </div>
+    {% else %}
+    <div class="bg-white dark:bg-gray-800 shadow overflow-hidden sm:rounded-lg">
+        <table class="min-w-full divide-y divide-gray-200 dark:divide-gray-700 text-sm">
+            <thead class="bg-gray-50 dark:bg-gray-900/50">
+                <tr>
+                    <th class="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300">When</th>
+                    <th class="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300">Decision</th>
+                    <th class="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300">Actor</th>
+                    <th class="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300">Requester</th>
+                    <th class="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300">Asset</th>
+                    <th class="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300">Protocol</th>
+                    <th class="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300">Duration</th>
+                    <th class="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300">IP</th>
+                    <th class="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300">Reason</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-200 dark:divide-gray-700">
+                {% for row in rows %}
+                <tr>
+                    <td class="px-3 py-2 text-gray-900 dark:text-gray-100 whitespace-nowrap">{{ row.created_at }}</td>
+                    <td class="px-3 py-2">
+                        <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {{ row.decision_class() }}">
+                            {{ row.decision }}
+                        </span>
+                    </td>
+                    <td class="px-3 py-2 text-gray-900 dark:text-gray-100">{{ row.actor_username }}</td>
+                    <td class="px-3 py-2 text-gray-900 dark:text-gray-100">{{ row.requester_username }}</td>
+                    <td class="px-3 py-2 text-gray-900 dark:text-gray-100">{{ row.asset_name }}</td>
+                    <td class="px-3 py-2 text-gray-700 dark:text-gray-300">{% if let Some(v) = row.protocol.as_ref() %}{{ v }}{% else %}—{% endif %}</td>
+                    <td class="px-3 py-2 text-gray-700 dark:text-gray-300">{{ row.duration_display() }}</td>
+                    <td class="px-3 py-2 text-gray-700 dark:text-gray-300">{% if let Some(v) = row.decision_ip.as_ref() %}{{ v }}{% else %}—{% endif %}</td>
+                    <td class="px-3 py-2 text-gray-700 dark:text-gray-300">{% if let Some(v) = row.decision_reason.as_ref() %}{{ v }}{% else %}—{% endif %}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    {% if pagination.total_pages > 1 %}
+    <div class="bg-white dark:bg-gray-800 px-4 py-3 flex items-center justify-between border-t border-gray-200 dark:border-gray-700 sm:px-6 rounded-lg">
+        <p class="text-sm text-gray-700 dark:text-gray-300">
+            Page <span class="font-medium">{{ pagination.current_page }}</span> of <span class="font-medium">{{ pagination.total_pages }}</span>
+            (<span class="font-medium">{{ pagination.total_items }}</span> total)
+        </p>
+        <nav class="inline-flex rounded-md shadow-sm -space-x-px" aria-label="Pagination">
+            {% if pagination.has_previous %}
+            <a href="?page={{ pagination.current_page - 1 }}{% if let Some(v) = filters.actor.as_ref() %}&actor={{ v }}{% endif %}{% if let Some(v) = filters.requester.as_ref() %}&requester={{ v }}{% endif %}{% if let Some(v) = filters.asset.as_ref() %}&asset={{ v }}{% endif %}{% if let Some(v) = filters.decision.as_ref() %}&decision={{ v }}{% endif %}{% if let Some(v) = filters.from_date.as_ref() %}&from_date={{ v }}{% endif %}{% if let Some(v) = filters.to_date.as_ref() %}&to_date={{ v }}{% endif %}" class="relative inline-flex items-center px-3 py-1 border border-gray-300 dark:border-gray-600 text-sm rounded-l-md bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-600">Previous</a>
+            {% endif %}
+            {% if pagination.has_next %}
+            <a href="?page={{ pagination.current_page + 1 }}{% if let Some(v) = filters.actor.as_ref() %}&actor={{ v }}{% endif %}{% if let Some(v) = filters.requester.as_ref() %}&requester={{ v }}{% endif %}{% if let Some(v) = filters.asset.as_ref() %}&asset={{ v }}{% endif %}{% if let Some(v) = filters.decision.as_ref() %}&decision={{ v }}{% endif %}{% if let Some(v) = filters.from_date.as_ref() %}&from_date={{ v }}{% endif %}{% if let Some(v) = filters.to_date.as_ref() %}&to_date={{ v }}{% endif %}" class="relative inline-flex items-center px-3 py-1 border border-gray-300 dark:border-gray-600 text-sm rounded-r-md bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-600">Next</a>
+            {% endif %}
+        </nav>
+    </div>
+    {% endif %}
+    {% endif %}
+</div>
+{% endblock %}

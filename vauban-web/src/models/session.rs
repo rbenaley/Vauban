@@ -167,6 +167,9 @@ pub struct ProxySession {
     pub approved_at: Option<DateTime<Utc>>,
     pub max_session_duration: Option<i32>,
     pub expires_at: Option<DateTime<Utc>>,
+    pub rejected_by_id: Option<i32>,
+    pub rejected_at: Option<DateTime<Utc>>,
+    pub decision_reason: Option<String>,
 }
 
 /// New session for insertion.
@@ -254,6 +257,9 @@ mod tests {
             approved_at: None,
             max_session_duration: None,
             expires_at: None,
+            rejected_by_id: None,
+            rejected_at: None,
+            decision_reason: None,
         }
     }
 

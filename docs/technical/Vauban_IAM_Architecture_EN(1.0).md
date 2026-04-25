@@ -1861,6 +1861,108 @@ access_rules.max_session_duration
   -> cleanup task enforces expires_at
 ```
 
+### 15.9 Approval Audit & Separation of Duties
+
+JIT requests are decided by humans, so the *who*, *when*, *why* and *from where* of each decision matter as much as the *what*. Two complementary properties make those decisions trustworthy:
+
+- **Separation of Duties (SoD).** A user who can request access cannot also approve their own request, even if they otherwise hold an approver role.
+- **Auditability.** Every approval and every rejection produces an append-only audit row that survives later changes to users, assets, sessions or access rules.
+
+Both properties are enforced at multiple layers (UI, IPC, DB) so that a regression — or a compromise — at one layer is contained by the next.
+
+#### 15.9.1 Threat Model
+
+The threat catalog drives the design. Each threat is mapped to the layer that catches it.
+
+| ID | Threat | Mitigation |
+|----|--------|------------|
+| T1 | A user with both `request` and `approve` permissions approves their own request. | UI hides the buttons; IPC `evaluate_eligibility` returns `SelfApproval`; DB `CHECK (approved_by_id <> user_id)` rejects the row. |
+| T2 | A compromised `vauban-access` re-points an existing audit row to a different `session_uuid`. | `block_approval_audit_log_mutation` trigger blocks every `UPDATE` on `approval_audit_log`. |
+| T3 | An operator tampers with audit history (`UPDATE`/`DELETE` on the table). | Same trigger; raised as a `CHECK` violation with an error string containing `approval_audit_log is append-only`, which is also the runbook's grep keyword. |
+| T4 | A compromised `vauban-web` reports a forged client IP to make decisions look as if they came from a trusted location. | `decision_ip` is resolved by the trusted-proxy middleware *before* the IPC call; `vauban-access` records what `vauban-web` reports but the truth is fixed by the middleware contract. |
+| T5 | Two approvers race to approve the same request; both succeed and both audit rows are written. | The decision is performed inside a single Diesel transaction with a TOCTOU re-check on `status='pending'`; the loser receives `ApprovalDenied{SessionNotPending}`. |
+| T6 | A rejection is "silent" — no audit footprint, leaving operators unable to count or grep rejections. | Reject decisions go through the same code path and write the same shape of row, with `decision='reject'` and an optional `decision_reason`. |
+| T7 | After a rejection, the session is silently transitioned back to `approved` by an attacker. | The handler refuses any `RecordApprovalDecision` whose target session is not `pending`; the response is `ApprovalDenied{SessionNotPending}`. |
+| T8 | A user is hard-deleted to erase their audit footprint. | `users.id` references in `approval_audit_log` use `ON DELETE SET NULL`, but the append-only trigger blocks the cascaded `UPDATE`. The hard delete therefore fails as long as any audit row references the user. Soft-delete is the supported path; the snapshot username keeps the row readable. |
+| T9 | An API-key-only path bypasses the human approval flow. | The session-token gate (see [AccessGuard](Vauban_AccessGuard_Architecture_EN(1.0).md)) requires a fresh token signed by `vauban-access`; only the IPC code path that runs `evaluate_eligibility` can issue it. |
+
+#### 15.9.2 Schema
+
+Migration `20260425000000_approval_audit_and_sod` adds:
+
+- New columns on `proxy_sessions`: `rejected_by_id INTEGER`, `rejected_at TIMESTAMPTZ`, `decision_reason TEXT`.
+- Two `CHECK` constraints, both named so that runbook queries can grep them:
+  - `approval_separation_of_duties`: `approved_by_id IS NULL OR approved_by_id <> user_id`.
+  - `rejection_separation_of_duties`: `rejected_by_id IS NULL OR rejected_by_id <> user_id`.
+- A new table `approval_audit_log` that is *append-only* by trigger (`block_approval_audit_log_mutation` raises on every `UPDATE` and `DELETE`).
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | `BIGSERIAL` PK | Monotonic ordering for paginated audit reads. |
+| `session_uuid` | `UUID NOT NULL` | The decided session. Indexed for per-session lookups. |
+| `decision` | `TEXT NOT NULL CHECK (decision IN ('approve','reject'))` | Pinned by Tier 7 structural test. |
+| `actor_user_id` | `INTEGER NULL` (FK `users` `ON DELETE SET NULL`) | Nullable so rows survive (logical) user removal. |
+| `actor_username` | `TEXT NOT NULL` | **Snapshot** of the username at decision time. |
+| `requester_user_id` | `INTEGER NULL` (FK `users` `ON DELETE SET NULL`) | See above. |
+| `requester_username` | `TEXT NOT NULL` | Snapshot. |
+| `asset_uuid` | `UUID NOT NULL` | |
+| `asset_name` | `TEXT NOT NULL` | Snapshot. |
+| `protocol` | `TEXT NULL` | Mirrors `proxy_sessions.session_type` at decision time. |
+| `duration_override_seconds` | `INTEGER NULL` | Recorded only when an override was applied. |
+| `decision_reason` | `TEXT NULL` | Mirrored from the form for both approve and reject. |
+| `decision_ip` | `INET NULL` | Resolved by the trusted-proxy middleware. |
+| `decision_user_agent` | `TEXT NULL` | Best-effort. |
+| `request_id` | `TEXT NULL` | The audit middleware's request id, for log correlation. |
+| `created_at` | `TIMESTAMPTZ NOT NULL DEFAULT NOW()` | |
+
+Indexes: `(actor_user_id, created_at DESC)`, `(requester_user_id, created_at DESC)`, `(asset_uuid, created_at DESC)` — sized for the three pages every operator runs (per-actor, per-requester, per-asset).
+
+#### 15.9.3 Decision Flow
+
+```mermaid
+sequenceDiagram
+    participant U as Approver Browser
+    participant W as vauban-web
+    participant AC as vauban-access
+    participant DB as PostgreSQL
+
+    U->>W: POST /sessions/{uuid}/approve (or /reject)
+    Note over W: CSRF check; trusted-proxy IP; audit request_id
+    W->>AC: CheckApprovalEligibility(actor, session)
+    AC->>DB: SELECT session, requester, asset, rule (read-only)
+    AC->>W: ApprovalEligibility{eligible, deny_reason?}
+    alt eligible
+        W->>AC: RecordApprovalDecision(actor, session, kind, reason, ip, ua, request_id)
+        AC->>DB: BEGIN; re-check pending; UPDATE proxy_sessions; INSERT approval_audit_log; COMMIT
+        AC->>W: ApprovalRecorded
+        W->>U: 303 redirect + flash success
+    else SelfApproval / NotPending / RuleChanged / RequesterDisabled
+        AC->>W: ApprovalDenied{reason}
+        W->>U: 303 redirect + flash error
+    end
+```
+
+The transaction is the contract: either the session moves out of `pending` *and* an audit row exists, or neither does. Tier 1 tests exercise both injected-failure paths.
+
+#### 15.9.4 UI Gating
+
+The web UI complements the IPC layer rather than replacing it. The list page splits requests into two sections:
+
+- **Awaiting your decision** — the actionable queue. The viewer's own pending requests are *excluded*.
+- **Your pending requests** — read-only, with an explanatory pill.
+
+The detail page hides the Approve/Reject buttons for the viewer's own pending request and renders the same explanatory pill. The sidebar count badge excludes the viewer's own pending requests so the queue indicator reflects what the viewer can actually act on. Every gate is also enforced server-side: if the UI is bypassed, the IPC layer still returns `SelfApproval`.
+
+#### 15.9.5 Mono-Admin Deployments
+
+If a deployment has fewer than two administrators, SoD becomes structurally impossible to satisfy without external help. `vauban-access` detects this at boot and re-checks every 30 minutes; a `WARN` log line is emitted with a runbook keyword. The product still enforces SoD — the warning surfaces the operational risk rather than relaxing the rule.
+
+#### 15.9.6 Operator Surface
+
+A read-only `/audit/approvals` page renders `approval_audit_log` with pagination and filters on actor, requester, asset, decision and date range. The page is admin-only via Casbin and explicitly states that the table is append-only and snapshot-frozen, so what is rendered is what existed at decision time, not what exists today.
+
+For deeper analysis or export, see [`docs/runbooks/approval_audit.md`](../runbooks/approval_audit.md).
+
 ---
 
 ## Appendix A: Complete Login Flow

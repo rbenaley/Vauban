@@ -950,6 +950,12 @@ runbook.
   — RDP session lifecycle, including the AccessGuard re-check.
 - [`docs/runbooks/ipc_topology_debugging.md`](../runbooks/ipc_topology_debugging.md)
   — operational runbook for the topology / RBAC re-check failure mode.
+- [`Vauban_IAM_Architecture_EN(1.0).md` §15.9](Vauban_IAM_Architecture_EN(1.0).md#159-approval-audit--separation-of-duties)
+  — JIT approval audit and separation-of-duties model (T1–T9 threat
+  catalog, append-only log, mono-admin handling).
+- [`docs/runbooks/approval_audit.md`](../runbooks/approval_audit.md)
+  — operator queries against `approval_audit_log` (per-actor /
+  per-requester / per-asset windows, CSV export, mono-admin recovery).
 
 ### 10.2 Source of truth
 

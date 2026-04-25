@@ -19,6 +19,10 @@ pub struct ApprovalDetail {
     pub created_at: String,
     pub is_recorded: bool,
     pub max_session_duration: Option<i32>,
+    /// True when the requester is the viewer; the detail template
+    /// hides Approve/Reject controls in that case (separation of
+    /// duties — see `ApprovalListItem::is_own`).
+    pub is_own: bool,
 }
 
 impl ApprovalDetail {
@@ -82,6 +86,7 @@ mod tests {
             created_at: "2026-01-03 10:00:00".to_string(),
             is_recorded: true,
             max_session_duration: Some(7200),
+            is_own: false,
         }
     }
 
@@ -199,6 +204,66 @@ mod tests {
         let mut detail = create_test_approval_detail("pending");
         detail.max_session_duration = Some(1800);
         assert_eq!(detail.duration_default_unit(), "minutes");
+    }
+
+    // ---- UI gating tests (Tier 4) — separation of duties ----
+    //
+    // The detail page must visibly suppress the Approve/Reject
+    // buttons when the requester is the viewer, and replace them by
+    // an explanatory pill. The DB CHECK + IPC layer already block
+    // the POST; the UI block is what prevents accidental clicks.
+
+    fn detail_template(is_own: bool) -> ApprovalDetailTemplate {
+        use crate::templates::base::{UserContext, VaubanConfig};
+        let mut a = create_test_approval_detail("pending");
+        a.uuid = "uuid-detail-1".to_string();
+        a.is_own = is_own;
+        ApprovalDetailTemplate {
+            title: "Detail".to_string(),
+            user: Some(UserContext {
+                uuid: "x".to_string(),
+                username: "x".to_string(),
+                display_name: "x".to_string(),
+                is_superuser: false,
+                is_staff: false,
+            }),
+            vauban: VaubanConfig::default(),
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            approval: a,
+        }
+    }
+
+    #[test]
+    fn ui_gating_detail_hides_buttons_for_own_pending() {
+        let html = detail_template(true).render().expect("render");
+        assert!(
+            !html.contains("/sessions/approvals/uuid-detail-1/approve"),
+            "own pending detail must NOT expose Approve form"
+        );
+        assert!(
+            !html.contains("/sessions/approvals/uuid-detail-1/reject"),
+            "own pending detail must NOT expose Reject form"
+        );
+        assert!(
+            html.contains("Your own request") && html.contains("awaiting peer review"),
+            "must show explanatory pill for own pending"
+        );
+    }
+
+    #[test]
+    fn ui_gating_detail_renders_buttons_for_others_pending() {
+        let html = detail_template(false).render().expect("render");
+        assert!(
+            html.contains("/sessions/approvals/uuid-detail-1/approve"),
+            "non-own pending detail must expose Approve form"
+        );
+        assert!(
+            html.contains("/sessions/approvals/uuid-detail-1/reject"),
+            "non-own pending detail must expose Reject form"
+        );
     }
 
     #[test]

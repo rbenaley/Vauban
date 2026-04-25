@@ -3,6 +3,14 @@ use crate::templates::base::{FlashMessage, UserContext, VaubanConfig};
 use askama::Template;
 
 /// Approval item for list display.
+///
+/// `is_own` flags rows whose `requester == viewer`. The list and detail
+/// templates use this to hide the Approve/Reject buttons so the
+/// separation-of-duties invariant has a visible UI counterpart in
+/// addition to the IPC + DB enforcement points. The DB CHECK constraints
+/// `approval_separation_of_duties` / `rejection_separation_of_duties`
+/// remain the source of truth — this flag only suppresses tempting
+/// affordances.
 #[derive(Debug, Clone)]
 pub struct ApprovalListItem {
     pub uuid: String,
@@ -15,6 +23,7 @@ pub struct ApprovalListItem {
     pub created_at: String,
     pub status: String,
     pub max_session_duration: Option<i32>,
+    pub is_own: bool,
 }
 
 impl ApprovalListItem {
@@ -76,6 +85,10 @@ pub struct ApprovalListTemplate {
         Option<crate::templates::partials::sidebar_content::SidebarContentTemplate>,
     pub header_user: Option<crate::templates::base::UserContext>,
     pub approvals: Vec<ApprovalListItem>,
+    /// Pending requests submitted by the viewer themselves, displayed
+    /// read-only under a dedicated header so the operator clearly sees
+    /// they cannot decide their own request (separation of duties).
+    pub own_pending: Vec<ApprovalListItem>,
     pub pagination: Option<Pagination>,
     pub status_filter: Option<String>,
 }
@@ -96,6 +109,7 @@ mod tests {
             created_at: "2026-01-03 10:00:00".to_string(),
             status: status.to_string(),
             max_session_duration: Some(7200),
+            is_own: false,
         }
     }
 
@@ -330,6 +344,155 @@ mod tests {
         assert_eq!(item.duration_default_unit(), "minutes");
     }
 
+    // ---- UI gating tests (Tier 4) — separation of duties ----
+    //
+    // These pin the *visible* SoD invariant: the "Your pending
+    // requests" section must NEVER expose Approve/Reject buttons,
+    // and any row flagged `is_own == true` in the main list must
+    // also hide them. The DB CHECK + IPC layer already block the
+    // POST, but the UI block is what prevents accidental clicks
+    // from raising flash errors and confusing the operator.
+
+    fn own_pending_template() -> ApprovalListTemplate {
+        use crate::templates::base::{UserContext, VaubanConfig};
+        let mut own = create_test_approval_item("pending", "ssh");
+        own.is_own = true;
+        own.uuid = "own-uuid-123".to_string();
+        ApprovalListTemplate {
+            title: "Approvals".to_string(),
+            user: Some(UserContext {
+                uuid: "test".to_string(),
+                username: "testuser".to_string(),
+                display_name: "Test User".to_string(),
+                is_superuser: false,
+                is_staff: false,
+            }),
+            vauban: VaubanConfig {
+                brand_name: "VAUBAN".to_string(),
+                brand_logo: None,
+                theme: "dark".to_string(),
+                ..Default::default()
+            },
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            approvals: Vec::new(),
+            own_pending: vec![own],
+            status_filter: None,
+            pagination: None,
+        }
+    }
+
+    #[test]
+    fn ui_gating_own_pending_section_has_no_approve_form() {
+        let t = own_pending_template();
+        let html = t.render().expect("render");
+        assert!(
+            !html.contains("/sessions/approvals/own-uuid-123/approve"),
+            "own-pending section must NEVER render an Approve form"
+        );
+    }
+
+    #[test]
+    fn ui_gating_own_pending_section_has_no_reject_form() {
+        let t = own_pending_template();
+        let html = t.render().expect("render");
+        assert!(
+            !html.contains("/sessions/approvals/own-uuid-123/reject"),
+            "own-pending section must NEVER render a Reject form"
+        );
+    }
+
+    #[test]
+    fn ui_gating_own_pending_section_shows_peer_review_hint() {
+        let t = own_pending_template();
+        let html = t.render().expect("render");
+        assert!(
+            html.contains("awaiting peer review"),
+            "own-pending row should explain why it's read-only"
+        );
+        assert!(
+            html.contains("Your pending requests"),
+            "own-pending section header missing"
+        );
+    }
+
+    #[test]
+    fn ui_gating_main_list_hides_buttons_for_is_own_row() {
+        // Defense in depth: even if a future query forgot to exclude
+        // own rows from `approvals`, the per-row `is_own` flag must
+        // still suppress the Approve/Reject buttons.
+        use crate::templates::base::{UserContext, VaubanConfig};
+        let mut row = create_test_approval_item("pending", "ssh");
+        row.is_own = true;
+        row.uuid = "leaked-own-uuid".to_string();
+        let t = ApprovalListTemplate {
+            title: "Approvals".to_string(),
+            user: Some(UserContext {
+                uuid: "x".to_string(),
+                username: "x".to_string(),
+                display_name: "x".to_string(),
+                is_superuser: false,
+                is_staff: false,
+            }),
+            vauban: VaubanConfig::default(),
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            approvals: vec![row],
+            own_pending: Vec::new(),
+            status_filter: None,
+            pagination: None,
+        };
+        let html = t.render().expect("render");
+        assert!(
+            !html.contains("/sessions/approvals/leaked-own-uuid/approve"),
+            "is_own row must hide Approve form even in main list"
+        );
+        assert!(
+            !html.contains("/sessions/approvals/leaked-own-uuid/reject"),
+            "is_own row must hide Reject form even in main list"
+        );
+    }
+
+    #[test]
+    fn ui_gating_main_list_renders_buttons_for_other_user_pending() {
+        use crate::templates::base::{UserContext, VaubanConfig};
+        let mut row = create_test_approval_item("pending", "ssh");
+        row.is_own = false;
+        row.uuid = "other-uuid".to_string();
+        let t = ApprovalListTemplate {
+            title: "Approvals".to_string(),
+            user: Some(UserContext {
+                uuid: "x".to_string(),
+                username: "x".to_string(),
+                display_name: "x".to_string(),
+                is_superuser: false,
+                is_staff: false,
+            }),
+            vauban: VaubanConfig::default(),
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            approvals: vec![row],
+            own_pending: Vec::new(),
+            status_filter: None,
+            pagination: None,
+        };
+        let html = t.render().expect("render");
+        assert!(
+            html.contains("/sessions/approvals/other-uuid/approve"),
+            "non-own pending row must expose Approve form"
+        );
+        assert!(
+            html.contains("/sessions/approvals/other-uuid/reject"),
+            "non-own pending row must expose Reject form"
+        );
+    }
+
     #[test]
     fn test_approval_list_template_renders() {
         use crate::templates::base::{UserContext, VaubanConfig};
@@ -354,6 +517,7 @@ mod tests {
             sidebar_content: None,
             header_user: None,
             approvals: vec![create_test_approval_item("pending", "ssh")],
+            own_pending: Vec::new(),
             status_filter: None,
             pagination: Some(Pagination {
                 current_page: 1,

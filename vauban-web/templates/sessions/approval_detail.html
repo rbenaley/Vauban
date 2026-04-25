@@ -38,7 +38,16 @@
                 Approval Request
             </h2>
         </div>
-        {% if approval.is_pending() %}
+        {% if approval.is_pending() && approval.is_own %}
+        <div class="mt-4 md:ml-4 md:mt-0">
+            <span class="inline-flex items-center rounded-md bg-yellow-50 dark:bg-yellow-900/30 px-3 py-2 text-sm font-medium text-yellow-800 dark:text-yellow-200 ring-1 ring-inset ring-yellow-200 dark:ring-yellow-700">
+                <svg class="-ml-0.5 mr-1.5 h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                    <path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd"/>
+                </svg>
+                Your own request &mdash; awaiting peer review
+            </span>
+        </div>
+        {% else if approval.is_pending() %}
         <div class="mt-4 flex md:ml-4 md:mt-0 space-x-3" x-data="csrf">
             <form method="post" action="/sessions/approvals/{{ approval.uuid }}/approve" class="flex items-center gap-2">
                 <input type="hidden" name="csrf_token" x-model="token" />

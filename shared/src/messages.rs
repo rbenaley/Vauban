@@ -324,6 +324,73 @@ pub struct IpcPage<T> {
     pub has_more: bool,
 }
 
+/// Decision kind for the JIT approval workflow. Pinned in `shared`
+/// so every layer (vauban-access policy engine, vauban-web handlers,
+/// templates) speaks the same vocabulary -- no string-typed dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ApprovalDecisionKind {
+    Approve,
+    Reject,
+}
+
+impl ApprovalDecisionKind {
+    /// Canonical SQL/text rendering used by the audit log's
+    /// `decision` column and by structural pin tests.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Approve => "approve",
+            Self::Reject => "reject",
+        }
+    }
+}
+
+/// Structured reason returned when an approval is denied. Pinned in
+/// `shared` (rather than a free-form `String`) so vauban-web can
+/// surface a localised flash message and tests can pin every
+/// adversarial path to a stable variant. The set is intentionally
+/// closed: every new deny path forces an explicit Rust enum
+/// addition + a Tier-2 IPC test update.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ApprovalDenyReason {
+    /// The actor is the requester (separation-of-duties violation).
+    /// Independently re-asserted by a CHECK constraint on
+    /// `proxy_sessions` (`approved_by_id <> user_id` and the
+    /// symmetric reject constraint) so even a malicious vauban-web
+    /// or a raw psql session cannot bypass it.
+    SelfApproval,
+    /// The session is no longer in `status='pending'` (already
+    /// approved, already rejected, expired, ...).
+    SessionNotPending,
+    /// No `proxy_sessions` row matches the supplied UUID.
+    SessionNotFound,
+    /// The underlying `access_rules` row no longer requires
+    /// approval (was edited or deleted between request and
+    /// decision); the request is moot.
+    RuleNoLongerRequiresApproval,
+    /// The requester account has been disabled, soft-deleted, or
+    /// otherwise made ineligible.
+    RequesterDisabled,
+}
+
+impl ApprovalDenyReason {
+    /// Human-readable label for flash messages and audit-log
+    /// rendering. Not used as a primary key by callers (they
+    /// `match` on the variant) but pinned for UI consistency.
+    pub fn as_message(&self) -> &'static str {
+        match self {
+            Self::SelfApproval => {
+                "You cannot decide on your own access request (separation of duties)"
+            }
+            Self::SessionNotPending => "This request has already been processed",
+            Self::SessionNotFound => "Request not found",
+            Self::RuleNoLongerRequiresApproval => {
+                "The underlying access rule no longer requires approval"
+            }
+            Self::RequesterDisabled => "The requester account is no longer active",
+        }
+    }
+}
+
 /// Access control request sent to vauban-access.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AccessRequest {
@@ -493,6 +560,50 @@ pub enum AccessRequest {
         target_service: Service,
         session_id: String,
     },
+
+    /// SECURITY: Pre-flight eligibility check for an admin about to
+    /// approve or reject a JIT access request. Pure read; no DB write.
+    ///
+    /// Centralises the policy decision so handlers in `vauban-web` only
+    /// surface the structured `ApprovalDenyReason` and never duplicate
+    /// the rule logic. The same checks are re-run inside the
+    /// `RecordApprovalDecision` transaction (TOCTOU defense) so a
+    /// successful eligibility response is purely advisory and never
+    /// authoritative.
+    ///
+    /// Wire compatibility: appended after `IssueSessionToken`. New
+    /// variants MUST keep being appended at the end.
+    CheckApprovalEligibility {
+        actor_user_uuid: String,
+        session_uuid: String,
+    },
+
+    /// SECURITY: Atomically persist an approval/rejection decision for
+    /// a pending session AND insert the matching append-only row in
+    /// `approval_audit_log`. Both operations run in a single Diesel
+    /// transaction; any sub-step failure rolls back the whole thing
+    /// and leaves the session in `pending` (no half-state, no orphan
+    /// audit row, fail-closed).
+    ///
+    /// `decision_ip` MUST already be the trusted-proxy-resolved IP
+    /// (callers should pass the value produced by
+    /// `vauban_web::middleware::resolve_client_ip`); `vauban-access`
+    /// has no way to re-derive it.
+    ///
+    /// Wire compatibility: appended after `CheckApprovalEligibility`.
+    RecordApprovalDecision {
+        actor_user_uuid: String,
+        session_uuid: String,
+        decision: ApprovalDecisionKind,
+        /// Approve-only; ignored when `decision == Reject`. When
+        /// `Some`, replaces the value originally copied from the
+        /// access rule. `None` keeps the existing value untouched.
+        duration_override_seconds: Option<i32>,
+        decision_reason: Option<String>,
+        decision_ip: Option<String>,
+        decision_user_agent: Option<String>,
+        request_id: Option<String>,
+    },
 }
 
 /// Access control response from vauban-access.
@@ -537,6 +648,35 @@ pub enum AccessResponse {
     /// "policy denied" from "minter is broken" would let a probe
     /// fingerprint the bastion.
     SessionTokenDenied,
+
+    /// Reply to `AccessRequest::CheckApprovalEligibility`. When
+    /// `allowed == true`, `reason` is `None`; otherwise `reason`
+    /// names the structured deny cause (separation of duties,
+    /// session not pending, ...). Advisory only -- the authoritative
+    /// re-check happens inside `RecordApprovalDecision`'s transaction.
+    ///
+    /// Wire compatibility: appended after `SessionTokenDenied`.
+    ApprovalEligibility {
+        allowed: bool,
+        reason: Option<ApprovalDenyReason>,
+    },
+
+    /// Successful reply to `AccessRequest::RecordApprovalDecision`.
+    /// `audit_log_id` is the primary key of the freshly inserted
+    /// `approval_audit_log` row, useful for cross-referencing with
+    /// the HTTP request_id at the call site.
+    ApprovalRecorded {
+        audit_log_id: i64,
+    },
+
+    /// Fail-closed reply to `AccessRequest::RecordApprovalDecision`.
+    /// Returned when the in-transaction re-check denies (e.g. the
+    /// session was approved by a peer in the meantime, or the
+    /// requester removed the rule, or the actor is the requester).
+    /// The session remains in its previous state.
+    ApprovalDenied {
+        reason: ApprovalDenyReason,
+    },
 }
 
 /// Seed user data for admin commands.

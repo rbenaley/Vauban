@@ -18,7 +18,7 @@
 //! - Policy evaluation and caching
 //! - Authorization decisions
 
-use vauban_access::{db, handlers, virtual_group};
+use vauban_access::{admin_count, db, handlers, virtual_group};
 
 use anyhow::{Context, Result};
 use casbin::prelude::*;
@@ -196,6 +196,18 @@ fn run_service() -> Result<()> {
         // state. Recovery: re-run the migration (it's ON CONFLICT-safe).
         rt.block_on(virtual_group::init_or_die(&pool))
             .context("Boot-time virtual group invariant check failed")?;
+
+        // SECURITY (operational visibility): warn loudly if the
+        // deployment cannot honor separation-of-duties end-to-end
+        // because there is fewer than 2 active admins. The check
+        // is best-effort and never fails the boot -- a degraded
+        // SoD posture is a warning, not a hard error.
+        rt.block_on(admin_count::check_at_boot(&pool));
+        // Periodic re-check survives the sandbox close because
+        // tokio tasks run on the runtime that owns the open DB
+        // socket; no new file descriptors are required.
+        admin_count::spawn_periodic(pool.clone());
+
         Some(pool)
     } else {
         warn!("VAUBAN_DATABASE_URL not set, running without database (dev mode)");

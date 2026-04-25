@@ -15,7 +15,11 @@
 //! Exposes access control logic for in-process use by integration tests.
 //! The binary crate (`main.rs`) is the production entry point.
 
+pub mod admin_count;
 pub mod db;
 pub mod handlers;
 pub mod virtual_group;
 pub use vauban_db::schema;
+
+#[cfg(test)]
+mod approval_audit_tests;

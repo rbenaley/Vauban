@@ -66,6 +66,7 @@ pub(crate) use askama::Template;
 mod access_rules;
 mod asset_groups;
 mod assets;
+mod audit;
 mod dashboard;
 mod groups;
 mod rdp;
@@ -76,6 +77,7 @@ mod users;
 pub use access_rules::*;
 pub use asset_groups::*;
 pub use assets::*;
+pub use audit::*;
 pub use dashboard::*;
 pub use groups::*;
 pub use rdp::*;
@@ -131,12 +133,37 @@ pub(crate) async fn apply_sidebar_rbac(
     let mut base = base.with_perms(perms);
 
     if admin && let Ok(mut conn) = state.db_pool.get().await {
-        let count: i64 = proxy_sessions::table
-            .filter(proxy_sessions::status.eq("pending"))
-            .count()
-            .get_result(&mut conn)
-            .await
-            .unwrap_or(0);
+        // Exclude the viewer's own pending requests from the badge:
+        // separation of duties forbids self-approval, so a number
+        // that included them would be misleading ("you have N to
+        // review", when really you can only review N - own).
+        use crate::schema::users;
+        let viewer_db_id: Option<i32> = match ::uuid::Uuid::parse_str(&auth_user.uuid) {
+            Ok(uuid) => users::table
+                .filter(users::uuid.eq(uuid))
+                .select(users::id)
+                .first::<i32>(&mut conn)
+                .await
+                .ok(),
+            Err(_) => None,
+        };
+
+        let count: i64 = if let Some(id) = viewer_db_id {
+            proxy_sessions::table
+                .filter(proxy_sessions::status.eq("pending"))
+                .filter(proxy_sessions::user_id.ne(id))
+                .count()
+                .get_result(&mut conn)
+                .await
+                .unwrap_or(0)
+        } else {
+            proxy_sessions::table
+                .filter(proxy_sessions::status.eq("pending"))
+                .count()
+                .get_result(&mut conn)
+                .await
+                .unwrap_or(0)
+        };
         base = base.with_pending_approval_count(count);
     }
 

@@ -5,18 +5,21 @@ use diesel::sql_types::Bool as SqlBool;
 use diesel_async::RunQueryDsl;
 use shared::messages::{
     AccessCheckResult, AccessCheckResultEntry, AccessRequest, AccessResponse, AccessRuleData,
-    AccessRuleInfo, AccessibleGroupEntry, AssetGroupInfo, DEFAULT_IPC_PAGE_LIMIT, GroupOption,
-    IpcPage, IpcPageParams, MAX_IPC_PAGE_LIMIT, VaubanGroupInfo,
+    AccessRuleInfo, AccessibleGroupEntry, ApprovalDecisionKind, ApprovalDenyReason,
+    AssetGroupInfo, DEFAULT_IPC_PAGE_LIMIT, GroupOption, IpcPage, IpcPageParams,
+    MAX_IPC_PAGE_LIMIT, VaubanGroupInfo,
 };
 use shared::session_token::{SessionToken, SessionTokenParams, TokenKey};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::collections::HashMap;
+use diesel_async::AsyncConnection;
 use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::db::{DbConnection, DbPool};
 use crate::schema::{
-    access_rules, asset_asset_groups, asset_groups, assets, user_groups, users, vauban_groups,
+    access_rules, approval_audit_log, asset_asset_groups, asset_groups, assets, proxy_sessions,
+    user_groups, users, vauban_groups,
 };
 
 type AccessRuleRow = (
@@ -208,6 +211,37 @@ pub async fn handle_access_request(pool: &DbPool, request: AccessRequest) -> Acc
                  routing bug in vauban-access main loop. Fail-closed deny."
             );
             AccessResponse::SessionTokenDenied
+        }
+
+        AccessRequest::CheckApprovalEligibility {
+            actor_user_uuid,
+            session_uuid,
+        } => handle_check_approval_eligibility(&mut conn, &actor_user_uuid, &session_uuid).await,
+
+        AccessRequest::RecordApprovalDecision {
+            actor_user_uuid,
+            session_uuid,
+            decision,
+            duration_override_seconds,
+            decision_reason,
+            decision_ip,
+            decision_user_agent,
+            request_id,
+        } => {
+            handle_record_approval_decision(
+                &mut conn,
+                ApprovalDecisionInput {
+                    actor_user_uuid: &actor_user_uuid,
+                    session_uuid: &session_uuid,
+                    decision,
+                    duration_override_seconds,
+                    decision_reason,
+                    decision_ip,
+                    decision_user_agent,
+                    request_id,
+                },
+            )
+            .await
         }
     }
 }
@@ -1841,6 +1875,535 @@ async fn handle_list_asset_group_options(
         }
         Err(e) => AccessResponse::Error(format!("Failed to load asset group options: {}", e)),
     }
+}
+
+// ==================== Approval Audit & Separation of Duties ====================
+
+/// Input bundle for [`handle_record_approval_decision`]. Grouped to keep
+/// the function signature manageable and to match the IPC variant 1:1
+/// (every field flows directly from `RecordApprovalDecision`).
+struct ApprovalDecisionInput<'a> {
+    actor_user_uuid: &'a str,
+    session_uuid: &'a str,
+    decision: ApprovalDecisionKind,
+    duration_override_seconds: Option<i32>,
+    decision_reason: Option<String>,
+    decision_ip: Option<String>,
+    decision_user_agent: Option<String>,
+    request_id: Option<String>,
+}
+
+/// Internal snapshot of the bits of `proxy_sessions` + `users` + `assets`
+/// needed both for eligibility checks and for the audit-log row. Resolved
+/// once inside the transaction (or once standalone for the read-only
+/// eligibility request) so we never split the policy across two queries
+/// and never let DB state drift between the read and the write.
+struct PendingSessionSnapshot {
+    session_pk: i32,
+    requester_id: i32,
+    requester_username: String,
+    requester_is_active: bool,
+    requester_is_deleted: bool,
+    asset_uuid: Uuid,
+    asset_name: String,
+    session_type: String,
+    rule_requires_approval: bool,
+    current_max_session_duration: Option<i32>,
+}
+
+/// Read-only pre-flight: would the actor be allowed to approve/reject
+/// the given session right now?
+///
+/// The reply is purely advisory -- the same checks are re-asserted
+/// inside `handle_record_approval_decision`'s transaction. Two
+/// responses can therefore disagree across a TOCTOU window; the
+/// authoritative one is always the in-transaction re-check.
+pub async fn handle_check_approval_eligibility(
+    conn: &mut DbConnection,
+    actor_user_uuid: &str,
+    session_uuid_str: &str,
+) -> AccessResponse {
+    let actor_uuid = match Uuid::parse_str(actor_user_uuid) {
+        Ok(u) => u,
+        Err(_) => {
+            return AccessResponse::ApprovalEligibility {
+                allowed: false,
+                reason: Some(ApprovalDenyReason::SessionNotFound),
+            };
+        }
+    };
+    let session_uuid = match Uuid::parse_str(session_uuid_str) {
+        Ok(u) => u,
+        Err(_) => {
+            return AccessResponse::ApprovalEligibility {
+                allowed: false,
+                reason: Some(ApprovalDenyReason::SessionNotFound),
+            };
+        }
+    };
+
+    let actor_id: i32 = match users::table
+        .filter(users::uuid.eq(actor_uuid))
+        .select(users::id)
+        .first(conn)
+        .await
+    {
+        Ok(id) => id,
+        Err(_) => {
+            return AccessResponse::ApprovalEligibility {
+                allowed: false,
+                reason: Some(ApprovalDenyReason::SessionNotFound),
+            };
+        }
+    };
+
+    match load_pending_session_snapshot(conn, session_uuid).await {
+        Ok(snap) => {
+            if let Some(reason) = evaluate_eligibility(&snap, actor_id) {
+                AccessResponse::ApprovalEligibility {
+                    allowed: false,
+                    reason: Some(reason),
+                }
+            } else {
+                AccessResponse::ApprovalEligibility {
+                    allowed: true,
+                    reason: None,
+                }
+            }
+        }
+        Err(reason) => AccessResponse::ApprovalEligibility {
+            allowed: false,
+            reason: Some(reason),
+        },
+    }
+}
+
+/// Authoritative decision recorder. Performs the eligibility re-check,
+/// the `proxy_sessions` UPDATE and the `approval_audit_log` INSERT in a
+/// single Diesel transaction so a sub-step failure rolls back the
+/// whole thing. Fail-closed: any DB error collapses to
+/// `ApprovalDenied { SessionNotFound }` and leaves the session
+/// untouched.
+async fn handle_record_approval_decision<'a>(
+    conn: &mut DbConnection,
+    input: ApprovalDecisionInput<'a>,
+) -> AccessResponse {
+    let actor_uuid = match Uuid::parse_str(input.actor_user_uuid) {
+        Ok(u) => u,
+        Err(_) => {
+            return AccessResponse::ApprovalDenied {
+                reason: ApprovalDenyReason::SessionNotFound,
+            };
+        }
+    };
+    let session_uuid = match Uuid::parse_str(input.session_uuid) {
+        Ok(u) => u,
+        Err(_) => {
+            return AccessResponse::ApprovalDenied {
+                reason: ApprovalDenyReason::SessionNotFound,
+            };
+        }
+    };
+
+    // Resolve the actor identity OUTSIDE the transaction to avoid an
+    // extra round-trip; the in-transaction re-check still validates
+    // separation-of-duties using the actor_id.
+    let (actor_id, actor_username) = match users::table
+        .filter(users::uuid.eq(actor_uuid))
+        .select((users::id, users::username))
+        .first::<(i32, String)>(conn)
+        .await
+    {
+        Ok(row) => row,
+        Err(_) => {
+            return AccessResponse::ApprovalDenied {
+                reason: ApprovalDenyReason::SessionNotFound,
+            };
+        }
+    };
+
+    let decision = input.decision;
+    let duration_override = input.duration_override_seconds;
+    let decision_reason = input.decision_reason.clone();
+    let decision_ip_str = input.decision_ip.clone();
+    let decision_user_agent = input.decision_user_agent.clone();
+    let request_id = input.request_id.clone();
+    let actor_username_for_audit = actor_username.clone();
+
+    // Wrap into a transaction so the UPDATE and the INSERT are atomic.
+    // Any error inside the closure rolls everything back; we then map
+    // the structured error onto a fail-closed `ApprovalDenied` reply.
+    let outcome: Result<RecordedApproval, ApprovalTxnError> = conn
+        .transaction::<RecordedApproval, ApprovalTxnError, _>(move |conn| {
+            let actor_username = actor_username_for_audit.clone();
+            let decision_reason = decision_reason.clone();
+            let decision_ip_str = decision_ip_str.clone();
+            let decision_user_agent = decision_user_agent.clone();
+            let request_id = request_id.clone();
+            Box::pin(async move {
+                // SECURITY: re-load the snapshot WITHIN the transaction.
+                // Postgres' default REPEATABLE READ is not in play here
+                // (we use READ COMMITTED), but the row-level UPDATE later
+                // takes a row-lock that prevents two concurrent admins
+                // from both winning the race -- the loser sees `updated
+                // == 0` and we fail-closed it as SessionNotPending.
+                let snap = load_pending_session_snapshot(conn, session_uuid)
+                    .await
+                    .map_err(ApprovalTxnError::Eligibility)?;
+
+                if let Some(reason) = evaluate_eligibility(&snap, actor_id) {
+                    return Err(ApprovalTxnError::Eligibility(reason));
+                }
+
+                let now = chrono::Utc::now();
+
+                let updated = match decision {
+                    ApprovalDecisionKind::Approve => {
+                        // Effective duration: explicit override wins;
+                        // otherwise keep the value copied from the rule
+                        // at request time.
+                        let effective_duration = duration_override
+                            .or(snap.current_max_session_duration);
+                        let approval_expires_at = effective_duration
+                            .map(|secs| now + chrono::Duration::seconds(secs as i64));
+
+                        if let Some(secs) = duration_override {
+                            diesel::update(
+                                proxy_sessions::table
+                                    .filter(proxy_sessions::uuid.eq(session_uuid))
+                                    .filter(proxy_sessions::status.eq("pending")),
+                            )
+                            .set((
+                                proxy_sessions::status.eq("approved"),
+                                proxy_sessions::approved_by_id.eq(Some(actor_id)),
+                                proxy_sessions::approved_at.eq(Some(now)),
+                                proxy_sessions::max_session_duration.eq(Some(secs)),
+                                proxy_sessions::expires_at.eq(approval_expires_at),
+                                proxy_sessions::updated_at.eq(now),
+                                proxy_sessions::decision_reason.eq(decision_reason.clone()),
+                            ))
+                            .execute(conn)
+                            .await
+                            .map_err(|e| ApprovalTxnError::Db(e.to_string()))?
+                        } else {
+                            diesel::update(
+                                proxy_sessions::table
+                                    .filter(proxy_sessions::uuid.eq(session_uuid))
+                                    .filter(proxy_sessions::status.eq("pending")),
+                            )
+                            .set((
+                                proxy_sessions::status.eq("approved"),
+                                proxy_sessions::approved_by_id.eq(Some(actor_id)),
+                                proxy_sessions::approved_at.eq(Some(now)),
+                                proxy_sessions::expires_at.eq(approval_expires_at),
+                                proxy_sessions::updated_at.eq(now),
+                                proxy_sessions::decision_reason.eq(decision_reason.clone()),
+                            ))
+                            .execute(conn)
+                            .await
+                            .map_err(|e| ApprovalTxnError::Db(e.to_string()))?
+                        }
+                    }
+                    ApprovalDecisionKind::Reject => diesel::update(
+                        proxy_sessions::table
+                            .filter(proxy_sessions::uuid.eq(session_uuid))
+                            .filter(proxy_sessions::status.eq("pending")),
+                    )
+                    .set((
+                        proxy_sessions::status.eq("rejected"),
+                        proxy_sessions::rejected_by_id.eq(Some(actor_id)),
+                        proxy_sessions::rejected_at.eq(Some(now)),
+                        proxy_sessions::decision_reason.eq(decision_reason.clone()),
+                        proxy_sessions::updated_at.eq(now),
+                    ))
+                    .execute(conn)
+                    .await
+                    .map_err(|e| ApprovalTxnError::Db(e.to_string()))?,
+                };
+
+                if updated == 0 {
+                    // Either someone else won the race (status moved off
+                    // 'pending'), or one of the SoD CHECK constraints
+                    // fired before the row matched. Either way we treat
+                    // it as "no longer pending" -- the in-snapshot
+                    // checks already ruled out the legitimate causes.
+                    return Err(ApprovalTxnError::Eligibility(
+                        ApprovalDenyReason::SessionNotPending,
+                    ));
+                }
+
+                // INSERT the audit row. Snapshot usernames so the trail
+                // survives later user soft-deletion / rename.
+                let decision_ip_inet: Option<ipnetwork::IpNetwork> = decision_ip_str
+                    .as_deref()
+                    .and_then(|s| s.parse::<std::net::IpAddr>().ok())
+                    .map(ipnetwork::IpNetwork::from);
+
+                let audit_id: i64 = diesel::insert_into(approval_audit_log::table)
+                    .values((
+                        approval_audit_log::session_uuid.eq(session_uuid),
+                        approval_audit_log::decision.eq(decision.as_str()),
+                        approval_audit_log::actor_user_id.eq(Some(actor_id)),
+                        approval_audit_log::actor_username.eq(&actor_username),
+                        approval_audit_log::requester_user_id.eq(Some(snap.requester_id)),
+                        approval_audit_log::requester_username.eq(&snap.requester_username),
+                        approval_audit_log::asset_uuid.eq(snap.asset_uuid),
+                        approval_audit_log::asset_name.eq(&snap.asset_name),
+                        approval_audit_log::protocol.eq(Some(snap.session_type.clone())),
+                        approval_audit_log::duration_override_seconds.eq(duration_override),
+                        approval_audit_log::decision_reason.eq(decision_reason.clone()),
+                        approval_audit_log::decision_ip.eq(decision_ip_inet),
+                        approval_audit_log::decision_user_agent.eq(decision_user_agent.clone()),
+                        approval_audit_log::request_id.eq(request_id.clone()),
+                    ))
+                    .returning(approval_audit_log::id)
+                    .get_result(conn)
+                    .await
+                    .map_err(|e| ApprovalTxnError::Db(e.to_string()))?;
+
+                Ok(RecordedApproval {
+                    audit_id,
+                    requester_id: snap.requester_id,
+                    session_pk: snap.session_pk,
+                })
+            })
+        })
+        .await;
+
+    match outcome {
+        Ok(rec) => {
+            info!(
+                session_uuid = %session_uuid,
+                actor_username = %actor_username,
+                decision = %decision.as_str(),
+                audit_id = rec.audit_id,
+                requester_id = rec.requester_id,
+                session_pk = rec.session_pk,
+                "Approval decision recorded"
+            );
+            AccessResponse::ApprovalRecorded {
+                audit_log_id: rec.audit_id,
+            }
+        }
+        Err(ApprovalTxnError::Eligibility(reason)) => {
+            info!(
+                session_uuid = %session_uuid,
+                actor_username = %actor_username,
+                decision = %decision.as_str(),
+                reason = ?reason,
+                "Approval decision denied at in-transaction re-check"
+            );
+            AccessResponse::ApprovalDenied { reason }
+        }
+        Err(ApprovalTxnError::Db(msg)) => {
+            warn!(
+                session_uuid = %session_uuid,
+                actor_username = %actor_username,
+                decision = %decision.as_str(),
+                error = %msg,
+                "Approval decision transaction failed; fail-closed deny"
+            );
+            // If the SoD CHECK constraint fired, surface the structured
+            // self-approval reason so the UI can display the right
+            // message (rather than a generic "not found"). Postgres
+            // emits the constraint name in the error string.
+            let reason = if msg.contains("approval_separation_of_duties")
+                || msg.contains("rejection_separation_of_duties")
+            {
+                ApprovalDenyReason::SelfApproval
+            } else {
+                ApprovalDenyReason::SessionNotFound
+            };
+            AccessResponse::ApprovalDenied { reason }
+        }
+    }
+}
+
+struct RecordedApproval {
+    audit_id: i64,
+    requester_id: i32,
+    session_pk: i32,
+}
+
+enum ApprovalTxnError {
+    Eligibility(ApprovalDenyReason),
+    Db(String),
+}
+
+impl std::fmt::Display for ApprovalTxnError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Eligibility(r) => write!(f, "eligibility:{:?}", r),
+            Self::Db(s) => write!(f, "db:{}", s),
+        }
+    }
+}
+
+impl std::fmt::Debug for ApprovalTxnError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
+}
+
+impl std::error::Error for ApprovalTxnError {}
+
+impl From<diesel::result::Error> for ApprovalTxnError {
+    fn from(e: diesel::result::Error) -> Self {
+        Self::Db(e.to_string())
+    }
+}
+
+/// Single source of truth for "is this session approvable AT ALL". Used
+/// both by the read-only eligibility endpoint and by the in-transaction
+/// re-check inside `handle_record_approval_decision`. Returning an
+/// `ApprovalDenyReason` here MUST stay in sync with the structured
+/// variants surfaced over IPC.
+async fn load_pending_session_snapshot(
+    conn: &mut DbConnection,
+    session_uuid: Uuid,
+) -> Result<PendingSessionSnapshot, ApprovalDenyReason> {
+    // We deliberately query without a JOIN to keep the policy clear:
+    // first the session, then the user, then the asset, then the rule.
+    // Each missing piece maps to a structured deny reason.
+    type SessionRow = (i32, i32, i32, String, String, Option<i32>);
+    let session: SessionRow = match proxy_sessions::table
+        .filter(proxy_sessions::uuid.eq(session_uuid))
+        .select((
+            proxy_sessions::id,
+            proxy_sessions::user_id,
+            proxy_sessions::asset_id,
+            proxy_sessions::status,
+            proxy_sessions::session_type,
+            proxy_sessions::max_session_duration,
+        ))
+        .first(conn)
+        .await
+    {
+        Ok(row) => row,
+        Err(_) => return Err(ApprovalDenyReason::SessionNotFound),
+    };
+
+    let (session_pk, requester_id, asset_pk, status, session_type, current_max) = session;
+
+    if status != "pending" {
+        return Err(ApprovalDenyReason::SessionNotPending);
+    }
+
+    let (requester_username, requester_is_active, requester_is_deleted): (String, bool, bool) =
+        match users::table
+            .filter(users::id.eq(requester_id))
+            .select((users::username, users::is_active, users::is_deleted))
+            .first(conn)
+            .await
+        {
+            Ok(r) => r,
+            Err(_) => return Err(ApprovalDenyReason::SessionNotFound),
+        };
+
+    if !requester_is_active || requester_is_deleted {
+        return Err(ApprovalDenyReason::RequesterDisabled);
+    }
+
+    let (asset_uuid, asset_name): (Uuid, String) = match assets::table
+        .filter(assets::id.eq(asset_pk))
+        .select((assets::uuid, assets::name))
+        .first(conn)
+        .await
+    {
+        Ok(r) => r,
+        Err(_) => return Err(ApprovalDenyReason::SessionNotFound),
+    };
+
+    // Re-evaluate whether ANY rule that grants the requester access to
+    // the asset still requires approval. If every applicable rule was
+    // edited to drop the requirement, the request is moot. We check the
+    // OR-aggregate across rules that could grant this access, mirroring
+    // what `handle_check_access_by_uuid` does.
+    let group_ids: Vec<i32> = match user_groups::table
+        .filter(user_groups::user_id.eq(requester_id))
+        .select(user_groups::group_id)
+        .load(conn)
+        .await
+    {
+        Ok(ids) => ids,
+        Err(_) => return Err(ApprovalDenyReason::SessionNotFound),
+    };
+
+    let asset_group_ids: Vec<i32> = match asset_asset_groups::table
+        .filter(asset_asset_groups::asset_id.eq(asset_pk))
+        .select(asset_asset_groups::asset_group_id)
+        .load(conn)
+        .await
+    {
+        Ok(ids) => ids,
+        Err(_) => return Err(ApprovalDenyReason::SessionNotFound),
+    };
+
+    // Include the virtual "All assets" group when present so a rule
+    // bound to it counts toward this asset.
+    let mut asset_group_ids = asset_group_ids;
+    let virtual_id = crate::virtual_group::virtual_asset_group_id();
+    if virtual_id != crate::virtual_group::UNINITIALIZED_VIRTUAL_ID
+        && !asset_group_ids.contains(&virtual_id)
+    {
+        asset_group_ids.push(virtual_id);
+    }
+
+    let still_requires_approval: bool = if group_ids.is_empty() || asset_group_ids.is_empty() {
+        // No matching rule path -> the request itself has lost its
+        // grant chain. Treat as moot rather than as an SoD issue.
+        false
+    } else {
+        access_rules::table
+            .filter(access_rules::user_group_id.eq_any(&group_ids))
+            .filter(access_rules::asset_group_id.eq_any(&asset_group_ids))
+            .filter(access_rules::is_active.eq(true))
+            .filter(access_rules::require_approval.eq(true))
+            .select(diesel::dsl::count_star())
+            .first::<i64>(conn)
+            .await
+            .map(|c| c > 0)
+            .unwrap_or(false)
+    };
+
+    Ok(PendingSessionSnapshot {
+        session_pk,
+        requester_id,
+        requester_username,
+        requester_is_active,
+        requester_is_deleted,
+        asset_uuid,
+        asset_name,
+        session_type,
+        rule_requires_approval: still_requires_approval,
+        current_max_session_duration: current_max,
+    })
+}
+
+/// Pure policy check: given a snapshot and an actor, return `Some(reason)`
+/// if the actor cannot decide on this request, `None` otherwise.
+///
+/// Centralised here so the read-only eligibility endpoint and the
+/// in-transaction re-check share the same predicate -- a single test
+/// (Tier 3) covers both call sites.
+fn evaluate_eligibility(
+    snap: &PendingSessionSnapshot,
+    actor_id: i32,
+) -> Option<ApprovalDenyReason> {
+    if !snap.requester_is_active || snap.requester_is_deleted {
+        return Some(ApprovalDenyReason::RequesterDisabled);
+    }
+    if snap.requester_id == actor_id {
+        // SECURITY (separation of duties): the actor is the requester.
+        // Even if they have admin_view, they cannot decide on their own
+        // request. The DB CHECK constraints provide a defense-in-depth
+        // layer in case this path is ever bypassed.
+        return Some(ApprovalDenyReason::SelfApproval);
+    }
+    if !snap.rule_requires_approval {
+        return Some(ApprovalDenyReason::RuleNoLongerRequiresApproval);
+    }
+    None
 }
 
 #[cfg(test)]

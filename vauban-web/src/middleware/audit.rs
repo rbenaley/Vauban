@@ -48,13 +48,22 @@ pub fn format_apache_combined(log: &AuditLog) -> String {
     )
 }
 
+/// Per-request correlation token, surfaced in the audit log line and
+/// propagated to downstream IPC payloads (notably the
+/// `approval_audit_log.request_id` column for the JIT approval flow).
+///
+/// Wrapped in a newtype so handlers can `.get::<RequestId>()` on the
+/// request extensions without colliding with any other `String` ext.
+#[derive(Debug, Clone)]
+pub struct RequestId(pub String);
+
 /// Audit middleware that logs requests.
 ///
 /// Proxy headers (`X-Forwarded-For`, `X-Real-IP`) are only trusted when the
 /// TCP connection originates from an address in `config.security.trusted_proxies`.
 pub async fn audit_middleware(
     State(state): State<AppState>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
     let start = Instant::now();
@@ -84,8 +93,11 @@ pub async fn audit_middleware(
         .and_then(|h| h.to_str().ok())
         .map(|s| s.to_string());
 
-    // Generate request ID
+    // Generate request ID and inject it into request extensions so
+    // downstream handlers can correlate audit events with this exact
+    // request line.
     let request_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
+    request.extensions_mut().insert(RequestId(request_id.clone()));
 
     let user = request.extensions().get::<AuthUser>().cloned();
 

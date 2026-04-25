@@ -45,6 +45,33 @@ diesel::table! {
 }
 
 diesel::table! {
+    approval_audit_log (id) {
+        id -> Int8,
+        session_uuid -> Uuid,
+        #[max_length = 8]
+        decision -> Varchar,
+        actor_user_id -> Nullable<Int4>,
+        #[max_length = 150]
+        actor_username -> Varchar,
+        requester_user_id -> Nullable<Int4>,
+        #[max_length = 150]
+        requester_username -> Varchar,
+        asset_uuid -> Uuid,
+        #[max_length = 200]
+        asset_name -> Varchar,
+        #[max_length = 10]
+        protocol -> Nullable<Varchar>,
+        duration_override_seconds -> Nullable<Int4>,
+        decision_reason -> Nullable<Text>,
+        decision_ip -> Nullable<Inet>,
+        decision_user_agent -> Nullable<Text>,
+        #[max_length = 64]
+        request_id -> Nullable<Varchar>,
+        created_at -> Timestamptz,
+    }
+}
+
+diesel::table! {
     asset_asset_groups (asset_id, asset_group_id) {
         asset_id -> Int4,
         asset_group_id -> Int4,
@@ -154,6 +181,9 @@ diesel::table! {
         approved_at -> Nullable<Timestamptz>,
         max_session_duration -> Nullable<Int4>,
         expires_at -> Nullable<Timestamptz>,
+        rejected_by_id -> Nullable<Int4>,
+        rejected_at -> Nullable<Timestamptz>,
+        decision_reason -> Nullable<Text>,
     }
 }
 
@@ -236,6 +266,7 @@ diesel::joinable!(user_groups -> vauban_groups (group_id));
 diesel::allow_tables_to_appear_in_same_query!(
     access_rules,
     api_keys,
+    approval_audit_log,
     asset_asset_groups,
     asset_groups,
     assets,

@@ -10,7 +10,8 @@ use shared::ipc::IpcChannel;
 use shared::messages::{
     AccessCheckResult, AccessCheckResultEntry, AccessRequest as AccessReq,
     AccessResponse as AccessResp, AccessRuleData, AccessRuleInfo, AccessibleGroupEntry,
-    AssetGroupInfo, GroupOption, IpcPage, IpcPageParams, Message, RbacResult, VaubanGroupInfo,
+    ApprovalDecisionKind, ApprovalDenyReason, AssetGroupInfo, GroupOption, IpcPage,
+    IpcPageParams, Message, RbacResult, VaubanGroupInfo,
 };
 use std::collections::HashMap;
 use std::io;
@@ -248,6 +249,74 @@ impl AccessIpcClient {
             AccessResp::Error(e) => Err(AppError::Ipc(e)),
             _ => Err(AppError::Ipc(
                 "unexpected response for CheckAccessByUuid".into(),
+            )),
+        }
+    }
+
+    /// Read-only pre-flight: ask vauban-access whether `actor_user_uuid`
+    /// is allowed to decide on the pending request `session_uuid`.
+    ///
+    /// Advisory only -- the authoritative re-check happens inside
+    /// [`Self::record_approval_decision`]'s transaction.
+    pub async fn check_approval_eligibility(
+        &self,
+        actor_user_uuid: &str,
+        session_uuid: &str,
+    ) -> AppResult<(bool, Option<ApprovalDenyReason>)> {
+        let resp = self
+            .send_access_request(AccessReq::CheckApprovalEligibility {
+                actor_user_uuid: actor_user_uuid.to_string(),
+                session_uuid: session_uuid.to_string(),
+            })
+            .await?;
+        match resp {
+            AccessResp::ApprovalEligibility { allowed, reason } => Ok((allowed, reason)),
+            AccessResp::Error(e) => Err(AppError::Ipc(e)),
+            _ => Err(AppError::Ipc(
+                "unexpected response for CheckApprovalEligibility".into(),
+            )),
+        }
+    }
+
+    /// Atomically persist a JIT approval/rejection decision and the
+    /// matching append-only audit row in vauban-access. Returns the
+    /// `audit_log_id` on success, or the structured deny reason when
+    /// the in-transaction re-check refused.
+    ///
+    /// `decision_ip` MUST already be the trusted-proxy-resolved client
+    /// IP (see `crate::middleware::resolve_client_ip`). Forwarding raw
+    /// `peer_addr` from the socket would let a request from behind a
+    /// reverse proxy spoof its origin in the audit trail.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn record_approval_decision(
+        &self,
+        actor_user_uuid: &str,
+        session_uuid: &str,
+        decision: ApprovalDecisionKind,
+        duration_override_seconds: Option<i32>,
+        decision_reason: Option<String>,
+        decision_ip: Option<String>,
+        decision_user_agent: Option<String>,
+        request_id: Option<String>,
+    ) -> AppResult<Result<i64, ApprovalDenyReason>> {
+        let resp = self
+            .send_access_request(AccessReq::RecordApprovalDecision {
+                actor_user_uuid: actor_user_uuid.to_string(),
+                session_uuid: session_uuid.to_string(),
+                decision,
+                duration_override_seconds,
+                decision_reason,
+                decision_ip,
+                decision_user_agent,
+                request_id,
+            })
+            .await?;
+        match resp {
+            AccessResp::ApprovalRecorded { audit_log_id } => Ok(Ok(audit_log_id)),
+            AccessResp::ApprovalDenied { reason } => Ok(Err(reason)),
+            AccessResp::Error(e) => Err(AppError::Ipc(e)),
+            _ => Err(AppError::Ipc(
+                "unexpected response for RecordApprovalDecision".into(),
             )),
         }
     }

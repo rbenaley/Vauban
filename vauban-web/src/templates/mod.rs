@@ -1,5 +1,6 @@
 pub mod accounts;
 pub mod assets;
+pub mod audit;
 /// VAUBAN Web - Askama templates module.
 ///
 /// This module contains all template structs and shared types for Askama templates.
