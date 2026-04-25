@@ -30,7 +30,21 @@ ALTER TABLE proxy_sessions
     ADD COLUMN rejected_at TIMESTAMPTZ,
     ADD COLUMN decision_reason TEXT NULL;
 
--- 2) Separation of Duties: the approver/rejecter must be a different user
+-- 2) Backfill: clear self-approval / self-rejection references created
+--    before SoD was enforced. These are historical rows where the admin
+--    approved their own request (legal at the time). We NULL-out the
+--    actor FK so the CHECK below can be applied cleanly. The session
+--    status and timestamps are preserved — only the "who decided" link
+--    is severed for those legacy rows.
+UPDATE proxy_sessions
+    SET approved_by_id = NULL
+    WHERE approved_by_id IS NOT NULL AND approved_by_id = user_id;
+
+UPDATE proxy_sessions
+    SET rejected_by_id = NULL
+    WHERE rejected_by_id IS NOT NULL AND rejected_by_id = user_id;
+
+-- 3) Separation of Duties: the approver/rejecter must be a different user
 --    than the requester. Both constraints accept NULL on the actor side
 --    (no decision yet) but reject any row that would make the actor and
 --    the requester the same person.
@@ -42,7 +56,7 @@ ALTER TABLE proxy_sessions
     ADD CONSTRAINT rejection_separation_of_duties
     CHECK (rejected_by_id IS NULL OR rejected_by_id <> user_id);
 
--- 3) Append-only audit log. One row per approval decision (approve or
+-- 4) Append-only audit log. One row per approval decision (approve or
 --    reject). Snapshots the actor/requester usernames and asset name so
 --    the trail survives later user/asset deletions.
 CREATE TABLE approval_audit_log (
@@ -64,23 +78,46 @@ CREATE TABLE approval_audit_log (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- 4) Append-only invariant: any UPDATE or DELETE on this table raises.
+-- 5) Append-only invariant: any UPDATE or DELETE on this table raises.
 --    Insertions are the only legitimate write path. Even DBAs without
 --    superuser bypass cannot rewrite the audit history without explicitly
 --    DROP'ing the trigger first (a loud, auditable action by itself).
+--
+--    Exception: FK cascaded SET NULL (user deletion) is allowed because
+--    it only touches the nullable FK columns (actor_user_id,
+--    requester_user_id) without altering any audit-significant field.
+--    The snapshotted usernames and all other fields are preserved.
 CREATE OR REPLACE FUNCTION block_approval_audit_log_mutation()
 RETURNS TRIGGER AS $$
 BEGIN
-    IF TG_OP = 'UPDATE' THEN
-        RAISE EXCEPTION
-            'approval_audit_log is append-only (UPDATE on id=% rejected)',
-            OLD.id
-            USING ERRCODE = 'check_violation';
-    ELSIF TG_OP = 'DELETE' THEN
+    IF TG_OP = 'DELETE' THEN
         RAISE EXCEPTION
             'approval_audit_log is append-only (DELETE on id=% rejected)',
             OLD.id
             USING ERRCODE = 'check_violation';
+    ELSIF TG_OP = 'UPDATE' THEN
+        -- Allow FK cascaded SET NULL on the two user-id columns.
+        -- Every other column change is blocked.
+        IF ROW(NEW.id, NEW.session_uuid, NEW.decision,
+               NEW.actor_username, NEW.requester_username,
+               NEW.asset_uuid, NEW.asset_name, NEW.protocol,
+               NEW.duration_override_seconds, NEW.decision_reason,
+               NEW.decision_ip, NEW.decision_user_agent,
+               NEW.request_id, NEW.created_at)
+           IS DISTINCT FROM
+           ROW(OLD.id, OLD.session_uuid, OLD.decision,
+               OLD.actor_username, OLD.requester_username,
+               OLD.asset_uuid, OLD.asset_name, OLD.protocol,
+               OLD.duration_override_seconds, OLD.decision_reason,
+               OLD.decision_ip, OLD.decision_user_agent,
+               OLD.request_id, OLD.created_at)
+        THEN
+            RAISE EXCEPTION
+                'approval_audit_log is append-only (UPDATE on id=% rejected)',
+                OLD.id
+                USING ERRCODE = 'check_violation';
+        END IF;
+        RETURN NEW;
     END IF;
     RETURN NULL;
 END;
@@ -94,7 +131,7 @@ CREATE TRIGGER block_approval_audit_log_delete
     BEFORE DELETE ON approval_audit_log
     FOR EACH ROW EXECUTE FUNCTION block_approval_audit_log_mutation();
 
--- 5) Indexes for the typical query patterns:
+-- 6) Indexes for the typical query patterns:
 --    * by session (the detail page joins audit rows back to a session)
 --    * by actor (the /audit/approvals page filters by approver)
 --    * by requester (compliance: "who approved my access?")

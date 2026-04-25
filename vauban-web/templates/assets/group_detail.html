@@ -185,7 +185,7 @@
                     </div>
                     <div class="flex flex-wrap items-center gap-2 sm:gap-3 sm:flex-shrink-0">
                         <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium {{ asset.status_class() }}">
-                            {{ asset.status }}
+                            {{ asset.status|capitalize }}
                         </span>
                         {# BUG-12 / issue #19: HTMX-driven removal with styled-modal confirmation. #}
                         {# Reversible operation (re-add the asset); message reflects that. #}

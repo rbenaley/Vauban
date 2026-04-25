@@ -405,10 +405,17 @@ pub async fn asset_list(
     // Skipping this step for admins is what made the row render the blue
     // "Connect" button on assets that actually require approval — see the
     // top-of-handler comment.
+    //
+    // NOTE: the virtual "All assets" group has no rows in `asset_asset_groups`
+    // (enforced by a DB trigger). An INNER JOIN through that table silently
+    // misses any access rule whose `asset_group_id` is the virtual id, causing
+    // `requires_request` to be false even though approval is required. We
+    // handle this with a separate query that detects such rules and, when
+    // found, marks every asset on the current page as requiring approval.
     let (approval_set, approved_set) = {
         use crate::schema::{access_rules, asset_asset_groups, user_groups};
 
-        let approval_ids: Vec<i32> = access_rules::table
+        let mut approval_ids: Vec<i32> = access_rules::table
             .inner_join(
                 asset_asset_groups::table
                     .on(asset_asset_groups::asset_group_id.eq(access_rules::asset_group_id)),
@@ -425,6 +432,28 @@ pub async fn asset_list(
             .load(&mut conn)
             .await
             .unwrap_or_default();
+
+        // Supplementary check for the virtual "All assets" group.
+        // If any active rule ties this user (via their groups) to the virtual
+        // asset group AND requires approval, every asset on the page is covered.
+        let virtual_id = crate::services::virtual_group::virtual_asset_group_id();
+        let virtual_approval_count: i64 = access_rules::table
+            .inner_join(
+                user_groups::table.on(user_groups::group_id.eq(access_rules::user_group_id)),
+            )
+            .filter(user_groups::user_id.eq(user_internal_id))
+            .filter(access_rules::is_active.eq(true))
+            .filter(access_rules::require_approval.eq(true))
+            .filter(access_rules::asset_group_id.eq(virtual_id))
+            .select(diesel::dsl::count_star())
+            .first(&mut conn)
+            .await
+            .unwrap_or(0);
+        if virtual_approval_count > 0 {
+            approval_ids.extend_from_slice(&displayed_asset_ids);
+            approval_ids.sort_unstable();
+            approval_ids.dedup();
+        }
 
         let approved_ids: Vec<i32> = proxy_sessions::table
             .filter(proxy_sessions::user_id.eq(user_internal_id))

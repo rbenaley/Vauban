@@ -2196,11 +2196,16 @@ async fn handle_record_approval_decision<'a>(
             AccessResponse::ApprovalDenied { reason }
         }
         Err(ApprovalTxnError::Db(msg)) => {
-            warn!(
+            // Log the real DB error at ERROR level so operators can
+            // diagnose missing migrations, schema drift, etc. The
+            // original code only logged at WARN and then returned
+            // the generic "SessionNotFound", which masks the true
+            // cause (e.g. missing approval_audit_log table).
+            tracing::error!(
                 session_uuid = %session_uuid,
                 actor_username = %actor_username,
                 decision = %decision.as_str(),
-                error = %msg,
+                db_error = %msg,
                 "Approval decision transaction failed; fail-closed deny"
             );
             // If the SoD CHECK constraint fired, surface the structured
@@ -2730,7 +2735,7 @@ mod tests {
         .expect("test-prune: DELETE vauban_groups failed");
 
         diesel::sql_query(format!(
-            "DELETE FROM asset_groups WHERE id NOT IN \
+            "DELETE FROM asset_groups WHERE kind = 'static' AND id NOT IN \
              (SELECT id FROM asset_groups ORDER BY id DESC LIMIT {MAX_TEST_ASSET_GROUPS})"
         ))
         .execute(&mut conn)

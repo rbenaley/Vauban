@@ -661,14 +661,33 @@ document.addEventListener('DOMContentLoaded', function () {
 
     // Auto-open justification modal when landing on asset detail with #justify hash
     // (SEC-03: triggered from asset list "Connect" button when justification is required)
+    //
+    // Defense-in-depth: if the asset actually requires approval and no approved
+    // session exists yet (e.g., the user arrived here via a stale "Connect" link
+    // before the list page was refreshed), redirect to #request-access instead so
+    // the JIT modal opens and the user can submit the correct request form.
     if (window.location.hash === '#justify') {
         history.replaceState(null, '', window.location.pathname + window.location.search);
-        var waitForJustify = setInterval(function () {
-            if (typeof Alpine !== 'undefined' && Alpine.store('justificationModal')) {
-                Alpine.store('justificationModal').show = true;
-                clearInterval(waitForJustify);
-            }
-        }, 50);
-        setTimeout(function () { clearInterval(waitForJustify); }, 3000);
+        var policyEl = document.getElementById('asset-policy-state');
+        var requiresApproval = policyEl && policyEl.dataset.requireApproval === 'true';
+        var hasApproved = policyEl && policyEl.dataset.hasApprovedSession === 'true';
+        if (requiresApproval && !hasApproved) {
+            // Asset needs approval first — open the access-request modal instead.
+            var waitForAccess = setInterval(function () {
+                if (typeof Alpine !== 'undefined' && Alpine.store('accessModal')) {
+                    Alpine.store('accessModal').show = true;
+                    clearInterval(waitForAccess);
+                }
+            }, 50);
+            setTimeout(function () { clearInterval(waitForAccess); }, 3000);
+        } else {
+            var waitForJustify = setInterval(function () {
+                if (typeof Alpine !== 'undefined' && Alpine.store('justificationModal')) {
+                    Alpine.store('justificationModal').show = true;
+                    clearInterval(waitForJustify);
+                }
+            }, 50);
+            setTimeout(function () { clearInterval(waitForJustify); }, 3000);
+        }
     }
 });

@@ -8,7 +8,8 @@ use crate::fixtures::{
     create_approved_session, create_expired_approved_session, create_jit_session,
     create_simple_admin_user, create_simple_ssh_asset, create_simple_user,
     create_test_access_rule_with_constraints, create_test_asset_group, create_test_asset_in_group,
-    create_test_session, create_test_vauban_group, get_asset_uuid, unique_name,
+    create_test_session, create_test_vauban_group, get_asset_uuid, setup_approval_rule,
+    unique_name,
 };
 use axum::http::header::COOKIE;
 use diesel::{BoolExpressionMethods, ExpressionMethods, QueryDsl};
@@ -103,6 +104,7 @@ async fn test_approve_session_updates_status() {
 
     let asset_name = unique_name("jit_asset_approve");
     let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
+    setup_approval_rule(&mut conn, user_id, asset_id).await;
     let session_uuid = create_approval_request(&mut conn, user_id, asset_id).await;
 
     let token = app
@@ -164,6 +166,7 @@ async fn test_reject_session_updates_status() {
 
     let asset_name = unique_name("jit_asset_reject");
     let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
+    setup_approval_rule(&mut conn, user_id, asset_id).await;
     let session_uuid = create_approval_request(&mut conn, user_id, asset_id).await;
 
     let token = app
@@ -716,6 +719,7 @@ async fn test_approve_with_duration_override_updates_max_session_duration() {
 
     let asset_name = unique_name("jit_ast_dur_ovr");
     let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
+    setup_approval_rule(&mut conn, user_id, asset_id).await;
     let session_uuid =
         create_approval_request_with_duration(&mut conn, user_id, asset_id, Some(3600)).await;
 
@@ -773,6 +777,7 @@ async fn test_approve_without_duration_keeps_default() {
 
     let asset_name = unique_name("jit_ast_dur_keep");
     let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
+    setup_approval_rule(&mut conn, user_id, asset_id).await;
     let session_uuid =
         create_approval_request_with_duration(&mut conn, user_id, asset_id, Some(3600)).await;
 
@@ -826,6 +831,7 @@ async fn test_approve_with_invalid_duration_rejected() {
 
     let asset_name = unique_name("jit_ast_dur_inv");
     let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
+    setup_approval_rule(&mut conn, user_id, asset_id).await;
     let session_uuid =
         create_approval_request_with_duration(&mut conn, user_id, asset_id, Some(3600)).await;
 
@@ -967,6 +973,7 @@ async fn test_approve_with_empty_duration_value_succeeds() {
 
     let asset_name = unique_name("jit_ast_empty_dur");
     let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
+    setup_approval_rule(&mut conn, user_id, asset_id).await;
     let session_uuid =
         create_approval_request_with_duration(&mut conn, user_id, asset_id, Some(900)).await;
 
@@ -1028,6 +1035,7 @@ async fn test_approve_with_no_duration_fields_succeeds() {
 
     let asset_name = unique_name("jit_ast_no_dur_f");
     let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
+    setup_approval_rule(&mut conn, user_id, asset_id).await;
     let session_uuid =
         create_approval_request_with_duration(&mut conn, user_id, asset_id, Some(1800)).await;
 
@@ -1079,6 +1087,7 @@ async fn test_approve_unlimited_with_empty_duration_value_succeeds() {
 
     let asset_name = unique_name("jit_ast_unlim_empty");
     let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
+    setup_approval_rule(&mut conn, user_id, asset_id).await;
     let session_uuid =
         create_approval_request_with_duration(&mut conn, user_id, asset_id, None).await;
 
@@ -1211,6 +1220,7 @@ async fn test_approve_with_non_numeric_duration_returns_422() {
 
     let asset_name = unique_name("jit_ast_nan_dur");
     let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
+    setup_approval_rule(&mut conn, user_id, asset_id).await;
     let session_uuid =
         create_approval_request_with_duration(&mut conn, user_id, asset_id, Some(900)).await;
 
@@ -1273,6 +1283,7 @@ async fn test_approve_sets_expires_at_on_approved_session() {
 
     let asset_name = unique_name("jit_ast_exp_set");
     let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
+    setup_approval_rule(&mut conn, user_id, asset_id).await;
     let session_uuid =
         create_approval_request_with_duration(&mut conn, user_id, asset_id, Some(900)).await;
 
@@ -1331,6 +1342,7 @@ async fn test_approve_with_override_sets_correct_expires_at() {
 
     let asset_name = unique_name("jit_ast_ovr_exp");
     let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, admin_id).await;
+    setup_approval_rule(&mut conn, user_id, asset_id).await;
     let session_uuid =
         create_approval_request_with_duration(&mut conn, user_id, asset_id, Some(900)).await;
 

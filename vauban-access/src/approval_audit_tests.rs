@@ -340,23 +340,21 @@ async fn db_audit_row_snapshot_survives_user_soft_deletion() {
 }
 
 #[tokio::test]
-async fn db_user_hard_delete_blocked_when_audit_row_exists() {
-    // Deleting a user that owns audit rows would fire the FK ON DELETE
-    // SET NULL action, which itself UPDATEs the audit row -- and the
-    // append-only trigger blocks ANY UPDATE. The end result is that
-    // history cannot be erased even by a privileged DBA via a plain
-    // `DELETE FROM users`. Hard-delete must therefore be preceded by
-    // an explicit DROP of the trigger (a loud, auditable action). This
-    // test pins that property so a future migration that loosens the
-    // trigger is forced to update the test (and reconsider the
-    // tradeoff).
+async fn db_user_hard_delete_cascades_set_null_on_audit_log() {
+    // Deleting a user fires the FK ON DELETE SET NULL cascade, which
+    // UPDATEs only the nullable FK columns (actor_user_id,
+    // requester_user_id). The append-only trigger allows this
+    // narrow mutation so that user lifecycle management does not
+    // require dropping the trigger. The snapshotted usernames
+    // and all audit-significant fields remain intact.
     let p = pool().await;
     let requester = insert_user(&p, &unique("req_hd")).await;
     let approver = insert_user(&p, &unique("apr_hd")).await;
     let mut conn = p.get().await.unwrap();
+    let audit_session_uuid = Uuid::new_v4();
     diesel::insert_into(approval_audit_log::table)
         .values((
-            approval_audit_log::session_uuid.eq(Uuid::new_v4()),
+            approval_audit_log::session_uuid.eq(audit_session_uuid),
             approval_audit_log::decision.eq("approve"),
             approval_audit_log::actor_user_id.eq(Some(approver)),
             approval_audit_log::actor_username.eq("apr"),
@@ -368,17 +366,29 @@ async fn db_user_hard_delete_blocked_when_audit_row_exists() {
         .execute(&mut conn)
         .await
         .unwrap();
-    let res = diesel::delete(users::table.filter(users::id.eq(requester)))
+    // Hard-delete the requester — FK cascade SETs NULL on the audit row.
+    diesel::delete(users::table.filter(users::id.eq(requester)))
         .execute(&mut conn)
-        .await;
+        .await
+        .expect("hard-delete of user must succeed (FK SET NULL allowed)");
+
+    // The audit row survives with the FK NULLed but the snapshot intact.
+    let (req_id, req_name): (Option<i32>, String) = approval_audit_log::table
+        .filter(approval_audit_log::session_uuid.eq(audit_session_uuid))
+        .select((
+            approval_audit_log::requester_user_id,
+            approval_audit_log::requester_username,
+        ))
+        .first(&mut conn)
+        .await
+        .unwrap();
     assert!(
-        res.is_err(),
-        "hard-delete of user with audit rows must be blocked"
+        req_id.is_none(),
+        "requester FK must be NULLed after user delete"
     );
-    let msg = format!("{:?}", res.unwrap_err()).to_lowercase();
-    assert!(
-        msg.contains("append-only"),
-        "the block must come from the audit-log trigger, got: {msg}"
+    assert_eq!(
+        req_name, "req",
+        "snapshotted username must survive user delete"
     );
 }
 
@@ -498,7 +508,7 @@ async fn ipc_record_decision_rejects_malformed_uuids() {
 //   T5 dual-decision race    -> here: t5_second_decision_after_approval_loses
 //   T6 silent reject         -> here: t5_reject_decision_writes_audit_row
 //   T7 rebound after reject  -> here: t5_second_decision_after_reject_loses
-//   T8 user-delete cascade   -> Tier 1: db_user_hard_delete_blocked_*
+//   T8 user-delete cascade   -> Tier 1: db_user_hard_delete_cascades_set_null_*
 //   T9 stolen API key        -> session-token gate (separate test suite)
 // =====================================================================
 

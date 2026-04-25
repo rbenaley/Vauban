@@ -179,4 +179,68 @@ mod tests {
         let result = template.render();
         assert!(result.is_ok(), "AssetDetailTemplate should render");
     }
+
+    // ---- asset-policy-state div tests (JS hash-router defense-in-depth) ----
+
+    fn asset_detail_template(require_approval: bool, has_approved: bool) -> AssetDetailTemplate {
+        use crate::templates::base::{UserContext, VaubanConfig};
+        let mut asset = create_test_asset_detail("online", "ssh");
+        asset.require_approval = require_approval;
+        asset.has_approved_session = has_approved;
+        AssetDetailTemplate {
+            title: "Asset".to_string(),
+            user: Some(UserContext {
+                uuid: "u".to_string(),
+                username: "u".to_string(),
+                display_name: "u".to_string(),
+                is_superuser: false,
+                is_staff: false,
+            }),
+            vauban: VaubanConfig::default(),
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            asset,
+        }
+    }
+
+    #[test]
+    fn policy_state_div_present_with_approval_flag() {
+        let html = asset_detail_template(true, false).render().expect("render");
+        assert!(
+            html.contains("id=\"asset-policy-state\""),
+            "must contain policy-state div for JS hash-router"
+        );
+        assert!(
+            html.contains("data-require-approval=\"true\""),
+            "data-require-approval must reflect the policy"
+        );
+        assert!(
+            html.contains("data-has-approved-session=\"false\""),
+            "data-has-approved-session must reflect unapproved state"
+        );
+    }
+
+    #[test]
+    fn policy_state_div_reflects_approved_session() {
+        let html = asset_detail_template(true, true).render().expect("render");
+        assert!(
+            html.contains("data-require-approval=\"true\""),
+            "approval still required (rule exists)"
+        );
+        assert!(
+            html.contains("data-has-approved-session=\"true\""),
+            "approved session must be reflected"
+        );
+    }
+
+    #[test]
+    fn policy_state_no_approval_required() {
+        let html = asset_detail_template(false, false).render().expect("render");
+        assert!(
+            html.contains("data-require-approval=\"false\""),
+            "no approval required"
+        );
+    }
 }

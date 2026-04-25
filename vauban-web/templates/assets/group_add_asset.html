@@ -144,7 +144,7 @@
                                     <span class="mt-1 flex items-center text-sm text-gray-500 dark:text-gray-400">{{ asset.hostname }}</span>
                                     <span class="mt-1 flex items-center text-sm">
                                         <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {{ asset.status_class() }}">
-                                            {{ asset.status }}
+                                            {{ asset.status|capitalize }}
                                         </span>
                                     </span>
                                 </span>
@@ -171,7 +171,7 @@
                                     <span class="mt-1 flex items-center text-sm text-gray-400 dark:text-gray-500">{{ asset.hostname }}</span>
                                     <span class="mt-1 flex items-center text-sm">
                                         <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-400">
-                                            {{ asset.status }}
+                                            {{ asset.status|capitalize }}
                                         </span>
                                     </span>
                                     <span class="mt-2 flex items-center text-xs text-amber-600 dark:text-amber-400">

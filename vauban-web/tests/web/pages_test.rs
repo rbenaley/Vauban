@@ -589,19 +589,23 @@ async fn test_approval_list_status_filter_all_statuses() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    // Create a user and assets for multiple approval requests
-    let username = unique_name("status_filter_user");
-    let user_id = create_simple_user(&mut conn, &username).await;
-    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+    // The viewer (admin) is distinct from the requester so that SoD
+    // filtering does not hide all rows into the "own pending" section.
+    let viewer_name = unique_name("status_filter_viewer");
+    let viewer_id = create_simple_user(&mut conn, &viewer_name).await;
+    let viewer_uuid = get_user_uuid(&mut conn, viewer_id).await;
+
+    let requester_name = unique_name("status_filter_req");
+    let requester_id = create_simple_user(&mut conn, &requester_name).await;
 
     // Create approval requests with different statuses
     let statuses = ["pending", "approved", "rejected", "expired", "orphaned"];
 
     for (i, status) in statuses.iter().enumerate() {
         let asset_id =
-            create_simple_ssh_asset(&mut conn, &format!("status-filter-asset-{}", i), user_id)
+            create_simple_ssh_asset(&mut conn, &format!("status-filter-asset-{}", i), requester_id)
                 .await;
-        let approval_uuid = create_approval_request(&mut conn, user_id, asset_id).await;
+        let approval_uuid = create_approval_request(&mut conn, requester_id, asset_id).await;
 
         // Update the status
         use vauban_web::schema::proxy_sessions::dsl as ps;
@@ -613,7 +617,7 @@ async fn test_approval_list_status_filter_all_statuses() {
     }
 
     let token = app
-        .generate_test_token(&user_uuid.to_string(), &username, true, true)
+        .generate_test_token(&viewer_uuid.to_string(), &viewer_name, true, true)
         .await;
 
     // Test 1: No filter - should show all approvals

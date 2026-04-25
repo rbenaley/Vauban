@@ -50,7 +50,7 @@
                     {{ asset.name }}
                 </h2>
                 <span class="ml-3 inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium {{ asset.status_class() }}">
-                    {{ asset.status }}
+                    {{ asset.status|capitalize }}
                 </span>
             </div>
         </div>
@@ -158,7 +158,7 @@
                     <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Status</dt>
                     <dd class="mt-1">
                         <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium {{ asset.status_class() }}">
-                            {{ asset.status }}
+                            {{ asset.status|capitalize }}
                         </span>
                     </dd>
                 </div>
@@ -303,5 +303,12 @@
 
     {% include "sessions/access_request_modal.html" %}
     {% include "sessions/justification_modal.html" %}
+
+    {# Publish policy state so the JS hash-router can redirect #justify to   #}
+    {# #request-access when approval is required but not yet granted.         #}
+    <div id="asset-policy-state"
+         data-require-approval="{{ asset.require_approval }}"
+         data-has-approved-session="{{ asset.has_approved_session }}"
+         hidden></div>
 </div>
 {% endblock %}

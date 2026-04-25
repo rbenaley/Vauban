@@ -23,6 +23,12 @@ pub struct ApprovalDetail {
     /// hides Approve/Reject controls in that case (separation of
     /// duties — see `ApprovalListItem::is_own`).
     pub is_own: bool,
+    /// Username of the admin who approved or rejected this request (if decided).
+    pub decided_by: Option<String>,
+    /// Timestamp of the decision (formatted for display).
+    pub decided_at: Option<String>,
+    /// Reason supplied by the decision-maker (if any).
+    pub decision_reason: Option<String>,
 }
 
 impl ApprovalDetail {
@@ -87,6 +93,9 @@ mod tests {
             is_recorded: true,
             max_session_duration: Some(7200),
             is_own: false,
+            decided_by: None,
+            decided_at: None,
+            decision_reason: None,
         }
     }
 
@@ -263,6 +272,110 @@ mod tests {
         assert!(
             html.contains("/sessions/approvals/uuid-detail-1/reject"),
             "non-own pending detail must expose Reject form"
+        );
+    }
+
+    // ---- Decision section tests ----
+
+    #[test]
+    fn decision_section_hidden_when_no_decision() {
+        let tpl = detail_template(false);
+        let html = tpl.render().expect("render");
+        assert!(
+            !html.contains("Approved by"),
+            "must not show Decision section when decided_by is None"
+        );
+        assert!(
+            !html.contains("Rejected by"),
+            "must not show Decision section when decided_by is None"
+        );
+    }
+
+    #[test]
+    fn decision_section_shows_approver() {
+        let mut tpl = detail_template(false);
+        tpl.approval.status = "approved".to_string();
+        tpl.approval.decided_by = Some("admin_alice".to_string());
+        tpl.approval.decided_at = Some("Apr 25, 2026 22:30".to_string());
+        tpl.approval.decision_reason = None;
+        let html = tpl.render().expect("render");
+        assert!(
+            html.contains("Approved by"),
+            "approved session must show 'Approved by' label"
+        );
+        assert!(
+            html.contains("admin_alice"),
+            "approver username must appear in Decision section"
+        );
+        assert!(
+            html.contains("Apr 25, 2026 22:30"),
+            "approval timestamp must appear in Decision section"
+        );
+    }
+
+    #[test]
+    fn decision_section_shows_rejector_with_reason() {
+        let mut tpl = detail_template(false);
+        tpl.approval.status = "rejected".to_string();
+        tpl.approval.decided_by = Some("admin_bob".to_string());
+        tpl.approval.decided_at = Some("Apr 25, 2026 23:00".to_string());
+        tpl.approval.decision_reason = Some("Insufficient justification".to_string());
+        let html = tpl.render().expect("render");
+        assert!(
+            html.contains("Rejected by"),
+            "rejected session must show 'Rejected by' label"
+        );
+        assert!(
+            html.contains("admin_bob"),
+            "rejector username must appear in Decision section"
+        );
+        assert!(
+            html.contains("Insufficient justification"),
+            "decision reason must appear when present"
+        );
+    }
+
+    #[test]
+    fn decision_section_omits_reason_when_absent() {
+        let mut tpl = detail_template(false);
+        tpl.approval.status = "approved".to_string();
+        tpl.approval.decided_by = Some("admin_carol".to_string());
+        tpl.approval.decided_at = Some("Apr 25, 2026 22:45".to_string());
+        tpl.approval.decision_reason = None;
+        let html = tpl.render().expect("render");
+        assert!(
+            html.contains("admin_carol"),
+            "approver must appear"
+        );
+        assert!(
+            !html.contains("Reason"),
+            "Reason label must be absent when decision_reason is None"
+        );
+    }
+
+    #[test]
+    fn reject_form_contains_reason_textarea() {
+        let html = detail_template(false).render().expect("render");
+        assert!(
+            html.contains(r#"name="reason"#),
+            "reject form must include a textarea with name='reason'"
+        );
+        assert!(
+            html.contains("Reject Request"),
+            "reject modal must have a title"
+        );
+        assert!(
+            html.contains("Confirm Rejection"),
+            "reject modal must have a confirmation button"
+        );
+    }
+
+    #[test]
+    fn reject_form_hidden_for_own_pending() {
+        let html = detail_template(true).render().expect("render");
+        assert!(
+            !html.contains(r#"name="reason"#),
+            "own pending detail must NOT show the reject reason textarea"
         );
     }
 

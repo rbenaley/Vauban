@@ -50,7 +50,7 @@
                     Session #{{ session.id }}
                 </h2>
                 <span class="ml-3 inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium {{ session.status_class() }}">
-                    {{ session.status }}
+                    {{ session.status|capitalize }}
                 </span>
             </div>
         </div>
@@ -107,7 +107,7 @@
                     <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Status</dt>
                     <dd class="mt-1">
                         <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium {{ session.status_class() }}">
-                            {{ session.status }}
+                            {{ session.status|capitalize }}
                         </span>
                     </dd>
                 </div>

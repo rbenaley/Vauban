@@ -667,6 +667,12 @@ fn build_test_router(state: AppState) -> Router {
         .route("/", get(handlers::web::dashboard_home))
         // Fallback handler for unmatched routes
         .fallback(handlers::web::fallback_handler)
+        // Audit middleware (injects RequestId extension required by
+        // approve/reject handlers)
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            middleware::audit::audit_middleware,
+        ))
         // Security headers middleware
         .layer(axum::middleware::from_fn(
             middleware::security::security_headers_middleware,

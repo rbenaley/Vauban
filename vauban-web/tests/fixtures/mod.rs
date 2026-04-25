@@ -2,7 +2,7 @@
 ///
 /// Factory functions for creating test data.
 use chrono::{Duration, Utc};
-use diesel::{ExpressionMethods, QueryDsl};
+use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use sha3::{Digest, Sha3_256};
 use uuid::Uuid;
@@ -823,11 +823,28 @@ pub async fn create_approval_request_with_duration(
 
 /// Create a pre-approved session (status = "approved") with expires_at set.
 /// Simulates what the approve handler does after admin approval.
+///
+/// The `approved_by_id` is set to a distinct user to comply with the
+/// separation-of-duties CHECK constraint (`approved_by_id <> user_id`).
+/// Callers that need to control the approver can use
+/// `create_approved_session_by`.
 pub async fn create_approved_session(
     conn: &mut AsyncPgConnection,
     user_id: i32,
     asset_id: i32,
     max_duration: Option<i32>,
+) -> Uuid {
+    let approver_id = ensure_test_approver(conn).await;
+    create_approved_session_by(conn, user_id, asset_id, max_duration, approver_id).await
+}
+
+/// Like `create_approved_session` but with an explicit approver.
+pub async fn create_approved_session_by(
+    conn: &mut AsyncPgConnection,
+    user_id: i32,
+    asset_id: i32,
+    max_duration: Option<i32>,
+    approver_id: i32,
 ) -> Uuid {
     use chrono::Utc;
     use vauban_web::schema::proxy_sessions;
@@ -852,7 +869,7 @@ pub async fn create_approved_session(
                 proxy_sessions::justification.eq("Approved access"),
                 proxy_sessions::metadata.eq(serde_json::json!({"approval_required": true})),
                 proxy_sessions::max_session_duration.eq(max_duration),
-                proxy_sessions::approved_by_id.eq(Some(user_id)),
+                proxy_sessions::approved_by_id.eq(Some(approver_id)),
                 proxy_sessions::approved_at.eq(Some(now)),
                 proxy_sessions::expires_at.eq(expires_at),
             ))
@@ -861,6 +878,71 @@ pub async fn create_approved_session(
     );
 
     session_uuid
+}
+
+/// Returns the DB id of a shared "test approver" user, creating it once
+/// if it does not exist. This user is distinct from any requester so
+/// that the `approval_separation_of_duties` CHECK constraint is satisfied.
+async fn ensure_test_approver(conn: &mut AsyncPgConnection) -> i32 {
+    use vauban_web::schema::users;
+
+    let existing: Option<i32> = users::table
+        .filter(users::username.eq("__test_approver__"))
+        .select(users::id)
+        .first(conn)
+        .await
+        .optional()
+        .expect("query test_approver");
+    if let Some(id) = existing {
+        return id;
+    }
+    create_simple_user(conn, "__test_approver").await
+}
+
+/// Wire user + asset into groups with an active access rule that has
+/// `require_approval = true`. Needed by approve/reject integration tests
+/// so that `vauban-access`'s `load_pending_session_snapshot` can find a
+/// matching rule (post-SoD refactoring).
+/// Wire user + asset into groups with an active access rule that has
+/// `require_approval = true`. Needed by approve/reject integration tests
+/// so that `vauban-access`'s `load_pending_session_snapshot` can find a
+/// matching rule (post-SoD refactoring).
+pub async fn setup_approval_rule(
+    conn: &mut AsyncPgConnection,
+    user_id: i32,
+    asset_id: i32,
+) {
+    let ug_uuid = create_test_vauban_group(conn, &unique_name("jit-ug")).await;
+    add_user_to_vauban_group(conn, user_id, &ug_uuid).await;
+
+    let ag_uuid = create_test_asset_group(conn, &unique_name("jit-ag")).await;
+
+    use vauban_web::schema::{asset_asset_groups, asset_groups};
+    let ag_id: i32 = asset_groups::table
+        .filter(asset_groups::uuid.eq(ag_uuid))
+        .select(asset_groups::id)
+        .first(conn)
+        .await
+        .expect("get ag_id");
+    diesel::insert_into(asset_asset_groups::table)
+        .values((
+            asset_asset_groups::asset_id.eq(asset_id),
+            asset_asset_groups::asset_group_id.eq(ag_id),
+        ))
+        .execute(conn)
+        .await
+        .expect("insert asset_asset_groups");
+
+    create_test_access_rule_with_constraints(
+        conn,
+        &ug_uuid,
+        &ag_uuid,
+        &["ssh", "rdp"],
+        false,
+        true,
+        None,
+    )
+    .await;
 }
 
 /// Create an already-expired approved session (expires_at in the past).
@@ -873,6 +955,7 @@ pub async fn create_expired_approved_session(
     use chrono::Utc;
     use vauban_web::schema::proxy_sessions;
 
+    let approver_id = ensure_test_approver(conn).await;
     let session_uuid = Uuid::new_v4();
     let ip: ipnetwork::IpNetwork = unwrap_ok!("127.0.0.1".parse());
     let now = Utc::now();
@@ -893,7 +976,7 @@ pub async fn create_expired_approved_session(
                 proxy_sessions::justification.eq("Expired approved access"),
                 proxy_sessions::metadata.eq(serde_json::json!({"approval_required": true})),
                 proxy_sessions::max_session_duration.eq(Some(900)),
-                proxy_sessions::approved_by_id.eq(Some(user_id)),
+                proxy_sessions::approved_by_id.eq(Some(approver_id)),
                 proxy_sessions::approved_at.eq(Some(now - Duration::hours(2))),
                 proxy_sessions::expires_at.eq(Some(expired_at)),
             ))

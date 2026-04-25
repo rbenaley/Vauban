@@ -2,6 +2,11 @@
 use super::*;
 use crate::models::session::SessionType;
 
+/// Statuses that belong to the approval lifecycle. Session-state
+/// statuses (connecting, active, terminated, disconnected) are
+/// excluded — they belong in the session list, not the approval queue.
+const APPROVAL_STATUSES: &[&str] = &["pending", "approved", "rejected", "expired", "orphaned"];
+
 /// Session list page (admin-only).
 pub async fn session_list(
     State(state): State<AppState>,
@@ -867,8 +872,14 @@ pub async fn approval_list(
         .optional()
         .map_err(AppError::Database)?;
 
+    // Only show statuses that belong to the approval lifecycle.
+    // Sessions that have progressed past approval (connecting, active,
+    // terminated, disconnected) are session-state concerns — they
+    // belong in the session list, not the approval queue.
+
     let mut count_query = proxy_sessions::table
         .filter(proxy_sessions::justification.is_not_null())
+        .filter(proxy_sessions::status.eq_any(APPROVAL_STATUSES))
         .into_boxed();
 
     if let Some(ref status) = status_filter {
@@ -887,6 +898,7 @@ pub async fn approval_list(
         .inner_join(schema_assets::table)
         .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
         .filter(proxy_sessions::justification.is_not_null())
+        .filter(proxy_sessions::status.eq_any(APPROVAL_STATUSES))
         .into_boxed();
 
     if let Some(ref status) = status_filter {
@@ -1182,6 +1194,49 @@ pub async fn approval_detail(
 
     let is_own = requester_uuid.to_string() == auth_user.uuid;
 
+    // Resolve who approved or rejected, when, and why.
+    type DecisionRow = (Option<i32>, Option<chrono::DateTime<chrono::Utc>>,
+                        Option<i32>, Option<chrono::DateTime<chrono::Utc>>,
+                        Option<String>);
+    let (decided_by, decided_at, decision_reason) = {
+        let row: Option<DecisionRow> = proxy_sessions::table
+            .filter(proxy_sessions::uuid.eq(approval_uuid))
+            .select((
+                proxy_sessions::approved_by_id,
+                proxy_sessions::approved_at,
+                proxy_sessions::rejected_by_id,
+                proxy_sessions::rejected_at,
+                proxy_sessions::decision_reason,
+            ))
+            .first(&mut conn)
+            .await
+            .ok();
+
+        if let Some((appr_id, appr_at, rej_id, rej_at, reason)) = row {
+            let actor_id = appr_id.or(rej_id);
+            let actor_at = appr_at.or(rej_at);
+
+            let actor_name: Option<String> = if let Some(id) = actor_id {
+                users::table
+                    .filter(users::id.eq(id))
+                    .select(users::username)
+                    .first(&mut conn)
+                    .await
+                    .ok()
+            } else {
+                None
+            };
+
+            (
+                actor_name,
+                actor_at.map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
+                reason,
+            )
+        } else {
+            (None, None, None)
+        }
+    };
+
     let approval = crate::templates::sessions::approval_detail::ApprovalDetail {
         uuid: a_uuid.to_string(),
         username,
@@ -1198,10 +1253,23 @@ pub async fn approval_detail(
         is_recorded,
         max_session_duration,
         is_own,
+        decided_by,
+        decided_at,
+        decision_reason,
     };
 
+    let flash_messages: Vec<crate::templates::base::FlashMessage> = incoming_flash
+        .messages()
+        .iter()
+        .map(|m| crate::templates::base::FlashMessage {
+            level: m.level.clone(),
+            message: m.message.clone(),
+        })
+        .collect();
+
     let base = BaseTemplate::new("Approval Request".to_string(), user.clone())
-        .with_current_path("/sessions/approvals");
+        .with_current_path("/sessions/approvals")
+        .with_messages(flash_messages);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
             .await
@@ -3198,6 +3266,9 @@ mod tests {
     #[test]
     fn test_broadcast_approval_badge_called_after_approve() {
         let source = include_str!("sessions.rs");
+        // After the SoD refactoring, approve_access_request delegates to
+        // dispatch_approval_decision which calls broadcast_approval_badge.
+        // Verify the call chain: approve → dispatch → broadcast.
         let approve_fn = source
             .find("fn approve_access_request")
             .expect("approve_access_request must exist");
@@ -3207,14 +3278,28 @@ mod tests {
             .unwrap_or(source.len());
         let body = &source[approve_fn..next_fn];
         assert!(
-            body.contains("broadcast_approval_badge"),
-            "approve_access_request must call broadcast_approval_badge"
+            body.contains("dispatch_approval_decision"),
+            "approve_access_request must delegate to dispatch_approval_decision"
+        );
+        let dispatch_fn = source
+            .find("fn dispatch_approval_decision")
+            .expect("dispatch_approval_decision must exist");
+        let dispatch_end = source[dispatch_fn..]
+            .find("\nfn ")
+            .or_else(|| source[dispatch_fn..].find("\nasync fn "))
+            .map(|p| dispatch_fn + p)
+            .unwrap_or(source.len());
+        let dispatch_body = &source[dispatch_fn..dispatch_end];
+        assert!(
+            dispatch_body.contains("broadcast_approval_badge"),
+            "dispatch_approval_decision must call broadcast_approval_badge"
         );
     }
 
     #[test]
     fn test_broadcast_approval_badge_called_after_reject() {
         let source = include_str!("sessions.rs");
+        // Same delegation chain as approve.
         let reject_fn = source
             .find("fn reject_access_request")
             .expect("reject_access_request must exist");
@@ -3224,8 +3309,8 @@ mod tests {
             .unwrap_or(source.len());
         let body = &source[reject_fn..next_fn];
         assert!(
-            body.contains("broadcast_approval_badge"),
-            "reject_access_request must call broadcast_approval_badge"
+            body.contains("dispatch_approval_decision"),
+            "reject_access_request must delegate to dispatch_approval_decision"
         );
     }
 
@@ -3385,6 +3470,175 @@ mod tests {
         assert!(
             body.contains("hx-swap-oob"),
             "broadcast_approval_badge must use hx-swap-oob"
+        );
+    }
+
+    // ---- approval_detail flash-message anti-regression (BUG-14) ----
+    //
+    // The POST handlers (approve/reject) use flash_redirect to send
+    // a success or error message via the PRG pattern. The GET handler
+    // (approval_detail) MUST consume `incoming_flash.messages()` and
+    // inject them via `.with_messages(...)`, otherwise the operator
+    // never sees the outcome of their action.
+
+    #[test]
+    fn approval_detail_consumes_flash_messages() {
+        let source = include_str!("sessions.rs");
+        let detail_fn = source
+            .find("pub async fn approval_detail(")
+            .expect("approval_detail handler must exist");
+        let next_fn = source[detail_fn..]
+            .find("\npub async fn ")
+            .map(|p| detail_fn + p)
+            .unwrap_or(source.len());
+        let body = &source[detail_fn..next_fn];
+
+        assert!(
+            body.contains("incoming_flash"),
+            "approval_detail must accept IncomingFlash extractor"
+        );
+        assert!(
+            body.contains(".messages()"),
+            "approval_detail must read flash messages via .messages()"
+        );
+        assert!(
+            body.contains(".with_messages("),
+            "approval_detail must inject flash messages into BaseTemplate via .with_messages()"
+        );
+    }
+
+    // ---- approval_list status filter anti-regression ----
+    //
+    // The approval list must only show statuses that belong to the
+    // approval lifecycle: pending, approved, rejected, expired,
+    // orphaned. Session-state statuses (connecting, active,
+    // terminated, disconnected, consumed) must NEVER appear.
+
+    #[test]
+    fn approval_list_filters_by_approval_statuses_only() {
+        let source = include_str!("sessions.rs");
+        let list_fn = source
+            .find("pub async fn approval_list(")
+            .expect("approval_list handler must exist");
+        let next_fn = source[list_fn..]
+            .find("\npub async fn ")
+            .map(|p| list_fn + p)
+            .unwrap_or(source.len());
+        let body = &source[list_fn..next_fn];
+
+        assert!(
+            body.contains("APPROVAL_STATUSES"),
+            "approval_list must reference APPROVAL_STATUSES constant"
+        );
+        assert!(
+            body.contains(".eq_any(APPROVAL_STATUSES)"),
+            "approval_list must filter proxy_sessions by APPROVAL_STATUSES"
+        );
+    }
+
+    #[test]
+    fn approval_statuses_contains_only_approval_lifecycle() {
+        assert!(
+            APPROVAL_STATUSES.contains(&"pending"),
+            "APPROVAL_STATUSES must include pending"
+        );
+        assert!(
+            APPROVAL_STATUSES.contains(&"approved"),
+            "APPROVAL_STATUSES must include approved"
+        );
+        assert!(
+            APPROVAL_STATUSES.contains(&"rejected"),
+            "APPROVAL_STATUSES must include rejected"
+        );
+        assert!(
+            APPROVAL_STATUSES.contains(&"expired"),
+            "APPROVAL_STATUSES must include expired"
+        );
+        assert!(
+            APPROVAL_STATUSES.contains(&"orphaned"),
+            "APPROVAL_STATUSES must include orphaned"
+        );
+        assert!(
+            !APPROVAL_STATUSES.contains(&"connecting"),
+            "APPROVAL_STATUSES must NOT include connecting"
+        );
+        assert!(
+            !APPROVAL_STATUSES.contains(&"active"),
+            "APPROVAL_STATUSES must NOT include active"
+        );
+        assert!(
+            !APPROVAL_STATUSES.contains(&"terminated"),
+            "APPROVAL_STATUSES must NOT include terminated"
+        );
+        assert!(
+            !APPROVAL_STATUSES.contains(&"disconnected"),
+            "APPROVAL_STATUSES must NOT include disconnected"
+        );
+    }
+
+    // ---- decision section in approval detail (BUG-15) ----
+    //
+    // When decided_by is populated, the detail page must render
+    // the "Decision" card so the operator can see who acted.
+
+    #[test]
+    fn approval_detail_template_exposes_decided_by_field() {
+        let source = include_str!("sessions.rs");
+        let detail_fn = source
+            .find("pub async fn approval_detail(")
+            .expect("approval_detail must exist");
+        let next_fn = source[detail_fn..]
+            .find("\npub async fn ")
+            .map(|p| detail_fn + p)
+            .unwrap_or(source.len());
+        let body = &source[detail_fn..next_fn];
+
+        assert!(
+            body.contains("decided_by"),
+            "approval_detail must populate decided_by in ApprovalDetail"
+        );
+        assert!(
+            body.contains("decided_at"),
+            "approval_detail must populate decided_at in ApprovalDetail"
+        );
+        assert!(
+            body.contains("decision_reason"),
+            "approval_detail must populate decision_reason in ApprovalDetail"
+        );
+    }
+
+    #[test]
+    fn reject_form_has_reason_field() {
+        let source = include_str!("sessions.rs");
+        let struct_pos = source
+            .find("pub struct RejectForm")
+            .expect("RejectForm must exist");
+        let brace_end = source[struct_pos..]
+            .find('}')
+            .map(|p| struct_pos + p)
+            .unwrap();
+        let struct_body = &source[struct_pos..brace_end];
+        assert!(
+            struct_body.contains("reason"),
+            "RejectForm must have a 'reason' field for mandatory rejection motivation"
+        );
+    }
+
+    #[test]
+    fn reject_handler_passes_reason_to_dispatch() {
+        let source = include_str!("sessions.rs");
+        let reject_fn = source
+            .find("fn reject_access_request")
+            .expect("reject_access_request must exist");
+        let next_fn = source[reject_fn..]
+            .find("\npub async fn ")
+            .or_else(|| source[reject_fn..].find("\nasync fn "))
+            .map(|p| reject_fn + p)
+            .unwrap_or(source.len());
+        let body = &source[reject_fn..next_fn];
+        assert!(
+            body.contains("form.reason") || body.contains("reason"),
+            "reject_access_request must read and forward the rejection reason"
         );
     }
 }
