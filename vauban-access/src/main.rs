@@ -205,8 +205,11 @@ fn run_service() -> Result<()> {
         rt.block_on(admin_count::check_at_boot(&pool));
         // Periodic re-check survives the sandbox close because
         // tokio tasks run on the runtime that owns the open DB
-        // socket; no new file descriptors are required.
-        admin_count::spawn_periodic(pool.clone());
+        // socket; no new file descriptors are required. We hand the
+        // runtime handle explicitly because we are NOT inside a
+        // `block_on` here -- `tokio::spawn` would panic with
+        // "no reactor running".
+        admin_count::spawn_periodic(rt.handle(), pool.clone());
 
         Some(pool)
     } else {

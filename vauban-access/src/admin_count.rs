@@ -50,10 +50,20 @@ pub async fn check_at_boot(pool: &DbPool) -> i64 {
     count
 }
 
-/// Spawn the background re-checker. Owns its own pool clone (cheap;
-/// `DbPool` is `Arc` under the hood).
-pub fn spawn_periodic(pool: DbPool) {
-    tokio::spawn(async move {
+/// Spawn the background re-checker on the supplied runtime handle.
+///
+/// We take an explicit `tokio::runtime::Handle` rather than relying on
+/// `tokio::spawn`'s thread-local because vauban-access's main loop runs
+/// the IPC `select!` synchronously after `rt.block_on(...)` returns;
+/// at the call site there is no current runtime, so `tokio::spawn`
+/// would panic with "no reactor running" (boot crash, see
+/// `admin_count.rs` history).
+///
+/// The pool clone is cheap (`DbPool` is `Arc` under the hood) and the
+/// task survives the Capsicum sandbox close because the DB socket is
+/// already open.
+pub fn spawn_periodic(handle: &tokio::runtime::Handle, pool: DbPool) {
+    handle.spawn(async move {
         let mut ticker = tokio::time::interval(RECHECK_PERIOD);
         // Skip the first immediate tick: we already logged at boot.
         ticker.tick().await;
