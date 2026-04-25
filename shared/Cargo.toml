@@ -47,6 +47,11 @@ default = []
 # binary. Activate this feature in every protocol proxy that opens
 # upstream sessions on behalf of a user.
 access-guard = ["dep:tokio"]
+# Tiny `shared::tasks::spawn_periodic` helper (Handle-based, no
+# thread-local footgun). Activate in any crate that runs ticker-driven
+# background work. tokio-free crates (vault, audit, auth) MUST NOT
+# enable this.
+tasks = ["dep:tokio", "tokio/time", "tokio/rt"]
 # Enables the shared::session_token module (cryptographic gate that
 # binds every TcpConnectRequest / SessionOpen to a fresh access-signed
 # decision). Activate this feature in vauban-access (mints), vauban-

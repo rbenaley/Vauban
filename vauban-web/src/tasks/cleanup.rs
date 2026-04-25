@@ -6,7 +6,6 @@ use chrono::Utc;
 use diesel::{BoolExpressionMethods, ExpressionMethods, QueryDsl};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::time::interval;
 use tracing::{debug, error, info};
 
 use crate::db::DbPool;
@@ -28,17 +27,26 @@ const STALE_ACTIVE_TTL_HOURS: i64 = 24;
 /// Start all cleanup tasks.
 ///
 /// `idle_timeout_secs` mirrors `config.security.session_idle_timeout_secs`
-/// and is forwarded to [`cleanup_expired_or_idle_sessions`] (Issue #8) so
-/// long-idle login sessions are reaped on the same 30-second tick as
-/// already-expired ones.
+/// and is forwarded to [`run_cleanup_pass`] (Issue #8) so long-idle login
+/// sessions are reaped on the same 30-second tick as already-expired ones.
+///
+/// Spawn is delegated to `shared::tasks::spawn_periodic` for a uniform
+/// task lifecycle (named tracing, skip-first-tick, Handle-based spawn).
 pub async fn start_cleanup_tasks(db_pool: DbPool, idle_timeout_secs: u64) {
     let db_pool = Arc::new(db_pool);
-
-    // Spawn session cleanup task
-    let db_clone = Arc::clone(&db_pool);
-    tokio::spawn(async move {
-        session_cleanup_task(db_clone, idle_timeout_secs).await;
-    });
+    let handle = tokio::runtime::Handle::current();
+    let pool_for_task = Arc::clone(&db_pool);
+    shared::tasks::spawn_periodic(
+        &handle,
+        "session_cleanup",
+        Duration::from_secs(CLEANUP_INTERVAL_SECS),
+        move || {
+            let pool = Arc::clone(&pool_for_task);
+            async move {
+                run_cleanup_pass(&pool, idle_timeout_secs).await;
+            }
+        },
+    );
 
     info!(
         interval_secs = CLEANUP_INTERVAL_SECS,
@@ -46,93 +54,89 @@ pub async fn start_cleanup_tasks(db_pool: DbPool, idle_timeout_secs: u64) {
     );
 }
 
-/// Task that periodically cleans up expired auth sessions and API keys.
-async fn session_cleanup_task(db_pool: Arc<DbPool>, idle_timeout_secs: u64) {
-    let mut ticker = interval(Duration::from_secs(CLEANUP_INTERVAL_SECS));
-
-    loop {
-        ticker.tick().await;
-
-        // Cleanup expired or long-idle auth sessions (Issue #8).
-        match cleanup_expired_or_idle_sessions(&db_pool, idle_timeout_secs).await {
-            Ok(count) => {
-                if count > 0 {
-                    info!(deleted = count, "Cleaned up expired or idle auth sessions");
-                } else {
-                    debug!("No expired or idle auth sessions to clean up");
-                }
+/// One pass of all cleanup operations. Runs on every tick of the
+/// shared periodic scheduler. Any per-operation error is logged but
+/// never aborts the loop.
+async fn run_cleanup_pass(db_pool: &DbPool, idle_timeout_secs: u64) {
+    // Cleanup expired or long-idle auth sessions (Issue #8).
+    match cleanup_expired_or_idle_sessions(db_pool, idle_timeout_secs).await {
+        Ok(count) => {
+            if count > 0 {
+                info!(deleted = count, "Cleaned up expired or idle auth sessions");
+            } else {
+                debug!("No expired or idle auth sessions to clean up");
             }
-            Err(e) => error!(error = %e, "Failed to clean up expired or idle auth sessions"),
         }
+        Err(e) => error!(error = %e, "Failed to clean up expired or idle auth sessions"),
+    }
 
-        // Cleanup expired and inactive API keys
-        match cleanup_expired_api_keys(&db_pool).await {
-            Ok(count) => {
-                if count > 0 {
-                    info!(deleted = count, "Cleaned up expired/inactive API keys");
-                } else {
-                    debug!("No expired API keys to clean up");
-                }
+    // Cleanup expired and inactive API keys
+    match cleanup_expired_api_keys(db_pool).await {
+        Ok(count) => {
+            if count > 0 {
+                info!(deleted = count, "Cleaned up expired/inactive API keys");
+            } else {
+                debug!("No expired API keys to clean up");
             }
-            Err(e) => error!(error = %e, "Failed to clean up expired API keys"),
         }
+        Err(e) => error!(error = %e, "Failed to clean up expired API keys"),
+    }
 
-        // Terminate proxy sessions past their max_session_duration
-        match terminate_expired_proxy_sessions(&db_pool).await {
-            Ok(count) => {
-                if count > 0 {
-                    info!(
-                        terminated = count,
-                        "Terminated expired proxy sessions (max_session_duration)"
-                    );
-                }
+    // Terminate proxy sessions past their max_session_duration
+    match terminate_expired_proxy_sessions(db_pool).await {
+        Ok(count) => {
+            if count > 0 {
+                info!(
+                    terminated = count,
+                    "Terminated expired proxy sessions (max_session_duration)"
+                );
             }
-            Err(e) => error!(error = %e, "Failed to terminate expired proxy sessions"),
         }
+        Err(e) => error!(error = %e, "Failed to terminate expired proxy sessions"),
+    }
 
-        // Expire stale pending access requests
-        match expire_stale_pending_requests(&db_pool).await {
-            Ok(count) => {
-                if count > 0 {
-                    info!(expired = count, "Expired stale pending access requests");
-                }
+    // Expire stale pending access requests
+    match expire_stale_pending_requests(db_pool).await {
+        Ok(count) => {
+            if count > 0 {
+                info!(expired = count, "Expired stale pending access requests");
             }
-            Err(e) => error!(error = %e, "Failed to expire stale pending requests"),
         }
+        Err(e) => error!(error = %e, "Failed to expire stale pending requests"),
+    }
 
-        // Expire approved sessions past their expires_at deadline
-        match expire_stale_approved_sessions(&db_pool).await {
-            Ok(count) => {
-                if count > 0 {
-                    info!(expired = count, "Expired stale approved sessions");
-                }
+    // Expire approved sessions past their expires_at deadline
+    match expire_stale_approved_sessions(db_pool).await {
+        Ok(count) => {
+            if count > 0 {
+                info!(expired = count, "Expired stale approved sessions");
             }
-            Err(e) => error!(error = %e, "Failed to expire stale approved sessions"),
         }
+        Err(e) => error!(error = %e, "Failed to expire stale approved sessions"),
+    }
 
-        // Expire sessions stuck in "connecting" for too long
-        match expire_stale_connecting_sessions(&db_pool).await {
-            Ok(count) => {
-                if count > 0 {
-                    info!(expired = count, "Expired stale connecting sessions");
-                }
+    // Expire sessions stuck in "connecting" for too long
+    match expire_stale_connecting_sessions(db_pool).await {
+        Ok(count) => {
+            if count > 0 {
+                info!(expired = count, "Expired stale connecting sessions");
             }
-            Err(e) => error!(error = %e, "Failed to expire stale connecting sessions"),
         }
+        Err(e) => error!(error = %e, "Failed to expire stale connecting sessions"),
+    }
 
-        // Disconnect stale active sessions without expires_at
-        match disconnect_stale_active_sessions(&db_pool).await {
-            Ok(count) => {
-                if count > 0 {
-                    info!(
-                        disconnected = count,
-                        "Disconnected stale active sessions (no expiry, no update for {}h)",
-                        STALE_ACTIVE_TTL_HOURS
-                    );
-                }
+    // Disconnect stale active sessions without expires_at
+    match disconnect_stale_active_sessions(db_pool).await {
+        Ok(count) => {
+            if count > 0 {
+                info!(
+                    disconnected = count,
+                    "Disconnected stale active sessions (no expiry, no update for {}h)",
+                    STALE_ACTIVE_TTL_HOURS
+                );
             }
-            Err(e) => error!(error = %e, "Failed to disconnect stale active sessions"),
         }
+        Err(e) => error!(error = %e, "Failed to disconnect stale active sessions"),
     }
 }
 
@@ -485,7 +489,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_interval_creation() {
-        let mut ticker = interval(Duration::from_secs(CLEANUP_INTERVAL_SECS));
+        let mut ticker = tokio::time::interval(Duration::from_secs(CLEANUP_INTERVAL_SECS));
 
         // First tick is immediate
         ticker.tick().await;

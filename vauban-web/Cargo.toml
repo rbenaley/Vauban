@@ -11,7 +11,7 @@ license.workspace = true
 
 [dependencies]
 # Shared IPC library
-shared.workspace = true
+shared = { workspace = true, features = ["tasks"] }
 
 # Shared Diesel schema
 vauban-db.workspace = true

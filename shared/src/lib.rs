@@ -37,4 +37,12 @@ pub mod access_guard;
 #[cfg(feature = "session-token")]
 pub mod session_token;
 
+// Tiny periodic-task helper (Handle-based, runtime-context-free).
+// Used by every crate that needs `tokio::time::interval`-driven
+// background work without re-implementing the spawn/log/skip-first
+// boilerplate. Behind a feature so tokio-free consumers (vault,
+// audit, auth) keep their dep tree minimal.
+#[cfg(feature = "tasks")]
+pub mod tasks;
+
 pub use messages::{ControlMessage, Message, ServiceStats};
