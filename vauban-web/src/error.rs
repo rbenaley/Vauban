@@ -54,6 +54,16 @@ pub enum AppError {
     Config(String),
 }
 
+impl AppError {
+    /// Build a 403 `Authorization` error for a missing Casbin permission.
+    ///
+    /// Standard message format used by every handler in the codebase so
+    /// audit logs and integration tests can rely on a stable substring.
+    pub fn forbidden(perm: &str) -> Self {
+        Self::Authorization(format!("Insufficient privileges: {} required", perm))
+    }
+}
+
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         // Special case: AuthRedirect returns a redirect to login page

@@ -813,14 +813,14 @@ pub async fn connect_ssh(
 pub async fn fetch_ssh_host_key(
     State(state): State<AppState>,
     auth_user: AuthUser,
+    perms: crate::auth::PermissionContext,
     axum::extract::Path(asset_uuid_str): axum::extract::Path<String>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
     use uuid::Uuid;
 
-    // Require staff/superuser
-    if !auth_user.is_staff && !auth_user.is_superuser {
-        return htmx_error_response("Insufficient privileges: staff or superuser required");
+    if !perms.assets_write {
+        return htmx_error_response("Insufficient privileges: assets:write required");
     }
 
     let confirm = params.get("confirm").map(|v| v == "true").unwrap_or(false);
@@ -1178,6 +1178,7 @@ pub async fn terminal_page(
     State(state): State<AppState>,
     incoming_flash: IncomingFlash,
     auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     axum::extract::Path(session_id): axum::extract::Path<String>,
 ) -> Response {
     use crate::error::AppError;
@@ -1198,9 +1199,13 @@ pub async fn terminal_page(
     // user (or is admin-monitorable) before rendering anything. We collapse
     // every failure mode into a single opaque 404 so that an unauthenticated
     // probe cannot use the response to enumerate valid session UUIDs.
-    if let Err(status) =
-        crate::handlers::websocket::verify_session_ownership(&state, &session_id, &auth_user.0)
-            .await
+    if let Err(status) = crate::handlers::websocket::verify_session_ownership(
+        &state,
+        &session_id,
+        &auth_user.0,
+        perms.sessions_supervise,
+    )
+    .await
     {
         tracing::warn!(
             session_id = %session_id,

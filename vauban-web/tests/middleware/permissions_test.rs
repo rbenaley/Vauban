@@ -17,7 +17,7 @@
 /// 4. Non-regression for issue #1: an authenticated regular user must NOT
 ///    see an "Edit" button on their own profile, but an admin user must see
 ///    it (UI must mirror the server gate exactly).
-/// 5. Performance: loading the full `PermissionContext` (15 parallel
+/// 5. Performance: loading the full `PermissionContext` (20 parallel
 ///    `check_rbac` calls in fallback mode) stays well under any reasonable
 ///    request budget.
 use std::time::Instant;
@@ -53,6 +53,11 @@ fn permission_context_default_denies_every_resource() {
     assert!(!ctx.admin_view);
     assert!(!ctx.profile_read);
     assert!(!ctx.profile_write);
+    assert!(!ctx.users_manage_admins);
+    assert!(!ctx.assets_read_all);
+    assert!(!ctx.groups_manage_members);
+    assert!(!ctx.sessions_supervise);
+    assert!(!ctx.sessions_bypass_access_rules);
 }
 
 // ---------------------------------------------------------------------------
@@ -94,15 +99,21 @@ async fn check_rbac_staff_grants_admin_set_only() {
     let state = build_state_from(app);
     let user = make_user(false, true);
 
+    // Matches `config/access/default_policy.csv` for role:staff. Note that
+    // `groups:write`, `users:manage_admins` and `sessions:bypass_access_rules`
+    // are deliberately superuser-only; staff retains the `manage_members`
+    // and `supervise` scopes instead.
     let staff_allowed: &[(&str, &str)] = &[
         ("users", "read"),
         ("users", "write"),
         ("assets", "read"),
+        ("assets", "read_all"),
         ("assets", "write"),
         ("sessions", "read"),
         ("sessions", "write"),
+        ("sessions", "supervise"),
         ("groups", "read"),
-        ("groups", "write"),
+        ("groups", "manage_members"),
         ("access_rules", "read"),
         ("access_rules", "write"),
         ("auth_sessions", "read"),
@@ -146,6 +157,88 @@ async fn check_rbac_user_grants_only_self_serve_set() {
             action
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Targeted negative-cases: documents the privilege boundaries introduced by
+// the fine-grained migration. Each test below is the canonical proof-of-
+// regression for one resserrement.
+// ---------------------------------------------------------------------------
+
+/// `assets:read_all` MUST stay denied to `role:user`. Regular users see
+/// assets only through their access rules; granting `read_all` would leak
+/// every asset in the catalogue.
+#[tokio::test]
+#[serial]
+async fn check_rbac_user_denied_assets_read_all() {
+    let app = TestApp::spawn().await;
+    let state = build_state_from(app);
+    let user = make_user(false, false);
+
+    assert!(
+        !check_rbac(&state, &user, "assets", "read_all").await,
+        "regular user must NOT have assets:read_all (would bypass access \
+         rules at listing time)"
+    );
+}
+
+/// `groups:write` (CRUD on the group itself) was deliberately resserre to
+/// superuser-only after the migration. Staff retains `manage_members` but
+/// MUST NOT be able to create/rename/delete a group.
+#[tokio::test]
+#[serial]
+async fn check_rbac_staff_denied_groups_write() {
+    let app = TestApp::spawn().await;
+    let state = build_state_from(app);
+    let user = make_user(false, true);
+
+    assert!(
+        !check_rbac(&state, &user, "groups", "write").await,
+        "staff must NOT have groups:write after the migration (CRUD on \
+         the group entity is reserved to superusers)"
+    );
+    assert!(
+        check_rbac(&state, &user, "groups", "manage_members").await,
+        "staff must keep groups:manage_members so the day-to-day membership \
+         workflow is not broken"
+    );
+}
+
+/// `sessions:bypass_access_rules` is reserved to superusers (via the
+/// `*` wildcard). Staff must be subject to the same access-rule checks
+/// as regular users when opening a session.
+#[tokio::test]
+#[serial]
+async fn check_rbac_staff_denied_sessions_bypass_access_rules() {
+    let app = TestApp::spawn().await;
+    let state = build_state_from(app);
+    let user = make_user(false, true);
+
+    assert!(
+        !check_rbac(&state, &user, "sessions", "bypass_access_rules").await,
+        "staff must NOT bypass access rules when opening a session; only \
+         superusers may"
+    );
+}
+
+/// `users:manage_admins` (promote/demote a superuser) is superuser-only.
+/// Staff must be able to manage non-admin users (`users:write`) but must
+/// NOT be able to grant the superuser flag.
+#[tokio::test]
+#[serial]
+async fn check_rbac_staff_denied_users_manage_admins() {
+    let app = TestApp::spawn().await;
+    let state = build_state_from(app);
+    let user = make_user(false, true);
+
+    assert!(
+        !check_rbac(&state, &user, "users", "manage_admins").await,
+        "staff must NOT promote/demote superusers"
+    );
+    assert!(
+        check_rbac(&state, &user, "users", "write").await,
+        "staff must keep users:write for non-admin user CRUD"
+    );
 }
 
 #[tokio::test]
@@ -364,11 +457,11 @@ async fn profile_edit_button_shown_for_admin_user() {
 // Performance budget
 // ---------------------------------------------------------------------------
 
-/// `PermissionContext::load` performs 15 Casbin checks in parallel via
+/// `PermissionContext::load` performs 20 Casbin checks in parallel via
 /// `tokio::join!`. Even in fallback mode (pure in-memory match) we want to
 /// confirm the parallel join is dirt-cheap and is not a per-request hotspot.
-/// Threshold is intentionally generous (20 ms) so the test stays stable on
-/// slow CI hardware while still catching multi-millisecond regressions.
+/// Threshold is intentionally generous so the test stays stable on slow
+/// CI hardware while still catching multi-millisecond regressions.
 #[tokio::test]
 #[serial]
 async fn permission_context_load_perf_budget() {
@@ -402,7 +495,7 @@ async fn permission_context_load_perf_budget() {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Re-create the 15 (resource, action) couples loaded by
+/// Re-create the 20 (resource, action) couples loaded by
 /// [`PermissionContext::load`] so the matrix tests stay aligned with the
 /// loader implementation. If the loader gains a new permission the const
 /// below MUST be updated, and a matching grant must be added to one of the
@@ -410,16 +503,21 @@ async fn permission_context_load_perf_budget() {
 const TRACKED_PERMS: &[(&str, &str)] = &[
     ("users", "read"),
     ("users", "write"),
+    ("users", "manage_admins"),
     ("assets", "read"),
+    ("assets", "read_all"),
     ("assets", "write"),
     ("groups", "read"),
     ("groups", "write"),
+    ("groups", "manage_members"),
     ("access_rules", "read"),
     ("access_rules", "write"),
     ("auth_sessions", "read"),
     ("auth_sessions", "write"),
     ("sessions", "read"),
     ("sessions", "write"),
+    ("sessions", "supervise"),
+    ("sessions", "bypass_access_rules"),
     ("admin", "view"),
     ("profile", "read"),
     ("profile", "write"),
@@ -429,16 +527,22 @@ async fn manual_load(state: &vauban_web::AppState, user: &AuthUser) -> Permissio
     PermissionContext {
         users_read: check_rbac(state, user, "users", "read").await,
         users_write: check_rbac(state, user, "users", "write").await,
+        users_manage_admins: check_rbac(state, user, "users", "manage_admins").await,
         assets_read: check_rbac(state, user, "assets", "read").await,
+        assets_read_all: check_rbac(state, user, "assets", "read_all").await,
         assets_write: check_rbac(state, user, "assets", "write").await,
         groups_read: check_rbac(state, user, "groups", "read").await,
         groups_write: check_rbac(state, user, "groups", "write").await,
+        groups_manage_members: check_rbac(state, user, "groups", "manage_members").await,
         access_rules_read: check_rbac(state, user, "access_rules", "read").await,
         access_rules_write: check_rbac(state, user, "access_rules", "write").await,
         auth_sessions_read: check_rbac(state, user, "auth_sessions", "read").await,
         auth_sessions_write: check_rbac(state, user, "auth_sessions", "write").await,
         sessions_read: check_rbac(state, user, "sessions", "read").await,
         sessions_write: check_rbac(state, user, "sessions", "write").await,
+        sessions_supervise: check_rbac(state, user, "sessions", "supervise").await,
+        sessions_bypass_access_rules: check_rbac(state, user, "sessions", "bypass_access_rules")
+            .await,
         admin_view: check_rbac(state, user, "admin", "view").await,
         profile_read: check_rbac(state, user, "profile", "read").await,
         profile_write: check_rbac(state, user, "profile", "write").await,
@@ -469,5 +573,70 @@ fn build_state_from(app: &TestApp) -> vauban_web::AppState {
         vault_client: None,
         access_client: std::sync::Arc::clone(&app._access_service.access_client),
         auth_ipc_client: None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Policy / code drift detector
+// ---------------------------------------------------------------------------
+
+/// Catches the regression scenario where a contributor adds a new
+/// `PermissionContext` field (and a `check_rbac` call in `load()`) without
+/// granting it to ANY role in `config/access/default_policy.csv`. In that
+/// situation the field would silently stay `false` for everybody and
+/// nothing would ever exercise the new code path.
+///
+/// We parse the CSV at test time and assert that every `(resource, action)`
+/// tuple in [`TRACKED_PERMS`] is mentioned by at least one `p, role:..., r,
+/// a` line OR by the catch-all `p, role:superuser, *, *` (which makes any
+/// `(r, a)` reachable for superusers).
+#[test]
+fn policy_csv_grants_every_tracked_permission_to_at_least_one_role() {
+    // `include_str!` is relative to this source file: walk up three
+    // directories (middleware -> tests -> vauban-web -> repo root) to
+    // locate `config/access/default_policy.csv`.
+    let csv = include_str!("../../../config/access/default_policy.csv");
+
+    // Parse `p, sub, obj, act` lines. We deliberately keep this loose: the
+    // real Casbin model has the same shape and any deviation should be
+    // caught by the integration tests anyway.
+    let mut grants: Vec<(String, String)> = Vec::new();
+    let mut has_superuser_wildcard = false;
+    for raw in csv.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let fields: Vec<&str> = line.split(',').map(str::trim).collect();
+        if fields.len() < 4 || fields[0] != "p" {
+            continue;
+        }
+        let (subject, obj, act) = (fields[1], fields[2], fields[3]);
+        if subject == "role:superuser" && obj == "*" && act == "*" {
+            has_superuser_wildcard = true;
+        } else {
+            grants.push((obj.to_string(), act.to_string()));
+        }
+    }
+
+    assert!(
+        has_superuser_wildcard || !grants.is_empty(),
+        "default_policy.csv parsed empty; check the include_str! path"
+    );
+
+    for (resource, action) in TRACKED_PERMS {
+        let granted_explicitly = grants.iter().any(|(r, a)| r == resource && a == action);
+        let granted_via_wildcard = has_superuser_wildcard;
+        assert!(
+            granted_explicitly || granted_via_wildcard,
+            "TRACKED_PERMS includes ({}:{}) but `default_policy.csv` grants \
+             it to no role -- the new field would silently stay false for \
+             every user. Add a `p, role:..., {}, {}` line (or rely on the \
+             superuser wildcard) before merging.",
+            resource,
+            action,
+            resource,
+            action
+        );
     }
 }

@@ -6,7 +6,7 @@ use crate::templates::assets::{
     AccessRuleCreateForm, AccessRuleCreateTemplate, AccessRuleDetailData, AccessRuleDetailTemplate,
     AccessRuleEdit, AccessRuleEditTemplate, GroupOption,
 };
-use shared::messages::{AccessRuleData, GroupOption as IpcGroupOption, ASSET_GROUP_KIND_ALL};
+use shared::messages::{ASSET_GROUP_KIND_ALL, AccessRuleData, GroupOption as IpcGroupOption};
 
 /// Map IPC `GroupOption`s into template `GroupOption`s for the access-rule
 /// editor. Virtual asset groups (`kind == "all"`) are flagged with
@@ -29,7 +29,11 @@ fn map_group_options(
                 id: g.id,
                 name: g.name,
                 is_virtual,
-                virtual_asset_count: if is_virtual { dynamic_asset_count } else { None },
+                virtual_asset_count: if is_virtual {
+                    dynamic_asset_count
+                } else {
+                    None
+                },
             }
         })
         .collect();
@@ -353,7 +357,10 @@ pub async fn access_rule_create_form(
     let client = &state.access_client;
     let virtual_count = live_virtual_asset_count(&state).await;
     let (user_groups, asset_groups) = match client.get_group_options_with_virtual().await {
-        Ok((ug, ag)) => (map_group_options(ug, None), map_group_options(ag, virtual_count)),
+        Ok((ug, ag)) => (
+            map_group_options(ug, None),
+            map_group_options(ag, virtual_count),
+        ),
         Err(e) => {
             tracing::error!("IPC error loading group options: {}", e);
             return flash_redirect(flash.error("Failed to load groups"), "/assets/access");
@@ -541,7 +548,10 @@ pub async fn access_rule_edit(
         };
 
         let (ug, ag) = match groups_res {
-            Ok((a, b)) => (map_group_options(a, None), map_group_options(b, virtual_count)),
+            Ok((a, b)) => (
+                map_group_options(a, None),
+                map_group_options(b, virtual_count),
+            ),
             Err(e) => {
                 tracing::error!("IPC error loading group options: {}", e);
                 return flash_redirect(flash.error("Failed to load groups"), "/assets/access");

@@ -1348,11 +1348,41 @@ sequenceDiagram
     T->>U: HTML where {% if sc.perms.users_write %} ...
 ```
 
-`PermissionContext` is a flat struct of pre-computed booleans
-(`users_read`, `users_write`, `groups_read`, `groups_write`,
-`access_rules_read`, `access_rules_write`, `assets_read`, `assets_write`,
-`admin_view`, `auth_sessions_read`, `auth_sessions_write`,
-`sessions_read`, `sessions_write`, `profile_read`, `profile_write`).
+`PermissionContext` is a flat struct of 20 pre-computed booleans, in
+1:1 correspondence with the Casbin `(resource, action)` couples loaded
+by `permission_context_middleware`. The full catalogue is:
+
+| Resource       | Field                        | Default role grants |
+|----------------|------------------------------|---------------------|
+| `users`        | `users_read`                 | staff, superuser    |
+| `users`        | `users_write`                | staff, superuser    |
+| `users`        | `users_manage_admins`        | superuser only      |
+| `assets`       | `assets_read`                | user, staff, superuser |
+| `assets`       | `assets_read_all`            | staff, superuser    |
+| `assets`       | `assets_write`               | staff, superuser    |
+| `groups`       | `groups_read`                | staff, superuser    |
+| `groups`       | `groups_write`               | superuser only      |
+| `groups`       | `groups_manage_members`      | staff, superuser    |
+| `access_rules` | `access_rules_read`          | staff, superuser    |
+| `access_rules` | `access_rules_write`         | staff, superuser    |
+| `auth_sessions`| `auth_sessions_read`         | staff, superuser    |
+| `auth_sessions`| `auth_sessions_write`        | staff, superuser    |
+| `sessions`     | `sessions_read`              | staff, superuser    |
+| `sessions`     | `sessions_write`             | staff, superuser    |
+| `sessions`     | `sessions_supervise`         | staff, superuser    |
+| `sessions`     | `sessions_bypass_access_rules` | superuser only    |
+| `admin`        | `admin_view`                 | staff, superuser    |
+| `profile`      | `profile_read`               | user, staff, superuser |
+| `profile`      | `profile_write`              | user, staff, superuser |
+
+The `manage_admins`, `groups:write`, `bypass_access_rules` triple is
+the privilege-separation boundary between `role:staff` and
+`role:superuser`: staff can run the day-to-day operations
+(`users:write`, `groups:manage_members`, `sessions:supervise`) but the
+sensitive lifecycle operations (mint another superuser, mutate the
+group entity itself, bypass instance-level access rules when opening a
+session) remain reserved to superusers via the policy wildcard.
+
 All checks for one user happen **once per request**, in parallel via
 `tokio::join!`, regardless of how many handlers / template branches read them.
 
@@ -1375,9 +1405,15 @@ pub async fn user_detail(
 
 There is no longer any per-handler `check_rbac(&state, &user, "X", "Y").await`
 call: those round-trips are consolidated into the middleware's single parallel
-load. Handlers may still inspect `auth_user.is_superuser` for *target-vs-actor*
-business rules (e.g. only a superuser may edit another superuser), but never to
-gate visibility.
+load. Reading `auth_user.is_superuser` / `auth_user.is_staff` from a handler
+is forbidden -- the structural lint
+`vauban-web/scripts/check_no_handler_role_gates.sh` (the server-side
+companion of the templates lint) fails CI on any such occurrence inside
+`vauban-web/src/handlers/**/*.rs`. Legitimate non-gating reads
+(JWT-claim minting in `auth.rs`, `UserContext` data passing in
+`web/mod.rs`) opt out via a `// allow-role-gate: <reason>` annotation
+on the same line or the line immediately above; reviewers can then
+audit each exception in isolation.
 
 #### Template usage
 

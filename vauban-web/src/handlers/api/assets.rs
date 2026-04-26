@@ -13,6 +13,7 @@ use diesel_async::RunQueryDsl;
 use serde::Deserialize;
 
 use crate::AppState;
+use crate::auth::PermissionContext;
 use crate::error::{AppError, AppResult};
 use crate::middleware::auth::AuthUser;
 use crate::models::asset::{
@@ -32,13 +33,19 @@ pub struct ListAssetsParams {
 
 /// List assets handler.
 ///
-/// Staff/superusers see all assets. Regular users only see assets
-/// they have access to via access rules.
+/// Holders of `assets:read_all` (staff and superuser) see every asset.
+/// Regular users only see assets exposed via an active access rule
+/// matching one of their groups.
 pub async fn list_assets(
     State(state): State<AppState>,
     user: AuthUser,
+    perms: PermissionContext,
     Query(params): Query<ListAssetsParams>,
 ) -> AppResult<Json<Vec<Asset>>> {
+    if !perms.assets_read {
+        return Err(AppError::forbidden("assets:read"));
+    }
+
     let mut conn = state
         .db_pool
         .get()
@@ -46,8 +53,7 @@ pub async fn list_assets(
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
     let mut query = assets.filter(is_deleted.eq(false)).into_boxed();
 
-    // Non-admin users: filter to only accessible assets via access rules
-    if !user.is_superuser && !user.is_staff {
+    if !perms.assets_read_all {
         let user_internal_id: i32 = crate::schema::users::table
             .filter(
                 crate::schema::users::uuid
@@ -122,10 +128,13 @@ pub async fn get_asset(
 /// Create asset handler.
 pub async fn create_asset(
     State(state): State<AppState>,
-    user: AuthUser,
+    _user: AuthUser,
+    perms: PermissionContext,
     Json(request): Json<CreateAssetRequest>,
 ) -> AppResult<Json<Asset>> {
-    super::require_staff(&state, &user).await?;
+    if !perms.assets_write {
+        return Err(AppError::forbidden("assets:write"));
+    }
 
     validator::Validate::validate(&request)
         .map_err(|e| AppError::Validation(format!("Validation failed: {:?}", e)))?;
@@ -219,15 +228,16 @@ pub async fn create_asset(
 /// - HTML error fragment on failure (for display in error container)
 pub async fn update_asset(
     State(state): State<AppState>,
-    user: AuthUser,
+    _user: AuthUser,
+    perms: PermissionContext,
     headers: HeaderMap,
     Path(asset_uuid_str): Path<String>,
     Json(request): Json<UpdateAssetRequest>,
 ) -> Response {
     use crate::error::{htmx_error_response, is_htmx_request};
 
-    if let Err(e) = super::require_staff(&state, &user).await {
-        return e.into_response();
+    if !perms.assets_write {
+        return AppError::forbidden("assets:write").into_response();
     }
 
     let is_htmx = is_htmx_request(&headers);
@@ -501,10 +511,13 @@ pub async fn list_group_assets(
 pub async fn fetch_ssh_host_key_api(
     State(state): State<AppState>,
     user: AuthUser,
+    perms: PermissionContext,
     Path(asset_uuid_str): Path<String>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> AppResult<Json<serde_json::Value>> {
-    super::require_staff(&state, &user).await?;
+    if !perms.assets_write {
+        return Err(AppError::forbidden("assets:write"));
+    }
 
     let confirm = params.get("confirm").map(|v| v == "true").unwrap_or(false);
 

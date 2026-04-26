@@ -184,7 +184,9 @@ pub async fn login(
             &user.uuid.to_string(),
             &user.username,
             false, // mfa_verified = false
+            // allow-role-gate: passed as JWT claim so the request-scoped Casbin subject mapping works on subsequent requests.
             user.is_superuser,
+            // allow-role-gate: passed as JWT claim so the request-scoped Casbin subject mapping works on subsequent requests.
             user.is_staff,
         )?;
 
@@ -370,7 +372,9 @@ pub async fn login(
         &user.uuid.to_string(),
         &user.username,
         mfa_verified,
+        // allow-role-gate: passed as JWT claim so the request-scoped Casbin subject mapping works on subsequent requests.
         user.is_superuser,
+        // allow-role-gate: passed as JWT claim so the request-scoped Casbin subject mapping works on subsequent requests.
         user.is_staff,
     )?;
 
@@ -616,13 +620,8 @@ async fn insert_session_with_purge(
                     .execute(conn)
                     .await?;
 
-                    purge_sessions_for_device(
-                        conn,
-                        user_id_val,
-                        &device_info_attempt,
-                        client_ip,
-                    )
-                    .await?;
+                    purge_sessions_for_device(conn, user_id_val, &device_info_attempt, client_ip)
+                        .await?;
 
                     diesel::insert_into(auth_sessions::table)
                         .values(&new_session_attempt)

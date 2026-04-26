@@ -10,6 +10,13 @@
 //! - Return structured error responses, not flash messages
 //! - Authenticated via API keys or JWT tokens
 //!
+//! Authorization is performed exclusively through the Casbin-backed
+//! [`crate::auth::PermissionContext`] extractor: every handler reads the
+//! relevant `perms.<resource>_<action>` boolean and returns
+//! [`AppError::forbidden`] when the gate is closed. There is no longer a
+//! `require_staff` shortcut; handlers must call out the exact permission
+//! they require, which is both more granular and more auditable.
+//!
 //! These handlers are conditionally mounted based on `config.api.enabled`.
 
 pub mod access_rules;
@@ -17,27 +24,6 @@ pub mod accounts;
 pub mod assets;
 pub mod groups;
 pub mod sessions;
-
-use crate::AppState;
-use crate::error::AppError;
-use crate::middleware::auth::AuthUser;
-
-/// Verify the authenticated user has staff or superuser privileges.
-///
-/// Uses the RBAC IPC client (Casbin) when available, otherwise falls back
-/// to the local `is_staff || is_superuser` check.
-/// Returns `Err(AppError::Authorization)` with a 403 Forbidden if the user
-/// does not have sufficient privileges.
-pub async fn require_staff(state: &AppState, user: &AuthUser) -> Result<(), AppError> {
-    let allowed = crate::handlers::web::check_rbac(state, user, "admin", "view").await;
-    if allowed {
-        Ok(())
-    } else {
-        Err(AppError::Authorization(
-            "Insufficient privileges: staff or superuser role required".to_string(),
-        ))
-    }
-}
 
 // Re-export all API handlers for convenient access
 pub use access_rules::{

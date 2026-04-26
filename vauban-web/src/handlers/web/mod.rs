@@ -100,17 +100,12 @@ pub(crate) fn user_context_from_auth(auth_user: &AuthUser) -> UserContext {
         uuid: auth_user.uuid.clone(),
         username: auth_user.username.clone(),
         display_name: auth_user.username.clone(), // TODO: Get full name from database
+        // allow-role-gate: copied verbatim into UserContext for template display (badges, formulaires); not used as a gate.
         is_superuser: auth_user.is_superuser,
+        // allow-role-gate: copied verbatim into UserContext for template display (badges, formulaires); not used as a gate.
         is_staff: auth_user.is_staff,
     }
 }
-
-/// Re-export of the canonical Casbin RBAC check from [`crate::auth`].
-///
-/// The implementation lives in [`crate::auth::permissions::check_rbac`]; this
-/// alias is kept for the lifetime of the PermissionContext migration so that
-/// existing handler code continues to compile unchanged.
-pub(crate) use crate::auth::check_rbac;
 
 /// Apply RBAC-based sidebar permissions to a `BaseTemplate`.
 ///
@@ -277,10 +272,7 @@ pub(crate) fn validate_required_credentials(
     match asset_type {
         AssetType::Rdp => {
             if is_blank(password) {
-                return Err(
-                    "Password is required for RDP assets (ASS-03)."
-                        .to_string(),
-                );
+                return Err("Password is required for RDP assets (ASS-03).".to_string());
             }
         }
         AssetType::Ssh => {
@@ -292,11 +284,9 @@ pub(crate) fn validate_required_credentials(
             match mode {
                 "password" => {
                     if is_blank(password) {
-                        return Err(
-                            "Password is required for SSH assets when authentication \
+                        return Err("Password is required for SSH assets when authentication \
                              type is 'password' (ASS-02)."
-                                .to_string(),
-                        );
+                            .to_string());
                     }
                 }
                 "private_key" => {

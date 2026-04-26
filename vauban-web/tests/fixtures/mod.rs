@@ -169,6 +169,63 @@ pub async fn create_admin_user(
     }
 }
 
+/// Create a `is_staff=true, is_superuser=false` user. Designed for the
+/// fine-grained Casbin tests that exercise the privilege boundary
+/// between staff and superusers (e.g. `groups:write` requires
+/// superuser even though staff retains `manage_members`).
+pub async fn create_staff_only_user(
+    conn: &mut AsyncPgConnection,
+    auth_service: &AuthService,
+    username: &str,
+) -> TestUser {
+    let password = "StaffPassword123!";
+    let password_hash = unwrap_ok!(auth_service.hash_password(password));
+    let user_uuid = Uuid::new_v4();
+
+    let new_user = NewUser {
+        uuid: user_uuid,
+        username: username.to_string(),
+        email: format!("{}@test.vauban.io", username),
+        password_hash,
+        first_name: Some("Staff".to_string()),
+        last_name: Some("Only".to_string()),
+        phone: None,
+        is_active: true,
+        is_staff: true,
+        is_superuser: false,
+        is_service_account: false,
+        mfa_enabled: false,
+        mfa_enforced: false,
+        mfa_secret: None,
+        preferences: serde_json::json!({}),
+        auth_source: AuthSource::Local,
+        external_id: None,
+    };
+
+    let user: User = unwrap_ok!(
+        diesel::insert_into(users::table)
+            .values(&new_user)
+            .get_result(conn)
+            .await
+    );
+
+    let token = unwrap_ok!(auth_service.generate_access_token(
+        &user.uuid.to_string(),
+        &user.username,
+        true,
+        false,
+        true,
+    ));
+
+    create_session_for_token(conn, user.id, &token).await;
+
+    TestUser {
+        user,
+        password: password.to_string(),
+        token,
+    }
+}
+
 /// Create a user with MFA enabled.
 pub async fn create_mfa_user(
     conn: &mut AsyncPgConnection,
@@ -907,11 +964,7 @@ async fn ensure_test_approver(conn: &mut AsyncPgConnection) -> i32 {
 /// `require_approval = true`. Needed by approve/reject integration tests
 /// so that `vauban-access`'s `load_pending_session_snapshot` can find a
 /// matching rule (post-SoD refactoring).
-pub async fn setup_approval_rule(
-    conn: &mut AsyncPgConnection,
-    user_id: i32,
-    asset_id: i32,
-) {
+pub async fn setup_approval_rule(conn: &mut AsyncPgConnection, user_id: i32, asset_id: i32) {
     let ug_uuid = create_test_vauban_group(conn, &unique_name("jit-ug")).await;
     add_user_to_vauban_group(conn, user_id, &ug_uuid).await;
 

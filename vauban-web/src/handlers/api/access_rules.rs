@@ -13,6 +13,7 @@ use axum::{
 use shared::messages::{AccessRuleData, AccessRuleInfo};
 
 use crate::AppState;
+use crate::auth::PermissionContext;
 use crate::error::{AppError, AppResult};
 use crate::middleware::auth::AuthUser;
 use crate::models::access_rule::{
@@ -72,9 +73,12 @@ fn map_not_found(e: AppError, what: &'static str) -> AppError {
 /// List all access rules with enriched group names.
 pub async fn list_access_rules(
     State(state): State<AppState>,
-    user: AuthUser,
+    _user: AuthUser,
+    perms: PermissionContext,
 ) -> AppResult<Json<Vec<AccessRuleResponse>>> {
-    super::require_staff(&state, &user).await?;
+    if !perms.access_rules_read {
+        return Err(AppError::forbidden("access_rules:read"));
+    }
 
     let list = state.access_client.list_access_rules().await?;
     Ok(Json(list.into_iter().map(info_to_response).collect()))
@@ -83,10 +87,13 @@ pub async fn list_access_rules(
 /// Get a single access rule by UUID.
 pub async fn get_access_rule(
     State(state): State<AppState>,
-    user: AuthUser,
+    _user: AuthUser,
+    perms: PermissionContext,
     Path(rule_uuid_str): Path<String>,
 ) -> AppResult<Json<AccessRuleResponse>> {
-    super::require_staff(&state, &user).await?;
+    if !perms.access_rules_read {
+        return Err(AppError::forbidden("access_rules:read"));
+    }
 
     Uuid::parse_str(&rule_uuid_str)
         .map_err(|_| AppError::Validation("Invalid UUID format".to_string()))?;
@@ -103,9 +110,12 @@ pub async fn get_access_rule(
 pub async fn create_access_rule(
     State(state): State<AppState>,
     _user: AuthUser,
+    perms: PermissionContext,
     Json(request): Json<CreateAccessRuleRequest>,
 ) -> AppResult<Json<AccessRuleResponse>> {
-    super::require_staff(&state, &_user).await?;
+    if !perms.access_rules_write {
+        return Err(AppError::forbidden("access_rules:write"));
+    }
 
     validator::Validate::validate(&request)
         .map_err(|e| AppError::Validation(format!("Validation failed: {:?}", e)))?;
@@ -166,11 +176,14 @@ pub async fn create_access_rule(
 /// Update an existing access rule.
 pub async fn update_access_rule(
     State(state): State<AppState>,
-    user: AuthUser,
+    _user: AuthUser,
+    perms: PermissionContext,
     Path(rule_uuid_str): Path<String>,
     Json(request): Json<UpdateAccessRuleRequest>,
 ) -> AppResult<Json<AccessRuleResponse>> {
-    super::require_staff(&state, &user).await?;
+    if !perms.access_rules_write {
+        return Err(AppError::forbidden("access_rules:write"));
+    }
 
     validator::Validate::validate(&request)
         .map_err(|e| AppError::Validation(format!("Validation failed: {:?}", e)))?;
@@ -223,10 +236,13 @@ pub async fn update_access_rule(
 /// Delete an access rule.
 pub async fn delete_access_rule(
     State(state): State<AppState>,
-    user: AuthUser,
+    _user: AuthUser,
+    perms: PermissionContext,
     Path(rule_uuid_str): Path<String>,
 ) -> AppResult<Json<serde_json::Value>> {
-    super::require_staff(&state, &user).await?;
+    if !perms.access_rules_write {
+        return Err(AppError::forbidden("access_rules:write"));
+    }
 
     Uuid::parse_str(&rule_uuid_str)
         .map_err(|_| AppError::Validation("Invalid UUID format".to_string()))?;

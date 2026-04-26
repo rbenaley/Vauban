@@ -367,8 +367,9 @@ pub async fn user_detail(
     };
 
     // Sourced from the request-scoped PermissionContext (Casbin via middleware)
-    // instead of an ad-hoc `check_rbac` round-trip per request.
-    let can_edit = perms.users_write && (!is_superuser || auth_user.is_superuser);
+    // instead of an ad-hoc `check_rbac` round-trip per request. Promotions /
+    // edits of an existing superuser require `users:manage_admins`.
+    let can_edit = perms.users_write && (!is_superuser || perms.users_manage_admins);
 
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
@@ -450,7 +451,7 @@ pub async fn user_create_form(
     let base = BaseTemplate::new("New User".to_string(), user).with_current_path("/accounts/users");
 
     let password_min_length = state.config.security.password_min_length;
-    let can_manage_superusers = auth_user.is_superuser;
+    let can_manage_superusers = perms.users_manage_admins;
 
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
@@ -477,7 +478,7 @@ pub async fn user_create_form(
 /// Create user handler (POST /accounts/users).
 pub async fn create_user_web(
     State(state): State<AppState>,
-    auth_user: WebAuthUser,
+    _auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
@@ -509,7 +510,7 @@ pub async fn create_user_web(
     }
 
     let wants_superuser = form.is_superuser.as_deref() == Some("on");
-    if wants_superuser && !auth_user.is_superuser {
+    if wants_superuser && !perms.users_manage_admins {
         return flash_redirect(
             flash.error("Only a superuser can create superuser accounts"),
             "/accounts/users/new",
@@ -710,8 +711,10 @@ pub async fn user_edit_form(
 
     let (uuid, username, email, first_name, last_name, is_active, is_staff, is_superuser) = db_user;
 
-    // Staff cannot edit superusers
-    if is_superuser && !auth_user.is_superuser {
+    // Editing or viewing the edit form for an existing superuser requires
+    // `users:manage_admins`; staff with mere `users:write` cannot escalate
+    // through this entry point.
+    if is_superuser && !perms.users_manage_admins {
         return flash_redirect(
             flash.error("Only a superuser can edit superuser accounts"),
             &format!("/accounts/users/{}", user_uuid),
@@ -730,9 +733,9 @@ pub async fn user_edit_form(
     };
 
     let password_min_length = state.config.security.password_min_length;
-    let can_manage_superusers = auth_user.is_superuser;
+    let can_manage_superusers = perms.users_manage_admins;
     // Sourced from the request-scoped PermissionContext (Casbin via middleware).
-    let can_delete = perms.users_write && (!is_superuser || auth_user.is_superuser);
+    let can_delete = perms.users_write && (!is_superuser || perms.users_manage_admins);
 
     // Whether the OPERATOR (not the target) has a usable TOTP factor enrolled.
     // Drives the enrollment banner in the template; a `false` value disables
@@ -864,17 +867,15 @@ pub async fn update_user_web(
         }
     };
 
-    // Staff cannot edit superusers
-    if target_is_superuser && !auth_user.is_superuser {
+    if target_is_superuser && !perms.users_manage_admins {
         return flash_redirect(
             flash.error("Only a superuser can edit superuser accounts"),
             &format!("/accounts/users/{}", user_uuid),
         );
     }
 
-    // Staff cannot promote to superuser
     let wants_superuser = form.is_superuser.as_deref() == Some("on");
-    if wants_superuser && !auth_user.is_superuser {
+    if wants_superuser && !perms.users_manage_admins {
         return flash_redirect(
             flash.error("Only a superuser can grant superuser privileges"),
             &format!("/accounts/users/{}/edit", user_uuid),
@@ -1123,8 +1124,7 @@ pub async fn delete_user_web(
         }
     };
 
-    // Staff cannot delete superusers
-    if target_is_superuser && !auth_user.is_superuser {
+    if target_is_superuser && !perms.users_manage_admins {
         return flash_redirect(
             flash.error("Only a superuser can delete another superuser"),
             &format!("/accounts/users/{}", user_uuid),
@@ -1289,9 +1289,10 @@ pub async fn change_own_password_web(
     // `security.password_min_length` get a single source of truth across the
     // create-user, edit-user and self-rotation paths. The wording lives in
     // `validate_password_length` so the three sites stay aligned.
-    if let Err(msg) =
-        validate_password_length(&form.new_password, state.config.security.password_min_length)
-    {
+    if let Err(msg) = validate_password_length(
+        &form.new_password,
+        state.config.security.password_min_length,
+    ) {
         return flash_redirect(flash.error(msg), profile_url);
     }
 
@@ -1338,7 +1339,9 @@ pub async fn change_own_password_web(
     };
     if !matches!(auth_source, AuthSource::Local) {
         return flash_redirect(
-            flash.error("Your password is managed by your identity provider and cannot be changed here."),
+            flash.error(
+                "Your password is managed by your identity provider and cannot be changed here.",
+            ),
             profile_url,
         );
     }
@@ -1348,8 +1351,7 @@ pub async fn change_own_password_web(
     // with a precise flash so the user knows what to fix (no enrolment vs
     // wrong code vs replayed code vs vault unavailable).
     if let Err(err) =
-        crate::auth::enforce_totp_step_up(&state, &mut conn, &auth_user.uuid, &form.totp_code)
-            .await
+        crate::auth::enforce_totp_step_up(&state, &mut conn, &auth_user.uuid, &form.totp_code).await
     {
         tracing::info!(
             operator = %auth_user.uuid,
@@ -1399,10 +1401,7 @@ pub async fn change_own_password_web(
             np.zeroize();
             let mut cp = form.confirm_password;
             cp.zeroize();
-            flash_redirect(
-                flash.success("Password updated successfully"),
-                profile_url,
-            )
+            flash_redirect(flash.success("Password updated successfully"), profile_url)
         }
         Err(_) => flash_redirect(
             flash.error("Failed to update password. Please try again."),

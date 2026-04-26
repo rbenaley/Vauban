@@ -12,6 +12,7 @@ use diesel_async::RunQueryDsl;
 use serde::Serialize;
 
 use crate::AppState;
+use crate::auth::PermissionContext;
 use crate::error::AppError;
 use crate::middleware::auth::AuthUser;
 
@@ -43,10 +44,13 @@ pub struct ListMembersResponse {
 /// Always delegates to vauban-access via IPC.
 pub async fn list_group_members(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    _auth_user: AuthUser,
+    perms: PermissionContext,
     Path(uuid_str): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    super::require_staff(&state, &auth_user).await?;
+    if !perms.groups_read {
+        return Err(AppError::forbidden("groups:read"));
+    }
 
     use crate::schema::users::dsl as u;
 

@@ -13,6 +13,7 @@ use diesel_async::RunQueryDsl;
 use serde::Deserialize;
 
 use crate::AppState;
+use crate::auth::PermissionContext;
 use crate::error::{AppError, AppResult};
 use crate::middleware::auth::AuthUser;
 use crate::models::session::{CreateSessionRequest, NewProxySession, ProxySession, SessionType};
@@ -34,10 +35,13 @@ pub struct ListSessionsParams {
 /// List sessions handler.
 pub async fn list_sessions(
     State(state): State<AppState>,
-    user: AuthUser,
+    _user: AuthUser,
+    perms: PermissionContext,
     Query(params): Query<ListSessionsParams>,
 ) -> AppResult<Json<Vec<ProxySession>>> {
-    super::require_staff(&state, &user).await?;
+    if !perms.sessions_read {
+        return Err(AppError::forbidden("sessions:read"));
+    }
 
     let mut conn = state
         .db_pool
@@ -59,10 +63,13 @@ pub async fn list_sessions(
 /// Get session by UUID handler.
 pub async fn get_session(
     State(state): State<AppState>,
-    user: AuthUser,
+    _user: AuthUser,
+    perms: PermissionContext,
     Path(session_uuid_str): Path<String>,
 ) -> AppResult<Json<ProxySession>> {
-    super::require_staff(&state, &user).await?;
+    if !perms.sessions_read {
+        return Err(AppError::forbidden("sessions:read"));
+    }
 
     // Parse UUID manually for better error messages
     let session_uuid = Uuid::parse_str(&session_uuid_str)
@@ -87,14 +94,23 @@ pub async fn get_session(
 
 /// Create session handler.
 ///
-/// Superusers bypass access rule checks. Staff and regular users must have
-/// a valid, active access rule linking their group to the asset's group for
-/// the requested protocol.
+/// Holders of `sessions:bypass_access_rules` (superuser only) skip the
+/// per-asset access rule check. Staff and regular users must have a
+/// valid, active access rule linking their group to the asset's group
+/// for the requested protocol.
 pub async fn create_session(
     State(state): State<AppState>,
     user: AuthUser,
+    perms: PermissionContext,
     Json(request): Json<CreateSessionRequest>,
 ) -> AppResult<Json<ProxySession>> {
+    // NOTE: We do NOT gate on `perms.sessions_write` here. Regular users do
+    // not hold that permission, yet they MUST be able to open sessions on
+    // assets for which they have a valid access rule. The fine-grained gate
+    // below (`perms.sessions_bypass_access_rules`) determines whether the
+    // user can skip the per-asset access rule check.
+    let _ = &user;
+
     validator::Validate::validate(&request)
         .map_err(|e| AppError::Validation(format!("Validation failed: {:?}", e)))?;
 
@@ -128,8 +144,7 @@ pub async fn create_session(
 
     let protocol = request.session_type.as_str();
 
-    // Superusers bypass access rule checks
-    if !user.is_superuser {
+    if !perms.sessions_bypass_access_rules {
         let access_result = crate::services::access::can_access_asset(
             &state.access_client,
             &mut conn,
@@ -197,10 +212,13 @@ pub async fn create_session(
 pub async fn terminate_session(
     State(state): State<AppState>,
     headers: HeaderMap,
-    user: AuthUser,
+    _user: AuthUser,
+    perms: PermissionContext,
     Path(session_uuid_str): Path<String>,
 ) -> AppResult<Response> {
-    super::require_staff(&state, &user).await?;
+    if !perms.sessions_write {
+        return Err(AppError::forbidden("sessions:write"));
+    }
 
     let session_uuid = Uuid::parse_str(&session_uuid_str)
         .map_err(|_| AppError::Validation("Invalid UUID format".to_string()))?;

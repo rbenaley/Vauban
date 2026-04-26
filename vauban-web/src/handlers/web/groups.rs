@@ -315,15 +315,13 @@ pub struct CreateGroupWebForm {
 pub async fn vauban_group_create_form(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     jar: CookieJar,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::templates::accounts::GroupCreateTemplate;
 
-    // Only superuser can create groups
-    if !auth_user.is_superuser {
-        return Err(AppError::Authorization(
-            "Only superusers can create groups".to_string(),
-        ));
+    if !perms.groups_write {
+        return Err(AppError::forbidden("groups:write"));
     }
 
     // Get CSRF token from cookie
@@ -361,7 +359,8 @@ pub async fn vauban_group_create_form(
 /// Create vauban group handler (POST /accounts/groups).
 pub async fn create_vauban_group_web(
     State(state): State<AppState>,
-    auth_user: WebAuthUser,
+    _auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
     Form(form): Form<CreateGroupWebForm>,
@@ -382,10 +381,9 @@ pub async fn create_vauban_group_web(
         );
     }
 
-    // Only superuser can create groups
-    if !auth_user.is_superuser {
+    if !perms.groups_write {
         return flash_redirect(
-            flash.error("Only superusers can create groups"),
+            flash.error("Insufficient privileges: groups:write required"),
             "/accounts/groups",
         );
     }
@@ -431,16 +429,14 @@ pub async fn create_vauban_group_web(
 pub async fn vauban_group_edit_form(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     jar: CookieJar,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::templates::accounts::{GroupEditData, GroupEditTemplate};
 
-    // Only superuser can edit groups
-    if !auth_user.is_superuser {
-        return Err(AppError::Authorization(
-            "Only superusers can edit groups".to_string(),
-        ));
+    if !perms.groups_write {
+        return Err(AppError::forbidden("groups:write"));
     }
 
     // Get CSRF token from cookie
@@ -491,7 +487,8 @@ pub async fn vauban_group_edit_form(
 /// Update vauban group handler (POST /accounts/groups/{uuid}).
 pub async fn update_vauban_group_web(
     State(state): State<AppState>,
-    auth_user: WebAuthUser,
+    _auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
@@ -513,10 +510,9 @@ pub async fn update_vauban_group_web(
         );
     }
 
-    // Only superuser can edit groups
-    if !auth_user.is_superuser {
+    if !perms.groups_write {
         return flash_redirect(
-            flash.error("Only superusers can edit groups"),
+            flash.error("Insufficient privileges: groups:write required"),
             "/accounts/groups",
         );
     }
@@ -554,15 +550,13 @@ pub async fn update_vauban_group_web(
 pub async fn group_add_member_form(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::templates::accounts::{AvailableUser, GroupAddMemberTemplate, GroupInfo};
 
-    // Only staff or superuser can manage members
-    if !auth_user.is_superuser && !auth_user.is_staff {
-        return Err(AppError::Authorization(
-            "You do not have permission to manage group members".to_string(),
-        ));
+    if !perms.groups_manage_members {
+        return Err(AppError::forbidden("groups:manage_members"));
     }
 
     let client = &state.access_client;
@@ -639,15 +633,13 @@ pub async fn group_add_member_form(
 /// Search users for adding to group (HTMX endpoint).
 pub async fn group_member_search(
     State(state): State<AppState>,
-    auth_user: WebAuthUser,
+    _auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
-    // Only staff or superuser can manage members
-    if !auth_user.is_superuser && !auth_user.is_staff {
-        return Err(AppError::Authorization(
-            "You do not have permission to manage group members".to_string(),
-        ));
+    if !perms.groups_manage_members {
+        return Err(AppError::forbidden("groups:manage_members"));
     }
 
     let search_term = params.get("user-search").cloned().unwrap_or_default();
@@ -743,7 +735,8 @@ pub async fn group_member_search(
 /// Add member to group handler (POST /accounts/groups/{uuid}/members).
 pub async fn add_group_member_web(
     State(state): State<AppState>,
-    auth_user: WebAuthUser,
+    _auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
@@ -765,10 +758,9 @@ pub async fn add_group_member_web(
         );
     }
 
-    // Permission check
-    if !auth_user.is_superuser && !auth_user.is_staff {
+    if !perms.groups_manage_members {
         return flash_redirect(
-            flash.error("You do not have permission to manage group members"),
+            flash.error("Insufficient privileges: groups:manage_members required"),
             "/accounts/groups",
         );
     }
@@ -853,9 +845,13 @@ pub struct RemoveMemberParams {
 }
 
 /// Remove member from group handler (POST /accounts/groups/{uuid}/members/{user_uuid}/remove).
+// Axum extractors compose the argument list; the new `perms` extractor
+// pushes us one over the default clippy threshold.
+#[allow(clippy::too_many_arguments)]
 pub async fn remove_group_member_web(
     State(state): State<AppState>,
-    auth_user: WebAuthUser,
+    _auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
     headers: axum::http::HeaderMap,
@@ -882,11 +878,10 @@ pub async fn remove_group_member_web(
         );
     }
 
-    // Permission check
-    if !auth_user.is_superuser && !auth_user.is_staff {
+    if !perms.groups_manage_members {
         return htmx_or_flash_redirect(
             &headers,
-            flash.error("You do not have permission to manage group members"),
+            flash.error("Insufficient privileges: groups:manage_members required"),
             "/accounts/groups",
         );
     }
@@ -961,9 +956,13 @@ pub async fn remove_group_member_web(
 /// Delete vauban group handler (POST /accounts/groups/{uuid}/delete).
 ///
 /// A group can only be deleted if it has no members.
+// Axum extractors compose the argument list; the new `perms` extractor
+// pushes us one over the default clippy threshold.
+#[allow(clippy::too_many_arguments)]
 pub async fn delete_vauban_group_web(
     State(state): State<AppState>,
-    auth_user: WebAuthUser,
+    _auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
     headers: axum::http::HeaderMap,
@@ -990,11 +989,10 @@ pub async fn delete_vauban_group_web(
         );
     }
 
-    // Only superuser can delete groups
-    if !auth_user.is_superuser {
+    if !perms.groups_write {
         return htmx_or_flash_redirect(
             &headers,
-            flash.error("Only superusers can delete groups"),
+            flash.error("Insufficient privileges: groups:write required"),
             "/accounts/groups",
         );
     }

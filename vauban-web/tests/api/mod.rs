@@ -6,6 +6,7 @@ pub mod access_rules_test;
 pub mod accounts_test;
 pub mod asset_groups_test;
 pub mod assets_test;
+pub mod casbin_handler_eradication_test;
 pub mod cleanup_test;
 pub mod sessions_test;
 pub mod vauban_groups_test;

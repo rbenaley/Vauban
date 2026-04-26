@@ -96,6 +96,11 @@ mod tests {
             sessions_write: true,
             profile_read: true,
             profile_write: true,
+            users_manage_admins: true,
+            assets_read_all: true,
+            groups_manage_members: true,
+            sessions_supervise: true,
+            sessions_bypass_access_rules: true,
         }
     }
 

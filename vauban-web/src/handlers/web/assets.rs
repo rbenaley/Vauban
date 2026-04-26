@@ -633,7 +633,16 @@ pub async fn asset_deleted_list(
     let assets: Vec<DeletedAssetItem> = rows
         .into_iter()
         .map(
-            |(uuid, name, hostname, port, connection_username, asset_type, deleted_at, created_at)| {
+            |(
+                uuid,
+                name,
+                hostname,
+                port,
+                connection_username,
+                asset_type,
+                deleted_at,
+                created_at,
+            )| {
                 DeletedAssetItem {
                     uuid,
                     name,

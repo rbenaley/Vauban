@@ -33,16 +33,36 @@ use crate::middleware::auth::AuthUser;
 pub struct PermissionContext {
     pub users_read: bool,
     pub users_write: bool,
+    /// Promote / edit / delete a user holding the superuser flag. Only the
+    /// `role:superuser` (wildcard) grants this; staff cannot escalate
+    /// another account to administrator.
+    pub users_manage_admins: bool,
     pub assets_read: bool,
+    /// Bypass per-asset access-rule filtering when listing assets. Holders see
+    /// every active asset regardless of access rules; non-holders see the
+    /// subset granted by access rules. Staff and superuser have it; regular
+    /// users do not.
+    pub assets_read_all: bool,
     pub assets_write: bool,
     pub groups_read: bool,
+    /// CRUD on the group itself (create, edit, delete). Resserre par rapport
+    /// au comportement legacy: seul le superuser (wildcard) le possede.
     pub groups_write: bool,
+    /// Add or remove members of an existing group. Granted to staff and
+    /// superuser.
+    pub groups_manage_members: bool,
     pub access_rules_read: bool,
     pub access_rules_write: bool,
     pub auth_sessions_read: bool,
     pub auth_sessions_write: bool,
     pub sessions_read: bool,
     pub sessions_write: bool,
+    /// Observe / interact with proxy sessions owned by other users (e.g. live
+    /// WebSocket viewer for audit or shadowing). Staff and superuser.
+    pub sessions_supervise: bool,
+    /// Open a proxy session on an asset *without* a matching access rule.
+    /// Reserved to the superuser via the wildcard policy entry.
+    pub sessions_bypass_access_rules: bool,
     pub admin_view: bool,
     pub profile_read: bool,
     pub profile_write: bool,
@@ -58,32 +78,42 @@ impl PermissionContext {
         let (
             users_read,
             users_write,
+            users_manage_admins,
             assets_read,
+            assets_read_all,
             assets_write,
             groups_read,
             groups_write,
+            groups_manage_members,
             access_rules_read,
             access_rules_write,
             auth_sessions_read,
             auth_sessions_write,
             sessions_read,
             sessions_write,
+            sessions_supervise,
+            sessions_bypass_access_rules,
             admin_view,
             profile_read,
             profile_write,
         ) = tokio::join!(
             check_rbac(state, user, "users", "read"),
             check_rbac(state, user, "users", "write"),
+            check_rbac(state, user, "users", "manage_admins"),
             check_rbac(state, user, "assets", "read"),
+            check_rbac(state, user, "assets", "read_all"),
             check_rbac(state, user, "assets", "write"),
             check_rbac(state, user, "groups", "read"),
             check_rbac(state, user, "groups", "write"),
+            check_rbac(state, user, "groups", "manage_members"),
             check_rbac(state, user, "access_rules", "read"),
             check_rbac(state, user, "access_rules", "write"),
             check_rbac(state, user, "auth_sessions", "read"),
             check_rbac(state, user, "auth_sessions", "write"),
             check_rbac(state, user, "sessions", "read"),
             check_rbac(state, user, "sessions", "write"),
+            check_rbac(state, user, "sessions", "supervise"),
+            check_rbac(state, user, "sessions", "bypass_access_rules"),
             check_rbac(state, user, "admin", "view"),
             check_rbac(state, user, "profile", "read"),
             check_rbac(state, user, "profile", "write"),
@@ -92,16 +122,21 @@ impl PermissionContext {
         Self {
             users_read,
             users_write,
+            users_manage_admins,
             assets_read,
+            assets_read_all,
             assets_write,
             groups_read,
             groups_write,
+            groups_manage_members,
             access_rules_read,
             access_rules_write,
             auth_sessions_read,
             auth_sessions_write,
             sessions_read,
             sessions_write,
+            sessions_supervise,
+            sessions_bypass_access_rules,
             admin_view,
             profile_read,
             profile_write,
@@ -143,9 +178,10 @@ where
 /// `is_staff` attributes - those flags are passed to Casbin as role subjects
 /// and the policy file decides.
 ///
-/// This is the canonical implementation; [`crate::handlers::web::check_rbac`]
-/// is a thin re-export kept for backwards compatibility during the
-/// PermissionContext migration.
+/// This is the canonical implementation. Handlers must read the
+/// pre-computed [`PermissionContext`] (one parallel batch per request)
+/// rather than calling `check_rbac` directly; the function is exposed so
+/// that the middleware and the test suite can populate the context.
 pub async fn check_rbac(
     state: &AppState,
     auth_user: &AuthUser,
@@ -181,16 +217,21 @@ mod tests {
         let ctx = PermissionContext::default();
         assert!(!ctx.users_read);
         assert!(!ctx.users_write);
+        assert!(!ctx.users_manage_admins);
         assert!(!ctx.assets_read);
+        assert!(!ctx.assets_read_all);
         assert!(!ctx.assets_write);
         assert!(!ctx.groups_read);
         assert!(!ctx.groups_write);
+        assert!(!ctx.groups_manage_members);
         assert!(!ctx.access_rules_read);
         assert!(!ctx.access_rules_write);
         assert!(!ctx.auth_sessions_read);
         assert!(!ctx.auth_sessions_write);
         assert!(!ctx.sessions_read);
         assert!(!ctx.sessions_write);
+        assert!(!ctx.sessions_supervise);
+        assert!(!ctx.sessions_bypass_access_rules);
         assert!(!ctx.admin_view);
         assert!(!ctx.profile_read);
         assert!(!ctx.profile_write);

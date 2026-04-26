@@ -788,11 +788,13 @@ mod tests {
             ("users", "read"),
             ("users", "write"),
             ("assets", "read"),
+            ("assets", "read_all"),
             ("assets", "write"),
             ("sessions", "read"),
             ("sessions", "write"),
+            ("sessions", "supervise"),
             ("groups", "read"),
-            ("groups", "write"),
+            ("groups", "manage_members"),
             ("access_rules", "read"),
             ("access_rules", "write"),
             ("admin", "view"),
@@ -810,6 +812,29 @@ mod tests {
             let response: Message = client.recv().unwrap();
             if let Message::RbacResponse { result, .. } = response {
                 assert!(result.allowed, "staff must be allowed for {obj}/{act}");
+            } else {
+                panic!("Expected RbacResponse");
+            }
+        }
+
+        let denied = [
+            ("groups", "write"),
+            ("sessions", "bypass_access_rules"),
+            ("users", "manage_admins"),
+        ];
+
+        for (obj, act) in denied {
+            let request = Message::RbacCheck {
+                request_id: 201,
+                subject: "role:staff".to_string(),
+                object: obj.to_string(),
+                action: act.to_string(),
+            };
+            handle_message(&service, &mut state, request).unwrap();
+
+            let response: Message = client.recv().unwrap();
+            if let Message::RbacResponse { result, .. } = response {
+                assert!(!result.allowed, "staff must be denied for {obj}/{act}");
             } else {
                 panic!("Expected RbacResponse");
             }
@@ -1140,8 +1165,7 @@ mod tests {
             "EXPECTED_PEER_COUNT must reflect the 4 TOPOLOGY incoming peers"
         );
         assert!(
-            source.contains("anyhow::bail!")
-                && source.contains("TOPOLOGY mismatch"),
+            source.contains("anyhow::bail!") && source.contains("TOPOLOGY mismatch"),
             "vauban-access must bail! at boot when peer_count drifts from \
              EXPECTED_PEER_COUNT (asymmetric topology = silent timeouts)"
         );
@@ -1156,10 +1180,7 @@ mod tests {
         let source = prod_source();
         for peer_suffix in ["WEB", "PROXY_SSH", "PROXY_RDP", "AUTH"] {
             for direction in ["READ", "WRITE"] {
-                let needle = format!(
-                    "remove_var(\"VAUBAN_{}_IPC_{}\")",
-                    peer_suffix, direction
-                );
+                let needle = format!("remove_var(\"VAUBAN_{}_IPC_{}\")", peer_suffix, direction);
                 assert!(
                     source.contains(&needle),
                     "vauban-access must remove env var VAUBAN_{}_IPC_{} \

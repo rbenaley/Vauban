@@ -143,7 +143,12 @@ pub async fn ws_connection_limit(
 /// - The session exists in the database with the given UUID
 /// - The session is in a connectable state (connecting or active)
 /// - The session's `user_id` matches the authenticated user's UUID
-/// - OR the user is staff/superuser (admin monitoring)
+/// - OR the caller holds `sessions:supervise` (live shadowing for audit)
+///
+/// `can_supervise` MUST come from the request-scoped
+/// [`crate::auth::PermissionContext`] so the gate is uniform with the
+/// rest of the application; passing the raw `is_staff || is_superuser`
+/// shortcut here would silently bypass any custom Casbin policy.
 ///
 /// Returns `Err(StatusCode)` otherwise (`NOT_FOUND`, `GONE`, `FORBIDDEN`,
 /// `BAD_REQUEST`, or `INTERNAL_SERVER_ERROR`).
@@ -156,6 +161,7 @@ pub(crate) async fn verify_session_ownership(
     state: &AppState,
     session_uuid_str: &str,
     user: &AuthUser,
+    can_supervise: bool,
 ) -> Result<(), axum::http::StatusCode> {
     use crate::schema::{proxy_sessions, users};
     use diesel::prelude::*;
@@ -208,7 +214,7 @@ pub(crate) async fn verify_session_ownership(
             );
             Err(axum::http::StatusCode::GONE)
         }
-        Some((owner, _)) if owner == user_uuid || user.is_staff || user.is_superuser => Ok(()),
+        Some((owner, _)) if owner == user_uuid || can_supervise => Ok(()),
         Some(_) => {
             warn!(
                 session_id = %session_uuid_str,
@@ -256,12 +262,22 @@ pub async fn ws_session_guard(
         return axum::http::StatusCode::FORBIDDEN.into_response();
     }
 
+    // The PermissionContext middleware runs before this guard, so the
+    // request scope already holds a fully-loaded context. Falling back to
+    // the fail-closed default keeps `can_supervise = false` for an
+    // unauthenticated request that somehow slips through.
+    let can_supervise = request
+        .extensions()
+        .get::<crate::auth::PermissionContext>()
+        .map(|p| p.sessions_supervise)
+        .unwrap_or(false);
+
     // Extract session ID from the last path segment
     // Routes: /ws/terminal/{session_id} and /ws/session/{id}
     let path = request.uri().path().to_string();
     let session_id = path.rsplit('/').next().unwrap_or("");
 
-    match verify_session_ownership(&state, session_id, &user).await {
+    match verify_session_ownership(&state, session_id, &user, can_supervise).await {
         Err(status) => status.into_response(),
         Ok(()) => next.run(request).await,
     }
@@ -3134,7 +3150,10 @@ mod tests {
     fn test_no_ws_handler_uses_raw_auth_user() {
         let source = include_str!("websocket.rs");
         // Strip the test module so we only inspect production handlers.
-        let prod = source.find("#[cfg(test)]").map(|i| &source[..i]).unwrap_or(source);
+        let prod = source
+            .find("#[cfg(test)]")
+            .map(|i| &source[..i])
+            .unwrap_or(source);
 
         // Extract a balanced parenthesised slice starting at byte index
         // `start` of `s` (which must point at '('). Returns the slice

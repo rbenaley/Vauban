@@ -11,6 +11,7 @@ use diesel_async::RunQueryDsl;
 use serde::Deserialize;
 
 use crate::AppState;
+use crate::auth::PermissionContext;
 use crate::error::{AppError, AppResult};
 use crate::middleware::auth::AuthUser;
 use crate::models::user::{
@@ -29,10 +30,13 @@ pub struct ListUsersParams {
 /// List users handler.
 pub async fn list_users(
     State(state): State<AppState>,
-    user: AuthUser,
+    _user: AuthUser,
+    perms: PermissionContext,
     Query(params): Query<ListUsersParams>,
 ) -> AppResult<Json<Vec<UserDto>>> {
-    super::require_staff(&state, &user).await?;
+    if !perms.users_read {
+        return Err(AppError::forbidden("users:read"));
+    }
 
     let mut conn = state
         .db_pool
@@ -58,10 +62,13 @@ pub async fn list_users(
 /// Get user by UUID handler.
 pub async fn get_user(
     State(state): State<AppState>,
-    user: AuthUser,
+    _user: AuthUser,
+    perms: PermissionContext,
     Path(user_uuid_str): Path<String>,
 ) -> AppResult<Json<UserDto>> {
-    super::require_staff(&state, &user).await?;
+    if !perms.users_read {
+        return Err(AppError::forbidden("users:read"));
+    }
 
     // Parse UUID manually for better error messages
     let user_uuid = Uuid::parse_str(&user_uuid_str)
@@ -97,12 +104,22 @@ fn sanitize_text(value: Option<String>) -> Option<String> {
 }
 
 /// Create user handler.
+///
+/// Requires `users:write` for any account creation. Promoting the new
+/// account to superuser additionally requires `users:manage_admins`,
+/// preventing staff from escalating privileges by going through the API.
 pub async fn create_user(
     State(state): State<AppState>,
-    user: AuthUser,
+    _user: AuthUser,
+    perms: PermissionContext,
     Json(request): Json<CreateUserRequest>,
 ) -> AppResult<Json<UserDto>> {
-    super::require_staff(&state, &user).await?;
+    if !perms.users_write {
+        return Err(AppError::forbidden("users:write"));
+    }
+    if request.is_superuser.unwrap_or(false) && !perms.users_manage_admins {
+        return Err(AppError::forbidden("users:manage_admins"));
+    }
 
     validator::Validate::validate(&request)
         .map_err(|e| AppError::Validation(format!("Validation failed: {:?}", e)))?;
@@ -155,11 +172,14 @@ pub async fn create_user(
 /// Update user handler.
 pub async fn update_user(
     State(state): State<AppState>,
-    user: AuthUser,
+    _user: AuthUser,
+    perms: PermissionContext,
     Path(user_uuid_str): Path<String>,
     Json(request): Json<UpdateUserRequest>,
 ) -> AppResult<Json<UserDto>> {
-    super::require_staff(&state, &user).await?;
+    if !perms.users_write {
+        return Err(AppError::forbidden("users:write"));
+    }
 
     // Parse UUID manually for better error messages
     let user_uuid = Uuid::parse_str(&user_uuid_str)

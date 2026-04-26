@@ -223,6 +223,7 @@ pub async fn terminate_session_web(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     jar: CookieJar,
     axum::extract::Path(session_uuid_str): axum::extract::Path<String>,
     Form(form): Form<CsrfOnlyForm>,
@@ -245,6 +246,7 @@ pub async fn terminate_session_web(
         State(state),
         headers,
         auth_user.0,
+        perms,
         axum::extract::Path(session_uuid_str),
     )
     .await
@@ -1015,30 +1017,34 @@ pub async fn approval_list(
                 .await
                 .unwrap_or_default();
             rows.into_iter()
-                .map(|(
-                    uuid,
-                    username,
-                    asset_name,
-                    asset_type,
-                    session_type,
-                    justification,
-                    client_ip,
-                    created_at,
-                    status,
-                    max_session_duration,
-                )| crate::templates::sessions::approval_list::ApprovalListItem {
-                    uuid: uuid.to_string(),
-                    username,
-                    asset_name,
-                    asset_type,
-                    session_type,
-                    justification,
-                    client_ip: client_ip.ip().to_string(),
-                    created_at: created_at.format("%b %d, %Y %H:%M").to_string(),
-                    status,
-                    max_session_duration,
-                    is_own: true,
-                })
+                .map(
+                    |(
+                        uuid,
+                        username,
+                        asset_name,
+                        asset_type,
+                        session_type,
+                        justification,
+                        client_ip,
+                        created_at,
+                        status,
+                        max_session_duration,
+                    )| {
+                        crate::templates::sessions::approval_list::ApprovalListItem {
+                            uuid: uuid.to_string(),
+                            username,
+                            asset_name,
+                            asset_type,
+                            session_type,
+                            justification,
+                            client_ip: client_ip.ip().to_string(),
+                            created_at: created_at.format("%b %d, %Y %H:%M").to_string(),
+                            status,
+                            max_session_duration,
+                            is_own: true,
+                        }
+                    },
+                )
                 .collect()
         } else {
             Vec::new()
@@ -1195,9 +1201,13 @@ pub async fn approval_detail(
     let is_own = requester_uuid.to_string() == auth_user.uuid;
 
     // Resolve who approved or rejected, when, and why.
-    type DecisionRow = (Option<i32>, Option<chrono::DateTime<chrono::Utc>>,
-                        Option<i32>, Option<chrono::DateTime<chrono::Utc>>,
-                        Option<String>);
+    type DecisionRow = (
+        Option<i32>,
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<i32>,
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<String>,
+    );
     let (decided_by, decided_at, decision_reason) = {
         let row: Option<DecisionRow> = proxy_sessions::table
             .filter(proxy_sessions::uuid.eq(approval_uuid))
