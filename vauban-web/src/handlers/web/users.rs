@@ -798,6 +798,23 @@ pub async fn user_edit_form(
 }
 
 /// Update user handler (POST /accounts/users/{uuid}).
+///
+/// Role-invariant fence (see [`crate::services::role_invariants`]):
+///
+/// * **Self-demotion** is refused up-front by [`check_self_change`]: an
+///   operator cannot remove their own `is_superuser`/`is_staff` flag or
+///   deactivate their own row through this handler. Casbin already
+///   refuses some of these (staff cannot edit a superuser at all), but
+///   nothing in Casbin stops a superuser from deleting their own
+///   privileges and locking the platform out.
+/// * **Last-active-superuser** is enforced inside a SERIALIZABLE
+///   transaction that wraps the in-tx snapshot read,
+///   [`check_last_active_superuser`] and the actual `UPDATE`. Two
+///   operators racing to demote the last two superusers cannot both
+///   succeed: at most one commits, the second sees the post-commit
+///   snapshot and is rejected (or retried, then rejected). Without
+///   SERIALIZABLE this would be a TOCTOU window between the count and
+///   the update.
 pub async fn update_user_web(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
@@ -808,6 +825,10 @@ pub async fn update_user_web(
     Form(form): Form<UpdateUserWebForm>,
 ) -> Response {
     use crate::schema::users;
+    use crate::services::role_invariants::{
+        ChangeIntent, CheckError, RoleSnapshot, check_last_active_superuser, check_self_change,
+        run_serializable,
+    };
     use chrono::Utc;
 
     let flash = incoming_flash.flash();
@@ -840,6 +861,22 @@ pub async fn update_user_web(
         }
     };
 
+    // Operator UUID is parsed once for the self-change pure check below.
+    // The middleware guarantees `auth_user.uuid` is always a valid UUID
+    // string (it loads it from the same DB column we will compare to);
+    // a parse failure here would mean the auth state is corrupted and
+    // we treat that as a hard refusal rather than silently letting the
+    // self-check pass.
+    let operator_uuid = match uuid::Uuid::parse_str(&auth_user.uuid) {
+        Ok(u) => u,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Invalid session"),
+                &format!("/accounts/users/{}/edit", user_uuid),
+            );
+        }
+    };
+
     let mut conn = match state.db_pool.get().await {
         Ok(conn) => conn,
         Err(_) => {
@@ -851,16 +888,21 @@ pub async fn update_user_web(
     };
 
     // Get current user data to check permissions and detect is_active changes
-    let current_user: Option<(i32, bool, bool)> = users::table
+    let current_user: Option<(i32, bool, bool, bool)> = users::table
         .filter(users::uuid.eq(parsed_uuid))
         .filter(users::is_deleted.eq(false))
-        .select((users::id, users::is_superuser, users::is_active))
+        .select((
+            users::id,
+            users::is_superuser,
+            users::is_staff,
+            users::is_active,
+        ))
         .first(&mut conn)
         .await
         .optional()
         .unwrap_or(None);
 
-    let (user_id, target_is_superuser, old_is_active) = match current_user {
+    let (user_id, target_is_superuser, target_is_staff, old_is_active) = match current_user {
         Some(u) => u,
         None => {
             return flash_redirect(flash.error("User not found"), "/accounts/users");
@@ -878,6 +920,39 @@ pub async fn update_user_web(
     if wants_superuser && !perms.users_manage_admins {
         return flash_redirect(
             flash.error("Only a superuser can grant superuser privileges"),
+            &format!("/accounts/users/{}/edit", user_uuid),
+        );
+    }
+
+    let is_active = form.is_active.as_deref() == Some("on");
+    let is_staff = form.is_staff.as_deref() == Some("on");
+
+    // Self-change check (role-invariants). Pure, no DB. Fences out
+    // self-demote / self-deactivate before any expensive validation or
+    // side effect runs. Self-delete is unreachable from this edit
+    // handler (see `delete_user_web` for that case) so we pass
+    // `intent_delete = false` here.
+    let before = RoleSnapshot {
+        is_superuser: target_is_superuser,
+        is_staff: target_is_staff,
+        is_active: old_is_active,
+        is_deleted: false,
+    };
+    let after = RoleSnapshot {
+        is_superuser: wants_superuser,
+        is_staff,
+        is_active,
+        is_deleted: false,
+    };
+    if let Err(violation) = check_self_change(operator_uuid, parsed_uuid, &before, &after, false) {
+        tracing::info!(
+            operator = %auth_user.uuid,
+            target = %user_uuid,
+            violation = ?violation,
+            "update_user_web: refused self-demotion"
+        );
+        return flash_redirect(
+            flash.error(violation.flash_message()),
             &format!("/accounts/users/{}/edit", user_uuid),
         );
     }
@@ -969,49 +1044,136 @@ pub async fn update_user_web(
         None
     };
 
-    let is_active = form.is_active.as_deref() == Some("on");
-    let is_staff = form.is_staff.as_deref() == Some("on");
     let now = Utc::now();
 
     // Sanitize text fields to prevent stored XSS
     let sanitized_first_name = sanitize_opt_ref(form.first_name.as_ref().filter(|s| !s.is_empty()));
     let sanitized_last_name = sanitize_opt_ref(form.last_name.as_ref().filter(|s| !s.is_empty()));
 
-    // Update with or without password
-    let result = if let Some(ref hash) = password_hash {
-        diesel::update(users::table.filter(users::id.eq(user_id)))
-            .set((
-                users::username.eq(&form.username),
-                users::email.eq(&form.email),
-                users::password_hash.eq(hash),
-                users::first_name.eq(&sanitized_first_name),
-                users::last_name.eq(&sanitized_last_name),
-                users::is_active.eq(is_active),
-                users::is_staff.eq(is_staff),
-                users::is_superuser.eq(wants_superuser),
-                users::updated_at.eq(now),
-            ))
-            .execute(&mut conn)
-            .await
-    } else {
-        diesel::update(users::table.filter(users::id.eq(user_id)))
-            .set((
-                users::username.eq(&form.username),
-                users::email.eq(&form.email),
-                users::first_name.eq(&sanitized_first_name),
-                users::last_name.eq(&sanitized_last_name),
-                users::is_active.eq(is_active),
-                users::is_staff.eq(is_staff),
-                users::is_superuser.eq(wants_superuser),
-                users::updated_at.eq(now),
-            ))
-            .execute(&mut conn)
-            .await
-    };
+    // Drop the pre-tx connection: `run_serializable` checks one out of
+    // its own (potentially different to allow proper isolation) and
+    // holding two simultaneously would deadlock under sustained load
+    // when the pool is at its `max_connections` cap.
+    drop(conn);
 
-    match result {
-        Ok(_) => {
-            // Trigger side effects on is_active change (SEC-07)
+    // Run the UPDATE inside a SERIALIZABLE transaction so the in-tx
+    // count(other active superusers) and the UPDATE form one atomic
+    // unit. Two concurrent demotions of two different last superusers
+    // cannot both succeed: SERIALIZABLE detects the rw-dependency cycle
+    // and the loser is either retried (and re-checked against the new
+    // post-commit state) or returned with `LastActiveSuperuserDemote`.
+    let pool_ref = &state.db_pool;
+    let form_ref = &form;
+    let pwd_ref = &password_hash;
+    let sf_ref = &sanitized_first_name;
+    let sl_ref = &sanitized_last_name;
+    let tx_outcome = run_serializable::<bool, _>(pool_ref, move |c| {
+        let username = form_ref.username.clone();
+        let email = form_ref.email.clone();
+        let first_name = sf_ref.clone();
+        let last_name = sl_ref.clone();
+        let password_hash_owned = pwd_ref.clone();
+        Box::pin(async move {
+            // Re-read the target inside the SERIALIZABLE snapshot so the
+            // count we are about to take and the row we are about to
+            // update agree on what "before" was. A concurrent committed
+            // demote between the pre-tx read and now is invisible until
+            // the next snapshot, but that is exactly what SERIALIZABLE
+            // will detect at commit time.
+            let row: Option<(i32, bool, bool, bool, bool)> = users::table
+                .filter(users::uuid.eq(parsed_uuid))
+                .filter(users::is_deleted.eq(false))
+                .select((
+                    users::id,
+                    users::is_superuser,
+                    users::is_staff,
+                    users::is_active,
+                    users::is_deleted,
+                ))
+                .first(c)
+                .await
+                .optional()
+                .map_err(CheckError::Db)?;
+            let (in_tx_id, b_super, b_staff, b_active, b_deleted) = match row {
+                Some(t) => t,
+                None => {
+                    // Target disappeared between the pre-tx read and
+                    // the SERIALIZABLE snapshot: bail out cleanly. The
+                    // UPDATE would have been a no-op anyway.
+                    return Ok(false);
+                }
+            };
+            let in_tx_before = RoleSnapshot {
+                is_superuser: b_super,
+                is_staff: b_staff,
+                is_active: b_active,
+                is_deleted: b_deleted,
+            };
+
+            // Determine intent purely from in-tx state vs form. The
+            // outside-tx `before` cannot be trusted here: it might be
+            // stale by one committed write.
+            let intent = if in_tx_before.is_superuser && in_tx_before.is_active {
+                if !wants_superuser {
+                    Some(ChangeIntent::Demote)
+                } else if !is_active {
+                    Some(ChangeIntent::Deactivate)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            if let Some(intent) = intent {
+                check_last_active_superuser(c, in_tx_id, &in_tx_before, intent).await?;
+            }
+
+            if let Some(ref hash) = password_hash_owned {
+                diesel::update(users::table.filter(users::id.eq(in_tx_id)))
+                    .set((
+                        users::username.eq(&username),
+                        users::email.eq(&email),
+                        users::password_hash.eq(hash),
+                        users::first_name.eq(&first_name),
+                        users::last_name.eq(&last_name),
+                        users::is_active.eq(is_active),
+                        users::is_staff.eq(is_staff),
+                        users::is_superuser.eq(wants_superuser),
+                        users::updated_at.eq(now),
+                    ))
+                    .execute(c)
+                    .await
+                    .map_err(CheckError::Db)?;
+            } else {
+                diesel::update(users::table.filter(users::id.eq(in_tx_id)))
+                    .set((
+                        users::username.eq(&username),
+                        users::email.eq(&email),
+                        users::first_name.eq(&first_name),
+                        users::last_name.eq(&last_name),
+                        users::is_active.eq(is_active),
+                        users::is_staff.eq(is_staff),
+                        users::is_superuser.eq(wants_superuser),
+                        users::updated_at.eq(now),
+                    ))
+                    .execute(c)
+                    .await
+                    .map_err(CheckError::Db)?;
+            }
+            Ok(true)
+        })
+    })
+    .await;
+
+    match tx_outcome {
+        Ok(true) => {
+            // Trigger side effects on is_active change (SEC-07).
+            // These are best-effort, fire-and-forget side channels
+            // (revoke active sessions, broadcast deactivation) and
+            // therefore intentionally outside the SERIALIZABLE tx --
+            // running them inside would extend the lock window for no
+            // correctness benefit (the tx already committed when we
+            // get here).
             if old_is_active && !is_active {
                 deactivate_user(&state, user_id, &user_uuid).await;
             } else if !old_is_active && is_active {
@@ -1030,7 +1192,20 @@ pub async fn update_user_web(
                 &format!("/accounts/users/{}", user_uuid),
             )
         }
-        Err(_) => flash_redirect(
+        Ok(false) => flash_redirect(flash.error("User not found"), "/accounts/users"),
+        Err(CheckError::Violation(violation)) => {
+            tracing::info!(
+                operator = %auth_user.uuid,
+                target = %user_uuid,
+                violation = ?violation,
+                "update_user_web: refused last-active-superuser mutation"
+            );
+            flash_redirect(
+                flash.error(violation.flash_message()),
+                &format!("/accounts/users/{}/edit", user_uuid),
+            )
+        }
+        Err(CheckError::Db(_)) => flash_redirect(
             flash.error("Failed to update user. Please try again."),
             &format!("/accounts/users/{}/edit", user_uuid),
         ),
@@ -1052,6 +1227,18 @@ pub struct DeleteUserForm {
 
 /// Delete user handler (POST /accounts/users/{uuid}/delete).
 /// Web only - not available via API.
+///
+/// Role-invariant fence (see [`crate::services::role_invariants`]):
+///
+/// * **Self-delete** is always refused, even for a superuser. There is
+///   no legitimate use case for it (the operator can be deleted by a
+///   peer superuser) and allowing it would be a one-click way to lose
+///   the operator's own session, audit context, and -- if the operator
+///   was the last active superuser -- the entire admin floor.
+/// * **Last-active-superuser** deletion is refused. The previous
+///   `count() then update()` pair was a TOCTOU window; both are now
+///   inside a SERIALIZABLE transaction so two concurrent deletes of
+///   the last two superusers cannot both succeed.
 pub async fn delete_user_web(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
@@ -1062,6 +1249,10 @@ pub async fn delete_user_web(
     Form(form): Form<DeleteUserForm>,
 ) -> Response {
     use crate::schema::users;
+    use crate::services::role_invariants::{
+        ChangeIntent, CheckError, RoleSnapshot, check_last_active_superuser, check_self_change,
+        run_serializable,
+    };
     use chrono::Utc;
 
     let flash = incoming_flash.flash();
@@ -1094,6 +1285,19 @@ pub async fn delete_user_web(
         }
     };
 
+    // Operator UUID for the self-change pure check below. Same
+    // hardening as in `update_user_web`: a corrupted auth state means
+    // hard refusal.
+    let operator_uuid = match uuid::Uuid::parse_str(&auth_user.uuid) {
+        Ok(u) => u,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Invalid session"),
+                &format!("/accounts/users/{}", user_uuid),
+            );
+        }
+    };
+
     let mut conn = match state.db_pool.get().await {
         Ok(conn) => conn,
         Err(_) => {
@@ -1105,16 +1309,21 @@ pub async fn delete_user_web(
     };
 
     // Get target user data
-    let target_user: Option<(i32, bool, bool)> = users::table
+    let target_user: Option<(i32, bool, bool, bool)> = users::table
         .filter(users::uuid.eq(parsed_uuid))
         .filter(users::is_deleted.eq(false))
-        .select((users::id, users::is_superuser, users::is_active))
+        .select((
+            users::id,
+            users::is_superuser,
+            users::is_staff,
+            users::is_active,
+        ))
         .first(&mut conn)
         .await
         .optional()
         .unwrap_or(None);
 
-    let (user_id, target_is_superuser, target_is_active) = match target_user {
+    let (user_id, target_is_superuser, target_is_staff, target_is_active) = match target_user {
         Some(u) => u,
         None => {
             return flash_redirect(
@@ -1131,23 +1340,27 @@ pub async fn delete_user_web(
         );
     }
 
-    // Prevent deleting the last active superuser
-    if target_is_superuser && target_is_active {
-        let superuser_count: i64 = users::table
-            .filter(users::is_superuser.eq(true))
-            .filter(users::is_active.eq(true))
-            .filter(users::is_deleted.eq(false))
-            .count()
-            .get_result(&mut conn)
-            .await
-            .unwrap_or(0);
-
-        if superuser_count <= 1 {
-            return flash_redirect(
-                flash.error("Cannot delete the last active superuser"),
-                &format!("/accounts/users/{}", user_uuid),
-            );
-        }
+    // Self-delete is always refused, regardless of permissions. The
+    // operator can never delete their own account through this
+    // handler. Casbin already has the role to do it, but the role
+    // invariants forbid it irrespective of role.
+    let snap = RoleSnapshot {
+        is_superuser: target_is_superuser,
+        is_staff: target_is_staff,
+        is_active: target_is_active,
+        is_deleted: false,
+    };
+    if let Err(violation) = check_self_change(operator_uuid, parsed_uuid, &snap, &snap, true) {
+        tracing::info!(
+            operator = %auth_user.uuid,
+            target = %user_uuid,
+            violation = ?violation,
+            "delete_user_web: refused self-delete"
+        );
+        return flash_redirect(
+            flash.error(violation.flash_message()),
+            &format!("/accounts/users/{}", user_uuid),
+        );
     }
 
     // Step-up MFA: deletion is irreversible (modulo the soft-delete fence
@@ -1169,35 +1382,99 @@ pub async fn delete_user_web(
         return flash_redirect(flash.error(err.flash_message()), &detail_url);
     }
 
-    // Soft-delete: mark as deleted and retire username/email so the UNIQUE
-    // constraints are freed for future reuse while preserving audit history.
-    let now = Utc::now();
-    let suffix = format!("_deleted_{}", now.timestamp_millis());
+    // Drop the pre-tx connection before entering `run_serializable`:
+    // holding two simultaneously would deadlock under sustained load
+    // when the pool is at its `max_connections` cap.
+    drop(conn);
 
-    let current: (String, String) = users::table
-        .filter(users::id.eq(user_id))
-        .select((users::username, users::email))
-        .first(&mut conn)
-        .await
-        .unwrap_or_default();
+    // Soft-delete inside a SERIALIZABLE transaction. The previous
+    // implementation did `count(active superusers) then UPDATE` outside
+    // any transaction, which was a TOCTOU window: two operators each
+    // counting "2 active superusers" then each soft-deleting one of
+    // them ended up with zero superusers. The SERIALIZABLE wrap
+    // collapses that race.
+    let pool_ref = &state.db_pool;
+    let tx_outcome = run_serializable::<bool, _>(pool_ref, move |c| {
+        Box::pin(async move {
+            // Re-read inside the snapshot so the count and the update
+            // agree on what "before" was.
+            let row: Option<(i32, String, String, bool, bool, bool)> = users::table
+                .filter(users::uuid.eq(parsed_uuid))
+                .filter(users::is_deleted.eq(false))
+                .select((
+                    users::id,
+                    users::username,
+                    users::email,
+                    users::is_superuser,
+                    users::is_staff,
+                    users::is_active,
+                ))
+                .first(c)
+                .await
+                .optional()
+                .map_err(CheckError::Db)?;
+            let (in_tx_id, current_username, current_email, b_super, b_staff, b_active) = match row
+            {
+                Some(t) => t,
+                None => return Ok(false),
+            };
+            let in_tx_before = RoleSnapshot {
+                is_superuser: b_super,
+                is_staff: b_staff,
+                is_active: b_active,
+                is_deleted: false,
+            };
 
-    let result = diesel::update(users::table.filter(users::id.eq(user_id)))
-        .set((
-            users::is_deleted.eq(true),
-            users::deleted_at.eq(now),
-            users::updated_at.eq(now),
-            users::username.eq(format!("{}{}", current.0, suffix)),
-            users::email.eq(format!("{}{}", current.1, suffix)),
-        ))
-        .execute(&mut conn)
-        .await;
+            // Last-active-superuser fence. Only relevant when the
+            // target is currently a usable superuser (non-superusers
+            // and inactive ones don't count toward the minimum).
+            check_last_active_superuser(c, in_tx_id, &in_tx_before, ChangeIntent::Delete).await?;
 
-    match result {
-        Ok(_) => flash_redirect(
+            // Soft-delete: mark as deleted and retire username/email
+            // so the UNIQUE constraints are freed for future reuse
+            // while preserving audit history.
+            let now = Utc::now();
+            let suffix = format!("_deleted_{}", now.timestamp_millis());
+            diesel::update(users::table.filter(users::id.eq(in_tx_id)))
+                .set((
+                    users::is_deleted.eq(true),
+                    users::deleted_at.eq(now),
+                    users::updated_at.eq(now),
+                    users::username.eq(format!("{}{}", current_username, suffix)),
+                    users::email.eq(format!("{}{}", current_email, suffix)),
+                ))
+                .execute(c)
+                .await
+                .map_err(CheckError::Db)?;
+            Ok(true)
+        })
+    })
+    .await;
+
+    let _ = user_id; // user_id was only needed for permission gating above
+
+    match tx_outcome {
+        Ok(true) => flash_redirect(
             flash.success("User deleted successfully"),
             "/accounts/users",
         ),
-        Err(_) => flash_redirect(
+        Ok(false) => flash_redirect(
+            flash.error("User not found or already deleted"),
+            "/accounts/users",
+        ),
+        Err(CheckError::Violation(violation)) => {
+            tracing::info!(
+                operator = %auth_user.uuid,
+                target = %user_uuid,
+                violation = ?violation,
+                "delete_user_web: refused last-active-superuser delete"
+            );
+            flash_redirect(
+                flash.error(violation.flash_message()),
+                &format!("/accounts/users/{}", user_uuid),
+            )
+        }
+        Err(CheckError::Db(_)) => flash_redirect(
             flash.error("Failed to delete user. Please try again."),
             &format!("/accounts/users/{}", user_uuid),
         ),

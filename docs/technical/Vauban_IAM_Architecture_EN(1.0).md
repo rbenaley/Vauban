@@ -1452,6 +1452,101 @@ detects:
 | Test coverage | Required redundant `is_staff` flips in fixtures | Single `PermissionContext::default()` plus targeted overrides |
 | Drift between server and template | Frequent: easy to gate one but forget the other | Impossible: same struct is consulted on both sides |
 
+### 9.7 Role invariants (non-Casbin)
+
+Casbin answers *who* may invoke a handler. It does **not** answer *what
+minimum/maximum the resulting state must satisfy*. Two such invariants
+are enforced server-side, independently of the Casbin policy and on
+top of any custom policy a deployment might load. They live in
+[`vauban-web/src/services/role_invariants.rs`](../../vauban-web/src/services/role_invariants.rs)
+and are wired into `update_user_web`, `delete_user_web` and
+`api::accounts::update_user`.
+
+#### Catalogue
+
+| Invariant | Variant of `RoleViolation` | Stable flash message |
+|---|---|---|
+| No self-demote of `is_superuser` | `SelfDemoteSuperuser` | "You cannot remove your own superuser privileges" |
+| No self-demote of `is_staff` | `SelfDemoteStaff` | "You cannot remove your own staff privileges" |
+| No self-deactivation | `SelfDeactivate` | "You cannot deactivate your own account" |
+| No self-delete | `SelfDelete` | "You cannot delete your own account" |
+| Last active superuser cannot be demoted | `LastActiveSuperuserDemote` | "Cannot demote the last active superuser" |
+| Last active superuser cannot be deactivated | `LastActiveSuperuserDeactivate` | "Cannot deactivate the last active superuser" |
+| Last active superuser cannot be deleted | `LastActiveSuperuserDelete` | "Cannot delete the last active superuser" |
+
+The "self" group exists so an operator cannot lock themselves out of
+the platform with one click. The "last active superuser" group exists
+because Casbin alone never denies an operation a superuser is allowed
+to perform on another user; without this fence two operators could
+each demote / deactivate / delete the only two remaining superusers
+and leave the platform admin-less.
+
+`UserContext.is_staff` / `UserContext.is_superuser` remain reserved
+for display purposes; the role-invariant fence reads its own snapshot
+of `(is_superuser, is_staff, is_active, is_deleted)` from the database
+inside the SERIALIZABLE transaction, not from the JWT.
+
+#### Layering vs Casbin
+
+```mermaid
+flowchart TD
+    R[POST /accounts/users/uuid/edit] --> CSRF{CSRF valid?}
+    CSRF -->|no| R0[redirect with flash error]
+    CSRF -->|yes| CASBIN{Casbin: users:write?}
+    CASBIN -->|no| R1[redirect with flash error]
+    CASBIN -->|yes| SELF{check_self_change<br/>operator == target?}
+    SELF -->|self diminution| R2[redirect: SelfDemote* / SelfDeactivate / SelfDelete]
+    SELF -->|ok| TX[BEGIN SERIALIZABLE]
+    TX --> SNAP[snapshot target row]
+    SNAP --> COUNT{check_last_active_superuser:<br/>is target an active superuser<br/>AND mutation reduces count?}
+    COUNT -->|count(others)==0| ABORT[abort tx, redirect: LastActiveSuperuser*]
+    COUNT -->|>=1| UPDATE[UPDATE / soft-delete]
+    UPDATE --> COMMIT{commit succeeds?}
+    COMMIT -->|SerializationFailure| RETRY[retry up to 3x with 10/20/40 ms backoff]
+    COMMIT -->|yes| OK[redirect: success flash]
+```
+
+Casbin is never bypassed: the role-invariant fence runs **after**
+Casbin has authorised the call, never instead of it. The two layers
+are composed, not one OR the other.
+
+#### Atomicity contract
+
+The "last active superuser" check runs **inside** the same
+SERIALIZABLE Postgres transaction that owns the subsequent UPDATE /
+soft-delete. Without that, two operators racing to demote the last
+two superusers would each `count() == 1 other`, both proceed, and
+commit two writes that together break the invariant (TOCTOU).
+SERIALIZABLE detects the read-write dependency cycle at commit time
+and aborts the loser with `40001`, which the
+[`run_serializable`](../../vauban-web/src/services/role_invariants.rs)
+helper retries up to three times with exponential backoff (10 / 20 /
+40 ms) before bubbling up. The integration test
+`web::role_invariants_test::concurrent_demotions_keep_at_least_one_superuser`
+spins this race up via `tokio::spawn` + `tokio::sync::Barrier` and
+asserts that at least one of the two targets remains an active
+superuser at the end.
+
+The pure self-check ([`check_self_change`](../../vauban-web/src/services/role_invariants.rs))
+runs **before** the transaction since `operator_uuid == target_uuid`
+does not depend on database state. Self-check fires before
+last-superuser-check by construction; this ordering is pinned by
+unit and integration tests so a flash banner never claims
+"last active superuser" when the operator is in fact targeting
+their own row.
+
+#### Test surface
+
+| Concern | Test |
+|---|---|
+| Pure matrix of `check_self_change` (no DB) | `vauban_web::services::role_invariants::tests::*` |
+| Self-mutation refusal (5 scenarios) | `web::role_invariants_test::*_via_web` / `*_via_api` |
+| Last-active-superuser fence (5 scenarios) | `web::role_invariants_test::cannot_*_last_active_superuser_*` |
+| Inactive / soft-deleted superusers do not count | `web::role_invariants_test::{inactive,soft_deleted}_superuser_does_not_count*` |
+| Authorized cases (non-regression) | `web::role_invariants_test::can_*_when_two_active_superusers_exist` |
+| Concurrency (TOCTOU) | `web::role_invariants_test::concurrent_demotions_keep_at_least_one_superuser` |
+| Existing soft-delete fence | `web::pages_test::test_user_delete_protects_last_superuser` |
+
 ---
 
 ## 10. Capsicum Sandboxing

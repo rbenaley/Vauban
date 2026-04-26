@@ -26,6 +26,7 @@ pub mod mfa_test;
 pub mod pages_test;
 pub mod profile_password_test;
 pub mod responsive_templates_test;
+pub mod role_invariants_test;
 pub mod routing_test;
 pub mod session_pages_test;
 pub mod sidebar_menu_test;
