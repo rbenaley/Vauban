@@ -639,12 +639,7 @@ mod tests {
     async fn middleware_does_not_clear_when_no_incoming_cookie() {
         let app = make_app();
         let res = app
-            .oneshot(
-                Request::builder()
-                    .uri("/echo")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/echo").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
@@ -690,16 +685,15 @@ mod tests {
     async fn middleware_does_not_clobber_freshly_set_flash_cookie() {
         let app = make_app();
         let res = app
-            .oneshot(
-                Request::builder()
-                    .uri("/set")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/set").body(Body::empty()).unwrap())
             .await
             .unwrap();
         let cookies = flash_set_cookies(res.headers());
-        assert_eq!(cookies.len(), 1, "exactly one __vauban_flash cookie expected");
+        assert_eq!(
+            cookies.len(),
+            1,
+            "exactly one __vauban_flash cookie expected"
+        );
         assert!(
             !cookies[0].contains("Max-Age=0"),
             "the fresh flash must not be replaced by a clearing cookie: {}",

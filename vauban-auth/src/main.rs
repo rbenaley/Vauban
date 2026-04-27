@@ -639,9 +639,9 @@ mod tests {
             handle_message(&auth, &mut state, req).unwrap();
             let response: Message = web.recv().unwrap();
             match response {
-                Message::MfaVerifyResponse {
-                    success: true, ..
-                } => panic!("MfaVerify stub must never return success"),
+                Message::MfaVerifyResponse { success: true, .. } => {
+                    panic!("MfaVerify stub must never return success")
+                }
                 Message::MfaVerifyResponse {
                     success: false,
                     session_id,

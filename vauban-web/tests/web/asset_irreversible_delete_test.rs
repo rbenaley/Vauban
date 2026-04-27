@@ -202,7 +202,8 @@ async fn test_web_create_collision_on_active_triplet_redirects_with_flash() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("irrev_web_409")).await;
+    let admin =
+        create_admin_user(&mut conn, &app.auth_service, &unique_name("irrev_web_409")).await;
     let csrf = app.generate_csrf_token();
 
     let hostname = format!("{}.web-collide.test", unique_name("host"));
@@ -298,7 +299,8 @@ async fn test_api_create_collision_on_active_triplet_returns_409() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("irrev_api_409")).await;
+    let admin =
+        create_admin_user(&mut conn, &app.auth_service, &unique_name("irrev_api_409")).await;
 
     let hostname = format!("{}.api-collide.test", unique_name("host"));
     let body = json!({
@@ -316,7 +318,11 @@ async fn test_api_create_collision_on_active_triplet_returns_409() {
         .json(&body)
         .await;
     let s = create1.status_code().as_u16();
-    assert!(s == 200 || s == 201, "first API create must succeed, got {}", s);
+    assert!(
+        s == 200 || s == 201,
+        "first API create must succeed, got {}",
+        s
+    );
 
     let create2 = app
         .server
@@ -365,7 +371,8 @@ async fn test_update_on_tombstone_redirects_with_not_found_flash() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("irrev_upd_tomb")).await;
+    let admin =
+        create_admin_user(&mut conn, &app.auth_service, &unique_name("irrev_upd_tomb")).await;
     let csrf = app.generate_csrf_token();
 
     let hostname = format!("{}.upd-tomb.test", unique_name("host"));
@@ -440,7 +447,10 @@ async fn test_update_on_tombstone_redirects_with_not_found_flash() {
             .first(&mut conn)
             .await
     );
-    assert!(after.is_deleted, "tombstone must remain deleted after rejected edit");
+    assert!(
+        after.is_deleted,
+        "tombstone must remain deleted after rejected edit"
+    );
     assert_eq!(
         after.connection_config,
         json!({}),
@@ -519,7 +529,10 @@ async fn test_delete_is_idempotent_second_call_says_already_deleted() {
             .first(&mut conn)
             .await
     );
-    assert!(row.is_deleted, "row must still be tombstoned after second delete");
+    assert!(
+        row.is_deleted,
+        "row must still be tombstoned after second delete"
+    );
     assert_eq!(
         row.connection_config,
         json!({}),
@@ -533,7 +546,10 @@ async fn test_delete_is_idempotent_second_call_says_already_deleted() {
             .get_result(&mut conn)
             .await
     );
-    assert_eq!(total_rows, 1, "delete must remain a soft-delete -- no row removal");
+    assert_eq!(
+        total_rows, 1,
+        "delete must remain a soft-delete -- no row removal"
+    );
 
     test_db::cleanup(&mut conn).await;
 }
@@ -653,7 +669,10 @@ async fn test_create_delete_stress_ten_cycles_keeps_invariants() {
             .get_result(&mut conn)
             .await
     );
-    assert_eq!(active_count, 1, "exactly one active row must remain after the cycles");
+    assert_eq!(
+        active_count, 1,
+        "exactly one active row must remain after the cycles"
+    );
 
     let tombstone_count: i64 = unwrap_ok!(
         assets::table

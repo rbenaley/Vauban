@@ -75,10 +75,10 @@ async fn p55_perf_list_accessible_asset_ids_under_budget() {
     let ag = create_test_asset_group(&mut conn, &unique_name("p55_ag")).await;
     // Bulk-seed 1,000 assets via a single SQL statement so setup time
     // doesn't dominate the test's wall-clock.
+    use diesel::prelude::*;
     use diesel::sql_query;
     use diesel_async::RunQueryDsl;
     use vauban_web::schema::asset_groups;
-    use diesel::prelude::*;
     let ag_id: i32 = asset_groups::table
         .filter(asset_groups::uuid.eq(ag))
         .select(asset_groups::id)
@@ -286,7 +286,10 @@ fn s61_handle_list_asset_groups_default_filters_static() {
 fn s62_web_mutation_handlers_have_virtual_guard() {
     let src = include_str!("../../src/handlers/web/asset_groups.rs");
     let guard = "is_virtual_asset_group_uuid";
-    assert!(src.contains(guard), "asset_groups handlers MUST define {guard}");
+    assert!(
+        src.contains(guard),
+        "asset_groups handlers MUST define {guard}"
+    );
 
     // Each destructive endpoint MUST consult it.
     for (handler, expected) in [
@@ -301,9 +304,9 @@ fn s62_web_mutation_handlers_have_virtual_guard() {
         if !expected {
             continue;
         }
-        let idx = src.find(handler).unwrap_or_else(|| {
-            panic!("handler {handler} not found in asset_groups.rs source")
-        });
+        let idx = src
+            .find(handler)
+            .unwrap_or_else(|| panic!("handler {handler} not found in asset_groups.rs source"));
         // Look at the next ~3KB of source after the function signature
         // for the guard.
         let window = &src[idx..usize::min(idx + 3072, src.len())];
@@ -326,9 +329,8 @@ fn s63_all_assets_group_uuid_is_pinned() {
          changing it requires a coordinated migration + rollout"
     );
     // Also assert the constant is what the seed migration uses.
-    let migration = include_str!(
-        "../../../vauban-db/migrations/20260424000000_virtual_asset_group_all/up.sql"
-    );
+    let migration =
+        include_str!("../../../vauban-db/migrations/20260424000000_virtual_asset_group_all/up.sql");
     assert!(
         migration.contains("00000000-0000-0000-0000-000000000a11"),
         "migration's seed INSERT must use the pinned UUID"

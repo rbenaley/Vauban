@@ -52,8 +52,20 @@ async fn test_list_sessions_user_forbidden() {
         .add_header(header::AUTHORIZATION, app.auth_header(&user.token))
         .await;
 
-    // Assert: 403 Forbidden (regular users cannot list all sessions)
-    assert_status(&response, 403);
+    // Assert: 200 OK with an EMPTY list. Regular users now have
+    // `sessions:read` (so they can browse their own sessions via the
+    // API), but the listing is force-filtered to the caller server-
+    // side (see `handlers::api::sessions::list_sessions` /
+    // `services::session_access::filter_for_caller`). A user with no
+    // sessions of their own therefore gets `[]`, never another
+    // user's sessions.
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.trim() == "[]",
+        "regular user without `sessions:supervise` must see an empty \
+         list when they have no sessions of their own; got: {body}"
+    );
 
     // Cleanup
     test_db::cleanup(&mut conn).await;

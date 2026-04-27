@@ -106,13 +106,17 @@ pub fn verify_proxy(
     };
     // Anti-replay (post-MAC, post-expiry checks: the cache only sees
     // tokens that were otherwise valid, so we can't be DoS'd by junk).
-    match REPLAY_CACHE
-        .get()
-        .and_then(|m| m.lock().ok().map(|mut c| c.record(&token.session_id, &token.nonce)))
-    {
+    match REPLAY_CACHE.get().and_then(|m| {
+        m.lock()
+            .ok()
+            .map(|mut c| c.record(&token.session_id, &token.nonce))
+    }) {
         Some(true) => true,
         Some(false) => {
-            warn!(session_id, "session token replay detected at proxy; fail-closed deny");
+            warn!(
+                session_id,
+                "session token replay detected at proxy; fail-closed deny"
+            );
             false
         }
         None => {

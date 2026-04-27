@@ -107,9 +107,7 @@ impl TestApp {
         {
             let mut conn = unwrap_ok!(db_pool.get().await);
             if let Err(e) = vauban_web::services::virtual_group::init_or_die(&mut conn).await {
-                eprintln!(
-                    "test app: failed to init vauban-web virtual_group OnceLock: {e:?}"
-                );
+                eprintln!("test app: failed to init vauban-web virtual_group OnceLock: {e:?}");
             }
         }
 
@@ -318,6 +316,13 @@ fn build_test_router(state: AppState) -> Router {
         handlers::websocket::ws_connection_limit,
     );
 
+    // SECURITY: mirror the production routing of `/ws/sessions/list`
+    // and `/ws/sessions/active` (see `vauban-web/src/main.rs`):
+    // both are gated by `admin:view` BEFORE the WS upgrade extractor
+    // so unauthorised users get a 403 instead of a 400 (extractor
+    // rejection on missing upgrade headers).
+    let ws_admin_view_layer = axum::middleware::from_fn(handlers::websocket::ws_admin_view_guard);
+
     // WebSocket routes with connection limit middleware
     let ws_routes = Router::new()
         .route("/ws/dashboard", get(handlers::websocket::dashboard_ws))
@@ -331,11 +336,11 @@ fn build_test_router(state: AppState) -> Router {
         )
         .route(
             "/ws/sessions/active",
-            get(handlers::websocket::active_sessions_ws),
+            get(handlers::websocket::active_sessions_ws).layer(ws_admin_view_layer.clone()),
         )
         .route(
             "/ws/sessions/list",
-            get(handlers::websocket::session_list_ws),
+            get(handlers::websocket::session_list_ws).layer(ws_admin_view_layer),
         )
         .layer(ws_limit_layer);
 
@@ -444,6 +449,10 @@ fn build_test_router(state: AppState) -> Router {
             post(handlers::web::terminate_session_web),
         )
         .route(
+            "/api/v1/sessions/{uuid}/terminate",
+            post(handlers::api::terminate_session),
+        )
+        .route(
             "/assets/{uuid}/edit",
             get(handlers::web::asset_edit).post(handlers::web::update_asset_web),
         )
@@ -453,10 +462,7 @@ fn build_test_router(state: AppState) -> Router {
         )
         .route("/assets/new", get(handlers::web::asset_create_form))
         // Issue #17: literal route MUST come before `/assets/{uuid}`.
-        .route(
-            "/assets/deleted",
-            get(handlers::web::asset_deleted_list),
-        )
+        .route("/assets/deleted", get(handlers::web::asset_deleted_list))
         .route(
             "/assets",
             get(handlers::web::asset_list).post(handlers::web::create_asset_web),
@@ -872,9 +878,7 @@ pub mod ipc_test_service {
         // policy-resolution tests would silently fall back to the
         // UNINITIALIZED_VIRTUAL_ID sentinel and miss every virtual rule.
         if let Err(e) = rt.block_on(vauban_access::virtual_group::init_or_die(&pool)) {
-            eprintln!(
-                "test access service: failed to init virtual_group OnceLock: {e:?}"
-            );
+            eprintln!("test access service: failed to init virtual_group OnceLock: {e:?}");
         }
 
         loop {

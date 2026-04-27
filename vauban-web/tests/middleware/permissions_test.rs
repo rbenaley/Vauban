@@ -141,10 +141,17 @@ async fn check_rbac_user_grants_only_self_serve_set() {
     let user = make_user(false, false);
 
     // Matches `config/access/default_policy.csv` for role:user.
+    //
+    // SECURITY: `sessions:read` was added to `role:user` so regular
+    // users can list their own sessions via the API; the
+    // instance-level filter (caller_id == row.user_id) is enforced
+    // server-side in `services::session_access` /
+    // `handlers::api::sessions::list_sessions`.
     let user_allowed: &[(&str, &str)] = &[
         ("assets", "read"),
         ("profile", "read"),
         ("profile", "write"),
+        ("sessions", "read"),
     ];
 
     for (resource, action) in TRACKED_PERMS {

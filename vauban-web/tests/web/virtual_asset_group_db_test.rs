@@ -237,10 +237,12 @@ async fn v5_trigger_blocks_membership_update_to_virtual() {
     assert_err_contains(&err, "cannot add members to virtual");
 
     // Cleanup
-    sql_query(format!("DELETE FROM asset_asset_groups WHERE asset_id = {asset_id}"))
-        .execute(&mut conn)
-        .await
-        .ok();
+    sql_query(format!(
+        "DELETE FROM asset_asset_groups WHERE asset_id = {asset_id}"
+    ))
+    .execute(&mut conn)
+    .await
+    .ok();
     sql_query(format!("DELETE FROM assets WHERE id = {asset_id}"))
         .execute(&mut conn)
         .await

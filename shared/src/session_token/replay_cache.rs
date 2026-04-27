@@ -103,6 +103,11 @@ impl ReplayCache {
     pub fn len(&self) -> usize {
         self.entries.len()
     }
+
+    #[cfg(test)]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
 }
 
 #[cfg(test)]

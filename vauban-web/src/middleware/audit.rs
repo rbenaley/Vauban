@@ -97,7 +97,9 @@ pub async fn audit_middleware(
     // downstream handlers can correlate audit events with this exact
     // request line.
     let request_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
-    request.extensions_mut().insert(RequestId(request_id.clone()));
+    request
+        .extensions_mut()
+        .insert(RequestId(request_id.clone()));
 
     let user = request.extensions().get::<AuthUser>().cloned();
 

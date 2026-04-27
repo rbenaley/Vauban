@@ -517,7 +517,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // UI-side decision, which is a hard "fail loud" condition.
     {
         let mut conn = db_pool.get().await.map_err(|e| {
-            eprintln!("Failed to acquire DB connection for virtual-group boot check: {}", e);
+            eprintln!(
+                "Failed to acquire DB connection for virtual-group boot check: {}",
+                e
+            );
             e
         })?;
         vauban_web::services::virtual_group::init_or_die(&mut conn)
@@ -1004,6 +1007,14 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
         handlers::websocket::ws_connection_limit,
     );
 
+    // SECURITY: gate the admin-only WS broadcasts (`/ws/sessions/list`
+    // and `/ws/sessions/active`) on the `admin:view` Casbin
+    // permission BEFORE the `WebSocketUpgrade` extractor runs.
+    // Otherwise unauthorised users get a 400 (extractor rejection on
+    // missing upgrade headers) instead of the canonical 403 and the
+    // endpoint leaks to unauthenticated network probes.
+    let ws_admin_view_layer = axum::middleware::from_fn(handlers::websocket::ws_admin_view_guard);
+
     let ws_routes = Router::new()
         .route("/ws/dashboard", get(handlers::websocket::dashboard_ws))
         // Session-specific routes get the ownership guard middleware
@@ -1017,11 +1028,11 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
         )
         .route(
             "/ws/sessions/active",
-            get(handlers::websocket::active_sessions_ws),
+            get(handlers::websocket::active_sessions_ws).layer(ws_admin_view_layer.clone()),
         )
         .route(
             "/ws/sessions/list",
-            get(handlers::websocket::session_list_ws),
+            get(handlers::websocket::session_list_ws).layer(ws_admin_view_layer),
         )
         .route(
             "/ws/terminal/{session_id}",
@@ -1187,10 +1198,7 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
         // Issue #17: read-only audit page for soft-deleted assets.
         // MUST be declared before `/assets/{uuid}` so axum doesn't
         // attempt to parse "deleted" as a UUID.
-        .route(
-            "/assets/deleted",
-            get(handlers::web::asset_deleted_list),
-        )
+        .route("/assets/deleted", get(handlers::web::asset_deleted_list))
         .route(
             "/assets",
             get(handlers::web::asset_list).post(handlers::web::create_asset_web),
@@ -1283,10 +1291,7 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             get(handlers::web::serve_segment),
         )
         .route("/sessions/{id}", get(handlers::web::session_detail))
-        .route(
-            "/audit/approvals",
-            get(handlers::web::approval_audit_list),
-        )
+        .route("/audit/approvals", get(handlers::web::approval_audit_list))
         .route("/sessions/approvals", get(handlers::web::approval_list))
         .route(
             "/sessions/approvals/{uuid}",

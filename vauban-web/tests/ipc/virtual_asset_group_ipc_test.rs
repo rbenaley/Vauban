@@ -297,10 +297,7 @@ async fn c6_delete_virtual_asset_group_is_refused() {
     let client = &svc.access_client;
 
     let res = client.delete_asset_group(ALL_ASSETS_GROUP_UUID).await;
-    assert!(
-        res.is_err(),
-        "deleting the virtual group MUST fail; got Ok"
-    );
+    assert!(res.is_err(), "deleting the virtual group MUST fail; got Ok");
 
     // Singleton survives.
     let info = client
@@ -376,7 +373,10 @@ async fn c7_direct_membership_insert_on_virtual_is_refused() {
         .await
         .optional()
         .expect("query");
-    assert!(leaked.is_none(), "no membership row may exist after refused insert");
+    assert!(
+        leaked.is_none(),
+        "no membership row may exist after refused insert"
+    );
 
     diesel::delete(assets::table.filter(assets::uuid.eq(asset_uuid)))
         .execute(&mut conn)
@@ -395,9 +395,7 @@ async fn c8_list_asset_group_options_honours_include_virtual() {
     let client = &svc.access_client;
 
     let opts_default = list_all_asset_group_options(client, false).await;
-    let leaked_default = opts_default
-        .iter()
-        .any(|o| o.kind == ASSET_GROUP_KIND_ALL);
+    let leaked_default = opts_default.iter().any(|o| o.kind == ASSET_GROUP_KIND_ALL);
     assert!(
         !leaked_default,
         "default MUST hide virtual; got: {:?}",

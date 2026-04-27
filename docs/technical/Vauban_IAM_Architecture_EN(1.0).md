@@ -1549,6 +1549,144 @@ their own row.
 
 ---
 
+### 9.8 Session access (instance-level via vauban-access)
+
+Casbin gates *capability* (functional layer: "can the user, in
+principle, read sessions?"). It does not gate *which row* the user
+is allowed to see or operate on. Before this layer landed, an
+authenticated user that knew (or guessed) a `proxy_sessions.uuid`
+could:
+
+- open the RDP viewer page of someone else's session (the
+  `rdp_page` handler shipped with **no ownership check at all**);
+- terminate someone else's session via web or API (the handler
+  only checked `sessions:write`, never ownership);
+- read someone else's session metadata via
+  `GET /api/v1/sessions/{uuid}` (only `sessions:read` was
+  enforced);
+- enumerate every session globally via `GET /api/v1/sessions` (no
+  per-caller filter);
+- subscribe to the global WebSocket session feeds without holding
+  `admin:view` (the read-only audit gate that fronts the HTML
+  pages).
+
+These are the IDORs the session-access layer plugs. It is the third
+authorization layer in vauban-web, sitting next to Casbin and the
+role invariants:
+
+```mermaid
+flowchart LR
+    Browser[Browser] --> Handler[vauban-web handler<br/>viewer / WS / API]
+    Handler --> Casbin[PermissionContext<br/>functional Casbin gate]
+    Casbin --> Service[services::session_access::verify]
+    Service -->|IPC AccessRequest::<br/>VerifySessionAccess| Access[vauban-access::<br/>handle_verify_session_access]
+    Access --> ChkSession{session exists<br/>+ status connectable?}
+    ChkSession -->|no| Gone[Denied(NotFound) or Denied(Gone)]
+    ChkSession -->|yes| ChkOwner{requesting_user<br/>== session.user_id?}
+    ChkOwner -->|no| NotOwner[Denied(NotOwner)]
+    ChkOwner -->|yes| ChkRule{access-rule active<br/>valid_from / valid_until ok<br/>protocol covered?}
+    ChkRule -->|no| Revoked[Denied(AccessRuleRevoked)]
+    ChkRule -->|yes| Allowed[Allowed]
+    Allowed --> CasbinOR[apply_casbin_override<br/>per intent]
+    NotOwner --> CasbinOR
+    Revoked --> CasbinOR
+    CasbinOR --> Outcome[SessionAccessOutcome]
+    Gone --> Outcome
+    Outcome --> Render[render / next() / 404 / 410]
+```
+
+#### 9.8.1 The four intents
+
+Every consumer of an existing `proxy_sessions` row carries a
+declared intent so the service can apply the right OR-overrides:
+
+| Intent          | Surface                                            | Casbin OR-override on `NotOwner` / `AccessRuleRevoked` |
+|-----------------|----------------------------------------------------|---------------------------------------------------------|
+| `OpenViewer`    | `terminal_page` (SSH HTML), `rdp_page` (RDP HTML) | `perms.sessions_supervise`                              |
+| `ConsumeWs`     | `ws_session_guard` (terminal/session WS)          | `perms.sessions_supervise`                              |
+| `ReadMetadata`  | `GET /api/v1/sessions/{uuid}`, `session_detail`   | `perms.sessions_supervise`                              |
+| `Terminate`     | `POST /sessions/{uuid}/terminate` (web + API)     | owner is **always allowed** (even on `AccessRuleRevoked`) OR `perms.sessions_write` |
+
+Two invariants are NEVER overridden, even by a full superuser:
+
+- `NotFound` collapses to a generic 404 (a probe holding
+  `sessions:supervise` cannot resurrect a non-existent session into
+  a 200);
+- `Gone` collapses to a 410 for HTTP and to a 410-equivalent
+  WebSocket close (the session existed but is `terminated`,
+  `expired`, or `disconnected`).
+
+All other denials (NotOwner, AccessRuleRevoked, IPC failure,
+malformed UUID) collapse to **404** to keep anti-enumeration
+consistent. An attacker cannot tell a session that does not exist
+apart from one that exists but belongs to someone else.
+
+#### 9.8.2 Fail-fast access-rule re-check
+
+The single `VerifySessionAccess` RPC re-evaluates the matching
+`access_rules` row on every consumption: every page-load of the
+HTML viewers, every WebSocket handshake, every API metadata read,
+every terminate. If the rule that originally authorised the
+session is later deactivated, expires, becomes not-yet-valid, or
+its protocol set no longer covers the session's protocol, the next
+consumption is rejected. Live, in-flight WebSocket data is not
+interrupted (that is the proxy keep-alive recheck follow-up); but
+no *new* handshake or *re-load* is allowed once the rule is gone.
+
+This guarantees that revoking an access rule has the operational
+effect that operators expect: "no more access" means "no more
+access", not "no more new sessions".
+
+#### 9.8.3 Anti-enumeration
+
+Anti-enumeration is paramount. The service collapses every
+non-`Gone` denial to 404 with no body distinction. The
+`/api/v1/sessions` list endpoint applies the same discipline to
+its result set: a regular caller's page is force-filtered to
+`user_id == caller`, regardless of what the `user_id` query
+parameter said. Only callers holding `sessions:supervise` see the
+cross-user view (and they see exactly what they asked for).
+
+#### 9.8.4 Terminate is owner-friendly on AccessRuleRevoked
+
+The owner is always allowed to terminate their own session, even
+if the matching access rule was just revoked. Otherwise the user
+that created a session would have to call an operator to clean it
+up after their own access rule was tightened. The
+`session_access::apply_casbin_override` function pins this rule
+explicitly (the `Terminate` arm of `AccessRuleRevoked` returns
+`Allowed` without consulting `sessions_write`).
+
+#### 9.8.5 Centralisation lint
+
+`vauban-web/scripts/check_session_access_centralized.sh` enforces
+that:
+
+- `verify_session_ownership` is called only from its wrapper
+  declaration in `websocket.rs` and from the structural tests
+  (every other call site routes through `session_access::verify`);
+- `terminal_page`, `rdp_page` and `session_detail` do not load a
+  `proxy_sessions` row by UUID directly (which would bypass the
+  access-rule re-check).
+
+The lint runs in CI alongside `check_no_template_role_gates.sh`
+and `check_no_handler_role_gates.sh`. A new handler that needs to
+consume an existing session is forced by construction to route
+through the same trio.
+
+#### 9.8.6 Battle-tested coverage
+
+| Concern | Test |
+|---|---|
+| `apply_casbin_override` matrix (16 cases) | `vauban_web::services::session_access::tests::*` |
+| `VerifySessionAccess` RPC matrix (8 cases + IPC round-trip) | `vauban_access::handlers::tests::test_verify_session_access_*` and `vauban_web::tests::ipc::access_ipc_test::*` |
+| IDOR red tests (rdp_page, terminate, get_session, list_sessions, ws/sessions/list, ws/sessions/active) | `vauban_web::tests::security::session_idor_test::*` |
+| Access-rule fail-fast re-check (revoke, expire, not-yet-valid, protocol mismatch on HTML + WS) | `vauban_web::tests::security::access_rule_recheck_test::*` |
+| `terminate` authorisation matrix (owner OR `sessions:write`, anti-enum 404) | `vauban_web::tests::web::terminate_session_test::*` |
+| Centralisation lint (no `verify_session_ownership` outside the wrapper, no direct `proxy_sessions` UUID lookup in viewer/detail handlers) | `vauban-web/scripts/check_session_access_centralized.sh` |
+
+---
+
 ## 10. Capsicum Sandboxing
 
 ### 10.1 vauban-auth Sandbox

@@ -834,7 +834,9 @@ mod tests {
     fn test_start_cleanup_tasks_takes_idle_timeout_param() {
         let source = include_str!("cleanup.rs");
         assert!(
-            source.contains("pub async fn start_cleanup_tasks(db_pool: DbPool, idle_timeout_secs: u64)"),
+            source.contains(
+                "pub async fn start_cleanup_tasks(db_pool: DbPool, idle_timeout_secs: u64)"
+            ),
             "start_cleanup_tasks must take an idle_timeout_secs parameter (Issue #8)"
         );
     }

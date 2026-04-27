@@ -155,10 +155,12 @@ async fn a45_repoint_membership_to_virtual_raises() {
     .expect_err("UPDATE re-pointing MUST raise");
     assert_err_contains(&err, "cannot add members to virtual");
 
-    sql_query(format!("DELETE FROM asset_asset_groups WHERE asset_id = {asset_id}"))
-        .execute(&mut conn)
-        .await
-        .ok();
+    sql_query(format!(
+        "DELETE FROM asset_asset_groups WHERE asset_id = {asset_id}"
+    ))
+    .execute(&mut conn)
+    .await
+    .ok();
     sql_query(format!("DELETE FROM assets WHERE id = {asset_id}"))
         .execute(&mut conn)
         .await
@@ -325,8 +327,7 @@ async fn a51_concurrency_under_churn() {
         let pool = pool.clone();
         readers.push(tokio::spawn(async move {
             let mut conn = pool.get().await.expect("conn");
-            let res =
-                access::list_accessible_asset_ids(&access_client, &mut conn, user_id).await;
+            let res = access::list_accessible_asset_ids(&access_client, &mut conn, user_id).await;
             (i, res)
         }));
     }
@@ -395,18 +396,15 @@ async fn a52_race_new_assets_eventually_visible() {
 
     let mut created: Vec<i32> = Vec::new();
     for i in 0..20 {
-        let id = create_test_asset_in_group(
-            &mut conn,
-            &format!("a52-asset-{i}"),
-            admin.user.id,
-            &ag,
-        )
-        .await;
+        let id =
+            create_test_asset_in_group(&mut conn, &format!("a52-asset-{i}"), admin.user.id, &ag)
+                .await;
         created.push(id);
 
         let mut c = pool.get().await.expect("conn");
-        let visible =
-            access::list_accessible_asset_ids(&access_client, &mut c, user_id).await.unwrap();
+        let visible = access::list_accessible_asset_ids(&access_client, &mut c, user_id)
+            .await
+            .unwrap();
         for prev in &created {
             assert!(
                 visible.contains(prev),
@@ -433,9 +431,8 @@ async fn a53_init_or_die_refuses_when_virtual_row_missing() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    diesel_async::AsyncConnection::transaction::<(), diesel::result::Error, _>(
-        &mut conn,
-        |conn| Box::pin(async move {
+    diesel_async::AsyncConnection::transaction::<(), diesel::result::Error, _>(&mut conn, |conn| {
+        Box::pin(async move {
             sql_query("ALTER TABLE asset_groups DISABLE TRIGGER block_mutation_on_virtual_groups")
                 .execute(conn)
                 .await?;
@@ -460,8 +457,8 @@ async fn a53_init_or_die_refuses_when_virtual_row_missing() {
             // Roll the txn back so the singleton row reappears and the
             // rest of the suite can continue to use it.
             Err::<(), diesel::result::Error>(diesel::result::Error::RollbackTransaction)
-        }),
-    )
+        })
+    })
     .await
     .ok();
 

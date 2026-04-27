@@ -144,7 +144,9 @@ async fn test_user_sessions_page_contains_html() {
     let body = response.text();
     // Verify it's HTML content
     assert!(
-        body.contains("<!DOCTYPE html>") || body.contains("<html") || body.contains("My Login Sessions"),
+        body.contains("<!DOCTYPE html>")
+            || body.contains("<html")
+            || body.contains("My Login Sessions"),
         "Expected HTML content"
     );
 }

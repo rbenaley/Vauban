@@ -7,8 +7,8 @@
 
 use super::*;
 use crate::schema::approval_audit_log;
-use crate::templates::audit::{ApprovalAuditListTemplate, ApprovalAuditRow};
 use crate::templates::audit::approval_audit_list::{ApprovalAuditFilters, AuditPagination};
+use crate::templates::audit::{ApprovalAuditListTemplate, ApprovalAuditRow};
 
 /// Hard ceiling on `LIMIT` so a malicious or accidental
 /// `?per_page=999999` cannot pin a worker on a giant scan.
@@ -127,37 +127,39 @@ pub async fn approval_audit_list(
 
     let rows: Vec<ApprovalAuditRow> = rows_data
         .into_iter()
-        .map(|(
-            id,
-            session_uuid,
-            decision,
-            actor_username,
-            requester_username,
-            asset_uuid,
-            asset_name,
-            protocol,
-            duration_override_seconds,
-            decision_reason,
-            decision_ip,
-            decision_user_agent,
-            request_id,
-            created_at,
-        )| ApprovalAuditRow {
-            id,
-            session_uuid: session_uuid.to_string(),
-            decision,
-            actor_username,
-            requester_username,
-            asset_uuid: asset_uuid.to_string(),
-            asset_name,
-            protocol,
-            duration_override_seconds,
-            decision_reason,
-            decision_ip: decision_ip.map(|ip| ip.ip().to_string()),
-            decision_user_agent,
-            request_id,
-            created_at: created_at.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
-        })
+        .map(
+            |(
+                id,
+                session_uuid,
+                decision,
+                actor_username,
+                requester_username,
+                asset_uuid,
+                asset_name,
+                protocol,
+                duration_override_seconds,
+                decision_reason,
+                decision_ip,
+                decision_user_agent,
+                request_id,
+                created_at,
+            )| ApprovalAuditRow {
+                id,
+                session_uuid: session_uuid.to_string(),
+                decision,
+                actor_username,
+                requester_username,
+                asset_uuid: asset_uuid.to_string(),
+                asset_name,
+                protocol,
+                duration_override_seconds,
+                decision_reason,
+                decision_ip: decision_ip.map(|ip| ip.ip().to_string()),
+                decision_user_agent,
+                request_id,
+                created_at: created_at.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+            },
+        )
         .collect();
 
     let total_pages = if total_items == 0 {
@@ -196,9 +198,12 @@ pub async fn approval_audit_list(
 /// Parse `YYYY-MM-DD` as the start of the day in UTC.
 fn parse_from_date(s: Option<&str>) -> AppResult<Option<chrono::DateTime<chrono::Utc>>> {
     let Some(s) = s else { return Ok(None) };
-    let date = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
-        .map_err(|_| AppError::Validation("Invalid 'from_date' (expected YYYY-MM-DD)".to_string()))?;
-    Ok(Some(date.and_hms_opt(0, 0, 0).unwrap_or_default().and_utc()))
+    let date = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| {
+        AppError::Validation("Invalid 'from_date' (expected YYYY-MM-DD)".to_string())
+    })?;
+    Ok(Some(
+        date.and_hms_opt(0, 0, 0).unwrap_or_default().and_utc(),
+    ))
 }
 
 /// Parse `YYYY-MM-DD` as the *end* of the day in UTC (inclusive day).
@@ -211,8 +216,7 @@ fn parse_to_date(s: Option<&str>) -> AppResult<Option<chrono::DateTime<chrono::U
     ))
 }
 
-type BoxedAuditQuery<'a> =
-    approval_audit_log::BoxedQuery<'a, diesel::pg::Pg>;
+type BoxedAuditQuery<'a> = approval_audit_log::BoxedQuery<'a, diesel::pg::Pg>;
 
 /// Build a `WHERE`-only query (no select/order/limit) that the
 /// `count` and `select` paths share so a filter never gets applied
@@ -247,4 +251,3 @@ fn build_filtered_query<'a>(
     }
     q
 }
-

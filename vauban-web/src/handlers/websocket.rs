@@ -137,6 +137,49 @@ pub async fn ws_connection_limit(
     }
 }
 
+/// Middleware enforcing the `admin:view` Casbin permission on
+/// admin-only WebSocket routes.
+///
+/// SECURITY: the global-fanout WebSockets `/ws/sessions/list` and
+/// `/ws/sessions/active` mirror admin-only HTML pages. Without this
+/// guard any MFA-verified user could open them and watch every
+/// active session in real time. We enforce the gate as a middleware
+/// (and not as an in-handler check) because the `WebSocketUpgrade`
+/// extractor rejects requests without an `Upgrade: websocket`
+/// header with a 400 *before* the handler body runs, which would
+/// mask the authorisation failure behind an extractor rejection
+/// and leak the endpoint to unauthenticated network probes.
+///
+/// The `permission_context_middleware` populates the
+/// `PermissionContext` extension upstream; we read it back here so
+/// the gate stays consistent with the request-scoped Casbin batch
+/// (and aligns with the rule in `.cursor/rules/casbin-permissions.mdc`).
+pub async fn ws_admin_view_guard(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use crate::auth::PermissionContext;
+    let perms = request
+        .extensions()
+        .get::<PermissionContext>()
+        .cloned()
+        .unwrap_or_default();
+    if !perms.admin_view {
+        let user = request
+            .extensions()
+            .get::<AuthUser>()
+            .map(|u| u.username.clone())
+            .unwrap_or_else(|| "<anonymous>".to_string());
+        warn!(
+            user = %user,
+            path = %request.uri().path(),
+            "WebSocket admin gate denied: admin:view permission required"
+        );
+        return axum::http::StatusCode::FORBIDDEN.into_response();
+    }
+    next.run(request).await
+}
+
 /// Verify that a proxy session exists and belongs to the authenticated user.
 ///
 /// Returns `Ok(())` if:
@@ -157,71 +200,71 @@ pub async fn ws_connection_limit(
 /// `handlers::web::ssh::terminal_page`) can perform the same ownership
 /// check before serving HTML wrappers, plugging the IDOR found in the
 /// post-MFA security audit.
+///
+/// SECURITY: thin wrapper that delegates to
+/// [`crate::services::session_access::verify`] with intent
+/// `ConsumeWs`. The single seam is responsible for ownership AND
+/// access-rule re-check (status `terminated` / `expired` /
+/// `disconnected` -> 410 GONE; everything else collapses to 404 to
+/// keep anti-enumeration parity with the HTML viewer surface).
+///
+/// Kept as a thin wrapper for two reasons:
+/// 1. existing call sites (`ws_session_guard` below) want a
+///    `Result<(), StatusCode>` shape, while `session_access::verify`
+///    speaks the response-shaped `SessionAccessOutcome` enum;
+/// 2. the structural lints in `tests.rs` (terminated/expired/GONE
+///    strings) act as belt-and-braces against future regressions.
 pub(crate) async fn verify_session_ownership(
     state: &AppState,
     session_uuid_str: &str,
     user: &AuthUser,
     can_supervise: bool,
 ) -> Result<(), axum::http::StatusCode> {
-    use crate::schema::{proxy_sessions, users};
-    use diesel::prelude::*;
-    use diesel_async::RunQueryDsl;
+    use crate::auth::PermissionContext;
+    use crate::services::session_access::{self, SessionAccessOutcome};
+    use shared::messages::SessionAccessIntent;
 
-    // Parse the session UUID
-    let session_uuid: uuid::Uuid = session_uuid_str
-        .parse()
-        .map_err(|_| axum::http::StatusCode::BAD_REQUEST)?;
-
-    // Parse the authenticated user's UUID
-    let user_uuid: uuid::Uuid = user
-        .uuid
-        .parse()
-        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
-
-    let mut conn = state
-        .db_pool
-        .get()
-        .await
-        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
-
-    // Query: join proxy_sessions with users to check ownership and status
-    let result: Option<(uuid::Uuid, String)> = proxy_sessions::table
-        .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
-        .filter(proxy_sessions::uuid.eq(session_uuid))
-        .select((users::uuid, proxy_sessions::status))
-        .first(&mut conn)
-        .await
-        .optional()
-        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
-
-    match result {
-        None => {
+    // Build a minimal PermissionContext that only carries the
+    // supervise bit. The full context is loaded by middleware on
+    // every request, but `ws_session_guard` cannot extract it through
+    // the typed `AppState`/`AuthUser` channel; the supervise flag is
+    // forwarded explicitly via the `can_supervise` argument so
+    // callers can pre-load it (e.g. from request extensions).
+    //
+    // SECURITY: any failure mode (NotFound / NotOwner /
+    // AccessRuleRevoked / IPC error) lands as `Denied404` which we
+    // surface as the canonical HTTP 404, while a `Gone` session
+    // stays a 410 (terminated/expired/disconnected) so the front-end
+    // closes gracefully.
+    let perms = PermissionContext {
+        sessions_supervise: can_supervise,
+        ..PermissionContext::default()
+    };
+    match session_access::verify(
+        state,
+        session_uuid_str,
+        user,
+        &perms,
+        SessionAccessIntent::ConsumeWs,
+    )
+    .await
+    {
+        SessionAccessOutcome::Allowed => Ok(()),
+        SessionAccessOutcome::DeniedGone => {
             warn!(
                 session_id = %session_uuid_str,
                 user = %user.username,
-                "WebSocket rejected: session not found"
-            );
-            Err(axum::http::StatusCode::NOT_FOUND)
-        }
-        Some((_, ref status))
-            if status == "terminated" || status == "expired" || status == "disconnected" =>
-        {
-            warn!(
-                session_id = %session_uuid_str,
-                user = %user.username,
-                status = %status,
-                "WebSocket rejected: session is no longer active"
+                "WebSocket rejected: session is no longer active (terminated/expired/disconnected -> GONE)"
             );
             Err(axum::http::StatusCode::GONE)
         }
-        Some((owner, _)) if owner == user_uuid || can_supervise => Ok(()),
-        Some(_) => {
+        SessionAccessOutcome::Denied404 => {
             warn!(
                 session_id = %session_uuid_str,
                 user = %user.username,
-                "WebSocket rejected: session belongs to another user"
+                "WebSocket rejected: session not found / not owned / access-rule revoked (collapsed to 404)"
             );
-            Err(axum::http::StatusCode::FORBIDDEN)
+            Err(axum::http::StatusCode::NOT_FOUND)
         }
     }
 }
@@ -852,16 +895,25 @@ async fn handle_notifications_socket(
 ///
 /// Establishes a WebSocket connection for real-time active sessions list updates.
 /// Used by the /sessions/active page.
+///
+/// SECURITY: the `admin:view` Casbin gate MUST run BEFORE the
+/// `WebSocketUpgrade` extractor; otherwise a request without the
+/// `Upgrade: websocket` header is rejected with a 400 by the
+/// extractor (axum rejects unsatisfiable WS upgrades) and the
+/// handler body is never reached, masking the authorisation failure
+/// behind a generic 400. The gate is therefore implemented as a
+/// dedicated middleware (`ws_admin_view_guard` below) applied as a
+/// layer on this route in `main.rs`.
 pub async fn active_sessions_ws(
-    ws: WebSocketUpgrade,
     State(state): State<AppState>,
-    // SECURITY: see `middleware::auth::WsAuthUser`.
     user: WsAuthUser,
     ws_guard: WsGuard,
-) -> impl IntoResponse {
+    ws: WebSocketUpgrade,
+) -> axum::response::Response {
     let user = user.0;
     info!(user = %user.username, "Active sessions list WebSocket connection requested");
     ws.on_upgrade(move |socket| handle_active_sessions_socket(socket, state, user, ws_guard))
+        .into_response()
 }
 
 /// Handle active sessions list WebSocket connection.
@@ -1080,16 +1132,22 @@ pub(crate) async fn fetch_active_sessions_list(
 ///
 /// Establishes a WebSocket connection for real-time session history updates.
 /// Used by the /sessions page (admin-only, page 1, no filters).
+///
+/// SECURITY: the `admin:view` Casbin gate is applied as a middleware
+/// layer on the route (see `ws_admin_view_guard`) so it runs BEFORE
+/// the `WebSocketUpgrade` extractor and surfaces a clean 403 to
+/// unauthorised callers (instead of the 400 that the WS extractor
+/// would emit on a missing `Upgrade` header).
 pub async fn session_list_ws(
-    ws: WebSocketUpgrade,
     State(state): State<AppState>,
-    // SECURITY: see `middleware::auth::WsAuthUser`.
     user: WsAuthUser,
     ws_guard: WsGuard,
-) -> impl IntoResponse {
+    ws: WebSocketUpgrade,
+) -> axum::response::Response {
     let user = user.0;
     info!(user = %user.username, "Session list WebSocket connection requested");
     ws.on_upgrade(move |socket| handle_session_list_socket(socket, state, user, ws_guard))
+        .into_response()
 }
 
 /// Handle session list WebSocket connection.

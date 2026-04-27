@@ -30,18 +30,16 @@ mod session;
 mod session_manager;
 
 use anyhow::{Context, Result};
-use shared::session_token::proxy_gate as session_token_gate;
 use error::SessionError;
 use ipc::AsyncIpcChannel;
 use secrecy::SecretString;
 use session::{SessionConfig, SshCredential, fetch_host_key};
 use session_manager::SessionManager;
-use shared::access_guard::{
-    AccessGuard, AccessGuardMetrics, AccessGuardWiring, PROTOCOL_SSH,
-};
+use shared::access_guard::{AccessGuard, AccessGuardMetrics, AccessGuardWiring, PROTOCOL_SSH};
 use shared::capsicum;
 use shared::ipc::{IpcChannel, recv_fd};
 use shared::messages::{ControlMessage, Message, ServiceStats};
+use shared::session_token::proxy_gate as session_token_gate;
 use std::collections::HashMap;
 use std::os::unix::io::{OwnedFd, RawFd};
 use std::process::ExitCode;
@@ -344,6 +342,7 @@ async fn run_service() -> Result<()> {
     // consumes VAUBAN_ACCESS_IPC_READ / WRITE here and removes them
     // from the env. Returned wiring exposes the FDs for Capsicum and
     // the Arc<AccessGuard> we share across per-session spawns.
+    #[rustfmt::skip]
     let access_wiring: AccessGuardWiring =
         AccessGuard::from_env(PROTOCOL_SSH, Arc::clone(&state) as Arc<dyn AccessGuardMetrics>)
             .context(
@@ -774,9 +773,7 @@ async fn handle_web_message(
                 // client because doing so would let a probe distinguish
                 // "asset exists but I can't reach it" from "asset
                 // doesn't exist" (information disclosure).
-                let decision = access_guard_clone
-                    .authorize(&rbac_user, &rbac_asset)
-                    .await;
+                let decision = access_guard_clone.authorize(&rbac_user, &rbac_asset).await;
                 if !decision.is_granted() {
                     debug!(
                         session_id = %session_id, user_id = %rbac_user,
@@ -1161,8 +1158,7 @@ mod tests {
         // *which* peer pipe is missing without having to dig into the
         // shared crate's error type.
         assert!(
-            source.contains("VAUBAN_ACCESS_IPC_READ")
-                && source.contains("VAUBAN_ACCESS_IPC_WRITE"),
+            source.contains("VAUBAN_ACCESS_IPC_READ") && source.contains("VAUBAN_ACCESS_IPC_WRITE"),
             "proxy-ssh boot must mention both VAUBAN_ACCESS_IPC_READ and \
              VAUBAN_ACCESS_IPC_WRITE in its from_env context() so SREs can \
              grep the failure without reading shared crate sources"
@@ -1359,9 +1355,9 @@ mod tests {
              Without this, a compromised vauban-web could forge any \
              SshSessionOpen and bypass cryptographic authorization.",
         );
-        let authorize_idx = handler.find(".authorize(&rbac_user, &rbac_asset)").expect(
-            "AccessGuard.authorize call site must exist inside the handler",
-        );
+        let authorize_idx = handler
+            .find(".authorize(&rbac_user, &rbac_asset)")
+            .expect("AccessGuard.authorize call site must exist inside the handler");
         assert!(
             verify_idx < authorize_idx,
             "session_token_gate::verify_proxy MUST run BEFORE \

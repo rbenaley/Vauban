@@ -690,7 +690,10 @@ mod tests {
             );
         }
 
-        let banner = format!("{} vault {} ({})", "Legacy", "messages", "placeholder responses");
+        let banner = format!(
+            "{} vault {} ({})",
+            "Legacy", "messages", "placeholder responses"
+        );
         assert!(
             !source.contains(&banner),
             "vauban-vault production code must not carry the legacy \

@@ -693,13 +693,9 @@ async fn test_asset_list_pagination_with_many_assets() {
 
     // The previous "is_superuser / is_staff" listing-bypass is gone; admins
     // now require an access_rule to see an asset, like every other user.
-    let ag = grant_user_full_access_to_new_group(
-        &mut conn,
-        admin_id,
-        &unique_name("pg_many"),
-        &["ssh"],
-    )
-    .await;
+    let ag =
+        grant_user_full_access_to_new_group(&mut conn, admin_id, &unique_name("pg_many"), &["ssh"])
+            .await;
 
     for i in 0..35 {
         let name = unique_name(&format!("pg_asset_{:03}", i));
@@ -745,13 +741,9 @@ async fn test_asset_list_page_2() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_admin_uuid(&mut conn, admin_id).await;
 
-    let ag = grant_user_full_access_to_new_group(
-        &mut conn,
-        admin_id,
-        &unique_name("pg_p2"),
-        &["ssh"],
-    )
-    .await;
+    let ag =
+        grant_user_full_access_to_new_group(&mut conn, admin_id, &unique_name("pg_p2"), &["ssh"])
+            .await;
 
     for i in 0..35 {
         let name = unique_name(&format!("pg2_asset_{:03}", i));
@@ -902,13 +894,9 @@ async fn test_asset_list_showing_counter_accurate() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_admin_uuid(&mut conn, admin_id).await;
 
-    let ag = grant_user_full_access_to_new_group(
-        &mut conn,
-        admin_id,
-        &unique_name("pg_cnt"),
-        &["ssh"],
-    )
-    .await;
+    let ag =
+        grant_user_full_access_to_new_group(&mut conn, admin_id, &unique_name("pg_cnt"), &["ssh"])
+            .await;
 
     let search_tag = unique_name("pgcnt");
     for i in 0..35 {
@@ -1312,7 +1300,9 @@ fn assert_secret_input_contract(
          Generate Password prompts when they recognise credential-shaped \
          names. The real name MUST live only in `data-real-name=\"{}\"` \
          (ASSET-CREDS-NO-SAVE-PROMPT-20260420).",
-        context, real_name, real_name
+        context,
+        real_name,
+        real_name
     );
     let raw_id_needle = format!(" id=\"{}\"", real_name);
     assert!(
@@ -1320,7 +1310,8 @@ fn assert_secret_input_contract(
         "{}: rendered HTML must NOT carry `id=\"{}\"` — same heuristic \
          risk as name=. Use the opaque `vbn_*` id and aria/label \
          relations instead (ASSET-CREDS-NO-SAVE-PROMPT-20260420).",
-        context, real_name
+        context,
+        real_name
     );
 
     // 2. The opaque DOM input must exist with the right name + id +
@@ -1391,14 +1382,17 @@ fn assert_secret_input_contract(
         "{}: missing <label for=\"{}\">. Without a label binding the \
          field is invisible to screen readers \
          (ASSET-CREDS-NO-SAVE-PROMPT-20260420).",
-        context, dom_name
+        context,
+        dom_name
     );
 
     // 6. Visible label text matches the expected credential-neutral
     //    wording. We anchor on `for="vbn_*"` so there is no ambiguity
     //    with other labels on the page.
     let label_marker = format!("for=\"{}\"", dom_name);
-    let lbl_pos = body.find(&label_marker).expect("label needle checked above");
+    let lbl_pos = body
+        .find(&label_marker)
+        .expect("label needle checked above");
     let lbl_end = (lbl_pos + 400).min(body.len());
     let lbl_window = &body[lbl_pos..lbl_end];
     assert!(

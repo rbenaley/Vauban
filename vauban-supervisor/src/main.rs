@@ -32,15 +32,15 @@ use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
 use nix::unistd::{ForkResult, Gid, Pid, Uid, execv, fork, setgid, setuid};
 use shared::ipc::{IpcChannel, poll_readable, send_fd, socketpair_for_fd_passing};
 use shared::messages::{ControlMessage, Message, SensitiveString, Service, ServiceStats};
-use shared::session_token::{SESSION_TOKEN_KEY_ENV, SessionToken, TokenKey, Verifier};
 use shared::session_token::replay_cache::ReplayCache;
+use shared::session_token::{SESSION_TOKEN_KEY_ENV, SessionToken, TokenKey, Verifier};
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::net::ToSocketAddrs;
 use std::os::unix::io::{AsRawFd, OwnedFd, RawFd};
 use std::process::ExitCode;
-use std::sync::{Mutex, OnceLock};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info, warn};
 use zeroize::Zeroize;
@@ -364,10 +364,7 @@ fn service_needs_session_token_key(service_key: &str) -> bool {
 /// vector is consumed by `spawn_child` and dropped at the end of the
 /// fork; the supervisor never adds the variable to its own
 /// environment.
-fn service_env_with_token(
-    config: &SupervisorConfig,
-    service_key: &str,
-) -> Vec<(String, String)> {
+fn service_env_with_token(config: &SupervisorConfig, service_key: &str) -> Vec<(String, String)> {
     let mut env = config.service_env_vars(service_key);
     if service_needs_session_token_key(service_key)
         && let Some(key) = SESSION_TOKEN_KEY.get()
@@ -3927,9 +3924,9 @@ mod tests {
             "handle_tcp_connect_request MUST perform DNS resolution \
              via to_socket_addrs",
         );
-        let connect_idx = handler.find("TcpStream::connect_timeout(").expect(
-            "handle_tcp_connect_request MUST call TcpStream::connect_timeout",
-        );
+        let connect_idx = handler
+            .find("TcpStream::connect_timeout(")
+            .expect("handle_tcp_connect_request MUST call TcpStream::connect_timeout");
         assert!(
             verify_idx < dns_idx,
             "SessionToken::verify_bytes MUST run BEFORE DNS resolution. \

@@ -391,6 +391,65 @@ impl ApprovalDenyReason {
     }
 }
 
+/// Caller intent for `AccessRequest::VerifySessionAccess`. Advisory
+/// for the policy decision (each variant returns the same instance-
+/// level decision); used by vauban-access for structured audit logs
+/// and by vauban-web's `services::session_access::verify` to layer
+/// the right Casbin OR-override on top of the response.
+///
+/// Wire compatibility: append-only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SessionAccessIntent {
+    /// User opens a viewer page (`GET /sessions/terminal/{uuid}` or
+    /// `GET /sessions/rdp/{uuid}`). Casbin OR-override:
+    /// `sessions:supervise`.
+    OpenViewer,
+    /// WebSocket upgrade (`/ws/terminal/{uuid}`, `/ws/rdp/{uuid}`,
+    /// `/ws/session/{uuid}`). Casbin OR-override: `sessions:supervise`.
+    ConsumeWs,
+    /// JSON metadata read (`GET /api/v1/sessions/{uuid}` or session
+    /// detail page). Casbin OR-override: `sessions:supervise`.
+    ReadMetadata,
+    /// Termination request (`POST /sessions/{uuid}/terminate`, web or
+    /// API). Casbin OR-override: `sessions:write`.
+    Terminate,
+}
+
+/// Reason a `VerifySessionAccess` request was denied. The vauban-web
+/// service collapses these into either `404` (NotFound, NotOwner,
+/// AccessRuleRevoked - anti-enumeration) or `410` (Gone) so the
+/// client cannot fingerprint the bastion.
+///
+/// Wire compatibility: append-only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SessionDenialReason {
+    /// No `proxy_sessions` row matches the supplied UUID.
+    NotFound,
+    /// Session exists but is in a non-connectable status
+    /// (`terminated`, `expired`, or `disconnected`).
+    Gone,
+    /// Session exists but `proxy_sessions.user_id` does not match the
+    /// requesting user. The Casbin OR-override may still grant access
+    /// upstream (vauban-web layer).
+    NotOwner,
+    /// Session exists and is owned by the caller, but the access rule
+    /// that originally authorised the (user, asset, protocol) tuple
+    /// is no longer applicable (deactivated, expired, not yet valid,
+    /// or protocol mismatch). Fail-fast guarantees a revoked rule
+    /// stops a session at the next page-load or WS handshake.
+    AccessRuleRevoked,
+}
+
+/// Authoritative instance-level decision returned by vauban-access for
+/// `AccessRequest::VerifySessionAccess`.
+///
+/// Wire compatibility: append-only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SessionAccessDecision {
+    Allowed,
+    Denied(SessionDenialReason),
+}
+
 /// Access control request sent to vauban-access.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AccessRequest {
@@ -604,6 +663,31 @@ pub enum AccessRequest {
         decision_user_agent: Option<String>,
         request_id: Option<String>,
     },
+
+    /// SECURITY: Instance-level authorization for callers that already
+    /// hold a `proxy_sessions.uuid` and want to consume it (HTML viewer
+    /// page, WebSocket upgrade, JSON metadata read, terminate). vauban-
+    /// access combines (a) session existence + connectable status, (b)
+    /// ownership of the session by the caller, and (c) re-evaluation of
+    /// the matching access rule (`is_active`, `valid_from`,
+    /// `valid_until`, protocol coverage) against the asset of the
+    /// session. All callers that touch an existing proxy_session MUST
+    /// route through this RPC -- direct DB lookups in vauban-web are
+    /// forbidden by the `check_session_access_centralized.sh` lint.
+    ///
+    /// `intent` is purely advisory for vauban-access (used in audit
+    /// logs); the actual decision is identical for all four variants
+    /// because Casbin permissions like `sessions:supervise` /
+    /// `sessions:write` are combined with the response on the
+    /// vauban-web side via `services::session_access::verify`.
+    ///
+    /// Wire compatibility: appended after `RecordApprovalDecision`. New
+    /// variants MUST keep being appended at the end.
+    VerifySessionAccess {
+        session_uuid: String,
+        requesting_user_uuid: String,
+        intent: SessionAccessIntent,
+    },
 }
 
 /// Access control response from vauban-access.
@@ -638,7 +722,9 @@ pub enum AccessResponse {
     /// (kept as `Vec<u8>` so the wire-format module sits cleanly behind
     /// its own feature flag and `messages.rs` does not need to depend on
     /// the crypto stack).
-    SessionTokenIssued { token: Vec<u8> },
+    SessionTokenIssued {
+        token: Vec<u8>,
+    },
 
     /// Fail-closed reply to `AccessRequest::IssueSessionToken`. Returned
     /// either when the policy denies the request or when token minting
@@ -676,6 +762,16 @@ pub enum AccessResponse {
     /// The session remains in its previous state.
     ApprovalDenied {
         reason: ApprovalDenyReason,
+    },
+
+    /// Reply to `AccessRequest::VerifySessionAccess`. The decision is
+    /// authoritative for the instance-level slice (existence, status,
+    /// ownership, access-rule). vauban-web layers the Casbin
+    /// `sessions:supervise` / `sessions:write` OR-overrides on top.
+    ///
+    /// Wire compatibility: appended after `ApprovalDenied`.
+    SessionAccessChecked {
+        decision: SessionAccessDecision,
     },
 }
 

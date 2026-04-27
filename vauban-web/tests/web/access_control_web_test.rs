@@ -15,8 +15,7 @@ use crate::fixtures::{
     add_user_to_vauban_group, create_admin_user, create_expired_access_rule,
     create_inactive_access_rule, create_test_access_rule, create_test_asset_group,
     create_test_asset_in_group, create_test_asset_in_group_with_type, create_test_user,
-    create_test_vauban_group, get_asset_uuid, grant_user_full_access_to_new_group,
-    unique_name,
+    create_test_vauban_group, get_asset_uuid, grant_user_full_access_to_new_group, unique_name,
 };
 
 // =============================================================================

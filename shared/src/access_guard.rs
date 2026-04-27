@@ -250,13 +250,15 @@ impl AccessGuard {
     /// // Proceed with credential lookup + upstream connect.
     /// ```
     pub async fn authorize(&self, user_uuid: &str, asset_uuid: &str) -> AccessDecision {
-        let fut =
-            self.client
-                .check_access_by_uuid(user_uuid, asset_uuid, self.protocol);
+        let fut = self
+            .client
+            .check_access_by_uuid(user_uuid, asset_uuid, self.protocol);
         match tokio::time::timeout(self.timeout, fut).await {
             Ok(Ok(true)) => {
                 debug!(
-                    user_uuid, asset_uuid, protocol = self.protocol,
+                    user_uuid,
+                    asset_uuid,
+                    protocol = self.protocol,
                     "AccessGuard granted"
                 );
                 self.metrics.record_granted();
@@ -264,7 +266,9 @@ impl AccessGuard {
             }
             Ok(Ok(false)) => {
                 warn!(
-                    user_uuid, asset_uuid, protocol = self.protocol,
+                    user_uuid,
+                    asset_uuid,
+                    protocol = self.protocol,
                     "AccessGuard denied (policy)"
                 );
                 self.metrics.record_denied();
@@ -281,7 +285,8 @@ impl AccessGuard {
             }
             Err(_elapsed) => {
                 error!(
-                    user_uuid, asset_uuid,
+                    user_uuid,
+                    asset_uuid,
                     protocol = self.protocol,
                     timeout_secs = self.timeout.as_secs(),
                     "AccessGuard timeout - denying fail-closed (vauban-access \
@@ -447,8 +452,8 @@ impl RbacClient {
         }
 
         debug!(
-            request_id, user_uuid, asset_uuid, protocol,
-            "AccessGuard: CheckAccessByUuid sent"
+            request_id,
+            user_uuid, asset_uuid, protocol, "AccessGuard: CheckAccessByUuid sent"
         );
 
         let response = rx.await.map_err(|_| {
@@ -458,8 +463,12 @@ impl RbacClient {
         match response {
             AccessResponse::AccessChecked(result) => {
                 debug!(
-                    request_id, user_uuid, asset_uuid, protocol,
-                    allowed = result.allowed, "AccessGuard: response"
+                    request_id,
+                    user_uuid,
+                    asset_uuid,
+                    protocol,
+                    allowed = result.allowed,
+                    "AccessGuard: response"
                 );
                 Ok(result.allowed)
             }
@@ -618,9 +627,7 @@ mod tests {
         let client_read = c_read.into_raw_fd();
         let client_write = d_write.into_raw_fd();
         // SAFETY: fresh pipe ends owned by this process only.
-        let stub = unsafe {
-            IpcChannel::from_raw_fds(d_read.into_raw_fd(), c_write.into_raw_fd())
-        };
+        let stub = unsafe { IpcChannel::from_raw_fds(d_read.into_raw_fd(), c_write.into_raw_fd()) };
         (client_read, client_write, stub)
     }
 
@@ -640,7 +647,7 @@ mod tests {
             protocol,
             metrics: metrics.clone() as Arc<dyn AccessGuardMetrics>,
         });
-        let _ = guard.spawn_dispatcher();
+        let _handle = guard.spawn_dispatcher();
         (guard, metrics)
     }
 
@@ -863,7 +870,7 @@ mod tests {
             protocol: "ssh",
             metrics: metrics.clone() as Arc<dyn AccessGuardMetrics>,
         });
-        let _ = guard.spawn_dispatcher();
+        let _handle = guard.spawn_dispatcher();
 
         // Don't drive the stub: no response will ever come back.
         let g = Arc::clone(&guard);
@@ -942,7 +949,7 @@ mod tests {
             protocol,
             metrics: metrics.clone() as Arc<dyn AccessGuardMetrics>,
         });
-        let _ = guard.spawn_dispatcher();
+        let _handle = guard.spawn_dispatcher();
         (guard, metrics)
     }
 
@@ -1314,8 +1321,7 @@ mod tests {
         );
         // Either ipc_error or timeout must have been incremented.
         assert!(
-            metrics.ipc_error.load(Ordering::SeqCst) + metrics.timeout.load(Ordering::SeqCst)
-                >= 1,
+            metrics.ipc_error.load(Ordering::SeqCst) + metrics.timeout.load(Ordering::SeqCst) >= 1,
             "fail-closed metric MUST fire on pipe death"
         );
         assert_eq!(metrics.granted.load(Ordering::SeqCst), 0);
@@ -1342,10 +1348,7 @@ mod tests {
                 let req = stub.recv().unwrap();
                 if let Message::AccessRequest {
                     request_id,
-                    request:
-                        AccessRequest::CheckAccessByUuid {
-                            asset_uuid, ..
-                        },
+                    request: AccessRequest::CheckAccessByUuid { asset_uuid, .. },
                 } = req
                 {
                     buf.push((request_id, asset_uuid));
@@ -1357,7 +1360,7 @@ mod tests {
                     .strip_prefix("asset-")
                     .and_then(|s| s.parse().ok())
                     .unwrap();
-                let allow = idx % 2 == 0;
+                let allow = idx.is_multiple_of(2);
                 stub.send(&Message::AccessResponse {
                     request_id: *request_id,
                     response: AccessResponse::AccessChecked(AccessCheckResult {
@@ -1418,10 +1421,7 @@ mod tests {
                 let req = stub.recv().unwrap();
                 if let Message::AccessRequest {
                     request_id,
-                    request:
-                        AccessRequest::CheckAccessByUuid {
-                            protocol, ..
-                        },
+                    request: AccessRequest::CheckAccessByUuid { protocol, .. },
                 } = req
                 {
                     *captured_for_thread.lock().unwrap() = Some(protocol);

@@ -526,7 +526,10 @@ async fn test_create_rdp_with_domain_persists_in_connection_config() {
         .await
         .expect("RDP asset must be persisted");
     assert_eq!(
-        asset.connection_config.get("domain").and_then(|v| v.as_str()),
+        asset
+            .connection_config
+            .get("domain")
+            .and_then(|v| v.as_str()),
         Some("CORP"),
         "RDP domain must be persisted in connection_config.domain, got {}",
         asset.connection_config
@@ -748,8 +751,7 @@ async fn test_create_rdp_with_empty_password_rejects_400_canary_empty_20260418()
         "expected a flash cookie carrying the ASS-03 rejection"
     );
 
-    let persisted =
-        read_asset_by_triplet(&mut conn, &asset_hostname, 3389, "Administrator").await;
+    let persisted = read_asset_by_triplet(&mut conn, &asset_hostname, 3389, "Administrator").await;
     assert!(
         persisted.is_none(),
         "no row must be persisted when RDP password is empty, got: {:?}",
@@ -1108,7 +1110,10 @@ async fn test_edit_ssh_description_only_preserves_full_host_key_state() {
             ("ssh_username", "alice"),
             ("ssh_auth_type", "password"),
             ("ssh_password", ""), // option A: keep stored password
-            ("description", "operator only changed the description -- SEC-12"),
+            (
+                "description",
+                "operator only changed the description -- SEC-12",
+            ),
         ])
         .await;
 
@@ -1124,19 +1129,28 @@ async fn test_edit_ssh_description_only_preserves_full_host_key_state() {
         .expect("row must still exist after edit");
 
     assert_eq!(
-        after.connection_config.get("ssh_host_key").and_then(|v| v.as_str()),
+        after
+            .connection_config
+            .get("ssh_host_key")
+            .and_then(|v| v.as_str()),
         Some(HOST_KEY),
         "SEC-12 regression: ssh_host_key was wiped by an unrelated edit. \
          Full config after edit: {}",
         after.connection_config
     );
     assert_eq!(
-        after.connection_config.get("ssh_host_key_fingerprint").and_then(|v| v.as_str()),
+        after
+            .connection_config
+            .get("ssh_host_key_fingerprint")
+            .and_then(|v| v.as_str()),
         Some(FINGERPRINT),
         "SEC-12 regression: ssh_host_key_fingerprint was wiped by an unrelated edit"
     );
     assert_eq!(
-        after.connection_config.get("ssh_host_key_mismatch").and_then(|v| v.as_bool()),
+        after
+            .connection_config
+            .get("ssh_host_key_mismatch")
+            .and_then(|v| v.as_bool()),
         Some(true),
         "SEC-12 regression: ssh_host_key_mismatch flag was cleared by an unrelated edit \
          (this would silently re-allow connections to a suspected MITM target)"
@@ -1203,17 +1217,27 @@ async fn test_edit_ssh_password_rotation_preserves_host_key_pinning() {
         .await;
 
     let status = response.status_code().as_u16();
-    assert!(status == 302 || status == 303, "edit must succeed, got {}", status);
+    assert!(
+        status == 302 || status == 303,
+        "edit must succeed, got {}",
+        status
+    );
 
     let after = read_asset_by_uuid(&mut conn, asset.uuid).await.unwrap();
 
     assert_eq!(
-        after.connection_config.get("ssh_host_key").and_then(|v| v.as_str()),
+        after
+            .connection_config
+            .get("ssh_host_key")
+            .and_then(|v| v.as_str()),
         Some(HOST_KEY),
         "SEC-12 regression: ssh_host_key was wiped by a credential rotation"
     );
     assert_eq!(
-        after.connection_config.get("ssh_host_key_fingerprint").and_then(|v| v.as_str()),
+        after
+            .connection_config
+            .get("ssh_host_key_fingerprint")
+            .and_then(|v| v.as_str()),
         Some(FINGERPRINT),
         "SEC-12 regression: ssh_host_key_fingerprint was wiped by a credential rotation"
     );
@@ -1284,22 +1308,35 @@ async fn test_edit_ssh_switch_auth_type_preserves_host_key_pinning() {
         .await;
 
     let status = response.status_code().as_u16();
-    assert!(status == 302 || status == 303, "edit must succeed, got {}", status);
+    assert!(
+        status == 302 || status == 303,
+        "edit must succeed, got {}",
+        status
+    );
 
     let after = read_asset_by_uuid(&mut conn, asset.uuid).await.unwrap();
 
     assert_eq!(
-        after.connection_config.get("ssh_host_key").and_then(|v| v.as_str()),
+        after
+            .connection_config
+            .get("ssh_host_key")
+            .and_then(|v| v.as_str()),
         Some(HOST_KEY),
         "SEC-12 regression: ssh_host_key was wiped by an auth_type switch"
     );
     assert_eq!(
-        after.connection_config.get("ssh_host_key_fingerprint").and_then(|v| v.as_str()),
+        after
+            .connection_config
+            .get("ssh_host_key_fingerprint")
+            .and_then(|v| v.as_str()),
         Some(FINGERPRINT),
         "SEC-12 regression: ssh_host_key_fingerprint was wiped by an auth_type switch"
     );
     assert_eq!(
-        after.connection_config.get("auth_type").and_then(|v| v.as_str()),
+        after
+            .connection_config
+            .get("auth_type")
+            .and_then(|v| v.as_str()),
         Some("private_key"),
     );
 }
@@ -1354,16 +1391,26 @@ async fn test_edit_rdp_absent_domain_preserves_stored_domain() {
             ("status", "maintenance"),
             ("ssh_username", "Administrator"),
             ("ssh_password", ""),
-            ("description", "domain field intentionally absent from the request body"),
+            (
+                "description",
+                "domain field intentionally absent from the request body",
+            ),
         ])
         .await;
 
     let status = response.status_code().as_u16();
-    assert!(status == 302 || status == 303, "edit must succeed, got {}", status);
+    assert!(
+        status == 302 || status == 303,
+        "edit must succeed, got {}",
+        status
+    );
 
     let after = read_asset_by_uuid(&mut conn, asset.uuid).await.unwrap();
     assert_eq!(
-        after.connection_config.get("domain").and_then(|v| v.as_str()),
+        after
+            .connection_config
+            .get("domain")
+            .and_then(|v| v.as_str()),
         Some(DOMAIN),
         "absent rdp_domain field MUST preserve stored domain, got config: {}",
         after.connection_config
@@ -1422,7 +1469,11 @@ async fn test_edit_rdp_explicit_blank_domain_clears_stored_domain() {
         .await;
 
     let status = response.status_code().as_u16();
-    assert!(status == 302 || status == 303, "edit must succeed, got {}", status);
+    assert!(
+        status == 302 || status == 303,
+        "edit must succeed, got {}",
+        status
+    );
 
     let after = read_asset_by_uuid(&mut conn, asset.uuid).await.unwrap();
     assert!(

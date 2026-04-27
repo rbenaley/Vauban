@@ -80,12 +80,17 @@ mod tests {
         let counter = Arc::new(AtomicU32::new(0));
         let c = counter.clone();
         let handle = tokio::runtime::Handle::current();
-        let _task = spawn_periodic(&handle, "test_skip_first", Duration::from_millis(20), move || {
-            let c = c.clone();
-            async move {
-                c.fetch_add(1, Ordering::SeqCst);
-            }
-        });
+        let _task = spawn_periodic(
+            &handle,
+            "test_skip_first",
+            Duration::from_millis(20),
+            move || {
+                let c = c.clone();
+                async move {
+                    c.fetch_add(1, Ordering::SeqCst);
+                }
+            },
+        );
         // Within ~10 ms (less than one period) the counter must still
         // be zero: the first immediate tick is skipped.
         tokio::time::sleep(Duration::from_millis(5)).await;

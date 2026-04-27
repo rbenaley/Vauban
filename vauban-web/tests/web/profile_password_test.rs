@@ -149,10 +149,7 @@ async fn create_local_user_with_mfa(
 
 /// Create a local-auth operator WITHOUT a TOTP factor enrolled. Mirrors
 /// [`create_local_user_with_mfa`] otherwise.
-async fn create_local_user_without_mfa(
-    app: &TestApp,
-    label: &str,
-) -> (i32, Uuid, String) {
+async fn create_local_user_without_mfa(app: &TestApp, label: &str) -> (i32, Uuid, String) {
     let username = unique_name(label);
     let user_uuid = Uuid::new_v4();
     let hash = unwrap_ok!(app.auth_service.hash_password("StableInitialPwd#2026!"));
@@ -183,15 +180,11 @@ async fn create_local_user_without_mfa(
 /// Create a federated (LDAP) operator WITH MFA enrolled. Used to assert
 /// that the password rotation refuses non-local accounts even when their
 /// TOTP step-up would otherwise succeed.
-async fn create_ldap_user_with_mfa(
-    app: &TestApp,
-    label: &str,
-) -> (i32, Uuid, String, String) {
+async fn create_ldap_user_with_mfa(app: &TestApp, label: &str) -> (i32, Uuid, String, String) {
     let username = unique_name(label);
     let user_uuid = Uuid::new_v4();
     let hash = unwrap_ok!(app.auth_service.hash_password("StableInitialPwd#2026!"));
-    let (mfa_secret, _) =
-        unwrap_ok!(AuthService::generate_totp_secret(&username, "VAUBAN-tests"));
+    let (mfa_secret, _) = unwrap_ok!(AuthService::generate_totp_secret(&username, "VAUBAN-tests"));
 
     let mut conn = app.get_conn().await;
     let user_id: i32 = unwrap_ok!(
@@ -300,10 +293,7 @@ async fn fetch_profile_with_flash(app: &TestApp, token: &str, flash_cookie: &str
     let response = app
         .server
         .get("/accounts/profile")
-        .add_header(
-            COOKIE,
-            format!("access_token={}; {}", token, flash_cookie),
-        )
+        .add_header(COOKIE, format!("access_token={}; {}", token, flash_cookie))
         .await;
     assert_eq!(
         response.status_code().as_u16(),
@@ -520,8 +510,7 @@ async fn test_change_password_wrong_totp_code_rejected() {
 #[serial]
 async fn test_change_password_refuses_when_mfa_not_enrolled() {
     let app = TestApp::spawn().await;
-    let (user_id, user_uuid, username) =
-        create_local_user_without_mfa(app, "cp_no_mfa").await;
+    let (user_id, user_uuid, username) = create_local_user_without_mfa(app, "cp_no_mfa").await;
 
     let token = app
         .generate_test_token(&user_uuid.to_string(), &username, false, false)
@@ -759,10 +748,7 @@ async fn test_change_password_invalid_csrf_rejected() {
     let flash = assert_redirect_to_profile(&response);
 
     let hash_after = read_hash(app, user_id).await;
-    assert_eq!(
-        hash_after, hash_before,
-        "bad CSRF MUST NOT rotate hash"
-    );
+    assert_eq!(hash_after, hash_before, "bad CSRF MUST NOT rotate hash");
 
     let body = fetch_profile_with_flash(app, &token, &flash).await;
     assert!(
@@ -857,8 +843,7 @@ async fn test_profile_page_renders_change_password_modal_for_mfa_local_user() {
 #[serial]
 async fn test_profile_page_renders_mfa_required_banner_when_mfa_absent() {
     let app = TestApp::spawn().await;
-    let (_id, user_uuid, username) =
-        create_local_user_without_mfa(app, "cp_render_no_mfa").await;
+    let (_id, user_uuid, username) = create_local_user_without_mfa(app, "cp_render_no_mfa").await;
 
     let token = app
         .generate_test_token(&user_uuid.to_string(), &username, false, false)

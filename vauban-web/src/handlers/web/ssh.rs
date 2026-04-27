@@ -1195,25 +1195,43 @@ pub async fn terminal_page(
         return flash_redirect(flash.error("Invalid session identifier"), "/assets");
     }
 
-    // SECURITY (anti-IDOR): verify the session belongs to the authenticated
-    // user (or is admin-monitorable) before rendering anything. We collapse
-    // every failure mode into a single opaque 404 so that an unauthenticated
-    // probe cannot use the response to enumerate valid session UUIDs.
-    if let Err(status) = crate::handlers::websocket::verify_session_ownership(
+    // SECURITY (anti-IDOR + access-rule recheck): delegate to the
+    // single session_access seam. It calls vauban-access::
+    // VerifySessionAccess (status + ownership + access-rule re-check)
+    // and applies the Casbin OR-overrides (sessions:supervise here).
+    // Every denial that is not "Gone" collapses to a generic 404 so a
+    // probe cannot enumerate session UUIDs by status code.
+    use crate::services::session_access::{self, SessionAccessOutcome};
+    use shared::messages::SessionAccessIntent;
+    match session_access::verify(
         &state,
         &session_id,
         &auth_user.0,
-        perms.sessions_supervise,
+        &perms,
+        SessionAccessIntent::OpenViewer,
     )
     .await
     {
-        tracing::warn!(
-            session_id = %session_id,
-            user = %auth_user.username,
-            status = %status.as_u16(),
-            "terminal_page denied (collapsed to 404)"
-        );
-        return AppError::NotFound("Session not found".to_string()).into_response();
+        SessionAccessOutcome::Allowed => {}
+        SessionAccessOutcome::Denied404 => {
+            tracing::warn!(
+                session_id = %session_id,
+                user = %auth_user.username,
+                "terminal_page denied (collapsed to 404)"
+            );
+            return AppError::NotFound("Session not found".to_string()).into_response();
+        }
+        SessionAccessOutcome::DeniedGone => {
+            tracing::info!(
+                session_id = %session_id,
+                user = %auth_user.username,
+                "terminal_page denied: session is gone (collapsed to 404)"
+            );
+            // The terminal HTML wrapper does not have a meaningful
+            // 410 rendering; collapse to 404 so the rest of the
+            // anti-enum surface stays consistent.
+            return AppError::NotFound("Session not found".to_string()).into_response();
+        }
     }
 
     let user = Some(user_context_from_auth(&auth_user));

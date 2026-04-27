@@ -146,11 +146,7 @@ mod tests {
              removed for security; use VaultCryptoClient instead)"
         );
 
-        let forbidden_fn = format!(
-            "{} {}(",
-            "async fn",
-            "list_credentials"
-        );
+        let forbidden_fn = format!("{} {}(", "async fn", "list_credentials");
         assert!(
             !source.contains(&forbidden_fn),
             "ipc/clients.rs must not expose any `list_credentials` stub returning Ok(vec![])"

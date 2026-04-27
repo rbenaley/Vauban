@@ -427,12 +427,42 @@ pub async fn rdp_page(
     State(state): State<AppState>,
     incoming_flash: IncomingFlash,
     auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
     axum::extract::Path(session_id): axum::extract::Path<String>,
 ) -> Response {
+    use crate::error::AppError;
+    use crate::services::session_access::{self, SessionAccessOutcome};
+    use shared::messages::SessionAccessIntent;
+
     let flash = incoming_flash.flash();
 
     if uuid::Uuid::parse_str(&session_id).is_err() {
         return flash_redirect(flash.error("Invalid session identifier"), "/assets");
+    }
+
+    // SECURITY (anti-IDOR + access-rule recheck): identical seam to
+    // [`terminal_page`]. Without this gate, anyone holding the
+    // session_id (the user A who created the session, or anyone they
+    // shared the URL with) could open the RDP viewer of any session.
+    // See plan: rdp_page used to ship NO ownership check at all.
+    match session_access::verify(
+        &state,
+        &session_id,
+        &auth_user.0,
+        &perms,
+        SessionAccessIntent::OpenViewer,
+    )
+    .await
+    {
+        SessionAccessOutcome::Allowed => {}
+        SessionAccessOutcome::Denied404 | SessionAccessOutcome::DeniedGone => {
+            tracing::warn!(
+                session_id = %session_id,
+                user = %auth_user.username,
+                "rdp_page denied (collapsed to 404)"
+            );
+            return AppError::NotFound("Session not found".to_string()).into_response();
+        }
     }
 
     let user = Some(user_context_from_auth(&auth_user));

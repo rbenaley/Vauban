@@ -2,17 +2,17 @@ use chrono::Utc;
 use diesel::dsl::sql;
 use diesel::prelude::*;
 use diesel::sql_types::Bool as SqlBool;
+use diesel_async::AsyncConnection;
 use diesel_async::RunQueryDsl;
 use shared::messages::{
     AccessCheckResult, AccessCheckResultEntry, AccessRequest, AccessResponse, AccessRuleData,
-    AccessRuleInfo, AccessibleGroupEntry, ApprovalDecisionKind, ApprovalDenyReason,
-    AssetGroupInfo, DEFAULT_IPC_PAGE_LIMIT, GroupOption, IpcPage, IpcPageParams,
-    MAX_IPC_PAGE_LIMIT, VaubanGroupInfo,
+    AccessRuleInfo, AccessibleGroupEntry, ApprovalDecisionKind, ApprovalDenyReason, AssetGroupInfo,
+    DEFAULT_IPC_PAGE_LIMIT, GroupOption, IpcPage, IpcPageParams, MAX_IPC_PAGE_LIMIT,
+    VaubanGroupInfo,
 };
 use shared::session_token::{SessionToken, SessionTokenParams, TokenKey};
-use std::time::{SystemTime, UNIX_EPOCH};
 use std::collections::HashMap;
-use diesel_async::AsyncConnection;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -243,6 +243,166 @@ pub async fn handle_access_request(pool: &DbPool, request: AccessRequest) -> Acc
             )
             .await
         }
+
+        AccessRequest::VerifySessionAccess {
+            session_uuid,
+            requesting_user_uuid,
+            intent,
+        } => {
+            handle_verify_session_access(&mut conn, &session_uuid, &requesting_user_uuid, intent)
+                .await
+        }
+    }
+}
+
+/// SECURITY: instance-level decision for any consumer of an existing
+/// `proxy_sessions` row (HTML viewer, WebSocket upgrade, JSON metadata
+/// read, terminate). Combines:
+///
+/// 1. **Existence + status** — sessions in `terminated`, `expired`, or
+///    `disconnected` are reported as `Gone`. Unknown UUIDs are
+///    `NotFound`.
+/// 2. **Ownership** — `proxy_sessions.user_id` must match the supplied
+///    `requesting_user_uuid`. The Casbin `sessions:supervise` /
+///    `sessions:write` OR-overrides are layered later by the
+///    vauban-web service.
+/// 3. **Access-rule re-check** — the matching access rule for
+///    (owner, asset, session_type) is re-evaluated against
+///    `is_active`, `valid_from`, `valid_until`, and protocol coverage
+///    via [`handle_check_access_by_uuid`]. A revoked, expired, or
+///    not-yet-valid rule yields `AccessRuleRevoked` -> the consumer
+///    is fail-fast cut at its next page-load or WS handshake.
+///
+/// `intent` is recorded in the audit log but does not influence the
+/// decision; the OR-overrides are applied uniformly on the vauban-web
+/// side.
+///
+/// Fail-closed: any unexpected DB error collapses to a denial
+/// (`AccessRuleRevoked`) rather than `Error`, so a misbehaving
+/// infrastructure cannot accidentally grant access.
+async fn handle_verify_session_access(
+    conn: &mut DbConnection,
+    session_uuid: &str,
+    requesting_user_uuid: &str,
+    intent: shared::messages::SessionAccessIntent,
+) -> AccessResponse {
+    use shared::messages::{SessionAccessDecision, SessionDenialReason};
+
+    let denied = |reason: SessionDenialReason| AccessResponse::SessionAccessChecked {
+        decision: SessionAccessDecision::Denied(reason),
+    };
+
+    let session_uuid_parsed = match Uuid::parse_str(session_uuid) {
+        Ok(u) => u,
+        Err(e) => {
+            warn!(session_uuid, error = %e, "VerifySessionAccess: invalid session uuid");
+            return denied(SessionDenialReason::NotFound);
+        }
+    };
+    let requesting_user_parsed = match Uuid::parse_str(requesting_user_uuid) {
+        Ok(u) => u,
+        Err(e) => {
+            warn!(requesting_user_uuid, error = %e, "VerifySessionAccess: invalid user uuid");
+            return denied(SessionDenialReason::NotOwner);
+        }
+    };
+
+    type SessionRow = (Uuid, String, Uuid, String);
+    let row: Option<SessionRow> = match proxy_sessions::table
+        .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
+        .inner_join(assets::table.on(assets::id.eq(proxy_sessions::asset_id)))
+        .filter(proxy_sessions::uuid.eq(session_uuid_parsed))
+        .select((
+            users::uuid,
+            proxy_sessions::status,
+            assets::uuid,
+            proxy_sessions::session_type,
+        ))
+        .first::<SessionRow>(conn)
+        .await
+        .optional()
+    {
+        Ok(opt) => opt,
+        Err(e) => {
+            warn!(session_uuid, error = %e, "VerifySessionAccess: db error loading session");
+            return denied(SessionDenialReason::NotFound);
+        }
+    };
+
+    let (owner_uuid, status, asset_uuid, session_type) = match row {
+        Some(r) => r,
+        None => {
+            info!(
+                session_uuid,
+                ?intent,
+                "VerifySessionAccess denied: session not found"
+            );
+            return denied(SessionDenialReason::NotFound);
+        }
+    };
+
+    let is_gone = status == "terminated" || status == "expired" || status == "disconnected";
+
+    // SECURITY: ordering matters. For read-style intents we leak as
+    // little as possible: a non-owner attacker probing a known UUID
+    // sees `Gone` only if the session is actually gone, otherwise
+    // `NotOwner` (collapsed to 404 by the service). For `Terminate`
+    // we deliberately surface ownership BEFORE status so that the
+    // owner of an already-terminated session reaches the
+    // service-layer idempotency path (Gone -> Allowed for a verified
+    // owner / sessions:write holder) instead of being told 404 on
+    // their own session.
+    let owner_check_first = matches!(intent, shared::messages::SessionAccessIntent::Terminate);
+    if owner_check_first && owner_uuid != requesting_user_parsed {
+        info!(
+            session_uuid,
+            ?intent,
+            "VerifySessionAccess denied: requesting user is not the owner"
+        );
+        return denied(SessionDenialReason::NotOwner);
+    }
+
+    if is_gone {
+        info!(
+            session_uuid,
+            status,
+            ?intent,
+            "VerifySessionAccess denied: session is gone"
+        );
+        return denied(SessionDenialReason::Gone);
+    }
+
+    if !owner_check_first && owner_uuid != requesting_user_parsed {
+        info!(
+            session_uuid,
+            ?intent,
+            "VerifySessionAccess denied: requesting user is not the owner"
+        );
+        return denied(SessionDenialReason::NotOwner);
+    }
+
+    let owner_uuid_str = owner_uuid.to_string();
+    let asset_uuid_str = asset_uuid.to_string();
+    let check =
+        handle_check_access_by_uuid(conn, &owner_uuid_str, &asset_uuid_str, &session_type).await;
+    let allowed = matches!(
+        check,
+        AccessResponse::AccessChecked(AccessCheckResult { allowed: true, .. })
+    );
+    if !allowed {
+        info!(
+            session_uuid,
+            owner = %owner_uuid_str,
+            asset = %asset_uuid_str,
+            protocol = %session_type,
+            ?intent,
+            "VerifySessionAccess denied: access rule no longer applies"
+        );
+        return denied(SessionDenialReason::AccessRuleRevoked);
+    }
+
+    AccessResponse::SessionAccessChecked {
+        decision: SessionAccessDecision::Allowed,
     }
 }
 
@@ -631,7 +791,10 @@ async fn handle_check_access_by_uuid(
     {
         Ok(id) => id,
         Err(diesel::result::Error::NotFound) => {
-            warn!(user_uuid, protocol, "CheckAccessByUuid: unknown or inactive user");
+            warn!(
+                user_uuid,
+                protocol, "CheckAccessByUuid: unknown or inactive user"
+            );
             return denied();
         }
         Err(e) => {
@@ -649,7 +812,10 @@ async fn handle_check_access_by_uuid(
     {
         Ok(id) => id,
         Err(diesel::result::Error::NotFound) => {
-            warn!(asset_uuid, protocol, "CheckAccessByUuid: unknown or deleted asset");
+            warn!(
+                asset_uuid,
+                protocol, "CheckAccessByUuid: unknown or deleted asset"
+            );
             return denied();
         }
         Err(e) => {
@@ -688,7 +854,9 @@ async fn handle_check_access_by_uuid(
 
     if asset_group_ids.is_empty() {
         info!(
-            asset_uuid, asset_id, protocol,
+            asset_uuid,
+            asset_id,
+            protocol,
             "CheckAccessByUuid denied: asset belongs to no asset_group (and no virtual fallback)"
         );
         return denied();
@@ -702,7 +870,10 @@ async fn handle_check_access_by_uuid(
             return denied();
         }
         _ => {
-            warn!(user_uuid, asset_uuid, protocol, "CheckAccessByUuid: unexpected multi-check response");
+            warn!(
+                user_uuid,
+                asset_uuid, protocol, "CheckAccessByUuid: unexpected multi-check response"
+            );
             return denied();
         }
     };
@@ -710,8 +881,8 @@ async fn handle_check_access_by_uuid(
     let allowed = entries.iter().any(|e| e.result.allowed);
     if !allowed {
         info!(
-            user_uuid, asset_uuid, protocol,
-            "CheckAccessByUuid denied: no granting access_rule"
+            user_uuid,
+            asset_uuid, protocol, "CheckAccessByUuid denied: no granting access_rule"
         );
         return denied();
     }
@@ -723,14 +894,11 @@ async fn handle_check_access_by_uuid(
 
     let require_mfa = granting.iter().any(|r| r.require_mfa);
     let require_approval = granting.iter().any(|r| r.require_approval);
-    let max_session_duration = granting
-        .iter()
-        .filter_map(|r| r.max_session_duration)
-        .min();
+    let max_session_duration = granting.iter().filter_map(|r| r.max_session_duration).min();
 
     info!(
-        user_uuid, asset_uuid, protocol, require_mfa, require_approval,
-        "CheckAccessByUuid granted"
+        user_uuid,
+        asset_uuid, protocol, require_mfa, require_approval, "CheckAccessByUuid granted"
     );
 
     AccessResponse::AccessChecked(AccessCheckResult {
@@ -2062,8 +2230,8 @@ async fn handle_record_approval_decision<'a>(
                         // Effective duration: explicit override wins;
                         // otherwise keep the value copied from the rule
                         // at request time.
-                        let effective_duration = duration_override
-                            .or(snap.current_max_session_duration);
+                        let effective_duration =
+                            duration_override.or(snap.current_max_session_duration);
                         let approval_expires_at = effective_duration
                             .map(|secs| now + chrono::Duration::seconds(secs as i64));
 
@@ -2420,12 +2588,12 @@ mod tests {
     use diesel_async::pooled_connection::AsyncDieselConnectionManager;
     use diesel_async::pooled_connection::deadpool::Pool;
     use diesel_async::{AsyncPgConnection, RunQueryDsl};
-    use uuid::Uuid;
     use shared::messages::{
         AccessRequest, AccessResponse, AccessRuleData, AccessRuleInfo, AccessibleGroupEntry,
         AssetGroupInfo, DEFAULT_IPC_PAGE_LIMIT, IpcPage, IpcPageParams, MAX_IPC_PAGE_LIMIT,
         VaubanGroupInfo,
     };
+    use uuid::Uuid;
 
     fn page0() -> IpcPageParams {
         IpcPageParams {
@@ -3003,15 +3171,14 @@ mod tests {
     #[tokio::test]
     async fn test_list_asset_groups() {
         let pool = test_pool().await;
-        let resp =
-            handle_access_request(
-                &pool,
-                AccessRequest::ListAssetGroups {
-                    page: page0(),
-                    include_virtual: false,
-                },
-            )
-            .await;
+        let resp = handle_access_request(
+            &pool,
+            AccessRequest::ListAssetGroups {
+                page: page0(),
+                include_virtual: false,
+            },
+        )
+        .await;
         match resp {
             AccessResponse::AssetGroupPage(_) => {}
             other => panic!("Expected AssetGroupPage, got {:?}", other),
@@ -3970,8 +4137,7 @@ mod tests {
         let pool = test_pool().await;
         let user_id = ensure_test_user(&pool).await;
         let user_uuid = user_uuid(&pool, user_id).await;
-        let (asset_id, asset_uuid) =
-            insert_test_asset(&pool, &unique_name("asset_no_group")).await;
+        let (asset_id, asset_uuid) = insert_test_asset(&pool, &unique_name("asset_no_group")).await;
 
         let resp = handle_access_request(
             &pool,
@@ -4132,6 +4298,519 @@ mod tests {
         cleanup_vauban_group(&pool, &ug.uuid).await;
     }
 
+    // ==================== VerifySessionAccess ====================
+
+    /// Helpers shared by the VerifySessionAccess test matrix. Insert a
+    /// minimal `proxy_sessions` row tied to (user, asset) with the
+    /// requested status / session_type. Returns (session_uuid).
+    async fn insert_test_session(
+        pool: &DbPool,
+        user_id: i32,
+        asset_id: i32,
+        session_type: &str,
+        status: &str,
+    ) -> String {
+        use crate::schema::proxy_sessions;
+        use ipnetwork::IpNetwork;
+        let mut conn = pool.get().await.unwrap();
+        let session_uuid = Uuid::new_v4();
+        let client_ip: IpNetwork = "127.0.0.1".parse().unwrap();
+        diesel::insert_into(proxy_sessions::table)
+            .values((
+                proxy_sessions::uuid.eq(session_uuid),
+                proxy_sessions::user_id.eq(user_id),
+                proxy_sessions::asset_id.eq(asset_id),
+                proxy_sessions::credential_id.eq(Uuid::new_v4().to_string()),
+                proxy_sessions::credential_username.eq("root"),
+                proxy_sessions::session_type.eq(session_type),
+                proxy_sessions::status.eq(status),
+                proxy_sessions::client_ip.eq(client_ip),
+                proxy_sessions::is_recorded.eq(false),
+                proxy_sessions::bytes_sent.eq(0i64),
+                proxy_sessions::bytes_received.eq(0i64),
+                proxy_sessions::commands_count.eq(0i32),
+                proxy_sessions::metadata.eq(serde_json::json!({})),
+            ))
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        session_uuid.to_string()
+    }
+
+    async fn cleanup_session(pool: &DbPool, session_uuid: &str) {
+        use crate::schema::proxy_sessions;
+        let mut conn = pool.get().await.unwrap();
+        let parsed = match Uuid::parse_str(session_uuid) {
+            Ok(u) => u,
+            Err(_) => return,
+        };
+        let _ = diesel::delete(proxy_sessions::table.filter(proxy_sessions::uuid.eq(parsed)))
+            .execute(&mut conn)
+            .await;
+    }
+
+    /// Build a complete (user_in_group + asset_in_group + active rule)
+    /// fixture that grants `protocols` over (user_id, asset_id). Returns
+    /// the rule + group uuids so the caller can mutate / clean them up.
+    struct VsaFixture {
+        user_id: i32,
+        user_uuid: String,
+        asset_id: i32,
+        ug_uuid: String,
+        ag_uuid: String,
+        rule_uuid: String,
+    }
+
+    async fn make_vsa_fixture(pool: &DbPool, prefix: &str, protocols: Vec<&str>) -> VsaFixture {
+        let username = unique_name(&format!("{prefix}_owner"));
+        let user_id = insert_test_user(pool, &username).await;
+        let user_uuid = user_uuid(pool, user_id).await;
+        let ug = create_test_vauban_group(pool, &unique_name(&format!("{prefix}_ug"))).await;
+        let ag = create_test_asset_group(pool, &unique_name(&format!("{prefix}_ag"))).await;
+        handle_access_request(
+            pool,
+            AccessRequest::AddGroupMember {
+                group_id: ug.id,
+                user_id,
+            },
+        )
+        .await;
+        let rule = create_test_rule(
+            pool,
+            &unique_name(&format!("{prefix}_rule")),
+            ug.id,
+            ag.id,
+            protocols,
+        )
+        .await;
+        let (asset_id, _asset_uuid_str) =
+            insert_test_asset(pool, &unique_name(&format!("{prefix}_asset"))).await;
+        link_asset_to_group(pool, asset_id, ag.id).await;
+        VsaFixture {
+            user_id,
+            user_uuid,
+            asset_id,
+            ug_uuid: ug.uuid,
+            ag_uuid: ag.uuid,
+            rule_uuid: rule.uuid,
+        }
+    }
+
+    async fn cleanup_vsa_fixture(pool: &DbPool, fx: &VsaFixture) {
+        cleanup_asset(pool, fx.asset_id).await;
+        cleanup_rule(pool, &fx.rule_uuid).await;
+        cleanup_asset_group(pool, &fx.ag_uuid).await;
+        cleanup_vauban_group(pool, &fx.ug_uuid).await;
+    }
+
+    async fn deactivate_rule(pool: &DbPool, rule_uuid: &str) {
+        use crate::schema::access_rules;
+        let mut conn = pool.get().await.unwrap();
+        let parsed = Uuid::parse_str(rule_uuid).unwrap();
+        diesel::update(access_rules::table.filter(access_rules::uuid.eq(parsed)))
+            .set(access_rules::is_active.eq(false))
+            .execute(&mut conn)
+            .await
+            .unwrap();
+    }
+
+    async fn set_rule_validity(
+        pool: &DbPool,
+        rule_uuid: &str,
+        valid_from: Option<chrono::DateTime<chrono::Utc>>,
+        valid_until: Option<chrono::DateTime<chrono::Utc>>,
+    ) {
+        use crate::schema::access_rules;
+        let mut conn = pool.get().await.unwrap();
+        let parsed = Uuid::parse_str(rule_uuid).unwrap();
+        diesel::update(access_rules::table.filter(access_rules::uuid.eq(parsed)))
+            .set((
+                access_rules::valid_from.eq(valid_from),
+                access_rules::valid_until.eq(valid_until),
+            ))
+            .execute(&mut conn)
+            .await
+            .unwrap();
+    }
+
+    fn assert_session_decision(
+        resp: AccessResponse,
+        expected: shared::messages::SessionAccessDecision,
+    ) {
+        match resp {
+            AccessResponse::SessionAccessChecked { decision } => assert_eq!(
+                decision, expected,
+                "VerifySessionAccess returned an unexpected decision"
+            ),
+            other => panic!("expected SessionAccessChecked, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_verify_session_access_allowed_owner_active_rule() {
+        use shared::messages::{SessionAccessDecision, SessionAccessIntent};
+        let pool = test_pool().await;
+        let fx = make_vsa_fixture(&pool, "vsa_ok", vec!["ssh"]).await;
+        let session_uuid =
+            insert_test_session(&pool, fx.user_id, fx.asset_id, "ssh", "active").await;
+
+        let resp = handle_access_request(
+            &pool,
+            AccessRequest::VerifySessionAccess {
+                session_uuid: session_uuid.clone(),
+                requesting_user_uuid: fx.user_uuid.clone(),
+                intent: SessionAccessIntent::OpenViewer,
+            },
+        )
+        .await;
+        assert_session_decision(resp, SessionAccessDecision::Allowed);
+
+        cleanup_session(&pool, &session_uuid).await;
+        cleanup_vsa_fixture(&pool, &fx).await;
+    }
+
+    #[tokio::test]
+    async fn test_verify_session_access_denied_not_owner() {
+        use shared::messages::{SessionAccessDecision, SessionAccessIntent, SessionDenialReason};
+        let pool = test_pool().await;
+        let fx = make_vsa_fixture(&pool, "vsa_not_owner", vec!["ssh"]).await;
+        let session_uuid =
+            insert_test_session(&pool, fx.user_id, fx.asset_id, "ssh", "active").await;
+        let intruder_id = insert_test_user(&pool, &unique_name("vsa_intruder")).await;
+        let intruder_uuid = user_uuid(&pool, intruder_id).await;
+
+        let resp = handle_access_request(
+            &pool,
+            AccessRequest::VerifySessionAccess {
+                session_uuid: session_uuid.clone(),
+                requesting_user_uuid: intruder_uuid,
+                intent: SessionAccessIntent::OpenViewer,
+            },
+        )
+        .await;
+        assert_session_decision(
+            resp,
+            SessionAccessDecision::Denied(SessionDenialReason::NotOwner),
+        );
+
+        cleanup_session(&pool, &session_uuid).await;
+        cleanup_vsa_fixture(&pool, &fx).await;
+    }
+
+    #[tokio::test]
+    async fn test_verify_session_access_denied_session_terminated() {
+        use shared::messages::{SessionAccessDecision, SessionAccessIntent, SessionDenialReason};
+        let pool = test_pool().await;
+        let fx = make_vsa_fixture(&pool, "vsa_term", vec!["ssh"]).await;
+        let session_uuid =
+            insert_test_session(&pool, fx.user_id, fx.asset_id, "ssh", "terminated").await;
+
+        let resp = handle_access_request(
+            &pool,
+            AccessRequest::VerifySessionAccess {
+                session_uuid: session_uuid.clone(),
+                requesting_user_uuid: fx.user_uuid.clone(),
+                intent: SessionAccessIntent::ConsumeWs,
+            },
+        )
+        .await;
+        assert_session_decision(
+            resp,
+            SessionAccessDecision::Denied(SessionDenialReason::Gone),
+        );
+
+        cleanup_session(&pool, &session_uuid).await;
+        cleanup_vsa_fixture(&pool, &fx).await;
+    }
+
+    #[tokio::test]
+    async fn test_verify_session_access_denied_session_expired() {
+        use shared::messages::{SessionAccessDecision, SessionAccessIntent, SessionDenialReason};
+        let pool = test_pool().await;
+        let fx = make_vsa_fixture(&pool, "vsa_exp", vec!["ssh"]).await;
+        let session_uuid =
+            insert_test_session(&pool, fx.user_id, fx.asset_id, "ssh", "expired").await;
+
+        let resp = handle_access_request(
+            &pool,
+            AccessRequest::VerifySessionAccess {
+                session_uuid: session_uuid.clone(),
+                requesting_user_uuid: fx.user_uuid.clone(),
+                intent: SessionAccessIntent::ReadMetadata,
+            },
+        )
+        .await;
+        assert_session_decision(
+            resp,
+            SessionAccessDecision::Denied(SessionDenialReason::Gone),
+        );
+
+        cleanup_session(&pool, &session_uuid).await;
+        cleanup_vsa_fixture(&pool, &fx).await;
+    }
+
+    #[tokio::test]
+    async fn test_verify_session_access_denied_rule_inactive() {
+        use shared::messages::{SessionAccessDecision, SessionAccessIntent, SessionDenialReason};
+        let pool = test_pool().await;
+        let fx = make_vsa_fixture(&pool, "vsa_inactive", vec!["ssh"]).await;
+        let session_uuid =
+            insert_test_session(&pool, fx.user_id, fx.asset_id, "ssh", "active").await;
+        deactivate_rule(&pool, &fx.rule_uuid).await;
+
+        let resp = handle_access_request(
+            &pool,
+            AccessRequest::VerifySessionAccess {
+                session_uuid: session_uuid.clone(),
+                requesting_user_uuid: fx.user_uuid.clone(),
+                intent: SessionAccessIntent::OpenViewer,
+            },
+        )
+        .await;
+        assert_session_decision(
+            resp,
+            SessionAccessDecision::Denied(SessionDenialReason::AccessRuleRevoked),
+        );
+
+        cleanup_session(&pool, &session_uuid).await;
+        cleanup_vsa_fixture(&pool, &fx).await;
+    }
+
+    #[tokio::test]
+    async fn test_verify_session_access_denied_rule_expired() {
+        use chrono::{Duration, Utc};
+        use shared::messages::{SessionAccessDecision, SessionAccessIntent, SessionDenialReason};
+        let pool = test_pool().await;
+        let fx = make_vsa_fixture(&pool, "vsa_rule_exp", vec!["ssh"]).await;
+        let session_uuid =
+            insert_test_session(&pool, fx.user_id, fx.asset_id, "ssh", "active").await;
+        set_rule_validity(
+            &pool,
+            &fx.rule_uuid,
+            None,
+            Some(Utc::now() - Duration::hours(1)),
+        )
+        .await;
+
+        let resp = handle_access_request(
+            &pool,
+            AccessRequest::VerifySessionAccess {
+                session_uuid: session_uuid.clone(),
+                requesting_user_uuid: fx.user_uuid.clone(),
+                intent: SessionAccessIntent::OpenViewer,
+            },
+        )
+        .await;
+        assert_session_decision(
+            resp,
+            SessionAccessDecision::Denied(SessionDenialReason::AccessRuleRevoked),
+        );
+
+        cleanup_session(&pool, &session_uuid).await;
+        cleanup_vsa_fixture(&pool, &fx).await;
+    }
+
+    #[tokio::test]
+    async fn test_verify_session_access_denied_rule_not_yet_valid() {
+        use chrono::{Duration, Utc};
+        use shared::messages::{SessionAccessDecision, SessionAccessIntent, SessionDenialReason};
+        let pool = test_pool().await;
+        let fx = make_vsa_fixture(&pool, "vsa_rule_future", vec!["ssh"]).await;
+        let session_uuid =
+            insert_test_session(&pool, fx.user_id, fx.asset_id, "ssh", "active").await;
+        set_rule_validity(
+            &pool,
+            &fx.rule_uuid,
+            Some(Utc::now() + Duration::hours(1)),
+            None,
+        )
+        .await;
+
+        let resp = handle_access_request(
+            &pool,
+            AccessRequest::VerifySessionAccess {
+                session_uuid: session_uuid.clone(),
+                requesting_user_uuid: fx.user_uuid.clone(),
+                intent: SessionAccessIntent::ConsumeWs,
+            },
+        )
+        .await;
+        assert_session_decision(
+            resp,
+            SessionAccessDecision::Denied(SessionDenialReason::AccessRuleRevoked),
+        );
+
+        cleanup_session(&pool, &session_uuid).await;
+        cleanup_vsa_fixture(&pool, &fx).await;
+    }
+
+    #[tokio::test]
+    async fn test_verify_session_access_denied_protocol_mismatch() {
+        use shared::messages::{SessionAccessDecision, SessionAccessIntent, SessionDenialReason};
+        let pool = test_pool().await;
+        // Rule grants ssh, session is rdp -> protocol mismatch -> revoked.
+        let fx = make_vsa_fixture(&pool, "vsa_proto", vec!["ssh"]).await;
+        let session_uuid =
+            insert_test_session(&pool, fx.user_id, fx.asset_id, "rdp", "active").await;
+
+        let resp = handle_access_request(
+            &pool,
+            AccessRequest::VerifySessionAccess {
+                session_uuid: session_uuid.clone(),
+                requesting_user_uuid: fx.user_uuid.clone(),
+                intent: SessionAccessIntent::OpenViewer,
+            },
+        )
+        .await;
+        assert_session_decision(
+            resp,
+            SessionAccessDecision::Denied(SessionDenialReason::AccessRuleRevoked),
+        );
+
+        cleanup_session(&pool, &session_uuid).await;
+        cleanup_vsa_fixture(&pool, &fx).await;
+    }
+
+    #[tokio::test]
+    async fn test_verify_session_access_denied_session_not_found() {
+        use shared::messages::{SessionAccessDecision, SessionAccessIntent, SessionDenialReason};
+        let pool = test_pool().await;
+        let user_id = ensure_test_user(&pool).await;
+        let user_uuid_str = user_uuid(&pool, user_id).await;
+
+        let resp = handle_access_request(
+            &pool,
+            AccessRequest::VerifySessionAccess {
+                session_uuid: Uuid::new_v4().to_string(),
+                requesting_user_uuid: user_uuid_str,
+                intent: SessionAccessIntent::OpenViewer,
+            },
+        )
+        .await;
+        assert_session_decision(
+            resp,
+            SessionAccessDecision::Denied(SessionDenialReason::NotFound),
+        );
+    }
+
+    #[tokio::test]
+    async fn test_verify_session_access_invalid_session_uuid_collapses_not_found() {
+        use shared::messages::{SessionAccessDecision, SessionAccessIntent, SessionDenialReason};
+        let pool = test_pool().await;
+        let user_id = ensure_test_user(&pool).await;
+        let user_uuid_str = user_uuid(&pool, user_id).await;
+
+        let resp = handle_access_request(
+            &pool,
+            AccessRequest::VerifySessionAccess {
+                session_uuid: "not-a-uuid".to_string(),
+                requesting_user_uuid: user_uuid_str,
+                intent: SessionAccessIntent::Terminate,
+            },
+        )
+        .await;
+        assert_session_decision(
+            resp,
+            SessionAccessDecision::Denied(SessionDenialReason::NotFound),
+        );
+    }
+
+    #[tokio::test]
+    async fn test_verify_session_access_full_wire_roundtrip() {
+        use shared::ipc::IpcChannel;
+        use shared::messages::{Message, SessionAccessDecision, SessionAccessIntent};
+        use std::time::Duration;
+
+        fn make_pipe() -> (i32, i32) {
+            let mut fds = [0i32; 2];
+            let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
+            assert_eq!(rc, 0, "libc::pipe() failed");
+            (fds[0], fds[1])
+        }
+
+        let pool = test_pool().await;
+        let fx = make_vsa_fixture(&pool, "vsa_wire", vec!["ssh"]).await;
+        let session_uuid =
+            insert_test_session(&pool, fx.user_id, fx.asset_id, "ssh", "active").await;
+
+        let (a_read, a_write) = make_pipe();
+        let (b_read, b_write) = make_pipe();
+        let proxy_side = unsafe { IpcChannel::from_raw_fds(a_read, b_write) };
+        let access_side = unsafe { IpcChannel::from_raw_fds(b_read, a_write) };
+
+        let pool_for_server = pool.clone();
+        let server = tokio::task::spawn(async move {
+            let (access_side, req) = tokio::task::spawn_blocking(move || {
+                let req = access_side.recv().expect("access recv");
+                (access_side, req)
+            })
+            .await
+            .unwrap();
+            let (request_id, request) = match req {
+                Message::AccessRequest {
+                    request_id,
+                    request,
+                } => (request_id, request),
+                other => panic!("expected AccessRequest, got {:?}", other),
+            };
+            let response = handle_access_request(&pool_for_server, request).await;
+            let reply = Message::AccessResponse {
+                request_id,
+                response,
+            };
+            tokio::task::spawn_blocking(move || {
+                access_side.send(&reply).expect("access send");
+            })
+            .await
+            .unwrap();
+        });
+
+        let request_id: u64 = 0xFEEDFACE;
+        let req = Message::AccessRequest {
+            request_id,
+            request: AccessRequest::VerifySessionAccess {
+                session_uuid: session_uuid.clone(),
+                requesting_user_uuid: fx.user_uuid.clone(),
+                intent: SessionAccessIntent::OpenViewer,
+            },
+        };
+        let reply = tokio::task::spawn_blocking(move || {
+            proxy_side.send(&req).expect("proxy send");
+            proxy_side.recv().expect("proxy recv reply")
+        })
+        .await
+        .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("server task should complete within 5s")
+            .unwrap();
+
+        match reply {
+            Message::AccessResponse {
+                request_id: rid,
+                response: AccessResponse::SessionAccessChecked { decision },
+            } => {
+                assert_eq!(rid, request_id, "request_id must round-trip verbatim");
+                assert_eq!(
+                    decision,
+                    SessionAccessDecision::Allowed,
+                    "owner with active rule must round-trip as Allowed"
+                );
+            }
+            other => panic!(
+                "expected AccessResponse(SessionAccessChecked), got {:?} -- if \
+                 this changed, the AccessRequest/AccessResponse bincode \
+                 variant indices may have drifted between vauban-web and \
+                 vauban-access; both must be rebuilt together",
+                other
+            ),
+        }
+
+        cleanup_session(&pool, &session_uuid).await;
+        cleanup_vsa_fixture(&pool, &fx).await;
+    }
+
     /// SECURITY POLICY: handle_check_access_by_uuid MUST NOT bypass the
     /// access_rule lookup for superusers or staff. Both layers
     /// (vauban-web::handlers::web::ssh and the proxy-ssh re-check) now
@@ -4214,16 +4893,9 @@ mod tests {
             },
         )
         .await;
-        let rule = create_test_rule(
-            &pool,
-            &unique_name("wire_rule"),
-            ug.id,
-            ag.id,
-            vec!["ssh"],
-        )
-        .await;
-        let (asset_id, asset_uuid_str) =
-            insert_test_asset(&pool, &unique_name("asset_wire")).await;
+        let rule =
+            create_test_rule(&pool, &unique_name("wire_rule"), ug.id, ag.id, vec!["ssh"]).await;
+        let (asset_id, asset_uuid_str) = insert_test_asset(&pool, &unique_name("asset_wire")).await;
         link_asset_to_group(&pool, asset_id, ag.id).await;
 
         // Build a paired pipe -- proxy side writes, access side reads.
@@ -4245,11 +4917,17 @@ mod tests {
             .await
             .unwrap();
             let (request_id, request) = match req {
-                Message::AccessRequest { request_id, request } => (request_id, request),
+                Message::AccessRequest {
+                    request_id,
+                    request,
+                } => (request_id, request),
                 other => panic!("expected AccessRequest, got {:?}", other),
             };
             let response = handle_access_request(&pool_for_server, request).await;
-            let reply = Message::AccessResponse { request_id, response };
+            let reply = Message::AccessResponse {
+                request_id,
+                response,
+            };
             tokio::task::spawn_blocking(move || {
                 access_side.send(&reply).expect("access send");
             })

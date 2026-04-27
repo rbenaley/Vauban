@@ -30,8 +30,8 @@ use diesel_async::pooled_connection::AsyncDieselConnectionManager;
 use diesel_async::pooled_connection::deadpool::Pool;
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use shared::messages::{AccessRequest, AccessResponse, ApprovalDecisionKind, ApprovalDenyReason};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use uuid::Uuid;
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -136,16 +136,14 @@ async fn db_check_approval_separation_of_duties_blocks_self_approval() {
     // Try to UPDATE the session marking the *requester themselves* as
     // approver. The CHECK constraint must reject this — defense in
     // depth even if the IPC layer were ever bypassed.
-    let res = diesel::update(
-        proxy_sessions::table.filter(proxy_sessions::uuid.eq(session_uuid)),
-    )
-    .set((
-        proxy_sessions::status.eq("approved"),
-        proxy_sessions::approved_by_id.eq(Some(requester)),
-        proxy_sessions::approved_at.eq(Some(chrono::Utc::now())),
-    ))
-    .execute(&mut conn)
-    .await;
+    let res = diesel::update(proxy_sessions::table.filter(proxy_sessions::uuid.eq(session_uuid)))
+        .set((
+            proxy_sessions::status.eq("approved"),
+            proxy_sessions::approved_by_id.eq(Some(requester)),
+            proxy_sessions::approved_at.eq(Some(chrono::Utc::now())),
+        ))
+        .execute(&mut conn)
+        .await;
     assert!(
         res.is_err(),
         "UPDATE with approved_by_id == user_id must violate CHECK"
@@ -164,16 +162,14 @@ async fn db_check_rejection_separation_of_duties_blocks_self_rejection() {
     let asset = insert_asset(&p, &unique("a")).await;
     let session_uuid = insert_pending_session(&p, requester, asset).await;
     let mut conn = p.get().await.unwrap();
-    let res = diesel::update(
-        proxy_sessions::table.filter(proxy_sessions::uuid.eq(session_uuid)),
-    )
-    .set((
-        proxy_sessions::status.eq("rejected"),
-        proxy_sessions::rejected_by_id.eq(Some(requester)),
-        proxy_sessions::rejected_at.eq(Some(chrono::Utc::now())),
-    ))
-    .execute(&mut conn)
-    .await;
+    let res = diesel::update(proxy_sessions::table.filter(proxy_sessions::uuid.eq(session_uuid)))
+        .set((
+            proxy_sessions::status.eq("rejected"),
+            proxy_sessions::rejected_by_id.eq(Some(requester)),
+            proxy_sessions::rejected_at.eq(Some(chrono::Utc::now())),
+        ))
+        .execute(&mut conn)
+        .await;
     assert!(
         res.is_err(),
         "UPDATE with rejected_by_id == user_id must violate CHECK"
@@ -188,16 +184,14 @@ async fn db_check_separation_of_duties_allows_cross_user_approval() {
     let asset = insert_asset(&p, &unique("a")).await;
     let session_uuid = insert_pending_session(&p, requester, asset).await;
     let mut conn = p.get().await.unwrap();
-    let res = diesel::update(
-        proxy_sessions::table.filter(proxy_sessions::uuid.eq(session_uuid)),
-    )
-    .set((
-        proxy_sessions::status.eq("approved"),
-        proxy_sessions::approved_by_id.eq(Some(approver)),
-        proxy_sessions::approved_at.eq(Some(chrono::Utc::now())),
-    ))
-    .execute(&mut conn)
-    .await;
+    let res = diesel::update(proxy_sessions::table.filter(proxy_sessions::uuid.eq(session_uuid)))
+        .set((
+            proxy_sessions::status.eq("approved"),
+            proxy_sessions::approved_by_id.eq(Some(approver)),
+            proxy_sessions::approved_at.eq(Some(chrono::Utc::now())),
+        ))
+        .execute(&mut conn)
+        .await;
     assert!(
         res.is_ok(),
         "UPDATE with approved_by_id != user_id must succeed, got: {res:?}"
@@ -226,12 +220,10 @@ async fn db_audit_trigger_blocks_update() {
         .await
         .unwrap();
     // Any UPDATE must raise from the trigger.
-    let res = diesel::update(
-        approval_audit_log::table.filter(approval_audit_log::id.eq(id)),
-    )
-    .set(approval_audit_log::asset_name.eq("tampered"))
-    .execute(&mut conn)
-    .await;
+    let res = diesel::update(approval_audit_log::table.filter(approval_audit_log::id.eq(id)))
+        .set(approval_audit_log::asset_name.eq("tampered"))
+        .execute(&mut conn)
+        .await;
     assert!(
         res.is_err(),
         "UPDATE on append-only audit log must raise, got: {res:?}"
@@ -264,11 +256,9 @@ async fn db_audit_trigger_blocks_delete() {
         .get_result(&mut conn)
         .await
         .unwrap();
-    let res = diesel::delete(
-        approval_audit_log::table.filter(approval_audit_log::id.eq(id)),
-    )
-    .execute(&mut conn)
-    .await;
+    let res = diesel::delete(approval_audit_log::table.filter(approval_audit_log::id.eq(id)))
+        .execute(&mut conn)
+        .await;
     assert!(res.is_err(), "DELETE on audit log must raise");
 }
 
@@ -538,12 +528,10 @@ async fn t5_audit_row_session_uuid_is_immutable() {
         .get_result(&mut conn)
         .await
         .unwrap();
-    let attempt = diesel::update(
-        approval_audit_log::table.filter(approval_audit_log::id.eq(id)),
-    )
-    .set(approval_audit_log::session_uuid.eq(Uuid::new_v4()))
-    .execute(&mut conn)
-    .await;
+    let attempt = diesel::update(approval_audit_log::table.filter(approval_audit_log::id.eq(id)))
+        .set(approval_audit_log::session_uuid.eq(Uuid::new_v4()))
+        .execute(&mut conn)
+        .await;
     assert!(attempt.is_err(), "session_uuid re-pointing must be blocked");
     let stored: Uuid = approval_audit_log::table
         .filter(approval_audit_log::id.eq(id))
@@ -551,7 +539,10 @@ async fn t5_audit_row_session_uuid_is_immutable() {
         .first(&mut conn)
         .await
         .unwrap();
-    assert_eq!(stored, original_uuid, "session_uuid must match the original");
+    assert_eq!(
+        stored, original_uuid,
+        "session_uuid must match the original"
+    );
 }
 
 #[tokio::test]
@@ -699,9 +690,8 @@ fn t7_migration_check_constraint_names_match_handler_error_strings() {
     // renamed in the SQL but not in the runbook, operator queries that
     // grep for the constraint name would return no results. Pin both
     // names here: they must exist verbatim in the migration SQL.
-    let sql = include_str!(
-        "../../vauban-db/migrations/20260425000000_approval_audit_and_sod/up.sql"
-    );
+    let sql =
+        include_str!("../../vauban-db/migrations/20260425000000_approval_audit_and_sod/up.sql");
     assert!(
         sql.contains("approval_separation_of_duties"),
         "approval CHECK constraint name must be stable"

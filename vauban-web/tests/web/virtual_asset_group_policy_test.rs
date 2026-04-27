@@ -47,10 +47,10 @@ use vauban_web::services::access;
 
 use crate::common::{TestApp, test_db};
 use crate::fixtures::{
-    add_user_to_vauban_group, create_admin_user, create_test_asset_group,
-    create_test_asset_in_group, create_test_asset_in_group_with_type,
-    create_test_access_rule, create_test_access_rule_with_constraints,
-    create_test_user, create_test_vauban_group, get_asset_uuid, unique_name,
+    add_user_to_vauban_group, create_admin_user, create_test_access_rule,
+    create_test_access_rule_with_constraints, create_test_asset_group, create_test_asset_in_group,
+    create_test_asset_in_group_with_type, create_test_user, create_test_vauban_group,
+    get_asset_uuid, unique_name,
 };
 
 /// Lazily fetch the virtual asset_group's UUID.
@@ -60,10 +60,7 @@ fn virtual_uuid() -> Uuid {
 
 /// Insert an asset that belongs to NO static group ("orphan" from the
 /// regular RBAC perspective). Returns the asset's database id.
-async fn insert_orphan_asset(
-    conn: &mut diesel_async::AsyncPgConnection,
-    name: &str,
-) -> i32 {
+async fn insert_orphan_asset(conn: &mut diesel_async::AsyncPgConnection, name: &str) -> i32 {
     use vauban_web::models::asset::NewAsset;
     use vauban_web::schema::assets;
 
@@ -262,8 +259,7 @@ async fn p23_inactive_virtual_rule_returns_empty() {
     let ug = create_test_vauban_group(&mut conn, &unique_name("p23_ug")).await;
     add_user_to_vauban_group(&mut conn, user.user.id, &ug).await;
 
-    let rule_uuid =
-        create_test_access_rule(&mut conn, &ug, &virtual_uuid(), &["ssh"]).await;
+    let rule_uuid = create_test_access_rule(&mut conn, &ug, &virtual_uuid(), &["ssh"]).await;
 
     diesel::update(access_rules::table.filter(access_rules::uuid.eq(rule_uuid)))
         .set(access_rules::is_active.eq(false))
@@ -306,8 +302,7 @@ async fn p24_expired_virtual_rule_returns_empty() {
     let user = create_test_user(&mut conn, &app.auth_service, &username).await;
     let ug = create_test_vauban_group(&mut conn, &unique_name("p24_ug")).await;
     add_user_to_vauban_group(&mut conn, user.user.id, &ug).await;
-    let rule_uuid =
-        create_test_access_rule(&mut conn, &ug, &virtual_uuid(), &["ssh"]).await;
+    let rule_uuid = create_test_access_rule(&mut conn, &ug, &virtual_uuid(), &["ssh"]).await;
 
     let past = chrono::Utc::now() - chrono::Duration::days(7);
     diesel::update(access_rules::table.filter(access_rules::uuid.eq(rule_uuid)))
@@ -327,7 +322,10 @@ async fn p24_expired_virtual_rule_returns_empty() {
     )
     .await
     .expect("list");
-    assert!(!visible.contains(&asset_id), "expired virtual rule must not surface assets");
+    assert!(
+        !visible.contains(&asset_id),
+        "expired virtual rule must not surface assets"
+    );
 
     test_db::cleanup(&mut conn).await;
 }
@@ -353,16 +351,8 @@ async fn p25_or_aggregation_mfa_and_approval() {
     // Static rule on group Foo: MFA + approval required.
     let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("p25_adm")).await;
     let foo = create_test_asset_group(&mut conn, &unique_name("p25_foo")).await;
-    create_test_access_rule_with_constraints(
-        &mut conn,
-        &ug,
-        &foo,
-        &["ssh"],
-        true,
-        true,
-        None,
-    )
-    .await;
+    create_test_access_rule_with_constraints(&mut conn, &ug, &foo, &["ssh"], true, true, None)
+        .await;
 
     let asset_id = create_test_asset_in_group(&mut conn, "p25-asset", admin.user.id, &foo).await;
 
@@ -471,8 +461,7 @@ async fn p27_inactive_static_overlap_does_not_block_virtual() {
 
     let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("p27_adm")).await;
     let foo = create_test_asset_group(&mut conn, &unique_name("p27_foo")).await;
-    let static_rule_uuid =
-        create_test_access_rule(&mut conn, &ug, &foo, &["ssh"]).await;
+    let static_rule_uuid = create_test_access_rule(&mut conn, &ug, &foo, &["ssh"]).await;
     diesel::update(access_rules::table.filter(access_rules::uuid.eq(static_rule_uuid)))
         .set(access_rules::is_active.eq(false))
         .execute(&mut conn)
@@ -586,7 +575,10 @@ async fn p29_user_group_isolation_for_virtual_rules() {
     .await
     .expect("list b");
 
-    assert!(visible_a.contains(&asset_id), "user_a sees the asset via virtual rule");
+    assert!(
+        visible_a.contains(&asset_id),
+        "user_a sees the asset via virtual rule"
+    );
     assert!(
         !visible_b.contains(&asset_id),
         "user_b in a different group MUST NOT inherit user_a's virtual rule"
@@ -634,22 +626,18 @@ async fn p30_accessguard_parity_for_virtual_rule() {
 
     let client = &app._access_service.access_client;
 
-    for (asset_id, asset_uuid, protocol) in [
-        (ssh_id, ssh_uuid, "ssh"),
-        (rdp_id, rdp_uuid, "rdp"),
-    ] {
-        let web_decision = access::can_access_asset(
-            client,
-            &mut conn,
-            user.user.id,
-            asset_id,
-            protocol,
-        )
-        .await
-        .expect("web can_access_asset");
+    for (asset_id, asset_uuid, protocol) in [(ssh_id, ssh_uuid, "ssh"), (rdp_id, rdp_uuid, "rdp")] {
+        let web_decision =
+            access::can_access_asset(client, &mut conn, user.user.id, asset_id, protocol)
+                .await
+                .expect("web can_access_asset");
 
         let guard_decision = client
-            .check_access_by_uuid(&user.user.uuid.to_string(), &asset_uuid.to_string(), protocol)
+            .check_access_by_uuid(
+                &user.user.uuid.to_string(),
+                &asset_uuid.to_string(),
+                protocol,
+            )
             .await
             .expect("proxy CheckAccessByUuid");
 

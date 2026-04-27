@@ -758,6 +758,39 @@ pub async fn create_test_session_with_uuid(
     (session_id, session_uuid)
 }
 
+/// Like [`create_test_session_with_uuid`], but also provisions a fresh
+/// access rule covering the session's protocol so that the new
+/// `session_access::verify` gate (which re-checks the access rule on
+/// every consumption) does not collapse the request to 404.
+///
+/// Returns `(session_id, session_uuid, rule_uuid)`.
+///
+/// Tests that explicitly want to exercise the fail-fast revoke /
+/// expire / not-yet-valid paths should still combine
+/// [`create_test_session_with_uuid`] + [`grant_user_access_to_asset`]
+/// + the corresponding mutator (`deactivate_access_rule`,
+///   `set_access_rule_validity`, ...) so they can mutate the rule
+///   returned here directly.
+pub async fn create_test_session_with_access(
+    conn: &mut AsyncPgConnection,
+    user_id: i32,
+    asset_id: i32,
+    session_type: &str,
+    status: &str,
+) -> (i32, Uuid, Uuid) {
+    let (session_id, session_uuid) =
+        create_test_session_with_uuid(conn, user_id, asset_id, session_type, status).await;
+    let (rule_uuid, _ag) = grant_user_access_to_asset(
+        conn,
+        user_id,
+        asset_id,
+        &format!("auto-session-{}", session_uuid.simple()),
+        &[session_type],
+    )
+    .await;
+    (session_id, session_uuid, rule_uuid)
+}
+
 /// Create a recorded session and return session_id.
 pub async fn create_recorded_session(
     conn: &mut AsyncPgConnection,
@@ -1739,4 +1772,78 @@ pub async fn create_inactive_access_rule(
     );
 
     rule_uuid
+}
+
+/// SECURITY HELPER: grant `user_id` an active access rule that covers
+/// (`asset_id`, `protocols`). Builds the full chain (vauban_group +
+/// asset_group + membership + asset link + access_rule) so the
+/// vauban-access RPC `VerifySessionAccess` returns `Allowed` for any
+/// session opened on this (user, asset, protocol) tuple.
+///
+/// Returns the (rule_uuid, asset_group_uuid) so callers can later
+/// mutate the rule (deactivate / shift validity windows / delete) to
+/// exercise the fail-fast access-rule recheck path.
+pub async fn grant_user_access_to_asset(
+    conn: &mut AsyncPgConnection,
+    user_id: i32,
+    asset_id: i32,
+    name_hint: &str,
+    protocols: &[&str],
+) -> (Uuid, Uuid) {
+    use vauban_web::schema::{asset_asset_groups, asset_groups};
+
+    let ug = create_test_vauban_group(conn, &format!("{}-ug", name_hint)).await;
+    let ag = create_test_asset_group(conn, &format!("{}-ag", name_hint)).await;
+    add_user_to_vauban_group(conn, user_id, &ug).await;
+
+    let ag_id: i32 = unwrap_ok!(
+        asset_groups::table
+            .filter(asset_groups::uuid.eq(ag))
+            .select(asset_groups::id)
+            .first(conn)
+            .await
+    );
+    unwrap_ok!(
+        diesel::insert_into(asset_asset_groups::table)
+            .values((
+                asset_asset_groups::asset_id.eq(asset_id),
+                asset_asset_groups::asset_group_id.eq(ag_id),
+            ))
+            .on_conflict_do_nothing()
+            .execute(conn)
+            .await
+    );
+
+    let rule_uuid = create_test_access_rule(conn, &ug, &ag, protocols).await;
+    (rule_uuid, ag)
+}
+
+/// SECURITY HELPER: deactivate an access rule by UUID. Used by tests
+/// that exercise the fail-fast revocation behaviour.
+pub async fn deactivate_access_rule(conn: &mut AsyncPgConnection, rule_uuid: Uuid) {
+    unwrap_ok!(
+        diesel::update(access_rules::table.filter(access_rules::uuid.eq(rule_uuid)))
+            .set(access_rules::is_active.eq(false))
+            .execute(conn)
+            .await
+    );
+}
+
+/// SECURITY HELPER: shift an access rule's validity window. Used by
+/// tests that exercise expired / not-yet-valid rejection paths.
+pub async fn set_access_rule_validity(
+    conn: &mut AsyncPgConnection,
+    rule_uuid: Uuid,
+    valid_from: Option<chrono::DateTime<Utc>>,
+    valid_until: Option<chrono::DateTime<Utc>>,
+) {
+    unwrap_ok!(
+        diesel::update(access_rules::table.filter(access_rules::uuid.eq(rule_uuid)))
+            .set((
+                access_rules::valid_from.eq(valid_from),
+                access_rules::valid_until.eq(valid_until),
+            ))
+            .execute(conn)
+            .await
+    );
 }

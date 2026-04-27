@@ -108,7 +108,8 @@ async fn test_i1_two_active_rows_same_triplet_rejected() {
 
     let hostname = format!("{}.i1.test", unique_name("host"));
     let username = "shared";
-    let _first = insert_active_asset(&mut conn, &unique_name("i1-a"), &hostname, 22, username).await;
+    let _first =
+        insert_active_asset(&mut conn, &unique_name("i1-a"), &hostname, 22, username).await;
 
     let new_asset = NewAsset {
         uuid: Uuid::new_v4(),
@@ -166,7 +167,8 @@ async fn test_i2_two_tombstones_same_triplet_allowed() {
     let mut tombstone_uuids: Vec<Uuid> = Vec::new();
 
     for i in 0..3 {
-        let id = insert_active_asset(&mut conn, &format!("i2-{}", i), &hostname, 22, username).await;
+        let id =
+            insert_active_asset(&mut conn, &format!("i2-{}", i), &hostname, 22, username).await;
         let uuid: Uuid = assets::table
             .filter(assets::id.eq(id))
             .select(assets::uuid)
@@ -342,7 +344,10 @@ async fn test_i4_resurrection_blocked_by_trigger() {
         .first(&mut conn)
         .await
         .expect("read back the tombstone");
-    assert!(still_deleted, "the row must remain a tombstone after the failed resurrection");
+    assert!(
+        still_deleted,
+        "the row must remain a tombstone after the failed resurrection"
+    );
 }
 
 /// Variant: the trigger must fire even when other columns are also
@@ -409,7 +414,10 @@ async fn test_i4_resurrection_blocked_via_raw_sql_bypassing_orm() {
     let asset_id = insert_active_asset(&mut conn, &unique_name("i4-raw"), &hostname, 22, "u").await;
     soft_delete_at_db(&mut conn, asset_id).await;
 
-    let stmt = format!("UPDATE assets SET is_deleted = false WHERE id = {}", asset_id);
+    let stmt = format!(
+        "UPDATE assets SET is_deleted = false WHERE id = {}",
+        asset_id
+    );
     let result = sql_query(&stmt).execute(&mut conn).await;
 
     match result {
@@ -427,7 +435,10 @@ async fn test_i4_resurrection_blocked_via_raw_sql_bypassing_orm() {
             "raw-SQL resurrection succeeded with {} affected rows -- the DB-level guarantee is broken!",
             rows
         ),
-        other => panic!("unexpected error type from raw-SQL resurrection: {:?}", other),
+        other => panic!(
+            "unexpected error type from raw-SQL resurrection: {:?}",
+            other
+        ),
     }
 
     let stmt2 = format!(

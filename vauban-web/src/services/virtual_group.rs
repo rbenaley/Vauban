@@ -104,6 +104,6 @@ mod tests {
 
     #[test]
     fn test_uninitialized_sentinel_cannot_match_real_id() {
-        assert!(UNINITIALIZED_VIRTUAL_ID < 0);
+        const _: () = assert!(UNINITIALIZED_VIRTUAL_ID < 0);
     }
 }

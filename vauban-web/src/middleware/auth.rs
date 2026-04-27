@@ -972,10 +972,7 @@ mod tests {
         parts.extensions.insert(pre_mfa_user);
 
         let result = WsAuthUser::from_request_parts(&mut parts, &()).await;
-        assert!(
-            result.is_err(),
-            "WsAuthUser must reject pre-MFA tokens"
-        );
+        assert!(result.is_err(), "WsAuthUser must reject pre-MFA tokens");
         let err_response = result.unwrap_err().into_response();
         assert_eq!(
             err_response.status(),

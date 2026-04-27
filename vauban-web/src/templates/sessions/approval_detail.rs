@@ -343,10 +343,7 @@ mod tests {
         tpl.approval.decided_at = Some("Apr 25, 2026 22:45".to_string());
         tpl.approval.decision_reason = None;
         let html = tpl.render().expect("render");
-        assert!(
-            html.contains("admin_carol"),
-            "approver must appear"
-        );
+        assert!(html.contains("admin_carol"), "approver must appear");
         assert!(
             !html.contains("Reason"),
             "Reason label must be absent when decision_reason is None"

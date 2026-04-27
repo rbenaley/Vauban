@@ -33,12 +33,29 @@ pub struct ListSessionsParams {
 }
 
 /// List sessions handler.
+///
+/// SECURITY: layered authorisation:
+/// 1. functional `sessions:read` (Casbin) -- can read sessions at all.
+/// 2. instance-level visibility:
+///    - WITHOUT `sessions:supervise`, the result set is force-filtered
+///      to `user_id == caller`. The optional `user_id` param is
+///      ignored (or, if it points to someone else, replaced with the
+///      caller). Without this layer, every regular API consumer that
+///      held `sessions:read` could enumerate every session of every
+///      user.
+///    - WITH `sessions:supervise`, the caller can pass any `user_id`,
+///      `asset_id` or `status` filter and observe the matching
+///      cross-user view -- this is the supervisor / auditor seat.
+/// 3. `asset_id` and `status` filters are honoured for both classes
+///    of caller; they only narrow what is visible, never widen it.
 pub async fn list_sessions(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
     perms: PermissionContext,
     Query(params): Query<ListSessionsParams>,
 ) -> AppResult<Json<Vec<ProxySession>>> {
+    use crate::schema::users;
+
     if !perms.sessions_read {
         return Err(AppError::forbidden("sessions:read"));
     }
@@ -49,8 +66,77 @@ pub async fn list_sessions(
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
-    let sessions_list = proxy_sessions
-        .into_boxed()
+    let caller_uuid = Uuid::parse_str(&user.uuid)
+        .map_err(|_| AppError::Internal(anyhow::anyhow!("invalid caller uuid")))?;
+    let caller_id: i32 = users::table
+        .filter(users::uuid.eq(caller_uuid))
+        .select(users::id)
+        .first(&mut conn)
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("caller lookup failed: {}", e)))?;
+
+    // Resolve the optional user_id filter (UUID string) to an i32.
+    // Unknown UUID -> empty result for both classes (a probe cannot
+    // tell "no sessions" from "no such user").
+    let requested_user_id: Option<i32> = if let Some(ref uid_str) = params.user_id {
+        let uid = Uuid::parse_str(uid_str)
+            .map_err(|_| AppError::Validation("Invalid user_id UUID".to_string()))?;
+        match users::table
+            .filter(users::uuid.eq(uid))
+            .select(users::id)
+            .first::<i32>(&mut conn)
+            .await
+        {
+            Ok(uid_i32) => Some(uid_i32),
+            Err(diesel::result::Error::NotFound) => return Ok(Json(Vec::new())),
+            Err(e) => return Err(AppError::Database(e)),
+        }
+    } else {
+        None
+    };
+
+    // Resolve optional asset_id (UUID -> i32). Unknown UUID -> empty.
+    let requested_asset_id: Option<i32> = if let Some(asset_uuid_param) = params.asset_id {
+        use crate::schema::assets as schema_assets;
+        match schema_assets::table
+            .filter(schema_assets::uuid.eq(asset_uuid_param))
+            .select(schema_assets::id)
+            .first::<i32>(&mut conn)
+            .await
+        {
+            Ok(aid_i32) => Some(aid_i32),
+            Err(diesel::result::Error::NotFound) => return Ok(Json(Vec::new())),
+            Err(e) => return Err(AppError::Database(e)),
+        }
+    } else {
+        None
+    };
+
+    // Effective user_id filter:
+    // - supervise: honour `requested_user_id` as-is (None == every
+    //   user).
+    // - non-supervise: ALWAYS force `caller_id`, regardless of what
+    //   the param said. A regular user that asks for `user_id=other`
+    //   gets the same response shape as if they asked nothing.
+    let effective_user_id: i32 = if perms.sessions_supervise {
+        requested_user_id.unwrap_or(caller_id)
+    } else {
+        caller_id
+    };
+    let force_caller_only = !perms.sessions_supervise;
+
+    let mut q = proxy_sessions.into_boxed();
+    if force_caller_only || requested_user_id.is_some() {
+        q = q.filter(user_id.eq(effective_user_id));
+    }
+    if let Some(aid) = requested_asset_id {
+        q = q.filter(asset_id.eq(aid));
+    }
+    if let Some(ref s) = params.status {
+        q = q.filter(status.eq(s));
+    }
+
+    let sessions_list = q
         .limit(params.limit.unwrap_or(50))
         .offset(params.offset.unwrap_or(0))
         .order(created_at.desc())
@@ -61,17 +147,42 @@ pub async fn list_sessions(
 }
 
 /// Get session by UUID handler.
+///
+/// SECURITY: layered authorisation:
+/// 1. functional `sessions:read` (Casbin) -- Capability to read ANY
+///    session metadata at all.
+/// 2. instance-level `session_access::verify(ReadMetadata)` --
+///    ownership OR `sessions:supervise`, plus the access-rule
+///    re-check. Without this layer, anyone with `sessions:read` could
+///    GET any session UUID they happened to know.
 pub async fn get_session(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
     perms: PermissionContext,
     Path(session_uuid_str): Path<String>,
 ) -> AppResult<Json<ProxySession>> {
+    use crate::services::session_access::{self, SessionAccessOutcome};
+    use shared::messages::SessionAccessIntent;
+
     if !perms.sessions_read {
         return Err(AppError::forbidden("sessions:read"));
     }
 
-    // Parse UUID manually for better error messages
+    match session_access::verify(
+        &state,
+        &session_uuid_str,
+        &user,
+        &perms,
+        SessionAccessIntent::ReadMetadata,
+    )
+    .await
+    {
+        SessionAccessOutcome::Allowed => {}
+        SessionAccessOutcome::Denied404 | SessionAccessOutcome::DeniedGone => {
+            return Err(AppError::NotFound("Session not found".to_string()));
+        }
+    }
+
     let session_uuid = Uuid::parse_str(&session_uuid_str)
         .map_err(|_| AppError::Validation("Invalid UUID format".to_string()))?;
 
@@ -212,12 +323,31 @@ pub async fn create_session(
 pub async fn terminate_session(
     State(state): State<AppState>,
     headers: HeaderMap,
-    _user: AuthUser,
+    user: AuthUser,
     perms: PermissionContext,
     Path(session_uuid_str): Path<String>,
 ) -> AppResult<Response> {
-    if !perms.sessions_write {
-        return Err(AppError::forbidden("sessions:write"));
+    use crate::services::session_access::{self, SessionAccessOutcome};
+    use shared::messages::SessionAccessIntent;
+
+    // SECURITY: single seam. Allowed iff (caller is owner) OR
+    // `sessions:write`. Every denial collapses to 404 -- in
+    // particular a non-owner without `sessions:write` cannot
+    // distinguish "session does not exist" from "you are not the
+    // owner" through the status code.
+    match session_access::verify(
+        &state,
+        &session_uuid_str,
+        &user,
+        &perms,
+        SessionAccessIntent::Terminate,
+    )
+    .await
+    {
+        SessionAccessOutcome::Allowed => {}
+        SessionAccessOutcome::Denied404 | SessionAccessOutcome::DeniedGone => {
+            return Err(AppError::NotFound("Session not found".to_string()));
+        }
     }
 
     let session_uuid = Uuid::parse_str(&session_uuid_str)

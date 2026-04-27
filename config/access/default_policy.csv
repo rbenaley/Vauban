@@ -17,3 +17,11 @@ p, role:staff, admin, view
 p, role:user, assets, read
 p, role:user, profile, read
 p, role:user, profile, write
+# SECURITY: read-only access to the sessions API is granted to every
+# authenticated user so they can list their own sessions and read their
+# own metadata. Cross-user visibility is enforced at the instance
+# level by `services::session_access::verify(ReadMetadata)` in
+# vauban-web (force-filter to caller_id unless the caller also holds
+# `sessions, supervise`); the Casbin gate alone is not enough.
+p, role:user, sessions, read
+p, role:user, sessions, read

@@ -74,11 +74,7 @@ async fn count_admins(pool: &DbPool) -> Result<i64, String> {
     users::table
         .filter(users::is_active.eq(true))
         .filter(users::is_deleted.eq(false))
-        .filter(
-            users::is_superuser
-                .eq(true)
-                .or(users::is_staff.eq(true)),
-        )
+        .filter(users::is_superuser.eq(true).or(users::is_staff.eq(true)))
         .select(diesel::dsl::count_star())
         .first::<i64>(&mut conn)
         .await
@@ -104,9 +100,7 @@ fn log_count(count: i64) {
     } else {
         info!(
             admin_count = count,
-            "admin_count: healthy ({} >= {} admins)",
-            count,
-            MIN_ADMINS_FOR_HEALTHY_SOD
+            "admin_count: healthy ({} >= {} admins)", count, MIN_ADMINS_FOR_HEALTHY_SOD
         );
     }
 }

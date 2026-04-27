@@ -237,7 +237,9 @@ mod tests {
 
     #[test]
     fn policy_state_no_approval_required() {
-        let html = asset_detail_template(false, false).render().expect("render");
+        let html = asset_detail_template(false, false)
+            .render()
+            .expect("render");
         assert!(
             html.contains("data-require-approval=\"false\""),
             "no approval required"

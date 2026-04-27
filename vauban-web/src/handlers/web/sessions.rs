@@ -383,13 +383,32 @@ pub async fn session_detail(
     ) = session_row;
 
     let user_uuid_str = s_user_uuid.to_string();
+    let _ = user_is_admin;
 
-    // For non-admin users, check if they own this session
-    if !user_is_admin && user_uuid_str != auth_user.uuid {
-        return flash_redirect(
-            flash.error("You can only view your own sessions"),
-            "/sessions",
-        );
+    // SECURITY (anti-IDOR + access-rule recheck): delegate the
+    // decision to the single session_access seam. The previous
+    // ownership check (`!user_is_admin && user_uuid_str !=
+    // auth_user.uuid`) ignored the access-rule re-check entirely
+    // and used `admin_view` as a coarse override; the new path
+    // uses the same trio (vauban-access RPC + Casbin OR-overrides
+    // + anti-enum collapse) that protects the rest of the surface.
+    {
+        use crate::services::session_access::{self, SessionAccessOutcome};
+        use shared::messages::SessionAccessIntent;
+        match session_access::verify(
+            &state,
+            &s_uuid.to_string(),
+            &auth_user.0,
+            &perms,
+            SessionAccessIntent::ReadMetadata,
+        )
+        .await
+        {
+            SessionAccessOutcome::Allowed => {}
+            SessionAccessOutcome::Denied404 | SessionAccessOutcome::DeniedGone => {
+                return flash_redirect(flash.error("Session not found"), "/sessions");
+            }
+        }
     }
 
     // Calculate duration if connected_at and disconnected_at are present

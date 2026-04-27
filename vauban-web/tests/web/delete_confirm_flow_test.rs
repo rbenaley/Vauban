@@ -319,9 +319,13 @@ async fn test_asset_group_remove_asset_form_is_htmx_driven() {
     let group_uuid = create_test_asset_group(&mut conn, &unique_name("bug12-rm-asset-grp")).await;
     // The remove-asset form only renders for assets that are members of
     // the group, so we seed one.
-    let _asset_id =
-        create_test_asset_in_group(&mut conn, &unique_name("bug12-grp-asset"), admin_id, &group_uuid)
-            .await;
+    let _asset_id = create_test_asset_in_group(
+        &mut conn,
+        &unique_name("bug12-grp-asset"),
+        admin_id,
+        &group_uuid,
+    )
+    .await;
 
     let response = app
         .server
@@ -428,8 +432,7 @@ async fn test_htmx_delete_account_group_returns_hx_redirect() {
     let token = admin_token(app, "bug12_htmx_delete_acct_grp").await;
     let csrf = app.generate_csrf_token();
 
-    let group_uuid =
-        create_test_vauban_group(&mut conn, &unique_name("bug12-htmx-acct-grp")).await;
+    let group_uuid = create_test_vauban_group(&mut conn, &unique_name("bug12-htmx-acct-grp")).await;
 
     let response = app
         .server
@@ -450,7 +453,10 @@ async fn test_htmx_delete_account_group_returns_hx_redirect() {
         .optional()
         .expect("query must succeed")
         .is_some();
-    assert!(!exists, "account group must be hard-deleted on the HTMX path");
+    assert!(
+        !exists,
+        "account group must be hard-deleted on the HTMX path"
+    );
 
     test_db::cleanup(&mut conn).await;
 }
@@ -463,8 +469,7 @@ async fn test_htmx_remove_member_returns_hx_redirect() {
     let token = admin_token(app, "bug12_htmx_remove_member").await;
     let csrf = app.generate_csrf_token();
 
-    let group_uuid =
-        create_test_vauban_group(&mut conn, &unique_name("bug12-htmx-rm-grp")).await;
+    let group_uuid = create_test_vauban_group(&mut conn, &unique_name("bug12-htmx-rm-grp")).await;
     let user_id = create_simple_user(&mut conn, &unique_name("bug12-htmx-rm-user")).await;
     add_user_to_vauban_group(&mut conn, user_id, &group_uuid).await;
     let user_uuid = lookup_user_uuid(&mut conn, user_id).await;
@@ -497,8 +502,7 @@ async fn test_htmx_delete_asset_group_returns_hx_redirect() {
     let token = admin_token(app, "bug12_htmx_delete_asset_grp").await;
     let csrf = app.generate_csrf_token();
 
-    let group_uuid =
-        create_test_asset_group(&mut conn, &unique_name("bug12-htmx-asset-grp")).await;
+    let group_uuid = create_test_asset_group(&mut conn, &unique_name("bug12-htmx-asset-grp")).await;
 
     let response = app
         .server
@@ -635,10 +639,7 @@ async fn test_native_delete_asset_keeps_303_redirect() {
         .first(&mut conn)
         .await
         .expect("asset row must still exist");
-    assert!(
-        is_deleted,
-        "non-HTMX path must still soft-delete the asset"
-    );
+    assert!(is_deleted, "non-HTMX path must still soft-delete the asset");
 
     test_db::cleanup(&mut conn).await;
 }
@@ -672,7 +673,10 @@ async fn test_native_delete_account_group_keeps_303_redirect() {
         .optional()
         .expect("query must succeed")
         .is_some();
-    assert!(!exists, "account group must be deleted on the non-HTMX path");
+    assert!(
+        !exists,
+        "account group must be deleted on the non-HTMX path"
+    );
 
     test_db::cleanup(&mut conn).await;
 }
@@ -685,8 +689,7 @@ async fn test_native_remove_member_keeps_303_redirect() {
     let token = admin_token(app, "bug12_native_remove_member").await;
     let csrf = app.generate_csrf_token();
 
-    let group_uuid =
-        create_test_vauban_group(&mut conn, &unique_name("bug12-native-rm-grp")).await;
+    let group_uuid = create_test_vauban_group(&mut conn, &unique_name("bug12-native-rm-grp")).await;
     let user_id = create_simple_user(&mut conn, &unique_name("bug12-native-rm-user")).await;
     add_user_to_vauban_group(&mut conn, user_id, &group_uuid).await;
     let user_uuid = lookup_user_uuid(&mut conn, user_id).await;
@@ -752,8 +755,7 @@ async fn test_native_remove_asset_from_group_keeps_303_redirect() {
     let mut conn = app.get_conn().await;
     let token = admin_token(app, "bug12_native_remove_asset_grp").await;
     let csrf = app.generate_csrf_token();
-    let admin_id =
-        create_simple_user(&mut conn, &unique_name("bug12-native-rm-asset-admin")).await;
+    let admin_id = create_simple_user(&mut conn, &unique_name("bug12-native-rm-asset-admin")).await;
 
     let group_uuid =
         create_test_asset_group(&mut conn, &unique_name("bug12-native-rm-asset-grp")).await;
@@ -821,12 +823,7 @@ fn test_alpine_delete_confirm_store_is_registered() {
     );
     // The contract methods the templates rely on. A renamed callback would
     // also break the modal silently, so we lock the names in here.
-    for needle in [
-        "openWith:",
-        "confirm:",
-        "cancel:",
-        "issueRequest",
-    ] {
+    for needle in ["openWith:", "confirm:", "cancel:", "issueRequest"] {
         assert!(
             js.contains(needle),
             "vauban-components.js must define `{}` on the deleteConfirm store \

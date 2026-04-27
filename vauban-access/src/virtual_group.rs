@@ -126,7 +126,7 @@ mod tests {
         // SERIAL columns in Postgres are 1-based; i32::MIN is structurally
         // disjoint from any real id, so a stray reference to
         // virtual_asset_group_id() before init fails closed.
-        assert!(UNINITIALIZED_VIRTUAL_ID < 0);
-        assert_ne!(UNINITIALIZED_VIRTUAL_ID, 0);
+        const _: () = assert!(UNINITIALIZED_VIRTUAL_ID < 0);
+        const _: () = assert!(UNINITIALIZED_VIRTUAL_ID != 0);
     }
 }

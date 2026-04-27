@@ -873,12 +873,47 @@ fn test_compute_updated_ssh_host_key_state_always_preserved() {
 
     // Matrix of plausible operator actions on the edit form.
     let cases: &[EditFormCase] = &[
-        ("blank everything",     Some(""),       Some(""),            Some(""),    Some(""),    Some("")),
-        ("rotate password",      Some("alice"),  Some("password"),    Some("NEW"), Some(""),    Some("")),
-        ("switch to private_key",Some("alice"),  Some("private_key"), Some(""),    Some("KEY"), Some("")),
-        ("change username",      Some("bob"),    Some("password"),    Some(""),    Some(""),    Some("")),
-        ("change auth_type only",Some("alice"),  Some("private_key"), Some(""),    Some(""),    Some("")),
-        ("None for all options", None,           None,                None,        None,        None),
+        (
+            "blank everything",
+            Some(""),
+            Some(""),
+            Some(""),
+            Some(""),
+            Some(""),
+        ),
+        (
+            "rotate password",
+            Some("alice"),
+            Some("password"),
+            Some("NEW"),
+            Some(""),
+            Some(""),
+        ),
+        (
+            "switch to private_key",
+            Some("alice"),
+            Some("private_key"),
+            Some(""),
+            Some("KEY"),
+            Some(""),
+        ),
+        (
+            "change username",
+            Some("bob"),
+            Some("password"),
+            Some(""),
+            Some(""),
+            Some(""),
+        ),
+        (
+            "change auth_type only",
+            Some("alice"),
+            Some("private_key"),
+            Some(""),
+            Some(""),
+            Some(""),
+        ),
+        ("None for all options", None, None, None, None, None),
     ];
 
     for (label, username, auth_type, password, private_key, passphrase) in cases {
@@ -892,7 +927,9 @@ fn test_compute_updated_ssh_host_key_state_always_preserved() {
             *passphrase,
             None,
         );
-        let obj = new.as_object().unwrap_or_else(|| panic!("[{label}] new config is not an object: {new}"));
+        let obj = new
+            .as_object()
+            .unwrap_or_else(|| panic!("[{label}] new config is not an object: {new}"));
         assert_eq!(
             obj.get("ssh_host_key"),
             existing.get("ssh_host_key"),
@@ -978,7 +1015,12 @@ fn test_compute_updated_ssh_switch_to_private_key() {
         new.get("auth_type").and_then(|v| v.as_str()),
         Some("private_key"),
     );
-    assert!(new.get("private_key").and_then(|v| v.as_str()).unwrap().contains("FAKE"));
+    assert!(
+        new.get("private_key")
+            .and_then(|v| v.as_str())
+            .unwrap()
+            .contains("FAKE")
+    );
     assert_eq!(
         new.get("passphrase").and_then(|v| v.as_str()),
         Some("passphrase-secret"),
@@ -995,10 +1037,10 @@ fn test_compute_updated_ssh_switch_to_private_key() {
 #[test]
 fn test_compute_updated_ssh_strips_domain() {
     let mut existing = ssh_existing_full();
-    existing
-        .as_object_mut()
-        .unwrap()
-        .insert("domain".to_string(), serde_json::Value::String("LEAKED".to_string()));
+    existing.as_object_mut().unwrap().insert(
+        "domain".to_string(),
+        serde_json::Value::String("LEAKED".to_string()),
+    );
     let new = compute_updated_connection_config(
         &existing,
         AssetType::Ssh,
@@ -1135,9 +1177,18 @@ fn test_compute_updated_rdp_new_domain_replaces() {
 fn test_compute_updated_rdp_strips_ssh_only_fields() {
     let mut existing = rdp_existing_full();
     let obj = existing.as_object_mut().unwrap();
-    obj.insert("auth_type".to_string(), serde_json::Value::String("password".to_string()));
-    obj.insert("private_key".to_string(), serde_json::Value::String("LEAKED-KEY".to_string()));
-    obj.insert("passphrase".to_string(), serde_json::Value::String("LEAKED-PP".to_string()));
+    obj.insert(
+        "auth_type".to_string(),
+        serde_json::Value::String("password".to_string()),
+    );
+    obj.insert(
+        "private_key".to_string(),
+        serde_json::Value::String("LEAKED-KEY".to_string()),
+    );
+    obj.insert(
+        "passphrase".to_string(),
+        serde_json::Value::String("LEAKED-PP".to_string()),
+    );
 
     let new = compute_updated_connection_config(
         &existing,
@@ -1149,9 +1200,18 @@ fn test_compute_updated_rdp_strips_ssh_only_fields() {
         Some("ALSO-LEAKED2"), // tampered: try to smuggle passphrase
         None,
     );
-    assert!(new.get("auth_type").is_none(), "auth_type must be stripped on RDP");
-    assert!(new.get("private_key").is_none(), "private_key must be stripped on RDP");
-    assert!(new.get("passphrase").is_none(), "passphrase must be stripped on RDP");
+    assert!(
+        new.get("auth_type").is_none(),
+        "auth_type must be stripped on RDP"
+    );
+    assert!(
+        new.get("private_key").is_none(),
+        "private_key must be stripped on RDP"
+    );
+    assert!(
+        new.get("passphrase").is_none(),
+        "passphrase must be stripped on RDP"
+    );
 }
 
 /// Defensive: an existing row that somehow isn't a JSON object (legacy
@@ -1170,9 +1230,14 @@ fn test_compute_updated_handles_non_object_existing() {
         None,
         None,
     );
-    let obj = new.as_object().expect("fallback must produce a JSON object");
+    let obj = new
+        .as_object()
+        .expect("fallback must produce a JSON object");
     assert_eq!(obj.get("username").and_then(|v| v.as_str()), Some("alice"));
-    assert_eq!(obj.get("auth_type").and_then(|v| v.as_str()), Some("password"));
+    assert_eq!(
+        obj.get("auth_type").and_then(|v| v.as_str()),
+        Some("password")
+    );
     assert_eq!(obj.get("password").and_then(|v| v.as_str()), Some("PWD"));
     // No host-key state to preserve in this degenerate case.
     assert!(obj.get("ssh_host_key").is_none());
@@ -1207,7 +1272,8 @@ fn test_compute_updated_blank_username_keeps_existing() {
 // wrapper used to be served to any authenticated user that knew (or guessed)
 // a session UUID, even though the actual WebSocket data path is gated by
 // `ws_session_guard`. This test ensures the HTML handler keeps the explicit
-// `verify_session_ownership` invocation that collapses every failure mode
+// `session_access::verify` invocation that delegates to vauban-access for
+// ownership AND access-rule re-check, then collapses every failure mode
 // into a single opaque 404 response.
 
 /// Locate the body of `terminal_page` in the source of `ssh.rs`. Bails if
@@ -1230,12 +1296,17 @@ fn terminal_page_source() -> &'static str {
 }
 
 #[test]
-fn test_terminal_page_source_calls_verify_session_ownership() {
+fn test_terminal_page_source_calls_session_access_verify() {
     let body = terminal_page_source();
     assert!(
-        body.contains("verify_session_ownership"),
-        "terminal_page must call verify_session_ownership before rendering \
-         (anti-IDOR defense at the HTML layer)"
+        body.contains("session_access::verify"),
+        "terminal_page must delegate to session_access::verify before \
+         rendering (anti-IDOR + access-rule re-check at the HTML layer)"
+    );
+    assert!(
+        body.contains("SessionAccessIntent::OpenViewer"),
+        "terminal_page must declare its intent as OpenViewer so the \
+         service applies the right Casbin OR-overrides"
     );
 }
 
@@ -1515,17 +1586,12 @@ fn test_submit_access_request_no_longer_hardcodes_mfa_for_privileged_users() {
         .lines()
         .map(|line| {
             let trimmed = line.trim_start();
-            if trimmed.starts_with("//") {
-                ""
-            } else {
-                line
-            }
+            if trimmed.starts_with("//") { "" } else { line }
         })
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
-        !code_only.contains("require_mfa: true")
-            || !code_only.contains("require_approval: true"),
+        !code_only.contains("require_mfa: true") || !code_only.contains("require_approval: true"),
         "submit_access_request must not hardcode \
          `AccessCheckResult {{ require_mfa: true, require_approval: true, .. }}` \
          (the inverted superuser bypass that produced the spurious MFA prompt). \

@@ -571,7 +571,19 @@ async fn test_session_detail_own_session_allowed() {
 
     let asset_name = format!("own-sess-asset-{}", test_id);
     let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, user_id).await;
-    let session_id = create_test_session(&mut conn, user_id, asset_id, "ssh", "completed").await;
+    // The new session_access gate re-checks the access rule on every
+    // metadata read; an "owner sees own session" path that lacks an
+    // active access rule would otherwise collapse to 404 (anti-enum).
+    // Use the helper that provisions both the session row and a
+    // matching active rule.
+    let (session_id, _session_uuid, _rule) = crate::fixtures::create_test_session_with_access(
+        &mut conn,
+        user_id,
+        asset_id,
+        "ssh",
+        "completed",
+    )
+    .await;
 
     use vauban_web::schema::proxy_sessions;
     let session_exists: bool = proxy_sessions::table
@@ -1424,9 +1436,13 @@ async fn test_terminate_non_staff_rejected() {
         .form(&[("csrf_token", csrf_token.as_str())])
         .await;
 
+    // The new session_access gate collapses NotOwner to a generic 404
+    // (anti-enumeration), so a non-owner without `sessions:write` now
+    // sees 404 instead of the historical 403/302. The DB invariant
+    // (status must remain "active") is what we really care about.
     let status_code = response.status_code().as_u16();
     assert!(
-        status_code == 403 || status_code == 302,
+        status_code == 403 || status_code == 302 || status_code == 404,
         "Non-staff user must be rejected (got {})",
         status_code
     );

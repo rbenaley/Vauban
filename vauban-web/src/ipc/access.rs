@@ -10,8 +10,8 @@ use shared::ipc::IpcChannel;
 use shared::messages::{
     AccessCheckResult, AccessCheckResultEntry, AccessRequest as AccessReq,
     AccessResponse as AccessResp, AccessRuleData, AccessRuleInfo, AccessibleGroupEntry,
-    ApprovalDecisionKind, ApprovalDenyReason, AssetGroupInfo, GroupOption, IpcPage,
-    IpcPageParams, Message, RbacResult, VaubanGroupInfo,
+    ApprovalDecisionKind, ApprovalDenyReason, AssetGroupInfo, GroupOption, IpcPage, IpcPageParams,
+    Message, RbacResult, SessionAccessDecision, SessionAccessIntent, VaubanGroupInfo,
 };
 use std::collections::HashMap;
 use std::io;
@@ -157,6 +157,42 @@ impl AccessIpcClient {
             AccessResp::Error(e) => Err(AppError::Ipc(e)),
             _ => Err(AppError::Ipc(
                 "unexpected response for CheckAccess".to_string(),
+            )),
+        }
+    }
+
+    /// SECURITY: instance-level authorization for an existing
+    /// `proxy_sessions` row. Combines existence + status, ownership,
+    /// and access-rule re-check in a single round-trip. The Casbin
+    /// `sessions:supervise` / `sessions:write` OR-overrides are
+    /// layered on top by `services::session_access::verify`, NEVER
+    /// here -- this method is intentionally low-level so the service
+    /// remains the single seam where instance-level + functional
+    /// authorization combine.
+    ///
+    /// Fail-closed: any IPC or unexpected response is collapsed to a
+    /// `Denied(NotFound)` decision so a transient infrastructure issue
+    /// cannot accidentally grant a session. The caller-side service
+    /// further collapses every denial reason into a 404 (anti-
+    /// enumeration) or 410 (`Gone`).
+    pub async fn verify_session_access(
+        &self,
+        session_uuid: &str,
+        requesting_user_uuid: &str,
+        intent: SessionAccessIntent,
+    ) -> AppResult<SessionAccessDecision> {
+        let resp = self
+            .send_access_request(AccessReq::VerifySessionAccess {
+                session_uuid: session_uuid.to_string(),
+                requesting_user_uuid: requesting_user_uuid.to_string(),
+                intent,
+            })
+            .await?;
+        match resp {
+            AccessResp::SessionAccessChecked { decision } => Ok(decision),
+            AccessResp::Error(e) => Err(AppError::Ipc(e)),
+            _ => Err(AppError::Ipc(
+                "unexpected response for VerifySessionAccess".to_string(),
             )),
         }
     }

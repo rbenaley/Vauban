@@ -175,8 +175,7 @@ impl TokenKey {
     /// spawned, because `std::env::remove_var` is not thread-safe under
     /// the 2024 edition's lints.
     pub fn from_env() -> Result<Self, TokenKeyError> {
-        let raw = std::env::var(SESSION_TOKEN_KEY_ENV)
-            .map_err(|_| TokenKeyError::MissingEnvVar)?;
+        let raw = std::env::var(SESSION_TOKEN_KEY_ENV).map_err(|_| TokenKeyError::MissingEnvVar)?;
         // SAFETY: caller invariant -- single-threaded at this point.
         unsafe {
             std::env::remove_var(SESSION_TOKEN_KEY_ENV);
@@ -213,7 +212,9 @@ impl TokenKey {
 
 impl std::fmt::Debug for TokenKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TokenKey").field("inner", &"[REDACTED]").finish()
+        f.debug_struct("TokenKey")
+            .field("inner", &"[REDACTED]")
+            .finish()
     }
 }
 
@@ -500,8 +501,8 @@ impl SessionToken {
 fn compute_mac(key: &TokenKey, token: &SessionToken) -> [u8; MAC_LENGTH] {
     let mut blanked = token.clone();
     blanked.mac = [0u8; MAC_LENGTH];
-    let serialized = bincode::serde::encode_to_vec(&blanked, bincode::config::standard())
-        .unwrap_or_default();
+    let serialized =
+        bincode::serde::encode_to_vec(&blanked, bincode::config::standard()).unwrap_or_default();
     let mut hasher = blake3::Hasher::new_keyed(key.as_bytes());
     hasher.update(DOMAIN_SEPARATION_TAG);
     hasher.update(&serialized);
@@ -515,8 +516,8 @@ fn compute_mac(key: &TokenKey, token: &SessionToken) -> [u8; MAC_LENGTH] {
 // Submodules
 // ============================================================================
 
-pub mod replay_cache;
 pub mod proxy_gate;
+pub mod replay_cache;
 
 // ============================================================================
 // Tests (Tier 1: crypto unit tests)

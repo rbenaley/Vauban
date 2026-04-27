@@ -86,7 +86,11 @@ async fn test_session_ws_endpoint_exists() {
         test_db::cleanup(&mut c).await;
     }
 
-    // "test-session-id" is not a valid UUID -> ownership check returns 400
+    // "test-session-id" is not a valid UUID. The new session_access
+    // gate collapses every denial reason (including malformed UUID) to
+    // a generic 404 to keep the anti-enumeration discipline; 400/426
+    // remain acceptable if the runtime validation bumps before the
+    // gate.
     let response = app
         .server
         .get("/ws/session/test-session-id")
@@ -99,8 +103,8 @@ async fn test_session_ws_endpoint_exists() {
 
     let status = response.status_code().as_u16();
     assert!(
-        status == 400 || status == 426,
-        "Expected 400 or 426, got {}",
+        status == 400 || status == 404 || status == 426,
+        "Expected 400, 404 or 426, got {}",
         status
     );
 }
@@ -434,7 +438,11 @@ async fn test_terminal_ws_endpoint_exists() {
         test_db::cleanup(&mut c).await;
     }
 
-    // "test-session-id" is not a valid UUID -> ownership check returns 400
+    // "test-session-id" is not a valid UUID. The new session_access
+    // gate collapses every denial reason (including malformed UUID) to
+    // a generic 404 to keep the anti-enumeration discipline; 400/426
+    // remain acceptable if the runtime validation bumps before the
+    // gate.
     let response = app
         .server
         .get("/ws/terminal/test-session-id")
@@ -447,8 +455,8 @@ async fn test_terminal_ws_endpoint_exists() {
 
     let status = response.status_code().as_u16();
     assert!(
-        status == 400 || status == 426,
-        "Expected 400 or 426, got {}",
+        status == 400 || status == 404 || status == 426,
+        "Expected 400, 404 or 426, got {}",
         status
     );
 }

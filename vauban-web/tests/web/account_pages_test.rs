@@ -1420,7 +1420,10 @@ async fn test_revoke_session_broadcasts_update_to_websocket() {
     // Revoke the session
     let response = app
         .server
-        .post(&format!("/accounts/login-sessions/{}/revoke", session_to_revoke))
+        .post(&format!(
+            "/accounts/login-sessions/{}/revoke",
+            session_to_revoke
+        ))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -1934,7 +1937,10 @@ async fn test_admin_revoke_session_deletes_from_db() {
 
     let response = app
         .server
-        .post(&format!("/accounts/all-login-sessions/{}/revoke", session_uuid))
+        .post(&format!(
+            "/accounts/all-login-sessions/{}/revoke",
+            session_uuid
+        ))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -1985,7 +1991,10 @@ async fn test_admin_revoke_non_staff_rejected() {
 
     let response = app
         .server
-        .post(&format!("/accounts/all-login-sessions/{}/revoke", session_uuid))
+        .post(&format!(
+            "/accounts/all-login-sessions/{}/revoke",
+            session_uuid
+        ))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -2031,7 +2040,10 @@ async fn test_admin_revoke_nonexistent_session() {
     let nonexistent = Uuid::new_v4();
     let response = app
         .server
-        .post(&format!("/accounts/all-login-sessions/{}/revoke", nonexistent))
+        .post(&format!(
+            "/accounts/all-login-sessions/{}/revoke",
+            nonexistent
+        ))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -2099,7 +2111,10 @@ async fn test_admin_revoke_invalid_csrf() {
 
     let response = app
         .server
-        .post(&format!("/accounts/all-login-sessions/{}/revoke", session_uuid))
+        .post(&format!(
+            "/accounts/all-login-sessions/{}/revoke",
+            session_uuid
+        ))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf=invalid", token),
@@ -2143,7 +2158,10 @@ async fn test_admin_revoke_idempotent() {
     // First revocation
     let response = app
         .server
-        .post(&format!("/accounts/all-login-sessions/{}/revoke", session_uuid))
+        .post(&format!(
+            "/accounts/all-login-sessions/{}/revoke",
+            session_uuid
+        ))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -2156,7 +2174,10 @@ async fn test_admin_revoke_idempotent() {
     let csrf_token2 = app.generate_csrf_token();
     let response2 = app
         .server
-        .post(&format!("/accounts/all-login-sessions/{}/revoke", session_uuid))
+        .post(&format!(
+            "/accounts/all-login-sessions/{}/revoke",
+            session_uuid
+        ))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token2),
@@ -2193,7 +2214,10 @@ async fn test_admin_revoke_no_crash_when_target_offline() {
     // Revoke while user has no WebSocket connection -- should not crash
     let response = app
         .server
-        .post(&format!("/accounts/all-login-sessions/{}/revoke", session_uuid))
+        .post(&format!(
+            "/accounts/all-login-sessions/{}/revoke",
+            session_uuid
+        ))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -2232,7 +2256,10 @@ async fn test_admin_revoke_last_session() {
 
     let response = app
         .server
-        .post(&format!("/accounts/all-login-sessions/{}/revoke", session_uuid))
+        .post(&format!(
+            "/accounts/all-login-sessions/{}/revoke",
+            session_uuid
+        ))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -2507,13 +2534,15 @@ async fn test_legacy_user_sessions_route_redirects_permanent() {
         308,
         "GET /accounts/sessions must answer 308 Permanent Redirect"
     );
-    let location = unwrap_ok!(unwrap_ok!(
-        response
-            .headers()
-            .get("location")
-            .ok_or("missing Location header")
-    )
-    .to_str());
+    let location = unwrap_ok!(
+        unwrap_ok!(
+            response
+                .headers()
+                .get("location")
+                .ok_or("missing Location header")
+        )
+        .to_str()
+    );
     assert_eq!(location, "/accounts/login-sessions");
 }
 
@@ -2531,13 +2560,15 @@ async fn test_legacy_admin_sessions_route_redirects_permanent() {
         308,
         "GET /admin/sessions must answer 308 Permanent Redirect"
     );
-    let location = unwrap_ok!(unwrap_ok!(
-        response
-            .headers()
-            .get("location")
-            .ok_or("missing Location header")
-    )
-    .to_str());
+    let location = unwrap_ok!(
+        unwrap_ok!(
+            response
+                .headers()
+                .get("location")
+                .ok_or("missing Location header")
+        )
+        .to_str()
+    );
     assert_eq!(location, "/accounts/all-login-sessions");
 }
 
@@ -2559,13 +2590,15 @@ async fn test_legacy_user_revoke_route_redirects_permanent() {
         308,
         "POST /accounts/sessions/{{uuid}}/revoke must answer 308 Permanent Redirect"
     );
-    let location = unwrap_ok!(unwrap_ok!(
-        response
-            .headers()
-            .get("location")
-            .ok_or("missing Location header")
-    )
-    .to_str());
+    let location = unwrap_ok!(
+        unwrap_ok!(
+            response
+                .headers()
+                .get("location")
+                .ok_or("missing Location header")
+        )
+        .to_str()
+    );
     assert_eq!(
         location,
         format!("/accounts/login-sessions/{}/revoke", session_uuid)
@@ -2590,13 +2623,15 @@ async fn test_legacy_admin_revoke_route_redirects_permanent() {
         308,
         "POST /admin/sessions/{{uuid}}/revoke must answer 308 Permanent Redirect"
     );
-    let location = unwrap_ok!(unwrap_ok!(
-        response
-            .headers()
-            .get("location")
-            .ok_or("missing Location header")
-    )
-    .to_str());
+    let location = unwrap_ok!(
+        unwrap_ok!(
+            response
+                .headers()
+                .get("location")
+                .ok_or("missing Location header")
+        )
+        .to_str()
+    );
     assert_eq!(
         location,
         format!("/accounts/all-login-sessions/{}/revoke", session_uuid)

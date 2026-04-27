@@ -874,6 +874,11 @@ mod tests {
             ("assets", "read"),
             ("profile", "read"),
             ("profile", "write"),
+            // SECURITY: regular users may list and read their own
+            // sessions via the API. Cross-user visibility is gated
+            // at the instance level by the session_access service in
+            // vauban-web; see config/access/default_policy.csv.
+            ("sessions", "read"),
         ];
 
         for (obj, act) in allowed {
@@ -904,8 +909,9 @@ mod tests {
             ("users", "write"),
             ("groups", "write"),
             ("assets", "write"),
-            ("sessions", "read"),
             ("sessions", "create"),
+            ("sessions", "supervise"),
+            ("sessions", "write"),
         ];
 
         for (obj, act) in denied {

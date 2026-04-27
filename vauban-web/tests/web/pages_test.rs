@@ -602,9 +602,12 @@ async fn test_approval_list_status_filter_all_statuses() {
     let statuses = ["pending", "approved", "rejected", "expired", "orphaned"];
 
     for (i, status) in statuses.iter().enumerate() {
-        let asset_id =
-            create_simple_ssh_asset(&mut conn, &format!("status-filter-asset-{}", i), requester_id)
-                .await;
+        let asset_id = create_simple_ssh_asset(
+            &mut conn,
+            &format!("status-filter-asset-{}", i),
+            requester_id,
+        )
+        .await;
         let approval_uuid = create_approval_request(&mut conn, requester_id, asset_id).await;
 
         // Update the status
@@ -6926,7 +6929,10 @@ async fn test_asset_create_after_tombstone_yields_fresh_uuid() {
         .get_result(&mut conn)
         .await
         .unwrap();
-    assert_eq!(active_count, 1, "exactly one active row must exist on the triplet");
+    assert_eq!(
+        active_count, 1,
+        "exactly one active row must exist on the triplet"
+    );
 
     let total_count: i64 = assets::table
         .filter(assets::hostname.eq(&asset_hostname))

@@ -636,7 +636,13 @@ async fn test_regular_user_cannot_create_session() {
     test_db::cleanup(&mut conn).await;
 }
 
-/// Test that regular users cannot list sessions via the API.
+/// SECURITY: regular users may now hit `/api/v1/sessions` (the
+/// post-audit policy grants `sessions:read` to `role:user`) but the
+/// instance-level filter in `services::session_access` /
+/// `list_sessions` MUST force the result set to their own sessions
+/// only. We therefore assert (a) Casbin no longer blocks the call
+/// (200) and (b) without `sessions:supervise`, the listing is empty
+/// when no session was created by the caller.
 #[tokio::test]
 #[serial]
 async fn test_regular_user_cannot_list_sessions() {
@@ -652,7 +658,13 @@ async fn test_regular_user_cannot_list_sessions() {
         .add_header(header::AUTHORIZATION, app.auth_header(&regular_user.token))
         .await;
 
-    assert_status(&response, 403);
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.trim() == "[]",
+        "regular user with no sessions of their own must see an empty \
+         list (force-filter to caller_id), got: {body}"
+    );
 
     test_db::cleanup(&mut conn).await;
 }
@@ -3385,36 +3397,44 @@ async fn ws_session_request(
 }
 
 /// Regression: A regular user cannot access another user's terminal WebSocket.
+/// The new session_access gate collapses NotOwner / AccessRuleRevoked to a
+/// generic 404 (anti-enumeration), so the attacker can no longer fingerprint
+/// the existence of someone else's session via 403 vs 404.
 #[tokio::test]
 #[serial]
 async fn test_terminal_ws_forbidden_for_non_owner() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    // Create two regular users
     let owner = create_test_user(&mut conn, &app.auth_service, &unique_name("ws_owner")).await;
     let attacker =
         create_test_user(&mut conn, &app.auth_service, &unique_name("ws_attacker")).await;
 
-    // Create an asset and a session owned by `owner`
     let asset_id =
         create_simple_ssh_asset(&mut conn, &unique_name("ws_asset"), owner.user.id).await;
-    let (_session_id, session_uuid) =
-        create_test_session_with_uuid(&mut conn, owner.user.id, asset_id, "ssh", "active").await;
+    let (_session_id, session_uuid, _rule) = crate::fixtures::create_test_session_with_access(
+        &mut conn,
+        owner.user.id,
+        asset_id,
+        "ssh",
+        "active",
+    )
+    .await;
 
     drop(conn);
 
-    // Attacker tries to access owner's terminal session -> must be 403
     let response = ws_terminal_request(app, &session_uuid.to_string(), &attacker.token).await;
     let status = response.status_code().as_u16();
     assert_eq!(
-        status, 403,
-        "Regular user must not access another user's terminal WebSocket, got {}",
+        status, 404,
+        "Regular user must not access another user's terminal WebSocket \
+         (must collapse to 404 anti-enum), got {}",
         status
     );
 }
 
 /// Regression: A regular user cannot access another user's session monitoring WebSocket.
+/// Same anti-enumeration rationale as above: 403/404 collapse to 404.
 #[tokio::test]
 #[serial]
 async fn test_session_ws_forbidden_for_non_owner() {
@@ -3426,16 +3446,23 @@ async fn test_session_ws_forbidden_for_non_owner() {
 
     let asset_id =
         create_simple_ssh_asset(&mut conn, &unique_name("ws_asset2"), owner.user.id).await;
-    let (_session_id, session_uuid) =
-        create_test_session_with_uuid(&mut conn, owner.user.id, asset_id, "ssh", "active").await;
+    let (_session_id, session_uuid, _rule) = crate::fixtures::create_test_session_with_access(
+        &mut conn,
+        owner.user.id,
+        asset_id,
+        "ssh",
+        "active",
+    )
+    .await;
 
     drop(conn);
 
     let response = ws_session_request(app, &session_uuid.to_string(), &attacker.token).await;
     let status = response.status_code().as_u16();
     assert_eq!(
-        status, 403,
-        "Regular user must not access another user's session WebSocket, got {}",
+        status, 404,
+        "Regular user must not access another user's session WebSocket \
+         (must collapse to 404 anti-enum), got {}",
         status
     );
 }
@@ -3452,8 +3479,14 @@ async fn test_terminal_ws_allowed_for_owner() {
     let owner = create_test_user(&mut conn, &app.auth_service, &unique_name("ws_own3")).await;
     let asset_id =
         create_simple_ssh_asset(&mut conn, &unique_name("ws_asset3"), owner.user.id).await;
-    let (_session_id, session_uuid) =
-        create_test_session_with_uuid(&mut conn, owner.user.id, asset_id, "ssh", "active").await;
+    let (_session_id, session_uuid, _rule) = crate::fixtures::create_test_session_with_access(
+        &mut conn,
+        owner.user.id,
+        asset_id,
+        "ssh",
+        "active",
+    )
+    .await;
 
     drop(conn);
 
@@ -3478,8 +3511,14 @@ async fn test_session_ws_allowed_for_owner() {
     let owner = create_test_user(&mut conn, &app.auth_service, &unique_name("ws_own4")).await;
     let asset_id =
         create_simple_ssh_asset(&mut conn, &unique_name("ws_asset4"), owner.user.id).await;
-    let (_session_id, session_uuid) =
-        create_test_session_with_uuid(&mut conn, owner.user.id, asset_id, "ssh", "active").await;
+    let (_session_id, session_uuid, _rule) = crate::fixtures::create_test_session_with_access(
+        &mut conn,
+        owner.user.id,
+        asset_id,
+        "ssh",
+        "active",
+    )
+    .await;
 
     drop(conn);
 
@@ -3503,8 +3542,14 @@ async fn test_terminal_ws_allowed_for_admin() {
     let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("ws_admin5")).await;
     let asset_id =
         create_simple_ssh_asset(&mut conn, &unique_name("ws_asset5"), owner.user.id).await;
-    let (_session_id, session_uuid) =
-        create_test_session_with_uuid(&mut conn, owner.user.id, asset_id, "ssh", "active").await;
+    let (_session_id, session_uuid, _rule) = crate::fixtures::create_test_session_with_access(
+        &mut conn,
+        owner.user.id,
+        asset_id,
+        "ssh",
+        "active",
+    )
+    .await;
 
     drop(conn);
 
@@ -3530,8 +3575,14 @@ async fn test_session_ws_allowed_for_admin() {
     let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("ws_admin6")).await;
     let asset_id =
         create_simple_ssh_asset(&mut conn, &unique_name("ws_asset6"), owner.user.id).await;
-    let (_session_id, session_uuid) =
-        create_test_session_with_uuid(&mut conn, owner.user.id, asset_id, "ssh", "active").await;
+    let (_session_id, session_uuid, _rule) = crate::fixtures::create_test_session_with_access(
+        &mut conn,
+        owner.user.id,
+        asset_id,
+        "ssh",
+        "active",
+    )
+    .await;
 
     drop(conn);
 
@@ -3564,7 +3615,11 @@ async fn test_terminal_ws_nonexistent_session_returns_404() {
     );
 }
 
-/// Regression: Invalid session ID (not a UUID) returns 400.
+/// Regression: Invalid session ID (not a UUID) collapses to 404 under the
+/// session_access anti-enumeration policy. Historically this was 400 (UUID
+/// parse error surfaced to the client); we now hide it behind the same 404
+/// as a non-existent session so an attacker cannot distinguish "malformed"
+/// from "non-existent" from "exists but you have no access".
 #[tokio::test]
 #[serial]
 async fn test_terminal_ws_invalid_session_id_returns_400() {
@@ -3577,8 +3632,8 @@ async fn test_terminal_ws_invalid_session_id_returns_400() {
     let response = ws_terminal_request(app, "not-a-valid-uuid", &user.token).await;
     let status = response.status_code().as_u16();
     assert_eq!(
-        status, 400,
-        "Invalid session ID should return 400, got {}",
+        status, 404,
+        "Invalid session ID must collapse to 404 (anti-enum), got {}",
         status
     );
 }
@@ -3667,12 +3722,17 @@ async fn test_terminal_page_renders_for_owner() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let owner =
-        create_test_user(&mut conn, &app.auth_service, &unique_name("tp_owner_ok")).await;
+    let owner = create_test_user(&mut conn, &app.auth_service, &unique_name("tp_owner_ok")).await;
     let asset_id =
         create_simple_ssh_asset(&mut conn, &unique_name("tp_asset_b"), owner.user.id).await;
-    let (_session_id, session_uuid) =
-        create_test_session_with_uuid(&mut conn, owner.user.id, asset_id, "ssh", "active").await;
+    let (_session_id, session_uuid, _rule) = crate::fixtures::create_test_session_with_access(
+        &mut conn,
+        owner.user.id,
+        asset_id,
+        "ssh",
+        "active",
+    )
+    .await;
 
     drop(conn);
 
@@ -3694,8 +3754,7 @@ async fn test_terminal_page_404_does_not_leak_session_uuid() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    let owner =
-        create_test_user(&mut conn, &app.auth_service, &unique_name("tp_owner_nl")).await;
+    let owner = create_test_user(&mut conn, &app.auth_service, &unique_name("tp_owner_nl")).await;
     let attacker =
         create_test_user(&mut conn, &app.auth_service, &unique_name("tp_attacker_nl")).await;
     let asset_id =
@@ -8137,9 +8196,9 @@ fn test_ssh_handler_mints_token_before_session_open() {
         "vauban-web SSH handler MUST mint a session token via \
          AccessIpcClient::issue_session_token before opening a session.",
     );
-    let request_idx = source.find("SshSessionOpenRequest {").expect(
-        "vauban-web SSH handler MUST construct a SshSessionOpenRequest",
-    );
+    let request_idx = source
+        .find("SshSessionOpenRequest {")
+        .expect("vauban-web SSH handler MUST construct a SshSessionOpenRequest");
     assert!(
         mint_idx < request_idx,
         "issue_session_token MUST be called BEFORE SshSessionOpenRequest \
@@ -8160,9 +8219,9 @@ fn test_rdp_handler_mints_token_before_session_open() {
         "vauban-web RDP handler MUST mint a session token via \
          AccessIpcClient::issue_session_token before opening a session.",
     );
-    let request_idx = source.find("RdpSessionOpenRequest {").expect(
-        "vauban-web RDP handler MUST construct a RdpSessionOpenRequest",
-    );
+    let request_idx = source
+        .find("RdpSessionOpenRequest {")
+        .expect("vauban-web RDP handler MUST construct a RdpSessionOpenRequest");
     assert!(
         mint_idx < request_idx,
         "issue_session_token MUST be called BEFORE RdpSessionOpenRequest \
@@ -8185,8 +8244,7 @@ fn test_supervisor_client_request_tcp_connect_takes_session_token() {
          crypto-verify before any DNS/connect work."
     );
     assert!(
-        source.contains("Message::TcpConnectRequest {")
-            && source.contains("session_token,"),
+        source.contains("Message::TcpConnectRequest {") && source.contains("session_token,"),
         "SupervisorClient::request_tcp_connect MUST forward the \
          session_token into Message::TcpConnectRequest."
     );

@@ -30,6 +30,7 @@ pub mod role_invariants_test;
 pub mod routing_test;
 pub mod session_pages_test;
 pub mod sidebar_menu_test;
+pub mod terminate_session_test;
 pub mod user_edit_test;
 pub mod virtual_asset_group_adversarial_test;
 pub mod virtual_asset_group_boot_docs_test;

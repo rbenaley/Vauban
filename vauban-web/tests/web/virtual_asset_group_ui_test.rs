@@ -35,8 +35,8 @@ use uuid::Uuid;
 
 use crate::common::{TestApp, assertions::*, test_db};
 use crate::fixtures::{
-    create_admin_user, create_test_access_rule, create_test_asset_group,
-    create_test_vauban_group, unique_name,
+    create_admin_user, create_test_access_rule, create_test_asset_group, create_test_vauban_group,
+    unique_name,
 };
 
 fn auth_csrf_cookie(token: &str, csrf: &str) -> String {
