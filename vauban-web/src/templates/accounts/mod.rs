@@ -20,7 +20,9 @@ pub mod user_list;
 pub use apikey_create_form::ApikeyCreateFormTemplate;
 pub use apikey_created::ApikeyCreatedTemplate;
 pub use apikey_list::{ApiKeyItem, ApikeyListTemplate};
-pub use group_add_member::{AvailableUser, GroupAddMemberTemplate, GroupInfo};
+pub use group_add_member::{
+    AvailableUser, GroupAddMemberListPartial, GroupAddMemberTemplate, GroupInfo,
+};
 pub use group_create::GroupCreateTemplate;
 pub use group_detail::GroupDetailTemplate;
 pub use group_edit::{GroupEditData, GroupEditTemplate};

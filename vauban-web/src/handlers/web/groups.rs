@@ -622,6 +622,7 @@ pub async fn group_add_member_form(
         header_user,
         group,
         available_users,
+        is_search: false,
     };
 
     let html = template
@@ -631,6 +632,13 @@ pub async fn group_add_member_form(
 }
 
 /// Search users for adding to group (HTMX endpoint).
+///
+/// The HTMX response is rendered through the same Askama partial as the
+/// initial page (`accounts/_group_add_member_list.html`), which:
+///   - auto-escapes username/email (defense-in-depth XSS),
+///   - opts each form into Alpine's `csrf` component so the
+///     double-submit token is populated on submit (otherwise the empty
+///     `csrf_token` would be rejected by `add_group_member_web`).
 pub async fn group_member_search(
     State(state): State<AppState>,
     _auth_user: WebAuthUser,
@@ -638,6 +646,8 @@ pub async fn group_member_search(
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
+    use crate::templates::accounts::{AvailableUser, GroupAddMemberListPartial, GroupInfo};
+
     if !perms.groups_manage_members {
         return Err(AppError::forbidden("groups:manage_members"));
     }
@@ -645,16 +655,14 @@ pub async fn group_member_search(
     let search_term = params.get("user-search").cloned().unwrap_or_default();
 
     let client = &state.access_client;
-    let existing_member_ids: Vec<i32> = {
-        let group_info = client
-            .get_vauban_group(&uuid_str)
-            .await
-            .map_err(|e| AppError::Internal(anyhow::anyhow!("IPC error: {}", e)))?;
-        client
-            .list_group_members(group_info.id)
-            .await
-            .unwrap_or_default()
-    };
+    let group_info = client
+        .get_vauban_group(&uuid_str)
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("IPC error: {}", e)))?;
+    let existing_member_ids: Vec<i32> = client
+        .list_group_members(group_info.id)
+        .await
+        .unwrap_or_default();
 
     let mut conn = state
         .db_pool
@@ -688,47 +696,25 @@ pub async fn group_member_search(
             .map_err(AppError::Database)?
     };
 
-    // Build HTML response for HTMX
-    let mut html = String::new();
-    if available_users_data.is_empty() {
-        html.push_str(r#"<div class="px-4 py-8 text-center text-gray-500 dark:text-gray-400">"#);
-        html.push_str(r#"<svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">"#);
-        html.push_str(r#"<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"/>"#);
-        html.push_str("</svg>");
-        html.push_str(r#"<p class="mt-2 text-sm">No matching users found.</p>"#);
-        html.push_str("</div>");
-    } else {
-        for (user_uuid, username, email) in available_users_data {
-            let initial = username.chars().next().unwrap_or('U').to_uppercase();
-            html.push_str(&format!(
-                r#"<div class="px-4 py-3 hover:bg-gray-50 dark:hover:bg-gray-700">
-                    <form method="post" action="/accounts/groups/{}/members" class="flex items-center justify-between">
-                        <input type="hidden" name="csrf_token" />
-                        <input type="hidden" name="user_uuid" value="{}" />
-                        <div class="flex items-center space-x-3">
-                            <div class="flex-shrink-0">
-                                <span class="inline-flex h-8 w-8 items-center justify-center rounded-full bg-gray-500">
-                                    <span class="text-xs font-medium leading-none text-white">{}</span>
-                                </span>
-                            </div>
-                            <div>
-                                <p class="text-sm font-medium text-gray-900 dark:text-white">{}</p>
-                                <p class="text-xs text-gray-500 dark:text-gray-400">{}</p>
-                            </div>
-                        </div>
-                        <button type="submit" class="inline-flex items-center rounded-md bg-vauban-600 px-2.5 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-vauban-500">
-                            <svg class="-ml-0.5 mr-1 h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                                <path d="M10.75 4.75a.75.75 0 00-1.5 0v4.5h-4.5a.75.75 0 000 1.5h4.5v4.5a.75.75 0 001.5 0v-4.5h4.5a.75.75 0 000-1.5h-4.5v-4.5z"/>
-                            </svg>
-                            Add
-                        </button>
-                    </form>
-                </div>"#,
-                uuid_str, user_uuid, initial, username, email
-            ));
-        }
-    }
+    let partial = GroupAddMemberListPartial {
+        group: GroupInfo {
+            uuid: group_info.uuid,
+            name: group_info.name,
+        },
+        available_users: available_users_data
+            .into_iter()
+            .map(|(uuid, username, email)| AvailableUser {
+                uuid: uuid.to_string(),
+                username,
+                email,
+            })
+            .collect(),
+        is_search: true,
+    };
 
+    let html = partial
+        .render()
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
     Ok(Html(html))
 }
 

@@ -21,6 +21,8 @@ pub mod assets_db_invariants_test;
 pub mod casbin_handler_eradication_web_test;
 pub mod dashboard_pages_test;
 pub mod delete_confirm_flow_test;
+pub mod group_member_search_test;
+pub mod htmx_input_name_test;
 pub mod jit_access_test;
 pub mod mfa_test;
 pub mod pages_test;

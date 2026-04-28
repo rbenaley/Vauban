@@ -50,9 +50,9 @@
                     <form hx-post="/assets/{{ asset.uuid }}/{%- if asset.asset_type == "rdp" -%}connect-rdp{%- else -%}connect{%- endif -%}"
                           hx-swap="none"
                           class="mt-4 space-y-4"
+                          x-data="csrf"
                           @htmx:after-request="if(event.detail.successful) $store.justificationModal.show = false">
-                        <input type="hidden" name="csrf_token"
-                               :value="document.cookie.match(/(?:^|;\s*)__vauban_csrf=([^;]*)/)?.[1] || ''" />
+                        <input type="hidden" name="csrf_token" x-model="token" />
 
                         <div>
                             <label for="justification" class="block text-sm font-medium text-gray-700 dark:text-gray-300">

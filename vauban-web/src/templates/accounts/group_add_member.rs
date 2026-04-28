@@ -31,6 +31,26 @@ pub struct GroupAddMemberTemplate {
     pub header_user: Option<crate::templates::base::UserContext>,
     pub group: GroupInfo,
     pub available_users: Vec<AvailableUser>,
+    /// Drives the empty-state copy in `_group_add_member_list.html`.
+    /// Always `false` for the initial page render; the HTMX search
+    /// response uses `GroupAddMemberListPartial` with `is_search = true`.
+    pub is_search: bool,
+}
+
+/// HTMX partial for the live search results on
+/// `/accounts/groups/{uuid}/members/search`. Renders the inner content
+/// of `#user-list` (no surrounding wrapper, no `{% extends %}`) so the
+/// default HTMX `innerHTML` swap drops the bytes straight in.
+///
+/// Shares its template file with the initial render of
+/// `GroupAddMemberTemplate`, so the user-item HTML, CSRF wiring, and
+/// form action stay identical between the two code paths.
+#[derive(Template)]
+#[template(path = "accounts/_group_add_member_list.html")]
+pub struct GroupAddMemberListPartial {
+    pub group: GroupInfo,
+    pub available_users: Vec<AvailableUser>,
+    pub is_search: bool,
 }
 
 #[cfg(test)]
@@ -79,6 +99,7 @@ mod tests {
                 name: "Test Group".to_string(),
             },
             available_users: vec![create_test_available_user()],
+            is_search: false,
         };
 
         let result = template.render();
@@ -113,12 +134,122 @@ mod tests {
                 name: "Test Group".to_string(),
             },
             available_users: vec![],
+            is_search: false,
         };
 
         let result = template.render();
         assert!(
             result.is_ok(),
             "Template should render with empty user list"
+        );
+    }
+
+    /// `GroupAddMemberListPartial` with users renders the form items,
+    /// uses Alpine's `x-data="csrf"` (never an empty CSRF input), and
+    /// auto-escapes username/email so the response is XSS-safe.
+    #[test]
+    fn test_group_add_member_list_partial_renders_users_with_csrf() {
+        let partial = GroupAddMemberListPartial {
+            group: GroupInfo {
+                uuid: "group-uuid".to_string(),
+                name: "Test Group".to_string(),
+            },
+            available_users: vec![create_test_available_user()],
+            is_search: true,
+        };
+
+        let html = partial.render().expect("partial must render");
+
+        assert!(
+            html.contains("testuser"),
+            "user list must include the username"
+        );
+        assert!(
+            html.contains(r#"x-data="csrf""#),
+            "form must opt into the Alpine CSRF component"
+        );
+        assert!(
+            html.contains(r#"x-model="token""#),
+            "CSRF input must be bound to the Alpine token model"
+        );
+        // Forbidden anti-pattern: empty CSRF input expecting some
+        // vanilla-JS hook to populate it (see front-end-design SKILL).
+        assert!(
+            !html.contains(r#"name="csrf_token" />"#) && !html.contains(r#"name="csrf_token">"#),
+            "CSRF input must not be empty (Alpine x-model is required)"
+        );
+    }
+
+    /// Empty list + `is_search = true` shows the search-specific copy.
+    #[test]
+    fn test_group_add_member_list_partial_search_empty_message() {
+        let partial = GroupAddMemberListPartial {
+            group: GroupInfo {
+                uuid: "group-uuid".to_string(),
+                name: "Test Group".to_string(),
+            },
+            available_users: vec![],
+            is_search: true,
+        };
+
+        let html = partial.render().expect("partial must render");
+        assert!(
+            html.contains("No matching users found."),
+            "search empty state must use the search-specific copy"
+        );
+    }
+
+    /// Empty list + `is_search = false` shows the initial-render copy.
+    #[test]
+    fn test_group_add_member_list_partial_initial_empty_message() {
+        let partial = GroupAddMemberListPartial {
+            group: GroupInfo {
+                uuid: "group-uuid".to_string(),
+                name: "Test Group".to_string(),
+            },
+            available_users: vec![],
+            is_search: false,
+        };
+
+        let html = partial.render().expect("partial must render");
+        assert!(
+            html.contains("All users are already members of this group."),
+            "initial empty state must use the all-members copy"
+        );
+    }
+
+    /// Askama auto-escape protects username/email from XSS even if a
+    /// future relaxation of upstream validation lets `<` slip in.
+    #[test]
+    fn test_group_add_member_list_partial_escapes_username_and_email() {
+        let partial = GroupAddMemberListPartial {
+            group: GroupInfo {
+                uuid: "group-uuid".to_string(),
+                name: "Test Group".to_string(),
+            },
+            available_users: vec![AvailableUser {
+                uuid: "evil-uuid".to_string(),
+                username: "<script>alert(1)</script>".to_string(),
+                email: "x@<svg/onload=alert(1)>".to_string(),
+            }],
+            is_search: true,
+        };
+
+        let html = partial.render().expect("partial must render");
+        assert!(
+            !html.contains("<script>alert(1)</script>"),
+            "raw <script> must be escaped, got: {html}"
+        );
+        assert!(
+            !html.contains("<svg/onload=alert(1)>"),
+            "raw <svg/onload=...> must be escaped, got: {html}"
+        );
+        // Askama may emit either the named entity (&lt;) or the numeric
+        // entity (&#60;); both are valid escapes. Accept either.
+        let escaped_lt = html.contains("&lt;script") || html.contains("&#60;script");
+        assert!(
+            escaped_lt,
+            "expected an entity-encoded script tag (named or numeric), got: {html}"
         );
     }
 }

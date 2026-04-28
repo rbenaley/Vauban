@@ -50,9 +50,9 @@
                     <form hx-post="/sessions/request"
                           hx-swap="none"
                           class="mt-4 space-y-4"
+                          x-data="csrf"
                           @htmx:after-request="if(event.detail.successful) $store.accessModal.show = false">
-                        <input type="hidden" name="csrf_token"
-                               :value="document.cookie.match(/(?:^|;\s*)__vauban_csrf=([^;]*)/)?.[1] || ''" />
+                        <input type="hidden" name="csrf_token" x-model="token" />
                         <input type="hidden" name="asset_uuid" value="{{ asset.uuid }}" />
                         <input type="hidden" name="session_type" value="{{ asset.asset_type }}" />
 
