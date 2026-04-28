@@ -11,7 +11,7 @@
 //! fell into its empty-query branch and returned the full roster on
 //! every keystroke, making the search field cosmetic.
 //!
-//! These tests pin the contract on three layers so the bug cannot
+//! These tests pin the contract on four layers so the bug cannot
 //! re-appear silently:
 //!
 //! 1. **DOM contract**: the rendered Add Member page MUST carry an
@@ -27,6 +27,15 @@
 //!    email so a future relaxation of upstream validation cannot turn
 //!    the search response into a stored XSS sink.
 //!    (`test_search_response_*csrf*`, `test_search_response_escapes_*`)
+//! 4. **End-to-end Add (issue #25 / BUG-14)**: a `<form>` rendered by
+//!    the search response MUST POST successfully and redirect to the
+//!    group detail page with a success flash. The reciprocal negative
+//!    case (an empty CSRF token bounces back to `/members/add` with an
+//!    error flash) documents the exact failure mode that produced
+//!    BUG-14 at v0.6.6 -- where the legacy `format!()` HTML emitted
+//!    forms WITHOUT `x-data="csrf"` so the token shipped empty, the
+//!    backend rejected, and the user landed back on the same Add page
+//!    with no apparent state change. (`test_bug14_*`)
 
 use axum::http::header::COOKIE;
 use diesel::{ExpressionMethods, QueryDsl};
@@ -35,7 +44,10 @@ use serial_test::serial;
 use uuid::Uuid;
 
 use crate::common::{TestApp, assertions::assert_status, test_db, unwrap_ok};
-use crate::fixtures::{create_admin_user, create_test_user, create_test_vauban_group, unique_name};
+use crate::fixtures::{
+    count_vauban_group_members, create_admin_user, create_test_user, create_test_vauban_group,
+    unique_name,
+};
 
 /// 1. DOM contract: the Add Member page must render an input that
 ///    actually carries `name="user-search"`, otherwise HTMX cannot
@@ -481,6 +493,227 @@ async fn test_search_excludes_existing_group_members() {
         !body.contains(&already_member_name),
         "Search response must exclude users that are already members of \
          the group (got {already_member_name:?} in body)."
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+// ---------------------------------------------------------------------------
+// Issue #25 / BUG-14: end-to-end ratification
+//
+// At v0.6.6 the search response was built by `format!()` and emitted forms
+// WITHOUT `x-data="csrf"` -- so when Alpine ran on the HTMX-injected DOM,
+// no `csrf` component was instantiated and `<input name="csrf_token" />`
+// shipped EMPTY. Clicking Add then triggered the CSRF-rejection branch of
+// `add_group_member_web`, which `flash_redirect`s back to
+// `/accounts/groups/{uuid}/members/add` -- visually identical to "the page
+// did not react", which is the BUG-14 symptom.
+//
+// Issue #24's commit `f12405f` refactored the search response into a shared
+// Askama partial that always renders `x-data="csrf"` + `x-model="token"`,
+// so the cookie value reaches the POST and the success branch fires. The
+// next two tests pin both the success and the legacy-failure shape so the
+// BUG-14 mechanism cannot quietly come back: a future regression that
+// breaks CSRF wiring will surface here as a 303 to `/members/add` instead
+// of `/accounts/groups/{uuid}`.
+// ---------------------------------------------------------------------------
+
+/// 7. SUCCESS PATH: starting from a `<form>` rendered by the search
+///    response (the exact path BUG-14 broke), POST `/members` with the
+///    matching CSRF cookie and assert the handler answers
+///    `303 See Other` to `/accounts/groups/{uuid}` -- the group detail
+///    -- with a success flash cookie. The user must end up navigated
+///    AWAY from the Add page, which is the visual confirmation BUG-14
+///    reported as missing.
+#[tokio::test]
+#[serial]
+async fn test_bug14_search_then_add_redirects_to_group_detail_with_flash() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("test_bug14_success_admin");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+    let group_uuid =
+        create_test_vauban_group(&mut conn, &unique_name("test-bug14-success-grp")).await;
+
+    let candidate_name = unique_name("test_bug14_success_candidate");
+    let candidate = create_test_user(&mut conn, &app.auth_service, &candidate_name).await;
+
+    // Sanity preconditions: candidate is not yet in the group, and the
+    // search response actually contains a form pointing at this candidate.
+    assert_eq!(
+        count_vauban_group_members(&mut conn, &group_uuid).await,
+        0,
+        "precondition: group must start empty"
+    );
+
+    let search_response = app
+        .server
+        .get(&format!(
+            "/accounts/groups/{}/members/search?user-search={}",
+            group_uuid,
+            &candidate_name[..16]
+        ))
+        .add_header(COOKIE, format!("access_token={}", admin.token))
+        .await;
+    assert_status(&search_response, 200);
+    let search_body = search_response.text();
+    assert!(
+        search_body.contains(&candidate.user.uuid.to_string()),
+        "precondition: search response must list the candidate's UUID. \
+         Body: {search_body}"
+    );
+    // The form rendered by the search response MUST carry both Alpine
+    // wiring attrs -- this is the structural guarantee that the POST
+    // below will see a non-empty csrf_token in a real browser.
+    assert!(
+        search_body.contains(r#"x-data="csrf""#) && search_body.contains(r#"x-model="token""#),
+        "precondition (BUG-14 fix in f12405f): search response form must \
+         carry the canonical Alpine CSRF wiring. Body: {search_body}"
+    );
+
+    // Mirror what Alpine `x-model="token"` would do in the browser:
+    // copy the CSRF cookie value into the form payload.
+    let csrf = app.generate_csrf_token();
+
+    let response = app
+        .server
+        .post(&format!("/accounts/groups/{}/members", group_uuid))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", admin.token, csrf),
+        )
+        .form(&[
+            ("csrf_token", csrf.as_str()),
+            ("user_uuid", &candidate.user.uuid.to_string()),
+        ])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 303 || status == 302,
+        "BUG-14 (success branch): expected redirect after Add, got {status}. \
+         Body: {body}",
+        body = response.text()
+    );
+
+    // The redirect MUST go to the group detail, NOT back to /members/add.
+    // Bouncing back to /members/add IS the visual signature of BUG-14:
+    // the user clicks Add and "nothing happens".
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let expected = format!("/accounts/groups/{}", group_uuid);
+    assert_eq!(
+        location, expected,
+        "BUG-14: a successful Add must redirect to the group detail \
+         (`{expected}`), NOT bounce back to `/members/add`. Got: {location:?}"
+    );
+
+    // A flash cookie must be set so the group detail page can render
+    // the green success banner. We don't validate the message text
+    // (the cookie is signed) -- presence is enough to prove the
+    // success path fired.
+    let has_flash = response
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .any(|s| s.contains("__vauban_flash="));
+    assert!(
+        has_flash,
+        "BUG-14: a successful Add must set a `__vauban_flash` cookie. \
+         set-cookie headers: {cookies:?}",
+        cookies = response
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .collect::<Vec<_>>()
+    );
+
+    // Final state: the candidate is now actually a member.
+    assert_eq!(
+        count_vauban_group_members(&mut conn, &group_uuid).await,
+        1,
+        "BUG-14: the candidate must be a member of the group after the \
+         redirect succeeds end-to-end"
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// 8. LEGACY-FAILURE SHAPE: documents and pins the exact pre-`f12405f`
+///    failure mode of BUG-14. With an EMPTY `csrf_token` (which is what
+///    the v0.6.6 `format!()` HTML shipped in the search response), the
+///    handler MUST reject CSRF and `flash_redirect` BACK to
+///    `/members/add`. If a future regression silently re-introduces
+///    empty-csrf forms in the response, the success-path test above
+///    will fail with `expected `/accounts/groups/{uuid}`, got
+///    `/members/add``, and this test pins the failure semantics so the
+///    test author is reminded of what was happening at v0.6.6.
+#[tokio::test]
+#[serial]
+async fn test_bug14_empty_csrf_bounces_back_to_add_page() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("test_bug14_empty_csrf_admin");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+    let group_uuid =
+        create_test_vauban_group(&mut conn, &unique_name("test-bug14-empty-csrf-grp")).await;
+    let candidate_name = unique_name("test_bug14_empty_csrf_candidate");
+    let candidate = create_test_user(&mut conn, &app.auth_service, &candidate_name).await;
+
+    // CSRF cookie present but the form value is empty -- the v0.6.6
+    // bug shape (Alpine never bound `x-model="token"` because the form
+    // had no `x-data="csrf"`).
+    let csrf_cookie = app.generate_csrf_token();
+
+    let response = app
+        .server
+        .post(&format!("/accounts/groups/{}/members", group_uuid))
+        .add_header(
+            COOKIE,
+            format!(
+                "access_token={}; __vauban_csrf={}",
+                admin.token, csrf_cookie
+            ),
+        )
+        .form(&[
+            ("csrf_token", ""),
+            ("user_uuid", &candidate.user.uuid.to_string()),
+        ])
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 303 || status == 302,
+        "Even on CSRF rejection, `add_group_member_web` flash-redirects. \
+         Got {status}. Body: {body}",
+        body = response.text()
+    );
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let expected_bounce = format!("/accounts/groups/{}/members/add", group_uuid);
+    assert_eq!(
+        location, expected_bounce,
+        "BUG-14 legacy shape: an empty csrf_token MUST bounce back to \
+         `{expected_bounce}` (NOT to `/accounts/groups/{group_uuid}`). \
+         Got: {location:?}"
+    );
+    // And the candidate is NOT added.
+    assert_eq!(
+        count_vauban_group_members(&mut conn, &group_uuid).await,
+        0,
+        "BUG-14 legacy shape: a CSRF-rejected POST must NOT add the user"
     );
 
     test_db::cleanup(&mut conn).await;
