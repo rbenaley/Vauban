@@ -40,6 +40,9 @@ pub use active_list::{
 pub use approval_detail::ApprovalDetailTemplate;
 pub use approval_list::ApprovalListTemplate;
 pub use my_requests::MyRequestsTemplate;
+pub use recording_detail::{
+    ApprovalNarrative, IntegrityViewModel, RecordingDetailTemplate, RecordingDetailViewModel,
+};
 pub use recording_list::RecordingListTemplate;
 pub use session_detail::SessionDetailTemplate;
 pub use session_list::{SessionListContentWidget, SessionListItem, SessionListTemplate};

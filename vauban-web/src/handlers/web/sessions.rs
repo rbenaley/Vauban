@@ -577,6 +577,7 @@ pub async fn recording_list(
     #[allow(clippy::type_complexity)]
     let db_recordings: Vec<(
         i32,
+        ::uuid::Uuid,
         String,
         SessionType,
         String,
@@ -586,6 +587,7 @@ pub async fn recording_list(
     )> = query
         .select((
             proxy_sessions::id,
+            proxy_sessions::uuid,
             schema_assets::name,
             proxy_sessions::session_type,
             proxy_sessions::credential_username,
@@ -604,6 +606,7 @@ pub async fn recording_list(
         .map(
             |(
                 id,
+                session_uuid,
                 asset_name,
                 session_type,
                 credential_username,
@@ -620,6 +623,7 @@ pub async fn recording_list(
                 RecordingListItem {
                     id,
                     session_id: id,
+                    session_uuid: session_uuid.to_string(),
                     asset_name,
                     session_type: session_type.to_string(),
                     credential_username,
@@ -2543,6 +2547,573 @@ fn parse_range_header(header: &str, file_size: u64) -> Option<(u64, u64)> {
     }
 
     Some((start, end))
+}
+
+/// Recording-centric detail page (issue #29 / UX-28).
+///
+/// Reachable from the recordings list as the renamed "Recording
+/// Details" button. Replaces the misleading "View" link that jumped
+/// to a session-centric page and broke the sidebar breadcrumb (the
+/// `is_recordings` flag in [`crate::templates::base`] only matches
+/// when the URL contains `/recordings`).
+///
+/// Authorization layers:
+/// - Casbin `admin_view` -- functional capability (same family as
+///   the rest of the recording handlers).
+/// - Anti-enumeration: any 404-class denial collapses to the same
+///   generic 404 (Axum's `Path<Uuid>` extractor returns 400 on a
+///   malformed UUID, which is fine since "this is not even a UUID
+///   shape" is not a useful enumeration signal).
+/// - This is a *post-mortem* read of an immutable artefact, not a
+///   live-session viewer, so the `services::session_access::verify`
+///   seam (which gates running sessions) does not apply.
+//
+// allow-uuid-lookup: post-mortem recording artefact, not a live session
+// viewer. The session_access seam scopes to live sessions only.
+pub async fn recording_detail(
+    State(state): State<AppState>,
+    auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
+    axum::extract::Path(session_uuid): axum::extract::Path<::uuid::Uuid>,
+) -> Result<axum::response::Response, AppError> {
+    use crate::templates::sessions::recording_detail::{
+        ApprovalNarrative, IntegrityViewModel, RecordingDetailViewModel, format_bytes_human,
+        format_duration_human, format_label, status_pill, truncate_blake3,
+    };
+
+    if !perms.admin_view {
+        return Err(AppError::NotFound("Not found".to_string()));
+    }
+
+    let user = Some(user_context_from_auth(&auth_user));
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+
+    use crate::schema::users;
+
+    // SELECT the session row + asset name/hostname + requester username.
+    // Approver and rejecter are looked up in two follow-up queries to
+    // keep the join shape simple (Diesel does not support the same
+    // table joined three times via the DSL without explicit aliases).
+    #[allow(clippy::type_complexity)]
+    let row: (
+        i32,
+        ::uuid::Uuid,
+        SessionType,
+        String,
+        ipnetwork::IpNetwork,
+        String,
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<String>,
+        Option<String>,
+        Option<i64>,
+        Option<i64>,
+        Option<i32>,
+        Option<String>,
+        Option<i16>,
+        Option<i16>,
+        Option<i32>,
+        Option<String>,
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<i32>,
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<i32>,
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<String>,
+        String,
+        String,
+        String,
+    ) = match proxy_sessions::table
+        .inner_join(schema_assets::table)
+        .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
+        .filter(proxy_sessions::uuid.eq(session_uuid))
+        .filter(proxy_sessions::is_recorded.eq(true))
+        .filter(proxy_sessions::recording_path.is_not_null())
+        .select((
+            proxy_sessions::id,
+            proxy_sessions::uuid,
+            proxy_sessions::session_type,
+            proxy_sessions::status,
+            proxy_sessions::client_ip,
+            proxy_sessions::credential_username,
+            proxy_sessions::connected_at,
+            proxy_sessions::disconnected_at,
+            proxy_sessions::justification,
+            proxy_sessions::recording_blake3,
+            proxy_sessions::recording_size_bytes,
+            proxy_sessions::recording_duration_ms,
+            proxy_sessions::recording_event_count,
+            proxy_sessions::recording_format,
+            proxy_sessions::recording_width,
+            proxy_sessions::recording_height,
+            proxy_sessions::recording_segment_count,
+            proxy_sessions::recording_codec,
+            proxy_sessions::recording_finalized_at,
+            proxy_sessions::approved_by_id,
+            proxy_sessions::approved_at,
+            proxy_sessions::rejected_by_id,
+            proxy_sessions::rejected_at,
+            proxy_sessions::decision_reason,
+            users::username,
+            schema_assets::name,
+            schema_assets::hostname,
+        ))
+        .first(&mut conn)
+        .await
+    {
+        Ok(r) => r,
+        // Anti-enumeration: every "not found"/"not recorded"/"path
+        // missing" case collapses to the same generic 404.
+        Err(_) => return Err(AppError::NotFound("Not found".to_string())),
+    };
+
+    let (
+        session_id,
+        s_uuid,
+        s_type,
+        s_status,
+        s_client_ip,
+        s_cred_username,
+        s_connected_at,
+        s_disconnected_at,
+        s_justification,
+        s_blake3,
+        s_size_bytes,
+        s_duration_ms,
+        s_event_count,
+        s_format,
+        s_width,
+        s_height,
+        s_segment_count,
+        s_codec,
+        s_finalized_at,
+        s_approved_by_id,
+        s_approved_at,
+        s_rejected_by_id,
+        s_rejected_at,
+        s_decision_reason,
+        requester_username,
+        asset_name,
+        asset_hostname,
+    ) = row;
+
+    // Resolve approver / rejecter usernames if present.
+    let approver_username: Option<String> = if let Some(id) = s_approved_by_id {
+        users::table
+            .filter(users::id.eq(id))
+            .select(users::username)
+            .first::<String>(&mut conn)
+            .await
+            .ok()
+    } else {
+        None
+    };
+    let rejecter_username: Option<String> = if let Some(id) = s_rejected_by_id {
+        users::table
+            .filter(users::id.eq(id))
+            .select(users::username)
+            .first::<String>(&mut conn)
+            .await
+            .ok()
+    } else {
+        None
+    };
+
+    let session_type_label = match s_type {
+        SessionType::Ssh => "SSH (port 22)",
+        SessionType::Rdp => "RDP (port 3389)",
+    };
+
+    let (status_label, status_pill_class) = status_pill(&s_status);
+
+    let duration_human = match (s_connected_at, s_disconnected_at) {
+        (Some(start), Some(end)) => {
+            let ms = (end - start).num_milliseconds().max(0);
+            Some(format_duration_human(ms))
+        }
+        _ => None,
+    };
+
+    let approval = match (
+        approver_username.clone(),
+        s_approved_at,
+        rejecter_username.clone(),
+        s_rejected_at,
+    ) {
+        (Some(au), Some(at), _, _) => ApprovalNarrative::Approved {
+            approver_username: au,
+            approved_at_utc: at.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+        },
+        (_, _, Some(ru), Some(rt)) => ApprovalNarrative::Rejected {
+            rejecter_username: ru,
+            rejected_at_utc: rt.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+            reason: s_decision_reason.clone(),
+        },
+        _ => ApprovalNarrative::Awaiting,
+    };
+
+    let approver_line = if let (Some(au), Some(at)) = (approver_username, s_approved_at) {
+        Some(format!(
+            "{} at {}",
+            au,
+            at.format("%Y-%m-%d %H:%M:%S UTC")
+        ))
+    } else {
+        None
+    };
+    let rejecter_line = if let (Some(ru), Some(rt)) = (rejecter_username, s_rejected_at) {
+        Some(format!(
+            "{} at {}",
+            ru,
+            rt.format("%Y-%m-%d %H:%M:%S UTC")
+        ))
+    } else {
+        None
+    };
+    let rejection_reason = if rejecter_line.is_some() {
+        s_decision_reason.clone()
+    } else {
+        None
+    };
+
+    // Integrity bundle: present only when the hydrator has finalized
+    // the row. `corrupt_integrity` is true when finalized but the
+    // format column is NULL (the hydrator's marker for an unparseable
+    // meta.json).
+    let (integrity, corrupt_integrity) = if let Some(blake3_hex) = s_blake3 {
+        let format = s_format.clone().unwrap_or_default();
+        let format_label_str = format_label(&format).to_string();
+        let blake3_truncated = truncate_blake3(&blake3_hex);
+        let size_human = s_size_bytes.map(format_bytes_human).unwrap_or_default();
+        let dur_human = s_duration_ms.map(format_duration_human).unwrap_or_default();
+        let finalized_at_utc = s_finalized_at
+            .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+            .unwrap_or_default();
+        let bundle = IntegrityViewModel {
+            blake3_hex,
+            blake3_truncated,
+            size_human,
+            duration_human: dur_human,
+            format,
+            format_label: format_label_str,
+            width: s_width.unwrap_or(0),
+            height: s_height.unwrap_or(0),
+            event_count: s_event_count,
+            segment_count: s_segment_count,
+            codec: s_codec,
+            finalized_at_utc,
+        };
+        (Some(bundle), false)
+    } else if s_finalized_at.is_some() {
+        // Finalized but no blake3 -> hydrator marked corrupt.
+        (None, true)
+    } else {
+        (None, false)
+    };
+
+    let session_uuid_str = s_uuid.to_string();
+    let recording_vm = RecordingDetailViewModel {
+        session_uuid: session_uuid_str.clone(),
+        session_id,
+        session_type: s_type.to_string(),
+        session_type_label: session_type_label.to_string(),
+        status: s_status.clone(),
+        status_label: status_label.to_string(),
+        status_pill_class: status_pill_class.to_string(),
+        asset_name: asset_name.clone(),
+        asset_hostname,
+        source_ip: s_client_ip.ip().to_string(),
+        credential_username: s_cred_username,
+        requester_username,
+        connected_at_utc: s_connected_at
+            .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string()),
+        disconnected_at_utc: s_disconnected_at
+            .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string()),
+        duration_human,
+        justification: s_justification,
+        approval,
+        approver_line,
+        rejecter_line,
+        rejection_reason,
+        integrity,
+        corrupt_integrity,
+        play_url: format!("/sessions/recordings/{}/play", session_id),
+        download_url: format!("/sessions/recordings/{}/download", session_uuid_str),
+        back_url: "/sessions/recordings".to_string(),
+        list_url: "/sessions/recordings".to_string(),
+    };
+
+    let base = BaseTemplate::new(
+        format!("Recording Details - {}", asset_name),
+        user.clone(),
+    )
+    .with_current_path("/sessions/recordings");
+    let perms_for_template = perms.clone();
+    let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
+        apply_sidebar_rbac(&state, &auth_user, base)
+            .await
+            .into_fields();
+
+    let template = RecordingDetailTemplate {
+        title,
+        user: user_ctx,
+        vauban,
+        messages,
+        language_code,
+        sidebar_content,
+        header_user,
+        perms: perms_for_template,
+        recording: recording_vm,
+    };
+
+    let html = template
+        .render()
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Template render error: {}", e)))?;
+    Ok(Html(html).into_response())
+}
+
+/// Download the raw recording artefact.
+///
+/// SSH sessions ship the `.cast` file directly. RDP sessions stream a
+/// `.zip` (uncompressed `Stored` method, no CPU cost) of every segment
+/// `NNN.mp4` plus `manifest.mpd` and `meta.json`, with no
+/// re-encoding. Authorization mirrors [`recording_detail`].
+//
+// allow-uuid-lookup: post-mortem recording artefact download.
+pub async fn download_recording(
+    State(state): State<AppState>,
+    _auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
+    axum::extract::Path(session_uuid): axum::extract::Path<::uuid::Uuid>,
+) -> Result<axum::response::Response, AppError> {
+    use axum::body::Body;
+    use axum::http::header;
+    use tokio_util::io::ReaderStream;
+
+    if !perms.admin_view {
+        return Err(AppError::NotFound("Not found".to_string()));
+    }
+
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+
+    use crate::schema::proxy_sessions::dsl;
+    let (session_uuid_db, session_type, recording_path_opt, is_recorded): (
+        ::uuid::Uuid,
+        SessionType,
+        Option<String>,
+        bool,
+    ) = match dsl::proxy_sessions
+        .filter(dsl::uuid.eq(session_uuid))
+        .select((
+            dsl::uuid,
+            dsl::session_type,
+            dsl::recording_path,
+            dsl::is_recorded,
+        ))
+        .first(&mut conn)
+        .await
+    {
+        Ok(r) => r,
+        Err(_) => return Err(AppError::NotFound("Not found".to_string())),
+    };
+
+    if !is_recorded {
+        return Err(AppError::NotFound("Not found".to_string()));
+    }
+
+    let recording_path = recording_path_opt
+        .ok_or_else(|| AppError::NotFound("Not found".to_string()))?;
+
+    let supervisor = state
+        .supervisor
+        .as_ref()
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("Requires supervisor (SCM_RIGHTS)")))?;
+
+    let storage_base = &state.config.recording.storage_path;
+    let base_dir = recording_path
+        .strip_prefix(storage_base)
+        .unwrap_or(&recording_path)
+        .trim_start_matches('/');
+
+    match session_type {
+        SessionType::Ssh => {
+            let cast_relative = format!("{}session.cast", base_dir);
+            let result = supervisor
+                .request_recording_file(&session_uuid_db.to_string(), &cast_relative)
+                .await
+                .map_err(|e| {
+                    AppError::Internal(anyhow::anyhow!("Supervisor request failed: {}", e))
+                })?;
+
+            if !result.success {
+                return Err(AppError::NotFound("Recording file missing".to_string()));
+            }
+
+            let std_file = result.file.ok_or_else(|| {
+                AppError::Internal(anyhow::anyhow!("Supervisor returned success but no FD"))
+            })?;
+            let tokio_file = tokio::fs::File::from_std(std_file);
+            let stream = ReaderStream::with_capacity(tokio_file, 64 * 1024);
+            let filename = format!("{}.cast", session_uuid_db);
+            axum::http::Response::builder()
+                .header(header::CONTENT_TYPE, "application/x-asciicast")
+                .header(
+                    header::CONTENT_DISPOSITION,
+                    format!("attachment; filename=\"{}\"", filename),
+                )
+                .body(Body::from_stream(stream))
+                .map_err(|e| AppError::Internal(anyhow::anyhow!("Response build error: {}", e)))
+        }
+        SessionType::Rdp => {
+            stream_rdp_zip(&state, &session_uuid_db, base_dir).await
+        }
+    }
+}
+
+/// Build a streaming ZIP containing every segment `NNN.mp4` plus
+/// `manifest.mpd` (rendered on the fly via the existing
+/// `build_mpd_xml`) and the raw `meta.json`. Uses the `Stored`
+/// compression method (no compression, no CPU work) since the
+/// segments are already compressed elementary streams.
+async fn stream_rdp_zip(
+    state: &AppState,
+    session_uuid: &::uuid::Uuid,
+    base_dir: &str,
+) -> Result<axum::response::Response, AppError> {
+    use async_zip::base::write::ZipFileWriter;
+    use async_zip::{Compression, ZipEntryBuilder};
+    use axum::body::Body;
+    use axum::http::header;
+    use futures_util::io::AsyncWriteExt as FuturesAsyncWriteExt;
+    use tokio::io::{AsyncReadExt, duplex};
+    use tokio_util::io::ReaderStream;
+
+    let supervisor = state
+        .supervisor
+        .as_ref()
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("Requires supervisor")))?;
+
+    // Read meta.json to discover the segment list.
+    let meta_relative = format!("{}meta.json", base_dir);
+    let meta_result = supervisor
+        .request_recording_file(&session_uuid.to_string(), &meta_relative)
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Supervisor failed: {}", e)))?;
+
+    if !meta_result.success {
+        return Err(AppError::NotFound("meta.json missing".to_string()));
+    }
+
+    let meta_file = meta_result
+        .file
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("No FD for meta.json")))?;
+    let mut tokio_meta = tokio::fs::File::from_std(meta_file);
+    let mut meta_buf = Vec::new();
+    tokio_meta
+        .read_to_end(&mut meta_buf)
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("read meta.json: {}", e)))?;
+
+    let meta: RecordingMeta = serde_json::from_slice(&meta_buf)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("invalid meta.json: {}", e)))?;
+
+    // Pre-fetch every segment FD (and the manifest content) BEFORE
+    // starting the streaming response, so a missing segment surfaces
+    // as a 404 rather than a truncated download.
+    let manifest_xml = build_mpd_xml(&session_uuid.to_string(), &meta.segments);
+
+    let mut segments: Vec<(String, std::fs::File)> = Vec::with_capacity(meta.segments.len());
+    for seg in &meta.segments {
+        // Segment files on disk are written by `vauban-audit` with a
+        // three-digit zero-padded index (`001.mp4`, `002.mp4`, ...).
+        // See `vauban-audit/src/recording_manager.rs::compute_relative_path`
+        // and `build_mpd_xml` below, which both encode the index as
+        // `{:03}`. The ZIP entry name mirrors the on-disk layout so
+        // the archive can be re-played end-to-end with the bundled
+        // `manifest.mpd` without renaming.
+        let seg_relative = format!("{}{:03}.mp4", base_dir, seg.index);
+        let seg_result = supervisor
+            .request_recording_file(&session_uuid.to_string(), &seg_relative)
+            .await
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("Supervisor failed: {}", e)))?;
+        if !seg_result.success {
+            return Err(AppError::NotFound(format!(
+                "segment {:03} missing",
+                seg.index
+            )));
+        }
+        let seg_file = seg_result.file.ok_or_else(|| {
+            AppError::Internal(anyhow::anyhow!("No FD for segment {:03}", seg.index))
+        })?;
+        segments.push((format!("{:03}.mp4", seg.index), seg_file));
+    }
+
+    // Stream the ZIP through a tokio::io::DuplexStream into the
+    // response body. Capacity is generous (64 KiB) so the writer side
+    // does not block on small frames.
+    let (writer, reader) = duplex(64 * 1024);
+    let session_uuid_owned = *session_uuid;
+    tokio::spawn(async move {
+        let mut zip = ZipFileWriter::with_tokio(writer);
+
+        // 1) meta.json
+        let entry = ZipEntryBuilder::new("meta.json".into(), Compression::Stored).build();
+        if let Ok(mut e) = zip.write_entry_stream(entry).await {
+            let _ = e.write_all(&meta_buf).await;
+            let _ = e.close().await;
+        }
+
+        // 2) manifest.mpd
+        let entry =
+            ZipEntryBuilder::new("manifest.mpd".into(), Compression::Stored).build();
+        if let Ok(mut e) = zip.write_entry_stream(entry).await {
+            let _ = e.write_all(manifest_xml.as_bytes()).await;
+            let _ = e.close().await;
+        }
+
+        // 3) Each segment NNN.mp4
+        for (name, file) in segments {
+            let entry = ZipEntryBuilder::new(name.into(), Compression::Stored).build();
+            let mut tokio_file = tokio::fs::File::from_std(file);
+            let mut buf = vec![0u8; 64 * 1024];
+            if let Ok(mut e) = zip.write_entry_stream(entry).await {
+                loop {
+                    match tokio_file.read(&mut buf).await {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            if e.write_all(&buf[..n]).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                let _ = e.close().await;
+            }
+        }
+
+        let _ = zip.close().await;
+        tracing::debug!(session_uuid = %session_uuid_owned, "rdp zip stream complete");
+    });
+
+    let stream = ReaderStream::with_capacity(reader, 64 * 1024);
+    let filename = format!("{}.zip", session_uuid);
+    axum::http::Response::builder()
+        .header(header::CONTENT_TYPE, "application/zip")
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{}\"", filename),
+        )
+        .body(Body::from_stream(stream))
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Response build error: {}", e)))
 }
 
 /// Metadata for a recording segment (deserialized from meta.json).

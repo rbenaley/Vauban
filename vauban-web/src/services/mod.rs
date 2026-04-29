@@ -13,6 +13,7 @@ pub mod broadcast;
 pub mod connections;
 pub mod rate_limit;
 pub mod rbac;
+pub mod recording_hydrator;
 pub mod role_invariants;
 pub mod session_access;
 pub mod virtual_group;

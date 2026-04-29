@@ -170,6 +170,19 @@ pub struct ProxySession {
     pub rejected_by_id: Option<i32>,
     pub rejected_at: Option<DateTime<Utc>>,
     pub decision_reason: Option<String>,
+    // Recording integrity bundle, populated by recording_hydrator after
+    // session disconnect. NULL while the hydrator has not yet processed
+    // the row (typical window: a few seconds; up to one tick interval).
+    pub recording_blake3: Option<String>,
+    pub recording_size_bytes: Option<i64>,
+    pub recording_duration_ms: Option<i64>,
+    pub recording_event_count: Option<i32>,
+    pub recording_format: Option<String>,
+    pub recording_width: Option<i16>,
+    pub recording_height: Option<i16>,
+    pub recording_segment_count: Option<i32>,
+    pub recording_codec: Option<String>,
+    pub recording_finalized_at: Option<DateTime<Utc>>,
 }
 
 /// New session for insertion.
@@ -260,6 +273,16 @@ mod tests {
             rejected_by_id: None,
             rejected_at: None,
             decision_reason: None,
+            recording_blake3: None,
+            recording_size_bytes: None,
+            recording_duration_ms: None,
+            recording_event_count: None,
+            recording_format: None,
+            recording_width: None,
+            recording_height: None,
+            recording_segment_count: None,
+            recording_codec: None,
+            recording_finalized_at: None,
         }
     }
 

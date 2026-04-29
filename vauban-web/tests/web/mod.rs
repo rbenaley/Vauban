@@ -27,6 +27,8 @@ pub mod jit_access_test;
 pub mod mfa_test;
 pub mod pages_test;
 pub mod profile_password_test;
+pub mod recording_detail_test;
+pub mod recording_integrity_migration_test;
 pub mod responsive_templates_test;
 pub mod role_invariants_test;
 pub mod routing_test;

@@ -420,6 +420,17 @@ fn build_test_router(state: AppState) -> Router {
         // Web pages (HTML) - for testing raw SQL queries
         .route("/sessions", get(handlers::web::session_list))
         .route("/sessions/recordings", get(handlers::web::recording_list))
+        // Issue #29 / UX-28: recording-centric detail page (UUID-keyed)
+        // and download endpoint. Registered BEFORE `/sessions/{id}` to
+        // ensure `/sessions/recordings/...` always wins routing.
+        .route(
+            "/sessions/recordings/{uuid}",
+            get(handlers::web::recording_detail),
+        )
+        .route(
+            "/sessions/recordings/{uuid}/download",
+            get(handlers::web::download_recording),
+        )
         .route("/sessions/{id}", get(handlers::web::session_detail))
         .route(
             "/sessions/recordings/{id}/play",

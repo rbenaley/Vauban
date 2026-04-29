@@ -8,6 +8,11 @@ use askama::Template;
 pub struct RecordingListItem {
     pub id: i32,
     pub session_id: i32,
+    /// UUID of the parent session, used by the new "Recording Details"
+    /// route (`/sessions/recordings/{uuid}`). Populated alongside the
+    /// integer `id` for backward compatibility with the legacy
+    /// `/sessions/recordings/{id}/play` route.
+    pub session_uuid: String,
     pub asset_name: String,
     pub session_type: String,
     pub credential_username: String,
@@ -81,6 +86,7 @@ mod tests {
         RecordingListItem {
             id: 1,
             session_id: 100,
+            session_uuid: "00000000-0000-0000-0000-000000000100".to_string(),
             asset_name: "Test Asset".to_string(),
             session_type: session_type.to_string(),
             credential_username: "testuser".to_string(),

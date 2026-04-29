@@ -1,12 +1,261 @@
 {% extends "base.html" %}
 
-{% block title %}Recording Details - {{ vauban.brand_name }}{% endblock %}
+{% block title %}Recording Details - {{ recording.asset_name }} - {{ vauban.brand_name }}{% endblock %}
 
 {% block content %}
 <div class="space-y-6">
-    <div class="bg-white dark:bg-gray-800 shadow rounded-lg p-6">
-        <p class="text-gray-500 dark:text-gray-400">Recording detail content</p>
+
+    <!-- Breadcrumb (mobile-friendly: scrolls horizontally instead of wrapping) -->
+    <nav class="flex overflow-x-auto" aria-label="Breadcrumb">
+        <ol class="flex items-center space-x-2 whitespace-nowrap">
+            <li>
+                <a href="{{ recording.list_url }}"
+                   class="text-sm font-medium text-vauban-400 hover:text-vauban-300">
+                    Recordings
+                </a>
+            </li>
+            <li>
+                <div class="flex items-center">
+                    <svg class="h-5 w-5 flex-shrink-0 text-gray-300 dark:text-gray-600" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                        <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd"/>
+                    </svg>
+                    <span class="ml-2 text-sm font-medium text-gray-500 dark:text-gray-400 break-words">
+                        {{ recording.asset_name }}
+                    </span>
+                </div>
+            </li>
+        </ol>
+    </nav>
+
+    <!-- Header -->
+    <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div class="min-w-0 flex-1">
+            <h1 class="text-xl font-bold leading-7 text-gray-900 dark:text-white sm:text-2xl lg:text-3xl">
+                Recording Details
+            </h1>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400 break-words">
+                {{ recording.requester_username }}
+                &rarr;
+                {{ recording.asset_name }}
+                {% if recording.asset_hostname.len() > 0 %}({{ recording.asset_hostname }}){% endif %}
+            </p>
+        </div>
+        <div class="flex flex-wrap items-center gap-2 sm:flex-shrink-0 md:flex-nowrap md:gap-3">
+            <a href="{{ recording.play_url }}"
+               class="inline-flex items-center rounded-md bg-vauban-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-600">
+                <svg class="-ml-0.5 mr-1.5 h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                    <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd"/>
+                </svg>
+                Play Recording
+            </a>
+            <a href="{{ recording.download_url }}"
+               class="inline-flex items-center rounded-md bg-white dark:bg-gray-700 px-3 py-1.5 text-sm font-semibold text-gray-900 dark:text-white shadow-sm ring-1 ring-inset ring-gray-300 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600">
+                <svg class="-ml-0.5 mr-1.5 h-4 w-4 text-gray-400" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                    <path d="M10.75 2.75a.75.75 0 00-1.5 0v8.614L6.295 8.235a.75.75 0 10-1.09 1.03l4.25 4.5a.75.75 0 001.09 0l4.25-4.5a.75.75 0 00-1.09-1.03l-2.955 3.129V2.75z"/>
+                    <path d="M3.5 12.75a.75.75 0 00-1.5 0v2.5A2.75 2.75 0 004.75 18h10.5A2.75 2.75 0 0018 15.25v-2.5a.75.75 0 00-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z"/>
+                </svg>
+                Download
+            </a>
+        </div>
+    </div>
+
+    <!-- Status badges row -->
+    <div class="flex flex-wrap items-center gap-2">
+        <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium {{ recording.status_pill_class }}">
+            {{ recording.status_label }}
+        </span>
+        <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium
+            {% if recording.session_type == "ssh" %}bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300
+            {% else if recording.session_type == "rdp" %}bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-300
+            {% else %}bg-gray-200 text-gray-800 dark:bg-gray-700 dark:text-gray-200{% endif %}">
+            {{ recording.session_type_label }}
+        </span>
+        {% if let Some(d) = recording.duration_human.as_ref() %}
+        <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-gray-200 text-gray-800 dark:bg-gray-700 dark:text-gray-200">
+            {{ d }}
+        </span>
+        {% endif %}
+        {% if let Some(intg) = recording.integrity.as_ref() %}
+        <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-gray-200 text-gray-800 dark:bg-gray-700 dark:text-gray-200">
+            {{ intg.size_human }}
+        </span>
+        {% endif %}
+    </div>
+
+    <!-- Two-column layout: 2/3 + 1/3 on lg+, single column below -->
+    <div class="grid grid-cols-1 gap-6 lg:grid-cols-3">
+
+        <!-- LEFT: Session Context -->
+        <div class="lg:col-span-2 bg-white dark:bg-gray-800 shadow rounded-xl border border-gray-200 dark:border-gray-700 p-4 sm:p-6">
+            <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Session Context</h2>
+            <dl class="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-3">
+
+                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">User</dt>
+                <dd class="text-sm text-gray-900 dark:text-white sm:col-span-2 break-words">{{ recording.requester_username }}</dd>
+
+                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Asset</dt>
+                <dd class="text-sm text-gray-900 dark:text-white sm:col-span-2 break-words">{{ recording.asset_name }}</dd>
+
+                {% if recording.asset_hostname.len() > 0 %}
+                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Hostname</dt>
+                <dd class="text-sm text-gray-900 dark:text-white sm:col-span-2 break-all">{{ recording.asset_hostname }}</dd>
+                {% endif %}
+
+                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Protocol</dt>
+                <dd class="text-sm text-gray-900 dark:text-white sm:col-span-2">{{ recording.session_type_label }}</dd>
+
+                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Source IP</dt>
+                <dd class="text-sm text-gray-900 dark:text-white sm:col-span-2 break-all">{{ recording.source_ip }}</dd>
+
+                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Credential</dt>
+                <dd class="text-sm text-gray-900 dark:text-white sm:col-span-2 break-words">{{ recording.credential_username }}</dd>
+
+                {% if let Some(c) = recording.connected_at_utc.as_ref() %}
+                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Connected at</dt>
+                <dd class="text-sm text-gray-900 dark:text-white sm:col-span-2">{{ c }}</dd>
+                {% endif %}
+
+                {% if let Some(d) = recording.disconnected_at_utc.as_ref() %}
+                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Disconnected at</dt>
+                <dd class="text-sm text-gray-900 dark:text-white sm:col-span-2">{{ d }}</dd>
+                {% endif %}
+
+                {% if let Some(d) = recording.duration_human.as_ref() %}
+                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Duration</dt>
+                <dd class="text-sm text-gray-900 dark:text-white sm:col-span-2">{{ d }}</dd>
+                {% endif %}
+
+                {% if let Some(j) = recording.justification.as_ref() %}
+                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Justification</dt>
+                <dd class="text-sm text-gray-900 dark:text-white sm:col-span-2 break-words">{{ j }}</dd>
+                {% endif %}
+
+                {% if let Some(line) = recording.approver_line.as_ref() %}
+                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Approved by</dt>
+                <dd class="text-sm text-gray-900 dark:text-white sm:col-span-2 break-words">{{ line }}</dd>
+                {% endif %}
+
+                {% if let Some(line) = recording.rejecter_line.as_ref() %}
+                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Rejected by</dt>
+                <dd class="text-sm text-gray-900 dark:text-white sm:col-span-2 break-words">{{ line }}</dd>
+                {% if let Some(r) = recording.rejection_reason.as_ref() %}
+                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Rejection reason</dt>
+                <dd class="text-sm text-gray-900 dark:text-white sm:col-span-2 break-words">{{ r }}</dd>
+                {% endif %}
+                {% endif %}
+            </dl>
+        </div>
+
+        <!-- RIGHT column: two stacked cards -->
+        <div class="space-y-6">
+
+            <!-- Recording Artifact -->
+            <div class="bg-white dark:bg-gray-800 shadow rounded-xl border border-gray-200 dark:border-gray-700 p-4 sm:p-6">
+                <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Recording Artifact</h2>
+
+                {% if let Some(intg) = recording.integrity.as_ref() %}
+                <dl class="space-y-3">
+                    <div class="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                        <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Format</dt>
+                        <dd class="text-sm text-gray-900 dark:text-white break-words">{{ intg.format_label }}</dd>
+                    </div>
+                    <div class="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                        <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">File size</dt>
+                        <dd class="text-sm text-gray-900 dark:text-white">{{ intg.size_human }}</dd>
+                    </div>
+                    <div class="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                        <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Duration</dt>
+                        <dd class="text-sm text-gray-900 dark:text-white">{{ intg.duration_human }}</dd>
+                    </div>
+                    {% if let Some(ev) = intg.event_count %}
+                    <div class="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                        <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Events</dt>
+                        <dd class="text-sm text-gray-900 dark:text-white">{{ ev }}</dd>
+                    </div>
+                    {% endif %}
+                    {% if let Some(sc) = intg.segment_count %}
+                    <div class="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                        <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Segments</dt>
+                        <dd class="text-sm text-gray-900 dark:text-white">{{ sc }}</dd>
+                    </div>
+                    {% endif %}
+                    <div class="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                        <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Resolution</dt>
+                        <dd class="text-sm text-gray-900 dark:text-white">{{ intg.width }} x {{ intg.height }}</dd>
+                    </div>
+                    {% if let Some(co) = intg.codec.as_ref() %}
+                    <div class="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                        <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Codec</dt>
+                        <dd class="text-sm text-gray-900 dark:text-white font-mono break-all">{{ co }}</dd>
+                    </div>
+                    {% endif %}
+                    <div class="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                        <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">BLAKE3</dt>
+                        <dd class="text-sm text-gray-900 dark:text-white font-mono break-all" title="{{ intg.blake3_hex }}">{{ intg.blake3_truncated }}</dd>
+                    </div>
+                </dl>
+                {% else if recording.corrupt_integrity %}
+                <p class="text-sm text-amber-700 dark:text-amber-300">
+                    Integrity metadata unavailable for this recording.
+                    The hydrator could not parse <code class="font-mono">meta.json</code>;
+                    contact an operator to inspect the recording directory.
+                </p>
+                {% else %}
+                <p class="text-sm text-gray-500 dark:text-gray-400">
+                    Integrity metadata pending finalization. Refresh the page in a few seconds.
+                </p>
+                {% endif %}
+            </div>
+
+            <!-- Integrity & Audit -->
+            <div class="bg-white dark:bg-gray-800 shadow rounded-xl border border-gray-200 dark:border-gray-700 p-4 sm:p-6">
+                <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Integrity &amp; Audit</h2>
+
+                {% if let Some(intg) = recording.integrity.as_ref() %}
+                <ul class="space-y-3">
+                    <li class="flex items-start gap-2">
+                        <svg class="h-5 w-5 flex-shrink-0 text-emerald-500 dark:text-emerald-400" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/>
+                        </svg>
+                        <span class="text-sm text-gray-900 dark:text-white">BLAKE3 hash recorded</span>
+                    </li>
+                    <li class="flex items-start gap-2">
+                        <svg class="h-5 w-5 flex-shrink-0 text-emerald-500 dark:text-emerald-400" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/>
+                        </svg>
+                        <span class="text-sm text-gray-900 dark:text-white">Append-only audit log entry</span>
+                    </li>
+                    <li class="flex items-start gap-2">
+                        <svg class="h-5 w-5 flex-shrink-0 text-emerald-500 dark:text-emerald-400" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/>
+                        </svg>
+                        <span class="text-sm text-gray-900 dark:text-white">Recording sealed at session end</span>
+                    </li>
+                </ul>
+                <p class="mt-4 text-xs text-gray-500 dark:text-gray-400">
+                    Hydrated at {{ intg.finalized_at_utc }}
+                </p>
+                {% else %}
+                <p class="text-sm text-gray-500 dark:text-gray-400">
+                    Awaiting hydration.
+                </p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Footer: back button + recording id -->
+    <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <a href="{{ recording.back_url }}"
+           class="inline-flex items-center rounded-md bg-white dark:bg-gray-700 px-3 py-1.5 text-sm font-semibold text-gray-900 dark:text-white shadow-sm ring-1 ring-inset ring-gray-300 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600">
+            <svg class="-ml-0.5 mr-1.5 h-4 w-4 text-gray-400" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                <path fill-rule="evenodd" d="M17 10a.75.75 0 01-.75.75H5.612l4.158 3.96a.75.75 0 11-1.04 1.08l-5.5-5.25a.75.75 0 010-1.08l5.5-5.25a.75.75 0 111.04 1.08L5.612 9.25H16.25A.75.75 0 0117 10z" clip-rule="evenodd"/>
+            </svg>
+            Back to Recordings
+        </a>
+        <p class="text-xs text-gray-500 dark:text-gray-400 break-all">
+            Session UUID: <span class="font-mono">{{ recording.session_uuid }}</span>
+        </p>
     </div>
 </div>
 {% endblock %}
-

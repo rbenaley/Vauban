@@ -22,6 +22,7 @@ mod api; // REST API tests (/api/v1/*)
 mod ipc;
 mod middleware; // Middleware tests
 mod security; // Security tests (auth, CSRF, rate limiting)
+mod services; // Service-layer integration tests (DB-only)
 mod web; // Web page tests (HTML)
 mod ws; // WebSocket tests // IPC integration tests (vauban-access in-process)
 

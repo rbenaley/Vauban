@@ -5,9 +5,11 @@
 pub mod acme;
 pub mod cleanup;
 pub mod dashboard;
+pub mod recording_hydrator;
 
 pub use acme::{
     CertExpiry, CertInfo, extract_cert_info, extract_cert_info_from_pem, start_acme_monitoring,
 };
 pub use cleanup::start_cleanup_tasks;
 pub use dashboard::*;
+pub use recording_hydrator::start_recording_hydrator;

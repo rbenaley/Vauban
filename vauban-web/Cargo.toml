@@ -11,7 +11,7 @@ license.workspace = true
 
 [dependencies]
 # Shared IPC library
-shared = { workspace = true, features = ["tasks"] }
+shared = { workspace = true, features = ["tasks", "session-token"] }
 
 # Shared Diesel schema
 vauban-db.workspace = true
@@ -27,7 +27,7 @@ tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "timeout", "trace", "compression-gzip", "compression-br"] }
 
 # Database
-diesel = { version = "2.3", features = ["postgres", "uuid", "chrono", "serde_json", "network-address"] }
+diesel = { version = "2.3", features = ["postgres", "uuid", "chrono", "serde_json", "network-address", "64-column-tables"] }
 diesel-async = { version = "0.7", features = ["postgres", "deadpool"] }
 deadpool = { version = "0.12", features = ["managed"] }
 
@@ -107,13 +107,19 @@ reqwest = { version = "0.13", features = ["json", "rustls"] }
 
 # WebSocket & Cookies
 axum-extra = { version = "0.12", features = ["cookie", "typed-header"] }
-futures-util = "0.3"
+futures-util = { version = "0.3", features = ["io"] }
 
 # TLS (HTTPS only, TLS 1.3)
 axum-server = { version = "0.8", features = ["tls-rustls"] }
 rustls = "0.23"
 rustls-pki-types = "1"
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
+
+# Streaming ZIP for the RDP recording bundle download. `tokio` feature
+# enables a tokio-friendly async writer; we use the `Stored` compression
+# mode (no CPU work) since the segment files are already H.264 elementary
+# streams in fMP4.
+async_zip = { version = "0.0.17", default-features = false, features = ["tokio"] }
 
 [dev-dependencies]
 vauban-access = { path = "../vauban-access" }

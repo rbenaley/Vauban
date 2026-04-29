@@ -184,6 +184,19 @@ diesel::table! {
         rejected_by_id -> Nullable<Int4>,
         rejected_at -> Nullable<Timestamptz>,
         decision_reason -> Nullable<Text>,
+        #[max_length = 64]
+        recording_blake3 -> Nullable<Varchar>,
+        recording_size_bytes -> Nullable<Int8>,
+        recording_duration_ms -> Nullable<Int8>,
+        recording_event_count -> Nullable<Int4>,
+        #[max_length = 32]
+        recording_format -> Nullable<Varchar>,
+        recording_width -> Nullable<Int2>,
+        recording_height -> Nullable<Int2>,
+        recording_segment_count -> Nullable<Int4>,
+        #[max_length = 64]
+        recording_codec -> Nullable<Varchar>,
+        recording_finalized_at -> Nullable<Timestamptz>,
     }
 }
 

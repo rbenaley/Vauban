@@ -11,4 +11,4 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-diesel = { version = "2.3", features = ["postgres", "uuid", "chrono", "serde_json", "network-address"] }
+diesel = { version = "2.3", features = ["postgres", "uuid", "chrono", "serde_json", "network-address", "64-column-tables"] }

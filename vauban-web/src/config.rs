@@ -553,6 +553,28 @@ pub struct RecordingConfig {
     pub rdp: bool,
     #[serde(default = "default_recording_enabled")]
     pub ssh: bool,
+    /// Enable the lazy background hydrator that precomputes BLAKE3 +
+    /// integrity metadata onto `proxy_sessions`. Default true. When
+    /// false, the Recording Details page falls back to "Integrity
+    /// metadata pending finalization" indefinitely.
+    #[serde(default = "default_recording_enabled")]
+    pub hydration_enabled: bool,
+    /// Tick interval (seconds) between two hydrator scans. Default 30 s.
+    #[serde(default = "default_hydration_interval_secs")]
+    pub hydration_interval_secs: u64,
+    /// Maximum sessions processed per tick. Default 50.
+    #[serde(default = "default_hydration_batch_size")]
+    pub hydration_batch_size: i64,
+    /// Grace period (seconds) after `disconnected_at` before a session
+    /// with a missing `meta.json` is considered lost and marked
+    /// finalized with NULL integrity columns. Below the grace period,
+    /// missing meta is treated as a normal race with `vauban-audit`
+    /// and silently retried at the next tick. Default 300 (5 minutes).
+    /// Sessions with a flat `.mp4` legacy `recording_path` (no
+    /// directory, no `meta.json` ever produced) are finalized
+    /// immediately regardless of this knob.
+    #[serde(default = "default_hydration_missing_meta_grace_secs")]
+    pub hydration_missing_meta_grace_secs: u64,
 }
 
 fn default_require_justification() -> bool {
@@ -567,6 +589,18 @@ fn default_recording_storage_path() -> String {
     "recordings".to_string()
 }
 
+fn default_hydration_interval_secs() -> u64 {
+    30
+}
+
+fn default_hydration_batch_size() -> i64 {
+    50
+}
+
+fn default_hydration_missing_meta_grace_secs() -> u64 {
+    300
+}
+
 impl Default for RecordingConfig {
     fn default() -> Self {
         Self {
@@ -574,6 +608,10 @@ impl Default for RecordingConfig {
             storage_path: default_recording_storage_path(),
             rdp: default_recording_enabled(),
             ssh: default_recording_enabled(),
+            hydration_enabled: default_recording_enabled(),
+            hydration_interval_secs: default_hydration_interval_secs(),
+            hydration_batch_size: default_hydration_batch_size(),
+            hydration_missing_meta_grace_secs: default_hydration_missing_meta_grace_secs(),
         }
     }
 }

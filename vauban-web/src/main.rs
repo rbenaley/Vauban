@@ -707,7 +707,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start cleanup tasks for expired/idle sessions and API keys
     // (Issue #8: idle_timeout drives the auth_sessions purge predicate).
-    start_cleanup_tasks(db_pool, config.security.session_idle_timeout_secs).await;
+    start_cleanup_tasks(db_pool.clone(), config.security.session_idle_timeout_secs).await;
+
+    // Recording integrity hydrator (issue #29 / UX-28). Lazy
+    // background job: scans `proxy_sessions` for finalized recordings
+    // whose integrity bundle has not yet been precomputed and
+    // populates the columns from the on-disk `meta.json`. Requires
+    // the supervisor (FD passing for `meta.json`); silently skipped
+    // when running without one (development mode).
+    if config.recording.hydration_enabled
+        && let Some(ref sup) = supervisor_client
+    {
+        vauban_web::tasks::start_recording_hydrator(
+            tokio::runtime::Handle::current(),
+            db_pool.clone(),
+            Arc::clone(sup),
+            std::time::Duration::from_secs(config.recording.hydration_interval_secs),
+            config.recording.hydration_batch_size,
+            config.recording.storage_path.clone(),
+            std::time::Duration::from_secs(config.recording.hydration_missing_meta_grace_secs),
+        )
+        .await;
+    } else if config.recording.hydration_enabled {
+        tracing::info!(
+            "recording hydrator disabled: no supervisor (development mode without SCM_RIGHTS)"
+        );
+    } else {
+        tracing::info!("recording hydrator disabled by config");
+    }
 
     // Start ACME certificate monitoring task (if enabled)
     if let Some(ref acme_config) = config.server.tls.acme
@@ -1270,6 +1297,16 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             post(handlers::web::terminate_session_web),
         )
         .route("/sessions/recordings", get(handlers::web::recording_list))
+        // Recording-centric detail page (issue #29 / UX-28). UUID-keyed
+        // to avoid sequential ID enumeration.
+        .route(
+            "/sessions/recordings/{uuid}",
+            get(handlers::web::recording_detail),
+        )
+        .route(
+            "/sessions/recordings/{uuid}/download",
+            get(handlers::web::download_recording),
+        )
         .route(
             "/sessions/recordings/{id}/play",
             get(handlers::web::recording_play),

@@ -53,8 +53,8 @@ pub(crate) use crate::templates::dashboard::widgets::{
 };
 pub(crate) use crate::templates::dashboard::{AdminTemplate, HomeTemplate};
 pub(crate) use crate::templates::sessions::{
-    ActiveListTemplate, ApprovalDetailTemplate, ApprovalListTemplate, RecordingListTemplate,
-    SessionListTemplate as WebSessionListTemplate,
+    ActiveListTemplate, ApprovalDetailTemplate, ApprovalListTemplate, RecordingDetailTemplate,
+    RecordingListTemplate, SessionListTemplate as WebSessionListTemplate,
 };
 pub(crate) use crate::utils::format_duration;
 pub(crate) use askama::Template;
