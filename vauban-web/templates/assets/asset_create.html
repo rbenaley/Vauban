@@ -10,7 +10,7 @@
             <nav class="flex overflow-x-auto" aria-label="Breadcrumb">
                 <ol class="flex items-center space-x-2 whitespace-nowrap">
                     <li>
-                        <a href="/assets" class="text-gray-400 hover:text-gray-500 dark:text-gray-500 dark:hover:text-gray-400">
+                        <a href="/assets/manage" class="text-gray-400 hover:text-gray-500 dark:text-gray-500 dark:hover:text-gray-400">
                             <svg class="h-5 w-5 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
                                 <path fill-rule="evenodd" d="M9.293 2.293a1 1 0 011.414 0l7 7A1 1 0 0117 11h-1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-3a1 1 0 00-1-1H9a1 1 0 00-1 1v3a1 1 0 01-1 1H5a1 1 0 01-1-1v-6H3a1 1 0 01-.707-1.707l7-7z" clip-rule="evenodd"/>
                             </svg>
@@ -21,7 +21,7 @@
                             <svg class="h-5 w-5 flex-shrink-0 text-gray-300 dark:text-gray-600" viewBox="0 0 20 20" fill="currentColor">
                                 <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd"/>
                             </svg>
-                            <a href="/assets" class="ml-2 text-sm font-medium text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300">Assets</a>
+                            <a href="/assets/manage" class="ml-2 text-sm font-medium text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300">Assets</a>
                         </div>
                     </li>
                     <li>
@@ -65,7 +65,7 @@
        synchronously inside the submit event, before the default action,
        so the POST payload still uses ssh_username / ssh_password /
        ssh_passphrase and the backend is unaware of the renaming. #}
-    <form action="/assets" method="POST" class="space-y-6"
+    <form action="/assets/manage/new" method="POST" class="space-y-6"
           @submit="$el.querySelectorAll('[data-real-name]').forEach(function (el) { el.name = el.dataset.realName })"
           x-data="{
               defaults: { ssh: 22, rdp: 3389 },
@@ -250,7 +250,7 @@
 
         <!-- Actions -->
         <div class="flex justify-end space-x-3">
-            <a href="/assets"
+            <a href="/assets/manage"
                class="inline-flex items-center rounded-md bg-white dark:bg-gray-700 px-4 py-2 text-sm font-semibold text-gray-900 dark:text-white shadow-sm ring-1 ring-inset ring-gray-300 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600">
                 Cancel
             </a>

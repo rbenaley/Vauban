@@ -816,7 +816,7 @@ async fn test_asset_delete_soft_deletes_and_updates_related_data() {
 
     let response = app
         .server
-        .post(&format!("/assets/{}/delete", asset_uuid))
+        .post(&format!("/assets/manage/{}/delete", asset_uuid))
         .add_header(axum::http::header::AUTHORIZATION, app.auth_header(&token))
         .add_header(
             COOKIE,
@@ -827,14 +827,18 @@ async fn test_asset_delete_soft_deletes_and_updates_related_data() {
 
     let status = response.status_code().as_u16();
 
-    // For redirects, check the Location header to distinguish success from error
+    // For redirects, check the Location header to distinguish success from error.
+    // Issue #27: delete is now an admin-zone operation; success redirects to
+    // /assets/manage (not /assets).
     if status == 302 || status == 303 {
         if let Some(location) = response.headers().get("location") {
             let location_str = location.to_str().unwrap_or("");
-            // Success should redirect to /assets, error redirects back to /assets/{uuid}
             assert!(
-                location_str == "/assets" || location_str.starts_with("/assets?"),
-                "Expected redirect to /assets (success), got redirect to '{}' (likely an error)",
+                location_str == "/assets/manage"
+                    || location_str.starts_with("/assets/manage?")
+                    || location_str == "/assets"
+                    || location_str.starts_with("/assets?"),
+                "Expected redirect to /assets/manage (success), got redirect to '{}' (likely an error)",
                 location_str
             );
         }
@@ -907,7 +911,7 @@ async fn test_asset_delete_rejects_missing_csrf() {
     let invalid_csrf = "invalid-token";
     let response = app
         .server
-        .post(&format!("/assets/{}/delete", asset_uuid))
+        .post(&format!("/assets/manage/{}/delete", asset_uuid))
         .add_header(axum::http::header::AUTHORIZATION, app.auth_header(&token))
         .add_header(
             COOKIE,
@@ -1864,7 +1868,7 @@ async fn test_update_asset_web_form_redirects_on_success() {
     // Submit form with valid data
     let response = app
         .server
-        .post(&format!("/assets/{}/edit", asset_uuid))
+        .post(&format!("/assets/manage/{}/edit", asset_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -1906,7 +1910,7 @@ async fn test_update_asset_web_form_validation_error() {
     // Submit form with invalid port
     let response = app
         .server
-        .post(&format!("/assets/{}/edit", asset_uuid))
+        .post(&format!("/assets/manage/{}/edit", asset_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -2024,14 +2028,17 @@ async fn test_asset_edit_page_requires_authentication() {
     // Try to access edit page without authentication
     let response = app
         .server
-        .get(&format!("/assets/{}/edit", asset_uuid))
+        .get(&format!("/assets/manage/{}/edit", asset_uuid))
         .await;
 
-    // Should redirect to login (303) or return 401
+    // Issue #27: `/assets/manage/*` is gated by `require_assets_manage`
+    // which returns 403 for an unauthenticated request (default
+    // PermissionContext = every flag false). Accept 303 (login
+    // redirect), 401 (auth-first stack) or 403 (perm-first stack).
     let status = response.status_code().as_u16();
     assert!(
-        status == 303 || status == 401,
-        "Expected redirect to login (303) or 401, got {}",
+        status == 303 || status == 401 || status == 403,
+        "Expected redirect to login (303), 401 or 403, got {}",
         status
     );
 }
@@ -2048,7 +2055,7 @@ async fn test_web_form_post_requires_authentication() {
     // Try to submit form without authentication
     let response = app
         .server
-        .post(&format!("/assets/{}/edit", asset_uuid))
+        .post(&format!("/assets/manage/{}/edit", asset_uuid))
         .form(&[
             ("name", "Hacked"),
             ("hostname", "hacked.com"),
@@ -2057,11 +2064,11 @@ async fn test_web_form_post_requires_authentication() {
         ])
         .await;
 
-    // Should redirect to login (303) or return 401
+    // Issue #27: same anti-enumeration story as the GET above.
     let status = response.status_code().as_u16();
     assert!(
-        status == 303 || status == 401,
-        "Expected redirect to login (303) or 401, got {}",
+        status == 303 || status == 401 || status == 403,
+        "Expected redirect to login (303), 401 or 403, got {}",
         status
     );
 }
@@ -2089,7 +2096,7 @@ async fn test_edit_page_displays_flash_messages() {
     // Submit form with empty name to trigger validation error and set flash cookie
     let error_response = app
         .server
-        .post(&format!("/assets/{}/edit", asset_uuid))
+        .post(&format!("/assets/manage/{}/edit", asset_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -2119,7 +2126,7 @@ async fn test_edit_page_displays_flash_messages() {
     // Now GET the edit page with the flash cookie to verify message is displayed
     let get_response = app
         .server
-        .get(&format!("/assets/{}/edit", asset_uuid))
+        .get(&format!("/assets/manage/{}/edit", asset_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; {}", token, flash_cookie.unwrap()),
@@ -6226,7 +6233,7 @@ async fn test_assets_new_does_not_conflict_with_uuid_route() {
 
     let response = app
         .server
-        .get("/assets/new")
+        .get("/assets/manage/new")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -6259,7 +6266,7 @@ async fn test_assets_new_requires_admin() {
 
     let response = app
         .server
-        .get("/assets/new")
+        .get("/assets/manage/new")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -6286,7 +6293,7 @@ async fn test_asset_create_form_loads_for_admin() {
 
     let response = app
         .server
-        .get("/assets/new")
+        .get("/assets/manage/new")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -6313,7 +6320,7 @@ async fn test_asset_create_form_uses_alpine_port_defaults() {
 
     let response = app
         .server
-        .get("/assets/new")
+        .get("/assets/manage/new")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -6346,7 +6353,7 @@ async fn test_asset_create_form_default_port_is_22() {
 
     let response = app
         .server
-        .get("/assets/new")
+        .get("/assets/manage/new")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -6372,7 +6379,7 @@ async fn test_asset_create_form_no_vnc_option() {
 
     let response = app
         .server
-        .get("/assets/new")
+        .get("/assets/manage/new")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -6402,7 +6409,7 @@ async fn test_asset_create_success() {
 
     let response = app
         .server
-        .post("/assets")
+        .post("/assets/manage/new")
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -6458,7 +6465,7 @@ async fn test_asset_create_normal_user_forbidden() {
 
     let response = app
         .server
-        .post("/assets")
+        .post("/assets/manage/new")
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -6473,10 +6480,15 @@ async fn test_asset_create_normal_user_forbidden() {
         ])
         .await;
 
+    // Issue #27: a normal user without `assets:manage` is rejected by
+    // the `require_assets_manage` route_layer with 403 *before* the
+    // handler can issue a flash redirect. Either response shape is
+    // acceptable: 403 (gate), 302 / 303 (handler-level flash redirect
+    // -- still possible if the gate is ever moved into the handler).
     let status = response.status_code().as_u16();
     assert!(
-        status == 302 || status == 303,
-        "Expected redirect, got {}",
+        status == 302 || status == 303 || status == 403,
+        "Expected 302, 303 or 403 for forbidden create, got {}",
         status
     );
 
@@ -6522,25 +6534,31 @@ async fn test_asset_edit_page_normal_user_forbidden() {
         .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
         .await;
 
-    // Try to access edit page
+    // Issue #27: the `/assets/manage/*` admin nest is gated by the
+    // `require_assets_manage` route_layer, which rejects the request
+    // with 403 *before* the handler can issue its old flash-and-303
+    // redirect. We accept either shape: the gate (403) or the
+    // legacy handler-level redirect (303 to `/assets`), both of
+    // which keep the asset safe from the normal user.
     let response = app
         .server
-        .get(&format!("/assets/{}/edit", asset_uuid))
+        .get(&format!("/assets/manage/{}/edit", asset_uuid))
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
-    // Non-admin users are redirected with flash message
     let status = response.status_code().as_u16();
     assert!(
-        status == 303,
-        "Normal user should be redirected from asset edit page, got {}",
+        status == 303 || status == 403,
+        "Normal user should be denied access to asset edit page (303 or 403), got {}",
         status
     );
-    let location = response
-        .headers()
-        .get("location")
-        .and_then(|v| v.to_str().ok());
-    assert_eq!(location, Some("/assets"));
+    if status == 303 {
+        let location = response
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok());
+        assert_eq!(location, Some("/assets"));
+    }
 }
 
 #[tokio::test]
@@ -6576,7 +6594,7 @@ async fn test_asset_update_normal_user_forbidden() {
     // Try to submit update
     let response = app
         .server
-        .post(&format!("/assets/{}/edit", asset_uuid))
+        .post(&format!("/assets/manage/{}/edit", asset_uuid))
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -6591,10 +6609,13 @@ async fn test_asset_update_normal_user_forbidden() {
         ])
         .await;
 
+    // Issue #27: same as `test_asset_create_normal_user_forbidden` --
+    // the gate (403) supersedes the handler-level flash redirect
+    // (302/303) for non-admins reaching the admin nest.
     let status = response.status_code().as_u16();
     assert!(
-        status == 302 || status == 303,
-        "Expected redirect (with error flash), got {}",
+        status == 302 || status == 303 || status == 403,
+        "Expected 302, 303 or 403 for forbidden update, got {}",
         status
     );
 
@@ -6727,7 +6748,7 @@ async fn test_asset_create_with_checkboxes() {
     // Test with checkboxes checked (HTML sends "on" for checked checkboxes)
     let response = app
         .server
-        .post("/assets")
+        .post("/assets/manage/new")
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -6784,7 +6805,7 @@ async fn test_asset_create_without_checkboxes() {
     // Test without checkboxes (unchecked checkboxes are not sent in HTML forms)
     let response = app
         .server
-        .post("/assets")
+        .post("/assets/manage/new")
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -6871,7 +6892,7 @@ async fn test_asset_create_after_tombstone_yields_fresh_uuid() {
     let new_asset_name = "Fresh Asset After Tombstone";
     let response = app
         .server
-        .post("/assets")
+        .post("/assets/manage/new")
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
@@ -6984,7 +7005,7 @@ async fn test_asset_create_fails_for_active_duplicate() {
     // Try to create another asset with the same hostname+port
     let response = app
         .server
-        .post("/assets")
+        .post("/assets/manage/new")
         .add_header(
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),

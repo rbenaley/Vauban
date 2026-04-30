@@ -41,7 +41,7 @@ fn permission_context_default_denies_every_resource() {
     assert!(!ctx.users_read);
     assert!(!ctx.users_write);
     assert!(!ctx.assets_read);
-    assert!(!ctx.assets_write);
+    assert!(!ctx.assets_manage);
     assert!(!ctx.groups_read);
     assert!(!ctx.groups_write);
     assert!(!ctx.access_rules_read);
@@ -108,7 +108,7 @@ async fn check_rbac_staff_grants_admin_set_only() {
         ("users", "write"),
         ("assets", "read"),
         ("assets", "read_all"),
-        ("assets", "write"),
+        ("assets", "manage"),
         ("sessions", "read"),
         ("sessions", "write"),
         ("sessions", "supervise"),
@@ -226,6 +226,78 @@ async fn check_rbac_staff_denied_sessions_bypass_access_rules() {
         "staff must NOT bypass access rules when opening a session; only \
          superusers may"
     );
+}
+
+/// Issue #27: `assets:manage` (admin CRUD on the asset catalogue) MUST
+/// stay denied to `role:user`. The user zone (`/assets/*`) only grants
+/// `assets:read`; CRUD lives exclusively under the `/assets/manage/*`
+/// admin sub-tree gated by `assets:manage`.
+#[tokio::test]
+#[serial]
+async fn check_rbac_user_denied_assets_manage() {
+    let app = TestApp::spawn().await;
+    let state = build_state_from(app);
+    let user = make_user(false, false);
+
+    assert!(
+        !check_rbac(&state, &user, "assets", "manage").await,
+        "regular user must NOT have assets:manage (CRUD on the asset \
+         catalogue is reserved to staff/superuser via the /assets/manage \
+         admin sub-tree)"
+    );
+    assert!(
+        check_rbac(&state, &user, "assets", "read").await,
+        "regular user must keep assets:read so they can list assets they \
+         have an access rule for in the user zone"
+    );
+}
+
+/// Issue #27: staff MUST have `assets:manage` (the admin CRUD scope on
+/// assets that replaced the legacy `assets:write`). Without it the
+/// `/assets/manage/*` sub-tree would be unreachable for staff after the
+/// rename.
+#[tokio::test]
+#[serial]
+async fn check_rbac_staff_granted_assets_manage() {
+    let app = TestApp::spawn().await;
+    let state = build_state_from(app);
+    let user = make_user(false, true);
+
+    assert!(
+        check_rbac(&state, &user, "assets", "manage").await,
+        "staff must have assets:manage (admin CRUD scope; replaces the \
+         legacy assets:write after issue #27)"
+    );
+}
+
+/// Issue #27: the legacy `assets:write` permission MUST be denied for
+/// every role, even superuser via the `*, *` wildcard. The wildcard
+/// would technically grant it but no production code references the
+/// legacy string anymore (verified by
+/// `manage_assets_invariants_test::no_legacy_assets_write_in_production_code`),
+/// so a custom Casbin policy still using `assets:write` for staff/user
+/// would silently fail. We pin the rename here from the policy side.
+#[tokio::test]
+#[serial]
+async fn check_rbac_assets_write_not_required_by_any_handler() {
+    let app = TestApp::spawn().await;
+    let state = build_state_from(app);
+
+    // The wildcard line `p, role:superuser, *, *` makes superuser
+    // match `assets:write` too, but no handler reads that result.
+    // Staff and user MUST NOT match; if they did, a custom policy
+    // could accidentally grant CRUD via the legacy key.
+    for (label, user) in [
+        ("staff", make_user(false, true)),
+        ("user", make_user(false, false)),
+    ] {
+        assert!(
+            !check_rbac(&state, &user, "assets", "write").await,
+            "{label} must NOT be granted the legacy `assets:write` (renamed \
+             to `assets:manage` in issue #27); a custom policy using the \
+             legacy key would silently fail to authorise the admin handlers"
+        );
+    }
 }
 
 /// `users:manage_admins` (promote/demote a superuser) is superuser-only.
@@ -513,7 +585,7 @@ const TRACKED_PERMS: &[(&str, &str)] = &[
     ("users", "manage_admins"),
     ("assets", "read"),
     ("assets", "read_all"),
-    ("assets", "write"),
+    ("assets", "manage"),
     ("groups", "read"),
     ("groups", "write"),
     ("groups", "manage_members"),
@@ -537,7 +609,7 @@ async fn manual_load(state: &vauban_web::AppState, user: &AuthUser) -> Permissio
         users_manage_admins: check_rbac(state, user, "users", "manage_admins").await,
         assets_read: check_rbac(state, user, "assets", "read").await,
         assets_read_all: check_rbac(state, user, "assets", "read_all").await,
-        assets_write: check_rbac(state, user, "assets", "write").await,
+        assets_manage: check_rbac(state, user, "assets", "manage").await,
         groups_read: check_rbac(state, user, "groups", "read").await,
         groups_write: check_rbac(state, user, "groups", "write").await,
         groups_manage_members: check_rbac(state, user, "groups", "manage_members").await,

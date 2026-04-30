@@ -1240,17 +1240,16 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             "/accounts/groups/{uuid}",
             get(handlers::web::group_detail).post(handlers::web::update_vauban_group_web),
         )
-        // Assets pages - GET for viewing, POST for form submission (PRG pattern)
-        // Literal routes MUST come before parameterized routes
-        .route("/assets/new", get(handlers::web::asset_create_form))
-        // Issue #17: read-only audit page for soft-deleted assets.
-        // MUST be declared before `/assets/{uuid}` so axum doesn't
-        // attempt to parse "deleted" as a UUID.
-        .route("/assets/deleted", get(handlers::web::asset_deleted_list))
-        .route(
-            "/assets",
-            get(handlers::web::asset_list).post(handlers::web::create_asset_web),
-        )
+        // Assets pages - GET for viewing only (issue #27: user zone is
+        // session-only, no CRUD). All asset CRUD lives under
+        // `/assets/manage/*`, gated by `require_assets_manage`. The
+        // user zone exposes a single GET on `/assets` (list filtered
+        // by access rules) and a single GET on `/assets/{uuid}`
+        // (connect / request-access page); every other verb is in the
+        // admin nest below. There is intentionally NO legacy-URL
+        // redirect because v1.0 has not shipped, so we do not have any
+        // bookmarks or external clients to preserve compatibility for.
+        .route("/assets", get(handlers::web::asset_list))
         // Asset groups - literal routes MUST come before parameterized routes
         .route(
             "/assets/groups/new",
@@ -1301,16 +1300,14 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             "/assets/access/{uuid}/delete",
             post(handlers::web::delete_access_rule_web),
         )
-        .route("/assets/search", get(handlers::web::asset_search))
-        .route(
-            "/assets/{uuid}/edit",
-            get(handlers::web::asset_edit).post(handlers::web::update_asset_web),
-        )
-        .route(
-            "/assets/{uuid}/delete",
-            post(handlers::web::delete_asset_web),
-        )
-        .route("/assets/{uuid}", get(handlers::web::asset_detail))
+        // Issue #27: `/assets/{uuid}` GET stays in the user zone as the
+        // "connect / request access" page (gated `assets:read`). It
+        // never renders Edit / Delete / Fetch-Host-Key affordances --
+        // those live exclusively under `/assets/manage/{uuid}`. The
+        // template strips them, the handler stops at the access-rule
+        // check (so a caller without an access rule is told the asset
+        // does not exist, not 403, to avoid being a probing oracle).
+        .route("/assets/{uuid}", get(handlers::web::asset_user_view))
         // Sessions pages
         .route("/sessions", get(handlers::web::session_list))
         .route(
@@ -1373,13 +1370,13 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             post(handlers::web::cancel_access_request),
         )
         .route("/sessions/active", get(handlers::web::active_sessions))
-        // SSH connection endpoints
+        // SSH connection endpoints (user zone: opening sessions)
         .route("/assets/{uuid}/connect", post(handlers::web::connect_ssh))
-        // SSH host key management
-        .route(
-            "/assets/{uuid}/fetch-host-key",
-            post(handlers::web::fetch_ssh_host_key),
-        )
+        // SSH host key verification stays in the user zone because it
+        // is part of the connect flow (refuses to open a session when
+        // the stored fingerprint does not match). The administrative
+        // counterpart (`fetch-host-key`, which writes the trusted key
+        // into the asset record) lives under `/assets/manage/*`.
         .route(
             "/assets/{uuid}/verify-host-key",
             get(handlers::web::verify_ssh_host_key),
@@ -1394,6 +1391,55 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             post(handlers::web::connect_rdp),
         )
         .route("/sessions/rdp/{session_id}", get(handlers::web::rdp_page));
+
+    // --------------------------------------------------------------------
+    // Issue #27 -- ADMIN ASSET MANAGEMENT (`/assets/manage/*`)
+    // --------------------------------------------------------------------
+    //
+    // Defence-in-depth: a `Router::nest` carrying the
+    // `require_assets_manage` middleware makes every route under
+    // `/assets/manage/*` return 403 BEFORE the handler is called when
+    // the caller lacks the `assets:manage` Casbin permission. Each
+    // handler in `crate::handlers::web::manage_assets` (and
+    // `fetch_ssh_host_key` in `crate::handlers::web::ssh`) ALSO
+    // re-asserts the same flag inside its body. The two checks are
+    // intentional: one would catch a routing misconfiguration that
+    // bypassed the other, and the test suite asserts that both layers
+    // exist (`tests::manage_assets_gate_in_signature_test` and
+    // `tests::require_assets_manage_failclosed_test`).
+    //
+    // The literal `/deleted`, `/new`, `/search` paths are declared
+    // BEFORE the parameterized `{uuid}` paths so the axum router does
+    // not attempt to parse them as a UUID.
+    let manage_assets_routes = Router::new()
+        .route("/", get(handlers::web::manage_asset_list))
+        .route(
+            "/new",
+            get(handlers::web::asset_create_form).post(handlers::web::create_asset_web),
+        )
+        .route("/deleted", get(handlers::web::asset_deleted_list))
+        .route("/search", get(handlers::web::asset_search))
+        .route(
+            "/{uuid}",
+            get(handlers::web::asset_detail),
+        )
+        .route(
+            "/{uuid}/edit",
+            get(handlers::web::asset_edit).post(handlers::web::update_asset_web),
+        )
+        .route(
+            "/{uuid}/delete",
+            post(handlers::web::delete_asset_web),
+        )
+        .route(
+            "/{uuid}/fetch-host-key",
+            post(handlers::web::fetch_ssh_host_key),
+        )
+        .route_layer(axum::middleware::from_fn(
+            middleware::require_assets_manage::require_assets_manage,
+        ));
+
+    let web_routes = web_routes.nest("/assets/manage", manage_assets_routes);
 
     // ==========================================================================
     // API ROUTES - Conditionally active based on config.api.enabled
@@ -1420,32 +1466,21 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
                         (axum::http::StatusCode::NOT_IMPLEMENTED, "Not implemented")
                     }),
             )
-            // Assets API
+            // Assets API -- USER ZONE (read-only listing).
+            // Issue #27: every write operation lives under
+            // `/api/v1/assets/manage/*` (admin nest below). v1.0 has
+            // not shipped, so there are no legacy `/api/v1/assets/*`
+            // verbs to preserve compatibility for; M2M clients (CLI,
+            // IaC, orchestrators) target the canonical admin URLs
+            // directly. The DELETE stub stays at the legacy path so
+            // unsupported verbs get a canonical "not implemented"
+            // answer instead of falling through to the global 404.
             .route("/api/v1/assets", get(handlers::api::list_assets))
-            .route("/api/v1/assets", post(handlers::api::create_asset))
-            // DELETE stub returns 501 Not Implemented (not 200 OK)
             .route(
                 "/api/v1/assets/{uuid}",
-                get(handlers::api::get_asset)
-                    .put(handlers::api::update_asset)
-                    .delete(|| async {
-                        (axum::http::StatusCode::NOT_IMPLEMENTED, "Not implemented")
-                    }),
-            )
-            // SSH host key API
-            .route(
-                "/api/v1/assets/{uuid}/ssh-host-key",
-                get(handlers::api::get_ssh_host_key_status)
-                    .post(handlers::api::fetch_ssh_host_key_api),
-            )
-            // Asset Groups API
-            .route(
-                "/api/v1/assets/groups",
-                get(handlers::api::list_asset_groups),
-            )
-            .route(
-                "/api/v1/assets/groups/{uuid}/assets",
-                get(handlers::api::list_group_assets),
+                axum::routing::delete(|| async {
+                    (axum::http::StatusCode::NOT_IMPLEMENTED, "Not implemented")
+                }),
             )
             // Sessions API
             .route("/api/v1/sessions", get(handlers::api::list_sessions))
@@ -1476,6 +1511,45 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
                 get(handlers::api::get_access_rule)
                     .put(handlers::api::update_access_rule)
                     .delete(handlers::api::delete_access_rule),
+            )
+            // Issue #27 -- ADMIN ASSET MANAGEMENT API
+            // (`/api/v1/assets/manage/*`)
+            //
+            // Same defence-in-depth as the web nest above: the
+            // `require_assets_manage` middleware fences the entire
+            // sub-tree at the routing layer and every handler in
+            // `crate::handlers::api::manage_assets` re-asserts the
+            // flag inside its body. The literal `groups` segment is
+            // declared BEFORE the parameterized `{uuid}` so axum does
+            // not attempt to parse it as a UUID.
+            .nest(
+                "/api/v1/assets/manage",
+                Router::new()
+                    .route(
+                        "/",
+                        post(handlers::api::create_asset),
+                    )
+                    .route(
+                        "/groups",
+                        get(handlers::api::list_asset_groups),
+                    )
+                    .route(
+                        "/groups/{uuid}/assets",
+                        get(handlers::api::list_group_assets),
+                    )
+                    .route(
+                        "/{uuid}",
+                        get(handlers::api::get_asset)
+                            .put(handlers::api::update_asset),
+                    )
+                    .route(
+                        "/{uuid}/ssh-host-key",
+                        get(handlers::api::get_ssh_host_key_status)
+                            .post(handlers::api::fetch_ssh_host_key_api),
+                    )
+                    .route_layer(axum::middleware::from_fn(
+                        middleware::require_assets_manage::require_assets_manage,
+                    )),
             )
     } else {
         tracing::info!("API routes disabled by configuration");

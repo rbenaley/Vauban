@@ -36,8 +36,6 @@ pub struct AssetListTemplate {
     pub status_filter: Option<String>,
     pub asset_types: Vec<(String, String)>,
     pub statuses: Vec<(String, String)>,
-    /// Whether to show the "View" link (only for admin users).
-    pub show_view_link: bool,
     /// Whether to require justification before connecting (SEC-03).
     pub require_justification: bool,
 }
@@ -147,7 +145,6 @@ mod tests {
             status_filter: None,
             asset_types: vec![],
             statuses: vec![],
-            show_view_link: true,
             require_justification: true,
         };
 
@@ -155,45 +152,24 @@ mod tests {
         assert!(result.is_ok(), "AssetListTemplate should render");
     }
 
+    /// Issue #27 (asset zone split): the user-zone list NEVER shows a
+    /// View link. The `show_view_link` field was removed from the
+    /// template; the only actions on this page are `Connect` and
+    /// `Request access`. CRUD lives at `/assets/manage/*`.
     #[test]
-    fn test_asset_list_template_renders_without_view_link() {
-        use crate::templates::base::{UserContext, VaubanConfig};
-
-        let template = AssetListTemplate {
-            title: "Assets".to_string(),
-            user: Some(UserContext {
-                uuid: "test".to_string(),
-                username: "testuser".to_string(),
-                display_name: "Test User".to_string(),
-                is_superuser: false,
-                is_staff: false,
-            }),
-            vauban: VaubanConfig {
-                brand_name: "VAUBAN".to_string(),
-                brand_logo: None,
-                theme: "dark".to_string(),
-                ..Default::default()
-            },
-            messages: Vec::new(),
-            language_code: "en".to_string(),
-            sidebar_content: None,
-            header_user: None,
-            assets: vec![create_test_asset_item()],
-            pagination: None,
-            search: None,
-            type_filter: None,
-            status_filter: None,
-            asset_types: vec![],
-            statuses: vec![],
-            show_view_link: false,
-            require_justification: true,
-        };
-
-        assert!(!template.show_view_link);
-        let result = template.render();
+    fn test_asset_list_template_user_zone_has_no_view_field() {
+        let source = include_str!("asset_list.rs");
+        // Strip the test block so we only scan the production type.
+        let body = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("asset_list.rs always has a non-test prefix");
+        let view_field = format!("show{}view{}link", "_", "_");
         assert!(
-            result.is_ok(),
-            "AssetListTemplate should render without view link"
+            !body.contains(view_field.as_str()),
+            "AssetListTemplate must not carry a `{view_field}` field after issue #27 \
+             (the user-zone list has no detail page; CRUD is admin-only at \
+             /assets/manage/*)",
         );
     }
 
@@ -229,7 +205,6 @@ mod tests {
             status_filter,
             asset_types: vec![],
             statuses: vec![],
-            show_view_link: true,
             require_justification: true,
         }
     }
@@ -460,7 +435,6 @@ mod tests {
             status_filter: None,
             asset_types: vec![],
             statuses: vec![],
-            show_view_link: false,
             require_justification: true,
         };
         let html = template.render().expect("should render");
@@ -504,7 +478,6 @@ mod tests {
             status_filter: None,
             asset_types: vec![],
             statuses: vec![],
-            show_view_link: false,
             require_justification: false,
         };
         let html = template.render().expect("should render");
@@ -544,7 +517,6 @@ mod tests {
             status_filter: None,
             asset_types: vec![],
             statuses: vec![],
-            show_view_link: false,
             require_justification: true,
         };
         let html = template.render().expect("should render");
@@ -592,7 +564,6 @@ mod tests {
             status_filter: None,
             asset_types: vec![],
             statuses: vec![],
-            show_view_link: false,
             require_justification: false,
         };
         let html = template.render().expect("should render");

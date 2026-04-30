@@ -43,7 +43,18 @@ pub struct PermissionContext {
     /// subset granted by access rules. Staff and superuser have it; regular
     /// users do not.
     pub assets_read_all: bool,
-    pub assets_write: bool,
+    /// Manage the asset catalogue: full CRUD (create, edit, delete, view-detail
+    /// in the admin zone) on the `proxy_assets` table, plus admin-only side
+    /// operations such as fetching SSH host keys. This is the SOLE permission
+    /// gating the `/assets/manage/*` admin sub-tree (issue #27, asset zone
+    /// split). Holders are staff and superuser; regular users do NOT have it.
+    /// **No session can ever be opened from the admin zone**: source-level CI
+    /// tests (see `tests/web/manage_assets_no_session_test.rs`) pin that
+    /// invariant. Renamed from the legacy "write" action in v0.6.x; the
+    /// rename is intentional - the old name suggested only mutation, but
+    /// the gate is now also used for admin-side reads (asset detail,
+    /// deleted audit) so a "manage" semantic is more accurate.
+    pub assets_manage: bool,
     pub groups_read: bool,
     /// CRUD on the group itself (create, edit, delete). Resserre par rapport
     /// au comportement legacy: seul le superuser (wildcard) le possede.
@@ -81,7 +92,7 @@ impl PermissionContext {
             users_manage_admins,
             assets_read,
             assets_read_all,
-            assets_write,
+            assets_manage,
             groups_read,
             groups_write,
             groups_manage_members,
@@ -102,7 +113,7 @@ impl PermissionContext {
             check_rbac(state, user, "users", "manage_admins"),
             check_rbac(state, user, "assets", "read"),
             check_rbac(state, user, "assets", "read_all"),
-            check_rbac(state, user, "assets", "write"),
+            check_rbac(state, user, "assets", "manage"),
             check_rbac(state, user, "groups", "read"),
             check_rbac(state, user, "groups", "write"),
             check_rbac(state, user, "groups", "manage_members"),
@@ -125,7 +136,7 @@ impl PermissionContext {
             users_manage_admins,
             assets_read,
             assets_read_all,
-            assets_write,
+            assets_manage,
             groups_read,
             groups_write,
             groups_manage_members,
@@ -220,7 +231,7 @@ mod tests {
         assert!(!ctx.users_manage_admins);
         assert!(!ctx.assets_read);
         assert!(!ctx.assets_read_all);
-        assert!(!ctx.assets_write);
+        assert!(!ctx.assets_manage);
         assert!(!ctx.groups_read);
         assert!(!ctx.groups_write);
         assert!(!ctx.groups_manage_members);

@@ -84,6 +84,7 @@ impl BaseTemplate {
             user: u.clone(),
             is_dashboard: false,
             is_assets: false,
+            is_manage_assets: false,
             is_sessions: false,
             is_recordings: false,
             is_users: false,
@@ -124,10 +125,21 @@ impl BaseTemplate {
                 .as_ref()
                 .map(|s| s.perms.clone())
                 .unwrap_or_default();
+            // Issue #27: differentiate the user-facing `/assets` page
+            // (Connect / Request) from the admin `/assets/manage/*`
+            // sub-tree (CRUD). The two highlight different sidebar
+            // entries and the regex is intentionally narrow so adding a
+            // new admin asset path under `/assets/manage` does not
+            // bleed back into the user-zone highlight.
+            let on_manage_assets = path.starts_with("/assets/manage");
             self.sidebar_content = Some(SidebarContentTemplate {
                 user: user.clone(),
                 is_dashboard: path == "/",
-                is_assets: path.starts_with("/assets") && !path.contains("/access"),
+                is_assets: path.starts_with("/assets")
+                    && !path.contains("/access")
+                    && !on_manage_assets
+                    && !path.contains("/groups"),
+                is_manage_assets: on_manage_assets,
                 is_sessions: path.contains("/sessions")
                     && !path.contains("/recordings")
                     && !path.contains("/approvals")

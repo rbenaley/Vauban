@@ -819,8 +819,8 @@ pub async fn fetch_ssh_host_key(
 ) -> Response {
     use uuid::Uuid;
 
-    if !perms.assets_write {
-        return htmx_error_response("Insufficient privileges: assets:write required");
+    if !perms.assets_manage {
+        return htmx_error_response("Insufficient privileges: assets:manage required");
     }
 
     let confirm = params.get("confirm").map(|v| v == "true").unwrap_or(false);
@@ -998,11 +998,21 @@ pub async fn fetch_ssh_host_key(
 pub async fn verify_ssh_host_key(
     State(state): State<AppState>,
     _auth_user: AuthUser,
+    perms: crate::auth::PermissionContext,
     axum::extract::Path(asset_uuid_str): axum::extract::Path<String>,
 ) -> Response {
     use uuid::Uuid;
 
-    // Parse UUID
+    // Issue #27: this HTMX endpoint stays in the user zone (it powers
+    // the live mismatch indicator on the user-facing list / connect
+    // page) but now requires `assets_read` so an unauthenticated or
+    // unauthorised caller cannot probe asset existence by UUID. The
+    // gate runs BEFORE the UUID parse so a malformed UUID does not
+    // leak a different error than an unknown asset.
+    if !perms.assets_read {
+        return htmx_error_response("Insufficient privileges: assets:read required");
+    }
+
     let asset_uuid = match Uuid::parse_str(&asset_uuid_str) {
         Ok(u) => u,
         Err(_) => return htmx_error_response("Invalid asset identifier"),

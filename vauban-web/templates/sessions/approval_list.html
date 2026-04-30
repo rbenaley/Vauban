@@ -16,26 +16,41 @@
         </div>
     </div>
 
-    <!-- Filters -->
+    {# Live HTMX filter (issue #28). Same pattern as the other lists.
+       The auto-refresh trigger below already targets
+       `#approvals-list-container` via `hx-select`; this filter
+       reuses the same id so live filtering and WebSocket-driven
+       refresh coexist cleanly. #}
     <div class="bg-white dark:bg-gray-800 shadow rounded-lg p-4">
-        <form method="get" class="flex flex-col gap-4 sm:flex-row sm:items-end">
-            <div class="flex-1 min-w-0">
-                <label for="status" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Status</label>
-                <select name="status" id="status"
-                        class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
-                    <option value="">All statuses</option>
-                    <option value="pending" {% if status_filter.as_deref() == Some("pending") %}selected{% endif %}>Pending</option>
-                    <option value="approved" {% if status_filter.as_deref() == Some("approved") %}selected{% endif %}>Approved</option>
-                    <option value="rejected" {% if status_filter.as_deref() == Some("rejected") %}selected{% endif %}>Rejected</option>
-                    <option value="expired" {% if status_filter.as_deref() == Some("expired") %}selected{% endif %}>Expired</option>
-                    <option value="orphaned" {% if status_filter.as_deref() == Some("orphaned") %}selected{% endif %}>Orphaned</option>
-                </select>
-            </div>
-            <button type="submit"
-                    class="w-full sm:w-auto rounded-md bg-vauban-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-600">
-                Filter
-            </button>
-        </form>
+        <div>
+            <label for="status" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Status</label>
+            <select name="status" id="status"
+                    hx-get="/sessions/approvals"
+                    hx-trigger="change"
+                    hx-target="#approvals-list-container"
+                    hx-select="#approvals-list-container"
+                    hx-swap="outerHTML"
+                    hx-include="[name='status']"
+                    hx-push-url="true"
+                    hx-indicator="#approvals-list-indicator"
+                    class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
+                <option value="">All statuses</option>
+                <option value="pending" {% if status_filter.as_deref() == Some("pending") %}selected{% endif %}>Pending</option>
+                <option value="approved" {% if status_filter.as_deref() == Some("approved") %}selected{% endif %}>Approved</option>
+                <option value="rejected" {% if status_filter.as_deref() == Some("rejected") %}selected{% endif %}>Rejected</option>
+                <option value="expired" {% if status_filter.as_deref() == Some("expired") %}selected{% endif %}>Expired</option>
+                <option value="orphaned" {% if status_filter.as_deref() == Some("orphaned") %}selected{% endif %}>Orphaned</option>
+            </select>
+        </div>
+    </div>
+
+    <div id="approvals-list-indicator"
+         class="htmx-indicator pointer-events-none flex items-center justify-end gap-2 -mt-3 text-xs text-gray-500 dark:text-gray-400 transition-opacity opacity-0 [&.htmx-request]:opacity-100">
+        <svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+        </svg>
+        <span>Updating...</span>
     </div>
 
     <!-- Auto-refresh on WebSocket JIT events -->

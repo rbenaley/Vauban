@@ -177,7 +177,7 @@ async fn test_create_form_ssh_renders_auth_type_selector() {
 
     let response = app
         .server
-        .get("/assets/new")
+        .get("/assets/manage/new")
         .add_header(COOKIE, format!("access_token={}", admin.token))
         .await;
 
@@ -211,7 +211,7 @@ async fn test_create_form_rdp_hides_auth_type_selector_and_private_key() {
 
     let response = app
         .server
-        .get("/assets/new")
+        .get("/assets/manage/new")
         .add_header(COOKIE, format!("access_token={}", admin.token))
         .await;
 
@@ -241,7 +241,7 @@ async fn test_create_form_rdp_renders_domain_field() {
 
     let response = app
         .server
-        .get("/assets/new")
+        .get("/assets/manage/new")
         .add_header(COOKIE, format!("access_token={}", admin.token))
         .await;
 
@@ -274,7 +274,7 @@ async fn test_create_form_ssh_hides_domain_field() {
 
     let response = app
         .server
-        .get("/assets/new")
+        .get("/assets/manage/new")
         .add_header(COOKIE, format!("access_token={}", admin.token))
         .await;
 
@@ -321,7 +321,7 @@ async fn test_create_rdp_with_private_key_rejects_400_and_drops_field() {
 
     let response = app
         .server
-        .post("/assets")
+        .post("/assets/manage/new")
         .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
         .form(&[
             ("csrf_token", csrf.as_str()),
@@ -343,8 +343,8 @@ async fn test_create_rdp_with_private_key_rejects_400_and_drops_field() {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     assert_eq!(
-        location, "/assets/new",
-        "rejected RDP+private_key submissions must bounce back to /assets/new"
+        location, "/assets/manage/new",
+        "rejected RDP+private_key submissions must bounce back to /assets/manage/new"
     );
 
     let persisted = read_asset_by_triplet(&mut conn, &asset_hostname, 3389, "Administrator").await;
@@ -381,7 +381,7 @@ async fn test_create_rdp_with_password_succeeds() {
 
     let response = app
         .server
-        .post("/assets")
+        .post("/assets/manage/new")
         .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
         .form(&[
             ("csrf_token", csrf.as_str()),
@@ -444,7 +444,7 @@ async fn test_create_ssh_with_private_key_succeeds() {
 
     let response = app
         .server
-        .post("/assets")
+        .post("/assets/manage/new")
         .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
         .form(&[
             ("csrf_token", csrf.as_str()),
@@ -500,7 +500,7 @@ async fn test_create_rdp_with_domain_persists_in_connection_config() {
 
     let response = app
         .server
-        .post("/assets")
+        .post("/assets/manage/new")
         .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
         .form(&[
             ("csrf_token", csrf.as_str()),
@@ -575,7 +575,7 @@ async fn test_soft_delete_purges_connection_config() {
 
     let response = app
         .server
-        .post(&format!("/assets/{}/delete", asset.uuid))
+        .post(&format!("/assets/manage/{}/delete", asset.uuid))
         .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
         .form(&[("csrf_token", csrf.as_str())])
         .await;
@@ -630,7 +630,7 @@ async fn test_edit_rdp_cannot_set_private_key_via_form() {
     const CANARY: &str = "EDIT-CANARY-RDP-PK-MUST-BE-REJECTED";
     let response = app
         .server
-        .post(&format!("/assets/{}/edit", asset.uuid))
+        .post(&format!("/assets/manage/{}/edit", asset.uuid))
         .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
         .form(&[
             ("csrf_token", csrf.as_str()),
@@ -713,7 +713,7 @@ async fn test_create_rdp_with_empty_password_rejects_400_canary_empty_20260418()
 
     let response = app
         .server
-        .post("/assets")
+        .post("/assets/manage/new")
         .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
         .form(&[
             ("csrf_token", csrf.as_str()),
@@ -734,8 +734,8 @@ async fn test_create_rdp_with_empty_password_rejects_400_canary_empty_20260418()
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     assert_eq!(
-        location, "/assets/new",
-        "RDP+empty-password create must bounce to /assets/new, got {}",
+        location, "/assets/manage/new",
+        "RDP+empty-password create must bounce to /assets/manage/new, got {}",
         location
     );
 
@@ -774,7 +774,7 @@ async fn test_create_ssh_password_mode_with_empty_password_rejects_400() {
     let asset_hostname = format!("{}.ass02-pwd.test", unique_name("host"));
     let response = app
         .server
-        .post("/assets")
+        .post("/assets/manage/new")
         .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
         .form(&[
             ("csrf_token", csrf.as_str()),
@@ -795,7 +795,7 @@ async fn test_create_ssh_password_mode_with_empty_password_rejects_400() {
         .get(LOCATION)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    assert_eq!(location, "/assets/new");
+    assert_eq!(location, "/assets/manage/new");
 
     let persisted = read_asset_by_triplet(&mut conn, &asset_hostname, 22, "root").await;
     assert!(
@@ -819,7 +819,7 @@ async fn test_create_ssh_key_mode_with_empty_private_key_rejects_400() {
     let asset_hostname = format!("{}.ass02-key.test", unique_name("host"));
     let response = app
         .server
-        .post("/assets")
+        .post("/assets/manage/new")
         .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
         .form(&[
             ("csrf_token", csrf.as_str()),
@@ -840,7 +840,7 @@ async fn test_create_ssh_key_mode_with_empty_private_key_rejects_400() {
         .get(LOCATION)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    assert_eq!(location, "/assets/new");
+    assert_eq!(location, "/assets/manage/new");
 
     let persisted = read_asset_by_triplet(&mut conn, &asset_hostname, 22, "root").await;
     assert!(
@@ -878,7 +878,7 @@ async fn test_edit_rdp_with_blank_password_preserves_existing() {
 
     let response = app
         .server
-        .post(&format!("/assets/{}/edit", asset.uuid))
+        .post(&format!("/assets/manage/{}/edit", asset.uuid))
         .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
         .form(&[
             ("csrf_token", csrf.as_str()),
@@ -943,7 +943,7 @@ async fn test_edit_rdp_with_new_password_replaces_existing() {
 
     let response = app
         .server
-        .post(&format!("/assets/{}/edit", asset.uuid))
+        .post(&format!("/assets/manage/{}/edit", asset.uuid))
         .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
         .form(&[
             ("csrf_token", csrf.as_str()),
@@ -1016,7 +1016,7 @@ async fn test_edit_form_does_not_leak_stored_credential_into_html() {
 
     let response = app
         .server
-        .get(&format!("/assets/{}/edit", asset.uuid))
+        .get(&format!("/assets/manage/{}/edit", asset.uuid))
         .add_header(COOKIE, format!("access_token={}", admin.token))
         .await;
 
@@ -1099,7 +1099,7 @@ async fn test_edit_ssh_description_only_preserves_full_host_key_state() {
 
     let response = app
         .server
-        .post(&format!("/assets/{}/edit", asset.uuid))
+        .post(&format!("/assets/manage/{}/edit", asset.uuid))
         .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
         .form(&[
             ("csrf_token", csrf.as_str()),
@@ -1202,7 +1202,7 @@ async fn test_edit_ssh_password_rotation_preserves_host_key_pinning() {
 
     let response = app
         .server
-        .post(&format!("/assets/{}/edit", asset.uuid))
+        .post(&format!("/assets/manage/{}/edit", asset.uuid))
         .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
         .form(&[
             ("csrf_token", csrf.as_str()),
@@ -1293,7 +1293,7 @@ async fn test_edit_ssh_switch_auth_type_preserves_host_key_pinning() {
 
     let response = app
         .server
-        .post(&format!("/assets/{}/edit", asset.uuid))
+        .post(&format!("/assets/manage/{}/edit", asset.uuid))
         .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
         .form(&[
             ("csrf_token", csrf.as_str()),
@@ -1381,7 +1381,7 @@ async fn test_edit_rdp_absent_domain_preserves_stored_domain() {
     // non-browser client or a future stripped-down quick-edit form).
     let response = app
         .server
-        .post(&format!("/assets/{}/edit", asset.uuid))
+        .post(&format!("/assets/manage/{}/edit", asset.uuid))
         .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
         .form(&[
             ("csrf_token", csrf.as_str()),
@@ -1454,7 +1454,7 @@ async fn test_edit_rdp_explicit_blank_domain_clears_stored_domain() {
 
     let response = app
         .server
-        .post(&format!("/assets/{}/edit", asset.uuid))
+        .post(&format!("/assets/manage/{}/edit", asset.uuid))
         .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
         .form(&[
             ("csrf_token", csrf.as_str()),

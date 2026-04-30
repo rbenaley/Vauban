@@ -15,6 +15,9 @@ pub struct SidebarContentTemplate {
     pub user: UserContext,
     pub is_dashboard: bool,
     pub is_assets: bool,
+    /// Active state for the admin "Manage Assets" link
+    /// (`/assets/manage/*`) — issue #27 asset zone split.
+    pub is_manage_assets: bool,
     pub is_sessions: bool,
     pub is_recordings: bool,
     pub is_users: bool,
@@ -67,6 +70,7 @@ mod tests {
             user,
             is_dashboard: false,
             is_assets: false,
+            is_manage_assets: false,
             is_sessions: false,
             is_recordings: false,
             is_users: false,
@@ -88,7 +92,7 @@ mod tests {
             access_rules_read: true,
             access_rules_write: true,
             assets_read: true,
-            assets_write: true,
+            assets_manage: true,
             admin_view: true,
             auth_sessions_read: true,
             auth_sessions_write: true,

@@ -3,86 +3,206 @@
 {% block title %}Deleted Assets - {{ vauban.brand_name }}{% endblock %}
 
 {% block content %}
+{# Issue #17 + #27 -- Read-only audit view of soft-deleted assets.
+
+   This page is accessed as a sub-section of Assets (via the "Deleted"
+   button on `/assets/manage`). It is intentionally:
+
+   - audit-only: NO Restore / Reactivate / Edit / Connect affordance
+     (RG-ASS-04 + assets_no_resurrection_trg trigger);
+   - secret-free: tombstones carry `connection_config = '{}'` by
+     contract, the template never even sees the column;
+   - read-only HTMX-free: no `hx-post` action is rendered, even an
+     accidental one would be rejected by the `assets_no_resurrection_trg`
+     DB trigger but the template does not invite the regression.
+
+   The pinning unit-tests in `templates/assets/asset_deleted_list.rs`
+   enforce these invariants by string scan. #}
 <div class="space-y-6">
-    <!-- Header -->
-    <div class="md:flex md:items-center md:justify-between">
-        <div class="min-w-0 flex-1">
-            <h2 class="text-xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-2xl lg:text-3xl sm:tracking-tight">
-                Deleted Assets
-            </h2>
-            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
-                Audit-only view of soft-deleted assets. Deletion is irreversible (RG-ASS-04):
-                credentials are purged, sessions remain attached for audit, and these rows
-                cannot be restored. To re-onboard a previously deleted host, create a new
-                asset with the same hostname &mdash; it will receive a fresh UUID.
-            </p>
-        </div>
-        <div class="mt-4 md:ml-4 md:mt-0">
-            <a href="/assets"
-               class="inline-flex items-center rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm font-semibold text-gray-700 dark:text-gray-300 shadow-sm hover:bg-gray-50 dark:hover:bg-gray-600">
-                <svg class="-ml-0.5 mr-1.5 h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/>
-                </svg>
-                Back to Assets
-            </a>
+    <!-- Header with breadcrumbs -->
+    <div>
+        <nav class="flex overflow-x-auto" aria-label="Breadcrumb">
+            <ol class="flex items-center space-x-2 whitespace-nowrap">
+                <li>
+                    <a href="/assets/manage" class="text-gray-400 hover:text-gray-500 dark:text-gray-500 dark:hover:text-gray-400">
+                        <svg class="h-5 w-5 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd" d="M9.293 2.293a1 1 0 011.414 0l7 7A1 1 0 0117 11h-1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-3a1 1 0 00-1-1H9a1 1 0 00-1 1v3a1 1 0 01-1 1H5a1 1 0 01-1-1v-6H3a1 1 0 01-.707-1.707l7-7z" clip-rule="evenodd"/>
+                        </svg>
+                    </a>
+                </li>
+                <li>
+                    <div class="flex items-center">
+                        <svg class="h-5 w-5 flex-shrink-0 text-gray-300 dark:text-gray-600" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd"/>
+                        </svg>
+                        <a href="/assets/manage" class="ml-2 text-sm font-medium text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300">Assets</a>
+                    </div>
+                </li>
+                <li>
+                    <div class="flex items-center">
+                        <svg class="h-5 w-5 flex-shrink-0 text-gray-300 dark:text-gray-600" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd"/>
+                        </svg>
+                        <span class="ml-2 text-sm font-medium text-gray-500 dark:text-gray-400">Deleted</span>
+                    </div>
+                </li>
+            </ol>
+        </nav>
+
+        <div class="mt-2 md:flex md:items-center md:justify-between">
+            <div class="min-w-0 flex-1 flex items-center gap-3">
+                <h2 class="text-xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-2xl lg:text-3xl sm:tracking-tight">
+                    Deleted Assets
+                </h2>
+                <span class="inline-flex items-center rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-medium text-gray-700 dark:bg-gray-700 dark:text-gray-300 uppercase tracking-wider">
+                    Audit only
+                </span>
+            </div>
+            <div class="mt-3 md:ml-4 md:mt-0">
+                <a href="/assets/manage"
+                   class="inline-flex items-center rounded-md bg-white dark:bg-gray-700 px-3 py-2 text-sm font-semibold text-gray-900 dark:text-white shadow-sm ring-1 ring-inset ring-gray-300 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600">
+                    <svg class="-ml-0.5 mr-1.5 h-5 w-5 text-gray-400" viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd" d="M17 10a.75.75 0 01-.75.75H5.612l4.158 3.96a.75.75 0 11-1.04 1.08l-5.5-5.25a.75.75 0 010-1.08l5.5-5.25a.75.75 0 111.04 1.08L5.612 9.25H16.25A.75.75 0 0117 10z" clip-rule="evenodd"/>
+                    </svg>
+                    Back to Assets
+                </a>
+            </div>
         </div>
     </div>
 
+    <!-- Irreversibility advisory -->
+    <div class="rounded-md border border-amber-200 dark:border-amber-800/60 bg-amber-50 dark:bg-amber-900/20 p-4">
+        <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:gap-3">
+            <svg class="h-5 w-5 flex-shrink-0 text-amber-500 dark:text-amber-400 mt-0.5" viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 6a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 6zm0 9a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd"/>
+            </svg>
+            <div class="text-sm text-amber-800 dark:text-amber-200">
+                <p class="font-semibold">Deletion is irreversible.</p>
+                <p class="mt-1 text-amber-700 dark:text-amber-300/90">
+                    Tombstones are kept for audit purposes only: credentials have been
+                    purged, sessions remain attached to the original UUID for forensic
+                    review (RG-ASS-04). To re-onboard a previously deleted host, create
+                    a new asset with the same hostname &mdash; it will receive a fresh
+                    UUID.
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Content -->
     {% if assets.is_empty() %}
-    <div class="bg-white dark:bg-gray-800 shadow rounded-lg p-8 text-center">
-        <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
-        </svg>
-        <h3 class="mt-2 text-sm font-semibold text-gray-900 dark:text-white">No deleted assets</h3>
-        <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
-            The audit trail is empty. Soft-deleted assets will appear here for audit and review.
+    <div class="bg-white dark:bg-gray-800 shadow rounded-lg px-4 py-12 sm:px-6 text-center">
+        <span class="mx-auto inline-flex h-14 w-14 items-center justify-center rounded-full bg-green-50 dark:bg-green-900/30">
+            <svg class="h-7 w-7 text-green-600 dark:text-green-400" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+        </span>
+        <h3 class="mt-3 text-base font-semibold text-gray-900 dark:text-white">No deleted assets</h3>
+        <p class="mt-1 text-sm text-gray-500 dark:text-gray-400 max-w-md mx-auto">
+            The audit trail is empty. Soft-deleted assets will appear here for review and
+            forensic correlation with archived sessions.
         </p>
     </div>
     {% else %}
-    <div class="bg-white dark:bg-gray-800 shadow overflow-hidden rounded-lg">
-        <div class="overflow-x-auto">
-            <table class="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
-                <thead class="bg-gray-50 dark:bg-gray-900">
-                    <tr>
-                        <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Name</th>
-                        <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Endpoint</th>
-                        <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Username</th>
-                        <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Type</th>
-                        <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Created</th>
-                        <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Deleted</th>
-                    </tr>
-                </thead>
-                <tbody class="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
-                    {% for asset in assets %}
-                    <tr>
-                        <td class="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white">{{ asset.name }}</td>
-                        <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600 dark:text-gray-300 font-mono">{{ asset.hostname }}:{{ asset.port }}</td>
-                        <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600 dark:text-gray-300 font-mono">{{ asset.connection_username }}</td>
-                        <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600 dark:text-gray-300 uppercase">{{ asset.asset_type }}</td>
-                        <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{{ asset.created_at.format("%Y-%m-%d %H:%M UTC") }}</td>
-                        <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
-                            {% if let Some(d) = asset.deleted_at %}{{ d.format("%Y-%m-%d %H:%M UTC") }}{% else %}&mdash;{% endif %}
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
+    <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+        <ul role="list" class="divide-y divide-gray-200 dark:divide-gray-700">
+            {% for asset in assets %}
+            <li class="px-4 py-4 sm:px-6">
+                <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div class="flex items-start space-x-3 sm:space-x-4 min-w-0">
+                        <div class="flex-shrink-0">
+                            {# Type icon, desaturated to convey "no longer
+                               active". A trash overlay marks the row as a
+                               tombstone so the visual diverges from the
+                               active asset list at a glance. #}
+                            <span class="relative inline-flex h-10 w-10 items-center justify-center rounded-full bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400">
+                                {% if asset.asset_type == "ssh" %}
+                                <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0021 18V6a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 6v12a2.25 2.25 0 002.25 2.25z"/>
+                                </svg>
+                                {% else if asset.asset_type == "rdp" %}
+                                <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17.25v1.007a3 3 0 01-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0115 18.257V17.25m6-12V15a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 15V5.25m18 0A2.25 2.25 0 0018.75 3H5.25A2.25 2.25 0 003 5.25m18 0V12a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 12V5.25"/>
+                                </svg>
+                                {% else %}
+                                <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17.25v1.007a3 3 0 01-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0115 18.257V17.25m6-12V15a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 15V5.25m18 0A2.25 2.25 0 0018.75 3H5.25A2.25 2.25 0 003 5.25m18 0V12a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 12V5.25"/>
+                                </svg>
+                                {% endif %}
+                                <span class="absolute -bottom-1 -right-1 inline-flex h-5 w-5 items-center justify-center rounded-full bg-red-500 text-white ring-2 ring-white dark:ring-gray-800">
+                                    <svg class="h-3 w-3" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2h12a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM4.293 7.293a1 1 0 011.414 0L6 7.586l.293-.293a1 1 0 011.414 1.414L7.414 9l.293.293a1 1 0 11-1.414 1.414L6 10.414l-.293.293a1 1 0 01-1.414-1.414L4.586 9l-.293-.293a1 1 0 010-1.414zm10 0a1 1 0 011.414 0l.293.293.293-.293a1 1 0 011.414 1.414L17.414 9l.293.293a1 1 0 11-1.414 1.414L16 10.414l-.293.293a1 1 0 11-1.414-1.414L14.586 9l-.293-.293a1 1 0 010-1.414zM5 13a1 1 0 011-1h8a1 1 0 011 1v4a2 2 0 01-2 2H7a2 2 0 01-2-2v-4z" clip-rule="evenodd"/></svg>
+                                </span>
+                            </span>
+                        </div>
+                        <div class="flex-1 min-w-0">
+                            <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                <p class="text-sm font-medium text-gray-700 dark:text-gray-200 break-words line-through decoration-gray-300 dark:decoration-gray-600">
+                                    {{ asset.name }}
+                                </p>
+                                <span class="inline-flex items-center rounded-full bg-red-100 dark:bg-red-900/40 px-2.5 py-0.5 text-xs font-medium text-red-800 dark:text-red-300 uppercase tracking-wider">
+                                    Deleted
+                                </span>
+                                <span class="inline-flex items-center rounded-full bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-xs font-medium text-gray-600 dark:text-gray-300 uppercase tracking-wider">
+                                    {{ asset.asset_type }}
+                                </span>
+                            </div>
+                            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400 break-all font-mono">
+                                {{ asset.connection_username }}<span class="text-gray-400 dark:text-gray-500">@</span>{{ asset.hostname }}<span class="text-gray-400 dark:text-gray-500">:</span>{{ asset.port }}
+                            </p>
+                            <p class="mt-1 text-xs text-gray-400 dark:text-gray-500 font-mono break-all" title="UUID">
+                                {{ asset.uuid }}
+                            </p>
+                        </div>
+                    </div>
+                    <div class="sm:text-right text-xs text-gray-500 dark:text-gray-400 sm:flex-shrink-0 sm:min-w-[14rem]">
+                        <div class="flex flex-wrap items-center gap-x-2 gap-y-0 sm:justify-end">
+                            <svg class="h-4 w-4 text-red-500 dark:text-red-400" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166M3.75 5.79a48.108 48.108 0 0116.5 0m-15.34.165L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397M19.228 5.79l-1.16 13.882a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0"/>
+                            </svg>
+                            <span class="text-gray-700 dark:text-gray-300 font-medium">Deleted</span>
+                            {% if let Some(d) = asset.deleted_at %}
+                            <time datetime="{{ d.format("%Y-%m-%dT%H:%M:%SZ") }}"
+                                  title="{{ d.format("%Y-%m-%d %H:%M UTC") }}">
+                                {{ d.format("%b %d, %Y") }}
+                            </time>
+                            {% else %}
+                            <span class="italic text-gray-400">unknown</span>
+                            {% endif %}
+                        </div>
+                        <div class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0 sm:justify-end">
+                            <svg class="h-4 w-4 text-gray-400 dark:text-gray-500" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                            </svg>
+                            <span>Created</span>
+                            <time datetime="{{ asset.created_at.format("%Y-%m-%dT%H:%M:%SZ") }}"
+                                  title="{{ asset.created_at.format("%Y-%m-%d %H:%M UTC") }}">
+                                {{ asset.created_at.format("%b %d, %Y") }}
+                            </time>
+                        </div>
+                    </div>
+                </div>
+            </li>
+            {% endfor %}
+        </ul>
     </div>
 
     {% if let Some(pg) = pagination %}
-    <nav class="flex items-center justify-between border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-3 sm:px-6 rounded-b-lg" aria-label="Pagination">
-        <div class="hidden sm:block">
-            <p class="text-sm text-gray-700 dark:text-gray-300">
-                Showing <span class="font-medium">{{ pg.start_index }}</span> to <span class="font-medium">{{ pg.end_index }}</span> of <span class="font-medium">{{ pg.total_items }}</span> deleted assets
-            </p>
+    <nav class="flex items-center justify-between" aria-label="Pagination">
+        <div class="text-sm text-gray-500 dark:text-gray-400">
+            Showing <span class="font-medium">{{ pg.start_index }}</span> to <span class="font-medium">{{ pg.end_index }}</span> of <span class="font-medium">{{ pg.total_items }}</span> deleted assets
         </div>
-        <div class="flex flex-1 justify-between sm:justify-end gap-2">
+        <div class="flex gap-2">
             {% if pg.has_previous %}
-            <a href="?page={{ pg.current_page - 1 }}" class="relative inline-flex items-center rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-600">Previous</a>
+            <a href="?page={{ pg.current_page - 1 }}"
+               class="relative inline-flex items-center rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-600">
+                Previous
+            </a>
             {% endif %}
             {% if pg.has_next %}
-            <a href="?page={{ pg.current_page + 1 }}" class="relative inline-flex items-center rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-600">Next</a>
+            <a href="?page={{ pg.current_page + 1 }}"
+               class="relative inline-flex items-center rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-600">
+                Next
+            </a>
             {% endif %}
         </div>
     </nav>

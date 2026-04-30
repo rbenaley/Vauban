@@ -98,43 +98,14 @@
                 </button>
             </form>
             {% endif %}
-            <a href="/assets/{{ asset.uuid }}/edit"
-               class="inline-flex items-center rounded-md bg-white dark:bg-gray-700 px-3 py-2 text-sm font-semibold text-gray-900 dark:text-white shadow-sm ring-1 ring-inset ring-gray-300 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600">
-                <svg class="-ml-0.5 mr-1.5 h-5 w-5 text-gray-400" viewBox="0 0 20 20" fill="currentColor">
-                    <path d="M2.695 14.763l-1.262 3.154a.5.5 0 00.65.65l3.155-1.262a4 4 0 001.343-.885L17.5 5.5a2.121 2.121 0 00-3-3L3.58 13.42a4 4 0 00-.885 1.343z"/>
-                </svg>
-                Edit
-            </a>
-            {# BUG-12 / issue #19: HTMX-driven delete with styled-modal confirmation. #}
-            {# `hx-post` is what makes `hx-confirm` and `htmx:confirm` actually fire — #}
-            {# the prior `method="post" action="..."` form was a native submit, so #}
-            {# `hx-confirm` was decorative and the destructive POST went through on #}
-            {# a single click. The `hx-confirm` attribute below is intentionally kept #}
-            {# as a defense-in-depth fallback (HTMX falls back to `window.confirm()` #}
-            {# if the Alpine store is unavailable). Resource-name strings live in #}
-            {# `data-confirm-*` attributes so askama's HTML-escape covers them and #}
-            {# they never enter a JS-parsed string context (no template-literal injection). #}
-            <form hx-post="/assets/{{ asset.uuid }}/delete"
-                  hx-confirm="Delete asset '{{ asset.name }}' ({{ asset.hostname }})? This cannot be undone."
-                  data-confirm-title="Delete asset"
-                  data-confirm-message="Delete asset '{{ asset.name }}' ({{ asset.hostname }})?&#10;Vauban deletes are structurally final — there is no restore."
-                  data-confirm-label="Delete asset"
-                  @htmx:confirm.prevent="$store.deleteConfirm.openWith({
-                      title: $el.dataset.confirmTitle,
-                      message: $el.dataset.confirmMessage,
-                      confirmLabel: $el.dataset.confirmLabel,
-                      sourceEvent: $event
-                  })"
-                  x-data="csrf">
-                <input type="hidden" name="csrf_token" x-model="token" />
-                <button type="submit"
-                        class="inline-flex items-center rounded-md bg-red-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-red-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-600">
-                    <svg class="-ml-0.5 mr-1.5 h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                        <path fill-rule="evenodd" d="M6 2a1 1 0 00-1 1v1H3a1 1 0 000 2h1v9a2 2 0 002 2h8a2 2 0 002-2V6h1a1 1 0 100-2h-2V3a1 1 0 00-1-1H6zm2 4a1 1 0 112 0v7a1 1 0 11-2 0V6zm4 0a1 1 0 10-2 0v7a1 1 0 102 0V6z" clip-rule="evenodd"/>
-                    </svg>
-                    Delete
-                </button>
-            </form>
+            {# Issue #27 -- asset zone split:
+               Edit/Delete/Fetch-Host-Key affordances live exclusively in
+               the admin zone at `/assets/manage/{uuid}`. This page is the
+               user-facing "connect / request access" view; it never
+               renders mutation buttons regardless of the viewer's
+               privileges (admins should navigate to the admin
+               "Assets" sidebar entry under "Administration" for
+               those actions). #}
         </div>
     </div>
 
@@ -221,32 +192,23 @@
                 </div>
             </div>
             {% else %}
-            <!-- No key stored - no need to verify against server -->
+            {# Issue #27 -- the user-zone view never offers the
+               "Fetch Host Key" mutation; only an administrator can
+               trust a new key (gated by `assets:manage`). The user
+               sees a read-only warning and is invited to contact an
+               admin. The connect path is still hard-blocked by
+               `verify_ssh_host_key` when no trusted key exists, so
+               the warning is informational, not a bypass. #}
             <div id="ssh-host-key-section" class="p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg">
-                <div class="flex items-center justify-between">
-                    <div>
-                        <div class="flex items-center gap-2 text-amber-700 dark:text-amber-400">
-                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"></path></svg>
-                            <span class="font-medium">No Host Key Stored</span>
-                        </div>
-                        <p class="mt-1 text-sm text-gray-600 dark:text-gray-400">
-                            Connections to this server are not protected against MITM attacks.
-                            Fetch the host key to enable verification.
-                        </p>
-                    </div>
-                    <button
-                        hx-post="/assets/{{ asset.uuid }}/fetch-host-key"
-                        hx-target="#ssh-host-key-section"
-                        hx-swap="outerHTML"
-                        hx-indicator="#host-key-loading"
-                        class="px-3 py-1.5 text-sm bg-vauban-600 hover:bg-vauban-500 text-white rounded-md transition-colors flex items-center gap-2">
-                        <svg class="w-4 h-4 htmx-indicator hidden animate-spin" id="host-key-loading" fill="none" viewBox="0 0 24 24">
-                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                        </svg>
-                        Fetch Host Key
-                    </button>
+                <div class="flex items-center gap-2 text-amber-700 dark:text-amber-400">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"></path></svg>
+                    <span class="font-medium">No Host Key Stored</span>
                 </div>
+                <p class="mt-1 text-sm text-gray-600 dark:text-gray-400">
+                    Connections to this server are not protected against MITM attacks
+                    yet. Ask an administrator to fetch and trust the host key from
+                    the admin "Assets" page (Administration menu).
+                </p>
             </div>
             {% endif %}
         </div>

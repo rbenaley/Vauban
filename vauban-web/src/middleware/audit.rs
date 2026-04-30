@@ -421,7 +421,7 @@ mod tests {
 
     #[test]
     fn test_audit_log_long_path() {
-        let long_path = "/api/".to_string() + &"a".repeat(1000);
+        let long_path = "/api/".to_string() + "a".repeat(1000).as_str();
         let log = AuditLog {
             user_id: Some("user".to_string()),
             ip_address: Some("1.2.3.4".to_string()),

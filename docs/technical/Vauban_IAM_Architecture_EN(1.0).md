@@ -1359,7 +1359,7 @@ by `permission_context_middleware`. The full catalogue is:
 | `users`        | `users_manage_admins`        | superuser only      |
 | `assets`       | `assets_read`                | user, staff, superuser |
 | `assets`       | `assets_read_all`            | staff, superuser    |
-| `assets`       | `assets_write`               | staff, superuser    |
+| `assets`       | `assets_manage`              | staff, superuser    |
 | `groups`       | `groups_read`                | staff, superuser    |
 | `groups`       | `groups_write`               | superuser only      |
 | `groups`       | `groups_manage_members`      | staff, superuser    |
@@ -1382,6 +1382,54 @@ the privilege-separation boundary between `role:staff` and
 sensitive lifecycle operations (mint another superuser, mutate the
 group entity itself, bypass instance-level access rules when opening a
 session) remain reserved to superusers via the policy wildcard.
+
+##### `assets:read` vs `assets:manage` -- the asset zone split (issue #27)
+
+The asset surface is structurally split into two URL sub-trees with
+two distinct Casbin permissions:
+
+- `/assets/*` -- **user zone**, gated by `assets:read`. This is where
+  end users connect to assets they have an access rule for, request
+  access (JIT), and run the host-key verify HTMX flow. CRUD, deletion
+  and host-key fetch are absent: even an admin uses this sub-tree only
+  to consume sessions, not to manage assets.
+- `/assets/manage/*` -- **admin zone**, gated by `assets:manage`. The
+  pre-v1.0 `assets:write` permission was renamed to `assets:manage` to
+  emphasise its broader scope: every CRUD operation on assets, the
+  deleted-assets audit list, and the privileged "fetch SSH host key"
+  action all live here. The sub-tree is structurally session-free --
+  no Connect / Request / WebSocket reference may appear in
+  `handlers/web/manage_assets.rs`, `handlers/api/manage_assets.rs`,
+  `templates/assets/manage/`, enforced by
+  `scripts/check_no_session_in_manage_assets.sh` and
+  `tests/web/manage_assets_invariants_test.rs`.
+
+Defence-in-depth at the routing layer: the entire `/assets/manage`
+nest carries an additional `route_layer(require_assets_manage)` that
+returns 403 *before* the handler is reached when `assets_manage` is
+false. Each handler in `manage_assets.rs` ALSO re-asserts the flag in
+its body so a misconfiguration of either layer is caught by the
+other; the dual gate is asserted by
+`tests/web/manage_assets_invariants_test::manage_assets_every_handler_gates_on_assets_manage`.
+
+Anti-enumeration: because the routing-layer denial happens before any
+DB lookup, a `role:user` cannot use `/assets/manage/{random-uuid}` as
+an oracle for asset existence. Every denial collapses to the same 403
+body, pinned by `manage_assets_anti_enumeration_test.rs`.
+
+No legacy redirect: v1.0 has not shipped, so the pre-split admin URLs
+(`/assets/new`, `/assets/{uuid}/edit`, `/assets/{uuid}/delete`,
+`/assets/{uuid}/fetch-host-key`, `/assets/deleted` and the API
+equivalents under `/api/v1/assets/*`) are NOT mounted as 308
+redirects. Every UI form, HTMX fragment, CLI client and IaC
+integration MUST target `/assets/manage/*` (web) or
+`/api/v1/assets/manage/*` (API) directly. The absence is pinned by
+`tests/web/boot_smoke_test::main_rs_does_not_carry_legacy_asset_redirects`,
+which fails CI as soon as any `redirect_legacy_*` helper or any
+legacy admin route literal reappears in `main.rs`. If a future
+v1.x release ever needs migration redirects, reintroduce them
+together with a fresh boot-smoke test rather than by undoing the
+guard.
 
 All checks for one user happen **once per request**, in parallel via
 `tokio::join!`, regardless of how many handlers / template branches read them.

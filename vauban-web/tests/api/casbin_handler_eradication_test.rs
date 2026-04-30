@@ -161,16 +161,17 @@ async fn sessions_bypass_access_rules_staff_denied_without_rule() {
 }
 
 // ---------------------------------------------------------------------------
-// 3. ssh_fetch_host_key -- now requires assets:write (was `require_staff`).
+// 3. ssh_fetch_host_key -- now requires assets:manage (was `require_staff`,
+//    renamed from the legacy "write" action in issue #27 / asset zone split).
 // ---------------------------------------------------------------------------
 
 /// Regular user POSTs to `/api/v1/assets/{uuid}/ssh-host-key` and is
-/// rejected with 403 because they lack `assets:write`. The asset is
+/// rejected with 403 because they lack `assets:manage`. The asset is
 /// otherwise fully accessible (this is a pure permission test, not a
 /// not-found test).
 #[tokio::test]
 #[serial]
-async fn ssh_fetch_host_key_requires_assets_write() {
+async fn ssh_fetch_host_key_requires_assets_manage() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
@@ -180,7 +181,7 @@ async fn ssh_fetch_host_key_requires_assets_write() {
 
     let response = app
         .server
-        .post(&format!("/api/v1/assets/{}/ssh-host-key", asset.asset.uuid))
+        .post(&format!("/api/v1/assets/manage/{}/ssh-host-key", asset.asset.uuid))
         .add_header(header::AUTHORIZATION, app.auth_header(&user.token))
         .await;
 
@@ -206,14 +207,14 @@ async fn ssh_fetch_host_key_passes_gate_for_staff() {
 
     let response = app
         .server
-        .post(&format!("/api/v1/assets/{}/ssh-host-key", asset.asset.uuid))
+        .post(&format!("/api/v1/assets/manage/{}/ssh-host-key", asset.asset.uuid))
         .add_header(header::AUTHORIZATION, app.auth_header(&staff.token))
         .await;
 
     assert_ne!(
         response.status_code().as_u16(),
         403,
-        "staff (assets:write) MUST clear the permission gate; the proxy \
+        "staff (assets:manage) MUST clear the permission gate; the proxy \
          layer may then return another non-403 status"
     );
 

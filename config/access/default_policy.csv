@@ -3,7 +3,7 @@ p, role:staff, users, read
 p, role:staff, users, write
 p, role:staff, assets, read
 p, role:staff, assets, read_all
-p, role:staff, assets, write
+p, role:staff, assets, manage
 p, role:staff, sessions, read
 p, role:staff, sessions, write
 p, role:staff, sessions, supervise

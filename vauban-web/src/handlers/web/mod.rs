@@ -44,8 +44,8 @@ pub(crate) use crate::templates::accounts::{
 };
 pub(crate) use crate::templates::assets::asset_list::AssetListItem;
 pub(crate) use crate::templates::assets::{
-    AccessListTemplate, AssetDetailTemplate, AssetEditTemplate, AssetGroupDetailTemplate,
-    AssetGroupEditTemplate, AssetGroupListTemplate, AssetListTemplate,
+    AccessListTemplate, AssetEditTemplate, AssetGroupDetailTemplate, AssetGroupEditTemplate,
+    AssetGroupListTemplate, AssetListTemplate,
 };
 pub(crate) use crate::templates::base::{BaseTemplate, UserContext};
 pub(crate) use crate::templates::dashboard::widgets::{
@@ -69,6 +69,7 @@ mod assets;
 mod audit;
 mod dashboard;
 mod groups;
+mod manage_assets;
 mod rdp;
 mod sessions;
 mod ssh;
@@ -80,6 +81,7 @@ pub use assets::*;
 pub use audit::*;
 pub use dashboard::*;
 pub use groups::*;
+pub use manage_assets::*;
 pub use rdp::*;
 pub use sessions::*;
 pub use ssh::*;

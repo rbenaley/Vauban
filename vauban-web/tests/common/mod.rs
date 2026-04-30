@@ -380,26 +380,24 @@ fn build_test_router(state: AppState) -> Router {
                 .put(handlers::api::update_user)
                 .delete(|| async { (axum::http::StatusCode::NOT_IMPLEMENTED, "Not implemented") }),
         )
-        // Assets routes
+        // Assets routes -- USER ZONE only.
+        // Issue #27: every write / detail / SSH host-key endpoint moved
+        // under `/api/v1/assets/manage/*` (mounted further down with
+        // the require_assets_manage middleware). The DELETE stub at
+        // the legacy path mirrors production: an unsupported verb
+        // returns 501 Not Implemented instead of falling through to a
+        // generic 404.
         .route("/api/v1/assets", get(handlers::api::list_assets))
-        .route("/api/v1/assets", post(handlers::api::create_asset))
-        // DELETE stub returns 501 Not Implemented (not 200 OK)
         .route(
             "/api/v1/assets/{uuid}",
-            get(handlers::api::get_asset)
-                .put(handlers::api::update_asset)
-                .delete(|| async { (axum::http::StatusCode::NOT_IMPLEMENTED, "Not implemented") }),
+            axum::routing::delete(|| async {
+                (axum::http::StatusCode::NOT_IMPLEMENTED, "Not implemented")
+            }),
         )
-        // Asset Groups API
-        .route(
-            "/api/v1/assets/groups",
-            get(handlers::api::list_asset_groups),
-        )
-        .route(
-            "/api/v1/assets/groups/{uuid}/assets",
-            get(handlers::api::list_group_assets),
-        )
-        // Asset groups routes
+        // Asset groups POST -- this endpoint does not exist in
+        // production (asset groups are managed via the web routes
+        // under /assets/groups/*). Kept as a test-only fixture for
+        // pre-existing tests in `tests/api/asset_groups_test.rs`.
         .route(
             "/api/v1/assets/groups/{uuid}",
             post(handlers::web::update_asset_group),
@@ -470,23 +468,76 @@ fn build_test_router(state: AppState) -> Router {
             "/api/v1/sessions/{uuid}/terminate",
             post(handlers::api::terminate_session),
         )
-        .route(
-            "/assets/{uuid}/edit",
-            get(handlers::web::asset_edit).post(handlers::web::update_asset_web),
+        // ----------------------------------------------------------------
+        // Issue #27: USER zone -- `/assets` (list filtered by access
+        // rules) + `/assets/{uuid}` (connect / request-access page).
+        // Every other verb on `/assets/*` lives in the admin nest
+        // below and is gated by `require_assets_manage`. v1.0 has not
+        // shipped, so there are NO legacy admin routes mounted here:
+        // tests targeting CRUD MUST use `/assets/manage/*`.
+        // ----------------------------------------------------------------
+        .route("/assets", get(handlers::web::asset_list))
+        .route("/assets/{uuid}", get(handlers::web::asset_user_view))
+        // ----------------------------------------------------------------
+        // Issue #27: admin asset CRUD nest, mirrored from main.rs so
+        // gate-matrix and anti-enumeration tests exercise the same
+        // route_layer middleware as production.
+        // ----------------------------------------------------------------
+        .nest(
+            "/assets/manage",
+            Router::new()
+                .route("/", get(handlers::web::manage_asset_list))
+                .route(
+                    "/new",
+                    get(handlers::web::asset_create_form)
+                        .post(handlers::web::create_asset_web),
+                )
+                .route("/deleted", get(handlers::web::asset_deleted_list))
+                .route("/search", get(handlers::web::asset_search))
+                .route("/{uuid}", get(handlers::web::asset_detail))
+                .route(
+                    "/{uuid}/edit",
+                    get(handlers::web::asset_edit)
+                        .post(handlers::web::update_asset_web),
+                )
+                .route(
+                    "/{uuid}/delete",
+                    post(handlers::web::delete_asset_web),
+                )
+                .route(
+                    "/{uuid}/fetch-host-key",
+                    post(handlers::web::fetch_ssh_host_key),
+                )
+                .route_layer(axum::middleware::from_fn(
+                    middleware::require_assets_manage::require_assets_manage,
+                )),
         )
-        .route(
-            "/assets/{uuid}/delete",
-            post(handlers::web::delete_asset_web),
+        // ----------------------------------------------------------------
+        // Issue #27: API admin nest, same defence-in-depth as the web nest.
+        // ----------------------------------------------------------------
+        .nest(
+            "/api/v1/assets/manage",
+            Router::new()
+                .route("/", post(handlers::api::create_asset))
+                .route("/groups", get(handlers::api::list_asset_groups))
+                .route(
+                    "/groups/{uuid}/assets",
+                    get(handlers::api::list_group_assets),
+                )
+                .route(
+                    "/{uuid}",
+                    get(handlers::api::get_asset)
+                        .put(handlers::api::update_asset),
+                )
+                .route(
+                    "/{uuid}/ssh-host-key",
+                    get(handlers::api::get_ssh_host_key_status)
+                        .post(handlers::api::fetch_ssh_host_key_api),
+                )
+                .route_layer(axum::middleware::from_fn(
+                    middleware::require_assets_manage::require_assets_manage,
+                )),
         )
-        .route("/assets/new", get(handlers::web::asset_create_form))
-        // Issue #17: literal route MUST come before `/assets/{uuid}`.
-        .route("/assets/deleted", get(handlers::web::asset_deleted_list))
-        .route(
-            "/assets",
-            get(handlers::web::asset_list).post(handlers::web::create_asset_web),
-        )
-        .route("/assets/{uuid}", get(handlers::web::asset_detail))
-        .route("/assets/search", get(handlers::web::asset_search))
         // Access rules - literal routes MUST come before parameterized routes
         .route(
             "/assets/access/new",

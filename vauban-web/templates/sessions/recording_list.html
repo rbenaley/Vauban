@@ -16,31 +16,63 @@
         </div>
     </div>
 
-    <!-- Filters -->
+    {# Live HTMX filters (issue #28). Field order: Asset, Format.
+       Same pattern as the other lists. The auto-refresh trigger
+       below already targets `#recordings-list-container` via
+       `hx-select`; HTMX filtering reuses the same id so live
+       filtering and WebSocket-driven refresh coexist cleanly. #}
     <div class="bg-white dark:bg-gray-800 shadow rounded-lg p-4">
-        <form method="get" class="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div>
+                <label for="asset" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Asset</label>
+                <div class="relative mt-1">
+                    <div class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
+                        <svg class="h-5 w-5 text-gray-400" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clip-rule="evenodd"/>
+                        </svg>
+                    </div>
+                    <input type="search" name="asset" id="asset"
+                           value="{{ asset_filter.as_deref().unwrap_or_default() }}"
+                           placeholder="Search by asset name..."
+                           autocomplete="off"
+                           hx-get="/sessions/recordings"
+                           hx-trigger="input changed delay:300ms, search"
+                           hx-target="#recordings-list-container"
+                           hx-select="#recordings-list-container"
+                           hx-swap="outerHTML"
+                           hx-include="[name='asset'], [name='format']"
+                           hx-push-url="true"
+                           hx-indicator="#recordings-list-indicator"
+                           class="block w-full rounded-md border-0 py-2 pl-10 pr-3 text-gray-900 dark:text-white ring-1 ring-inset ring-gray-300 dark:ring-gray-600 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-vauban-600 dark:bg-gray-700 sm:text-sm">
+                </div>
+            </div>
             <div>
                 <label for="format" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Format</label>
                 <select name="format" id="format"
+                        hx-get="/sessions/recordings"
+                        hx-trigger="change"
+                        hx-target="#recordings-list-container"
+                        hx-select="#recordings-list-container"
+                        hx-swap="outerHTML"
+                        hx-include="[name='asset'], [name='format']"
+                        hx-push-url="true"
+                        hx-indicator="#recordings-list-indicator"
                         class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
                     <option value="">All formats</option>
                     <option value="ssh" {% if format_filter.as_deref() == Some("ssh") %}selected{% endif %}>Asciinema (SSH)</option>
                     <option value="rdp" {% if format_filter.as_deref() == Some("rdp") %}selected{% endif %}>H.264/AVC (RDP)</option>
                 </select>
             </div>
-            <div>
-                <label for="asset" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Asset</label>
-                <input type="text" name="asset" id="asset" value="{{ asset_filter.as_deref().unwrap_or_default() }}"
-                       placeholder="Search by asset name"
-                       class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
-            </div>
-            <div class="flex items-end">
-                <button type="submit"
-                        class="w-full rounded-md bg-vauban-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-600">
-                    Filter
-                </button>
-            </div>
-        </form>
+        </div>
+    </div>
+
+    <div id="recordings-list-indicator"
+         class="htmx-indicator pointer-events-none flex items-center justify-end gap-2 -mt-3 text-xs text-gray-500 dark:text-gray-400 transition-opacity opacity-0 [&.htmx-request]:opacity-100">
+        <svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+        </svg>
+        <span>Updating...</span>
     </div>
 
     <!-- Auto-refresh: WebSocket for instant updates + periodic polling as fallback -->
@@ -172,6 +204,18 @@
         {% endif %}
 
         {% else %}
+        {% if format_filter.is_some() || asset_filter.is_some() %}
+        <div class="px-4 py-12 sm:px-6 text-center">
+            <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"/>
+            </svg>
+            <h3 class="mt-2 text-sm font-semibold text-gray-900 dark:text-white">No recordings match your filters</h3>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                Try a different search term or
+                <a href="/sessions/recordings" class="text-vauban-600 hover:underline">clear all filters</a>.
+            </p>
+        </div>
+        {% else %}
         <div class="px-4 py-12 sm:px-6 text-center">
             <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/>
@@ -187,6 +231,7 @@
                 </a>
             </div>
         </div>
+        {% endif %}
         {% endif %}
     </div>
 </div>

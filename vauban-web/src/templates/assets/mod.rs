@@ -10,6 +10,7 @@ pub mod asset_edit;
 /// VAUBAN Web - Assets templates.
 pub mod asset_list;
 pub mod group_add_asset;
+pub mod manage;
 pub mod group_create;
 pub mod group_detail;
 pub mod group_edit;

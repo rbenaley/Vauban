@@ -27,6 +27,7 @@ mod tests {
             user: create_test_user(),
             is_dashboard: true,
             is_assets: false,
+            is_manage_assets: false,
             is_sessions: false,
             is_recordings: false,
             is_users: false,

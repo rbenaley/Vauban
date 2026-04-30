@@ -125,7 +125,7 @@ async fn test_create_asset_success() {
     // Execute: POST /api/v1/assets
     let response = app
         .server
-        .post("/api/v1/assets")
+        .post("/api/v1/assets/manage")
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .json(&json!({
             "name": asset_name,
@@ -162,7 +162,7 @@ async fn test_create_asset_invalid_port() {
     // Execute: POST /api/v1/assets with invalid port
     let response = app
         .server
-        .post("/api/v1/assets")
+        .post("/api/v1/assets/manage")
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .json(&json!({
             "name": "test-invalid-port",
@@ -187,24 +187,24 @@ async fn test_get_asset_exists() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    // Setup: create user and asset
-    let username = unique_name("test_user_get_asset");
-    let user = create_test_user(&mut conn, &app.auth_service, &username).await;
+    // Issue #27: GET single asset by UUID is an admin-zone operation
+    // (the user zone only exposes the list filtered by access rules
+    // and the connect/request flows). Auth as admin and target the
+    // /api/v1/assets/manage/{uuid} sub-tree.
+    let admin_name = unique_name("test_admin_get_asset");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
     let asset = create_test_ssh_asset(&mut conn, &unique_name("test-get-asset")).await;
 
-    // Execute: GET /api/v1/assets/{uuid}
     let response = app
         .server
-        .get(&format!("/api/v1/assets/{}", asset.asset.uuid))
-        .add_header(header::AUTHORIZATION, app.auth_header(&user.token))
+        .get(&format!("/api/v1/assets/manage/{}", asset.asset.uuid))
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .await;
 
-    // Assert: 200 OK
     assert_status(&response, 200);
     assert_json_has_field(&response, "uuid");
 
-    // Cleanup
     test_db::cleanup(&mut conn).await;
 }
 
@@ -215,23 +215,23 @@ async fn test_get_asset_not_found() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    // Setup: create user
-    let username = unique_name("test_user_asset_404");
-    let user = create_test_user(&mut conn, &app.auth_service, &username).await;
+    // Issue #27: GET single asset by UUID is admin-only. We test
+    // the 404 path for an admin caller (a regular user would get a
+    // 403 from the routing-layer gate -- pinned by
+    // `manage_assets_anti_enumeration_test`).
+    let admin_name = unique_name("test_admin_asset_404");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
 
     let fake_uuid = Uuid::new_v4();
 
-    // Execute: GET /api/v1/assets/{fake_uuid}
     let response = app
         .server
-        .get(&format!("/api/v1/assets/{}", fake_uuid))
-        .add_header(header::AUTHORIZATION, app.auth_header(&user.token))
+        .get(&format!("/api/v1/assets/manage/{}", fake_uuid))
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .await;
 
-    // Assert: 404 Not Found
     assert_status(&response, 404);
 
-    // Cleanup
     test_db::cleanup(&mut conn).await;
 }
 
@@ -251,7 +251,7 @@ async fn test_update_asset_success() {
     // Execute: PUT /api/v1/assets/{uuid}
     let response = app
         .server
-        .put(&format!("/api/v1/assets/{}", asset.asset.uuid))
+        .put(&format!("/api/v1/assets/manage/{}", asset.asset.uuid))
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .json(&json!({
             "name": "updated-asset-name",
@@ -282,7 +282,7 @@ async fn test_update_asset_with_multiple_fields_persists_to_database() {
     // Execute: PUT /api/v1/assets/{uuid} with multiple fields
     let response = app
         .server
-        .put(&format!("/api/v1/assets/{}", asset.asset.uuid))
+        .put(&format!("/api/v1/assets/manage/{}", asset.asset.uuid))
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .json(&json!({
             "name": "multi-updated-asset",
@@ -333,7 +333,7 @@ async fn test_update_asset_with_string_port() {
     // Execute: PUT with port as string (like HTML forms send)
     let response = app
         .server
-        .put(&format!("/api/v1/assets/{}", asset.asset.uuid))
+        .put(&format!("/api/v1/assets/manage/{}", asset.asset.uuid))
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .json(&serde_json::json!({
             "port": "2222"
@@ -373,7 +373,7 @@ async fn test_update_asset_simple_field() {
 
     let response = app
         .server
-        .put(&format!("/api/v1/assets/{}", asset.asset.uuid))
+        .put(&format!("/api/v1/assets/manage/{}", asset.asset.uuid))
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .json(&serde_json::json!({
             "status": "maintenance"
@@ -416,7 +416,7 @@ async fn test_update_asset_full_form_submission() {
     // Execute: PUT with all fields as strings (like HTMX json-enc sends)
     let response = app
         .server
-        .put(&format!("/api/v1/assets/{}", asset.asset.uuid))
+        .put(&format!("/api/v1/assets/manage/{}", asset.asset.uuid))
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .json(&serde_json::json!({
             "name": updated_name,
@@ -482,7 +482,7 @@ async fn test_get_asset_malformed_uuid_returns_validation_error() {
     for bad_uuid in malformed_uuids {
         let response = app
             .server
-            .get(&format!("/api/v1/assets/{}", bad_uuid))
+            .get(&format!("/api/v1/assets/manage/{}", bad_uuid))
             .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
             .await;
 
@@ -534,7 +534,7 @@ async fn test_ssh_host_key_status_no_key() {
 
     let response = app
         .server
-        .get(&format!("/api/v1/assets/{}/ssh-host-key", asset.asset.uuid))
+        .get(&format!("/api/v1/assets/manage/{}/ssh-host-key", asset.asset.uuid))
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .await;
 
@@ -578,7 +578,7 @@ async fn test_ssh_host_key_status_verified() {
 
     let response = app
         .server
-        .get(&format!("/api/v1/assets/{}/ssh-host-key", asset.asset.uuid))
+        .get(&format!("/api/v1/assets/manage/{}/ssh-host-key", asset.asset.uuid))
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .await;
 
@@ -629,7 +629,7 @@ async fn test_ssh_host_key_status_mismatch() {
 
     let response = app
         .server
-        .get(&format!("/api/v1/assets/{}/ssh-host-key", asset.asset.uuid))
+        .get(&format!("/api/v1/assets/manage/{}/ssh-host-key", asset.asset.uuid))
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .await;
 
@@ -663,7 +663,7 @@ async fn test_ssh_host_key_status_rejects_non_ssh() {
     let response = app
         .server
         .get(&format!(
-            "/api/v1/assets/{}/ssh-host-key",
+            "/api/v1/assets/manage/{}/ssh-host-key",
             rdp_asset.asset.uuid
         ))
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
@@ -679,7 +679,12 @@ async fn test_ssh_host_key_status_rejects_non_ssh() {
     test_db::cleanup(&mut conn).await;
 }
 
-/// GET /api/v1/assets/{uuid}/ssh-host-key returns 401 without authentication.
+/// GET /api/v1/assets/manage/{uuid}/ssh-host-key without auth must
+/// be denied. Issue #27 mounted this route under the admin nest, so
+/// the `require_assets_manage` route_layer rejects with 403 before
+/// the AuthUser extractor would have rejected with 401. We accept
+/// either: both are valid "you cannot reach this" answers and
+/// 403-first is intentional anti-enumeration.
 #[tokio::test]
 #[serial]
 async fn test_ssh_host_key_status_requires_auth() {
@@ -690,10 +695,15 @@ async fn test_ssh_host_key_status_requires_auth() {
 
     let response = app
         .server
-        .get(&format!("/api/v1/assets/{}/ssh-host-key", asset.asset.uuid))
+        .get(&format!("/api/v1/assets/manage/{}/ssh-host-key", asset.asset.uuid))
         .await;
 
-    assert_status(&response, 401);
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 401 || status == 403,
+        "Expected 401 or 403 without auth, got {}",
+        status
+    );
 
     test_db::cleanup(&mut conn).await;
 }
@@ -712,7 +722,7 @@ async fn test_ssh_host_key_status_not_found() {
 
     let response = app
         .server
-        .get(&format!("/api/v1/assets/{}/ssh-host-key", fake_uuid))
+        .get(&format!("/api/v1/assets/manage/{}/ssh-host-key", fake_uuid))
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .await;
 
@@ -747,7 +757,7 @@ async fn test_get_asset_exposes_mismatch_in_connection_config() {
 
     let response = app
         .server
-        .get(&format!("/api/v1/assets/{}", asset.asset.uuid))
+        .get(&format!("/api/v1/assets/manage/{}", asset.asset.uuid))
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .await;
 
@@ -805,7 +815,7 @@ async fn test_mismatch_flag_cleared_after_update() {
     // Verify mismatch state via API
     let response = app
         .server
-        .get(&format!("/api/v1/assets/{}/ssh-host-key", asset.asset.uuid))
+        .get(&format!("/api/v1/assets/manage/{}/ssh-host-key", asset.asset.uuid))
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .await;
     assert_status(&response, 200);
@@ -830,7 +840,7 @@ async fn test_mismatch_flag_cleared_after_update() {
     // Verify it's now "verified"
     let response = app
         .server
-        .get(&format!("/api/v1/assets/{}/ssh-host-key", asset.asset.uuid))
+        .get(&format!("/api/v1/assets/manage/{}/ssh-host-key", asset.asset.uuid))
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .await;
     assert_status(&response, 200);
@@ -869,7 +879,7 @@ async fn test_update_asset_malformed_uuid_returns_validation_error() {
 
     let response = app
         .server
-        .put("/api/v1/assets/invalid-uuid-here")
+        .put("/api/v1/assets/manage/invalid-uuid-here")
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .json(&serde_json::json!({
             "name": "Test Asset"

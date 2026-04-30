@@ -125,15 +125,16 @@ async fn test_asset_detail_delete_form_is_htmx_driven() {
     let asset_id = create_test_asset_in_group(&mut conn, &asset_name, admin_id, &ag).await;
     let asset_uuid = crate::fixtures::get_asset_uuid(&mut conn, asset_id).await;
 
+    // Issue #27: the Delete affordance lives in the admin zone.
     let response = app
         .server
-        .get(&format!("/assets/{}", asset_uuid))
+        .get(&format!("/assets/manage/{}", asset_uuid))
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
     assert_status(&response, 200);
 
     let body = response.text();
-    let endpoint = format!("/assets/{}/delete", asset_uuid);
+    let endpoint = format!("/assets/manage/{}/delete", asset_uuid);
 
     assert!(
         body.contains(&format!("hx-post=\"{}\"", endpoint)),
@@ -399,15 +400,17 @@ async fn test_htmx_delete_asset_returns_hx_redirect() {
 
     let asset = create_test_ssh_asset(&mut conn, &unique_name("bug12-htmx-asset")).await;
 
+    // Issue #27: delete lives in the admin zone; HX-Redirect points
+    // back to the admin landing page after a successful delete.
     let response = app
         .server
-        .post(&format!("/assets/{}/delete", asset.asset.uuid))
+        .post(&format!("/assets/manage/{}/delete", asset.asset.uuid))
         .add_header(COOKIE, auth_csrf_cookie(&token, &csrf))
         .add_header("HX-Request", "true")
         .form(&[("csrf_token", csrf.as_str())])
         .await;
 
-    assert_hx_redirect(&response, "/assets");
+    assert_hx_redirect(&response, "/assets/manage");
 
     use vauban_web::schema::assets;
     let is_deleted: bool = assets::table
@@ -622,15 +625,16 @@ async fn test_native_delete_asset_keeps_303_redirect() {
 
     let asset = create_test_ssh_asset(&mut conn, &unique_name("bug12-native-asset")).await;
 
+    // Issue #27: native fallback also targets the admin zone now.
     let response = app
         .server
-        .post(&format!("/assets/{}/delete", asset.asset.uuid))
+        .post(&format!("/assets/manage/{}/delete", asset.asset.uuid))
         .add_header(COOKIE, auth_csrf_cookie(&token, &csrf))
         // explicitly DO NOT set HX-Request
         .form(&[("csrf_token", csrf.as_str())])
         .await;
 
-    assert_native_redirect(&response, "/assets");
+    assert_native_redirect(&response, "/assets/manage");
 
     use vauban_web::schema::assets;
     let is_deleted: bool = assets::table

@@ -1,0 +1,305 @@
+{% extends "base.html" %}
+
+{% block title %}{{ asset.name }} - Assets - {{ vauban.brand_name }}{% endblock %}
+
+{% block content %}
+{# Issue #27 -- admin asset detail (`/assets/manage/{uuid}`).
+
+   The layout intentionally mirrors the pre-split `asset_detail.html`
+   so admins land on a familiar surface: same breadcrumb, same
+   "Connection Details" / "SSH Host Key" / "System Information" /
+   "Metadata" sections, same back-link. The only difference is in the
+   header action bar: Connect / Request / Justification are GONE
+   (the admin zone never opens sessions; user-zone view at
+   `/assets/{uuid}` keeps those affordances). Edit / Delete /
+   Fetch-host-key are restored here as the admin's privileged
+   actions. The "no session-opening token" invariant is asserted by
+   `tests/web/manage_assets_invariants_test.rs`. #}
+<div class="space-y-6">
+    <!-- Header -->
+    <div class="md:flex md:items-center md:justify-between">
+        <div class="min-w-0 flex-1">
+            <nav class="flex overflow-x-auto" aria-label="Breadcrumb">
+                <ol class="flex items-center space-x-2 whitespace-nowrap">
+                    <li>
+                        <a href="/assets/manage" class="text-gray-400 hover:text-gray-500 dark:text-gray-500 dark:hover:text-gray-400">
+                            <svg class="h-5 w-5 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd" d="M9.293 2.293a1 1 0 011.414 0l7 7A1 1 0 0117 11h-1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-3a1 1 0 00-1-1H9a1 1 0 00-1 1v3a1 1 0 01-1 1H5a1 1 0 01-1-1v-6H3a1 1 0 01-.707-1.707l7-7z" clip-rule="evenodd"/>
+                            </svg>
+                        </a>
+                    </li>
+                    <li>
+                        <div class="flex items-center">
+                            <svg class="h-5 w-5 flex-shrink-0 text-gray-300 dark:text-gray-600" viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd"/>
+                            </svg>
+                            <a href="/assets/manage" class="ml-2 text-sm font-medium text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300">Assets</a>
+                        </div>
+                    </li>
+                    <li>
+                        <div class="flex items-center">
+                            <svg class="h-5 w-5 flex-shrink-0 text-gray-300 dark:text-gray-600" viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd"/>
+                            </svg>
+                            <span class="ml-2 text-sm font-medium text-gray-500 dark:text-gray-400">{{ asset.name }}</span>
+                        </div>
+                    </li>
+                </ol>
+            </nav>
+            <div class="mt-2 flex items-center">
+                <span class="inline-flex h-10 w-10 items-center justify-center rounded-lg mr-3
+                    {% if asset.asset_type == "ssh" %}bg-green-100 dark:bg-green-900/50
+                    {% else if asset.asset_type == "rdp" %}bg-blue-100 dark:bg-blue-900/50
+                    {% else %}bg-purple-100 dark:bg-purple-900/50{% endif %}">
+                    <span class="text-sm font-bold
+                        {% if asset.asset_type == "ssh" %}text-green-600 dark:text-green-400
+                        {% else if asset.asset_type == "rdp" %}text-blue-600 dark:text-blue-400
+                        {% else %}text-purple-600 dark:text-purple-400{% endif %}">
+                        {{ asset.asset_type|upper }}
+                    </span>
+                </span>
+                <h2 class="text-xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-2xl lg:text-3xl sm:tracking-tight">
+                    {{ asset.name }}
+                </h2>
+                <span class="ml-3 inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium
+                    {% if asset.status == "online" %}bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300
+                    {% else if asset.status == "offline" %}bg-red-100 text-red-800 dark:bg-red-900/50 dark:text-red-300
+                    {% else if asset.status == "maintenance" %}bg-yellow-100 text-yellow-800 dark:bg-yellow-900/50 dark:text-yellow-300
+                    {% else %}bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300{% endif %}">
+                    {{ asset.status|capitalize }}
+                </span>
+            </div>
+        </div>
+        <div class="mt-4 flex flex-wrap gap-2 md:ml-4 md:mt-0 md:flex-nowrap md:space-x-3 md:gap-0">
+            {# Issue #27 -- admin actions only. Connect / Request /
+               Justification are intentionally absent: the user zone at
+               `/assets/{uuid}` carries those affordances. The admin
+               zone is structurally session-free (asserted by
+               `tests/web/manage_assets_invariants_test.rs`). #}
+            <a href="/assets/manage/{{ asset.uuid }}/edit"
+               class="inline-flex items-center rounded-md bg-white dark:bg-gray-700 px-3 py-2 text-sm font-semibold text-gray-900 dark:text-white shadow-sm ring-1 ring-inset ring-gray-300 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600">
+                <svg class="-ml-0.5 mr-1.5 h-5 w-5 text-gray-400" viewBox="0 0 20 20" fill="currentColor">
+                    <path d="M2.695 14.763l-1.262 3.154a.5.5 0 00.65.65l3.155-1.262a4 4 0 001.343-.885L17.5 5.5a2.121 2.121 0 00-3-3L3.58 13.42a4 4 0 00-.885 1.343z"/>
+                </svg>
+                Edit
+            </a>
+            {# Styled-modal delete confirmation (BUG-12 / issue #19): the
+               `hx-confirm` attribute is the defense-in-depth fallback;
+               the @htmx:confirm.prevent handler invokes the Alpine
+               store. Resource-name strings live in `data-confirm-*`
+               attributes so askama's HTML-escape covers them and they
+               never enter a JS-parsed string context. #}
+            <form hx-post="/assets/manage/{{ asset.uuid }}/delete"
+                  hx-confirm="Delete asset '{{ asset.name }}' ({{ asset.hostname }})? This cannot be undone."
+                  data-confirm-title="Delete asset"
+                  data-confirm-message="Delete asset '{{ asset.name }}' ({{ asset.hostname }})?&#10;Vauban deletes are structurally final -- there is no restore."
+                  data-confirm-label="Delete asset"
+                  @htmx:confirm.prevent="$store.deleteConfirm.openWith({
+                      title: $el.dataset.confirmTitle,
+                      message: $el.dataset.confirmMessage,
+                      confirmLabel: $el.dataset.confirmLabel,
+                      sourceEvent: $event
+                  })"
+                  hx-swap="none"
+                  x-data="csrf">
+                <input type="hidden" name="csrf_token" x-model="token" />
+                <button type="submit"
+                        class="inline-flex items-center rounded-md bg-red-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-red-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-600">
+                    <svg class="-ml-0.5 mr-1.5 h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd" d="M6 2a1 1 0 00-1 1v1H3a1 1 0 000 2h1v9a2 2 0 002 2h8a2 2 0 002-2V6h1a1 1 0 100-2h-2V3a1 1 0 00-1-1H6zm2 4a1 1 0 112 0v7a1 1 0 11-2 0V6zm4 0a1 1 0 10-2 0v7a1 1 0 102 0V6z" clip-rule="evenodd"/>
+                    </svg>
+                    Delete
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Connection Details -->
+    <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
+            <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Connection Details</h3>
+        </div>
+        <div class="px-4 py-5 sm:p-6">
+            <dl class="grid grid-cols-1 gap-x-4 gap-y-6 sm:grid-cols-2 lg:grid-cols-3">
+                <div>
+                    <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Hostname</dt>
+                    <dd class="mt-1 text-sm text-gray-900 dark:text-white font-mono break-all">{{ asset.hostname }}</dd>
+                </div>
+                <div>
+                    <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Port</dt>
+                    <dd class="mt-1 text-sm text-gray-900 dark:text-white font-mono">{{ asset.port }}</dd>
+                </div>
+                <div>
+                    <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Type</dt>
+                    <dd class="mt-1">
+                        <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium
+                            {% if asset.asset_type == "ssh" %}bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300
+                            {% else if asset.asset_type == "rdp" %}bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-300
+                            {% else %}bg-purple-100 text-purple-800 dark:bg-purple-900/50 dark:text-purple-300{% endif %}">
+                            {{ asset.asset_type|upper }}
+                        </span>
+                    </dd>
+                </div>
+                <div>
+                    <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Status</dt>
+                    <dd class="mt-1">
+                        <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium
+                            {% if asset.status == "online" %}bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300
+                            {% else if asset.status == "offline" %}bg-red-100 text-red-800 dark:bg-red-900/50 dark:text-red-300
+                            {% else if asset.status == "maintenance" %}bg-yellow-100 text-yellow-800 dark:bg-yellow-900/50 dark:text-yellow-300
+                            {% else %}bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300{% endif %}">
+                            {{ asset.status|capitalize }}
+                        </span>
+                    </dd>
+                </div>
+                {% if asset.group_name.is_some() %}
+                <div>
+                    <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Group</dt>
+                    <dd class="mt-1 text-sm">
+                        {% if asset.group_uuid.is_some() %}
+                        <a href="/assets/groups/{{ asset.group_uuid.as_ref().unwrap() }}" class="text-vauban-600 hover:text-vauban-500 dark:text-vauban-400">
+                            {{ asset.group_name.as_ref().unwrap() }}
+                        </a>
+                        {% else %}
+                        {{ asset.group_name.as_ref().unwrap() }}
+                        {% endif %}
+                    </dd>
+                </div>
+                {% endif %}
+            </dl>
+        </div>
+    </div>
+
+    <!-- SSH Host Key Verification - Only for SSH assets -->
+    {% if asset.asset_type == "ssh" %}
+    <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
+            <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">SSH Host Key</h3>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                Verify the server's SSH host key to prevent man-in-the-middle attacks.
+            </p>
+        </div>
+        <div class="px-4 py-5 sm:p-6">
+            {# The read-only `verify-host-key` HTMX endpoint stays in
+               the user-zone URL space (`/assets/{uuid}/verify-host-key`)
+               because it is gated on `assets:read` -- admins have it
+               for free. Only the privileged `fetch-host-key` mutation
+               (which trusts a new key) lives under
+               `/assets/manage/*`. The Fetch button is rendered from
+               the no-key fragment returned by the verify endpoint
+               and points at `/assets/manage/{uuid}/fetch-host-key`. #}
+            {% if let Some(fp) = asset.ssh_host_key_fingerprint %}
+            <div id="ssh-host-key-section"
+                 hx-get="/assets/{{ asset.uuid }}/verify-host-key"
+                 hx-trigger="load"
+                 hx-swap="outerHTML"
+                 class="p-4 bg-gray-50 dark:bg-gray-700/30 border border-gray-200 dark:border-gray-600 rounded-lg">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <div class="flex items-center gap-2 text-gray-500 dark:text-gray-400">
+                            <svg class="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            <span class="font-medium">Verifying host key...</span>
+                            {% if asset.ssh_host_key_mismatch %}
+                            <span class="ml-2 inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-800 dark:bg-red-900/50 dark:text-red-300">mismatch</span>
+                            {% endif %}
+                        </div>
+                        <p class="mt-1 text-sm text-gray-500 dark:text-gray-400 font-mono break-all">{{ fp }}</p>
+                    </div>
+                </div>
+            </div>
+            {% else %}
+            <!-- No key stored - admin can fetch it from this page. -->
+            <div id="ssh-host-key-section" class="p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg">
+                <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div class="flex-1 min-w-0">
+                        <div class="flex items-center gap-2 text-amber-700 dark:text-amber-400">
+                            <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"></path></svg>
+                            <span class="font-medium">No Host Key Stored</span>
+                        </div>
+                        <p class="mt-1 text-sm text-gray-600 dark:text-gray-400">
+                            Connections to this server are not protected against MITM attacks.
+                            Fetch the host key to enable verification.
+                        </p>
+                    </div>
+                    <form hx-post="/assets/manage/{{ asset.uuid }}/fetch-host-key"
+                          hx-target="#ssh-host-key-section"
+                          hx-swap="outerHTML"
+                          hx-indicator="#host-key-loading"
+                          x-data="csrf"
+                          class="flex-shrink-0">
+                        <input type="hidden" name="csrf_token" x-model="token" />
+                        <button type="submit"
+                                class="px-3 py-1.5 text-sm bg-vauban-600 hover:bg-vauban-500 text-white rounded-md transition-colors flex items-center gap-2">
+                            <svg class="w-4 h-4 htmx-indicator hidden animate-spin" id="host-key-loading" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            Fetch Host Key
+                        </button>
+                    </form>
+                </div>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- System Information -->
+    <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
+            <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">System Information</h3>
+        </div>
+        <div class="px-4 py-5 sm:p-6">
+            <dl class="grid grid-cols-1 gap-x-4 gap-y-6 sm:grid-cols-2">
+                <div class="sm:col-span-2">
+                    <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Description</dt>
+                    <dd class="mt-1 text-sm text-gray-900 dark:text-white">
+                        {% if asset.description.is_some() %}
+                        {{ asset.description.as_ref().unwrap() }}
+                        {% else %}
+                        <span class="text-gray-400 dark:text-gray-500 italic">No description</span>
+                        {% endif %}
+                    </dd>
+                </div>
+            </dl>
+        </div>
+    </div>
+
+    <!-- Metadata -->
+    <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
+            <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Metadata</h3>
+        </div>
+        <div class="px-4 py-5 sm:p-6">
+            <dl class="grid grid-cols-1 gap-x-4 gap-y-6 sm:grid-cols-2">
+                <div>
+                    <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Created</dt>
+                    <dd class="mt-1 text-sm text-gray-900 dark:text-white">{{ asset.created_at }}</dd>
+                </div>
+                <div>
+                    <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Last Updated</dt>
+                    <dd class="mt-1 text-sm text-gray-900 dark:text-white">{{ asset.updated_at }}</dd>
+                </div>
+                <div>
+                    <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">UUID</dt>
+                    <dd class="mt-1 text-sm text-gray-900 dark:text-white font-mono text-xs break-all">{{ asset.uuid }}</dd>
+                </div>
+            </dl>
+        </div>
+    </div>
+
+    <!-- Back Button -->
+    <div class="flex justify-start">
+        <a href="/assets/manage"
+           class="inline-flex items-center rounded-md bg-white dark:bg-gray-700 px-3 py-2 text-sm font-semibold text-gray-900 dark:text-white shadow-sm ring-1 ring-inset ring-gray-300 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600">
+            <svg class="-ml-0.5 mr-1.5 h-5 w-5 text-gray-400" viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M17 10a.75.75 0 01-.75.75H5.612l4.158 3.96a.75.75 0 11-1.04 1.08l-5.5-5.25a.75.75 0 010-1.08l5.5-5.25a.75.75 0 111.04 1.08L5.612 9.25H16.25A.75.75 0 0117 10z" clip-rule="evenodd"/>
+            </svg>
+            Back to Assets
+        </a>
+    </div>
+</div>
+{% endblock %}

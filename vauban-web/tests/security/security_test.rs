@@ -588,7 +588,7 @@ async fn test_regular_user_cannot_create_asset() {
 
     let response = app
         .server
-        .post("/api/v1/assets")
+        .post("/api/v1/assets/manage")
         .add_header(header::AUTHORIZATION, app.auth_header(&regular_user.token))
         .json(&json!({
             "name": "Unauthorized Asset",
@@ -828,7 +828,7 @@ async fn test_input_validation_asset_creation() {
     // Test invalid port number
     let response = app
         .server
-        .post("/api/v1/assets")
+        .post("/api/v1/assets/manage")
         .add_header(header::AUTHORIZATION, app.auth_header(&test_user.token))
         .json(&json!({
             "name": "Invalid Asset",
@@ -843,7 +843,7 @@ async fn test_input_validation_asset_creation() {
     // Test empty name
     let response = app
         .server
-        .post("/api/v1/assets")
+        .post("/api/v1/assets/manage")
         .add_header(header::AUTHORIZATION, app.auth_header(&test_user.token))
         .json(&json!({
             "name": "",
@@ -3116,7 +3116,7 @@ async fn test_xss_sanitized_in_web_asset_create() {
 
     let _response = app
         .server
-        .post("/assets")
+        .post("/assets/manage/new")
         .add_header(
             header::COOKIE,
             format!("access_token={}; __vauban_csrf={}", admin.token, csrf_token),
@@ -3275,7 +3275,7 @@ async fn test_xss_sanitized_in_api_create_asset() {
 
     let response = app
         .server
-        .post("/api/v1/assets")
+        .post("/api/v1/assets/manage")
         .add_header(header::AUTHORIZATION, format!("Bearer {}", admin.token))
         .json(&json!({
             "name": "<script>alert('xss')</script>APIServer",
@@ -4347,7 +4347,9 @@ async fn test_fetch_host_key_detects_key_change() {
 #[tokio::test]
 #[serial]
 async fn test_api_fetch_host_key_detects_key_change() {
-    let api_source = include_str!("../../src/handlers/api/assets.rs");
+    // Issue #27: the SSH host-key fetch / confirm flow lives in the
+    // admin zone. The handler moved to handlers/api/manage_assets.rs.
+    let api_source = include_str!("../../src/handlers/api/manage_assets.rs");
 
     assert!(
         api_source.contains("stored_host_key"),
@@ -4498,7 +4500,8 @@ async fn test_fetch_handler_clears_mismatch_flag() {
         "fetch handler must remove the mismatch flag when storing a new key"
     );
 
-    let api_source = include_str!("../../src/handlers/api/assets.rs");
+    // Issue #27: API fetch handler moved to manage_assets.rs.
+    let api_source = include_str!("../../src/handlers/api/manage_assets.rs");
     assert!(
         api_source.contains(r#"m.remove("ssh_host_key_mismatch")"#),
         "API fetch handler must remove the mismatch flag when storing a new key"
@@ -4510,7 +4513,8 @@ async fn test_fetch_handler_clears_mismatch_flag() {
 #[tokio::test]
 #[serial]
 async fn test_api_get_ssh_host_key_status_endpoint_exists() {
-    let api_source = include_str!("../../src/handlers/api/assets.rs");
+    // Issue #27: SSH host-key status endpoint moved to manage_assets.rs.
+    let api_source = include_str!("../../src/handlers/api/manage_assets.rs");
 
     assert!(
         api_source.contains("get_ssh_host_key_status"),
@@ -4727,7 +4731,8 @@ async fn test_fetch_web_handler_passes_supervisor() {
 #[tokio::test]
 #[serial]
 async fn test_fetch_api_handler_passes_supervisor() {
-    let api_source = include_str!("../../src/handlers/api/assets.rs");
+    // Issue #27: SSH host-key fetch API moved to manage_assets.rs.
+    let api_source = include_str!("../../src/handlers/api/manage_assets.rs");
 
     assert!(
         api_source.contains("supervisor_ref"),
@@ -5150,7 +5155,8 @@ fn test_connect_ssh_decrypts_via_vault() {
 /// Asset creation must encrypt credentials via vault.
 #[test]
 fn test_asset_creation_encrypts_via_vault() {
-    let source = include_str!("../../src/handlers/web/assets.rs");
+    // Issue #27: asset CRUD moved to manage_assets.rs (admin zone).
+    let source = include_str!("../../src/handlers/web/manage_assets.rs");
     assert!(
         source.contains("encrypt_connection_config"),
         "asset creation/edit must call encrypt_connection_config for credential encryption"

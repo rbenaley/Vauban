@@ -51,6 +51,31 @@
             <li>
                 <div class="text-xs font-semibold leading-6 text-gray-400">Administration</div>
                 <ul role="list" class="-mx-2 mt-2 space-y-1">
+                    {# Issue #27 -- admin asset CRUD entry. Labelled
+                       simply "Assets" to mirror the user-zone link in
+                       the upper section: the user-zone "Assets"
+                       (gated `assets:read`) only exposes Connect /
+                       Request, while this admin "Assets" entry
+                       (gated `assets:manage`) opens the full CRUD
+                       surface under `/assets/manage/*`. The icon is
+                       intentionally kept (gear/settings) to keep the
+                       admin entry visually distinct in the sidebar.
+                       Both `manage_assets` handlers and the
+                       `require_assets_manage` middleware enforce the
+                       same gate server-side. #}
+                    {% if sc.perms.assets_manage %}
+                    <li>
+                        <a href="/assets/manage"
+                           class="group flex gap-x-3 rounded-md p-2 text-sm font-semibold leading-6 {% if sc.is_manage_assets %}bg-gray-800 text-white{% else %}text-gray-400 hover:bg-gray-800 hover:text-white{% endif %}">
+                            <svg class="h-6 w-6 shrink-0" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37a1.724 1.724 0 002.572-1.065z"/>
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                            </svg>
+                            Assets
+                        </a>
+                    </li>
+                    {% endif %}
+
                     <!-- Users -->
                     <li>
                         <a href="/accounts/users"
@@ -133,20 +158,17 @@
                     </li>
                     {% endif %}
 
-                    {# Issue #17: audit-only view of soft-deleted assets. #}
-                    {# Gated on the same permission as the active asset list, since #}
-                    {# the rows are still asset records (just irreversibly retired). #}
-                    {% if sc.perms.assets_read %}
-                    <li>
-                        <a href="/assets/deleted"
-                           class="group flex gap-x-3 rounded-md p-2 text-sm font-semibold leading-6 text-gray-400 hover:bg-gray-800 hover:text-white">
-                            <svg class="h-6 w-6 shrink-0" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0"/>
-                            </svg>
-                            Deleted assets
-                        </a>
-                    </li>
-                    {% endif %}
+                    {# Issue #17 + #27: the deleted-assets audit view
+                       remains accessible at `/assets/manage/deleted`
+                       as a sub-section of Assets (entered via the
+                       "Deleted" button on the `/assets/manage` list
+                       header). The standalone sidebar entry has been
+                       removed to declutter the navigation: deletion
+                       is irreversible (RG-ASS-04) and the audit view
+                       is consulted from the asset catalogue itself,
+                       not as a top-level destination. The
+                       `assets_manage` middleware still gates the
+                       route server-side. #}
                 </ul>
             </li>
             {% endif %}

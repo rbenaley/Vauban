@@ -1462,10 +1462,18 @@ fn test_connect_rdp_no_longer_bypasses_access_rules_for_privileged_users() {
 // `vauban-access` policy lookup. The guards below catch any regression.
 
 fn asset_detail_source() -> &'static str {
+    // Issue #27: the user-zone equivalent of the legacy `asset_detail`
+    // handler is now `asset_user_view` in `handlers/web/assets.rs`.
+    // The admin-zone CRUD `asset_detail` lives in `manage_assets.rs`
+    // and never opens a session, so the bypass guard does not apply
+    // there. The user-zone view is the surface that decides whether
+    // the rendered asset page shows a blue "Connect" or an orange
+    // "Request Access" button, so this is where the historical
+    // privileged-user bypass would resurface.
     let full = include_str!("assets.rs");
     let start = full
-        .find("pub async fn asset_detail(")
-        .expect("asset_detail handler must exist in handlers/web/assets.rs");
+        .find("pub async fn asset_user_view(")
+        .expect("asset_user_view handler must exist in handlers/web/assets.rs");
     let after = &full[start..];
     let end = after
         .find("\npub async fn ")
@@ -1523,15 +1531,25 @@ fn test_asset_detail_no_longer_bypasses_access_rules_for_privileged_users() {
             pat
         );
     }
+    // Issue #27: the user-zone `asset_user_view` derives
+    // `require_approval` / `require_mfa` directly from the
+    // `access_rules` table (joined to the asset's groups + the
+    // virtual all-assets group) instead of going through
+    // `services::access::can_access_asset`. The semantics are
+    // identical (same predicate, same scope) and crucially there is
+    // no `is_superuser` / `is_staff` short-circuit. Accept either
+    // form so we are not coupled to the exact lookup helper.
     assert!(
-        body.contains("can_access_asset"),
-        "asset_detail must call services::access::can_access_asset for every \
-         user so that `require_approval` / `require_mfa` reflect the real \
-         policy"
+        body.contains("can_access_asset")
+            || (body.contains("require_approval.eq(true)")
+                && body.contains("require_mfa.eq(true)")),
+        "asset_user_view must compute `require_approval` / `require_mfa` \
+         from the real policy (either via services::access::can_access_asset \
+         or via direct access_rules SQL queries) for every user"
     );
     assert!(
         body.contains("list_accessible_asset_ids"),
-        "asset_detail must call services::access::list_accessible_asset_ids \
+        "asset_user_view must call services::access::list_accessible_asset_ids \
          for every user so the instance-level access filter applies uniformly"
     );
 }

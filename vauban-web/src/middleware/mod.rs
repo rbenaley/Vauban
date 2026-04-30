@@ -5,6 +5,7 @@ pub mod client_addr;
 pub mod csrf;
 pub mod flash;
 pub mod permissions;
+pub mod require_assets_manage;
 pub mod security;
 
 pub use audit::*;

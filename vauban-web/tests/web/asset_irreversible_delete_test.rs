@@ -79,7 +79,7 @@ async fn test_create_after_delete_yields_fresh_uuid() {
 
     let create1 = app
         .server
-        .post("/assets")
+        .post("/assets/manage/new")
         .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
         .form(&[
             ("csrf_token", csrf.as_str()),
@@ -98,15 +98,15 @@ async fn test_create_after_delete_yields_fresh_uuid() {
         .headers()
         .get(LOCATION)
         .and_then(|v| v.to_str().ok())
-        .expect("create must redirect to /assets/{uuid}");
+        .expect("create must redirect to /assets/manage/{uuid}");
     let first_uuid_str = location1
-        .strip_prefix("/assets/")
-        .expect("redirect must be /assets/{uuid}");
+        .strip_prefix("/assets/manage/")
+        .expect("redirect must be /assets/manage/{uuid}");
     let first_uuid = Uuid::parse_str(first_uuid_str).expect("location must carry a valid UUID");
 
     let delete = app
         .server
-        .post(&format!("/assets/{}/delete", first_uuid))
+        .post(&format!("/assets/manage/{}/delete", first_uuid))
         .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
         .form(&[("csrf_token", csrf.as_str())])
         .await;
@@ -128,7 +128,7 @@ async fn test_create_after_delete_yields_fresh_uuid() {
 
     let create2 = app
         .server
-        .post("/assets")
+        .post("/assets/manage/new")
         .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
         .form(&[
             ("csrf_token", csrf.as_str()),
@@ -147,10 +147,10 @@ async fn test_create_after_delete_yields_fresh_uuid() {
         .headers()
         .get(LOCATION)
         .and_then(|v| v.to_str().ok())
-        .expect("second create must also redirect to /assets/{uuid}");
+        .expect("second create must also redirect to /assets/manage/{uuid}");
     let second_uuid_str = location2
-        .strip_prefix("/assets/")
-        .expect("redirect must be /assets/{uuid}");
+        .strip_prefix("/assets/manage/")
+        .expect("redirect must be /assets/manage/{uuid}");
     let second_uuid = Uuid::parse_str(second_uuid_str).expect("location must carry a valid UUID");
 
     assert_ne!(
@@ -211,7 +211,7 @@ async fn test_web_create_collision_on_active_triplet_redirects_with_flash() {
 
     let create1 = app
         .server
-        .post("/assets")
+        .post("/assets/manage/new")
         .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
         .form(&[
             ("csrf_token", csrf.as_str()),
@@ -229,7 +229,7 @@ async fn test_web_create_collision_on_active_triplet_redirects_with_flash() {
 
     let create2 = app
         .server
-        .post("/assets")
+        .post("/assets/manage/new")
         .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
         .form(&[
             ("csrf_token", csrf.as_str()),
@@ -249,9 +249,11 @@ async fn test_web_create_collision_on_active_triplet_redirects_with_flash() {
         .get(LOCATION)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
+    // Issue #27: asset CRUD lives under `/assets/manage/*`. The
+    // collision flash bounces to the admin create form.
     assert_eq!(
-        location, "/assets/new",
-        "duplicate active triplet must bounce back to /assets/new, got {}",
+        location, "/assets/manage/new",
+        "duplicate active triplet must bounce back to /assets/manage/new, got {}",
         location
     );
 
@@ -313,7 +315,7 @@ async fn test_api_create_collision_on_active_triplet_returns_409() {
 
     let create1 = app
         .server
-        .post("/api/v1/assets")
+        .post("/api/v1/assets/manage")
         .add_header(AUTHORIZATION, app.auth_header(&admin.token))
         .json(&body)
         .await;
@@ -326,7 +328,7 @@ async fn test_api_create_collision_on_active_triplet_returns_409() {
 
     let create2 = app
         .server
-        .post("/api/v1/assets")
+        .post("/api/v1/assets/manage")
         .add_header(AUTHORIZATION, app.auth_header(&admin.token))
         .json(&json!({
             "name": unique_name("api-collide-b"),
@@ -378,7 +380,7 @@ async fn test_update_on_tombstone_redirects_with_not_found_flash() {
     let hostname = format!("{}.upd-tomb.test", unique_name("host"));
     let create = app
         .server
-        .post("/assets")
+        .post("/assets/manage/new")
         .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
         .form(&[
             ("csrf_token", csrf.as_str()),
@@ -396,14 +398,14 @@ async fn test_update_on_tombstone_redirects_with_not_found_flash() {
         .headers()
         .get(LOCATION)
         .and_then(|v| v.to_str().ok())
-        .and_then(|l| l.strip_prefix("/assets/"))
-        .expect("create must redirect to /assets/{uuid}")
+        .and_then(|l| l.strip_prefix("/assets/manage/"))
+        .expect("create must redirect to /assets/manage/{uuid}")
         .to_string();
     let asset_uuid = Uuid::parse_str(&asset_uuid_str).expect("valid uuid");
 
     let delete = app
         .server
-        .post(&format!("/assets/{}/delete", asset_uuid))
+        .post(&format!("/assets/manage/{}/delete", asset_uuid))
         .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
         .form(&[("csrf_token", csrf.as_str())])
         .await;
@@ -412,7 +414,7 @@ async fn test_update_on_tombstone_redirects_with_not_found_flash() {
 
     let edit = app
         .server
-        .post(&format!("/assets/{}/edit", asset_uuid))
+        .post(&format!("/assets/manage/{}/edit", asset_uuid))
         .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
         .form(&[
             ("csrf_token", csrf.as_str()),
@@ -436,8 +438,8 @@ async fn test_update_on_tombstone_redirects_with_not_found_flash() {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     assert!(
-        location == "/assets" || location.starts_with("/assets"),
-        "edit on tombstone must redirect to /assets (or /assets/{{uuid}}/edit), got {}",
+        location == "/assets/manage" || location.starts_with("/assets/manage"),
+        "edit on tombstone must redirect to /assets/manage (or /assets/manage/{{uuid}}/edit), got {}",
         location
     );
 
@@ -484,7 +486,7 @@ async fn test_delete_is_idempotent_second_call_says_already_deleted() {
     let hostname = format!("{}.idem.test", unique_name("host"));
     let create = app
         .server
-        .post("/assets")
+        .post("/assets/manage/new")
         .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
         .form(&[
             ("csrf_token", csrf.as_str()),
@@ -502,15 +504,15 @@ async fn test_delete_is_idempotent_second_call_says_already_deleted() {
         .headers()
         .get(LOCATION)
         .and_then(|v| v.to_str().ok())
-        .and_then(|l| l.strip_prefix("/assets/"))
-        .expect("create must redirect to /assets/{uuid}")
+        .and_then(|l| l.strip_prefix("/assets/manage/"))
+        .expect("create must redirect to /assets/manage/{uuid}")
         .to_string();
     let asset_uuid = Uuid::parse_str(&asset_uuid_str).expect("valid uuid");
 
     for attempt in 1..=2 {
         let delete = app
             .server
-            .post(&format!("/assets/{}/delete", asset_uuid))
+            .post(&format!("/assets/manage/{}/delete", asset_uuid))
             .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
             .form(&[("csrf_token", csrf.as_str())])
             .await;
@@ -581,7 +583,7 @@ async fn test_create_delete_stress_ten_cycles_keeps_invariants() {
     for cycle in 0..10 {
         let create = app
             .server
-            .post("/assets")
+            .post("/assets/manage/new")
             .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
             .form(&[
                 ("csrf_token", csrf.as_str()),
@@ -601,8 +603,8 @@ async fn test_create_delete_stress_ten_cycles_keeps_invariants() {
                 .headers()
                 .get(LOCATION)
                 .and_then(|v| v.to_str().ok())
-                .and_then(|l| l.strip_prefix("/assets/"))
-                .expect("redirect to /assets/{uuid}"),
+                .and_then(|l| l.strip_prefix("/assets/manage/"))
+                .expect("redirect to /assets/manage/{uuid}"),
         )
         .expect("valid uuid");
 
@@ -615,7 +617,7 @@ async fn test_create_delete_stress_ten_cycles_keeps_invariants() {
 
         let delete = app
             .server
-            .post(&format!("/assets/{}/delete", asset_uuid))
+            .post(&format!("/assets/manage/{}/delete", asset_uuid))
             .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
             .form(&[("csrf_token", csrf.as_str())])
             .await;
@@ -630,7 +632,7 @@ async fn test_create_delete_stress_ten_cycles_keeps_invariants() {
 
     let final_create = app
         .server
-        .post("/assets")
+        .post("/assets/manage/new")
         .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
         .form(&[
             ("csrf_token", csrf.as_str()),
@@ -650,8 +652,8 @@ async fn test_create_delete_stress_ten_cycles_keeps_invariants() {
             .headers()
             .get(LOCATION)
             .and_then(|v| v.to_str().ok())
-            .and_then(|l| l.strip_prefix("/assets/"))
-            .expect("redirect to /assets/{uuid}"),
+            .and_then(|l| l.strip_prefix("/assets/manage/"))
+            .expect("redirect to /assets/manage/{uuid}"),
     )
     .expect("valid uuid");
     assert!(
@@ -726,7 +728,7 @@ async fn test_proxy_session_fk_survives_asset_soft_delete() {
     let hostname = format!("{}.fk.test", unique_name("host"));
     let create = app
         .server
-        .post("/assets")
+        .post("/assets/manage/new")
         .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
         .form(&[
             ("csrf_token", csrf.as_str()),
@@ -745,8 +747,8 @@ async fn test_proxy_session_fk_survives_asset_soft_delete() {
             .headers()
             .get(LOCATION)
             .and_then(|v| v.to_str().ok())
-            .and_then(|l| l.strip_prefix("/assets/"))
-            .expect("redirect to /assets/{uuid}"),
+            .and_then(|l| l.strip_prefix("/assets/manage/"))
+            .expect("redirect to /assets/manage/{uuid}"),
     )
     .expect("valid uuid");
 
@@ -763,7 +765,7 @@ async fn test_proxy_session_fk_survives_asset_soft_delete() {
 
     let delete = app
         .server
-        .post(&format!("/assets/{}/delete", asset_uuid))
+        .post(&format!("/assets/manage/{}/delete", asset_uuid))
         .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
         .form(&[("csrf_token", csrf.as_str())])
         .await;

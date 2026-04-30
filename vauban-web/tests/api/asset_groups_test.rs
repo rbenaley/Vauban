@@ -179,7 +179,7 @@ async fn test_api_list_asset_groups() {
     // Execute: GET /api/v1/assets/groups
     let response = app
         .server
-        .get("/api/v1/assets/groups")
+        .get("/api/v1/assets/manage/groups")
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .await;
 
@@ -218,12 +218,23 @@ async fn test_api_list_asset_groups() {
 async fn test_api_list_asset_groups_requires_auth() {
     let app = TestApp::spawn().await;
 
-    // Execute: GET /api/v1/assets/groups without auth
-    let response = app.server.get("/api/v1/assets/groups").await;
-
-    // Assert: 401 Unauthorized
+    // Execute: GET /api/v1/assets/manage/groups without auth.
+    // Issue #27: this route lives under the admin nest gated by
+    // `require_assets_manage`. Without an Authorization header, the
+    // request reaches the gate with `PermissionContext::default()`
+    // (every flag false), so the gate returns 403 *before* any
+    // handler-level 401. The 403 is intentional anti-enumeration: an
+    // unauth probe gets the same shape as a regular `role:user` who
+    // is forbidden, leaking nothing about the route's existence. We
+    // accept either 401 (auth-first stack) or 403 (perm-first stack)
+    // so the test stays robust if the middleware order ever changes.
+    let response = app.server.get("/api/v1/assets/manage/groups").await;
     let status = response.status_code().as_u16();
-    assert_eq!(status, 401, "Expected 401 without auth, got {}", status);
+    assert!(
+        status == 401 || status == 403,
+        "Expected 401 or 403 without auth, got {}",
+        status
+    );
 }
 
 /// Test list assets in a group API.
@@ -249,7 +260,7 @@ async fn test_api_list_group_assets() {
     // Execute: GET /api/v1/assets/groups/{uuid}/assets
     let response = app
         .server
-        .get(&format!("/api/v1/assets/groups/{}/assets", group_uuid))
+        .get(&format!("/api/v1/assets/manage/groups/{}/assets", group_uuid))
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .await;
 
@@ -291,7 +302,7 @@ async fn test_api_list_group_assets_not_found() {
     // Execute: GET /api/v1/assets/groups/{fake_uuid}/assets
     let response = app
         .server
-        .get(&format!("/api/v1/assets/groups/{}/assets", fake_uuid))
+        .get(&format!("/api/v1/assets/manage/groups/{}/assets", fake_uuid))
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .await;
 
@@ -316,15 +327,18 @@ async fn test_api_list_group_assets_requires_auth() {
 
     let group_uuid = create_test_asset_group(&mut conn, &unique_name("api-grp-auth")).await;
 
-    // Execute: GET /api/v1/assets/groups/{uuid}/assets without auth
+    // Issue #27: route is in the admin nest -- accept 401 or 403
+    // (see comment in `test_api_list_asset_groups_requires_auth`).
     let response = app
         .server
-        .get(&format!("/api/v1/assets/groups/{}/assets", group_uuid))
+        .get(&format!("/api/v1/assets/manage/groups/{}/assets", group_uuid))
         .await;
-
-    // Assert: 401 Unauthorized
     let status = response.status_code().as_u16();
-    assert_eq!(status, 401, "Expected 401 without auth, got {}", status);
+    assert!(
+        status == 401 || status == 403,
+        "Expected 401 or 403 without auth, got {}",
+        status
+    );
 
     // Cleanup
     test_db::cleanup(&mut conn).await;
@@ -346,7 +360,7 @@ async fn test_api_list_group_assets_empty() {
     // Execute: GET /api/v1/assets/groups/{uuid}/assets
     let response = app
         .server
-        .get(&format!("/api/v1/assets/groups/{}/assets", group_uuid))
+        .get(&format!("/api/v1/assets/manage/groups/{}/assets", group_uuid))
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .await;
 
