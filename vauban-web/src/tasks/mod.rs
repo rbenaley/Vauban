@@ -12,4 +12,4 @@ pub use acme::{
 };
 pub use cleanup::start_cleanup_tasks;
 pub use dashboard::*;
-pub use recording_hydrator::start_recording_hydrator;
+pub use recording_hydrator::{run_bootstrap_hydration, start_daily_reconciliation};

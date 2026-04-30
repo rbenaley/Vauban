@@ -2683,6 +2683,15 @@ pub async fn deactivate_user(state: &AppState, user_id: i32, user_uuid: &str) {
                 .await;
         }
 
+        // PRIMARY hydration path (issue #29 v1.4): schedule the
+        // integrity bundle population for this session. Idempotent +
+        // no-op for non-recorded rows.
+        std::mem::drop(crate::services::recording_hydrator::enqueue_hydration(
+            state,
+            session.id,
+            std::time::Duration::from_secs(state.config.recording.hydration_enqueue_delay_secs),
+        ));
+
         match session.session_type {
             SessionType::Ssh => {
                 if let Some(ref proxy) = state.ssh_proxy {

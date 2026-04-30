@@ -553,28 +553,44 @@ pub struct RecordingConfig {
     pub rdp: bool,
     #[serde(default = "default_recording_enabled")]
     pub ssh: bool,
-    /// Enable the lazy background hydrator that precomputes BLAKE3 +
-    /// integrity metadata onto `proxy_sessions`. Default true. When
-    /// false, the Recording Details page falls back to "Integrity
-    /// metadata pending finalization" indefinitely.
+    /// Enable the recording integrity hydrator (bootstrap at boot +
+    /// per-call-site enqueue + daily reconciliation cron). Default
+    /// true. When false, the Recording Details page falls back to
+    /// "Integrity metadata pending finalization" indefinitely.
     #[serde(default = "default_recording_enabled")]
     pub hydration_enabled: bool,
-    /// Tick interval (seconds) between two hydrator scans. Default 30 s.
-    #[serde(default = "default_hydration_interval_secs")]
-    pub hydration_interval_secs: u64,
-    /// Maximum sessions processed per tick. Default 50.
+    /// Maximum sessions processed per bootstrap/cron batch. Default 50.
+    /// The bootstrap loops until the candidate index is empty, so this
+    /// only bounds the per-pass memory + transaction footprint, not
+    /// the total amount of work.
     #[serde(default = "default_hydration_batch_size")]
     pub hydration_batch_size: i64,
     /// Grace period (seconds) after `disconnected_at` before a session
     /// with a missing `meta.json` is considered lost and marked
     /// finalized with NULL integrity columns. Below the grace period,
     /// missing meta is treated as a normal race with `vauban-audit`
-    /// and silently retried at the next tick. Default 300 (5 minutes).
-    /// Sessions with a flat `.mp4` legacy `recording_path` (no
-    /// directory, no `meta.json` ever produced) are finalized
-    /// immediately regardless of this knob.
+    /// and silently retried by the next bootstrap or daily cron run.
+    /// Default 300 (5 minutes). Sessions with a flat `.mp4` legacy
+    /// `recording_path` (no directory, no `meta.json` ever produced)
+    /// are finalized immediately regardless of this knob.
     #[serde(default = "default_hydration_missing_meta_grace_secs")]
     pub hydration_missing_meta_grace_secs: u64,
+    /// Delay (seconds) between a session being marked `disconnected_at`
+    /// by a call-site and the actual hydration call. Gives
+    /// `vauban-audit` enough time to flush `meta.json` to disk after
+    /// the WebSocket / proxy session ends. Default 5 s. This is the
+    /// PRIMARY finalization latency in nominal operation: shorter
+    /// values risk racing audit; longer values delay UI feedback.
+    #[serde(default = "default_hydration_enqueue_delay_secs")]
+    pub hydration_enqueue_delay_secs: u64,
+    /// Hour of day (UTC, 0..=23) when the daily reconciliation cron
+    /// runs. Default 4 (04:00 UTC = low traffic window). The cron is
+    /// a SAFETY NET that re-runs the bootstrap, NOT the primary
+    /// finalization path -- in nominal operation it logs
+    /// `bootstrap_complete { hydrated=0, ... }` and exits in
+    /// milliseconds. See `docs/technical/Vauban_Recording_Architecture_EN(1.3).md`.
+    #[serde(default = "default_hydration_daily_cron_hour_utc")]
+    pub hydration_daily_cron_hour_utc: u8,
 }
 
 fn default_require_justification() -> bool {
@@ -589,16 +605,40 @@ fn default_recording_storage_path() -> String {
     "recordings".to_string()
 }
 
-fn default_hydration_interval_secs() -> u64 {
-    30
-}
-
 fn default_hydration_batch_size() -> i64 {
     50
 }
 
 fn default_hydration_missing_meta_grace_secs() -> u64 {
     300
+}
+
+fn default_hydration_enqueue_delay_secs() -> u64 {
+    5
+}
+
+fn default_hydration_daily_cron_hour_utc() -> u8 {
+    4
+}
+
+impl RecordingConfig {
+    /// Validate semantic invariants the serde defaults cannot enforce.
+    /// Currently only: `hydration_daily_cron_hour_utc` must be a valid
+    /// UTC hour (0..=23). Called from
+    /// [`Config::load_with_environment`] so an out-of-range value
+    /// fails the boot rather than silently misbehaving.
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.hydration_enabled {
+            return Ok(());
+        }
+        if self.hydration_daily_cron_hour_utc > 23 {
+            return Err(format!(
+                "recording.hydration_daily_cron_hour_utc must be in 0..=23, got {}",
+                self.hydration_daily_cron_hour_utc
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl Default for RecordingConfig {
@@ -609,9 +649,10 @@ impl Default for RecordingConfig {
             rdp: default_recording_enabled(),
             ssh: default_recording_enabled(),
             hydration_enabled: default_recording_enabled(),
-            hydration_interval_secs: default_hydration_interval_secs(),
             hydration_batch_size: default_hydration_batch_size(),
             hydration_missing_meta_grace_secs: default_hydration_missing_meta_grace_secs(),
+            hydration_enqueue_delay_secs: default_hydration_enqueue_delay_secs(),
+            hydration_daily_cron_hour_utc: default_hydration_daily_cron_hour_utc(),
         }
     }
 }
@@ -819,6 +860,9 @@ impl Config {
             ));
         }
 
+        // Validate recording hydrator knobs (e.g. cron hour must be 0..=23).
+        config.recording.validate().map_err(crate::error::AppError::Config)?;
+
         Ok(config)
     }
 
@@ -897,6 +941,90 @@ pub mod test_fixtures {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ==================== RecordingConfig::validate (issue #29 v1.4) ====================
+
+    #[test]
+    fn test_recording_config_validate_accepts_default() {
+        let cfg = RecordingConfig::default();
+        assert!(
+            cfg.validate().is_ok(),
+            "default RecordingConfig must validate"
+        );
+    }
+
+    #[test]
+    fn test_recording_config_validate_accepts_lower_bound() {
+        let cfg = RecordingConfig {
+            hydration_daily_cron_hour_utc: 0,
+            ..RecordingConfig::default()
+        };
+        assert!(cfg.validate().is_ok(), "hour 0 (midnight UTC) is valid");
+    }
+
+    #[test]
+    fn test_recording_config_validate_accepts_upper_bound() {
+        let cfg = RecordingConfig {
+            hydration_daily_cron_hour_utc: 23,
+            ..RecordingConfig::default()
+        };
+        assert!(cfg.validate().is_ok(), "hour 23 is the upper inclusive bound");
+    }
+
+    #[test]
+    fn test_recording_config_validate_rejects_24() {
+        let cfg = RecordingConfig {
+            hydration_daily_cron_hour_utc: 24,
+            ..RecordingConfig::default()
+        };
+        let err = cfg.validate().expect_err("hour 24 must be rejected");
+        assert!(
+            err.contains("0..=23"),
+            "error message must mention the valid range, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_recording_config_validate_skipped_when_disabled() {
+        // When the hydrator is disabled, an out-of-range cron hour is
+        // not checked (the cron will not run anyway). This avoids
+        // breaking deployments that don't use the hydrator.
+        let cfg = RecordingConfig {
+            hydration_enabled: false,
+            hydration_daily_cron_hour_utc: 99,
+            ..RecordingConfig::default()
+        };
+        assert!(
+            cfg.validate().is_ok(),
+            "validation skipped when hydration_enabled=false"
+        );
+    }
+
+    #[test]
+    fn test_recording_config_defaults_match_documentation() {
+        // Pin the defaults documented in
+        // docs/technical/Vauban_Recording_Architecture_EN(1.3).md.
+        // Changing them is a deliberate operational decision -- the
+        // doc + runbook MUST be updated in lock-step.
+        let cfg = RecordingConfig::default();
+        assert_eq!(
+            cfg.hydration_enqueue_delay_secs, 5,
+            "PRIMARY enqueue grace period documented as 5s"
+        );
+        assert_eq!(
+            cfg.hydration_missing_meta_grace_secs, 300,
+            "SAFETY-net missing-meta grace documented as 300s (5min)"
+        );
+        assert_eq!(
+            cfg.hydration_daily_cron_hour_utc, 4,
+            "daily reconciliation documented at 04:00 UTC"
+        );
+        assert_eq!(
+            cfg.hydration_batch_size, 50,
+            "bootstrap batch size documented as 50"
+        );
+    }
 
     // ==================== Environment Tests ====================
 

@@ -34,6 +34,11 @@ pub struct TestApp {
     pub broadcast: BroadcastService,
     pub user_connections: vauban_web::services::connections::UserConnectionRegistry,
     pub ws_counter: vauban_web::services::connections::WsConnectionCounter,
+    /// Cloned AppState exposed for tests that need to call functions
+    /// taking `&AppState` (e.g. `services::recording_hydrator::enqueue_hydration`).
+    /// `supervisor` is `None` here -- exactly the development-mode shape
+    /// `enqueue_hydration` must short-circuit on (issue #29 v1.4).
+    pub app_state: AppState,
     /// Handle to the in-process vauban-access service backing the test
     /// AppState's `access_client`. Kept alive for the lifetime of the app
     /// so the background threads (and their Casbin enforcer) stay up.
@@ -147,6 +152,7 @@ impl TestApp {
         };
 
         // Build router
+        let app_state = state.clone();
         let app = build_test_router(state);
 
         // Create test server
@@ -160,6 +166,7 @@ impl TestApp {
             broadcast,
             user_connections,
             ws_counter,
+            app_state,
             _access_service: access_service,
         }
     }

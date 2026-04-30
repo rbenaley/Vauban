@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, error, info};
 
+use crate::AppState;
 use crate::db::DbPool;
 use crate::schema::{api_keys, auth_sessions, proxy_sessions};
 
@@ -30,20 +31,26 @@ const STALE_ACTIVE_TTL_HOURS: i64 = 24;
 /// and is forwarded to [`run_cleanup_pass`] (Issue #8) so long-idle login
 /// sessions are reaped on the same 30-second tick as already-expired ones.
 ///
+/// `state` exposes the DB pool (for cleanup queries) and is forwarded to
+/// the recording hydrator's PRIMARY enqueue path so any session
+/// transitioned to `terminated` / `disconnected` by this task gets its
+/// integrity bundle hydrated within `hydration_enqueue_delay_secs`
+/// (issue #29 v1.4) -- without polling.
+///
 /// Spawn is delegated to `shared::tasks::spawn_periodic` for a uniform
 /// task lifecycle (named tracing, skip-first-tick, Handle-based spawn).
-pub async fn start_cleanup_tasks(db_pool: DbPool, idle_timeout_secs: u64) {
-    let db_pool = Arc::new(db_pool);
+pub async fn start_cleanup_tasks(state: AppState, idle_timeout_secs: u64) {
+    let state = Arc::new(state);
     let handle = tokio::runtime::Handle::current();
-    let pool_for_task = Arc::clone(&db_pool);
+    let state_for_task = Arc::clone(&state);
     shared::tasks::spawn_periodic(
         &handle,
         "session_cleanup",
         Duration::from_secs(CLEANUP_INTERVAL_SECS),
         move || {
-            let pool = Arc::clone(&pool_for_task);
+            let state = Arc::clone(&state_for_task);
             async move {
-                run_cleanup_pass(&pool, idle_timeout_secs).await;
+                run_cleanup_pass(&state, idle_timeout_secs).await;
             }
         },
     );
@@ -57,7 +64,8 @@ pub async fn start_cleanup_tasks(db_pool: DbPool, idle_timeout_secs: u64) {
 /// One pass of all cleanup operations. Runs on every tick of the
 /// shared periodic scheduler. Any per-operation error is logged but
 /// never aborts the loop.
-async fn run_cleanup_pass(db_pool: &DbPool, idle_timeout_secs: u64) {
+async fn run_cleanup_pass(state: &AppState, idle_timeout_secs: u64) {
+    let db_pool = &state.db_pool;
     // Cleanup expired or long-idle auth sessions (Issue #8).
     match cleanup_expired_or_idle_sessions(db_pool, idle_timeout_secs).await {
         Ok(count) => {
@@ -82,14 +90,18 @@ async fn run_cleanup_pass(db_pool: &DbPool, idle_timeout_secs: u64) {
         Err(e) => error!(error = %e, "Failed to clean up expired API keys"),
     }
 
-    // Terminate proxy sessions past their max_session_duration
+    // Terminate proxy sessions past their max_session_duration.
+    // Returns the IDs of the rows actually transitioned so we can
+    // schedule a recording-hydration enqueue for each one (issue #29
+    // v1.4 PRIMARY path).
     match terminate_expired_proxy_sessions(db_pool).await {
-        Ok(count) => {
-            if count > 0 {
+        Ok(ids) => {
+            if !ids.is_empty() {
                 info!(
-                    terminated = count,
+                    terminated = ids.len(),
                     "Terminated expired proxy sessions (max_session_duration)"
                 );
+                enqueue_hydration_for(state, &ids);
             }
         }
         Err(e) => error!(error = %e, "Failed to terminate expired proxy sessions"),
@@ -115,7 +127,9 @@ async fn run_cleanup_pass(db_pool: &DbPool, idle_timeout_secs: u64) {
         Err(e) => error!(error = %e, "Failed to expire stale approved sessions"),
     }
 
-    // Expire sessions stuck in "connecting" for too long
+    // Expire sessions stuck in "connecting" for too long.
+    // We deliberately do NOT call enqueue_hydration here: a
+    // never-connected session has no recording on disk to hydrate.
     match expire_stale_connecting_sessions(db_pool).await {
         Ok(count) => {
             if count > 0 {
@@ -125,18 +139,34 @@ async fn run_cleanup_pass(db_pool: &DbPool, idle_timeout_secs: u64) {
         Err(e) => error!(error = %e, "Failed to expire stale connecting sessions"),
     }
 
-    // Disconnect stale active sessions without expires_at
+    // Disconnect stale active sessions without expires_at. These
+    // *may* have been recorded; enqueue hydration for each.
     match disconnect_stale_active_sessions(db_pool).await {
-        Ok(count) => {
-            if count > 0 {
+        Ok(ids) => {
+            if !ids.is_empty() {
                 info!(
-                    disconnected = count,
+                    disconnected = ids.len(),
                     "Disconnected stale active sessions (no expiry, no update for {}h)",
                     STALE_ACTIVE_TTL_HOURS
                 );
+                enqueue_hydration_for(state, &ids);
             }
         }
         Err(e) => error!(error = %e, "Failed to disconnect stale active sessions"),
+    }
+}
+
+/// Issue an `enqueue_hydration` for every session id transitioned to
+/// a terminal state by the current cleanup pass. Idempotent: each
+/// enqueue is a no-op for non-recorded rows or rows already finalised
+/// concurrently (PRIMARY path, issue #29 v1.4).
+fn enqueue_hydration_for(state: &AppState, ids: &[i32]) {
+    let grace =
+        Duration::from_secs(state.config.recording.hydration_enqueue_delay_secs);
+    for id in ids {
+        std::mem::drop(crate::services::recording_hydrator::enqueue_hydration(
+            state, *id, grace,
+        ));
     }
 }
 
@@ -200,14 +230,16 @@ async fn cleanup_expired_api_keys(db_pool: &DbPool) -> Result<usize, String> {
 /// Terminate active proxy sessions that have exceeded their max_session_duration.
 ///
 /// Finds sessions where `expires_at` is set and has passed, then moves them
-/// to "terminated" status.
-async fn terminate_expired_proxy_sessions(db_pool: &DbPool) -> Result<usize, String> {
+/// to "terminated" status. Returns the IDs of the rows actually
+/// transitioned so the caller can schedule a recording-hydration enqueue
+/// for each (issue #29 v1.4 PRIMARY path).
+async fn terminate_expired_proxy_sessions(db_pool: &DbPool) -> Result<Vec<i32>, String> {
     use diesel_async::RunQueryDsl;
 
     let mut conn = db_pool.get().await.map_err(|e| e.to_string())?;
     let now = Utc::now();
 
-    let terminated = diesel::update(
+    let terminated_ids: Vec<i32> = diesel::update(
         proxy_sessions::table
             .filter(proxy_sessions::status.eq("active"))
             .filter(proxy_sessions::expires_at.le(now)),
@@ -217,11 +249,12 @@ async fn terminate_expired_proxy_sessions(db_pool: &DbPool) -> Result<usize, Str
         proxy_sessions::disconnected_at.eq(Some(now)),
         proxy_sessions::updated_at.eq(now),
     ))
-    .execute(&mut conn)
+    .returning(proxy_sessions::id)
+    .get_results(&mut conn)
     .await
     .map_err(|e| e.to_string())?;
 
-    Ok(terminated)
+    Ok(terminated_ids)
 }
 
 /// Expire approved sessions whose `expires_at` has passed without the user connecting.
@@ -305,15 +338,17 @@ async fn expire_stale_connecting_sessions(db_pool: &DbPool) -> Result<usize, Str
 ///
 /// Sessions with `expires_at` are handled by `terminate_expired_proxy_sessions`.
 /// This catches sessions orphaned by server restarts, network outages, or
-/// WebSocket closures that failed to update the database.
-async fn disconnect_stale_active_sessions(db_pool: &DbPool) -> Result<usize, String> {
+/// WebSocket closures that failed to update the database. Returns the
+/// IDs of the rows actually transitioned so the caller can schedule a
+/// recording-hydration enqueue for each (issue #29 v1.4 PRIMARY path).
+async fn disconnect_stale_active_sessions(db_pool: &DbPool) -> Result<Vec<i32>, String> {
     use diesel_async::RunQueryDsl;
 
     let mut conn = db_pool.get().await.map_err(|e| e.to_string())?;
     let now = Utc::now();
     let cutoff = now - chrono::Duration::hours(STALE_ACTIVE_TTL_HOURS);
 
-    let disconnected = diesel::update(
+    let disconnected_ids: Vec<i32> = diesel::update(
         proxy_sessions::table
             .filter(proxy_sessions::status.eq("active"))
             .filter(proxy_sessions::expires_at.is_null())
@@ -324,11 +359,12 @@ async fn disconnect_stale_active_sessions(db_pool: &DbPool) -> Result<usize, Str
         proxy_sessions::disconnected_at.eq(Some(now)),
         proxy_sessions::updated_at.eq(now),
     ))
-    .execute(&mut conn)
+    .returning(proxy_sessions::id)
+    .get_results(&mut conn)
     .await
     .map_err(|e| e.to_string())?;
 
-    Ok(disconnected)
+    Ok(disconnected_ids)
 }
 
 #[cfg(test)]
@@ -786,83 +822,179 @@ mod tests {
         );
     }
 
-    // ==================== Cleanup Task Calls All Functions ====================
+    // ==================== Cleanup Pass Calls All Functions ====================
 
-    #[test]
-    fn test_cleanup_task_calls_connecting_cleanup() {
-        let source = include_str!("cleanup.rs");
+    /// Helper: extract the body of `run_cleanup_pass` from the source
+    /// for source-level pinning. Bounded by the next `async fn` / doc
+    /// comment / `#[cfg(test)]` so unrelated code does not pollute
+    /// the slice.
+    fn run_cleanup_pass_body(source: &str) -> &str {
         let fn_start = source
-            .find("fn session_cleanup_task")
-            .expect("session_cleanup_task must exist");
+            .find("fn run_cleanup_pass")
+            .expect("run_cleanup_pass must exist");
         let fn_body = &source[fn_start..];
         let fn_end = fn_body[1..]
             .find("\nasync fn ")
+            .or_else(|| fn_body[1..].find("\nfn "))
             .or_else(|| fn_body[1..].find("\n/// "))
+            .or_else(|| fn_body[1..].find("#[cfg(test)]"))
             .unwrap_or(fn_body.len());
-        let fn_body = &fn_body[..fn_end];
+        &fn_body[..fn_end]
+    }
 
+    #[test]
+    fn test_cleanup_pass_calls_connecting_cleanup() {
+        let source = include_str!("cleanup.rs");
+        let fn_body = run_cleanup_pass_body(source);
         assert!(
             fn_body.contains("expire_stale_connecting_sessions"),
-            "session_cleanup_task must call expire_stale_connecting_sessions"
+            "run_cleanup_pass must call expire_stale_connecting_sessions"
         );
     }
 
     #[test]
-    fn test_cleanup_task_calls_stale_active_cleanup() {
+    fn test_cleanup_pass_calls_stale_active_cleanup() {
         let source = include_str!("cleanup.rs");
-        let fn_start = source
-            .find("fn session_cleanup_task")
-            .expect("session_cleanup_task must exist");
-        let fn_body = &source[fn_start..];
-        let fn_end = fn_body[1..]
-            .find("\nasync fn ")
-            .or_else(|| fn_body[1..].find("\n/// "))
-            .unwrap_or(fn_body.len());
-        let fn_body = &fn_body[..fn_end];
-
+        let fn_body = run_cleanup_pass_body(source);
         assert!(
             fn_body.contains("disconnect_stale_active_sessions"),
-            "session_cleanup_task must call disconnect_stale_active_sessions"
+            "run_cleanup_pass must call disconnect_stale_active_sessions"
         );
     }
 
     // ==================== Issue #8 -- Idle session cleanup ====================
 
-    /// `start_cleanup_tasks` must accept the idle timeout as a parameter,
-    /// otherwise it cannot honour `config.security.session_idle_timeout_secs`.
+    /// `start_cleanup_tasks` must accept `state: AppState` (so it can
+    /// forward to `enqueue_hydration` -- issue #29 v1.4) and the idle
+    /// timeout as a parameter (issue #8).
     #[test]
-    fn test_start_cleanup_tasks_takes_idle_timeout_param() {
+    fn test_start_cleanup_tasks_signature() {
         let source = include_str!("cleanup.rs");
         assert!(
             source.contains(
-                "pub async fn start_cleanup_tasks(db_pool: DbPool, idle_timeout_secs: u64)"
+                "pub async fn start_cleanup_tasks(state: AppState, idle_timeout_secs: u64)"
             ),
-            "start_cleanup_tasks must take an idle_timeout_secs parameter (Issue #8)"
+            "start_cleanup_tasks signature must be (state: AppState, idle_timeout_secs: u64) \
+             so it can call enqueue_hydration (issue #29 v1.4) and honour \
+             config.security.session_idle_timeout_secs (issue #8)"
         );
     }
 
-    /// The session-cleanup task must call the renamed function so the new
+    /// The cleanup pass must call the renamed function so the new
     /// idle-cleanup behaviour actually runs on every tick.
     #[test]
-    fn test_cleanup_task_calls_expired_or_idle_cleanup() {
+    fn test_cleanup_pass_calls_expired_or_idle_cleanup() {
         let source = include_str!("cleanup.rs");
-        let fn_start = source
-            .find("fn session_cleanup_task")
-            .expect("session_cleanup_task must exist");
-        let fn_body = &source[fn_start..];
-        let fn_end = fn_body[1..]
-            .find("\nasync fn ")
-            .or_else(|| fn_body[1..].find("\n/// "))
-            .unwrap_or(fn_body.len());
-        let fn_body = &fn_body[..fn_end];
-
+        let fn_body = run_cleanup_pass_body(source);
         assert!(
             fn_body.contains("cleanup_expired_or_idle_sessions"),
-            "session_cleanup_task must call cleanup_expired_or_idle_sessions (Issue #8)"
+            "run_cleanup_pass must call cleanup_expired_or_idle_sessions (Issue #8)"
         );
         assert!(
             fn_body.contains("idle_timeout_secs"),
-            "session_cleanup_task must forward idle_timeout_secs to the cleanup helper"
+            "run_cleanup_pass must forward idle_timeout_secs to the cleanup helper"
+        );
+    }
+
+    // ==================== Issue #29 v1.4 -- PRIMARY enqueue ====================
+
+    /// `terminate_expired_proxy_sessions` must enqueue a recording
+    /// hydration for each transitioned id, otherwise sessions
+    /// terminated by max_session_duration would only be hydrated by
+    /// the daily SAFETY cron (up to 24h delay).
+    #[test]
+    fn test_cleanup_pass_enqueues_hydration_for_terminated_sessions() {
+        let source = include_str!("cleanup.rs");
+        let fn_body = run_cleanup_pass_body(source);
+        assert!(
+            fn_body.contains("terminate_expired_proxy_sessions"),
+            "run_cleanup_pass must call terminate_expired_proxy_sessions"
+        );
+        assert!(
+            fn_body.contains("enqueue_hydration_for"),
+            "run_cleanup_pass must enqueue hydration for terminated sessions (issue #29 v1.4)"
+        );
+    }
+
+    /// The `expire_stale_connecting_sessions` path must NOT enqueue a
+    /// hydration: never-connected sessions have no recording on disk
+    /// to hydrate; doing so would log spurious skipped_missing_meta
+    /// entries every cleanup tick.
+    #[test]
+    fn test_expire_stale_connecting_does_not_enqueue_hydration() {
+        let source = include_str!("cleanup.rs");
+        let fn_body = run_cleanup_pass_body(source);
+        // Find the `expire_stale_connecting_sessions` match arm and
+        // ensure no `enqueue_hydration` is in scope until the next
+        // `match` (i.e. the next cleanup step).
+        let arm_start = fn_body
+            .find("expire_stale_connecting_sessions(db_pool)")
+            .expect("connecting cleanup arm must exist in run_cleanup_pass");
+        let arm_body = &fn_body[arm_start..];
+        let arm_end = arm_body[1..]
+            .find("match ")
+            .map(|i| i + 1)
+            .unwrap_or(arm_body.len());
+        let arm_body = &arm_body[..arm_end];
+        assert!(
+            !arm_body.contains("enqueue_hydration"),
+            "expire_stale_connecting_sessions arm must NOT enqueue hydration: \
+             never-connected sessions have no recording on disk"
+        );
+    }
+
+    /// The disconnect-stale-active path MUST enqueue a hydration:
+    /// these sessions WERE active and may have been recorded; if their
+    /// owning vauban-web crashed they could be left in-flight forever.
+    #[test]
+    fn test_cleanup_pass_enqueues_hydration_for_stale_active() {
+        let source = include_str!("cleanup.rs");
+        let fn_body = run_cleanup_pass_body(source);
+        let arm_start = fn_body
+            .find("disconnect_stale_active_sessions(db_pool)")
+            .expect("stale-active arm must exist in run_cleanup_pass");
+        let arm_body = &fn_body[arm_start..];
+        let arm_end = arm_body[1..]
+            .find("match ")
+            .map(|i| i + 1)
+            .unwrap_or(arm_body.len());
+        let arm_body = &arm_body[..arm_end];
+        assert!(
+            arm_body.contains("enqueue_hydration_for"),
+            "disconnect_stale_active_sessions arm must enqueue hydration (issue #29 v1.4)"
+        );
+    }
+
+    /// `enqueue_hydration_for` must derive the grace from
+    /// `state.config.recording.hydration_enqueue_delay_secs` so the
+    /// configured value is honoured uniformly across the codebase.
+    #[test]
+    fn test_enqueue_hydration_for_uses_configured_delay() {
+        let source = include_str!("cleanup.rs");
+        assert!(
+            source.contains("hydration_enqueue_delay_secs"),
+            "enqueue_hydration_for must read state.config.recording.hydration_enqueue_delay_secs"
+        );
+    }
+
+    /// `terminate_expired_proxy_sessions` and
+    /// `disconnect_stale_active_sessions` must return `Vec<i32>` so
+    /// the caller can enqueue per-id (issue #29 v1.4). A regression to
+    /// `Result<usize, _>` would silently break the PRIMARY path.
+    #[test]
+    fn test_terminate_returns_vec_of_ids() {
+        let source = include_str!("cleanup.rs");
+        assert!(
+            source.contains(
+                "async fn terminate_expired_proxy_sessions(db_pool: &DbPool) -> Result<Vec<i32>, String>"
+            ),
+            "terminate_expired_proxy_sessions must return Vec<i32>"
+        );
+        assert!(
+            source.contains(
+                "async fn disconnect_stale_active_sessions(db_pool: &DbPool) -> Result<Vec<i32>, String>"
+            ),
+            "disconnect_stale_active_sessions must return Vec<i32>"
         );
     }
 

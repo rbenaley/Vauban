@@ -41,14 +41,17 @@ use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 use serde::Deserialize;
 use tokio::io::AsyncReadExt;
+use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
 /// Stable identifier used by [`shared::tasks::spawn_periodic`] for
-/// the hydrator loop. Surfaces in tracing as `task=recording_hydrator`
-/// so operators can correlate the spawn line with later activity.
-/// Consumed by [`crate::tasks::recording_hydrator::start_recording_hydrator`].
+/// the recording hydrator's daily reconciliation cron. Surfaces in
+/// tracing as `task=recording_hydrator` so operators can correlate
+/// the spawn line with later activity. Consumed by
+/// [`crate::tasks::recording_hydrator::start_daily_reconciliation`].
 pub const TASK_NAME: &str = "recording_hydrator";
 
+use crate::AppState;
 use crate::db::DbPool;
 use crate::ipc::SupervisorClient;
 use crate::models::session::SessionType;
@@ -351,6 +354,192 @@ impl RecordingHydrator {
         Ok(report)
     }
 
+    /// Hydrate a single session by its primary key. Used by the
+    /// per-call-site `enqueue_hydration` path: every UPDATE that sets
+    /// `disconnected_at` on a recorded session schedules a delayed
+    /// call to this method so the integrity bundle is persisted
+    /// within seconds of the session ending, without polling.
+    ///
+    /// Idempotent: the underlying `persist_bundle` /
+    /// `mark_finalized_*` UPDATEs are gated by
+    /// `recording_finalized_at IS NULL`, so calling this twice (or
+    /// concurrently with the daily reconciliation cron) is safe and
+    /// the second call is a no-op at the DB level.
+    ///
+    /// Returns `Ok(report)` so callers can log structured outcomes
+    /// (`finalized=1`, `skipped_missing_meta=1`, ...). The single-row
+    /// report uses the same counters as `tick()` for uniform logging.
+    pub async fn hydrate_session_id(
+        &self,
+        session_id: i32,
+    ) -> Result<HydrationReport, HydrationError> {
+        use crate::schema::proxy_sessions::dsl;
+
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| HydrationError::Database(format!("pool: {}", e)))?;
+
+        type CandidateRow = (
+            i32,
+            ::uuid::Uuid,
+            SessionType,
+            Option<String>,
+            Option<DateTime<Utc>>,
+            DateTime<Utc>,
+            bool,
+        );
+        // Filter on the same predicates as `tick`, plus `id = ?`. The
+        // `is_recorded` and `recording_finalized_at IS NULL` clauses
+        // make this a no-op for sessions that are already finalised
+        // or were never recorded -> safe to call from any call-site
+        // without an extra preflight check.
+        let row: Option<CandidateRow> = dsl::proxy_sessions
+            .filter(dsl::id.eq(session_id))
+            .filter(dsl::is_recorded.eq(true))
+            .filter(dsl::recording_path.is_not_null())
+            .filter(dsl::recording_finalized_at.is_null())
+            .select((
+                dsl::id,
+                dsl::uuid,
+                dsl::session_type,
+                dsl::recording_path,
+                dsl::disconnected_at,
+                dsl::created_at,
+                dsl::is_recorded,
+            ))
+            .first(&mut conn)
+            .await
+            .optional()
+            .map_err(|e| HydrationError::Database(format!("select by id: {}", e)))?;
+
+        let mut report = HydrationReport::default();
+        let (id, uuid, session_type, recording_path_opt, disconnected_at, created_at, _) =
+            match row {
+                Some(r) => r,
+                None => {
+                    debug!(
+                        session_id,
+                        "hydrator: nothing to hydrate (already finalized, not recorded, or no path)"
+                    );
+                    return Ok(report);
+                }
+            };
+        report.scanned = 1;
+
+        let recording_path = match recording_path_opt {
+            Some(p) => p,
+            None => return Ok(report),
+        };
+
+        // Same legacy-flat short-circuit as `tick`.
+        if !recording_path.ends_with('/') {
+            match mark_finalized_legacy_flat(&self.pool, id).await {
+                Ok(_) => {
+                    info!(
+                        session_uuid = %uuid,
+                        recording_path = %recording_path,
+                        "hydrator: legacy flat .mp4 recording, marking finalized as fmp4-flat"
+                    );
+                    report.marked_finalized_legacy_flat += 1;
+                }
+                Err(e) => {
+                    error!(
+                        session_uuid = %uuid,
+                        error = %e,
+                        "hydrator: failed to mark legacy flat .mp4 as finalized"
+                    );
+                    report.errored += 1;
+                }
+            }
+            return Ok(report);
+        }
+
+        match self
+            .hydrate_one(&uuid, session_type, &recording_path)
+            .await
+        {
+            HydrationOutcome::Bundle(bundle) => {
+                if let Err(e) = persist_bundle(&self.pool, id, &bundle).await {
+                    error!(
+                        session_uuid = %uuid,
+                        error = %e,
+                        "hydrator: failed to persist integrity bundle"
+                    );
+                    report.errored += 1;
+                } else {
+                    info!(
+                        session_uuid = %uuid,
+                        "hydration_finalized: integrity bundle persisted"
+                    );
+                    report.finalized += 1;
+                }
+            }
+            HydrationOutcome::MissingMeta => {
+                let now = Utc::now();
+                let reference = disconnected_at.unwrap_or(created_at);
+                let age = now.signed_duration_since(reference);
+                let grace = chrono::Duration::from_std(self.missing_meta_grace)
+                    .unwrap_or(chrono::Duration::seconds(300));
+                if age > grace {
+                    match mark_finalized_corrupt(&self.pool, id).await {
+                        Ok(_) => {
+                            warn!(
+                                session_uuid = %uuid,
+                                age_secs = age.num_seconds(),
+                                "hydrator: meta.json missing past grace period, marking finalized (integrity unavailable)"
+                            );
+                            report.marked_finalized_lost += 1;
+                        }
+                        Err(e) => {
+                            error!(
+                                session_uuid = %uuid,
+                                error = %e,
+                                "hydrator: failed to mark lost recording as finalized"
+                            );
+                            report.errored += 1;
+                        }
+                    }
+                } else {
+                    debug!(
+                        session_uuid = %uuid,
+                        age_secs = age.num_seconds(),
+                        "hydrator: meta.json missing within grace period (will retry on next bootstrap or daily cron)"
+                    );
+                    report.skipped_missing_meta += 1;
+                }
+            }
+            HydrationOutcome::CorruptMeta(reason) => {
+                error!(
+                    session_uuid = %uuid,
+                    reason = %reason,
+                    "hydrator: meta.json corrupt, marking finalized with NULL format"
+                );
+                if let Err(e) = mark_finalized_corrupt(&self.pool, id).await {
+                    error!(
+                        session_uuid = %uuid,
+                        error = %e,
+                        "hydrator: failed to mark corrupt row as finalized"
+                    );
+                    report.errored += 1;
+                } else {
+                    report.marked_finalized_corrupt += 1;
+                }
+            }
+            HydrationOutcome::Error(e) => {
+                error!(
+                    session_uuid = %uuid,
+                    error = %e,
+                    "hydrator: unrecoverable error on session"
+                );
+                report.errored += 1;
+            }
+        }
+
+        Ok(report)
+    }
+
     async fn hydrate_one(
         &self,
         uuid: &::uuid::Uuid,
@@ -602,6 +791,169 @@ pub async fn mark_finalized_corrupt(pool: &DbPool, session_id: i32) -> Result<()
     .await
     .map_err(|e| format!("update: {}", e))?;
     Ok(())
+}
+
+/// PRIMARY hydration path, by-UUID variant. Same semantics as
+/// [`enqueue_hydration`] but accepts a session UUID -- handy for
+/// call-sites whose UPDATE used `WHERE uuid = ?` and never read the
+/// integer primary key. The DB lookup happens inside the spawned
+/// task (after the grace sleep), so the hot path stays
+/// allocation-free.
+pub fn enqueue_hydration_by_uuid(
+    state: &AppState,
+    session_uuid: ::uuid::Uuid,
+    grace: Duration,
+) -> JoinHandle<()> {
+    let supervisor = match state.supervisor.as_ref() {
+        Some(s) => Arc::clone(s),
+        None => {
+            debug!(
+                session_uuid = %session_uuid,
+                "hydration enqueue skipped: supervisor IPC unavailable (dev mode)"
+            );
+            return tokio::spawn(async {});
+        }
+    };
+    if !state.config.recording.hydration_enabled {
+        debug!(
+            session_uuid = %session_uuid,
+            "hydration enqueue skipped: recording.hydration_enabled = false"
+        );
+        return tokio::spawn(async {});
+    }
+    let pool = state.db_pool.clone();
+    let storage_base = state.config.recording.storage_path.clone();
+    let batch_size = state.config.recording.hydration_batch_size;
+    let missing_meta_grace =
+        Duration::from_secs(state.config.recording.hydration_missing_meta_grace_secs);
+    debug!(
+        session_uuid = %session_uuid,
+        grace_secs = grace.as_secs(),
+        "enqueue_hydration_by_uuid: scheduled"
+    );
+    tokio::spawn(async move {
+        tokio::time::sleep(grace).await;
+        // Resolve UUID -> id. If it cannot be found the task is a
+        // no-op; this keeps the call-side allocation free.
+        let id_result: Result<Option<i32>, String> = async {
+            use crate::schema::proxy_sessions::dsl;
+            let mut conn = pool.get().await.map_err(|e| format!("pool: {}", e))?;
+            dsl::proxy_sessions
+                .filter(dsl::uuid.eq(session_uuid))
+                .select(dsl::id)
+                .first::<i32>(&mut conn)
+                .await
+                .optional()
+                .map_err(|e| format!("select id by uuid: {}", e))
+        }
+        .await;
+        let id = match id_result {
+            Ok(Some(i)) => i,
+            Ok(None) => {
+                debug!(session_uuid = %session_uuid, "enqueue_hydration_by_uuid: session not found, skipping");
+                return;
+            }
+            Err(e) => {
+                error!(session_uuid = %session_uuid, error = %e, "enqueue_hydration_by_uuid: lookup failed");
+                return;
+            }
+        };
+        let hydrator = RecordingHydrator::new(
+            pool,
+            supervisor,
+            batch_size,
+            storage_base,
+            missing_meta_grace,
+        );
+        match hydrator.hydrate_session_id(id).await {
+            Ok(report) => {
+                if report.scanned == 0 {
+                    debug!(
+                        session_uuid = %session_uuid,
+                        "enqueue_hydration_by_uuid: nothing to do (already finalized or not recorded)"
+                    );
+                }
+            }
+            Err(e) => {
+                error!(session_uuid = %session_uuid, error = %e, "enqueue_hydration_by_uuid: hydrate_session_id failed");
+            }
+        }
+    })
+}
+
+/// PRIMARY hydration path. Schedule a single-shot hydration of one
+/// session after the configurable grace period
+/// (`recording.hydration_enqueue_delay_secs`, default 5 s). Called
+/// by every call-site that sets `proxy_sessions.disconnected_at` on
+/// a recorded session (WebSocket close, API terminate, admin
+/// terminate, user deletion, cleanup transitions).
+///
+/// Why a delay: `vauban-web` sets `disconnected_at` immediately on
+/// session end, but `vauban-audit` may take 1-2 seconds to flush the
+/// final segment + `meta.json` to disk. Calling `hydrate_session_id`
+/// before that flush would race and degrade to the
+/// `MissingMeta` -> retry path. The 5 s default is a prudent margin.
+///
+/// Idempotent and side-effect-free if there is nothing to do:
+/// - returns a JoinHandle that completes immediately when the
+///   supervisor IPC channel is unavailable (development mode);
+/// - the eventual `hydrate_session_id` is itself a no-op if the row
+///   has been finalized concurrently (by the bootstrap, by the
+///   daily cron, or by a sibling enqueue).
+///
+/// The returned JoinHandle is normally dropped (fire-and-forget);
+/// tests keep a reference to await completion.
+pub fn enqueue_hydration(state: &AppState, session_id: i32, grace: Duration) -> JoinHandle<()> {
+    let supervisor = match state.supervisor.as_ref() {
+        Some(s) => Arc::clone(s),
+        None => {
+            debug!(
+                session_id,
+                "hydration enqueue skipped: supervisor IPC unavailable (dev mode)"
+            );
+            return tokio::spawn(async {});
+        }
+    };
+    if !state.config.recording.hydration_enabled {
+        debug!(
+            session_id,
+            "hydration enqueue skipped: recording.hydration_enabled = false"
+        );
+        return tokio::spawn(async {});
+    }
+    let pool = state.db_pool.clone();
+    let storage_base = state.config.recording.storage_path.clone();
+    let batch_size = state.config.recording.hydration_batch_size;
+    let missing_meta_grace =
+        Duration::from_secs(state.config.recording.hydration_missing_meta_grace_secs);
+    debug!(
+        session_id,
+        grace_secs = grace.as_secs(),
+        "enqueue_hydration: scheduled"
+    );
+    tokio::spawn(async move {
+        tokio::time::sleep(grace).await;
+        let hydrator = RecordingHydrator::new(
+            pool,
+            supervisor,
+            batch_size,
+            storage_base,
+            missing_meta_grace,
+        );
+        match hydrator.hydrate_session_id(session_id).await {
+            Ok(report) => {
+                if report.scanned == 0 {
+                    debug!(
+                        session_id,
+                        "enqueue_hydration: nothing to do (already finalized or not recorded)"
+                    );
+                }
+            }
+            Err(e) => {
+                error!(session_id, error = %e, "enqueue_hydration: hydrate_session_id failed");
+            }
+        }
+    })
 }
 
 /// Mark a legacy fmp4-flat recording (single `.mp4` file written

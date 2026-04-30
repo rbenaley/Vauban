@@ -406,6 +406,16 @@ pub async fn terminate_session(
         _ => AppError::Database(e),
     })?;
 
+    // PRIMARY hydration path (issue #29 v1.4): schedule integrity
+    // bundle population after the configurable grace period so
+    // vauban-audit has time to flush meta.json. Idempotent + no-op
+    // when the session was not recorded.
+    std::mem::drop(crate::services::recording_hydrator::enqueue_hydration(
+        &state,
+        updated_session.id,
+        std::time::Duration::from_secs(state.config.recording.hydration_enqueue_delay_secs),
+    ));
+
     // Force-close the proxy connection and data channel so the active
     // WebSocket loop breaks (data_rx.recv() => None).
     let session_uuid_str = updated_session.uuid.to_string();

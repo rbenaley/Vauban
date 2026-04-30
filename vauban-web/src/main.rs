@@ -707,27 +707,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start cleanup tasks for expired/idle sessions and API keys
     // (Issue #8: idle_timeout drives the auth_sessions purge predicate).
-    start_cleanup_tasks(db_pool.clone(), config.security.session_idle_timeout_secs).await;
+    // Issue #29 v1.4: cleanup also enqueues recording hydration for
+    // every session it transitions to terminated/disconnected, hence
+    // the `app_state.clone()` instead of just `db_pool`.
+    start_cleanup_tasks(
+        app_state.clone(),
+        config.security.session_idle_timeout_secs,
+    )
+    .await;
 
-    // Recording integrity hydrator (issue #29 / UX-28). Lazy
-    // background job: scans `proxy_sessions` for finalized recordings
-    // whose integrity bundle has not yet been precomputed and
-    // populates the columns from the on-disk `meta.json`. Requires
-    // the supervisor (FD passing for `meta.json`); silently skipped
-    // when running without one (development mode).
+    // Recording integrity hydrator (issue #29 / UX-28 v1.4):
+    // event-driven. PRIMARY path = per-call-site `enqueue_hydration`
+    // after every UPDATE disconnected_at (~5s latency). At boot we
+    // run a one-shot bootstrap to rattrape the backlog (legacy
+    // recordings + sessions in-flight during a downtime), then
+    // schedule a daily reconciliation cron at 04:00 UTC as SAFETY
+    // NET. Requires the supervisor (FD passing for `meta.json`);
+    // silently skipped without one (development mode).
     if config.recording.hydration_enabled
         && let Some(ref sup) = supervisor_client
     {
-        vauban_web::tasks::start_recording_hydrator(
-            tokio::runtime::Handle::current(),
+        let handle = tokio::runtime::Handle::current();
+        let missing_meta_grace =
+            std::time::Duration::from_secs(config.recording.hydration_missing_meta_grace_secs);
+        // Boot bootstrap: detached, one-shot, exits when backlog empty.
+        std::mem::drop(vauban_web::tasks::run_bootstrap_hydration(
+            &handle,
             db_pool.clone(),
             Arc::clone(sup),
-            std::time::Duration::from_secs(config.recording.hydration_interval_secs),
             config.recording.hydration_batch_size,
             config.recording.storage_path.clone(),
-            std::time::Duration::from_secs(config.recording.hydration_missing_meta_grace_secs),
-        )
-        .await;
+            missing_meta_grace,
+        ));
+        // Daily reconciliation: SAFETY NET, runs once a day.
+        vauban_web::tasks::start_daily_reconciliation(
+            handle,
+            db_pool.clone(),
+            Arc::clone(sup),
+            config.recording.hydration_batch_size,
+            config.recording.storage_path.clone(),
+            missing_meta_grace,
+            config.recording.hydration_daily_cron_hour_utc,
+        );
     } else if config.recording.hydration_enabled {
         tracing::info!(
             "recording hydrator disabled: no supervisor (development mode without SCM_RIGHTS)"

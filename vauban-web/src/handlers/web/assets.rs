@@ -1260,7 +1260,7 @@ pub async fn delete_asset_web(
 
     let now = Utc::now();
     let result = conn
-        .transaction::<_, diesel::result::Error, _>(|conn| {
+        .transaction::<Vec<i32>, diesel::result::Error, _>(|conn| {
             Box::pin(async move {
                 // Issue #17: scrub `connection_config` on soft-delete so
                 // a tombstone never carries credentials, even briefly.
@@ -1282,7 +1282,11 @@ pub async fn delete_asset_web(
                     .execute(conn)
                     .await?;
 
-                diesel::update(
+                // Returning ids lets us schedule per-session
+                // hydration AFTER the transaction commits (issue
+                // #29 v1.4 PRIMARY path). Doing the enqueue inside
+                // the transaction would race against the commit.
+                let terminated_ids: Vec<i32> = diesel::update(
                     ps::proxy_sessions
                         .filter(ps::asset_id.eq(asset_id))
                         .filter(ps::status.eq("active")),
@@ -1292,16 +1296,32 @@ pub async fn delete_asset_web(
                     ps::disconnected_at.eq(now),
                     ps::updated_at.eq(now),
                 ))
-                .execute(conn)
+                .returning(ps::id)
+                .get_results(conn)
                 .await?;
 
-                Ok(())
+                Ok(terminated_ids)
             })
         })
         .await;
 
     match result {
-        Ok(_) => {
+        Ok(terminated_ids) => {
+            // PRIMARY hydration path (issue #29 v1.4): now that the
+            // transaction has committed, enqueue an integrity
+            // bundle hydration for every freshly-terminated session.
+            // No-op for non-recorded sessions; the bootstrap and
+            // daily cron remain as safety nets.
+            for sid in terminated_ids {
+                std::mem::drop(crate::services::recording_hydrator::enqueue_hydration(
+                    &state,
+                    sid,
+                    std::time::Duration::from_secs(
+                        state.config.recording.hydration_enqueue_delay_secs,
+                    ),
+                ));
+            }
+
             if let Err(err) = diesel::update(
                 ps::proxy_sessions
                     .filter(ps::asset_id.eq(asset_id))

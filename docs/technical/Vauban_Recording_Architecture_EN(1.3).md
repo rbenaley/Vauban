@@ -14,7 +14,8 @@
 | BLAKE3 unification | RDP recordings expose a single aggregated hash `BLAKE3(concat(segment_hashes_hex_bytes))`; SSH continues to expose the per-`.cast` hash. Same column, uniform semantics across protocols |
 | Recording Details page | New recording-centric `/sessions/recordings/{uuid}` page (issue #29 / UX-28) replacing the misleading "View" button on the recordings list. UUID-keyed to avoid sequential ID enumeration |
 | Recording download endpoint | `GET /sessions/recordings/{uuid}/download` ships `.cast` for SSH and a streaming uncompressed `.zip` (segments + manifest.mpd + meta.json) for RDP, no re-encoding |
-| Recording hydrator | Background `tokio` task in `vauban-web` reads `meta.json` via the supervisor's SCM_RIGHTS plumbing (same path as `serve_manifest`), parses, computes the bundle, UPDATEs the row. Idempotent, self-healing, partial-index backed |
+| Recording hydrator (event-driven) | `vauban-web` reads `meta.json` via the supervisor's SCM_RIGHTS plumbing (same path as `serve_manifest`), parses, computes the bundle and UPDATEs the row. Three coordinated paths: PRIMARY = per-call-site `enqueue_hydration` (~5 s after every `disconnected_at` UPDATE); BOOTSTRAP = one-shot scan at boot to rattrape backlog; SAFETY = daily 04:00 UTC reconciliation cron. No periodic ticker. Idempotent, self-healing, partial-index backed. See "Hydration model" below |
+| Source-level CI pins (hydrator + docs) | Regression tests assert that every `disconnected_at.eq(` call-site in `handlers/{websocket,api/sessions,web/assets,web/users}.rs` and `tasks/cleanup.rs` is followed by an `enqueue_hydration*` within 35 lines (and that `expire_stale_connecting_sessions` is NOT instrumented). The architecture doc and runbook are themselves pinned so the "PRIMARY / BOOTSTRAP / SAFETY" framing cannot drift silently |
 
 ## Changelog from v1.1
 
@@ -70,32 +71,119 @@ CREATE INDEX idx_proxy_sessions_pending_finalization
       AND recording_finalized_at IS NULL;
 ```
 
-### Lazy background hydrator
+### Hydration model (event-driven)
 
-`vauban-web/src/services/recording_hydrator.rs` runs a `tokio::spawn`
-loop with a 30 s default tick interval. Each tick:
+> **CALLOUT.** In nominal operation the integrity bundle is hydrated
+> within ~5 seconds of session end. The daily cron is a SAFETY NET,
+> NOT the primary finalization path -- it ordinarily logs
+> `bootstrap_complete { hydrated=0, ... }` and exits in milliseconds.
 
-1. Selects up to `batch_size` (default 50) candidates via the
-   partial index.
-2. For each, requests `meta.json` from the supervisor over the
-   existing `RecordingFileRequest` IPC verb (`SCM_RIGHTS` FD passing,
-   same plumbing `serve_manifest` already uses; no IPC topology
-   change).
-3. Parses the JSON into an `IntegrityBundle`. SSH and RDP have
-   separate parsers; RDP additionally aggregates the per-segment
-   hashes to expose a uniform `recording_blake3` column.
-4. UPDATEs the row inside a `WHERE recording_finalized_at IS NULL`
-   guard so two concurrent hydrators (or a manual operator UPDATE)
-   cannot double-write.
+#### Timing per mechanism
 
-### Failure modes
+| Mechanism | Trigger | Finalization latency | Coverage |
+|---|---|---|---|
+| Bootstrap (one-shot) | `vauban-web` boot | seconds after boot | All backlog (legacy + downtime) |
+| `enqueue_hydration` | Every session end (UPDATE `disconnected_at`) | **`hydration_enqueue_delay_secs` (default 5s)** | The session that just ended |
+| Daily reconciliation cron | 04:00 UTC | up to 24h | SAFETY NET for lost events only |
+
+#### Architecture
+
+```mermaid
+flowchart TD
+    Boot["vauban-web boot"] --> Bootstrap["tasks::recording_hydrator::run_bootstrap_hydration\nwalk SELECT WHERE recording_finalized_at IS NULL\nLIMIT batch ORDER BY created_at\nuntil empty, then exit"]
+
+    Cron["tasks::recording_hydrator::start_daily_reconciliation\nshared::tasks::spawn_periodic 86400s\nat next 04:00 UTC"] -->|"once a day -- SAFETY NET, NOT THE PRIMARY PATH"| Bootstrap
+
+    Terminate1["handlers/websocket.rs (SSH x2, RDP x2)"] --> Enqueue
+    Terminate2["handlers/api/sessions.rs::terminate"] --> Enqueue
+    Terminate3["handlers/web/assets.rs::terminate"] --> Enqueue
+    Terminate4["handlers/web/users.rs::delete_user"] --> Enqueue
+    Terminate5["tasks/cleanup.rs (terminate_expired, disconnect_stale_active)"] --> Enqueue
+
+    Enqueue["services::recording_hydrator::enqueue_hydration(state, id, grace)\ntokio::spawn(sleep grace; hydrate_one + persist_bundle)"]
+    Enqueue --> DB["UPDATE proxy_sessions SET ... WHERE recording_finalized_at IS NULL"]
+    Bootstrap --> DB
+```
+
+#### What happens when a user closes a session
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as User browser
+    participant WS as vauban-web (WebSocket)
+    participant DB as PostgreSQL
+    participant T as tokio runtime
+    participant Audit as vauban-audit
+    participant Sup as vauban-supervisor
+
+    U->>WS: close (browser exit, terminate, ...)
+    WS->>DB: UPDATE proxy_sessions SET status='disconnected', disconnected_at=now()
+    WS->>T: tokio::spawn(enqueue_hydration(state, id, 5s))
+    Note over T: detached, returns immediately
+    par
+      WS-->>U: HTTP 200 (or WS closed cleanly)
+    and
+      Audit->>Sup: write meta.json
+    end
+    Note over T: sleep 5s
+    T->>Sup: SCM_RIGHTS request meta.json
+    Sup-->>T: file descriptor
+    T->>T: parse + persist_bundle()
+    T->>DB: UPDATE proxy_sessions SET integrity columns, recording_finalized_at WHERE recording_finalized_at IS NULL
+```
+
+**Total latency: ~5 seconds.** The user-visible response (close
+acknowledgement / HTTP 200) is *not* on the hydration critical path:
+the enqueue is fire-and-forget.
+
+#### Why a 5 s grace period?
+
+`vauban-web` and `vauban-audit` race on session-end notifications.
+`vauban-web` learns the session ended via the WebSocket / IPC close
+event and immediately stamps `disconnected_at`; `vauban-audit` learns
+via its own IPC channel and flushes the last segment + `meta.json` to
+disk a few hundred milliseconds later. Calling `hydrate_session_id`
+synchronously would routinely race ahead of the flush and degrade to
+the `MissingMeta -> retry` branch. The 5 s default is a prudent
+margin over the observed 1-2 s flush tail. Set
+`recording.hydration_enqueue_delay_secs` if your deployment needs
+something different.
+
+#### When does the daily cron actually run useful work?
+
+In nominal operation, the daily 04:00 UTC reconciliation logs
+`bootstrap_complete { finalized=0, ... }` and exits in
+milliseconds. It only does real work in three degraded scenarios:
+
+1. `vauban-web` crashed between the `UPDATE disconnected_at` and the
+   `tokio::spawn(enqueue_hydration)` (race window: a few microseconds).
+2. A new call-site for `disconnected_at` was added without an
+   adjacent `enqueue_hydration` (in theory caught by the source-level
+   CI pins documented in this section's changelog).
+3. `vauban-audit` flushed `meta.json` with a delay greater than
+   `hydration_enqueue_delay_secs`, so the PRIMARY enqueue saw
+   `MissingMeta` and the row stayed in-flight until the next
+   bootstrap.
+
+#### Failure modes
 
 | Condition | Hydrator action | UI surface |
 |---|---|---|
-| `meta.json` missing | Log WARN, leave row unfinalized. Next tick retries. | "Integrity metadata pending finalization (refresh in a few seconds)" |
+| `meta.json` missing within `hydration_missing_meta_grace_secs` (default 300 s) | Log DEBUG `skipped_missing_meta`. Row stays unfinalized; the next bootstrap or daily cron retries. | "Integrity metadata pending finalization (refresh in a few seconds)" |
+| `meta.json` missing past grace period | Log WARN once, set `recording_finalized_at = NOW()` with all integrity columns NULL (`marked_finalized_lost`). | "Integrity metadata unavailable for this recording" |
 | `meta.json` corrupt or unparseable | Log ERROR, set `recording_finalized_at = NOW()` with all integrity columns NULL. | "Integrity metadata unavailable for this recording" |
-| Supervisor down (dev mode) | Hydrator never starts; logged once at boot. | "Integrity metadata pending finalization" indefinitely |
+| Legacy flat `.mp4` (`recording_path` does not end in `/`) | Log INFO once, set `recording_format='fmp4-flat'` and `recording_finalized_at`; other integrity columns stay NULL. Never retried. | "Integrity metadata unavailable for this recording" |
+| Supervisor down (dev mode) | `enqueue_hydration` short-circuits, bootstrap skipped, daily cron skipped. Logged at boot. | "Integrity metadata pending finalization" indefinitely |
 | `recording_format` not in enum | Rejected by DB CHECK. Treated as a defence-in-depth assertion -- the parser is the first gate. | (never reaches the page) |
+
+#### Idempotence
+
+Every hydration UPDATE is gated by `WHERE recording_finalized_at IS
+NULL`. A double-enqueue (e.g. WS-close + admin-terminate fired in
+quick succession on the same row) results in exactly one transition
+`NULL -> NOT NULL`; the second UPDATE matches zero rows and is a
+silent no-op.
 
 ### Recording-centric detail page
 

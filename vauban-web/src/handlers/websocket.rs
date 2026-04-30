@@ -1639,6 +1639,19 @@ async fn handle_terminal_socket(
                     match update_result {
                         Ok(count) if count > 0 => {
                             debug!(session_id = %session_id, "SSH session recording metadata saved");
+                            // PRIMARY hydration path: schedule the
+                            // integrity bundle population after the
+                            // configurable grace period so vauban-audit
+                            // has time to flush meta.json (issue #29 v1.4).
+                            std::mem::drop(
+                                crate::services::recording_hydrator::enqueue_hydration_by_uuid(
+                                    &state,
+                                    session_uuid,
+                                    std::time::Duration::from_secs(
+                                        state.config.recording.hydration_enqueue_delay_secs,
+                                    ),
+                                ),
+                            );
                             let _ = state
                                 .broadcast
                                 .send(
@@ -1673,6 +1686,20 @@ async fn handle_terminal_socket(
                     match update_result {
                         Ok(count) if count > 0 => {
                             debug!(session_id = %session_id, "SSH session marked disconnected");
+                            // Defensive: even though `is_recording` is
+                            // false here, future config flips (or
+                            // pre-existing recorded rows) could leave a
+                            // pending integrity bundle. enqueue is a
+                            // no-op when is_recorded=false (issue #29 v1.4).
+                            std::mem::drop(
+                                crate::services::recording_hydrator::enqueue_hydration_by_uuid(
+                                    &state,
+                                    session_uuid,
+                                    std::time::Duration::from_secs(
+                                        state.config.recording.hydration_enqueue_delay_secs,
+                                    ),
+                                ),
+                            );
                         }
                         Ok(_) => {
                             debug!(session_id = %session_id, "SSH session already in terminal state");
@@ -2007,6 +2034,16 @@ async fn handle_rdp_socket(
                     match update_result {
                         Ok(count) if count > 0 => {
                             debug!(session_id = %session_id, "RDP session recording metadata saved");
+                            // PRIMARY hydration path (issue #29 v1.4).
+                            std::mem::drop(
+                                crate::services::recording_hydrator::enqueue_hydration_by_uuid(
+                                    &state,
+                                    session_uuid,
+                                    std::time::Duration::from_secs(
+                                        state.config.recording.hydration_enqueue_delay_secs,
+                                    ),
+                                ),
+                            );
                             let _ = state
                                 .broadcast
                                 .send(
@@ -2041,6 +2078,18 @@ async fn handle_rdp_socket(
                     match update_result {
                         Ok(count) if count > 0 => {
                             debug!(session_id = %session_id, "RDP session marked disconnected");
+                            // Defensive enqueue (no-op for non-recorded
+                            // sessions; covers config-flip + pre-existing
+                            // recorded rows). See issue #29 v1.4.
+                            std::mem::drop(
+                                crate::services::recording_hydrator::enqueue_hydration_by_uuid(
+                                    &state,
+                                    session_uuid,
+                                    std::time::Duration::from_secs(
+                                        state.config.recording.hydration_enqueue_delay_secs,
+                                    ),
+                                ),
+                            );
                         }
                         Ok(_) => {
                             debug!(session_id = %session_id, "RDP session already in terminal state");
