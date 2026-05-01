@@ -33,9 +33,7 @@
 //! assert these guarantees. They run in-process (no DB, no HTTP
 //! server) so they are fast and deterministic.
 
-use vauban_web::templates::accounts::group_list::{
-    GroupListItem, GroupListTemplate,
-};
+use vauban_web::templates::accounts::group_list::{GroupListItem, GroupListTemplate};
 use vauban_web::templates::accounts::user_list::{Pagination, UserListItem, UserListTemplate};
 use vauban_web::templates::assets::asset_list::{AssetListItem, AssetListTemplate};
 use vauban_web::templates::assets::group_list::{AssetGroupItem, AssetGroupListTemplate};
@@ -219,7 +217,8 @@ fn assets_user_list_filtered_empty_state_shows_no_match_branch() {
         .expect("render");
     let lowered = html.to_ascii_lowercase();
     assert!(
-        lowered.contains("no matching") || lowered.contains("no asset") && lowered.contains("match"),
+        lowered.contains("no matching")
+            || lowered.contains("no asset") && lowered.contains("match"),
         "/assets must render a contextual 'no matching' empty state when filter is set"
     );
     assert!(
@@ -321,7 +320,9 @@ fn make_asset_group_list(
 
 #[test]
 fn asset_groups_list_has_live_htmx_filter_contract() {
-    let html = make_asset_group_list(vec![], None).render().expect("render");
+    let html = make_asset_group_list(vec![], None)
+        .render()
+        .expect("render");
     assert_htmx_live_filter(
         &html,
         "/assets/groups",
@@ -682,9 +683,7 @@ fn approvals_list_ws_trigger_and_htmx_filter_share_container() {
     // at `#approvals-list-container`. If they ever diverge the WS
     // refresh stops working after a filter change.
     let html = make_approval_list(None).render().expect("render");
-    let trigger_count = html
-        .matches("#approvals-list-container")
-        .count();
+    let trigger_count = html.matches("#approvals-list-container").count();
     assert!(
         trigger_count >= 2,
         "/sessions/approvals must reference #approvals-list-container at least twice \
@@ -720,7 +719,9 @@ fn every_live_filter_page_renders_an_indicator() {
         ),
         (
             "/accounts/users",
-            make_user_list(vec![one_user()], None, None).render().unwrap(),
+            make_user_list(vec![one_user()], None, None)
+                .render()
+                .unwrap(),
         ),
         (
             "/accounts/groups",

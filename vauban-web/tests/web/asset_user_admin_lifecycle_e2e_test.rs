@@ -24,9 +24,7 @@ use axum::http::header::COOKIE;
 use serial_test::serial;
 
 use crate::common::{TestApp, assertions::assert_status};
-use crate::fixtures::{
-    create_admin_user, create_test_ssh_asset, create_test_user, unique_name,
-};
+use crate::fixtures::{create_admin_user, create_test_ssh_asset, create_test_user, unique_name};
 
 #[tokio::test]
 #[serial]

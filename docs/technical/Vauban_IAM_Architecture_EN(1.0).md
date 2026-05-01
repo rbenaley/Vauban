@@ -1655,14 +1655,27 @@ declared intent so the service can apply the right OR-overrides:
 | `ReadMetadata`  | `GET /api/v1/sessions/{uuid}`, `session_detail`   | `perms.sessions_supervise`                              |
 | `Terminate`     | `POST /sessions/{uuid}/terminate` (web + API)     | owner is **always allowed** (even on `AccessRuleRevoked`) OR `perms.sessions_write` |
 
-Two invariants are NEVER overridden, even by a full superuser:
+`NotFound` is NEVER overridden, even by a full superuser: a probe
+holding `sessions:supervise` cannot resurrect a non-existent
+session into a 200.
 
-- `NotFound` collapses to a generic 404 (a probe holding
-  `sessions:supervise` cannot resurrect a non-existent session into
-  a 200);
-- `Gone` collapses to a 410 for HTTP and to a 410-equivalent
-  WebSocket close (the session existed but is `terminated`,
-  `expired`, or `disconnected`).
+`Gone` is intent-aware:
+
+- `OpenViewer` / `ConsumeWs` collapse to **410** for HTTP and to a
+  410-equivalent WebSocket close (the underlying TCP/RDP/SSH
+  connection is dead; no override resurrects it).
+- `Terminate` short-circuits to **Allowed** for the owner
+  (idempotent owner-cleanup; vauban-access has already proven
+  ownership by the time we observe `Gone`, thanks to the
+  owner-check-first ordering for that intent).
+- `ReadMetadata` short-circuits to **Allowed** for the owner: the
+  `/sessions/{id}` detail page MUST stay reachable to the operator
+  who ran the session so they can consult the historical audit
+  trail (durations, bytes, justification, recording link) after
+  the session terminated. The same owner-check-first ordering
+  protects against a non-owner ever observing `Gone` for
+  `ReadMetadata` -- they receive `NotOwner` instead, which the
+  service collapses to 404.
 
 All other denials (NotOwner, AccessRuleRevoked, IPC failure,
 malformed UUID) collapse to **404** to keep anti-enumeration
@@ -1726,8 +1739,10 @@ through the same trio.
 
 | Concern | Test |
 |---|---|
-| `apply_casbin_override` matrix (16 cases) | `vauban_web::services::session_access::tests::*` |
-| `VerifySessionAccess` RPC matrix (8 cases + IPC round-trip) | `vauban_access::handlers::tests::test_verify_session_access_*` and `vauban_web::tests::ipc::access_ipc_test::*` |
+| `apply_casbin_override` matrix (20 cases incl. Gone-per-intent) | `vauban_web::services::session_access::tests::*` |
+| `VerifySessionAccess` RPC matrix (12 cases incl. owner-read-Gone, intruder-read-Gone, IPC round-trip) | `vauban_access::handlers::tests::test_verify_session_access_*` and `vauban_web::tests::ipc::access_ipc_test::*` |
+| Session detail regression: owner can still read terminated/expired/disconnected sessions | `vauban_web::tests::web::session_pages_test::test_session_detail_owner_{terminated,expired,disconnected}_session_loads_200` |
+| Session detail anti-enum: non-owner probing a Gone session is redirected | `vauban_web::tests::web::session_pages_test::test_session_detail_intruder_terminated_session_redirects` |
 | IDOR red tests (rdp_page, terminate, get_session, list_sessions, ws/sessions/list, ws/sessions/active) | `vauban_web::tests::security::session_idor_test::*` |
 | Access-rule fail-fast re-check (revoke, expire, not-yet-valid, protocol mismatch on HTML + WS) | `vauban_web::tests::security::access_rule_recheck_test::*` |
 | `terminate` authorisation matrix (owner OR `sessions:write`, anti-enum 404) | `vauban_web::tests::web::terminate_session_test::*` |

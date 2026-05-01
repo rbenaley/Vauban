@@ -101,14 +101,16 @@ pub async fn handle_access_request(pool: &DbPool, request: AccessRequest) -> Acc
             handle_list_accessible_groups(&mut conn, user_id, page).await
         }
 
-        AccessRequest::CreateAccessRule { data } => {
-            handle_create_access_rule(&mut conn, data).await
+        AccessRequest::CreateAccessRule { data, actor_uuid } => {
+            handle_create_access_rule(&mut conn, data, actor_uuid.as_deref()).await
         }
         AccessRequest::GetAccessRule { uuid } => handle_get_access_rule(&mut conn, &uuid).await,
         AccessRequest::ListAccessRules { page } => handle_list_access_rules(&mut conn, page).await,
-        AccessRequest::UpdateAccessRule { uuid, data } => {
-            handle_update_access_rule(&mut conn, &uuid, data).await
-        }
+        AccessRequest::UpdateAccessRule {
+            uuid,
+            data,
+            actor_uuid,
+        } => handle_update_access_rule(&mut conn, &uuid, data, actor_uuid.as_deref()).await,
         AccessRequest::DeleteAccessRule { uuid } => {
             handle_delete_access_rule(&mut conn, &uuid).await
         }
@@ -151,6 +153,7 @@ pub async fn handle_access_request(pool: &DbPool, request: AccessRequest) -> Acc
             description,
             color,
             icon,
+            actor_uuid,
         } => {
             handle_create_asset_group(
                 &mut conn,
@@ -159,6 +162,7 @@ pub async fn handle_access_request(pool: &DbPool, request: AccessRequest) -> Acc
                 description.as_deref(),
                 &color,
                 &icon,
+                actor_uuid.as_deref(),
             )
             .await
         }
@@ -174,6 +178,7 @@ pub async fn handle_access_request(pool: &DbPool, request: AccessRequest) -> Acc
             description,
             color,
             icon,
+            actor_uuid,
         } => {
             handle_update_asset_group(
                 &mut conn,
@@ -183,6 +188,7 @@ pub async fn handle_access_request(pool: &DbPool, request: AccessRequest) -> Acc
                 description.as_deref(),
                 &color,
                 &icon,
+                actor_uuid.as_deref(),
             )
             .await
         }
@@ -343,16 +349,35 @@ async fn handle_verify_session_access(
 
     let is_gone = status == "terminated" || status == "expired" || status == "disconnected";
 
-    // SECURITY: ordering matters. For read-style intents we leak as
-    // little as possible: a non-owner attacker probing a known UUID
-    // sees `Gone` only if the session is actually gone, otherwise
-    // `NotOwner` (collapsed to 404 by the service). For `Terminate`
-    // we deliberately surface ownership BEFORE status so that the
-    // owner of an already-terminated session reaches the
-    // service-layer idempotency path (Gone -> Allowed for a verified
-    // owner / sessions:write holder) instead of being told 404 on
-    // their own session.
-    let owner_check_first = matches!(intent, shared::messages::SessionAccessIntent::Terminate);
+    // SECURITY: ordering matters.
+    //
+    // For `OpenViewer` / `ConsumeWs` (interactive intents) we keep
+    // the historical "status before owner" order: a non-owner
+    // attacker probing a known UUID sees `Gone` only if the session
+    // is actually gone, otherwise `NotOwner` (collapsed to 404 by
+    // the service). The interactive surface MUST refuse a `Gone`
+    // upgrade regardless of identity (the underlying TCP/RDP/SSH
+    // connection is dead).
+    //
+    // For `Terminate` and `ReadMetadata` (idempotent / historical
+    // intents) we surface ownership BEFORE status:
+    //
+    // * `Terminate`: the owner of an already-terminated session
+    //   reaches the service-layer idempotency path (Gone -> Allowed
+    //   for a verified owner / sessions:write holder) instead of
+    //   being told "404" on their own session.
+    // * `ReadMetadata`: the owner of a Gone session can still read
+    //   the session detail page (audit, replay link, durations,
+    //   bytes...) -- losing this read on the very moment the session
+    //   stops being live was a regression introduced by the IDOR
+    //   centralisation. A non-owner still gets `NotOwner` (collapsed
+    //   to 404 unless they hold `sessions:supervise`), preserving
+    //   the anti-enumeration property.
+    let owner_check_first = matches!(
+        intent,
+        shared::messages::SessionAccessIntent::Terminate
+            | shared::messages::SessionAccessIntent::ReadMetadata
+    );
     if owner_check_first && owner_uuid != requesting_user_parsed {
         info!(
             session_uuid,
@@ -363,6 +388,20 @@ async fn handle_verify_session_access(
     }
 
     if is_gone {
+        // ReadMetadata + owner: the access-rule re-check is moot
+        // (the session is already historical), and the operator
+        // legitimately needs to consult the trace. We short-circuit
+        // to `Allowed` here so the web layer renders the detail
+        // page instead of redirecting to "/sessions" with a flash
+        // "Session not found" -- the regression that motivated this
+        // path. For Terminate the service-layer keeps the Gone -> Allowed
+        // idempotency translation; for OpenViewer / ConsumeWs we stay
+        // strict (Gone -> 410).
+        if matches!(intent, shared::messages::SessionAccessIntent::ReadMetadata) {
+            return AccessResponse::SessionAccessChecked {
+                decision: SessionAccessDecision::Allowed,
+            };
+        }
         info!(
             session_uuid,
             status,
@@ -566,6 +605,24 @@ async fn build_vauban_group_info(
 
 fn parse_uuid(uuid_str: &str) -> Result<Uuid, String> {
     Uuid::parse_str(uuid_str).map_err(|e| format!("Invalid UUID '{}': {}", uuid_str, e))
+}
+
+/// Issue #22 — resolve a JWT-side actor UUID into a numeric
+/// `users.id` suitable for stamping `created_by_id` /
+/// `updated_by_id`. Returns `None` for any reason (missing
+/// arg, malformed UUID, unknown user, transient DB error) — the
+/// audit columns are `Nullable<Int4>` so a `None` only flips
+/// the read-side Metadata cell to the muted em-dash on the web
+/// detail pages, never blocking the write itself.
+async fn resolve_actor_id(conn: &mut DbConnection, actor_uuid: Option<&str>) -> Option<i32> {
+    let raw = actor_uuid?;
+    let parsed = Uuid::parse_str(raw).ok()?;
+    users::table
+        .filter(users::uuid.eq(parsed))
+        .select(users::id)
+        .first::<i32>(conn)
+        .await
+        .ok()
 }
 
 // ==================== Access checking ====================
@@ -1010,6 +1067,7 @@ async fn handle_list_accessible_groups(
 async fn handle_create_access_rule(
     conn: &mut DbConnection,
     data: AccessRuleData,
+    actor_uuid: Option<&str>,
 ) -> AccessResponse {
     let new_uuid = Uuid::new_v4();
     let now = Utc::now();
@@ -1024,6 +1082,13 @@ async fn handle_create_access_rule(
     };
 
     let protocols: Vec<Option<String>> = data.allowed_protocols.into_iter().map(Some).collect();
+    // Issue #22 — stamp the audit pair so the Metadata UI on
+    // `/assets/access/{uuid}` can surface "Created by" /
+    // "Updated by" for every freshly-created rule. `None` here
+    // only happens when the JWT `sub` claim no longer maps to a
+    // live user row; we let the INSERT proceed and fall back to
+    // the muted em-dash on render rather than refuse the write.
+    let actor_id = resolve_actor_id(conn, actor_uuid).await;
 
     let result = diesel::insert_into(access_rules::table)
         .values((
@@ -1040,6 +1105,8 @@ async fn handle_create_access_rule(
             access_rules::max_session_duration.eq(data.max_session_duration),
             access_rules::is_active.eq(data.is_active),
             access_rules::priority.eq(data.priority),
+            access_rules::created_by_id.eq(actor_id),
+            access_rules::updated_by_id.eq(actor_id),
             access_rules::created_at.eq(now),
             access_rules::updated_at.eq(now),
         ))
@@ -1104,6 +1171,7 @@ async fn handle_update_access_rule(
     conn: &mut DbConnection,
     uuid_str: &str,
     data: AccessRuleData,
+    actor_uuid: Option<&str>,
 ) -> AccessResponse {
     let rule_uuid = match parse_uuid(uuid_str) {
         Ok(u) => u,
@@ -1121,6 +1189,10 @@ async fn handle_update_access_rule(
 
     let protocols: Vec<Option<String>> = data.allowed_protocols.into_iter().map(Some).collect();
     let now = Utc::now();
+    // Issue #22 — re-stamp `updated_by_id` on every update so the
+    // "Updated by" cell on `/assets/access/{uuid}` reflects the
+    // operator that performed the most recent edit.
+    let actor_id = resolve_actor_id(conn, actor_uuid).await;
 
     let affected = diesel::update(access_rules::table.filter(access_rules::uuid.eq(rule_uuid)))
         .set((
@@ -1137,6 +1209,7 @@ async fn handle_update_access_rule(
             access_rules::is_active.eq(data.is_active),
             access_rules::priority.eq(data.priority),
             access_rules::updated_at.eq(now),
+            access_rules::updated_by_id.eq(actor_id),
         ))
         .execute(conn)
         .await;
@@ -1679,9 +1752,15 @@ async fn handle_create_asset_group(
     description: Option<&str>,
     color: &str,
     icon: &str,
+    actor_uuid: Option<&str>,
 ) -> AccessResponse {
     let new_uuid = Uuid::new_v4();
     let now = Utc::now();
+    // Issue #22 — stamp the audit pair so the Metadata UI on
+    // `/assets/groups/{uuid}` surfaces "Created by" / "Updated by"
+    // for every freshly-created group. `None` falls back to the
+    // muted em-dash on render rather than refusing the write.
+    let actor_id = resolve_actor_id(conn, actor_uuid).await;
 
     let result = diesel::insert_into(asset_groups::table)
         .values((
@@ -1691,6 +1770,8 @@ async fn handle_create_asset_group(
             asset_groups::description.eq(description),
             asset_groups::color.eq(color),
             asset_groups::icon.eq(icon),
+            asset_groups::created_by_id.eq(actor_id),
+            asset_groups::updated_by_id.eq(actor_id),
             asset_groups::created_at.eq(now),
             asset_groups::updated_at.eq(now),
         ))
@@ -1893,6 +1974,12 @@ async fn handle_list_asset_groups(
     }
 }
 
+// Signature mirrors the `AccessRequest::UpdateAssetGroup` variant
+// 1:1; collapsing the args into a struct here would only push the
+// same fan-out to the IPC dispatch and obscure the field-by-field
+// audit lint passes do on the variant. `actor_uuid` is the 8th arg
+// added by issue #22.
+#[allow(clippy::too_many_arguments)]
 async fn handle_update_asset_group(
     conn: &mut DbConnection,
     uuid_str: &str,
@@ -1901,11 +1988,16 @@ async fn handle_update_asset_group(
     description: Option<&str>,
     color: &str,
     icon: &str,
+    actor_uuid: Option<&str>,
 ) -> AccessResponse {
     let group_uuid = match parse_uuid(uuid_str) {
         Ok(u) => u,
         Err(e) => return AccessResponse::AssetGroup(Err(e)),
     };
+    // Issue #22 — re-stamp `updated_by_id` on every successful
+    // update so the Metadata UI on `/assets/groups/{uuid}` shows
+    // the operator that performed the most recent edit.
+    let actor_id = resolve_actor_id(conn, actor_uuid).await;
 
     let affected = diesel::update(asset_groups::table.filter(asset_groups::uuid.eq(group_uuid)))
         .set((
@@ -1915,6 +2007,7 @@ async fn handle_update_asset_group(
             asset_groups::color.eq(color),
             asset_groups::icon.eq(icon),
             asset_groups::updated_at.eq(Utc::now()),
+            asset_groups::updated_by_id.eq(actor_id),
         ))
         .execute(conn)
         .await;
@@ -2583,7 +2676,7 @@ fn evaluate_eligibility(
 mod tests {
     use super::handle_access_request;
     use crate::db::DbPool;
-    use crate::schema::users;
+    use crate::schema::{access_rules, asset_groups, users};
     use diesel::prelude::*;
     use diesel_async::pooled_connection::AsyncDieselConnectionManager;
     use diesel_async::pooled_connection::deadpool::Pool;
@@ -2996,6 +3089,7 @@ mod tests {
                 description: Some("test asset group".to_string()),
                 color: "#6B7280".to_string(),
                 icon: "folder".to_string(),
+                actor_uuid: None,
             },
         )
         .await
@@ -3026,7 +3120,15 @@ mod tests {
             is_active: true,
             priority: 0,
         };
-        match handle_access_request(pool, AccessRequest::CreateAccessRule { data }).await {
+        match handle_access_request(
+            pool,
+            AccessRequest::CreateAccessRule {
+                data,
+                actor_uuid: None,
+            },
+        )
+        .await
+        {
             AccessResponse::AccessRule(Ok(info)) => info,
             other => panic!("Expected AccessRule(Ok), got {:?}", other),
         }
@@ -3168,6 +3270,223 @@ mod tests {
         cleanup_asset_group(&pool, &group.uuid).await;
     }
 
+    /// Issue #22 — `CreateAssetGroup` MUST stamp `created_by_id`
+    /// and `updated_by_id` from the actor UUID forwarded by the
+    /// web layer. The Metadata UI on `/assets/groups/{uuid}`
+    /// reads those columns directly via
+    /// `audit_authors::resolve_audit_pair`.
+    #[tokio::test]
+    async fn test_create_asset_group_stamps_audit_pair_from_actor_uuid() {
+        let pool = test_pool().await;
+        let user_id = insert_test_user(&pool, &unique_name("ag_audit_actor")).await;
+        let actor_uuid: Uuid = {
+            let mut conn = pool.get().await.unwrap();
+            users::table
+                .filter(users::id.eq(user_id))
+                .select(users::uuid)
+                .first::<Uuid>(&mut conn)
+                .await
+                .unwrap()
+        };
+
+        let name = unique_name("ag_audit");
+        let slug = name.to_lowercase().replace(' ', "-");
+        let resp = handle_access_request(
+            &pool,
+            AccessRequest::CreateAssetGroup {
+                name: name.clone(),
+                slug,
+                description: None,
+                color: "#abcdef".to_string(),
+                icon: "folder".to_string(),
+                actor_uuid: Some(actor_uuid.to_string()),
+            },
+        )
+        .await;
+        let info = match resp {
+            AccessResponse::AssetGroup(Ok(info)) => info,
+            other => panic!("expected AssetGroup(Ok), got {:?}", other),
+        };
+
+        let mut conn = pool.get().await.unwrap();
+        let row: (Option<i32>, Option<i32>) = asset_groups::table
+            .filter(asset_groups::id.eq(info.id))
+            .select((asset_groups::created_by_id, asset_groups::updated_by_id))
+            .first(&mut conn)
+            .await
+            .unwrap();
+        assert_eq!(
+            row,
+            (Some(user_id), Some(user_id)),
+            "CreateAssetGroup must stamp both audit columns with the actor"
+        );
+
+        cleanup_asset_group(&pool, &info.uuid).await;
+    }
+
+    /// Issue #22 — `UpdateAssetGroup` MUST re-stamp
+    /// `updated_by_id` while LEAVING `created_by_id` untouched.
+    /// Otherwise an admin "fixing a typo" would erase the
+    /// original creator from the audit trail.
+    #[tokio::test]
+    async fn test_update_asset_group_restamps_only_updated_by() {
+        let pool = test_pool().await;
+        let creator = insert_test_user(&pool, &unique_name("ag_audit_creator")).await;
+        let editor = insert_test_user(&pool, &unique_name("ag_audit_editor")).await;
+        let creator_uuid: Uuid = {
+            let mut conn = pool.get().await.unwrap();
+            users::table
+                .filter(users::id.eq(creator))
+                .select(users::uuid)
+                .first::<Uuid>(&mut conn)
+                .await
+                .unwrap()
+        };
+        let editor_uuid: Uuid = {
+            let mut conn = pool.get().await.unwrap();
+            users::table
+                .filter(users::id.eq(editor))
+                .select(users::uuid)
+                .first::<Uuid>(&mut conn)
+                .await
+                .unwrap()
+        };
+
+        let name = unique_name("ag_audit_upd");
+        let slug = name.to_lowercase().replace(' ', "-");
+        let create_resp = handle_access_request(
+            &pool,
+            AccessRequest::CreateAssetGroup {
+                name: name.clone(),
+                slug: slug.clone(),
+                description: None,
+                color: "#000000".to_string(),
+                icon: "folder".to_string(),
+                actor_uuid: Some(creator_uuid.to_string()),
+            },
+        )
+        .await;
+        let info = match create_resp {
+            AccessResponse::AssetGroup(Ok(info)) => info,
+            other => panic!("expected AssetGroup(Ok), got {:?}", other),
+        };
+
+        let _ = handle_access_request(
+            &pool,
+            AccessRequest::UpdateAssetGroup {
+                uuid: info.uuid.clone(),
+                name: format!("{}-renamed", name),
+                slug: format!("{}-renamed", slug),
+                description: Some("edited".to_string()),
+                color: "#111111".to_string(),
+                icon: "server".to_string(),
+                actor_uuid: Some(editor_uuid.to_string()),
+            },
+        )
+        .await;
+
+        let mut conn = pool.get().await.unwrap();
+        let row: (Option<i32>, Option<i32>) = asset_groups::table
+            .filter(asset_groups::id.eq(info.id))
+            .select((asset_groups::created_by_id, asset_groups::updated_by_id))
+            .first(&mut conn)
+            .await
+            .unwrap();
+        assert_eq!(
+            row.0,
+            Some(creator),
+            "UpdateAssetGroup MUST NOT rewrite created_by_id"
+        );
+        assert_eq!(
+            row.1,
+            Some(editor),
+            "UpdateAssetGroup MUST re-stamp updated_by_id with the new actor"
+        );
+
+        cleanup_asset_group(&pool, &info.uuid).await;
+    }
+
+    /// Issue #22 — a missing or unresolvable `actor_uuid` MUST
+    /// NOT block the write. The audit columns are
+    /// `Nullable<Int4>` precisely so a transient lookup miss
+    /// only collapses the read-side cell to a muted em-dash.
+    #[tokio::test]
+    async fn test_create_asset_group_missing_actor_uuid_falls_back_to_null() {
+        let pool = test_pool().await;
+        let name = unique_name("ag_audit_no_actor");
+        let slug = name.to_lowercase().replace(' ', "-");
+        let resp = handle_access_request(
+            &pool,
+            AccessRequest::CreateAssetGroup {
+                name: name.clone(),
+                slug,
+                description: None,
+                color: "#aaaaaa".to_string(),
+                icon: "folder".to_string(),
+                actor_uuid: None,
+            },
+        )
+        .await;
+        let info = match resp {
+            AccessResponse::AssetGroup(Ok(info)) => info,
+            other => panic!("expected AssetGroup(Ok), got {:?}", other),
+        };
+
+        let mut conn = pool.get().await.unwrap();
+        let row: (Option<i32>, Option<i32>) = asset_groups::table
+            .filter(asset_groups::id.eq(info.id))
+            .select((asset_groups::created_by_id, asset_groups::updated_by_id))
+            .first(&mut conn)
+            .await
+            .unwrap();
+        assert_eq!(
+            row,
+            (None, None),
+            "missing actor_uuid must fall back to NULL audit columns, not block the write"
+        );
+        cleanup_asset_group(&pool, &info.uuid).await;
+    }
+
+    /// Issue #22 — a malformed `actor_uuid` falls through to
+    /// `None` (treated as "unknown / system" on the Metadata UI),
+    /// without ever leaking a parser error to the operator.
+    #[tokio::test]
+    async fn test_create_asset_group_malformed_actor_uuid_is_silently_ignored() {
+        let pool = test_pool().await;
+        let name = unique_name("ag_audit_bad_uuid");
+        let slug = name.to_lowercase().replace(' ', "-");
+        let resp = handle_access_request(
+            &pool,
+            AccessRequest::CreateAssetGroup {
+                name: name.clone(),
+                slug,
+                description: None,
+                color: "#bbbbbb".to_string(),
+                icon: "folder".to_string(),
+                actor_uuid: Some("not-a-uuid".to_string()),
+            },
+        )
+        .await;
+        let info = match resp {
+            AccessResponse::AssetGroup(Ok(info)) => info,
+            other => panic!("expected AssetGroup(Ok), got {:?}", other),
+        };
+
+        let mut conn = pool.get().await.unwrap();
+        let row: (Option<i32>, Option<i32>) = asset_groups::table
+            .filter(asset_groups::id.eq(info.id))
+            .select((asset_groups::created_by_id, asset_groups::updated_by_id))
+            .first(&mut conn)
+            .await
+            .unwrap();
+        assert_eq!(
+            row,
+            (None, None),
+            "malformed actor_uuid must collapse to NULL, not be persisted"
+        );
+        cleanup_asset_group(&pool, &info.uuid).await;
+    }
+
     #[tokio::test]
     async fn test_list_asset_groups() {
         let pool = test_pool().await;
@@ -3266,6 +3585,126 @@ mod tests {
         assert!(rule.is_active);
 
         cleanup_rule(&pool, &rule.uuid).await;
+        cleanup_asset_group(&pool, &ag.uuid).await;
+        cleanup_vauban_group(&pool, &ug.uuid).await;
+    }
+
+    /// Issue #22 — `CreateAccessRule` MUST stamp `created_by_id`
+    /// and `updated_by_id` from the actor UUID forwarded by the
+    /// web layer; `UpdateAccessRule` MUST re-stamp only the
+    /// updated column. Same contract as the asset-group test
+    /// above — kept as an explicit assertion so a future refactor
+    /// of either handler cannot silently drop the audit pair.
+    #[tokio::test]
+    async fn test_access_rule_create_and_update_audit_pair() {
+        let pool = test_pool().await;
+        let creator = insert_test_user(&pool, &unique_name("ar_audit_creator")).await;
+        let editor = insert_test_user(&pool, &unique_name("ar_audit_editor")).await;
+        let creator_uuid: Uuid = {
+            let mut conn = pool.get().await.unwrap();
+            users::table
+                .filter(users::id.eq(creator))
+                .select(users::uuid)
+                .first::<Uuid>(&mut conn)
+                .await
+                .unwrap()
+        };
+        let editor_uuid: Uuid = {
+            let mut conn = pool.get().await.unwrap();
+            users::table
+                .filter(users::id.eq(editor))
+                .select(users::uuid)
+                .first::<Uuid>(&mut conn)
+                .await
+                .unwrap()
+        };
+
+        let ug = create_test_vauban_group(&pool, &unique_name("ar_audit_ug")).await;
+        let ag = create_test_asset_group(&pool, &unique_name("ar_audit_ag")).await;
+
+        let data = AccessRuleData {
+            name: unique_name("ar_audit"),
+            description: None,
+            user_group_id: ug.id,
+            asset_group_id: ag.id,
+            allowed_protocols: vec!["ssh".to_string()],
+            valid_from: None,
+            valid_until: None,
+            require_mfa: false,
+            require_approval: false,
+            max_session_duration: None,
+            is_active: true,
+            priority: 0,
+        };
+        let create = handle_access_request(
+            &pool,
+            AccessRequest::CreateAccessRule {
+                data: data.clone(),
+                actor_uuid: Some(creator_uuid.to_string()),
+            },
+        )
+        .await;
+        let info = match create {
+            AccessResponse::AccessRule(Ok(info)) => info,
+            other => panic!("expected AccessRule(Ok), got {:?}", other),
+        };
+
+        let rule_uuid = Uuid::parse_str(&info.uuid).unwrap();
+        // Scope each pool.get() so the connection is returned to
+        // the pool before the next IPC call. The pool is sized to
+        // 2 (`test_pool().max_size(2)`); leaking a guard across
+        // `handle_access_request` plus the trailing cleanup_*
+        // helpers would saturate the pool and deadlock the test.
+        let after_create: (Option<i32>, Option<i32>) = {
+            let mut conn = pool.get().await.unwrap();
+            access_rules::table
+                .filter(access_rules::uuid.eq(rule_uuid))
+                .select((access_rules::created_by_id, access_rules::updated_by_id))
+                .first(&mut conn)
+                .await
+                .unwrap()
+        };
+        assert_eq!(
+            after_create,
+            (Some(creator), Some(creator)),
+            "CreateAccessRule must stamp both audit columns"
+        );
+
+        let updated = AccessRuleData {
+            name: format!("{}-renamed", data.name),
+            ..data
+        };
+        let _ = handle_access_request(
+            &pool,
+            AccessRequest::UpdateAccessRule {
+                uuid: info.uuid.clone(),
+                data: updated,
+                actor_uuid: Some(editor_uuid.to_string()),
+            },
+        )
+        .await;
+
+        let after_update: (Option<i32>, Option<i32>) = {
+            let mut conn = pool.get().await.unwrap();
+            access_rules::table
+                .filter(access_rules::uuid.eq(rule_uuid))
+                .select((access_rules::created_by_id, access_rules::updated_by_id))
+                .first(&mut conn)
+                .await
+                .unwrap()
+        };
+        assert_eq!(
+            after_update.0,
+            Some(creator),
+            "UpdateAccessRule MUST NOT rewrite created_by_id"
+        );
+        assert_eq!(
+            after_update.1,
+            Some(editor),
+            "UpdateAccessRule MUST re-stamp updated_by_id"
+        );
+
+        cleanup_rule(&pool, &info.uuid).await;
         cleanup_asset_group(&pool, &ag.uuid).await;
         cleanup_vauban_group(&pool, &ug.uuid).await;
     }
@@ -3877,6 +4316,7 @@ mod tests {
                     is_active: true,
                     priority: 0,
                 },
+                actor_uuid: None,
             },
         )
         .await;
@@ -3902,6 +4342,7 @@ mod tests {
                     is_active: true,
                     priority: 0,
                 },
+                actor_uuid: None,
             },
         )
         .await;
@@ -4524,10 +4965,72 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_verify_session_access_denied_session_expired() {
+    async fn test_verify_session_access_expired_consumews_collapses_to_gone() {
+        // Interactive intents (OpenViewer / ConsumeWs) MUST collapse a
+        // Gone session to `Gone` regardless of identity -- the
+        // underlying connection is dead.
         use shared::messages::{SessionAccessDecision, SessionAccessIntent, SessionDenialReason};
         let pool = test_pool().await;
         let fx = make_vsa_fixture(&pool, "vsa_exp", vec!["ssh"]).await;
+        let session_uuid =
+            insert_test_session(&pool, fx.user_id, fx.asset_id, "ssh", "expired").await;
+
+        let resp = handle_access_request(
+            &pool,
+            AccessRequest::VerifySessionAccess {
+                session_uuid: session_uuid.clone(),
+                requesting_user_uuid: fx.user_uuid.clone(),
+                intent: SessionAccessIntent::ConsumeWs,
+            },
+        )
+        .await;
+        assert_session_decision(
+            resp,
+            SessionAccessDecision::Denied(SessionDenialReason::Gone),
+        );
+
+        cleanup_session(&pool, &session_uuid).await;
+        cleanup_vsa_fixture(&pool, &fx).await;
+    }
+
+    #[tokio::test]
+    async fn test_verify_session_access_owner_read_metadata_terminated_allowed() {
+        // Regression guard: the owner of a `terminated` session MUST
+        // still be able to read its metadata (the detail page doubles
+        // as the audit trace + recording entry-point). Pre-fix, this
+        // path collapsed to `Denied(Gone)` -> 410, which the web
+        // handler turned into a 303 to /sessions with a misleading
+        // "Session not found" flash.
+        use shared::messages::{SessionAccessDecision, SessionAccessIntent};
+        let pool = test_pool().await;
+        let fx = make_vsa_fixture(&pool, "vsa_term_owner_read", vec!["ssh"]).await;
+        let session_uuid =
+            insert_test_session(&pool, fx.user_id, fx.asset_id, "ssh", "terminated").await;
+
+        let resp = handle_access_request(
+            &pool,
+            AccessRequest::VerifySessionAccess {
+                session_uuid: session_uuid.clone(),
+                requesting_user_uuid: fx.user_uuid.clone(),
+                intent: SessionAccessIntent::ReadMetadata,
+            },
+        )
+        .await;
+        assert_session_decision(resp, SessionAccessDecision::Allowed);
+
+        cleanup_session(&pool, &session_uuid).await;
+        cleanup_vsa_fixture(&pool, &fx).await;
+    }
+
+    #[tokio::test]
+    async fn test_verify_session_access_owner_read_metadata_expired_allowed() {
+        // Twin of the terminated case: every status that is_gone()
+        // (terminated / expired / disconnected) MUST allow the owner
+        // to read the historical metadata. Covers the `expired`
+        // branch.
+        use shared::messages::{SessionAccessDecision, SessionAccessIntent};
+        let pool = test_pool().await;
+        let fx = make_vsa_fixture(&pool, "vsa_exp_owner_read", vec!["ssh"]).await;
         let session_uuid =
             insert_test_session(&pool, fx.user_id, fx.asset_id, "ssh", "expired").await;
 
@@ -4540,9 +5043,66 @@ mod tests {
             },
         )
         .await;
+        assert_session_decision(resp, SessionAccessDecision::Allowed);
+
+        cleanup_session(&pool, &session_uuid).await;
+        cleanup_vsa_fixture(&pool, &fx).await;
+    }
+
+    #[tokio::test]
+    async fn test_verify_session_access_owner_read_metadata_disconnected_allowed() {
+        // Third is_gone() status: `disconnected`.
+        use shared::messages::{SessionAccessDecision, SessionAccessIntent};
+        let pool = test_pool().await;
+        let fx = make_vsa_fixture(&pool, "vsa_disc_owner_read", vec!["ssh"]).await;
+        let session_uuid =
+            insert_test_session(&pool, fx.user_id, fx.asset_id, "ssh", "disconnected").await;
+
+        let resp = handle_access_request(
+            &pool,
+            AccessRequest::VerifySessionAccess {
+                session_uuid: session_uuid.clone(),
+                requesting_user_uuid: fx.user_uuid.clone(),
+                intent: SessionAccessIntent::ReadMetadata,
+            },
+        )
+        .await;
+        assert_session_decision(resp, SessionAccessDecision::Allowed);
+
+        cleanup_session(&pool, &session_uuid).await;
+        cleanup_vsa_fixture(&pool, &fx).await;
+    }
+
+    #[tokio::test]
+    async fn test_verify_session_access_intruder_read_metadata_terminated_not_owner() {
+        // Anti-enumeration property: a non-owner probing a Gone
+        // session via ReadMetadata MUST receive `NotOwner`, never
+        // `Gone`. Otherwise an attacker who holds neither
+        // `sessions:supervise` nor ownership could distinguish a
+        // truly-non-existent UUID (NotFound -> 404) from an existing
+        // but terminated session of someone else (Gone -> 410). The
+        // owner-check-first ordering makes both collapse to the same
+        // 404 at the service layer.
+        use shared::messages::{SessionAccessDecision, SessionAccessIntent, SessionDenialReason};
+        let pool = test_pool().await;
+        let fx = make_vsa_fixture(&pool, "vsa_term_intruder_read", vec!["ssh"]).await;
+        let session_uuid =
+            insert_test_session(&pool, fx.user_id, fx.asset_id, "ssh", "terminated").await;
+        let intruder_id = insert_test_user(&pool, &unique_name("vsa_intruder_read")).await;
+        let intruder_uuid = user_uuid(&pool, intruder_id).await;
+
+        let resp = handle_access_request(
+            &pool,
+            AccessRequest::VerifySessionAccess {
+                session_uuid: session_uuid.clone(),
+                requesting_user_uuid: intruder_uuid,
+                intent: SessionAccessIntent::ReadMetadata,
+            },
+        )
+        .await;
         assert_session_decision(
             resp,
-            SessionAccessDecision::Denied(SessionDenialReason::Gone),
+            SessionAccessDecision::Denied(SessionDenialReason::NotOwner),
         );
 
         cleanup_session(&pool, &session_uuid).await;

@@ -1,3 +1,4 @@
+use crate::services::audit_authors::AuthorRef;
 use crate::templates::base::{FlashMessage, UserContext, VaubanConfig};
 /// VAUBAN Web - Asset group detail template.
 use askama::Template;
@@ -26,6 +27,13 @@ impl GroupAssetItem {
 }
 
 /// Asset group detail data.
+///
+/// `created_by` / `updated_by` were added by issue #22 to surface
+/// the audit pair on the Metadata section. They are
+/// `Option<AuthorRef>`; `None` means a NULL FK on the row or a
+/// hard-deleted user, both rendered as a muted em-dash. The
+/// `(inactive)` suffix kicks in when the user row is still there
+/// but `is_active = false`.
 #[derive(Debug, Clone)]
 pub struct AssetGroupDetail {
     pub uuid: String,
@@ -36,6 +44,8 @@ pub struct AssetGroupDetail {
     pub icon: String,
     pub created_at: String,
     pub updated_at: String,
+    pub created_by: Option<AuthorRef>,
+    pub updated_by: Option<AuthorRef>,
     pub assets: Vec<GroupAssetItem>,
 }
 
@@ -78,6 +88,8 @@ mod tests {
             icon: "server".to_string(),
             created_at: "2026-01-01 00:00:00".to_string(),
             updated_at: "2026-01-02 00:00:00".to_string(),
+            created_by: None,
+            updated_by: None,
             assets: vec![create_test_group_asset_item("online")],
         }
     }

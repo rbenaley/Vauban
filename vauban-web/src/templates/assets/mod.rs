@@ -10,11 +10,11 @@ pub mod asset_edit;
 /// VAUBAN Web - Assets templates.
 pub mod asset_list;
 pub mod group_add_asset;
-pub mod manage;
 pub mod group_create;
 pub mod group_detail;
 pub mod group_edit;
 pub mod group_list;
+pub mod manage;
 
 pub use access_list::AccessListTemplate;
 pub use access_rule_create::{AccessRuleCreateForm, AccessRuleCreateTemplate, GroupOption};

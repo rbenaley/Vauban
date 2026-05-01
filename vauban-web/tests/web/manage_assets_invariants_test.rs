@@ -213,8 +213,7 @@ fn manage_assets_every_handler_gates_on_assets_manage() {
             // either the web pattern (`flash_redirect(...)`,
             // `Err(AppError::Authorization(...))`, `Err(AppError::Forbidden)`)
             // or the API pattern (`AppError::forbidden("assets:manage")`).
-            let short_circuits_web =
-                signature_and_body.contains("flash_redirect(") // web admin handlers
+            let short_circuits_web = signature_and_body.contains("flash_redirect(") // web admin handlers
                     || signature_and_body.contains("AppError::Authorization")
                     || signature_and_body.contains("AppError::Forbidden");
             let short_circuits_api = signature_and_body.contains("AppError::forbidden");
@@ -253,8 +252,7 @@ fn router_mounts_assets_manage_under_a_gated_nest() {
     let api_nest_token_compact = format!(".nest(\"{}\"", "/api/v1/assets/manage");
 
     assert!(
-        collapsed.contains(nest_token.as_str())
-            || collapsed.contains(nest_token_compact.as_str()),
+        collapsed.contains(nest_token.as_str()) || collapsed.contains(nest_token_compact.as_str()),
         "main.rs must mount `/assets/manage` via Router::nest (web)"
     );
     assert!(

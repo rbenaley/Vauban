@@ -26,8 +26,8 @@ use diesel_async::RunQueryDsl;
 use vauban_web::models::session::SessionType;
 use vauban_web::services::recording_hydrator::{
     FORMAT_ASCIICAST_V2, FORMAT_FMP4_DASH, FORMAT_FMP4_FLAT, IntegrityBundle, TASK_NAME,
-    aggregate_rdp_blake3, is_valid_blake3_hex, mark_finalized_corrupt,
-    mark_finalized_legacy_flat, parse_meta,
+    aggregate_rdp_blake3, is_valid_blake3_hex, mark_finalized_corrupt, mark_finalized_legacy_flat,
+    parse_meta,
 };
 
 // ---------------------------------------------------------------------------
@@ -98,14 +98,7 @@ async fn test_hydrator_aggregates_rdp_segments_via_blake3_of_hex_concat() {
             &self.s
         }
     }
-    let manual = aggregate_rdp_blake3(&[
-        H {
-            s: h1.to_string(),
-        },
-        H {
-            s: h2.to_string(),
-        },
-    ]);
+    let manual = aggregate_rdp_blake3(&[H { s: h1.to_string() }, H { s: h2.to_string() }]);
     assert_eq!(bundle.blake3_hex, manual);
 }
 
@@ -122,8 +115,7 @@ async fn test_hydrator_persist_then_idempotent() {
 
     let username = unique_name("hyd_persist");
     let user_id = create_simple_admin_user(&mut conn, &username).await;
-    let asset_id =
-        create_simple_ssh_asset(&mut conn, &unique_name("hyd-asset"), user_id).await;
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("hyd-asset"), user_id).await;
     let session_id = create_recorded_session_with_type(&mut conn, user_id, asset_id, "ssh").await;
 
     // Manual UPDATE mirrors persist_bundle's SET clause exactly.
@@ -157,7 +149,10 @@ async fn test_hydrator_persist_then_idempotent() {
             .filter(dsl::id.eq(session_id))
             .filter(dsl::recording_finalized_at.is_null()),
     )
-    .set(dsl::recording_blake3.eq("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"))
+    .set(
+        dsl::recording_blake3
+            .eq("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"),
+    )
     .execute(&mut conn)
     .await
     .expect("second persist must execute (no constraint violation)");
@@ -185,8 +180,7 @@ async fn test_hydrator_db_rejects_uppercase_blake3() {
 
     let username = unique_name("hyd_uppercase");
     let user_id = create_simple_admin_user(&mut conn, &username).await;
-    let asset_id =
-        create_simple_ssh_asset(&mut conn, &unique_name("hyd-up-asset"), user_id).await;
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("hyd-up-asset"), user_id).await;
     let session_id = create_recorded_session_with_type(&mut conn, user_id, asset_id, "ssh").await;
 
     use vauban_web::schema::proxy_sessions::dsl;
@@ -212,8 +206,7 @@ async fn test_hydrator_db_rejects_unknown_format() {
 
     let username = unique_name("hyd_format");
     let user_id = create_simple_admin_user(&mut conn, &username).await;
-    let asset_id =
-        create_simple_ssh_asset(&mut conn, &unique_name("hyd-fmt-asset"), user_id).await;
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("hyd-fmt-asset"), user_id).await;
     let session_id = create_recorded_session_with_type(&mut conn, user_id, asset_id, "ssh").await;
 
     use vauban_web::schema::proxy_sessions::dsl;
@@ -364,8 +357,7 @@ async fn test_hydrator_marks_legacy_flat_mp4_as_fmp4_flat_and_is_one_shot() {
 
     let username = unique_name("hyd_legacy");
     let user_id = create_simple_admin_user(&mut conn, &username).await;
-    let asset_id =
-        create_simple_ssh_asset(&mut conn, &unique_name("hyd-leg-asset"), user_id).await;
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("hyd-leg-asset"), user_id).await;
 
     // Insert a session whose recording_path is a flat .mp4 (legacy).
     use vauban_web::models::session::SessionType as ST;
@@ -409,17 +401,20 @@ async fn test_hydrator_marks_legacy_flat_mp4_as_fmp4_flat_and_is_one_shot() {
         .expect("mark legacy flat");
 
     // Post-condition: format is fmp4-flat, finalized_at set, blake3 NULL.
-    let (fmt, finalized, blake3): (Option<String>, Option<chrono::DateTime<Utc>>, Option<String>) =
-        dsl::proxy_sessions
-            .filter(dsl::id.eq(session_id))
-            .select((
-                dsl::recording_format,
-                dsl::recording_finalized_at,
-                dsl::recording_blake3,
-            ))
-            .first(&mut conn)
-            .await
-            .expect("select");
+    let (fmt, finalized, blake3): (
+        Option<String>,
+        Option<chrono::DateTime<Utc>>,
+        Option<String>,
+    ) = dsl::proxy_sessions
+        .filter(dsl::id.eq(session_id))
+        .select((
+            dsl::recording_format,
+            dsl::recording_finalized_at,
+            dsl::recording_blake3,
+        ))
+        .first(&mut conn)
+        .await
+        .expect("select");
     assert_eq!(fmt.as_deref(), Some(FORMAT_FMP4_FLAT));
     assert!(finalized.is_some(), "finalized_at must be set");
     assert!(
@@ -916,8 +911,7 @@ async fn test_mark_finalized_corrupt_is_idempotent() {
 // document version. The pins therefore target the v1.3 file.
 // ===========================================================================
 
-const RECORDING_ARCHITECTURE_DOC: &str =
-    "docs/technical/Vauban_Recording_Architecture_EN(1.3).md";
+const RECORDING_ARCHITECTURE_DOC: &str = "docs/technical/Vauban_Recording_Architecture_EN(1.3).md";
 
 #[test]
 fn test_recording_architecture_doc_present() {
@@ -925,11 +919,7 @@ fn test_recording_architecture_doc_present() {
         .parent()
         .expect("workspace root")
         .join(RECORDING_ARCHITECTURE_DOC);
-    assert!(
-        p.exists(),
-        "architecture doc must exist at {}",
-        p.display()
-    );
+    assert!(p.exists(), "architecture doc must exist at {}", p.display());
 }
 
 #[test]
@@ -956,7 +946,9 @@ fn test_recording_architecture_documents_event_driven_timing() {
     );
     // Timing must be cristallin: 5s grace, 24h safety net.
     assert!(
-        content.contains("default 5s") || content.contains("(default 5s)") || content.contains("default 5 s"),
+        content.contains("default 5s")
+            || content.contains("(default 5s)")
+            || content.contains("default 5 s"),
         "doc must mention the 5s default for hydration_enqueue_delay_secs"
     );
     assert!(
@@ -983,8 +975,7 @@ fn test_recording_architecture_documents_event_driven_timing() {
     );
     // The FAQ on the grace period must be present.
     assert!(
-        content.contains("Why a 5 s grace period?")
-            || content.contains("Why a 5s grace period?"),
+        content.contains("Why a 5 s grace period?") || content.contains("Why a 5s grace period?"),
         "doc must include the 'Why a 5 s grace period?' FAQ section"
     );
 }

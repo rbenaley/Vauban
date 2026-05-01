@@ -354,8 +354,7 @@ async fn test_api_terminate_does_not_panic_when_supervisor_absent() {
     let owner_id = create_simple_user(&mut conn, &owner_name).await;
     let owner_uuid = get_user_uuid(&mut conn, owner_id).await;
     let admin_id = create_simple_admin_user(&mut conn, &unique_name("term_v14_adm")).await;
-    let asset_id =
-        create_simple_ssh_asset(&mut conn, &unique_name("term_v14_ast"), admin_id).await;
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("term_v14_ast"), admin_id).await;
     let _ = grant_user_access_to_asset(
         &mut conn,
         owner_id,

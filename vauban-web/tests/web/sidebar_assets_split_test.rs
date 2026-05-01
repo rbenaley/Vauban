@@ -127,10 +127,7 @@ async fn sidebar_superuser_shows_both_zones() {
         use vauban_web::schema::users;
         unwrap_ok!(
             diesel::update(users::table.filter(users::id.eq(user_id)))
-                .set((
-                    users::is_staff.eq(true),
-                    users::is_superuser.eq(true),
-                ))
+                .set((users::is_staff.eq(true), users::is_superuser.eq(true),))
                 .execute(&mut conn)
                 .await
         );

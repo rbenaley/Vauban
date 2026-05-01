@@ -280,24 +280,8 @@ pub async fn access_rule_detail(
     }
 
     let client = &state.access_client;
-    let detail = match client.get_access_rule(&uuid_str).await {
-        Ok(info) => AccessRuleDetailData {
-            uuid: info.uuid,
-            name: info.name,
-            description: info.description,
-            user_group_name: info.user_group_name,
-            asset_group_name: info.asset_group_name,
-            allowed_protocols: info.allowed_protocols,
-            valid_from: format_rfc3339_to_display(&info.valid_from),
-            valid_until: format_rfc3339_to_display(&info.valid_until),
-            require_mfa: info.require_mfa,
-            require_approval: info.require_approval,
-            max_session_duration: info.max_session_duration,
-            is_active: info.is_active,
-            priority: info.priority,
-            created_at: format_rfc3339_str_to_display(&info.created_at),
-            updated_at: format_rfc3339_str_to_display(&info.updated_at),
-        },
+    let info = match client.get_access_rule(&uuid_str).await {
+        Ok(info) => info,
         Err(AppError::Ipc(ref msg)) if msg.to_lowercase().contains("not found") => {
             return flash_redirect(flash.error("Access rule not found"), "/assets/access");
         }
@@ -305,6 +289,55 @@ pub async fn access_rule_detail(
             tracing::error!("IPC error fetching access rule: {}", e);
             return flash_redirect(flash.error("Failed to load access rule"), "/assets/access");
         }
+    };
+
+    // Audit pair (issue #22). The IPC `AccessRuleData` does not
+    // carry `created_by_id` / `updated_by_id` (those are pure
+    // presentation, not a policy decision), so fetch them via a
+    // small UUID-keyed lookup. Best-effort: a transient DB error
+    // here only loses the audit attribution, the rest of the
+    // page still renders.
+    let (created_by, updated_by) = {
+        use crate::schema::access_rules::dsl as ar_dsl;
+        use diesel::prelude::*;
+        use diesel_async::RunQueryDsl;
+        let parsed_uuid = ::uuid::Uuid::parse_str(&info.uuid).ok();
+        let pair: Option<(Option<i32>, Option<i32>)> =
+            match (parsed_uuid, state.db_pool.get().await) {
+                (Some(u), Ok(mut conn)) => ar_dsl::access_rules
+                    .filter(ar_dsl::uuid.eq(u))
+                    .select((ar_dsl::created_by_id, ar_dsl::updated_by_id))
+                    .first(&mut conn)
+                    .await
+                    .ok(),
+                _ => None,
+            };
+        match (pair, state.db_pool.get().await) {
+            (Some((c, u)), Ok(mut conn)) => {
+                crate::services::audit_authors::resolve_audit_pair(&mut conn, c, u).await
+            }
+            _ => (None, None),
+        }
+    };
+
+    let detail = AccessRuleDetailData {
+        uuid: info.uuid,
+        name: info.name,
+        description: info.description,
+        user_group_name: info.user_group_name,
+        asset_group_name: info.asset_group_name,
+        allowed_protocols: info.allowed_protocols,
+        valid_from: format_rfc3339_to_display(&info.valid_from),
+        valid_until: format_rfc3339_to_display(&info.valid_until),
+        require_mfa: info.require_mfa,
+        require_approval: info.require_approval,
+        max_session_duration: info.max_session_duration,
+        is_active: info.is_active,
+        priority: info.priority,
+        created_at: format_rfc3339_str_to_display(&info.created_at),
+        updated_at: format_rfc3339_str_to_display(&info.updated_at),
+        created_by,
+        updated_by,
     };
 
     let user = Some(user_context_from_auth(&auth_user));
@@ -408,7 +441,7 @@ pub async fn access_rule_create_form(
 
 pub async fn create_access_rule_web(
     State(state): State<AppState>,
-    _auth_user: WebAuthUser,
+    auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
@@ -478,7 +511,12 @@ pub async fn create_access_rule_web(
         is_active: form.is_active.is_some(),
         priority,
     };
-    match client.create_access_rule(data).await {
+    // Issue #22 — forward the operator UUID so vauban-access
+    // stamps `created_by_id` / `updated_by_id` on the new row.
+    match client
+        .create_access_rule(data, Some(auth_user.uuid.clone()))
+        .await
+    {
         Ok(info) => flash_redirect(
             flash.success(format!("Access rule '{}' created", sanitized_name)),
             &format!("/assets/access/{}", info.uuid),
@@ -615,7 +653,7 @@ pub async fn access_rule_edit(
 
 pub async fn update_access_rule_web(
     State(state): State<AppState>,
-    _auth_user: WebAuthUser,
+    auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
@@ -697,7 +735,12 @@ pub async fn update_access_rule_web(
         is_active: form.is_active.is_some(),
         priority,
     };
-    match client.update_access_rule(&uuid_str, data).await {
+    // Issue #22 — forward the operator UUID so vauban-access
+    // re-stamps `updated_by_id` on the row.
+    match client
+        .update_access_rule(&uuid_str, data, Some(auth_user.uuid.clone()))
+        .await
+    {
         Ok(_) => flash_redirect(
             flash.success(format!("Access rule '{}' updated", sanitized_name)),
             &format!("/assets/access/{}", uuid_str),

@@ -14,13 +14,26 @@
 //!   keep the audit surface minimal.
 //! - No "Connect" affordance — the asset is gone; sessions on its
 //!   `id` are reachable via the proxy_sessions history page.
+//!
+//! Issue #22 — `deleted_by` surfaces the operator that performed
+//! the soft-delete. We reuse the `updated_by_id` column (re-stamped
+//! by `delete_asset_web`) instead of introducing a dedicated
+//! `deleted_by_id`: a tombstone's last write IS the deletion by
+//! contract, and the active-asset detail page already uses
+//! `updated_by_id` to surface the most recent operator.
 
+use crate::services::audit_authors::AuthorRef;
 use crate::templates::accounts::user_list::Pagination;
 use crate::templates::base::{FlashMessage, UserContext, VaubanConfig};
 use askama::Template;
 
 /// One row in the deleted-assets audit list. Mirrors the audit-relevant
 /// columns of `assets`; secrets are not represented here on purpose.
+///
+/// `deleted_by` is sourced from `assets.updated_by_id` (re-stamped at
+/// soft-delete time by `delete_asset_web` and `delete_asset` API). A
+/// `None` collapses to a muted em-dash so historical tombstones
+/// created before the audit columns existed render gracefully.
 #[derive(Debug, Clone)]
 pub struct DeletedAssetItem {
     pub uuid: ::uuid::Uuid,
@@ -31,6 +44,7 @@ pub struct DeletedAssetItem {
     pub asset_type: String,
     pub deleted_at: Option<chrono::DateTime<chrono::Utc>>,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    pub deleted_by: Option<AuthorRef>,
 }
 
 #[derive(Template)]
@@ -62,6 +76,10 @@ mod tests {
             asset_type: "ssh".to_string(),
             deleted_at: Some(chrono::Utc::now()),
             created_at: chrono::Utc::now() - chrono::Duration::days(7),
+            deleted_by: Some(AuthorRef {
+                username: "alice_admin".to_string(),
+                is_active: true,
+            }),
         }
     }
 
@@ -141,6 +159,65 @@ mod tests {
             !lowered.contains("/restore") && !lowered.contains("/reactivate"),
             "audit view MUST NOT carry a restore/reactivate URL"
         );
+    }
+
+    #[test]
+    fn test_renders_deleted_by_username() {
+        let template = make_template(vec![make_item()]);
+        let html = template.render().expect("must render");
+        assert!(
+            html.contains("alice_admin"),
+            "tombstone row must surface the username of the operator that deleted it"
+        );
+        assert!(
+            html.to_lowercase().contains(">by<")
+                || html.to_lowercase().contains("deleted by")
+                || html.to_lowercase().contains(" by "),
+            "tombstone row must label the operator with a 'by' marker"
+        );
+    }
+
+    #[test]
+    fn test_renders_deleted_by_inactive_suffix() {
+        let mut item = make_item();
+        item.deleted_by = Some(AuthorRef {
+            username: "bob_admin".to_string(),
+            is_active: false,
+        });
+        let template = make_template(vec![item]);
+        let html = template.render().expect("must render");
+        assert!(html.contains("bob_admin"), "username must still render");
+        assert!(
+            html.contains("(inactive)"),
+            "an inactive operator must be flagged so the auditor sees the row was \
+             deleted by an account that is no longer active"
+        );
+    }
+
+    #[test]
+    fn test_renders_em_dash_when_deleted_by_missing() {
+        let mut item = make_item();
+        item.deleted_by = None;
+        let template = make_template(vec![item]);
+        let html = template.render().expect("must render");
+        assert!(
+            html.contains("&mdash;") || html.contains("\u{2014}"),
+            "a tombstone with no resolvable operator must render the muted em-dash, \
+             never an empty cell or 'Some(...)' Debug repr"
+        );
+    }
+
+    #[test]
+    fn test_deleted_by_never_leaks_authorref_repr() {
+        let template = make_template(vec![make_item()]);
+        let html = template.render().expect("must render");
+        for tok in ["AuthorRef {", "is_active:", "username:", "Some("] {
+            assert!(
+                !html.contains(tok),
+                "tombstone row leaked an implementation detail (`{}`) into the audit HTML",
+                tok
+            );
+        }
     }
 
     #[test]

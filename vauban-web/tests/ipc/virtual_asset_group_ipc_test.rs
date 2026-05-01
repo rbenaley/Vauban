@@ -160,7 +160,7 @@ async fn c3_asset_group_info_kind_field_correct() {
     let name = unique_name("c3_static");
     let slug = name.to_lowercase().replace('_', "-");
     let static_grp = client
-        .create_asset_group(&name, &slug, None, "#000", "folder")
+        .create_asset_group(&name, &slug, None, "#000", "folder", None)
         .await
         .expect("create static");
     assert_eq!(
@@ -226,7 +226,7 @@ async fn c4_create_access_rule_on_virtual_group() {
     };
 
     let rule = client
-        .create_access_rule(data)
+        .create_access_rule(data, None)
         .await
         .expect("create access rule on virtual group");
 
@@ -268,6 +268,7 @@ async fn c5_update_virtual_asset_group_is_refused() {
             None,
             "#ff0000",
             "skull",
+            None,
         )
         .await;
     assert!(
@@ -339,6 +340,7 @@ async fn c7_direct_membership_insert_on_virtual_is_refused() {
             description: None,
             connection_config: serde_json::json!({}),
             created_by_id: None,
+            updated_by_id: None,
             connection_username: "root".to_string(),
         })
         .returning(assets::id)

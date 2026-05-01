@@ -270,10 +270,7 @@ impl RecordingHydrator {
                 continue;
             }
 
-            match self
-                .hydrate_one(&uuid, session_type, &recording_path)
-                .await
-            {
+            match self.hydrate_one(&uuid, session_type, &recording_path).await {
                 HydrationOutcome::Bundle(bundle) => {
                     if let Err(e) = persist_bundle(&self.pool, id, &bundle).await {
                         error!(
@@ -415,17 +412,17 @@ impl RecordingHydrator {
             .map_err(|e| HydrationError::Database(format!("select by id: {}", e)))?;
 
         let mut report = HydrationReport::default();
-        let (id, uuid, session_type, recording_path_opt, disconnected_at, created_at, _) =
-            match row {
-                Some(r) => r,
-                None => {
-                    debug!(
-                        session_id,
-                        "hydrator: nothing to hydrate (already finalized, not recorded, or no path)"
-                    );
-                    return Ok(report);
-                }
-            };
+        let (id, uuid, session_type, recording_path_opt, disconnected_at, created_at, _) = match row
+        {
+            Some(r) => r,
+            None => {
+                debug!(
+                    session_id,
+                    "hydrator: nothing to hydrate (already finalized, not recorded, or no path)"
+                );
+                return Ok(report);
+            }
+        };
         report.scanned = 1;
 
         let recording_path = match recording_path_opt {
@@ -456,10 +453,7 @@ impl RecordingHydrator {
             return Ok(report);
         }
 
-        match self
-            .hydrate_one(&uuid, session_type, &recording_path)
-            .await
-        {
+        match self.hydrate_one(&uuid, session_type, &recording_path).await {
             HydrationOutcome::Bundle(bundle) => {
                 if let Err(e) = persist_bundle(&self.pool, id, &bundle).await {
                     error!(
@@ -620,8 +614,8 @@ pub fn meta_relative_for(storage_base: &str, recording_path: &str) -> Option<Str
 pub fn parse_meta(session_type: SessionType, buf: &str) -> Result<IntegrityBundle, String> {
     match session_type {
         SessionType::Ssh => {
-            let meta: SshMeta = serde_json::from_str(buf)
-                .map_err(|e| format!("invalid SSH meta.json: {}", e))?;
+            let meta: SshMeta =
+                serde_json::from_str(buf).map_err(|e| format!("invalid SSH meta.json: {}", e))?;
             if !is_valid_blake3_hex(&meta.blake3_hex) {
                 return Err(format!(
                     "SSH blake3_hex is not 64-char lowercase hex: {}",
@@ -633,7 +627,9 @@ pub fn parse_meta(session_type: SessionType, buf: &str) -> Result<IntegrityBundl
                 size_bytes: i64::try_from(meta.total_bytes).unwrap_or(i64::MAX),
                 duration_ms: (meta.duration_secs * 1000.0).round() as i64,
                 event_count: i32::try_from(meta.total_events).ok(),
-                format: meta.format.unwrap_or_else(|| FORMAT_ASCIICAST_V2.to_string()),
+                format: meta
+                    .format
+                    .unwrap_or_else(|| FORMAT_ASCIICAST_V2.to_string()),
                 width: meta.width as i16,
                 height: meta.height as i16,
                 segment_count: None,
@@ -641,8 +637,8 @@ pub fn parse_meta(session_type: SessionType, buf: &str) -> Result<IntegrityBundl
             })
         }
         SessionType::Rdp => {
-            let meta: RdpMeta = serde_json::from_str(buf)
-                .map_err(|e| format!("invalid RDP meta.json: {}", e))?;
+            let meta: RdpMeta =
+                serde_json::from_str(buf).map_err(|e| format!("invalid RDP meta.json: {}", e))?;
             if meta.segments.is_empty() {
                 // Empty segments array is treated as fmp4-flat legacy
                 // (no integrity to persist beyond size/format from the
@@ -724,7 +720,9 @@ impl HasSegmentHash for RdpSegment {
 /// True iff `s` is exactly 64 chars of [0-9a-f]. Mirrors the DB
 /// constraint `recording_blake3_format`.
 pub fn is_valid_blake3_hex(s: &str) -> bool {
-    s.len() == 64 && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    s.len() == 64
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 async fn persist_bundle(
@@ -733,10 +731,7 @@ async fn persist_bundle(
     bundle: &IntegrityBundle,
 ) -> Result<(), String> {
     use crate::schema::proxy_sessions::dsl;
-    let mut conn = pool
-        .get()
-        .await
-        .map_err(|e| format!("pool: {}", e))?;
+    let mut conn = pool.get().await.map_err(|e| format!("pool: {}", e))?;
     let now: DateTime<Utc> = Utc::now();
     let updated = diesel::update(
         dsl::proxy_sessions
@@ -772,10 +767,7 @@ async fn persist_bundle(
 /// procedure (`docs/runbooks/recording_hydrator.md` section B).
 pub async fn mark_finalized_corrupt(pool: &DbPool, session_id: i32) -> Result<(), String> {
     use crate::schema::proxy_sessions::dsl;
-    let mut conn = pool
-        .get()
-        .await
-        .map_err(|e| format!("pool: {}", e))?;
+    let mut conn = pool.get().await.map_err(|e| format!("pool: {}", e))?;
     let now: DateTime<Utc> = Utc::now();
     diesel::update(
         dsl::proxy_sessions
@@ -966,10 +958,7 @@ pub fn enqueue_hydration(state: &AppState, session_id: i32, grace: Duration) -> 
 /// Exposed for tests + the runbook.
 pub async fn mark_finalized_legacy_flat(pool: &DbPool, session_id: i32) -> Result<(), String> {
     use crate::schema::proxy_sessions::dsl;
-    let mut conn = pool
-        .get()
-        .await
-        .map_err(|e| format!("pool: {}", e))?;
+    let mut conn = pool.get().await.map_err(|e| format!("pool: {}", e))?;
     let now: DateTime<Utc> = Utc::now();
     diesel::update(
         dsl::proxy_sessions
@@ -1005,9 +994,7 @@ mod tests {
     fn test_is_valid_blake3_hex_accepts_lowercase_64_hex() {
         let s = "0".repeat(64);
         assert!(is_valid_blake3_hex(&s));
-        let s2: String = (0..64)
-            .map(|i| (b'a' + (i % 6) as u8) as char)
-            .collect();
+        let s2: String = (0..64).map(|i| (b'a' + (i % 6) as u8) as char).collect();
         assert!(is_valid_blake3_hex(&s2));
     }
 

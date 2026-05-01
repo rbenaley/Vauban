@@ -861,7 +861,10 @@ impl Config {
         }
 
         // Validate recording hydrator knobs (e.g. cron hour must be 0..=23).
-        config.recording.validate().map_err(crate::error::AppError::Config)?;
+        config
+            .recording
+            .validate()
+            .map_err(crate::error::AppError::Config)?;
 
         Ok(config)
     }
@@ -968,7 +971,10 @@ mod tests {
             hydration_daily_cron_hour_utc: 23,
             ..RecordingConfig::default()
         };
-        assert!(cfg.validate().is_ok(), "hour 23 is the upper inclusive bound");
+        assert!(
+            cfg.validate().is_ok(),
+            "hour 23 is the upper inclusive bound"
+        );
     }
 
     #[test]

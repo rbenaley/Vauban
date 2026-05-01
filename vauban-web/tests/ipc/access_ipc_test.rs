@@ -167,6 +167,7 @@ async fn test_ipc_create_and_get_asset_group() {
             Some("IPC test".to_string()),
             "#FF0000",
             "server",
+            None,
         )
         .await
         .expect("create asset group");
@@ -197,7 +198,7 @@ async fn test_ipc_list_asset_groups() {
     let name = unique_name("ipc_ag_list");
     let slug = name.to_lowercase().replace('_', "-");
     let group = client
-        .create_asset_group(&name, &slug, None, "#000000", "folder")
+        .create_asset_group(&name, &slug, None, "#000000", "folder", None)
         .await
         .expect("create");
 
@@ -227,7 +228,7 @@ async fn test_ipc_create_and_get_access_rule() {
         .await
         .expect("create ug");
     let ag = client
-        .create_asset_group(&ag_name, &ag_slug, None, "#123456", "folder")
+        .create_asset_group(&ag_name, &ag_slug, None, "#123456", "folder", None)
         .await
         .expect("create ag");
 
@@ -247,7 +248,7 @@ async fn test_ipc_create_and_get_access_rule() {
     };
 
     let rule = client
-        .create_access_rule(data)
+        .create_access_rule(data, None)
         .await
         .expect("create access rule");
     assert!(rule.is_active);
@@ -358,7 +359,7 @@ async fn test_ipc_check_access_allowed_and_protocol_filter() {
         .await
         .expect("create ug");
     let ag = client
-        .create_asset_group(&ag_name, &ag_slug, None, "#000", "server")
+        .create_asset_group(&ag_name, &ag_slug, None, "#000", "server", None)
         .await
         .expect("create ag");
 
@@ -381,7 +382,10 @@ async fn test_ipc_check_access_allowed_and_protocol_filter() {
         is_active: true,
         priority: 0,
     };
-    let rule = client.create_access_rule(data).await.expect("create rule");
+    let rule = client
+        .create_access_rule(data, None)
+        .await
+        .expect("create rule");
 
     let ssh_result = client
         .check_access(user_id, ag.id, "ssh")
@@ -417,7 +421,7 @@ async fn test_ipc_list_accessible_groups() {
         .await
         .expect("create ug");
     let ag = client
-        .create_asset_group(&ag_name, &ag_slug, None, "#000", "folder")
+        .create_asset_group(&ag_name, &ag_slug, None, "#000", "folder", None)
         .await
         .expect("create ag");
 
@@ -440,7 +444,10 @@ async fn test_ipc_list_accessible_groups() {
         is_active: true,
         priority: 0,
     };
-    let rule = client.create_access_rule(data).await.expect("create rule");
+    let rule = client
+        .create_access_rule(data, None)
+        .await
+        .expect("create rule");
 
     let groups = client
         .list_accessible_groups(user_id)
@@ -475,7 +482,7 @@ async fn test_ipc_get_group_options() {
         .await
         .expect("create ug");
     let ag = client
-        .create_asset_group(&ag_name, &ag_slug, None, "#000", "folder")
+        .create_asset_group(&ag_name, &ag_slug, None, "#000", "folder", None)
         .await
         .expect("create ag");
 

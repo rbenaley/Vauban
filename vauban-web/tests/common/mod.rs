@@ -489,21 +489,16 @@ fn build_test_router(state: AppState) -> Router {
                 .route("/", get(handlers::web::manage_asset_list))
                 .route(
                     "/new",
-                    get(handlers::web::asset_create_form)
-                        .post(handlers::web::create_asset_web),
+                    get(handlers::web::asset_create_form).post(handlers::web::create_asset_web),
                 )
                 .route("/deleted", get(handlers::web::asset_deleted_list))
                 .route("/search", get(handlers::web::asset_search))
                 .route("/{uuid}", get(handlers::web::asset_detail))
                 .route(
                     "/{uuid}/edit",
-                    get(handlers::web::asset_edit)
-                        .post(handlers::web::update_asset_web),
+                    get(handlers::web::asset_edit).post(handlers::web::update_asset_web),
                 )
-                .route(
-                    "/{uuid}/delete",
-                    post(handlers::web::delete_asset_web),
-                )
+                .route("/{uuid}/delete", post(handlers::web::delete_asset_web))
                 .route(
                     "/{uuid}/fetch-host-key",
                     post(handlers::web::fetch_ssh_host_key),
@@ -526,8 +521,7 @@ fn build_test_router(state: AppState) -> Router {
                 )
                 .route(
                     "/{uuid}",
-                    get(handlers::api::get_asset)
-                        .put(handlers::api::update_asset),
+                    get(handlers::api::get_asset).put(handlers::api::update_asset),
                 )
                 .route(
                     "/{uuid}/ssh-host-key",

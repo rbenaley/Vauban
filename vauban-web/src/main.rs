@@ -710,11 +710,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Issue #29 v1.4: cleanup also enqueues recording hydration for
     // every session it transitions to terminated/disconnected, hence
     // the `app_state.clone()` instead of just `db_pool`.
-    start_cleanup_tasks(
-        app_state.clone(),
-        config.security.session_idle_timeout_secs,
-    )
-    .await;
+    start_cleanup_tasks(app_state.clone(), config.security.session_idle_timeout_secs).await;
 
     // Recording integrity hydrator (issue #29 / UX-28 v1.4):
     // event-driven. PRIMARY path = per-call-site `enqueue_hydration`
@@ -1419,18 +1415,12 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
         )
         .route("/deleted", get(handlers::web::asset_deleted_list))
         .route("/search", get(handlers::web::asset_search))
-        .route(
-            "/{uuid}",
-            get(handlers::web::asset_detail),
-        )
+        .route("/{uuid}", get(handlers::web::asset_detail))
         .route(
             "/{uuid}/edit",
             get(handlers::web::asset_edit).post(handlers::web::update_asset_web),
         )
-        .route(
-            "/{uuid}/delete",
-            post(handlers::web::delete_asset_web),
-        )
+        .route("/{uuid}/delete", post(handlers::web::delete_asset_web))
         .route(
             "/{uuid}/fetch-host-key",
             post(handlers::web::fetch_ssh_host_key),
@@ -1525,22 +1515,15 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             .nest(
                 "/api/v1/assets/manage",
                 Router::new()
-                    .route(
-                        "/",
-                        post(handlers::api::create_asset),
-                    )
-                    .route(
-                        "/groups",
-                        get(handlers::api::list_asset_groups),
-                    )
+                    .route("/", post(handlers::api::create_asset))
+                    .route("/groups", get(handlers::api::list_asset_groups))
                     .route(
                         "/groups/{uuid}/assets",
                         get(handlers::api::list_group_assets),
                     )
                     .route(
                         "/{uuid}",
-                        get(handlers::api::get_asset)
-                            .put(handlers::api::update_asset),
+                        get(handlers::api::get_asset).put(handlers::api::update_asset),
                     )
                     .route(
                         "/{uuid}/ssh-host-key",

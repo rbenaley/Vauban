@@ -121,7 +121,17 @@
                             </span>
                         </td>
                         <td class="px-3 py-4 sm:px-4 lg:px-6 whitespace-nowrap text-right text-sm font-medium align-top">
-                            <a href="/assets/access/{{ rule.uuid }}/edit" class="text-vauban-600 hover:text-vauban-900 dark:text-vauban-400 dark:hover:text-vauban-300">Edit</a>
+                            {# Issue #28 follow-up -- align the Edit affordance
+                               with the secondary (neutral / "noir" in dark
+                               mode, animated on hover) Edit button used on
+                               /assets/manage rows. The shape doubles as a
+                               visual signal that this is a secondary action
+                               next to the primary (blue) View / Details
+                               buttons used elsewhere. #}
+                            <a href="/assets/access/{{ rule.uuid }}/edit"
+                               class="inline-flex items-center rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-1.5 text-sm font-semibold text-gray-700 dark:text-gray-300 shadow-sm transition-colors hover:bg-gray-50 dark:hover:bg-gray-600">
+                                Edit
+                            </a>
                         </td>
                     </tr>
                     {% endfor %}

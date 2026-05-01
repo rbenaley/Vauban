@@ -949,11 +949,20 @@ pub async fn fetch_ssh_host_key(
         .as_object_mut()
         .map(|m| m.remove("ssh_host_key_mismatch"));
 
+    // Issue #22 — re-stamp the audit actor: persisting a fetched
+    // host key mutates `connection_config`, so the operator that
+    // pressed "Fetch Host Key" must show up as the last
+    // `Updated by` on `/assets/manage/{uuid}`. Best-effort: a
+    // `None` collapses to the muted em-dash on render.
+    let actor_id =
+        crate::services::audit_authors::resolve_actor_id(&mut conn, &auth_user.uuid).await;
+
     use chrono::Utc;
     if let Err(e) = diesel::update(dsl::assets.filter(dsl::uuid.eq(asset_uuid)))
         .set((
             dsl::connection_config.eq(&config),
             dsl::updated_at.eq(Utc::now()),
+            dsl::updated_by_id.eq(actor_id),
         ))
         .execute(&mut conn)
         .await

@@ -161,8 +161,7 @@ async fn run_cleanup_pass(state: &AppState, idle_timeout_secs: u64) {
 /// enqueue is a no-op for non-recorded rows or rows already finalised
 /// concurrently (PRIMARY path, issue #29 v1.4).
 fn enqueue_hydration_for(state: &AppState, ids: &[i32]) {
-    let grace =
-        Duration::from_secs(state.config.recording.hydration_enqueue_delay_secs);
+    let grace = Duration::from_secs(state.config.recording.hydration_enqueue_delay_secs);
     for id in ids {
         std::mem::drop(crate::services::recording_hydrator::enqueue_hydration(
             state, *id, grace,

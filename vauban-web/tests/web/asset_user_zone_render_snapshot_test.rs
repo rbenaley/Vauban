@@ -108,9 +108,9 @@ fn user_zone_list_renders_connect_only_no_admin_buttons() {
     let forbidden_admin = [
         format!(">{} Asset<", "New"),
         format!(">{} Rules<", "Access"),
-        format!("/assets/{{}}/{}\"", "edit"),  // sentinel: edit URL pattern
+        format!("/assets/{{}}/{}\"", "edit"), // sentinel: edit URL pattern
         format!("/assets/{{}}/{}\"", "delete"),
-        format!("/assets/{}/", "manage"),  // user zone MUST not advertise admin
+        format!("/assets/{}/", "manage"), // user zone MUST not advertise admin
     ];
     for tok in &forbidden_admin {
         assert!(
@@ -144,9 +144,7 @@ fn user_zone_detail_hides_admin_buttons() {
         asset: sample_user_detail(),
     };
 
-    let html = template
-        .render()
-        .expect("AssetDetailTemplate must render");
+    let html = template.render().expect("AssetDetailTemplate must render");
 
     let edit_url = "/assets/manage/";
     let edit_legacy_url = format!("/assets/{}/{}", "{uuid}", "edit");

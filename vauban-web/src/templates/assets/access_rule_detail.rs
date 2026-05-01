@@ -1,9 +1,17 @@
 /// VAUBAN Web - Access rule detail template.
 use askama::Template;
 
+use crate::services::audit_authors::AuthorRef;
 use crate::templates::base::{FlashMessage, UserContext, VaubanConfig};
 
 /// Access rule detail data for display.
+///
+/// `created_by` / `updated_by` were added by issue #22 to surface
+/// the audit pair on the Metadata section. They are
+/// `Option<AuthorRef>`; `None` means a NULL FK on the row or a
+/// hard-deleted user, both rendered as a muted em-dash. The
+/// `(inactive)` suffix kicks in when the user row is still there
+/// but `is_active = false`.
 #[derive(Debug, Clone)]
 pub struct AccessRuleDetailData {
     pub uuid: String,
@@ -21,6 +29,8 @@ pub struct AccessRuleDetailData {
     pub priority: i32,
     pub created_at: String,
     pub updated_at: String,
+    pub created_by: Option<AuthorRef>,
+    pub updated_by: Option<AuthorRef>,
 }
 
 impl AccessRuleDetailData {
@@ -81,6 +91,8 @@ mod tests {
             priority: 0,
             created_at: "2026-01-01 00:00:00".to_string(),
             updated_at: "2026-01-02 00:00:00".to_string(),
+            created_by: None,
+            updated_by: None,
         }
     }
 

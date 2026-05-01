@@ -8,6 +8,7 @@
 //! [`crate::ipc::vault::VaultCryptoClient`].
 pub mod access;
 pub mod asset_membership;
+pub mod audit_authors;
 pub mod auth;
 pub mod broadcast;
 pub mod connections;

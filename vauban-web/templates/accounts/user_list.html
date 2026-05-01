@@ -192,7 +192,14 @@
                             {% endif %}
                         </td>
                         <td class="px-3 py-4 sm:px-4 lg:px-6 whitespace-nowrap text-right text-sm font-medium align-top">
-                            <a href="/accounts/users/{{ user.uuid }}" class="text-vauban-600 hover:text-vauban-900 dark:text-vauban-400 dark:hover:text-vauban-300">View</a>
+                            {# Issue #28 follow-up -- promote the View link to a primary
+                               (blue) button identical to the Details button on
+                               /assets/manage so navigation across admin list pages
+                               carries the same visual weight. #}
+                            <a href="/accounts/users/{{ user.uuid }}"
+                               class="inline-flex items-center rounded-md bg-vauban-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-600">
+                                View
+                            </a>
                         </td>
                     </tr>
                     {% endfor %}

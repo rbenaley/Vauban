@@ -260,7 +260,10 @@ async fn test_api_list_group_assets() {
     // Execute: GET /api/v1/assets/groups/{uuid}/assets
     let response = app
         .server
-        .get(&format!("/api/v1/assets/manage/groups/{}/assets", group_uuid))
+        .get(&format!(
+            "/api/v1/assets/manage/groups/{}/assets",
+            group_uuid
+        ))
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .await;
 
@@ -302,7 +305,10 @@ async fn test_api_list_group_assets_not_found() {
     // Execute: GET /api/v1/assets/groups/{fake_uuid}/assets
     let response = app
         .server
-        .get(&format!("/api/v1/assets/manage/groups/{}/assets", fake_uuid))
+        .get(&format!(
+            "/api/v1/assets/manage/groups/{}/assets",
+            fake_uuid
+        ))
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .await;
 
@@ -331,7 +337,10 @@ async fn test_api_list_group_assets_requires_auth() {
     // (see comment in `test_api_list_asset_groups_requires_auth`).
     let response = app
         .server
-        .get(&format!("/api/v1/assets/manage/groups/{}/assets", group_uuid))
+        .get(&format!(
+            "/api/v1/assets/manage/groups/{}/assets",
+            group_uuid
+        ))
         .await;
     let status = response.status_code().as_u16();
     assert!(
@@ -360,7 +369,10 @@ async fn test_api_list_group_assets_empty() {
     // Execute: GET /api/v1/assets/groups/{uuid}/assets
     let response = app
         .server
-        .get(&format!("/api/v1/assets/manage/groups/{}/assets", group_uuid))
+        .get(&format!(
+            "/api/v1/assets/manage/groups/{}/assets",
+            group_uuid
+        ))
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .await;
 

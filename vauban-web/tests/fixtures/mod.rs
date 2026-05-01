@@ -401,6 +401,7 @@ pub async fn create_test_ssh_asset(conn: &mut AsyncPgConnection, name: &str) -> 
         description: Some("Test SSH asset".to_string()),
         connection_config: serde_json::json!({}),
         created_by_id: None,
+        updated_by_id: None,
         connection_username: "root".to_string(),
     };
 
@@ -428,6 +429,7 @@ pub async fn create_test_rdp_asset(conn: &mut AsyncPgConnection, name: &str) -> 
         description: Some("Test RDP asset".to_string()),
         connection_config: serde_json::json!({}),
         created_by_id: None,
+        updated_by_id: None,
         connection_username: "Administrator".to_string(),
     };
 
@@ -572,6 +574,7 @@ pub async fn create_simple_ssh_asset(
         description: None,
         connection_config: serde_json::json!({}),
         created_by_id: Some(created_by),
+        updated_by_id: Some(created_by),
         connection_username: "root".to_string(),
     };
 
@@ -604,6 +607,7 @@ pub async fn create_simple_rdp_asset(
         description: None,
         connection_config: serde_json::json!({}),
         created_by_id: Some(created_by),
+        updated_by_id: Some(created_by),
         connection_username: "Administrator".to_string(),
     };
 
@@ -1192,6 +1196,7 @@ pub async fn create_test_asset_in_group(
         description: None,
         connection_config: serde_json::json!({}),
         created_by_id: Some(created_by),
+        updated_by_id: Some(created_by),
         connection_username: "root".to_string(),
     };
 
@@ -1256,6 +1261,7 @@ pub async fn create_test_asset_in_group_with_type(
         description: None,
         connection_config: serde_json::json!({}),
         created_by_id: Some(created_by),
+        updated_by_id: Some(created_by),
         connection_username: default_user.to_string(),
     };
 

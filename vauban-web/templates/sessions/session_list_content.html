@@ -55,10 +55,15 @@
                     </div>
                 </div>
             </div>
-            <div class="flex items-center gap-2 sm:flex-shrink-0">
+            <div class="flex flex-wrap items-center gap-2 sm:flex-shrink-0">
                 {% if show_view_link %}
+                {# Issue #28 follow-up -- promote the View action to the
+                   primary (blue) button shape used on /assets/manage so the
+                   detail page (which carries duration, IP, user agent,
+                   bytes, recording, justification) is reachable as a clearly
+                   actionable affordance, not a discreet grey link. #}
                 <a href="/sessions/{{ session.id }}"
-                   class="text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">
+                   class="inline-flex items-center rounded-md bg-vauban-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-600">
                     View
                 </a>
                 {% endif %}

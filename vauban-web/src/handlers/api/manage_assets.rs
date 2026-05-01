@@ -85,7 +85,7 @@ pub async fn get_asset(
 /// Create asset handler (admin zone).
 pub async fn create_asset(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
     perms: PermissionContext,
     Json(request): Json<CreateAssetRequest>,
 ) -> AppResult<Json<Asset>> {
@@ -126,6 +126,15 @@ pub async fn create_asset(
         ));
     }
 
+    // Issue #22 — stamp the audit pair so the Metadata UI on
+    // `/assets/manage/{uuid}` can surface "Created by" / "Updated by"
+    // for every freshly-created asset. A `None` here only happens
+    // when the JWT `sub` claim no longer maps to a live user row;
+    // we let the write proceed (the audit columns are
+    // `Nullable<Int4>`) and fall back to the muted em-dash on
+    // render rather than refuse the operation.
+    let actor_id = crate::services::audit_authors::resolve_actor_id(&mut conn, &user.uuid).await;
+
     let new_asset = NewAsset {
         uuid: Uuid::new_v4(),
         name: sanitized_name,
@@ -135,7 +144,8 @@ pub async fn create_asset(
         status: "unknown".to_string(),
         description: sanitized_description,
         connection_config: serde_json::json!({}),
-        created_by_id: None,
+        created_by_id: actor_id,
+        updated_by_id: actor_id,
         connection_username: "root".to_string(),
     };
 
@@ -179,7 +189,7 @@ pub async fn create_asset(
 /// - HTML error fragment on failure (for display in error container)
 pub async fn update_asset(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
     perms: PermissionContext,
     headers: HeaderMap,
     Path(asset_uuid_str): Path<String>,
@@ -226,7 +236,7 @@ pub async fn update_asset(
 
     use crate::schema::assets::dsl::{
         assets, description as description_col, hostname as hostname_col, name as name_col,
-        port as port_col, status as status_col, updated_at, uuid,
+        port as port_col, status as status_col, updated_at, updated_by_id as updated_by_col, uuid,
     };
     use chrono::Utc;
 
@@ -249,6 +259,13 @@ pub async fn update_asset(
         .map(|d| strip(&d))
         .or(existing.description);
 
+    // Issue #22 — re-stamp the audit actor on every successful
+    // mutation so the "Updated by" cell on `/assets/manage/{uuid}`
+    // reflects the last operator that touched the row, not the
+    // creator. Best-effort: a `None` (UUID no longer maps to a
+    // live user row) collapses to the muted em-dash on render.
+    let actor_id = crate::services::audit_authors::resolve_actor_id(&mut conn, &user.uuid).await;
+
     let asset: Asset = match diesel::update(assets.filter(uuid.eq(asset_uuid)))
         .set((
             name_col.eq(sanitized_name),
@@ -257,6 +274,7 @@ pub async fn update_asset(
             status_col.eq(request.status.unwrap_or(existing.status)),
             description_col.eq(sanitized_description),
             updated_at.eq(Utc::now()),
+            updated_by_col.eq(actor_id),
         ))
         .get_result(&mut conn)
         .await
@@ -564,10 +582,19 @@ pub async fn fetch_ssh_host_key_api(
 
     use crate::schema::assets::dsl::connection_config as config_col;
     use crate::schema::assets::dsl::updated_at;
+    use crate::schema::assets::dsl::updated_by_id as updated_by_col;
     use chrono::Utc;
 
+    // Issue #22 — fetching/refreshing the SSH host key mutates
+    // `connection_config`, so we re-stamp the audit actor too.
+    let actor_id = crate::services::audit_authors::resolve_actor_id(&mut conn, &user.uuid).await;
+
     diesel::update(assets.filter(uuid.eq(asset_uuid)))
-        .set((config_col.eq(&config), updated_at.eq(Utc::now())))
+        .set((
+            config_col.eq(&config),
+            updated_at.eq(Utc::now()),
+            updated_by_col.eq(actor_id),
+        ))
         .execute(&mut conn)
         .await?;
 
@@ -671,11 +698,7 @@ mod tests {
             .lines()
             .map(|l| {
                 let t = l.trim_start();
-                if t.starts_with("//") {
-                    ""
-                } else {
-                    l
-                }
+                if t.starts_with("//") { "" } else { l }
             })
             .collect::<Vec<_>>()
             .join("\n");

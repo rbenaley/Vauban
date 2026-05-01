@@ -395,10 +395,7 @@ pub async fn asset_user_view(
     {
         Ok(ids) => ids,
         Err(_) => {
-            return flash_redirect(
-                flash.error("Database error. Please try again."),
-                "/assets",
-            );
+            return flash_redirect(flash.error("Database error. Please try again."), "/assets");
         }
     };
 
@@ -418,10 +415,7 @@ pub async fn asset_user_view(
             return flash_redirect(flash.error("Asset not found"), "/assets");
         }
         Err(_) => {
-            return flash_redirect(
-                flash.error("Database error. Please try again."),
-                "/assets",
-            );
+            return flash_redirect(flash.error("Database error. Please try again."), "/assets");
         }
     };
 

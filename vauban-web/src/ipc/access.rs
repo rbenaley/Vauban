@@ -377,9 +377,13 @@ impl AccessIpcClient {
 
     // === Access Rules CRUD ===
 
-    pub async fn create_access_rule(&self, data: AccessRuleData) -> AppResult<AccessRuleInfo> {
+    pub async fn create_access_rule(
+        &self,
+        data: AccessRuleData,
+        actor_uuid: Option<String>,
+    ) -> AppResult<AccessRuleInfo> {
         let resp = self
-            .send_access_request(AccessReq::CreateAccessRule { data })
+            .send_access_request(AccessReq::CreateAccessRule { data, actor_uuid })
             .await?;
         match resp {
             AccessResp::AccessRule(Ok(info)) => Ok(info),
@@ -421,11 +425,13 @@ impl AccessIpcClient {
         &self,
         uuid: &str,
         data: AccessRuleData,
+        actor_uuid: Option<String>,
     ) -> AppResult<AccessRuleInfo> {
         let resp = self
             .send_access_request(AccessReq::UpdateAccessRule {
                 uuid: uuid.to_string(),
                 data,
+                actor_uuid,
             })
             .await?;
         match resp {
@@ -609,6 +615,7 @@ impl AccessIpcClient {
         description: Option<String>,
         color: &str,
         icon: &str,
+        actor_uuid: Option<String>,
     ) -> AppResult<AssetGroupInfo> {
         let resp = self
             .send_access_request(AccessReq::CreateAssetGroup {
@@ -617,6 +624,7 @@ impl AccessIpcClient {
                 description,
                 color: color.to_string(),
                 icon: icon.to_string(),
+                actor_uuid,
             })
             .await?;
         match resp {
@@ -675,6 +683,12 @@ impl AccessIpcClient {
         .await
     }
 
+    // Signature mirrors the `AccessRequest::UpdateAssetGroup`
+    // variant 1:1; collapsing the args into a struct here would
+    // only push the same fan-out to the dispatch site (the call
+    // graph already validates each field separately on the wire).
+    // `actor_uuid` is the 8th arg added by issue #22.
+    #[allow(clippy::too_many_arguments)]
     pub async fn update_asset_group(
         &self,
         uuid: &str,
@@ -683,6 +697,7 @@ impl AccessIpcClient {
         description: Option<String>,
         color: &str,
         icon: &str,
+        actor_uuid: Option<String>,
     ) -> AppResult<AssetGroupInfo> {
         let resp = self
             .send_access_request(AccessReq::UpdateAssetGroup {
@@ -690,6 +705,7 @@ impl AccessIpcClient {
                 name: name.to_string(),
                 slug: slug.to_string(),
                 description,
+                actor_uuid,
                 color: color.to_string(),
                 icon: icon.to_string(),
             })

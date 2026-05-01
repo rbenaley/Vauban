@@ -7,6 +7,7 @@
 //! enforced by source-level CI tests.
 use askama::Template;
 
+use crate::services::audit_authors::AuthorRef;
 use crate::templates::base::{FlashMessage, UserContext, VaubanConfig};
 
 /// Asset metadata exposed on the admin detail page.
@@ -19,6 +20,12 @@ use crate::templates::base::{FlashMessage, UserContext, VaubanConfig};
 /// - `require_justification` (only meaningful for the Connect button).
 ///
 /// All three were removed because the admin zone never opens sessions.
+///
+/// Carries the audit-author pair (`created_by` / `updated_by`)
+/// resolved by [`crate::services::audit_authors::resolve_audit_pair`]
+/// for the Metadata UI (issue #22). `None` means either a NULL FK
+/// (system bootstrap rows) or a hard-deleted user — both render as
+/// `—` in the template, never as a numeric id.
 pub struct ManageAssetDetail {
     pub uuid: String,
     pub name: String,
@@ -31,6 +38,8 @@ pub struct ManageAssetDetail {
     pub description: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    pub created_by: Option<AuthorRef>,
+    pub updated_by: Option<AuthorRef>,
     pub ssh_host_key_fingerprint: Option<String>,
     pub ssh_host_key_mismatch: bool,
 }

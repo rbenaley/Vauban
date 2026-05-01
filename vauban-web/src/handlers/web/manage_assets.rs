@@ -114,7 +114,7 @@ pub struct CreateAssetWebForm {
 /// Handle asset creation form submission (admin zone).
 pub async fn create_asset_web(
     State(state): State<AppState>,
-    _auth_user: WebAuthUser,
+    auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
@@ -223,6 +223,16 @@ pub async fn create_asset_web(
     // policy (RG-ASS-04) make any other path a security regression.
     let new_uuid = ::uuid::Uuid::new_v4();
 
+    // Issue #22 — stamp the audit pair on creation so the
+    // Metadata UI surfaces "Created by" / "Updated by" without
+    // ever needing to fall back to the muted em-dash for assets
+    // born after this change. A `None` here only happens if the
+    // session JWT no longer maps to a live user row; we let the
+    // INSERT proceed (audit columns are `Nullable<Int4>`) so a
+    // transient lookup miss never blocks a legitimate create.
+    let actor_id =
+        crate::services::audit_authors::resolve_actor_id(&mut conn, &auth_user.uuid).await;
+
     let result = diesel::insert_into(a::assets)
         .values((
             a::uuid.eq(new_uuid),
@@ -235,6 +245,8 @@ pub async fn create_asset_web(
             a::connection_config.eq(connection_config),
             a::connection_username.eq(connection_username),
             a::is_deleted.eq(false),
+            a::created_by_id.eq(actor_id),
+            a::updated_by_id.eq(actor_id),
             a::created_at.eq(now),
             a::updated_at.eq(now),
         ))
@@ -255,10 +267,7 @@ pub async fn create_asset_web(
         ),
         Err(e) => {
             tracing::error!("Failed to create asset: {}", e);
-            flash_redirect(
-                flash.error("Failed to create asset"),
-                "/assets/manage/new",
-            )
+            flash_redirect(flash.error("Failed to create asset"), "/assets/manage/new")
         }
     }
 }
@@ -516,6 +525,7 @@ pub async fn asset_deleted_list(
         AssetType,
         Option<chrono::DateTime<chrono::Utc>>,
         chrono::DateTime<chrono::Utc>,
+        Option<i32>,
     )> = schema_assets::table
         .filter(schema_assets::is_deleted.eq(true))
         .select((
@@ -527,6 +537,7 @@ pub async fn asset_deleted_list(
             schema_assets::asset_type,
             schema_assets::deleted_at,
             schema_assets::created_at,
+            schema_assets::updated_by_id,
         ))
         .order(schema_assets::deleted_at.desc().nulls_last())
         .then_order_by(schema_assets::name.asc())
@@ -534,6 +545,15 @@ pub async fn asset_deleted_list(
         .offset(offset)
         .load(&mut conn)
         .await?;
+
+    // Issue #22 — bulk-resolve the operator that soft-deleted each
+    // tombstone. We reuse `updated_by_id` (re-stamped by
+    // `delete_asset_web`) instead of introducing a dedicated
+    // `deleted_by_id` column: by contract a tombstone's last write
+    // IS the deletion. One round-trip for the whole page, even
+    // when many rows share the same admin.
+    let actor_ids: Vec<Option<i32>> = rows.iter().map(|r| r.8).collect();
+    let authors = crate::services::audit_authors::resolve_authors(&mut conn, &actor_ids).await;
 
     let assets: Vec<DeletedAssetItem> = rows
         .into_iter()
@@ -547,7 +567,9 @@ pub async fn asset_deleted_list(
                 asset_type,
                 deleted_at,
                 created_at,
+                updated_by_id,
             )| {
+                let deleted_by = updated_by_id.and_then(|id| authors.get(&id).cloned());
                 DeletedAssetItem {
                     uuid,
                     name,
@@ -557,6 +579,7 @@ pub async fn asset_deleted_list(
                     asset_type: asset_type.to_string(),
                     deleted_at,
                     created_at,
+                    deleted_by,
                 }
             },
         )
@@ -782,6 +805,16 @@ pub async fn asset_detail(
         )
     };
 
+    // Resolve the audit-author pair (issue #22). One DB round-trip
+    // covers both ids; on failure, render falls back to "—" so a
+    // transient DB blip on the lookup never fails the detail page.
+    let (created_by, updated_by) = crate::services::audit_authors::resolve_audit_pair(
+        &mut conn,
+        asset_model.created_by_id,
+        asset_model.updated_by_id,
+    )
+    .await;
+
     let asset = crate::templates::assets::manage::ManageAssetDetail {
         uuid: asset_model.uuid.to_string(),
         name: asset_name.clone(),
@@ -794,6 +827,8 @@ pub async fn asset_detail(
         description: asset_model.description.clone(),
         created_at: asset_model.created_at.format("%b %d, %Y %H:%M").to_string(),
         updated_at: asset_model.updated_at.format("%b %d, %Y %H:%M").to_string(),
+        created_by,
+        updated_by,
         ssh_host_key_fingerprint,
         ssh_host_key_mismatch,
     };
@@ -1028,7 +1063,7 @@ pub struct CsrfOnlyForm {
 /// Update asset handler (admin zone).
 pub async fn update_asset_web(
     State(state): State<AppState>,
-    _auth_user: WebAuthUser,
+    auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
@@ -1194,6 +1229,14 @@ pub async fn update_asset_web(
         .filter(|s| !s.is_empty())
         .unwrap_or(&existing.connection_username);
 
+    // Issue #22 — re-stamp the audit actor so the "Updated by"
+    // cell on `/assets/manage/{uuid}` reflects the operator that
+    // performed the most recent edit, not just the original
+    // creator. Best-effort: a `None` collapses to the muted
+    // em-dash on render.
+    let actor_id =
+        crate::services::audit_authors::resolve_actor_id(&mut conn, &auth_user.uuid).await;
+
     let result = diesel::update(a::assets.filter(a::uuid.eq(asset_uuid)))
         .set((
             a::name.eq(&sanitized_name),
@@ -1204,6 +1247,7 @@ pub async fn update_asset_web(
             a::connection_config.eq(connection_config),
             a::connection_username.eq(updated_username),
             a::updated_at.eq(Utc::now()),
+            a::updated_by_id.eq(actor_id),
         ))
         .execute(&mut conn)
         .await;
@@ -1235,7 +1279,7 @@ pub async fn update_asset_web(
 #[allow(clippy::too_many_arguments)]
 pub async fn delete_asset_web(
     State(state): State<AppState>,
-    _auth_user: WebAuthUser,
+    auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
@@ -1318,19 +1362,23 @@ pub async fn delete_asset_web(
     };
 
     let now = Utc::now();
+    // Issue #22 — re-stamp `updated_by_id` on soft-delete: the
+    // tombstone's audit pair must reflect the operator that
+    // performed the deletion, not the original creator. Resolved
+    // outside the transaction so we never block the row write on
+    // a `users` lookup latency. Best-effort: a `None` collapses
+    // to the muted em-dash on the `/assets/manage/deleted` page.
+    let actor_id =
+        crate::services::audit_authors::resolve_actor_id(&mut conn, &auth_user.uuid).await;
     let result = conn
         .transaction::<Vec<i32>, diesel::result::Error, _>(|conn| {
             Box::pin(async move {
-                // Issue #17: scrub `connection_config` on soft-delete so
-                // a tombstone never carries credentials, even briefly.
-                // The DB enforces the same invariant via the
-                // `assets_tombstone_no_secrets` CHECK constraint -- this
-                // explicit write is now defence-in-depth.
                 diesel::update(a::assets.filter(a::id.eq(asset_id)))
                     .set((
                         a::is_deleted.eq(true),
                         a::deleted_at.eq(now),
                         a::updated_at.eq(now),
+                        a::updated_by_id.eq(actor_id),
                         a::connection_config.eq(serde_json::json!({})),
                     ))
                     .execute(conn)
@@ -1424,11 +1472,7 @@ mod tests {
             .lines()
             .map(|l| {
                 let t = l.trim_start();
-                if t.starts_with("//") {
-                    ""
-                } else {
-                    l
-                }
+                if t.starts_with("//") { "" } else { l }
             })
             .collect::<Vec<_>>()
             .join("\n");

@@ -78,10 +78,23 @@ impl SessionAccessOutcome {
 /// | `Terminate`     | `perms.sessions_write` (and the owner is **always**  |
 /// |                 | allowed to terminate, regardless of access-rule)    |
 ///
-/// `NotFound` and `Gone` are NEVER overridden: a probe cannot
-/// resurrect a `404` into a `200` by holding `sessions:supervise`
-/// because the underlying session does not exist (or is gone)
-/// either way.
+/// `NotFound` is NEVER overridden: a probe cannot resurrect a
+/// `404` into a `200` by holding `sessions:supervise` because the
+/// underlying session does not exist either way.
+///
+/// `Gone` is intent-aware:
+/// * `OpenViewer` / `ConsumeWs` -> `DeniedGone` (410). The
+///   underlying TCP/RDP/SSH connection is dead; no override
+///   resurrects it.
+/// * `Terminate` -> `Allowed` (idempotent owner-cleanup; vauban-access
+///   has already proven ownership by the time we observe `Gone`).
+/// * `ReadMetadata` -> `Allowed` (historical metadata read; same
+///   ordering invariant -- vauban-access does owner-check-first
+///   for ReadMetadata too, so reaching this arm means the caller
+///   is the owner). This is the regression-guard for the "View"
+///   link on `/sessions` after a session disconnects: the audit
+///   detail page (durations, bytes, justification, recording
+///   link) MUST stay reachable to the operator who ran it.
 ///
 /// Fail-closed: any IPC error is logged at `warn` level (with the
 /// caller's UUID and the session UUID for correlation) and collapsed
@@ -158,6 +171,17 @@ fn apply_casbin_override(
             // get the same idempotency for symmetry with non-Gone
             // terminates.
             SessionAccessIntent::Terminate => SessionAccessOutcome::Allowed,
+            // Defense-in-depth twin of the Terminate branch above:
+            // vauban-access already short-circuits ReadMetadata + Gone
+            // to `Allowed` at the source so this arm is normally
+            // unreachable, but if a future change ever surfaces a
+            // `Denied(Gone)` for ReadMetadata we still want the owner
+            // (proven by the owner-check-first ordering on the access
+            // side) to read their historical session metadata rather
+            // than be redirected with a misleading "not found"
+            // flash. The `Gone` -> 410 collapse stays in effect for
+            // the interactive intents (OpenViewer / ConsumeWs).
+            SessionAccessIntent::ReadMetadata => SessionAccessOutcome::Allowed,
             _ => SessionAccessOutcome::DeniedGone,
         },
         SessionAccessDecision::Denied(SessionDenialReason::NotOwner) => match intent {
@@ -271,10 +295,12 @@ mod tests {
         );
     }
 
-    // --- Gone is NEVER overridden either ---
+    // --- Gone behaviour per intent ---
 
     #[test]
-    fn test_gone_collapses_410_even_with_supervise() {
+    fn test_gone_consumews_collapses_410_even_with_supervise() {
+        // Interactive intents (OpenViewer / ConsumeWs) keep the
+        // strict 410 collapse: the underlying connection is dead.
         assert_eq!(
             apply_casbin_override(
                 SessionAccessDecision::Denied(SessionDenialReason::Gone),
@@ -282,6 +308,70 @@ mod tests {
                 SessionAccessIntent::ConsumeWs,
             ),
             SessionAccessOutcome::DeniedGone
+        );
+    }
+
+    #[test]
+    fn test_gone_open_viewer_collapses_410_even_with_supervise() {
+        assert_eq!(
+            apply_casbin_override(
+                SessionAccessDecision::Denied(SessionDenialReason::Gone),
+                &perms(true, true),
+                SessionAccessIntent::OpenViewer,
+            ),
+            SessionAccessOutcome::DeniedGone
+        );
+    }
+
+    #[test]
+    fn test_gone_terminate_collapses_to_allowed_idempotency() {
+        // Already-Gone Terminate is the idempotent owner-cleanup
+        // path: vauban-access has proven ownership by the time we
+        // reach this arm (owner-check-first ordering); we surface a
+        // success so a double-click does not mislead the operator.
+        assert_eq!(
+            apply_casbin_override(
+                SessionAccessDecision::Denied(SessionDenialReason::Gone),
+                &perms(false, false),
+                SessionAccessIntent::Terminate,
+            ),
+            SessionAccessOutcome::Allowed
+        );
+    }
+
+    #[test]
+    fn test_gone_read_metadata_collapses_to_allowed_for_owner() {
+        // Defense-in-depth twin of the Terminate case: a Gone +
+        // ReadMetadata reaching the service layer means the caller
+        // is the owner (vauban-access already gates non-owners with
+        // NotOwner before checking is_gone for ReadMetadata). We
+        // surface Allowed so the historical detail page
+        // (audit trace + recording link + bytes / commands) is
+        // reachable even after the session has terminated. This is
+        // the regression-guard for the "View" link flashing
+        // "Session not found" right after a session disconnects.
+        assert_eq!(
+            apply_casbin_override(
+                SessionAccessDecision::Denied(SessionDenialReason::Gone),
+                &perms(false, false),
+                SessionAccessIntent::ReadMetadata,
+            ),
+            SessionAccessOutcome::Allowed
+        );
+    }
+
+    #[test]
+    fn test_gone_read_metadata_allowed_even_with_supervise() {
+        // Twin of the previous: holding sessions:supervise must NOT
+        // change the answer (Allowed already), keeping the override
+        // matrix monotonic.
+        assert_eq!(
+            apply_casbin_override(
+                SessionAccessDecision::Denied(SessionDenialReason::Gone),
+                &perms(true, true),
+                SessionAccessIntent::ReadMetadata,
+            ),
+            SessionAccessOutcome::Allowed
         );
     }
 

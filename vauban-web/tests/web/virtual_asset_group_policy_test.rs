@@ -74,6 +74,7 @@ async fn insert_orphan_asset(conn: &mut diesel_async::AsyncPgConnection, name: &
         description: None,
         connection_config: serde_json::json!({}),
         created_by_id: None,
+        updated_by_id: None,
         connection_username: "root".to_string(),
     };
     diesel::insert_into(assets::table)

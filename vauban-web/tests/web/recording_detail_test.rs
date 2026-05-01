@@ -96,10 +96,8 @@ async fn test_recording_detail_renders_for_ssh_with_full_integrity() {
     let admin_name = unique_name("rd_ssh_admin");
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
-    let asset_id =
-        create_simple_ssh_asset(&mut conn, &unique_name("rd-ssh-asset"), admin_id).await;
-    let session_id =
-        create_recorded_session_with_type(&mut conn, admin_id, asset_id, "ssh").await;
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("rd-ssh-asset"), admin_id).await;
+    let session_id = create_recorded_session_with_type(&mut conn, admin_id, asset_id, "ssh").await;
     fill_ssh_integrity(&mut conn, session_id).await;
     let uuid = get_session_uuid(&mut conn, session_id).await;
 
@@ -116,7 +114,10 @@ async fn test_recording_detail_renders_for_ssh_with_full_integrity() {
     assert_eq!(response.status_code().as_u16(), 200);
     let body = response.text();
     assert!(body.contains("Recording Details"));
-    assert!(body.contains("01234567...89abcdef"), "blake3 truncated form");
+    assert!(
+        body.contains("01234567...89abcdef"),
+        "blake3 truncated form"
+    );
     assert!(body.contains("asciicast v2"));
     assert!(body.contains("Session UUID"));
 }
@@ -129,10 +130,8 @@ async fn test_recording_detail_renders_for_rdp_segmented() {
     let admin_name = unique_name("rd_rdp_admin");
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
-    let asset_id =
-        create_simple_ssh_asset(&mut conn, &unique_name("rd-rdp-asset"), admin_id).await;
-    let session_id =
-        create_recorded_session_with_type(&mut conn, admin_id, asset_id, "rdp").await;
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("rd-rdp-asset"), admin_id).await;
+    let session_id = create_recorded_session_with_type(&mut conn, admin_id, asset_id, "rdp").await;
     fill_rdp_integrity(&mut conn, session_id).await;
     let uuid = get_session_uuid(&mut conn, session_id).await;
 
@@ -163,8 +162,7 @@ async fn test_recording_detail_renders_pending_integrity_state() {
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
     let asset_id =
         create_simple_ssh_asset(&mut conn, &unique_name("rd-pending-asset"), admin_id).await;
-    let session_id =
-        create_recorded_session_with_type(&mut conn, admin_id, asset_id, "ssh").await;
+    let session_id = create_recorded_session_with_type(&mut conn, admin_id, asset_id, "ssh").await;
     let uuid = get_session_uuid(&mut conn, session_id).await;
     // No integrity columns populated -> hydrator hasn't run yet.
 
@@ -254,8 +252,7 @@ async fn test_recording_detail_404_when_session_not_recorded() {
             proxy_sessions::asset_id.eq(asset_id),
             proxy_sessions::credential_id.eq("c"),
             proxy_sessions::credential_username.eq("u"),
-            proxy_sessions::session_type
-                .eq(vauban_web::models::session::SessionType::Ssh),
+            proxy_sessions::session_type.eq(vauban_web::models::session::SessionType::Ssh),
             proxy_sessions::status.eq("completed"),
             proxy_sessions::client_ip.eq(ip),
             proxy_sessions::is_recorded.eq(false),
@@ -288,8 +285,7 @@ async fn test_recording_detail_403_or_404_when_caller_lacks_admin_view() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let asset_id =
         create_simple_ssh_asset(&mut conn, &unique_name("rd-owner-asset"), admin_id).await;
-    let session_id =
-        create_recorded_session_with_type(&mut conn, admin_id, asset_id, "ssh").await;
+    let session_id = create_recorded_session_with_type(&mut conn, admin_id, asset_id, "ssh").await;
     let uuid = get_session_uuid(&mut conn, session_id).await;
 
     let user_name = unique_name("rd_user");
@@ -306,11 +302,7 @@ async fn test_recording_detail_403_or_404_when_caller_lacks_admin_view() {
         .await;
 
     let s = response.status_code().as_u16();
-    assert!(
-        s == 404,
-        "non-admin must see anti-enum 404, got {}",
-        s
-    );
+    assert!(s == 404, "non-admin must see anti-enum 404, got {}", s);
 }
 
 #[tokio::test]
@@ -323,8 +315,7 @@ async fn test_recording_detail_sidebar_active_tab_remains_recordings() {
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
     let asset_id =
         create_simple_ssh_asset(&mut conn, &unique_name("rd-sidebar-asset"), admin_id).await;
-    let session_id =
-        create_recorded_session_with_type(&mut conn, admin_id, asset_id, "ssh").await;
+    let session_id = create_recorded_session_with_type(&mut conn, admin_id, asset_id, "ssh").await;
     fill_ssh_integrity(&mut conn, session_id).await;
     let uuid = get_session_uuid(&mut conn, session_id).await;
 
@@ -362,8 +353,7 @@ async fn test_recording_detail_back_to_recordings_link_present() {
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
     let asset_id =
         create_simple_ssh_asset(&mut conn, &unique_name("rd-back-asset"), admin_id).await;
-    let session_id =
-        create_recorded_session_with_type(&mut conn, admin_id, asset_id, "ssh").await;
+    let session_id = create_recorded_session_with_type(&mut conn, admin_id, asset_id, "ssh").await;
     fill_ssh_integrity(&mut conn, session_id).await;
     let uuid = get_session_uuid(&mut conn, session_id).await;
 
@@ -393,10 +383,8 @@ async fn test_recording_detail_play_and_download_buttons_present() {
     let admin_name = unique_name("rd_buttons_admin");
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
-    let asset_id =
-        create_simple_ssh_asset(&mut conn, &unique_name("rd-btn-asset"), admin_id).await;
-    let session_id =
-        create_recorded_session_with_type(&mut conn, admin_id, asset_id, "ssh").await;
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("rd-btn-asset"), admin_id).await;
+    let session_id = create_recorded_session_with_type(&mut conn, admin_id, asset_id, "ssh").await;
     fill_ssh_integrity(&mut conn, session_id).await;
     let uuid = get_session_uuid(&mut conn, session_id).await;
 
@@ -411,11 +399,11 @@ async fn test_recording_detail_play_and_download_buttons_present() {
         .await;
 
     let body = response.text();
-    assert!(body.contains(&format!(r#"href="/sessions/recordings/{}/play""#, session_id)));
     assert!(body.contains(&format!(
-        r#"href="/sessions/recordings/{}/download""#,
-        uuid
+        r#"href="/sessions/recordings/{}/play""#,
+        session_id
     )));
+    assert!(body.contains(&format!(r#"href="/sessions/recordings/{}/download""#, uuid)));
 }
 
 #[tokio::test]
@@ -426,10 +414,8 @@ async fn test_recording_detail_no_inline_script_or_style() {
     let admin_name = unique_name("rd_csp_admin");
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
-    let asset_id =
-        create_simple_ssh_asset(&mut conn, &unique_name("rd-csp-asset"), admin_id).await;
-    let session_id =
-        create_recorded_session_with_type(&mut conn, admin_id, asset_id, "ssh").await;
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("rd-csp-asset"), admin_id).await;
+    let session_id = create_recorded_session_with_type(&mut conn, admin_id, asset_id, "ssh").await;
     fill_ssh_integrity(&mut conn, session_id).await;
     let uuid = get_session_uuid(&mut conn, session_id).await;
 
@@ -469,8 +455,7 @@ async fn test_recording_detail_corrupt_integrity_state() {
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
     let asset_id =
         create_simple_ssh_asset(&mut conn, &unique_name("rd-corrupt-asset"), admin_id).await;
-    let session_id =
-        create_recorded_session_with_type(&mut conn, admin_id, asset_id, "ssh").await;
+    let session_id = create_recorded_session_with_type(&mut conn, admin_id, asset_id, "ssh").await;
     let uuid = get_session_uuid(&mut conn, session_id).await;
 
     // Hydrator's "corrupt" marker: finalized_at set, blake3 NULL.
@@ -508,8 +493,7 @@ async fn test_recording_detail_rejection_narrative_when_rejected() {
 
     let requester_name = unique_name("rd_reject_user");
     let requester_id = create_simple_user(&mut conn, &requester_name).await;
-    let asset_id =
-        create_simple_ssh_asset(&mut conn, &unique_name("rd-rej-asset"), admin_id).await;
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("rd-rej-asset"), admin_id).await;
     let session_id =
         create_recorded_session_with_type(&mut conn, requester_id, asset_id, "ssh").await;
     let uuid = get_session_uuid(&mut conn, session_id).await;
@@ -537,7 +521,10 @@ async fn test_recording_detail_rejection_narrative_when_rejected() {
         .await;
 
     let body = response.text();
-    assert!(body.contains("Rejected by"), "must show rejection narrative");
+    assert!(
+        body.contains("Rejected by"),
+        "must show rejection narrative"
+    );
     assert!(body.contains("Out of business hours"));
 }
 
@@ -592,10 +579,8 @@ async fn test_recording_detail_blake3_hex_lowercase_64_chars() {
     let admin_name = unique_name("rd_b3_admin");
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
-    let asset_id =
-        create_simple_ssh_asset(&mut conn, &unique_name("rd-b3-asset"), admin_id).await;
-    let session_id =
-        create_recorded_session_with_type(&mut conn, admin_id, asset_id, "ssh").await;
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("rd-b3-asset"), admin_id).await;
+    let session_id = create_recorded_session_with_type(&mut conn, admin_id, asset_id, "ssh").await;
     fill_ssh_integrity(&mut conn, session_id).await;
     let uuid = get_session_uuid(&mut conn, session_id).await;
 
@@ -611,9 +596,7 @@ async fn test_recording_detail_blake3_hex_lowercase_64_chars() {
 
     // The full hex shows up in the title attribute. The SET clause
     // wrote a lowercase 64-char value; verify it round-trips.
-    assert!(body.contains(
-        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-    ));
+    assert!(body.contains("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"));
 }
 
 #[tokio::test]
@@ -626,8 +609,7 @@ async fn test_recording_detail_renders_legacy_fmp4_flat() {
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
     let asset_id =
         create_simple_ssh_asset(&mut conn, &unique_name("rd-flat-asset"), admin_id).await;
-    let session_id =
-        create_recorded_session_with_type(&mut conn, admin_id, asset_id, "rdp").await;
+    let session_id = create_recorded_session_with_type(&mut conn, admin_id, asset_id, "rdp").await;
     let uuid = get_session_uuid(&mut conn, session_id).await;
 
     use vauban_web::schema::proxy_sessions::dsl;
@@ -670,8 +652,7 @@ async fn test_recording_detail_includes_session_uuid_in_footer() {
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
     let asset_id =
         create_simple_ssh_asset(&mut conn, &unique_name("rd-uuid-asset"), admin_id).await;
-    let session_id =
-        create_recorded_session_with_type(&mut conn, admin_id, asset_id, "ssh").await;
+    let session_id = create_recorded_session_with_type(&mut conn, admin_id, asset_id, "ssh").await;
     let uuid = get_session_uuid(&mut conn, session_id).await;
 
     let token = app
@@ -694,10 +675,8 @@ async fn test_recording_detail_breadcrumb_present() {
     let admin_name = unique_name("rd_bc_admin");
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
-    let asset_id =
-        create_simple_ssh_asset(&mut conn, &unique_name("rd-bc-asset"), admin_id).await;
-    let session_id =
-        create_recorded_session_with_type(&mut conn, admin_id, asset_id, "ssh").await;
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("rd-bc-asset"), admin_id).await;
+    let session_id = create_recorded_session_with_type(&mut conn, admin_id, asset_id, "ssh").await;
     let uuid = get_session_uuid(&mut conn, session_id).await;
 
     let token = app
@@ -726,8 +705,7 @@ async fn test_recording_list_button_says_details_not_view() {
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
     let asset_id =
         create_simple_ssh_asset(&mut conn, &unique_name("rl-label-asset"), admin_id).await;
-    let _session_id =
-        create_recorded_session_with_type(&mut conn, admin_id, asset_id, "ssh").await;
+    let _session_id = create_recorded_session_with_type(&mut conn, admin_id, asset_id, "ssh").await;
 
     let token = app
         .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
@@ -746,7 +724,9 @@ async fn test_recording_list_button_says_details_not_view() {
     // ambiguity since context is the recording row).
     let trimmed: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
-        trimmed.contains("> Details <") || body.contains(">Details<") || body.contains(">\n                            Details\n                        <"),
+        trimmed.contains("> Details <")
+            || body.contains(">Details<")
+            || body.contains(">\n                            Details\n                        <"),
         "row link must be labelled 'Details' (got body excerpt around 'Details': {})",
         body.lines()
             .filter(|l| l.contains("Details"))
@@ -771,8 +751,7 @@ async fn test_recording_list_button_link_uses_uuid_route() {
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
     let asset_id =
         create_simple_ssh_asset(&mut conn, &unique_name("rl-uuid-asset"), admin_id).await;
-    let session_id =
-        create_recorded_session_with_type(&mut conn, admin_id, asset_id, "ssh").await;
+    let session_id = create_recorded_session_with_type(&mut conn, admin_id, asset_id, "ssh").await;
     let uuid = get_session_uuid(&mut conn, session_id).await;
 
     let token = app
@@ -800,8 +779,7 @@ async fn test_recording_list_no_link_to_session_id_remains() {
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
     let asset_id =
         create_simple_ssh_asset(&mut conn, &unique_name("rl-nosess-asset"), admin_id).await;
-    let session_id =
-        create_recorded_session_with_type(&mut conn, admin_id, asset_id, "ssh").await;
+    let session_id = create_recorded_session_with_type(&mut conn, admin_id, asset_id, "ssh").await;
 
     let token = app
         .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
@@ -838,8 +816,7 @@ async fn test_download_recording_requires_admin_view() {
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
     let asset_id =
         create_simple_ssh_asset(&mut conn, &unique_name("dl-owner-asset"), admin_id).await;
-    let session_id =
-        create_recorded_session_with_type(&mut conn, admin_id, asset_id, "ssh").await;
+    let session_id = create_recorded_session_with_type(&mut conn, admin_id, asset_id, "ssh").await;
     let uuid = get_session_uuid(&mut conn, session_id).await;
 
     let user_name = unique_name("dl_user");
@@ -908,8 +885,7 @@ async fn test_download_recording_404_when_supervisor_unavailable() {
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
     let asset_id =
         create_simple_ssh_asset(&mut conn, &unique_name("dl-no-sup-asset"), admin_id).await;
-    let session_id =
-        create_recorded_session_with_type(&mut conn, admin_id, asset_id, "ssh").await;
+    let session_id = create_recorded_session_with_type(&mut conn, admin_id, asset_id, "ssh").await;
     let uuid = get_session_uuid(&mut conn, session_id).await;
 
     let token = app
@@ -954,8 +930,7 @@ async fn test_download_recording_404_when_session_not_recorded() {
             proxy_sessions::asset_id.eq(asset_id),
             proxy_sessions::credential_id.eq("c"),
             proxy_sessions::credential_username.eq("u"),
-            proxy_sessions::session_type
-                .eq(vauban_web::models::session::SessionType::Ssh),
+            proxy_sessions::session_type.eq(vauban_web::models::session::SessionType::Ssh),
             proxy_sessions::status.eq("completed"),
             proxy_sessions::client_ip.eq(ip),
             proxy_sessions::is_recorded.eq(false),
@@ -994,8 +969,7 @@ async fn test_play_page_header_button_says_recording_details_not_session_details
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
     let asset_id =
         create_simple_ssh_asset(&mut conn, &unique_name("rp-label-asset"), admin_id).await;
-    let session_id =
-        create_recorded_session_with_type(&mut conn, admin_id, asset_id, "ssh").await;
+    let session_id = create_recorded_session_with_type(&mut conn, admin_id, asset_id, "ssh").await;
 
     let token = app
         .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
@@ -1057,8 +1031,7 @@ async fn test_play_page_header_button_links_to_recording_uuid_route() {
     let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
     let asset_id =
         create_simple_ssh_asset(&mut conn, &unique_name("rp-link-asset"), admin_id).await;
-    let session_id =
-        create_recorded_session_with_type(&mut conn, admin_id, asset_id, "ssh").await;
+    let session_id = create_recorded_session_with_type(&mut conn, admin_id, asset_id, "ssh").await;
     let uuid = get_session_uuid(&mut conn, session_id).await;
 
     let token = app

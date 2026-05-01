@@ -100,9 +100,12 @@
                             </div>
                         </div>
                     </div>
-                    <div class="flex items-center space-x-2">
+                    <div class="flex items-center gap-2 sm:flex-shrink-0">
+                        {# Issue #28 follow-up -- align the View action with the
+                           Details button on /assets/manage so the row CTA reads
+                           consistently across admin list pages. #}
                         <a href="/accounts/groups/{{ group.uuid }}"
-                           class="text-sm text-vauban-600 hover:text-vauban-900 dark:text-vauban-400 dark:hover:text-vauban-300">
+                           class="inline-flex items-center rounded-md bg-vauban-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-600">
                             View
                         </a>
                     </div>

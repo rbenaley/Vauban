@@ -138,6 +138,7 @@ async fn insert_asset_with_config(
         description: None,
         connection_config,
         created_by_id: None,
+        updated_by_id: None,
         connection_username: connection_username.to_string(),
     };
     unwrap_ok!(

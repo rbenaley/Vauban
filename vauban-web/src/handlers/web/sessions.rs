@@ -2757,20 +2757,12 @@ pub async fn recording_detail(
     };
 
     let approver_line = if let (Some(au), Some(at)) = (approver_username, s_approved_at) {
-        Some(format!(
-            "{} at {}",
-            au,
-            at.format("%Y-%m-%d %H:%M:%S UTC")
-        ))
+        Some(format!("{} at {}", au, at.format("%Y-%m-%d %H:%M:%S UTC")))
     } else {
         None
     };
     let rejecter_line = if let (Some(ru), Some(rt)) = (rejecter_username, s_rejected_at) {
-        Some(format!(
-            "{} at {}",
-            ru,
-            rt.format("%Y-%m-%d %H:%M:%S UTC")
-        ))
+        Some(format!("{} at {}", ru, rt.format("%Y-%m-%d %H:%M:%S UTC")))
     } else {
         None
     };
@@ -2829,8 +2821,7 @@ pub async fn recording_detail(
         source_ip: s_client_ip.ip().to_string(),
         credential_username: s_cred_username,
         requester_username,
-        connected_at_utc: s_connected_at
-            .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string()),
+        connected_at_utc: s_connected_at.map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string()),
         disconnected_at_utc: s_disconnected_at
             .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string()),
         duration_human,
@@ -2847,11 +2838,8 @@ pub async fn recording_detail(
         list_url: "/sessions/recordings".to_string(),
     };
 
-    let base = BaseTemplate::new(
-        format!("Recording Details - {}", asset_name),
-        user.clone(),
-    )
-    .with_current_path("/sessions/recordings");
+    let base = BaseTemplate::new(format!("Recording Details - {}", asset_name), user.clone())
+        .with_current_path("/sessions/recordings");
     let perms_for_template = perms.clone();
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
@@ -2929,8 +2917,8 @@ pub async fn download_recording(
         return Err(AppError::NotFound("Not found".to_string()));
     }
 
-    let recording_path = recording_path_opt
-        .ok_or_else(|| AppError::NotFound("Not found".to_string()))?;
+    let recording_path =
+        recording_path_opt.ok_or_else(|| AppError::NotFound("Not found".to_string()))?;
 
     let supervisor = state
         .supervisor
@@ -2972,9 +2960,7 @@ pub async fn download_recording(
                 .body(Body::from_stream(stream))
                 .map_err(|e| AppError::Internal(anyhow::anyhow!("Response build error: {}", e)))
         }
-        SessionType::Rdp => {
-            stream_rdp_zip(&state, &session_uuid_db, base_dir).await
-        }
+        SessionType::Rdp => stream_rdp_zip(&state, &session_uuid_db, base_dir).await,
     }
 }
 
@@ -3072,8 +3058,7 @@ async fn stream_rdp_zip(
         }
 
         // 2) manifest.mpd
-        let entry =
-            ZipEntryBuilder::new("manifest.mpd".into(), Compression::Stored).build();
+        let entry = ZipEntryBuilder::new("manifest.mpd".into(), Compression::Stored).build();
         if let Ok(mut e) = zip.write_entry_stream(entry).await {
             let _ = e.write_all(manifest_xml.as_bytes()).await;
             let _ = e.close().await;

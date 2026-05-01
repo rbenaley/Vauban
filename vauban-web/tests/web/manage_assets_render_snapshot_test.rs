@@ -60,6 +60,8 @@ fn sample_detail() -> ManageAssetDetail {
         description: Some("Primary PostgreSQL master".to_string()),
         created_at: "2026-04-30T10:00:00Z".to_string(),
         updated_at: "2026-04-30T11:00:00Z".to_string(),
+        created_by: None,
+        updated_by: None,
         ssh_host_key_fingerprint: Some("SHA256:fingerprint".to_string()),
         ssh_host_key_mismatch: false,
     }
@@ -86,7 +88,9 @@ fn manage_list_renders_admin_actions_only() {
         statuses: vec![],
     };
 
-    let html = template.render().expect("ManageAssetListTemplate must render");
+    let html = template
+        .render()
+        .expect("ManageAssetListTemplate must render");
 
     // Forbidden tokens are constructed via `format!` so this test
     // does not match its own assertion strings if grepped.

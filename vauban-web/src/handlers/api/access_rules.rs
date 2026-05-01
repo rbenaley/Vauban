@@ -109,7 +109,7 @@ pub async fn get_access_rule(
 /// Create a new access rule.
 pub async fn create_access_rule(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
     perms: PermissionContext,
     Json(request): Json<CreateAccessRuleRequest>,
 ) -> AppResult<Json<AccessRuleResponse>> {
@@ -157,7 +157,7 @@ pub async fn create_access_rule(
 
     let info = state
         .access_client
-        .create_access_rule(data)
+        .create_access_rule(data, Some(user.uuid.clone()))
         .await
         .map_err(|e| {
             if let AppError::Ipc(ref msg) = e
@@ -176,7 +176,7 @@ pub async fn create_access_rule(
 /// Update an existing access rule.
 pub async fn update_access_rule(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
     perms: PermissionContext,
     Path(rule_uuid_str): Path<String>,
     Json(request): Json<UpdateAccessRuleRequest>,
@@ -227,7 +227,7 @@ pub async fn update_access_rule(
 
     let updated = state
         .access_client
-        .update_access_rule(&rule_uuid_str, data)
+        .update_access_rule(&rule_uuid_str, data, Some(user.uuid.clone()))
         .await
         .map_err(|e| map_not_found(e, "Access rule"))?;
     Ok(Json(info_to_response(updated)))

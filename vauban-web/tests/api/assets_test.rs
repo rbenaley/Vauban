@@ -1,7 +1,7 @@
 /// VAUBAN Web - Assets API Integration Tests.
 ///
 /// Tests for /api/v1/assets/* endpoints.
-use axum::http::header;
+use axum::http::header::{self, COOKIE};
 use diesel::{ExpressionMethods, QueryDsl};
 use diesel_async::RunQueryDsl;
 use serde_json::json;
@@ -534,7 +534,10 @@ async fn test_ssh_host_key_status_no_key() {
 
     let response = app
         .server
-        .get(&format!("/api/v1/assets/manage/{}/ssh-host-key", asset.asset.uuid))
+        .get(&format!(
+            "/api/v1/assets/manage/{}/ssh-host-key",
+            asset.asset.uuid
+        ))
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .await;
 
@@ -578,7 +581,10 @@ async fn test_ssh_host_key_status_verified() {
 
     let response = app
         .server
-        .get(&format!("/api/v1/assets/manage/{}/ssh-host-key", asset.asset.uuid))
+        .get(&format!(
+            "/api/v1/assets/manage/{}/ssh-host-key",
+            asset.asset.uuid
+        ))
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .await;
 
@@ -629,7 +635,10 @@ async fn test_ssh_host_key_status_mismatch() {
 
     let response = app
         .server
-        .get(&format!("/api/v1/assets/manage/{}/ssh-host-key", asset.asset.uuid))
+        .get(&format!(
+            "/api/v1/assets/manage/{}/ssh-host-key",
+            asset.asset.uuid
+        ))
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .await;
 
@@ -695,7 +704,10 @@ async fn test_ssh_host_key_status_requires_auth() {
 
     let response = app
         .server
-        .get(&format!("/api/v1/assets/manage/{}/ssh-host-key", asset.asset.uuid))
+        .get(&format!(
+            "/api/v1/assets/manage/{}/ssh-host-key",
+            asset.asset.uuid
+        ))
         .await;
 
     let status = response.status_code().as_u16();
@@ -815,7 +827,10 @@ async fn test_mismatch_flag_cleared_after_update() {
     // Verify mismatch state via API
     let response = app
         .server
-        .get(&format!("/api/v1/assets/manage/{}/ssh-host-key", asset.asset.uuid))
+        .get(&format!(
+            "/api/v1/assets/manage/{}/ssh-host-key",
+            asset.asset.uuid
+        ))
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .await;
     assert_status(&response, 200);
@@ -840,7 +855,10 @@ async fn test_mismatch_flag_cleared_after_update() {
     // Verify it's now "verified"
     let response = app
         .server
-        .get(&format!("/api/v1/assets/manage/{}/ssh-host-key", asset.asset.uuid))
+        .get(&format!(
+            "/api/v1/assets/manage/{}/ssh-host-key",
+            asset.asset.uuid
+        ))
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .await;
     assert_status(&response, 200);
@@ -913,6 +931,337 @@ async fn test_delete_asset_returns_501_not_implemented() {
         .await;
 
     assert_status(&response, 501);
+
+    test_db::cleanup(&mut conn).await;
+}
+
+// =============================================================================
+// Issue #22 - Audit actor stamping (created_by_id / updated_by_id)
+// =============================================================================
+//
+// These tests close the loop on the IPC + DB-write wiring added for
+// issue #22: a `POST /api/v1/assets/manage` MUST stamp both audit
+// columns with the caller's numeric `users.id`, a subsequent `PUT`
+// MUST re-stamp `updated_by_id` only (preserving the original
+// creator), and the rendered HTML detail page MUST surface the
+// resolved `username` for the operator. Without this end-to-end
+// coverage we can ship a backend that silently leaves the columns
+// `NULL`, which is exactly what regressed during the IPC migration.
+
+/// `POST /api/v1/assets/manage` MUST stamp `created_by_id` and
+/// `updated_by_id` with the caller's `users.id`, resolved from the
+/// JWT `sub` claim through `services::audit_authors::resolve_actor_id`.
+#[tokio::test]
+#[serial]
+async fn test_create_asset_api_stamps_audit_actor_pair() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin = create_admin_user(
+        &mut conn,
+        &app.auth_service,
+        &unique_name("audit_create_admin"),
+    )
+    .await;
+
+    let asset_name = unique_name("audit-asset-create");
+    let response = app
+        .server
+        .post("/api/v1/assets/manage")
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .json(&json!({
+            "name": asset_name,
+            "hostname": format!("{}.audit.test", asset_name),
+            "port": 22,
+            "asset_type": "ssh",
+            "status": "online"
+        }))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 200 || status == 201,
+        "Expected 2xx, got {}",
+        status
+    );
+    let body: serde_json::Value = response.json();
+    let asset_uuid = Uuid::parse_str(body["uuid"].as_str().expect("response carries uuid"))
+        .expect("uuid is valid");
+
+    use vauban_web::schema::assets::dsl as a;
+    let (created_by, updated_by): (Option<i32>, Option<i32>) = unwrap_ok!(
+        a::assets
+            .filter(a::uuid.eq(asset_uuid))
+            .select((a::created_by_id, a::updated_by_id))
+            .first(&mut conn)
+            .await
+    );
+    assert_eq!(
+        created_by,
+        Some(admin.user.id),
+        "created_by_id MUST equal the calling admin's users.id"
+    );
+    assert_eq!(
+        updated_by,
+        Some(admin.user.id),
+        "updated_by_id MUST equal the calling admin's users.id on creation"
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// `PUT /api/v1/assets/manage/{uuid}` MUST re-stamp `updated_by_id`
+/// with the caller while leaving `created_by_id` untouched, so a
+/// later admin "fixing a typo" never erases the original creator
+/// from the audit trail.
+#[tokio::test]
+#[serial]
+async fn test_update_asset_api_restamps_only_updated_by() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let creator =
+        create_admin_user(&mut conn, &app.auth_service, &unique_name("audit_creator")).await;
+    let editor =
+        create_admin_user(&mut conn, &app.auth_service, &unique_name("audit_editor")).await;
+
+    let asset_name = unique_name("audit-asset-update");
+    let create_resp = app
+        .server
+        .post("/api/v1/assets/manage")
+        .add_header(header::AUTHORIZATION, app.auth_header(&creator.token))
+        .json(&json!({
+            "name": asset_name,
+            "hostname": format!("{}.audit.test", asset_name),
+            "port": 22,
+            "asset_type": "ssh",
+            "status": "online"
+        }))
+        .await;
+    let create_status = create_resp.status_code().as_u16();
+    assert!(create_status == 200 || create_status == 201);
+    let asset_uuid = Uuid::parse_str(
+        create_resp.json::<serde_json::Value>()["uuid"]
+            .as_str()
+            .expect("uuid"),
+    )
+    .expect("uuid");
+
+    let update_resp = app
+        .server
+        .put(&format!("/api/v1/assets/manage/{}", asset_uuid))
+        .add_header(header::AUTHORIZATION, app.auth_header(&editor.token))
+        .json(&json!({
+            "status": "maintenance"
+        }))
+        .await;
+    assert_status(&update_resp, 200);
+
+    use vauban_web::schema::assets::dsl as a;
+    let (created_by, updated_by): (Option<i32>, Option<i32>) = unwrap_ok!(
+        a::assets
+            .filter(a::uuid.eq(asset_uuid))
+            .select((a::created_by_id, a::updated_by_id))
+            .first(&mut conn)
+            .await
+    );
+    assert_eq!(
+        created_by,
+        Some(creator.user.id),
+        "PUT MUST NOT rewrite created_by_id"
+    );
+    assert_eq!(
+        updated_by,
+        Some(editor.user.id),
+        "PUT MUST re-stamp updated_by_id with the editor"
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// `GET /assets/manage/{uuid}` (HTML) MUST render the resolved
+/// `username` for both audit actors. This is the user-visible
+/// proof that the full chain works: write-side stamping (this
+/// test creates by API), join in `manage_assets::asset_detail`
+/// against `users`, and Askama rendering of `AuthorRef.username`.
+///
+/// Aligned with the approval-decision UI which also surfaces the
+/// stable login handle (not `first_name + last_name`).
+#[tokio::test]
+#[serial]
+async fn test_asset_detail_html_renders_audit_usernames() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let creator_name = unique_name("audit_render_creator");
+    let editor_name = unique_name("audit_render_editor");
+    let creator = create_admin_user(&mut conn, &app.auth_service, &creator_name).await;
+    let editor = create_admin_user(&mut conn, &app.auth_service, &editor_name).await;
+
+    let asset_name = unique_name("audit-render-asset");
+    let create_resp = app
+        .server
+        .post("/api/v1/assets/manage")
+        .add_header(header::AUTHORIZATION, app.auth_header(&creator.token))
+        .json(&json!({
+            "name": asset_name,
+            "hostname": format!("{}.audit.test", asset_name),
+            "port": 22,
+            "asset_type": "ssh",
+            "status": "online"
+        }))
+        .await;
+    let asset_uuid = Uuid::parse_str(
+        create_resp.json::<serde_json::Value>()["uuid"]
+            .as_str()
+            .expect("uuid"),
+    )
+    .expect("uuid");
+
+    let _ = app
+        .server
+        .put(&format!("/api/v1/assets/manage/{}", asset_uuid))
+        .add_header(header::AUTHORIZATION, app.auth_header(&editor.token))
+        .json(&json!({ "status": "maintenance" }))
+        .await;
+
+    let html_resp = app
+        .server
+        .get(&format!("/assets/manage/{}", asset_uuid))
+        .add_header(header::AUTHORIZATION, app.auth_header(&editor.token))
+        .await;
+    assert_status(&html_resp, 200);
+    let body = html_resp.text();
+
+    assert!(
+        body.contains("Created by"),
+        "detail page must label the created_by row"
+    );
+    assert!(
+        body.contains("Updated by"),
+        "detail page must label the updated_by row"
+    );
+    assert!(
+        body.contains(&creator_name),
+        "detail page must surface the creator username `{}` in the audit metadata; \
+         got HTML excerpt around metadata: <missing>",
+        creator_name
+    );
+    assert!(
+        body.contains(&editor_name),
+        "detail page must surface the editor username `{}` in the audit metadata",
+        editor_name
+    );
+    assert!(
+        !body.contains("AuthorRef {"),
+        "detail page must never leak the AuthorRef Debug repr"
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// `GET /assets/manage/deleted` MUST surface the operator that
+/// soft-deleted each tombstone. The chain under test:
+///   1. admin A creates the asset (POST API),
+///   2. admin B soft-deletes the asset (DELETE web form),
+///   3. soft-delete re-stamps `updated_by_id = B.id`,
+///   4. the deleted-list page joins on `users` and renders B's
+///      `username` next to the row.
+///
+/// Without this surfacing, audit reviewers cannot answer the basic
+/// "who deleted this?" question — the whole point of issue #22 on
+/// the tombstone view.
+#[tokio::test]
+#[serial]
+async fn test_deleted_list_surfaces_deleting_operator_username() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let creator_name = unique_name("audit_del_creator");
+    let deleter_name = unique_name("audit_del_deleter");
+    let creator = create_admin_user(&mut conn, &app.auth_service, &creator_name).await;
+    let deleter = create_admin_user(&mut conn, &app.auth_service, &deleter_name).await;
+
+    let asset_name = unique_name("audit-del-asset");
+    let create_resp = app
+        .server
+        .post("/api/v1/assets/manage")
+        .add_header(header::AUTHORIZATION, app.auth_header(&creator.token))
+        .json(&json!({
+            "name": asset_name,
+            "hostname": format!("{}.audit.test", asset_name),
+            "port": 22,
+            "asset_type": "ssh",
+            "status": "online"
+        }))
+        .await;
+    let asset_uuid = Uuid::parse_str(
+        create_resp.json::<serde_json::Value>()["uuid"]
+            .as_str()
+            .expect("uuid"),
+    )
+    .expect("uuid");
+
+    // Soft-delete via the web form so the operator UUID flows
+    // through `WebAuthUser` exactly the way the IDE-driven flow
+    // does. The admin zone has no API DELETE endpoint by design
+    // (audit-friendly: every soft-delete carries a CSRF receipt
+    // and a flash redirect target).
+    let csrf = app.generate_csrf_token();
+    let cookie = format!("access_token={}; __vauban_csrf={}", deleter.token, csrf);
+    let delete_resp = app
+        .server
+        .post(&format!("/assets/manage/{}/delete", asset_uuid))
+        .add_header(COOKIE, cookie)
+        .form(&[("csrf_token", csrf.as_str())])
+        .await;
+    let del_status = delete_resp.status_code().as_u16();
+    assert!(
+        (200..400).contains(&del_status),
+        "POST /assets/manage/{{uuid}}/delete expected 2xx/3xx, got {}",
+        del_status
+    );
+
+    use vauban_web::schema::assets::dsl as a;
+    let (is_deleted, updated_by): (bool, Option<i32>) = unwrap_ok!(
+        a::assets
+            .filter(a::uuid.eq(asset_uuid))
+            .select((a::is_deleted, a::updated_by_id))
+            .first(&mut conn)
+            .await
+    );
+    assert!(is_deleted, "asset must be tombstoned");
+    assert_eq!(
+        updated_by,
+        Some(deleter.user.id),
+        "soft-delete MUST re-stamp updated_by_id with the deleting operator"
+    );
+
+    let html_resp = app
+        .server
+        .get("/assets/manage/deleted")
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", deleter.token, csrf),
+        )
+        .await;
+    assert_status(&html_resp, 200);
+    let body = html_resp.text();
+
+    assert!(
+        body.contains(&asset_name),
+        "tombstone row must reference the deleted asset name"
+    );
+    assert!(
+        body.contains(&deleter_name),
+        "deleted-list page MUST surface the deleter username `{}`; without it the \
+         auditor cannot answer 'who deleted this asset?'",
+        deleter_name
+    );
+    assert!(
+        !body.contains("AuthorRef {"),
+        "deleted-list MUST NEVER leak the AuthorRef Debug repr"
+    );
 
     test_db::cleanup(&mut conn).await;
 }

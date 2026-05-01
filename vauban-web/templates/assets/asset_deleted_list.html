@@ -169,6 +169,22 @@
                             <span class="italic text-gray-400">unknown</span>
                             {% endif %}
                         </div>
+                        {# Issue #22 — surface the operator that performed the
+                           soft-delete. Sourced from `updated_by_id` re-stamped
+                           by `delete_asset_web`. A `None` collapses to a muted
+                           em-dash so historical tombstones (created before the
+                           audit columns existed) still render gracefully. #}
+                        <div class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0 sm:justify-end">
+                            <svg class="h-4 w-4 text-gray-400 dark:text-gray-500" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z"/>
+                            </svg>
+                            <span>by</span>
+                            {% if let Some(author) = asset.deleted_by.as_ref() %}
+                            <span class="text-gray-700 dark:text-gray-300 font-medium">{{ author.username }}</span>{% if !author.is_active %}<span class="text-gray-400 dark:text-gray-500" title="Inactive user">(inactive)</span>{% endif %}
+                            {% else %}
+                            <span class="text-gray-400 dark:text-gray-500" title="System or deleted user">&mdash;</span>
+                            {% endif %}
+                        </div>
                         <div class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0 sm:justify-end">
                             <svg class="h-4 w-4 text-gray-400 dark:text-gray-500" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor">
                                 <path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z"/>

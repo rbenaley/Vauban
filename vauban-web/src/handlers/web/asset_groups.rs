@@ -199,6 +199,32 @@ pub async fn asset_group_detail(
             })
             .collect();
 
+        // Audit pair (issue #22). The IPC `AssetGroupInfo` does not
+        // carry `created_by_id` / `updated_by_id` (those are pure
+        // presentation, not a policy decision) so we fetch them
+        // directly. `id` came back from the IPC response so this
+        // is a primary-key lookup, no extra UUID parsing needed.
+        let audit_ids: Option<(Option<i32>, Option<i32>)> = {
+            use crate::schema::asset_groups::dsl as ag_dsl;
+            ag_dsl::asset_groups
+                .filter(ag_dsl::id.eq(group_info.id))
+                .select((ag_dsl::created_by_id, ag_dsl::updated_by_id))
+                .first(&mut conn)
+                .await
+                .ok()
+        };
+        let (created_by, updated_by) = match audit_ids {
+            Some((created_by_id, updated_by_id)) => {
+                crate::services::audit_authors::resolve_audit_pair(
+                    &mut conn,
+                    created_by_id,
+                    updated_by_id,
+                )
+                .await
+            }
+            None => (None, None),
+        };
+
         let group = crate::templates::assets::group_detail::AssetGroupDetail {
             uuid: group_info.uuid,
             name: group_info.name.clone(),
@@ -208,6 +234,8 @@ pub async fn asset_group_detail(
             icon: group_info.icon,
             created_at: format_rfc3339_date(&group_info.created_at, "%b %d, %Y %H:%M"),
             updated_at: format_rfc3339_date(&group_info.updated_at, "%b %d, %Y %H:%M"),
+            created_by,
+            updated_by,
             assets,
         };
         (group, group_info.name)
@@ -930,7 +958,7 @@ pub struct UpdateAssetGroupForm {
 /// Handles POST /assets/groups/{uuid}/edit with flash messages.
 pub async fn update_asset_group(
     State(state): State<AppState>,
-    _auth_user: WebAuthUser,
+    auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
@@ -999,6 +1027,8 @@ pub async fn update_asset_group(
     let sanitized_description = sanitize_opt(form.description.clone());
 
     let client = &state.access_client;
+    // Issue #22 — forward the operator UUID so vauban-access
+    // re-stamps `updated_by_id` on the row.
     let result: Result<(), AppError> = client
         .update_asset_group(
             &uuid_str,
@@ -1007,6 +1037,7 @@ pub async fn update_asset_group(
             sanitized_description,
             &form.color,
             &form.icon,
+            Some(auth_user.uuid.clone()),
         )
         .await
         .map(|_| ());
@@ -1104,7 +1135,7 @@ pub struct CreateAssetGroupWebForm {
 /// Handle asset group creation form submission.
 pub async fn create_asset_group_web(
     State(state): State<AppState>,
-    _auth_user: WebAuthUser,
+    auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
@@ -1143,6 +1174,8 @@ pub async fn create_asset_group_web(
         sanitize_opt(form.description.as_ref().filter(|s| !s.is_empty()).cloned());
 
     let client = &state.access_client;
+    // Issue #22 — forward the operator UUID so vauban-access
+    // stamps `created_by_id` / `updated_by_id` on the new row.
     let result = client
         .create_asset_group(
             &sanitized_name,
@@ -1150,6 +1183,7 @@ pub async fn create_asset_group_web(
             sanitized_description,
             &form.color,
             &form.icon,
+            Some(auth_user.uuid.clone()),
         )
         .await;
 

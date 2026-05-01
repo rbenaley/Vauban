@@ -51,27 +51,87 @@ struct Route {
 /// matrix focuses on the per-method × per-role gate that
 /// `require_assets_manage` enforces on the unambiguous routes.
 const WEB_ROUTES: &[Route] = &[
-    Route { method: Method::Get,  path_template: "/assets/manage/new",                   needs_uuid: false },
-    Route { method: Method::Post, path_template: "/assets/manage/new",                   needs_uuid: false },
-    Route { method: Method::Get,  path_template: "/assets/manage/deleted",               needs_uuid: false },
-    Route { method: Method::Get,  path_template: "/assets/manage/search",                needs_uuid: false },
-    Route { method: Method::Get,  path_template: "/assets/manage/{uuid}",                needs_uuid: true  },
-    Route { method: Method::Get,  path_template: "/assets/manage/{uuid}/edit",           needs_uuid: true  },
-    Route { method: Method::Post, path_template: "/assets/manage/{uuid}/edit",           needs_uuid: true  },
-    Route { method: Method::Post, path_template: "/assets/manage/{uuid}/delete",         needs_uuid: true  },
-    Route { method: Method::Post, path_template: "/assets/manage/{uuid}/fetch-host-key", needs_uuid: true  },
+    Route {
+        method: Method::Get,
+        path_template: "/assets/manage/new",
+        needs_uuid: false,
+    },
+    Route {
+        method: Method::Post,
+        path_template: "/assets/manage/new",
+        needs_uuid: false,
+    },
+    Route {
+        method: Method::Get,
+        path_template: "/assets/manage/deleted",
+        needs_uuid: false,
+    },
+    Route {
+        method: Method::Get,
+        path_template: "/assets/manage/search",
+        needs_uuid: false,
+    },
+    Route {
+        method: Method::Get,
+        path_template: "/assets/manage/{uuid}",
+        needs_uuid: true,
+    },
+    Route {
+        method: Method::Get,
+        path_template: "/assets/manage/{uuid}/edit",
+        needs_uuid: true,
+    },
+    Route {
+        method: Method::Post,
+        path_template: "/assets/manage/{uuid}/edit",
+        needs_uuid: true,
+    },
+    Route {
+        method: Method::Post,
+        path_template: "/assets/manage/{uuid}/delete",
+        needs_uuid: true,
+    },
+    Route {
+        method: Method::Post,
+        path_template: "/assets/manage/{uuid}/fetch-host-key",
+        needs_uuid: true,
+    },
 ];
 
 /// All routes mounted under the `/api/v1/assets/manage/*` API nest.
 /// The bare root path is excluded for the same reason the web matrix
 /// excludes it (see [`WEB_ROUTES`]).
 const API_ROUTES: &[Route] = &[
-    Route { method: Method::Get,  path_template: "/api/v1/assets/manage/groups",                needs_uuid: false },
-    Route { method: Method::Get,  path_template: "/api/v1/assets/manage/groups/{uuid}/assets",  needs_uuid: true  },
-    Route { method: Method::Get,  path_template: "/api/v1/assets/manage/{uuid}",                needs_uuid: true  },
-    Route { method: Method::Put,  path_template: "/api/v1/assets/manage/{uuid}",                needs_uuid: true  },
-    Route { method: Method::Get,  path_template: "/api/v1/assets/manage/{uuid}/ssh-host-key",   needs_uuid: true  },
-    Route { method: Method::Post, path_template: "/api/v1/assets/manage/{uuid}/ssh-host-key",   needs_uuid: true  },
+    Route {
+        method: Method::Get,
+        path_template: "/api/v1/assets/manage/groups",
+        needs_uuid: false,
+    },
+    Route {
+        method: Method::Get,
+        path_template: "/api/v1/assets/manage/groups/{uuid}/assets",
+        needs_uuid: true,
+    },
+    Route {
+        method: Method::Get,
+        path_template: "/api/v1/assets/manage/{uuid}",
+        needs_uuid: true,
+    },
+    Route {
+        method: Method::Put,
+        path_template: "/api/v1/assets/manage/{uuid}",
+        needs_uuid: true,
+    },
+    Route {
+        method: Method::Get,
+        path_template: "/api/v1/assets/manage/{uuid}/ssh-host-key",
+        needs_uuid: true,
+    },
+    Route {
+        method: Method::Post,
+        path_template: "/api/v1/assets/manage/{uuid}/ssh-host-key",
+        needs_uuid: true,
+    },
 ];
 
 /// Materialise the path by substituting `{uuid}` with a synthetic UUID.
@@ -136,7 +196,8 @@ async fn web_routes_deny_regular_user() {
     for route in WEB_ROUTES {
         let status = send(app, route, Some(&user.token)).await;
         assert_eq!(
-            status, 403,
+            status,
+            403,
             "{} {} MUST return 403 for role:user (gated by require_assets_manage)",
             method_str(route.method),
             route.path_template
@@ -159,13 +220,15 @@ async fn web_routes_clear_gate_for_staff() {
     for route in WEB_ROUTES {
         let status = send(app, route, Some(&staff.token)).await;
         assert_ne!(
-            status, 403,
+            status,
+            403,
             "{} {} MUST clear require_assets_manage for role:staff (got 403)",
             method_str(route.method),
             route.path_template
         );
         assert_ne!(
-            status, 401,
+            status,
+            401,
             "{} {} MUST clear auth_middleware for role:staff (got 401)",
             method_str(route.method),
             route.path_template
@@ -185,7 +248,8 @@ async fn web_routes_clear_gate_for_superuser() {
     for route in WEB_ROUTES {
         let status = send(app, route, Some(&admin.token)).await;
         assert_ne!(
-            status, 403,
+            status,
+            403,
             "{} {} MUST clear require_assets_manage for role:superuser (got 403)",
             method_str(route.method),
             route.path_template
@@ -228,7 +292,8 @@ async fn api_routes_deny_regular_user() {
     for route in API_ROUTES {
         let status = send(app, route, Some(&user.token)).await;
         assert_eq!(
-            status, 403,
+            status,
+            403,
             "{} {} MUST return 403 for role:user (gated by require_assets_manage)",
             method_str(route.method),
             route.path_template
@@ -248,7 +313,8 @@ async fn api_routes_clear_gate_for_staff() {
     for route in API_ROUTES {
         let status = send(app, route, Some(&staff.token)).await;
         assert_ne!(
-            status, 403,
+            status,
+            403,
             "{} {} MUST clear require_assets_manage for role:staff (got 403)",
             method_str(route.method),
             route.path_template

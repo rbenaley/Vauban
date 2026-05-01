@@ -34,7 +34,10 @@ fn connect_ssh_writes_mismatch_flag_on_failure() {
     // `ssh_host_key_mismatch` write context appear in connect_ssh.
     // Constructed via format! so this test cannot self-match if it
     // is ever included in a future grep.
-    let needle = format!("config[\"{}\"] = serde_json::Value::Bool(true)", "ssh_host_key_mismatch");
+    let needle = format!(
+        "config[\"{}\"] = serde_json::Value::Bool(true)",
+        "ssh_host_key_mismatch"
+    );
     let count = body.matches(needle.as_str()).count();
     assert!(
         count >= 2,
@@ -70,9 +73,7 @@ fn ssh_host_key_no_key_fragment_points_at_admin_endpoint() {
     // host key MUST point at the admin-only endpoint (issue #27).
     // Otherwise a regular user could trigger a host-key write — a
     // privileged operation that requires `assets:manage`.
-    let body = include_str!(
-        "../../templates/assets/_ssh_host_key_no_key_fragment.html"
-    );
+    let body = include_str!("../../templates/assets/_ssh_host_key_no_key_fragment.html");
 
     let admin_path = format!("/assets/{}/{{}}/fetch-host-key", "manage");
     let admin_path_unescaped = admin_path.replace("{}", "__ASSET_UUID__");
@@ -88,9 +89,7 @@ fn ssh_host_key_no_key_fragment_points_at_admin_endpoint() {
 
 #[test]
 fn ssh_host_key_mismatch_fragment_points_at_admin_endpoint() {
-    let body = include_str!(
-        "../../templates/assets/_ssh_host_key_mismatch_fragment.html"
-    );
+    let body = include_str!("../../templates/assets/_ssh_host_key_mismatch_fragment.html");
 
     let admin_path = "/assets/manage/__ASSET_UUID__/fetch-host-key";
     assert!(
@@ -104,9 +103,7 @@ fn ssh_host_key_mismatch_fragment_points_at_admin_endpoint() {
 
 #[test]
 fn ssh_host_key_stored_mismatch_fragment_points_at_admin_endpoint() {
-    let body = include_str!(
-        "../../templates/assets/_ssh_host_key_stored_mismatch_fragment.html"
-    );
+    let body = include_str!("../../templates/assets/_ssh_host_key_stored_mismatch_fragment.html");
 
     let admin_path = "/assets/manage/__ASSET_UUID__/fetch-host-key";
     assert!(

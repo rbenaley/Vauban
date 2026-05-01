@@ -121,13 +121,38 @@
                         {% endif %}
                     </dd>
                 </div>
+                {# Audit pair (issue #22). Each author line sits
+                   next to its corresponding timestamp; `None`
+                   renders as a muted em-dash, never as a numeric
+                   id, and an inactive author carries a muted
+                   `(inactive)` suffix. #}
                 <div>
                     <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Created</dt>
                     <dd class="mt-1 text-sm text-gray-900 dark:text-white">{{ group.created_at }}</dd>
                 </div>
                 <div>
+                    <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Created by</dt>
+                    <dd class="mt-1 text-sm text-gray-900 dark:text-white">
+                        {% if let Some(author) = group.created_by.as_ref() %}
+                            {{ author.username }}{% if !author.is_active %} <span class="text-xs text-gray-400 dark:text-gray-500" title="Inactive user">(inactive)</span>{% endif %}
+                        {% else %}
+                            <span class="text-gray-400 dark:text-gray-500" title="System or deleted user">&mdash;</span>
+                        {% endif %}
+                    </dd>
+                </div>
+                <div>
                     <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Last Updated</dt>
                     <dd class="mt-1 text-sm text-gray-900 dark:text-white">{{ group.updated_at }}</dd>
+                </div>
+                <div>
+                    <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Updated by</dt>
+                    <dd class="mt-1 text-sm text-gray-900 dark:text-white">
+                        {% if let Some(author) = group.updated_by.as_ref() %}
+                            {{ author.username }}{% if !author.is_active %} <span class="text-xs text-gray-400 dark:text-gray-500" title="Inactive user">(inactive)</span>{% endif %}
+                        {% else %}
+                            <span class="text-gray-400 dark:text-gray-500" title="System or deleted user">&mdash;</span>
+                        {% endif %}
+                    </dd>
                 </div>
             </dl>
         </div>

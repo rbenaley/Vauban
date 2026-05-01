@@ -465,6 +465,13 @@ pub enum AccessRequest {
 
     CreateAccessRule {
         data: AccessRuleData,
+        /// Issue #22 — caller's UUID (from the JWT `sub` claim) used
+        /// to populate `created_by_id` / `updated_by_id` on the new
+        /// row. `None` falls back to the muted em-dash on the
+        /// Metadata UI; vauban-access NEVER refuses a write because
+        /// of a missing or unresolvable actor.
+        #[serde(default)]
+        actor_uuid: Option<String>,
     },
     GetAccessRule {
         uuid: String,
@@ -475,6 +482,10 @@ pub enum AccessRequest {
     UpdateAccessRule {
         uuid: String,
         data: AccessRuleData,
+        /// Issue #22 — see `CreateAccessRule.actor_uuid`. Re-stamps
+        /// `updated_by_id` on every successful update.
+        #[serde(default)]
+        actor_uuid: Option<String>,
     },
     DeleteAccessRule {
         uuid: String,
@@ -525,6 +536,9 @@ pub enum AccessRequest {
         description: Option<String>,
         color: String,
         icon: String,
+        /// Issue #22 — see `CreateAccessRule.actor_uuid`.
+        #[serde(default)]
+        actor_uuid: Option<String>,
     },
     GetAssetGroup {
         uuid: String,
@@ -548,6 +562,10 @@ pub enum AccessRequest {
         description: Option<String>,
         color: String,
         icon: String,
+        /// Issue #22 — re-stamps `updated_by_id` on every
+        /// successful update. See `CreateAccessRule.actor_uuid`.
+        #[serde(default)]
+        actor_uuid: Option<String>,
     },
     DeleteAssetGroup {
         uuid: String,
@@ -4014,10 +4032,13 @@ mod tests {
             is_active: true,
             priority: 10,
         };
-        let req = AccessRequest::CreateAccessRule { data };
+        let req = AccessRequest::CreateAccessRule {
+            data,
+            actor_uuid: None,
+        };
         let serialized = serialize(&req);
         let deserialized: AccessRequest = deserialize(&serialized);
-        if let AccessRequest::CreateAccessRule { data } = deserialized {
+        if let AccessRequest::CreateAccessRule { data, .. } = deserialized {
             assert_eq!(data.name, "Test Rule");
             assert_eq!(data.allowed_protocols.len(), 2);
             assert!(data.require_mfa);
@@ -4062,6 +4083,7 @@ mod tests {
                     is_active: true,
                     priority: 0,
                 },
+                actor_uuid: None,
             },
             AccessRequest::GetAccessRule {
                 uuid: "u".to_string(),
@@ -4083,6 +4105,7 @@ mod tests {
                     is_active: true,
                     priority: 0,
                 },
+                actor_uuid: None,
             },
             AccessRequest::DeleteAccessRule {
                 uuid: "u".to_string(),
@@ -4126,6 +4149,7 @@ mod tests {
                 description: None,
                 color: "#000".to_string(),
                 icon: "server".to_string(),
+                actor_uuid: None,
             },
             AccessRequest::GetAssetGroup {
                 uuid: "u".to_string(),
@@ -4141,6 +4165,7 @@ mod tests {
                 description: None,
                 color: "#000".to_string(),
                 icon: "server".to_string(),
+                actor_uuid: None,
             },
             AccessRequest::DeleteAssetGroup {
                 uuid: "u".to_string(),
@@ -4319,6 +4344,7 @@ mod tests {
                 2,
                 AccessRequest::CreateAccessRule {
                     data: dummy_data.clone(),
+                    actor_uuid: None,
                 },
             ),
             (
@@ -4337,6 +4363,7 @@ mod tests {
                 AccessRequest::UpdateAccessRule {
                     uuid: "u".into(),
                     data: dummy_data,
+                    actor_uuid: None,
                 },
             ),
             (
@@ -4422,6 +4449,7 @@ mod tests {
                     description: None,
                     color: "#000".into(),
                     icon: "server".into(),
+                    actor_uuid: None,
                 },
             ),
             (
@@ -4447,6 +4475,7 @@ mod tests {
                     description: None,
                     color: "#000".into(),
                     icon: "server".into(),
+                    actor_uuid: None,
                 },
             ),
             (

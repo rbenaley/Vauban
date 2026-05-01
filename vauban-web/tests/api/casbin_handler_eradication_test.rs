@@ -181,7 +181,10 @@ async fn ssh_fetch_host_key_requires_assets_manage() {
 
     let response = app
         .server
-        .post(&format!("/api/v1/assets/manage/{}/ssh-host-key", asset.asset.uuid))
+        .post(&format!(
+            "/api/v1/assets/manage/{}/ssh-host-key",
+            asset.asset.uuid
+        ))
         .add_header(header::AUTHORIZATION, app.auth_header(&user.token))
         .await;
 
@@ -207,7 +210,10 @@ async fn ssh_fetch_host_key_passes_gate_for_staff() {
 
     let response = app
         .server
-        .post(&format!("/api/v1/assets/manage/{}/ssh-host-key", asset.asset.uuid))
+        .post(&format!(
+            "/api/v1/assets/manage/{}/ssh-host-key",
+            asset.asset.uuid
+        ))
         .add_header(header::AUTHORIZATION, app.auth_header(&staff.token))
         .await;
 

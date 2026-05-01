@@ -613,6 +613,171 @@ async fn test_session_detail_own_session_allowed() {
     );
 }
 
+/// Regression guard for the "View" link on /sessions: the owner of
+/// a session that has reached an `is_gone()` status (terminated,
+/// expired or disconnected) MUST still be able to load the detail
+/// page so the audit trail (durations, bytes, justification,
+/// recording link) stays reachable. Pre-fix, this collapsed to 303
+/// "/sessions" with a misleading "Session not found" flash because
+/// vauban-access returned `Denied(Gone)` for the `ReadMetadata`
+/// intent regardless of identity.
+#[tokio::test]
+async fn test_session_detail_owner_terminated_session_loads_200() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let test_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
+    let username = format!("term_owner_{}", test_id);
+    let user_id = create_simple_user(&mut conn, &username).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+
+    let asset_name = format!("term-asset-{}", test_id);
+    let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, user_id).await;
+    let (session_id, _session_uuid, _rule) = crate::fixtures::create_test_session_with_access(
+        &mut conn,
+        user_id,
+        asset_id,
+        "ssh",
+        "terminated",
+    )
+    .await;
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, false, false)
+        .await;
+
+    let response = app
+        .server
+        .get(&format!("/sessions/{}", session_id))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert_eq!(
+        status, 200,
+        "Owner must be able to read the historical metadata of their TERMINATED session, got {}",
+        status
+    );
+}
+
+#[tokio::test]
+async fn test_session_detail_owner_expired_session_loads_200() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let test_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
+    let username = format!("exp_owner_{}", test_id);
+    let user_id = create_simple_user(&mut conn, &username).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+
+    let asset_name = format!("exp-asset-{}", test_id);
+    let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, user_id).await;
+    let (session_id, _session_uuid, _rule) = crate::fixtures::create_test_session_with_access(
+        &mut conn, user_id, asset_id, "ssh", "expired",
+    )
+    .await;
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, false, false)
+        .await;
+
+    let response = app
+        .server
+        .get(&format!("/sessions/{}", session_id))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert_eq!(
+        status, 200,
+        "Owner must be able to read the historical metadata of their EXPIRED session, got {}",
+        status
+    );
+}
+
+#[tokio::test]
+async fn test_session_detail_owner_disconnected_session_loads_200() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let test_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
+    let username = format!("disc_owner_{}", test_id);
+    let user_id = create_simple_user(&mut conn, &username).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+
+    let asset_name = format!("disc-asset-{}", test_id);
+    let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, user_id).await;
+    let (session_id, _session_uuid, _rule) = crate::fixtures::create_test_session_with_access(
+        &mut conn,
+        user_id,
+        asset_id,
+        "ssh",
+        "disconnected",
+    )
+    .await;
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &username, false, false)
+        .await;
+
+    let response = app
+        .server
+        .get(&format!("/sessions/{}", session_id))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert_eq!(
+        status, 200,
+        "Owner must be able to read the historical metadata of their DISCONNECTED session, got {}",
+        status
+    );
+}
+
+/// Anti-enumeration twin of the regression guard above: a non-owner
+/// probing a Gone session via the View link MUST be redirected
+/// (303 -> /sessions) with the same "not found" flash as for a truly
+/// non-existent UUID, so a probe cannot tell a terminated foreign
+/// session apart from a never-existed one.
+#[tokio::test]
+async fn test_session_detail_intruder_terminated_session_redirects() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let test_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
+    let owner_name = format!("term_intruder_owner_{}", test_id);
+    let owner_id = create_simple_user(&mut conn, &owner_name).await;
+    let asset_name = format!("term-intruder-asset-{}", test_id);
+    let asset_id = create_simple_ssh_asset(&mut conn, &asset_name, owner_id).await;
+    let session_id = create_test_session(&mut conn, owner_id, asset_id, "ssh", "terminated").await;
+
+    let intruder_name = format!("term_intruder_{}", test_id);
+    let intruder_id = create_simple_user(&mut conn, &intruder_name).await;
+    let intruder_uuid = get_user_uuid(&mut conn, intruder_id).await;
+
+    let token = app
+        .generate_test_token(&intruder_uuid.to_string(), &intruder_name, false, false)
+        .await;
+
+    let response = app
+        .server
+        .get(&format!("/sessions/{}", session_id))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+
+    let status = response.status_code().as_u16();
+    assert_eq!(
+        status, 303,
+        "Non-owner probing a terminated session must be redirected (anti-enum), got {}",
+        status
+    );
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok());
+    assert_eq!(location, Some("/sessions"));
+}
+
 #[tokio::test]
 async fn test_session_detail_other_session_forbidden() {
     let app = TestApp::spawn().await;

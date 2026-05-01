@@ -60,6 +60,7 @@ async fn insert_active_asset(
         description: None,
         connection_config: json!({}),
         created_by_id: None,
+        updated_by_id: None,
         connection_username: username.to_string(),
     };
     diesel::insert_into(assets::table)
@@ -121,6 +122,7 @@ async fn test_i1_two_active_rows_same_triplet_rejected() {
         description: None,
         connection_config: json!({}),
         created_by_id: None,
+        updated_by_id: None,
         connection_username: username.to_string(),
     };
     let result = diesel::insert_into(assets::table)

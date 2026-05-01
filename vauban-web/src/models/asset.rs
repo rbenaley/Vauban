@@ -183,6 +183,7 @@ pub struct NewAsset {
     pub description: Option<String>,
     pub connection_config: serde_json::Value,
     pub created_by_id: Option<i32>,
+    pub updated_by_id: Option<i32>,
     pub connection_username: String,
 }
 
@@ -628,6 +629,7 @@ mod tests {
             description: None,
             connection_config: serde_json::json!({}),
             created_by_id: None,
+            updated_by_id: None,
             connection_username: "root".to_string(),
         };
 
@@ -647,6 +649,7 @@ mod tests {
             description: Some("A cloned asset".to_string()),
             connection_config: serde_json::json!({"key": "value"}),
             created_by_id: Some(1),
+            updated_by_id: Some(1),
             connection_username: "Administrator".to_string(),
         };
 
