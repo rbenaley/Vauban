@@ -10,8 +10,18 @@
     <!-- Navigation -->
     <nav class="flex flex-1 flex-col">
         <ul role="list" class="flex flex-1 flex-col gap-y-7">
+            {# Issue #26 -- introduce a "User Zone" label symmetric to
+               the existing "Administration" label below. The block
+               itself is unchanged and stays always-visible (no Casbin
+               gate): every authenticated user gets at least these
+               three personal-scope entries. The label restores the
+               anchor that the issue identified as missing -- a user
+               scanning the menu now has a clear "what's mine vs.
+               what's org-wide" repere, and the layout stays
+               symmetrical between the two zones. #}
             <li>
-                <ul role="list" class="-mx-2 space-y-1">
+                <div class="text-xs font-semibold leading-6 text-gray-400">User Zone</div>
+                <ul role="list" class="-mx-2 mt-2 space-y-1">
                     <!-- Dashboard -->
                     <li>
                         <a href="/"

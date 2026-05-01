@@ -44,6 +44,7 @@ pub mod routing_test;
 pub mod session_pages_test;
 pub mod sidebar_assets_split_test;
 pub mod sidebar_menu_test;
+pub mod sidebar_user_zone_test;
 pub mod ssh_host_key_mismatch_invariant_test;
 pub mod terminate_session_test;
 pub mod user_edit_test;
