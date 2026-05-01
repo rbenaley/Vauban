@@ -47,6 +47,15 @@ pub struct SupervisorConfig {
     /// Database configuration (shared URL for services that need DB access).
     #[serde(default)]
     pub database: DatabaseConfig,
+    /// Email notification configuration (Issue #10).
+    ///
+    /// The supervisor reads this block to enforce a strict (host, port)
+    /// whitelist on `TcpConnectRequest { target_service: Web }` messages.
+    /// Even though the mailer code lives in vauban-web, the SUPERVISOR
+    /// is the authoritative gatekeeper for outbound TCP and refuses to
+    /// connect anywhere else when the requester is the Web service.
+    #[serde(default)]
+    pub mailer: MailerConfig,
 }
 
 /// Database configuration for services that require direct DB access.
@@ -185,6 +194,53 @@ impl Default for RecordingConfig {
             rdp: default_recording_enabled(),
             ssh: default_recording_enabled(),
         }
+    }
+}
+
+/// Email notification configuration (Issue #10), supervisor view.
+///
+/// The supervisor only needs to know:
+///   1. Whether the mailer is enabled. When `enabled = false`, every
+///      `TcpConnectRequest { target_service: Web }` is fail-closed.
+///   2. The exact `(smtp_host, smtp_port)` couple that vauban-web is
+///      allowed to brokered-connect to. Anything else is fail-closed.
+///
+/// All other knobs (credentials, retry policy, ...) live in vauban-web.
+//
+// `dead_code` is allowed temporarily on the fields and `allows()` because
+// the supervisor hookup that consumes them lives in
+// `handle_tcp_connect_request` and is wired in the next commit. Removing
+// the allows once the wiring is in place is enforced by a regression test
+// (`mailer_loaded_from_default_toml_is_disabled` already touches the
+// fields and would break if they are ever removed).
+#[allow(dead_code)]
+#[derive(Debug, Default, Clone, Deserialize)]
+pub struct MailerConfig {
+    /// Master switch. When false, the supervisor refuses to broker any
+    /// TCP connection on behalf of vauban-web.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Allowed SMTP host (DNS name, exact match required).
+    #[serde(default)]
+    pub smtp_host: String,
+    /// Allowed SMTP port (exact match required).
+    #[serde(default)]
+    pub smtp_port: u16,
+}
+
+impl MailerConfig {
+    /// Returns `true` iff the mailer is enabled and `(host, port)`
+    /// matches the configured whitelist (case-insensitive on host as
+    /// per RFC 1035 §2.3.3).
+    ///
+    /// This is the SSRF guard: vauban-web cannot trick the supervisor
+    /// into opening a socket to anywhere else just by forging a
+    /// `TcpConnectRequest`.
+    pub fn allows(&self, host: &str, port: u16) -> bool {
+        self.enabled
+            && port == self.smtp_port
+            && !self.smtp_host.is_empty()
+            && host.eq_ignore_ascii_case(&self.smtp_host)
     }
 }
 
@@ -1036,5 +1092,71 @@ mod tests {
             .expect("Failed to load production config");
         assert_eq!(config.server.host, "0.0.0.0");
         assert!(config.server.port > 0, "port should be set");
+    }
+
+    // ==================== Mailer SSRF whitelist (Issue #10) ====================
+
+    fn mailer(enabled: bool, host: &str, port: u16) -> MailerConfig {
+        MailerConfig {
+            enabled,
+            smtp_host: host.to_string(),
+            smtp_port: port,
+        }
+    }
+
+    #[test]
+    fn mailer_allows_exact_host_port_when_enabled() {
+        let m = mailer(true, "smtp.example.com", 587);
+        assert!(m.allows("smtp.example.com", 587));
+    }
+
+    #[test]
+    fn mailer_denies_when_disabled_even_if_match() {
+        let m = mailer(false, "smtp.example.com", 587);
+        assert!(!m.allows("smtp.example.com", 587));
+    }
+
+    #[test]
+    fn mailer_denies_wrong_host() {
+        let m = mailer(true, "smtp.example.com", 587);
+        assert!(!m.allows("evil.example.com", 587));
+    }
+
+    #[test]
+    fn mailer_denies_wrong_port() {
+        let m = mailer(true, "smtp.example.com", 587);
+        assert!(!m.allows("smtp.example.com", 25));
+    }
+
+    #[test]
+    fn mailer_denies_empty_host() {
+        let m = mailer(true, "", 587);
+        // even when "match" formally holds (host.eq_ignore_ascii_case(""))
+        // we MUST fail-closed because an empty whitelist must not
+        // implicitly allow an empty target.
+        assert!(!m.allows("", 587));
+    }
+
+    #[test]
+    fn mailer_host_match_is_case_insensitive() {
+        let m = mailer(true, "smtp.example.com", 587);
+        assert!(m.allows("SMTP.Example.Com", 587));
+    }
+
+    #[test]
+    fn mailer_default_is_disabled_and_denies_everything() {
+        let m = MailerConfig::default();
+        assert!(!m.enabled);
+        assert!(!m.allows("any", 1));
+        assert!(!m.allows("", 0));
+    }
+
+    #[test]
+    fn mailer_loaded_from_default_toml_is_disabled() {
+        let config = test_config();
+        assert!(
+            !config.mailer.enabled,
+            "default.toml ships with mailer disabled (operator must opt-in)"
+        );
     }
 }

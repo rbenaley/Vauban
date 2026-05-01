@@ -940,7 +940,11 @@ fn watchdog_loop(
         }
 
         // Process incoming messages from services (TcpConnectRequest, RecordingFileRequest, etc.)
-        process_service_messages(children, &config.recording.storage_path);
+        process_service_messages(
+            children,
+            &config.recording.storage_path,
+            &config.mailer,
+        );
 
         // Send heartbeats periodically
         if last_heartbeat.elapsed() >= heartbeat_interval {
@@ -1747,6 +1751,7 @@ fn handle_tcp_connect_request(
     payload: TcpConnectPayload,
     requesting_channel: &IpcChannel,
     children: &HashMap<String, ChildState>,
+    mailer: &crate::config::MailerConfig,
 ) {
     let TcpConnectPayload {
         request_id,
@@ -1756,82 +1761,34 @@ fn handle_tcp_connect_request(
         target_service,
         session_token,
     } = payload;
-    // === Cryptographic gate (fail-closed before any side-effect) ===
-    //
-    // SECURITY: this MUST run before DNS, before connect(), before FD
-    // passing. A compromised vauban-web that bypasses its own
-    // AccessGuard collapses here because it cannot mint a valid token
-    // without the BLAKE3 key (which it never receives).
-    let key = match SESSION_TOKEN_KEY.get() {
-        Some(k) => k,
-        None => {
-            error!(
-                "TcpConnectRequest received before SESSION_TOKEN_KEY init; \
-                 fail-closed deny"
-            );
-            let response = Message::TcpConnectResponse {
-                request_id,
-                session_id,
-                success: false,
-                error: Some("supervisor not ready".to_string()),
-            };
-            let _ = requesting_channel.send(&response);
-            return;
-        }
-    };
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let verifier = Verifier::Supervisor {
-        host: host.clone(),
-        port,
-        target_service: target_service.as_token_discriminant(),
-        session_id: session_id.clone(),
-    };
-    let token = match SessionToken::verify_bytes(&session_token, key, now, &verifier) {
-        Ok(t) => t,
-        Err(e) => {
-            warn!(
-                session_id = %session_id,
-                target = ?target_service,
-                "session token rejected: {e}; fail-closed deny"
-            );
-            let response = Message::TcpConnectResponse {
-                request_id,
-                session_id,
-                success: false,
-                error: Some("Access denied".to_string()),
-            };
-            let _ = requesting_channel.send(&response);
-            return;
-        }
-    };
-    // Anti-replay: a valid token presented twice within its TTL is a
-    // replay (or a duplicate from a buggy web). Either way we deny.
-    if !session_token_replay_cache()
-        .lock()
-        .map(|mut c| c.record(&token.session_id, &token.nonce))
-        .unwrap_or(false)
-    {
-        warn!(
-            session_id = %session_id,
-            "session token replay detected; fail-closed deny"
-        );
-        let response = Message::TcpConnectResponse {
-            request_id,
-            session_id,
-            success: false,
-            error: Some("Access denied".to_string()),
-        };
-        let _ = requesting_channel.send(&response);
-        return;
-    }
 
-    // Convert target service to service key
+    // === Step 0: target_service routing (early reject unknown variants).
+    //
+    // Each accepted target has its own authorization gate:
+    //
+    //   * Service::ProxySsh / Service::ProxyRdp -- gated by the
+    //     BLAKE3-keyed SessionToken below. vauban-access is the SOLE
+    //     minter of those tokens; vauban-web is a pure transport. The
+    //     token cryptographically binds
+    //     (host, port, target_service, session_id, user, asset, protocol)
+    //     to a 30 s TTL, ensuring the supervisor only DNS-resolves and
+    //     connects to a couple that vauban-access just approved.
+    //
+    //   * Service::Web (mailer, Issue #10) -- gated by the
+    //     supervisor-owned `[mailer]` whitelist (`mailer.allows`). The
+    //     token gate is intentionally NOT applied here: vauban-web
+    //     would otherwise have to mint its own tokens, which means
+    //     holding the BLAKE3 key, which means a compromised web could
+    //     mint tokens for any (host, port) and fully defeat the proxy
+    //     paths' crypto gate. Keeping vauban-web key-less, plus a
+    //     stricter-than-token whitelist (a single (host, port) couple,
+    //     not a per-asset one), is a security-positive trade.
+    //
+    // Anything outside this set fail-closes immediately.
     let target_key = match target_service {
         Service::ProxySsh => "proxy_ssh",
         Service::ProxyRdp => "proxy_rdp",
+        Service::Web => "web",
         _ => {
             warn!(
                 "TcpConnectRequest for unsupported target service: {:?}",
@@ -1847,6 +1804,114 @@ fn handle_tcp_connect_request(
             return;
         }
     };
+
+    if matches!(target_service, Service::Web) {
+        // === Step 1a: Mailer SSRF whitelist (Issue #10).
+        //
+        // Fail-closed before any DNS / connect / FD-passing work. Even
+        // if vauban-web is wholly compromised, the only outbound socket
+        // the supervisor will hand back is the configured SMTP relay.
+        if !mailer.allows(&host, port) {
+            warn!(
+                session_id = %session_id,
+                requested_host = %host,
+                requested_port = port,
+                mailer_enabled = mailer.enabled,
+                "TcpConnectRequest target=Web rejected by mailer whitelist; \
+                 fail-closed deny"
+            );
+            let response = Message::TcpConnectResponse {
+                request_id,
+                session_id,
+                success: false,
+                error: Some("Access denied".to_string()),
+            };
+            let _ = requesting_channel.send(&response);
+            return;
+        }
+        // The session_token bytes are still received on the wire (for
+        // protocol uniformity), but vauban-web does NOT hold the
+        // BLAKE3 key, so they are inert. We deliberately do not feed
+        // them to verify_bytes.
+        debug!(
+            session_id = %session_id,
+            host = %host,
+            port = port,
+            "Mailer broker request authorized by whitelist"
+        );
+    } else {
+        // === Step 1b: Cryptographic gate for proxy targets.
+        //
+        // SECURITY: this MUST run before DNS, before connect(), before FD
+        // passing. A compromised vauban-web that bypasses its own
+        // AccessGuard collapses here because it cannot mint a valid token
+        // without the BLAKE3 key (which it never receives).
+        let key = match SESSION_TOKEN_KEY.get() {
+            Some(k) => k,
+            None => {
+                error!(
+                    "TcpConnectRequest received before SESSION_TOKEN_KEY init; \
+                     fail-closed deny"
+                );
+                let response = Message::TcpConnectResponse {
+                    request_id,
+                    session_id,
+                    success: false,
+                    error: Some("supervisor not ready".to_string()),
+                };
+                let _ = requesting_channel.send(&response);
+                return;
+            }
+        };
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let verifier = Verifier::Supervisor {
+            host: host.clone(),
+            port,
+            target_service: target_service.as_token_discriminant(),
+            session_id: session_id.clone(),
+        };
+        let token = match SessionToken::verify_bytes(&session_token, key, now, &verifier) {
+            Ok(t) => t,
+            Err(e) => {
+                warn!(
+                    session_id = %session_id,
+                    target = ?target_service,
+                    "session token rejected: {e}; fail-closed deny"
+                );
+                let response = Message::TcpConnectResponse {
+                    request_id,
+                    session_id,
+                    success: false,
+                    error: Some("Access denied".to_string()),
+                };
+                let _ = requesting_channel.send(&response);
+                return;
+            }
+        };
+        // Anti-replay: a valid token presented twice within its TTL is a
+        // replay (or a duplicate from a buggy web). Either way we deny.
+        if !session_token_replay_cache()
+            .lock()
+            .map(|mut c| c.record(&token.session_id, &token.nonce))
+            .unwrap_or(false)
+        {
+            warn!(
+                session_id = %session_id,
+                "session token replay detected; fail-closed deny"
+            );
+            let response = Message::TcpConnectResponse {
+                request_id,
+                session_id,
+                success: false,
+                error: Some("Access denied".to_string()),
+            };
+            let _ = requesting_channel.send(&response);
+            return;
+        }
+    }
 
     // Get the target service's FD passing socket
     let target_state = match children.get(target_key) {
@@ -2106,9 +2171,15 @@ fn handle_recording_file_request(
 
 /// Poll all service channels and process incoming messages.
 ///
-/// Handles TcpConnectRequest (proxies), RecordingFileRequest (audit),
-/// and ACME renewal requests (web).
-fn process_service_messages(children: &HashMap<String, ChildState>, recording_storage_path: &str) {
+/// Handles TcpConnectRequest (proxies and web/mailer), RecordingFileRequest (audit),
+/// and ACME renewal requests (web). The `mailer` config is consulted by
+/// [`handle_tcp_connect_request`] when `target_service = Web` to enforce
+/// the SSRF whitelist (Issue #10).
+fn process_service_messages(
+    children: &HashMap<String, ChildState>,
+    recording_storage_path: &str,
+    mailer: &crate::config::MailerConfig,
+) {
     // Collect all read FDs from services
     let service_fds: Vec<(String, i32)> = children
         .iter()
@@ -2160,6 +2231,7 @@ fn process_service_messages(children: &HashMap<String, ChildState>, recording_st
                             },
                             &state.channel,
                             children,
+                            mailer,
                         );
                     }
                     Ok(Message::AcmeRenewRequest {
@@ -3917,8 +3989,8 @@ mod tests {
         let handler = &handler[..handler_end];
         let verify_idx = handler.find("SessionToken::verify_bytes(").expect(
             "handle_tcp_connect_request MUST call SessionToken::verify_bytes \
-             before any DNS / connect work. Without this, the TCP broker \
-             trusts whatever vauban-web sent.",
+             before any DNS / connect work for the proxy paths. Without this, \
+             the TCP broker trusts whatever vauban-web sent.",
         );
         let dns_idx = handler.find(".to_socket_addrs()").expect(
             "handle_tcp_connect_request MUST perform DNS resolution \
@@ -3942,6 +4014,67 @@ mod tests {
         );
     }
 
+    /// Issue #10: pin that the mailer (Service::Web) path skips the
+    /// SessionToken crypto gate AND that this is a deliberate, audited
+    /// exception (not a refactor accident).
+    ///
+    /// Background: vauban-web does not hold the BLAKE3 key (only
+    /// vauban-access mints, only the supervisor + proxies verify). For
+    /// the mailer to pass through verify_bytes, vauban-web would have
+    /// to receive the key, which would let a compromised web mint
+    /// tokens for any (host, port) and fully defeat the proxy paths'
+    /// crypto gate. The supervisor whitelist
+    /// (`mailer.allows(host, port)`) is BOTH narrower (a single fixed
+    /// couple instead of "any access-rule-allowed couple") AND
+    /// independent of vauban-web (the supervisor owns the `[mailer]`
+    /// config, not vauban-web). So skipping the token there is a
+    /// security-positive trade, not a regression.
+    #[test]
+    fn test_supervisor_tcp_broker_skips_token_for_web_target_intentionally() {
+        let source = supervisor_prod_source();
+        let handler_start = source
+            .find("fn handle_tcp_connect_request(")
+            .expect("handle_tcp_connect_request must exist");
+        let handler = &source[handler_start..];
+        let handler_end = handler
+            .find("\nfn ")
+            .or_else(|| handler.find("\nasync fn "))
+            .unwrap_or(handler.len());
+        let handler = &handler[..handler_end];
+
+        // The branching MUST be present and distinguish proxy vs web
+        // paths so that one cannot accidentally take the same
+        // verify-then-connect path as the other.
+        assert!(
+            handler.contains("matches!(target_service, Service::Web)"),
+            "Service::Web requires its own dedicated branch in \
+             handle_tcp_connect_request: it must NOT fall through the \
+             SessionToken::verify_bytes path because vauban-web has no \
+             access to the BLAKE3 key."
+        );
+        // The Web branch MUST use the whitelist as its sole gate.
+        assert!(
+            handler.contains("mailer.allows("),
+            "Service::Web branch MUST call mailer.allows(host, port) \
+             as its authorization gate (Issue #10 SSRF guard)."
+        );
+        // The Web branch MUST sit before the token verification (the
+        // ELSE branch holds verify_bytes).
+        let web_branch_idx = handler
+            .find("matches!(target_service, Service::Web)")
+            .expect("Service::Web branch must exist");
+        let verify_idx = handler.find("SessionToken::verify_bytes(").expect(
+            "verify_bytes call must exist in the proxy (else) branch",
+        );
+        assert!(
+            web_branch_idx < verify_idx,
+            "Service::Web branch MUST evaluate (and short-circuit) \
+             before the token verification, so a Web-target request \
+             never falls into the verify_bytes path that would always \
+             reject it (vauban-web has no key)."
+        );
+    }
+
     #[test]
     fn test_supervisor_tcp_broker_records_replay() {
         let source = supervisor_prod_source();
@@ -3959,6 +4092,67 @@ mod tests {
             "handle_tcp_connect_request MUST consult the replay cache \
              so a captured-but-still-fresh token cannot be reused for \
              multiple connects (DoS / pivot amplifier)."
+        );
+    }
+
+    /// Issue #10: structural pin that the mailer SSRF whitelist is
+    /// consulted whenever `target_service = Web`. Without this gate, a
+    /// compromised vauban-web could mint its own SessionToken and ask
+    /// the supervisor to connect anywhere -- vauban-web is the only
+    /// service that holds the session-token key for its own
+    /// `Verifier::Web` role, so the BLAKE3 check above is necessary
+    /// but not sufficient when the requester == the issuer.
+    #[test]
+    fn test_supervisor_tcp_broker_enforces_mailer_whitelist_for_web() {
+        let source = supervisor_prod_source();
+        let handler_start = source
+            .find("fn handle_tcp_connect_request(")
+            .expect("handle_tcp_connect_request must exist");
+        let handler = &source[handler_start..];
+        let handler_end = handler
+            .find("\nfn ")
+            .or_else(|| handler.find("\nasync fn "))
+            .unwrap_or(handler.len());
+        let handler = &handler[..handler_end];
+
+        // The Web branch must exist.
+        let web_idx = handler.find("Service::Web =>").expect(
+            "handle_tcp_connect_request MUST have a Service::Web arm \
+             that opens the mailer broker path (Issue #10).",
+        );
+        // The whitelist call must exist BEFORE we proceed to send the FD.
+        let allows_idx = handler[web_idx..].find("mailer.allows(").map(|i| web_idx + i).expect(
+            "handle_tcp_connect_request MUST call mailer.allows(host, port) \
+             on the Service::Web arm before connecting. SSRF guard, Issue #10.",
+        );
+        // The fail-closed branch must call requesting_channel.send with a
+        // failed TcpConnectResponse. We grep for the most distinctive
+        // marker: the rejection log + the Access denied response that
+        // mirrors the cryptographic-gate error.
+        let _reject_idx = handler[allows_idx..]
+            .find("rejected by mailer whitelist")
+            .map(|i| allows_idx + i)
+            .expect(
+                "handle_tcp_connect_request MUST log a rejection when \
+                 mailer.allows() returns false; this is the audit trail \
+                 a SOC will look for after an SSRF attempt.",
+            );
+    }
+
+    /// Issue #10: regression that disabled `mailer` denies a Web target.
+    /// Validated through `MailerConfig::allows` directly so the test is
+    /// fast and does not require child processes.
+    #[test]
+    fn test_mailer_disabled_denies_web_broker() {
+        let m = crate::config::MailerConfig {
+            enabled: false,
+            smtp_host: "smtp.example.com".to_string(),
+            smtp_port: 587,
+        };
+        assert!(
+            !m.allows("smtp.example.com", 587),
+            "even with a perfectly matching (host, port), a disabled mailer \
+             MUST refuse the broker request (fail-closed)"
         );
     }
 }

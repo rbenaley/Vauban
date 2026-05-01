@@ -148,6 +148,31 @@ diesel::table! {
 }
 
 diesel::table! {
+    email_outbox (id) {
+        id -> Int8,
+        event_id -> Uuid,
+        #[max_length = 64]
+        event_kind -> Varchar,
+        #[max_length = 320]
+        recipient -> Varchar,
+        #[max_length = 255]
+        recipient_name -> Varchar,
+        #[max_length = 200]
+        subject -> Varchar,
+        body_text -> Text,
+        body_html -> Nullable<Text>,
+        #[max_length = 16]
+        status -> Varchar,
+        attempts -> Int4,
+        max_attempts -> Int4,
+        next_retry_at -> Nullable<Timestamptz>,
+        last_error -> Nullable<Text>,
+        created_at -> Timestamptz,
+        sent_at -> Nullable<Timestamptz>,
+    }
+}
+
+diesel::table! {
     proxy_sessions (id) {
         id -> Int4,
         uuid -> Uuid,
@@ -284,6 +309,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     asset_groups,
     assets,
     auth_sessions,
+    email_outbox,
     proxy_sessions,
     user_groups,
     users,

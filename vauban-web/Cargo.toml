@@ -80,7 +80,7 @@ serde.workspace = true
 serde_json = "1.0"
 
 # Utilities
-uuid = { version = "1.11", features = ["v4", "serde"] }
+uuid = { version = "1.11", features = ["v4", "v5", "serde"] }
 ipnetwork = "0.21"
 chrono = { version = "0.4", features = ["serde"] }
 time = "0.3"
@@ -114,6 +114,11 @@ axum-server = { version = "0.8", features = ["tls-rustls"] }
 rustls = "0.23"
 rustls-pki-types = "1"
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
+# Used by the embedded SMTP client (Issue #10) to upgrade the
+# supervisor-brokered TCP socket via STARTTLS. Pinned to 0.26 to match
+# what `vauban-proxy-rdp` already audits.
+tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs"] }
+webpki-roots = "1"
 
 # Streaming ZIP for the RDP recording bundle download. `tokio` feature
 # enables a tokio-friendly async writer; we use the `Stored` compression

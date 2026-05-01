@@ -240,6 +240,9 @@ pub struct Config {
     /// Asset / asset-group membership behavior.
     #[serde(default)]
     pub assets: AssetsConfig,
+    /// Email notification (Issue #10) configuration.
+    #[serde(default)]
+    pub mailer: MailerConfig,
 }
 
 debug_redacted_struct!(
@@ -657,6 +660,253 @@ impl Default for RecordingConfig {
     }
 }
 
+/// Email notification configuration (Issue #10).
+///
+/// The mailer is embedded in `vauban-web`. The TCP socket to the MTA is
+/// established by `vauban-supervisor` (which is not Capsicum-confined)
+/// and passed back to `vauban-web` via SCM_RIGHTS. The supervisor also
+/// owns its own copy of `[mailer]` (see
+/// [`vauban-supervisor/src/config.rs`]) used as an SSRF-proof whitelist:
+/// it accepts a `TcpConnectRequest { target_service: Web }` only if
+/// `(host, port)` exactly matches its `smtp_host` / `smtp_port`.
+///
+/// Secrets (SMTP password) are loaded from the environment variable
+/// `VAUBAN_SMTP_PASSWORD` and cleared from `/proc/PID/environ`
+/// immediately after reading. Username can be loaded similarly via
+/// `VAUBAN_SMTP_USERNAME` to avoid storing it in TOML.
+#[derive(Clone, Deserialize)]
+pub struct MailerConfig {
+    /// Master switch. When false, `Mailer::queue` is a no-op and the
+    /// dispatcher task does not start. Default false; enable explicitly
+    /// in production with the SMTP credentials.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Sender address (RFC 5321 reverse-path / `MAIL FROM`).
+    /// Mandatory when `enabled` is true.
+    #[serde(default)]
+    pub from_address: String,
+    /// Display name rendered in the `From:` header (`"Name <addr>"`).
+    /// Optional.
+    #[serde(default)]
+    pub from_name: String,
+    /// Optional `Reply-To:` header. Empty string disables the header.
+    #[serde(default)]
+    pub reply_to: String,
+    /// Public base URL injected into email templates (e.g.
+    /// `https://vauban.example.com`). Used to build absolute links to
+    /// the approval page, the reset-password page, etc. The dispatcher
+    /// rejects values that are not `https://` in production.
+    #[serde(default)]
+    pub base_url: String,
+    /// SMTP server host (DNS name). Resolved by the supervisor at each
+    /// connect; the supervisor also enforces an exact `(host, port)`
+    /// match against its own config (SSRF guard).
+    #[serde(default)]
+    pub smtp_host: String,
+    /// SMTP server port (typically 587 with STARTTLS, or 465 with
+    /// implicit TLS).
+    #[serde(default = "MailerConfig::default_smtp_port")]
+    pub smtp_port: u16,
+    /// Transport encryption.
+    #[serde(default = "MailerConfig::default_smtp_encryption")]
+    pub smtp_encryption: SmtpEncryption,
+    /// Optional SMTP username. Empty string == no AUTH.
+    /// Override via `VAUBAN_SMTP_USERNAME`.
+    #[serde(default)]
+    pub smtp_username: String,
+    /// SMTP password (`SecretString`). Override via
+    /// `VAUBAN_SMTP_PASSWORD` (preferred). The env var is cleared from
+    /// the process environment immediately after read.
+    #[serde(default = "MailerConfig::default_secret_string")]
+    pub smtp_password: secrecy::SecretString,
+    /// Hostname advertised in the SMTP EHLO/HELO command. Defaults to
+    /// "vauban" when empty. Many MTAs reject EHLOs containing a
+    /// publicly-routable bare hostname mismatch, so override with the
+    /// HELO-acceptable value for your relay (often the public DNS name
+    /// of the deployment).
+    #[serde(default)]
+    pub helo_name: String,
+    /// Dispatcher polling interval, in seconds. Notifications also wake
+    /// the task instantly via `tokio::sync::Notify`, so this only
+    /// matters for catching up after a restart or a missed notify.
+    #[serde(default = "MailerConfig::default_poll_interval_secs")]
+    pub poll_interval_secs: u64,
+    /// Per-cycle batch size pulled from `email_outbox`. Bounds the
+    /// memory and locking footprint of one cycle. Default 16.
+    #[serde(default = "MailerConfig::default_batch_size")]
+    pub batch_size: i64,
+    /// Maximum delivery attempts per row. The dispatcher gives up and
+    /// marks the row `failed` after this count. Default 5.
+    #[serde(default = "MailerConfig::default_max_attempts")]
+    pub max_attempts: i32,
+    /// Per-attempt SMTP timeout, in seconds. Wraps the entire
+    /// EHLO/STARTTLS/AUTH/MAIL/RCPT/DATA/QUIT exchange.
+    #[serde(default = "MailerConfig::default_smtp_timeout_secs")]
+    pub smtp_timeout_secs: u64,
+    /// TCP-broker timeout, in seconds. The dispatcher waits at most
+    /// this long for the supervisor to come back with the connected
+    /// FD. The supervisor itself uses 30 s; we mirror that.
+    #[serde(default = "MailerConfig::default_broker_timeout_secs")]
+    pub broker_timeout_secs: u64,
+}
+
+/// SMTP transport encryption mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SmtpEncryption {
+    /// Connect on the plain port (e.g. 587), then upgrade with
+    /// `STARTTLS` before AUTH and DATA. Mandatory in production.
+    Starttls,
+    /// Connect with TLS from byte 0 (e.g. port 465).
+    Tls,
+    /// No transport encryption. ONLY allowed in development against a
+    /// localhost test MTA. The dispatcher will refuse to send AUTH
+    /// credentials in this mode.
+    Plaintext,
+}
+
+impl MailerConfig {
+    fn default_smtp_port() -> u16 {
+        587
+    }
+
+    fn default_smtp_encryption() -> SmtpEncryption {
+        SmtpEncryption::Starttls
+    }
+
+    fn default_secret_string() -> secrecy::SecretString {
+        secrecy::SecretString::new(String::new().into())
+    }
+
+    fn default_poll_interval_secs() -> u64 {
+        10
+    }
+
+    fn default_batch_size() -> i64 {
+        16
+    }
+
+    fn default_max_attempts() -> i32 {
+        5
+    }
+
+    fn default_smtp_timeout_secs() -> u64 {
+        30
+    }
+
+    fn default_broker_timeout_secs() -> u64 {
+        30
+    }
+
+    /// Effective HELO/EHLO domain. Falls back to `"vauban"` if not set.
+    pub fn effective_helo(&self) -> &str {
+        if self.helo_name.is_empty() {
+            "vauban"
+        } else {
+            self.helo_name.as_str()
+        }
+    }
+
+    /// Validate the mailer block. Called from `Config::load_with_environment`.
+    /// All checks are no-ops when `enabled` is false (parking-lot mode).
+    pub fn validate(&self, environment: Environment) -> Result<(), String> {
+        if !self.enabled {
+            return Ok(());
+        }
+        if self.from_address.is_empty() {
+            return Err("mailer.from_address is required when mailer is enabled".into());
+        }
+        if !self.from_address.contains('@') {
+            return Err(format!(
+                "mailer.from_address {:?} is not a valid email address",
+                self.from_address
+            ));
+        }
+        if self.smtp_host.is_empty() {
+            return Err("mailer.smtp_host is required when mailer is enabled".into());
+        }
+        if self.smtp_port == 0 {
+            return Err("mailer.smtp_port must be > 0".into());
+        }
+        if self.base_url.is_empty() {
+            return Err("mailer.base_url is required when mailer is enabled".into());
+        }
+        if environment == Environment::Production && !self.base_url.starts_with("https://") {
+            return Err(format!(
+                "mailer.base_url must be https:// in production, got {:?}",
+                self.base_url
+            ));
+        }
+        if environment == Environment::Production
+            && self.smtp_encryption == SmtpEncryption::Plaintext
+        {
+            return Err("mailer.smtp_encryption = \"plaintext\" is forbidden in production".into());
+        }
+        if self.batch_size <= 0 {
+            return Err("mailer.batch_size must be > 0".into());
+        }
+        if self.max_attempts <= 0 {
+            return Err("mailer.max_attempts must be > 0".into());
+        }
+        if self.poll_interval_secs == 0 {
+            return Err("mailer.poll_interval_secs must be > 0".into());
+        }
+        if self.smtp_timeout_secs == 0 {
+            return Err("mailer.smtp_timeout_secs must be > 0".into());
+        }
+        if self.broker_timeout_secs == 0 {
+            return Err("mailer.broker_timeout_secs must be > 0".into());
+        }
+        Ok(())
+    }
+}
+
+impl Default for MailerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            from_address: String::new(),
+            from_name: String::new(),
+            reply_to: String::new(),
+            base_url: String::new(),
+            smtp_host: String::new(),
+            smtp_port: Self::default_smtp_port(),
+            smtp_encryption: Self::default_smtp_encryption(),
+            smtp_username: String::new(),
+            smtp_password: Self::default_secret_string(),
+            helo_name: String::new(),
+            poll_interval_secs: Self::default_poll_interval_secs(),
+            batch_size: Self::default_batch_size(),
+            max_attempts: Self::default_max_attempts(),
+            smtp_timeout_secs: Self::default_smtp_timeout_secs(),
+            broker_timeout_secs: Self::default_broker_timeout_secs(),
+        }
+    }
+}
+
+impl std::fmt::Debug for MailerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MailerConfig")
+            .field("enabled", &self.enabled)
+            .field("from_address", &self.from_address)
+            .field("from_name", &self.from_name)
+            .field("reply_to", &self.reply_to)
+            .field("base_url", &self.base_url)
+            .field("smtp_host", &self.smtp_host)
+            .field("smtp_port", &self.smtp_port)
+            .field("smtp_encryption", &self.smtp_encryption)
+            .field("smtp_username", &self.smtp_username)
+            .field("smtp_password", &"[REDACTED]")
+            .field("helo_name", &self.helo_name)
+            .field("poll_interval_secs", &self.poll_interval_secs)
+            .field("batch_size", &self.batch_size)
+            .field("max_attempts", &self.max_attempts)
+            .field("smtp_timeout_secs", &self.smtp_timeout_secs)
+            .field("broker_timeout_secs", &self.broker_timeout_secs)
+            .finish()
+    }
+}
+
 impl Config {
     /// Load configuration from TOML files.
     ///
@@ -839,6 +1089,39 @@ impl Config {
             })?;
         }
 
+        // 5. Override SMTP credentials (Issue #10) -- VAUBAN_SMTP_USERNAME
+        //    and VAUBAN_SMTP_PASSWORD. Same env-var-erase pattern as
+        //    VAUBAN_SECRET_KEY: read once, scrub from /proc/PID/environ.
+        if let Ok(username) = std::env::var("VAUBAN_SMTP_USERNAME") {
+            // SAFETY: same as VAUBAN_SECRET_KEY; called single-threaded
+            // before the Tokio runtime is started.
+            unsafe {
+                std::env::remove_var("VAUBAN_SMTP_USERNAME");
+            }
+            builder = builder
+                .set_override("mailer.smtp_username", username)
+                .map_err(|e| {
+                    crate::error::AppError::Config(format!(
+                        "Failed to set mailer.smtp_username: {}",
+                        e
+                    ))
+                })?;
+        }
+        if let Ok(password) = std::env::var("VAUBAN_SMTP_PASSWORD") {
+            // SAFETY: same as VAUBAN_SECRET_KEY.
+            unsafe {
+                std::env::remove_var("VAUBAN_SMTP_PASSWORD");
+            }
+            builder = builder
+                .set_override("mailer.smtp_password", password)
+                .map_err(|e| {
+                    crate::error::AppError::Config(format!(
+                        "Failed to set mailer.smtp_password: {}",
+                        e
+                    ))
+                })?;
+        }
+
         // Build configuration
         let settings = builder.build().map_err(Self::config_error)?;
 
@@ -864,6 +1147,14 @@ impl Config {
         config
             .recording
             .validate()
+            .map_err(crate::error::AppError::Config)?;
+
+        // Validate mailer block (Issue #10). No-op when disabled; in
+        // production it requires from_address, smtp_host, https base_url,
+        // and rejects plaintext SMTP.
+        config
+            .mailer
+            .validate(config.environment)
             .map_err(crate::error::AppError::Config)?;
 
         Ok(config)

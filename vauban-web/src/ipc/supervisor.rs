@@ -50,6 +50,36 @@ pub struct RecordingFileResult {
     pub file: Option<std::fs::File>,
 }
 
+/// Pending SMTP broker request (Issue #10) waiting for the supervisor
+/// to come back with a connected `tokio::net::TcpStream` materialised
+/// from a SCM_RIGHTS file descriptor.
+struct PendingSmtpConnect {
+    response_tx: oneshot::Sender<SmtpConnectResult>,
+}
+
+/// Result of an SMTP-broker request.
+///
+/// `stream` is `Some` iff `success` is true; the supervisor performed
+/// DNS + connect, validated the `(host, port)` against its `[mailer]`
+/// whitelist, and passed the connected FD via SCM_RIGHTS. The stream
+/// is non-blocking and ready for use with `tokio-rustls` STARTTLS or
+/// direct AUTH/MAIL/RCPT/DATA exchange.
+pub struct SmtpConnectResult {
+    pub success: bool,
+    pub error: Option<String>,
+    pub stream: Option<tokio::net::TcpStream>,
+}
+
+impl std::fmt::Debug for SmtpConnectResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SmtpConnectResult")
+            .field("success", &self.success)
+            .field("error", &self.error)
+            .field("stream", &self.stream.as_ref().map(|_| "<TcpStream>"))
+            .finish()
+    }
+}
+
 /// Shared state between the supervisor communication thread and async tasks.
 pub struct SupervisorClientInner {
     /// IPC channel to supervisor.
@@ -62,6 +92,12 @@ pub struct SupervisorClientInner {
     pending_tcp_connects: Mutex<HashMap<u64, PendingTcpConnect>>,
     /// Pending recording file requests.
     pending_recording_files: Mutex<HashMap<u64, PendingRecordingFile>>,
+    /// Pending SMTP-broker requests (Issue #10). Distinct from
+    /// `pending_tcp_connects` because the IPC loop must materialise an
+    /// FD via SCM_RIGHTS into a `tokio::net::TcpStream` for these,
+    /// whereas `pending_tcp_connects` is fire-and-forget on the web
+    /// side (the proxy receives the FD).
+    pending_smtp_connects: Mutex<HashMap<u64, PendingSmtpConnect>>,
     /// Service statistics for heartbeat responses.
     pub start_time: Instant,
     pub requests_processed: AtomicU64,
@@ -126,6 +162,7 @@ impl SupervisorClient {
             next_request_id: AtomicU64::new(1),
             pending_tcp_connects: Mutex::new(HashMap::new()),
             pending_recording_files: Mutex::new(HashMap::new()),
+            pending_smtp_connects: Mutex::new(HashMap::new()),
             start_time: Instant::now(),
             requests_processed: AtomicU64::new(0),
             requests_failed: AtomicU64::new(0),
@@ -230,6 +267,85 @@ impl SupervisorClient {
         }
     }
 
+    /// Request the supervisor to broker a TCP connection to the
+    /// configured SMTP relay (Issue #10) and pass the connected FD
+    /// back to vauban-web via SCM_RIGHTS.
+    ///
+    /// The supervisor enforces:
+    ///   * `target_service = Service::Web` is whitelisted only when
+    ///     `[mailer]` is enabled in the supervisor config;
+    ///   * `(host, port)` MUST exactly match the supervisor's
+    ///     `mailer.smtp_host` / `mailer.smtp_port` (SSRF guard).
+    ///
+    /// On success, returns a non-blocking `tokio::net::TcpStream` ready
+    /// for `STARTTLS` / SMTP exchange. The stream's lifetime is owned
+    /// by the caller (typically the dispatcher task).
+    ///
+    /// `session_token` is sent verbatim on the wire for protocol
+    /// uniformity with the proxy paths but is NOT verified by the
+    /// supervisor for `target_service = Web` (see the supervisor's
+    /// `handle_tcp_connect_request` for the rationale). Callers should
+    /// pass an empty `Vec` here.
+    pub async fn request_smtp_connect(
+        &self,
+        session_id: &str,
+        host: &str,
+        port: u16,
+        session_token: Vec<u8>,
+        timeout: Duration,
+    ) -> Result<SmtpConnectResult, String> {
+        let request_id = self.inner.next_request_id.fetch_add(1, Ordering::SeqCst);
+
+        debug!(
+            request_id,
+            session_id = %session_id,
+            host = %host,
+            port,
+            "Requesting SMTP broker from supervisor"
+        );
+
+        let (tx, rx) = oneshot::channel();
+        {
+            let mut pending = self
+                .inner
+                .pending_smtp_connects
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            pending.insert(request_id, PendingSmtpConnect { response_tx: tx });
+        }
+
+        let msg = Message::TcpConnectRequest {
+            request_id,
+            session_id: session_id.to_string(),
+            host: host.to_string(),
+            port,
+            target_service: Service::Web,
+            session_token,
+        };
+
+        if let Err(e) = self.inner.channel.send(&msg) {
+            self.inner
+                .pending_smtp_connects
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&request_id);
+            return Err(format!("Failed to send SMTP TcpConnectRequest: {}", e));
+        }
+
+        match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(result)) => Ok(result),
+            Ok(Err(_)) => Err("SMTP broker response channel dropped".to_string()),
+            Err(_) => {
+                self.inner
+                    .pending_smtp_connects
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&request_id);
+                Err("SMTP broker request timeout".to_string())
+            }
+        }
+    }
+
     /// Request the supervisor to open a recording file (read-only) and pass
     /// the FD via SCM_RIGHTS. Returns the opened file on success.
     pub async fn request_recording_file(
@@ -330,6 +446,50 @@ impl SupervisorClient {
     }
 }
 
+/// Receive a SCM_RIGHTS-passed file descriptor from the supervisor and
+/// materialise it as a non-blocking `tokio::net::TcpStream`.
+///
+/// Used by the SMTP broker path (Issue #10). The supervisor performs
+/// the `connect()` and ships the connected FD to vauban-web via
+/// `SCM_RIGHTS`. We:
+///   1. Receive an `OwnedFd` from the AF_UNIX socket-pair dedicated to
+///      FD passing.
+///   2. Hand-build a `std::net::TcpStream` from the raw FD (taking
+///      ownership; the supervisor's copy is closed on its side after
+///      `sendmsg`).
+///   3. Switch the socket to non-blocking mode (mandatory for tokio).
+///   4. Wrap it in `tokio::net::TcpStream::from_std`.
+fn recv_smtp_stream(
+    fd_passing_socket: Option<RawFd>,
+    request_id: u64,
+) -> Result<tokio::net::TcpStream, String> {
+    let fd_socket = fd_passing_socket.ok_or_else(|| {
+        format!(
+            "request_id={}: no fd_passing socket configured (cannot \
+             recv_fd for SMTP broker)",
+            request_id
+        )
+    })?;
+
+    let owned_fd = recv_fd(fd_socket).map_err(|e| {
+        format!(
+            "request_id={}: recv_fd failed: {}",
+            request_id, e
+        )
+    })?;
+
+    let raw_fd = owned_fd.into_raw_fd();
+    // SAFETY: `raw_fd` was just received via SCM_RIGHTS from the
+    // supervisor and represents a fully owned, connected TCP socket.
+    // We take ownership and `from_std` will close it on drop.
+    let std_stream = unsafe { std::net::TcpStream::from_raw_fd(raw_fd) };
+    std_stream
+        .set_nonblocking(true)
+        .map_err(|e| format!("request_id={}: set_nonblocking failed: {}", request_id, e))?;
+    tokio::net::TcpStream::from_std(std_stream)
+        .map_err(|e| format!("request_id={}: TcpStream::from_std failed: {}", request_id, e))
+}
+
 /// Main loop for supervisor IPC communication thread.
 ///
 /// Handles heartbeat pings from supervisor and routes TcpConnectResponse
@@ -404,6 +564,47 @@ fn supervisor_ipc_loop(inner: Arc<SupervisorClientInner>) {
                     success = success,
                     "TCP connect response from supervisor"
                 );
+
+                // Mailer broker (Issue #10) FIRST: those request_ids were
+                // registered via `request_smtp_connect` and the supervisor
+                // sends the connected FD to vauban-web via SCM_RIGHTS,
+                // unlike the proxy path where the FD goes to proxy_ssh /
+                // proxy_rdp directly.
+                let smtp_pending = inner
+                    .pending_smtp_connects
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&request_id);
+                if let Some(smtp_pending) = smtp_pending {
+                    let stream = if success {
+                        match recv_smtp_stream(inner.fd_passing_socket, request_id) {
+                            Ok(s) => Some(s),
+                            Err(e) => {
+                                warn!(
+                                    request_id,
+                                    session_id = %session_id,
+                                    error = %e,
+                                    "Failed to materialise SMTP stream from FD"
+                                );
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    };
+                    let materialised_ok = stream.is_some();
+                    let result = SmtpConnectResult {
+                        success: success && materialised_ok,
+                        error: if !materialised_ok && success {
+                            Some("recv_fd / TcpStream materialisation failed".to_string())
+                        } else {
+                            error
+                        },
+                        stream,
+                    };
+                    let _ = smtp_pending.response_tx.send(result);
+                    continue;
+                }
 
                 let pending = inner
                     .pending_tcp_connects
@@ -662,5 +863,88 @@ mod tests {
         };
         assert!(!result.success);
         assert_eq!(result.error.unwrap(), "Connection refused");
+    }
+
+    // ==================== SMTP broker (Issue #10) ====================
+
+    #[test]
+    fn test_smtp_connect_result_failure_has_no_stream() {
+        let r = SmtpConnectResult {
+            success: false,
+            error: Some("denied".to_string()),
+            stream: None,
+        };
+        assert!(!r.success);
+        assert!(r.stream.is_none());
+        assert_eq!(r.error.as_deref(), Some("denied"));
+    }
+
+    #[test]
+    fn test_smtp_connect_result_debug_redacts_stream() {
+        let r = SmtpConnectResult {
+            success: false,
+            error: None,
+            stream: None,
+        };
+        let dbg = format!("{:?}", r);
+        // No surprise leak of internals; the stream field is
+        // hand-formatted by the manual Debug impl.
+        assert!(dbg.contains("SmtpConnectResult"));
+        assert!(dbg.contains("success: false"));
+    }
+
+    /// Pin: the IPC loop MUST consult `pending_smtp_connects` BEFORE
+    /// `pending_tcp_connects` for an incoming `TcpConnectResponse`,
+    /// otherwise a mailer request would race against the proxy lookup
+    /// and (a) be silently dropped if the proxy map happens to also
+    /// have the request_id in the future, or (b) leak the SCM_RIGHTS
+    /// FD because no path consumes it.
+    #[test]
+    fn test_supervisor_loop_consults_smtp_pending_before_tcp_pending() {
+        let source = include_str!("supervisor.rs");
+        // Locate the TcpConnectResponse handler in the IPC loop.
+        let handler_start = source
+            .find("Ok(Message::TcpConnectResponse {")
+            .expect("TcpConnectResponse handler must exist");
+        let handler = &source[handler_start..];
+        let smtp_idx = handler
+            .find("pending_smtp_connects")
+            .expect("TcpConnectResponse handler MUST consult pending_smtp_connects");
+        let tcp_idx = handler
+            .find("pending_tcp_connects")
+            .expect("TcpConnectResponse handler MUST consult pending_tcp_connects");
+        assert!(
+            smtp_idx < tcp_idx,
+            "pending_smtp_connects MUST be consulted BEFORE \
+             pending_tcp_connects in the IPC loop. The mailer path \
+             needs to consume the SCM_RIGHTS FD; routing the response \
+             through the proxy path would leak the FD."
+        );
+    }
+
+    /// Pin: the SMTP broker request MUST set `target_service =
+    /// Service::Web`. The supervisor's whitelist is keyed by that
+    /// variant; sending any other (e.g. ProxySsh) here would either
+    /// hit the proxy crypto path (rejected, no key) or open a TCP
+    /// connection routed to the SSH proxy, which is a serious
+    /// confused-deputy bug.
+    #[test]
+    fn test_request_smtp_connect_uses_service_web() {
+        let source = include_str!("supervisor.rs");
+        let fn_start = source
+            .find("pub async fn request_smtp_connect(")
+            .expect("request_smtp_connect must exist");
+        let fn_body = &source[fn_start..];
+        let fn_end = fn_body
+            .find("\n    /// ")
+            .or_else(|| fn_body.find("\n    pub "))
+            .unwrap_or(fn_body.len().min(4096));
+        let fn_body = &fn_body[..fn_end];
+        assert!(
+            fn_body.contains("target_service: Service::Web"),
+            "request_smtp_connect MUST set target_service: Service::Web; \
+             any other variant would route the broker request to the \
+             wrong supervisor branch (Issue #10 confused-deputy guard)."
+        );
     }
 }

@@ -1579,6 +1579,29 @@ pub async fn submit_access_request(
 
     broadcast_approval_badge(&state).await;
 
+    // Issue #10: queue an email to every active staff/superuser. The
+    // pure WebSocket badge is great for live admins, but Vauban does
+    // not assume the admin is online -- email is the primary
+    // out-of-band channel for "a new access request needs your
+    // attention". One row per recipient (UNIQUE(event_id) provides
+    // idempotence on a double-submit retry).
+    let session_type_str = form.session_type.to_string();
+    if let Err(e) = queue_submitted_emails(
+        &state,
+        session_uuid,
+        &auth_user.username,
+        &asset.name,
+        &session_type_str,
+    )
+    .await
+    {
+        tracing::warn!(
+            session_uuid = %session_uuid,
+            error = %e,
+            "Failed to queue access_request.submitted emails (request itself was recorded)"
+        );
+    }
+
     if is_htmx {
         let trigger_json = r#"{"showToast": {"message": "Access request submitted. An administrator will review your request.", "type": "success"}}"#.to_string();
         (
@@ -1790,6 +1813,10 @@ async fn dispatch_approval_decision(
         .and_then(|h| h.to_str().ok())
         .map(|s| s.to_string());
 
+    // Stash a copy of the decision reason for the post-success email
+    // hook (the IPC call below moves the original).
+    let decision_reason_clone = decision_reason.clone();
+
     let outcome = state
         .access_client
         .record_approval_decision(
@@ -1858,6 +1885,31 @@ async fn dispatch_approval_decision(
                 "JIT access request decision recorded via IPC"
             );
 
+            // Email the requester (Issue #10). Best-effort: a failure
+            // here is logged but never bubbles up -- the audit row is
+            // already durable on the access-side, so the user has
+            // learned the outcome from the WS notification anyway.
+            if let Some(uid) = requester_id {
+                if let Err(e) = queue_approval_email(
+                    state,
+                    uid,
+                    session_uuid,
+                    decision,
+                    &auth_user.username,
+                    decision_reason_clone.as_deref(),
+                )
+                .await
+                {
+                    tracing::warn!(
+                        session_uuid = %session_uuid,
+                        decision = ?decision,
+                        error = %e,
+                        "Failed to queue approval-decision email \
+                         (audit log already recorded; admin can resend)"
+                    );
+                }
+            }
+
             Ok(ApprovalOutcome::Recorded {
                 audit_log_id,
                 requester_id,
@@ -1875,6 +1927,179 @@ async fn dispatch_approval_decision(
             );
             Ok(ApprovalOutcome::Denied(reason))
         }
+    }
+}
+
+/// Queue one `access_request.submitted` email per active superuser (Issue #10).
+///
+/// "Active superuser" is the canonical approver pool today. A future
+/// access-rule-driven approver routing can replace this lookup without
+/// touching the call sites.
+///
+/// Best-effort: any failure here is logged and never propagated -- the
+/// access request itself is durable, and the WebSocket fan-out has
+/// already alerted any live admin.
+async fn queue_submitted_emails(
+    state: &AppState,
+    session_uuid: ::uuid::Uuid,
+    requester_username: &str,
+    asset_name: &str,
+    protocol: &str,
+) -> Result<(), String> {
+    use crate::schema::users;
+    use crate::services::mailer::{
+        AccessRequestSubmittedEvent, EmailEvent, EmailRecipient, deterministic_event_id,
+    };
+
+    let mut conn = state.db_pool.get().await.map_err(|e| e.to_string())?;
+    let approver_emails: Vec<(String, String)> = users::table
+        .filter(users::is_active.eq(true))
+        .filter(users::is_superuser.eq(true))
+        .filter(users::email.ne(""))
+        .select((users::email, users::username))
+        .load(&mut conn)
+        .await
+        .map_err(|e| format!("approver lookup: {}", e))?;
+    drop(conn);
+
+    if approver_emails.is_empty() {
+        return Ok(());
+    }
+
+    let approval_url = format!(
+        "{}/sessions/approvals/{}",
+        state.config.mailer.base_url, session_uuid
+    );
+    let business_key = format!("submitted:{}", session_uuid);
+
+    let mut errors: Vec<String> = Vec::new();
+    for (email, username) in approver_emails {
+        let event_id = deterministic_event_id(
+            "access_request.submitted",
+            &business_key,
+            &email,
+        );
+        let event = EmailEvent::AccessRequestSubmitted(AccessRequestSubmittedEvent {
+            event_id,
+            recipient: EmailRecipient::new(email, username),
+            requester_username: requester_username.to_string(),
+            asset_name: asset_name.to_string(),
+            protocol: protocol.to_string(),
+            justification: None,
+            approval_url: approval_url.clone(),
+            base_url: state.config.mailer.base_url.clone(),
+            from_brand: state.config.mailer.from_name.clone(),
+        });
+        let mut conn = state.db_pool.get().await.map_err(|e| e.to_string())?;
+        match state.mailer.queue(&mut conn, &event).await {
+            Ok(()) | Err(crate::services::mailer::MailerError::Duplicate) => {}
+            Err(e) => errors.push(e.to_string()),
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
+/// Queue an approval-decision email to the request author (Issue #10).
+///
+/// Best-effort: any error here is logged by the caller and never
+/// propagates -- the audit log is the source of truth for "decision
+/// taken", and the WebSocket notification has already informed the
+/// user. The email is a courtesy duplicate.
+///
+/// The function loads (requester email, asset name, protocol) and
+/// builds the matching `EmailEvent`. Multiple DB lookups are merged
+/// into a single connection borrow to keep the pool occupancy low.
+async fn queue_approval_email(
+    state: &AppState,
+    requester_id: i32,
+    session_uuid: ::uuid::Uuid,
+    decision: shared::messages::ApprovalDecisionKind,
+    approver_username: &str,
+    rejection_reason: Option<&str>,
+) -> Result<(), String> {
+    use crate::schema::{assets, proxy_sessions, users};
+    use crate::services::mailer::{
+        AccessRequestApprovedEvent, AccessRequestRejectedEvent, EmailEvent, EmailRecipient,
+        deterministic_event_id,
+    };
+
+    let mut conn = state.db_pool.get().await.map_err(|e| e.to_string())?;
+
+    // Requester contact details.
+    let (req_email, _req_username): (String, String) = users::table
+        .filter(users::id.eq(requester_id))
+        .select((users::email, users::username))
+        .first(&mut conn)
+        .await
+        .map_err(|e| format!("requester lookup: {}", e))?;
+    if req_email.is_empty() {
+        // No address on file -> nothing to do. Non-error.
+        return Ok(());
+    }
+
+    // Asset metadata for the email body.
+    let (asset_name, protocol): (String, String) = proxy_sessions::table
+        .inner_join(assets::table.on(assets::id.eq(proxy_sessions::asset_id)))
+        .filter(proxy_sessions::uuid.eq(session_uuid))
+        .select((assets::name, proxy_sessions::session_type))
+        .first(&mut conn)
+        .await
+        .map_err(|e| format!("session lookup: {}", e))?;
+    drop(conn);
+
+    let recipient = EmailRecipient::bare(&req_email);
+    let business_key = format!("{}:{:?}", session_uuid, decision);
+    let event_id =
+        deterministic_event_id(decision_kind_str(decision), &business_key, &req_email);
+
+    let event = match decision {
+        shared::messages::ApprovalDecisionKind::Approve => {
+            EmailEvent::AccessRequestApproved(AccessRequestApprovedEvent {
+                event_id,
+                recipient,
+                asset_name,
+                protocol,
+                approver_username: approver_username.to_string(),
+                session_url: format!(
+                    "{}/sessions/approvals/{}",
+                    state.config.mailer.base_url, session_uuid
+                ),
+                valid_until: None,
+                base_url: state.config.mailer.base_url.clone(),
+                from_brand: state.config.mailer.from_name.clone(),
+            })
+        }
+        shared::messages::ApprovalDecisionKind::Reject => {
+            EmailEvent::AccessRequestRejected(AccessRequestRejectedEvent {
+                event_id,
+                recipient,
+                asset_name,
+                protocol,
+                approver_username: approver_username.to_string(),
+                reason: rejection_reason.map(str::to_string),
+                base_url: state.config.mailer.base_url.clone(),
+                from_brand: state.config.mailer.from_name.clone(),
+            })
+        }
+    };
+
+    let mut conn = state.db_pool.get().await.map_err(|e| e.to_string())?;
+    match state.mailer.queue(&mut conn, &event).await {
+        Ok(()) => Ok(()),
+        Err(crate::services::mailer::MailerError::Duplicate) => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+fn decision_kind_str(decision: shared::messages::ApprovalDecisionKind) -> &'static str {
+    match decision {
+        shared::messages::ApprovalDecisionKind::Approve => "access_request.approved",
+        shared::messages::ApprovalDecisionKind::Reject => "access_request.rejected",
     }
 }
 

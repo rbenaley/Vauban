@@ -46,6 +46,7 @@ use ipc::VaultCryptoClient;
 use services::auth::AuthService;
 use services::broadcast::BroadcastService;
 use services::connections::{UserConnectionRegistry, WsConnectionCounter};
+use services::mailer::Mailer;
 use services::rate_limit::RateLimiter;
 use std::sync::Arc;
 
@@ -90,6 +91,11 @@ pub struct AppState {
     /// Auth IPC client for password hashing/verification via vauban-auth (Argon2id).
     /// None if not running under supervisor (development mode).
     pub auth_ipc_client: Option<Arc<AuthIpcClient>>,
+    /// Email notification mailer (Issue #10). Owns the dispatcher's
+    /// `Notify` handle. `Mailer::queue` is called from handlers in
+    /// the same DB transaction as the business mutation; the
+    /// dispatcher task drains the outbox out-of-band.
+    pub mailer: Mailer,
 }
 
 #[cfg(test)]

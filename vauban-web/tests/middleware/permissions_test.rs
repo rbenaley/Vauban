@@ -652,6 +652,11 @@ fn build_state_from(app: &TestApp) -> vauban_web::AppState {
         vault_client: None,
         access_client: std::sync::Arc::clone(&app._access_service.access_client),
         auth_ipc_client: None,
+        mailer: vauban_web::services::mailer::Mailer::new(
+            std::sync::Arc::new(tokio::sync::Notify::new()),
+            false,
+            5,
+        ),
     }
 }
 

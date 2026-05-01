@@ -149,6 +149,11 @@ impl TestApp {
             vault_client: None,    // No vault in tests (dev mode fallback)
             access_client,         // Real Casbin-backed IPC client
             auth_ipc_client: None, // No Auth IPC in tests (dev mode fallback)
+            mailer: vauban_web::services::mailer::Mailer::new(
+                std::sync::Arc::new(tokio::sync::Notify::new()),
+                false, // disabled in tests; Mailer::queue is a no-op
+                5,
+            ),
         };
 
         // Build router

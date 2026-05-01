@@ -684,6 +684,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("Auth IPC processing task started");
     }
 
+    // Build mailer (Issue #10). The dispatcher task owns the same
+    // Notify; HTTP handlers fire `notify_one()` after a successful
+    // `Mailer::queue` to wake the task. When `[mailer]` is disabled,
+    // the Mailer turns into a no-op (queue() returns Ok without
+    // touching the DB) so handlers do not need to special-case it.
+    let mailer = vauban_web::services::mailer::Mailer::new(
+        std::sync::Arc::new(tokio::sync::Notify::new()),
+        config.mailer.enabled,
+        config.mailer.max_attempts,
+    );
+
     // Create application state
     let app_state = AppState {
         config: config.clone(),
@@ -700,6 +711,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         vault_client,
         access_client,
         auth_ipc_client,
+        mailer,
     };
 
     // Start background tasks for WebSocket updates
@@ -711,6 +723,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // every session it transitions to terminated/disconnected, hence
     // the `app_state.clone()` instead of just `db_pool`.
     start_cleanup_tasks(app_state.clone(), config.security.session_idle_timeout_secs).await;
+
+    // Email dispatcher (Issue #10). Drains email_outbox via the
+    // supervisor-brokered SMTP socket. No-op when the [mailer] block
+    // is disabled.
+    vauban_web::tasks::mailer::start_mailer_dispatcher(app_state.clone());
 
     // Recording integrity hydrator (issue #29 / UX-28 v1.4):
     // event-driven. PRIMARY path = per-call-site `enqueue_hydration`

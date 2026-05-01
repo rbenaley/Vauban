@@ -168,6 +168,39 @@ max_connections_per_user = 30
 video_bitrate_bps = 5_000_000
 
 # ==============================================================================
+# EMAIL NOTIFICATIONS (Issue #10)
+# ==============================================================================
+#
+# vauban-web embeds an SMTP dispatcher that drains the email_outbox table
+# and sends mails through the supervisor-brokered TCP socket (Capsicum
+# sandbox-compatible). The supervisor enforces an exact (host, port)
+# whitelist before performing connect() -- see [mailer] in the
+# supervisor's own configuration.
+#
+# Disabled by default. Enable in production via vauban.conf or a
+# secrets-injecting mechanism. SMTP password MUST come from the
+# environment variable VAUBAN_SMTP_PASSWORD (cleared from /proc/PID/environ
+# right after read), never from TOML.
+
+[mailer]
+enabled = false
+from_address = ""                       # e.g. "vauban@example.com"
+from_name = "Vauban PAM"
+reply_to = ""
+base_url = "https://localhost:8443"     # used to build links in emails
+smtp_host = ""                          # e.g. "smtp.example.com"
+smtp_port = 587
+smtp_encryption = "starttls"            # "starttls" | "tls" | "plaintext" (dev only)
+smtp_username = ""                      # override via VAUBAN_SMTP_USERNAME
+smtp_password = ""                      # override via VAUBAN_SMTP_PASSWORD (preferred)
+helo_name = ""                          # falls back to "vauban" if empty
+poll_interval_secs = 10
+batch_size = 16
+max_attempts = 5
+smtp_timeout_secs = 30
+broker_timeout_secs = 30
+
+# ==============================================================================
 # SESSION RECORDING
 # ==============================================================================
 
