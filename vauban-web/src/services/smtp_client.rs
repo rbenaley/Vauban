@@ -140,9 +140,13 @@ pub struct SmtpSession {
     inner: Inner,
 }
 
+// `TlsStream` carries multi-KB of session/handshake state, while a
+// raw `TcpStream` is a few words. Box the TLS variant so the enum
+// stays cache-friendly and matches clippy's
+// `large_enum_variant` recommendation.
 enum Inner {
     Plain(BufReader<TcpStream>),
-    Tls(BufReader<TlsStream<TcpStream>>),
+    Tls(Box<BufReader<TlsStream<TcpStream>>>),
 }
 
 impl SmtpSession {
@@ -201,7 +205,7 @@ impl SmtpSession {
             .map_err(|e| SmtpError::Tls(format!("TLS handshake failed: {}", e)))?;
 
         let mut session = Self {
-            inner: Inner::Tls(BufReader::with_capacity(8192, tls_stream)),
+            inner: Inner::Tls(Box::new(BufReader::with_capacity(8192, tls_stream))),
         };
         // Re-issue EHLO inside the TLS tunnel (RFC 3207 §4.2: the
         // SMTP client MUST discard any prior knowledge after STARTTLS

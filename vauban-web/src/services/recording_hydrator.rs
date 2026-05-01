@@ -55,6 +55,7 @@ use crate::AppState;
 use crate::db::DbPool;
 use crate::ipc::SupervisorClient;
 use crate::models::session::SessionType;
+use crate::services::broadcast::{BroadcastService, WsChannel, WsMessage};
 
 /// Marker constant strings persisted in `recording_format`. Pinned by
 /// the migration's `recording_format_enum` CHECK constraint and by the
@@ -159,6 +160,12 @@ pub struct RecordingHydrator {
     batch_size: i64,
     storage_base: String,
     missing_meta_grace: Duration,
+    /// Live broadcast handle for WS push notifications when a row
+    /// transitions to a finalized state. `None` for offline / batch
+    /// contexts (e.g. bootstrap on a node that has not yet wired
+    /// the WebSocket relay) -- the hydrator stays purely DB-driven
+    /// in that case and the user falls back to the next page load.
+    broadcast: Option<BroadcastService>,
 }
 
 impl RecordingHydrator {
@@ -171,6 +178,7 @@ impl RecordingHydrator {
         batch_size: i64,
         storage_base: String,
         missing_meta_grace: Duration,
+        broadcast: Option<BroadcastService>,
     ) -> Self {
         Self {
             pool,
@@ -178,6 +186,7 @@ impl RecordingHydrator {
             batch_size,
             storage_base,
             missing_meta_grace,
+            broadcast,
         }
     }
 
@@ -257,6 +266,7 @@ impl RecordingHydrator {
                             "hydrator: legacy flat .mp4 recording, marking finalized as fmp4-flat"
                         );
                         report.marked_finalized_legacy_flat += 1;
+                        broadcast_recording_hydrated(&self.broadcast, &uuid).await;
                     }
                     Err(e) => {
                         error!(
@@ -281,6 +291,7 @@ impl RecordingHydrator {
                         report.errored += 1;
                     } else {
                         report.finalized += 1;
+                        broadcast_recording_hydrated(&self.broadcast, &uuid).await;
                     }
                 }
                 HydrationOutcome::MissingMeta => {
@@ -301,6 +312,7 @@ impl RecordingHydrator {
                                     "hydrator: meta.json missing past grace period, marking finalized (integrity unavailable)"
                                 );
                                 report.marked_finalized_lost += 1;
+                                broadcast_recording_hydrated(&self.broadcast, &uuid).await;
                             }
                             Err(e) => {
                                 error!(
@@ -335,6 +347,7 @@ impl RecordingHydrator {
                         report.errored += 1;
                     } else {
                         report.marked_finalized_corrupt += 1;
+                        broadcast_recording_hydrated(&self.broadcast, &uuid).await;
                     }
                 }
                 HydrationOutcome::Error(e) => {
@@ -440,6 +453,7 @@ impl RecordingHydrator {
                         "hydrator: legacy flat .mp4 recording, marking finalized as fmp4-flat"
                     );
                     report.marked_finalized_legacy_flat += 1;
+                    broadcast_recording_hydrated(&self.broadcast, &uuid).await;
                 }
                 Err(e) => {
                     error!(
@@ -468,6 +482,7 @@ impl RecordingHydrator {
                         "hydration_finalized: integrity bundle persisted"
                     );
                     report.finalized += 1;
+                    broadcast_recording_hydrated(&self.broadcast, &uuid).await;
                 }
             }
             HydrationOutcome::MissingMeta => {
@@ -485,6 +500,7 @@ impl RecordingHydrator {
                                 "hydrator: meta.json missing past grace period, marking finalized (integrity unavailable)"
                             );
                             report.marked_finalized_lost += 1;
+                            broadcast_recording_hydrated(&self.broadcast, &uuid).await;
                         }
                         Err(e) => {
                             error!(
@@ -519,6 +535,7 @@ impl RecordingHydrator {
                     report.errored += 1;
                 } else {
                     report.marked_finalized_corrupt += 1;
+                    broadcast_recording_hydrated(&self.broadcast, &uuid).await;
                 }
             }
             HydrationOutcome::Error(e) => {
@@ -725,6 +742,42 @@ pub fn is_valid_blake3_hex(s: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
+/// Push a `recording_hydrated` WebSocket notification on the
+/// `Notifications` channel.
+///
+/// The payload is a JSON document the Recording Details and Recording
+/// List templates filter on (`detail.message.indexOf('recording_hydrated')`
+/// and the `session_uuid`). Sent on every state transition the page
+/// might want to react to: integrity bundle persisted, row marked
+/// "integrity unavailable" (corrupt / missing meta), or row marked
+/// legacy-flat. Quietly skipped when no `BroadcastService` was wired
+/// (CLI / offline batch contexts).
+///
+/// Failures are logged at `debug` and never bubble up: a broken WS
+/// channel must not stop the hydrator from finalizing rows.
+async fn broadcast_recording_hydrated(
+    broadcast: &Option<BroadcastService>,
+    session_uuid: &::uuid::Uuid,
+) {
+    let Some(b) = broadcast else { return };
+    let payload = format!(
+        r#"{{"type":"recording_hydrated","session_uuid":"{}"}}"#,
+        session_uuid
+    );
+    if let Err(()) = b
+        .send(
+            &WsChannel::Notifications,
+            WsMessage::new("jit-notification", payload),
+        )
+        .await
+    {
+        debug!(
+            session_uuid = %session_uuid,
+            "hydrator: WS notify failed (no live subscriber); ignoring"
+        );
+    }
+}
+
 async fn persist_bundle(
     pool: &DbPool,
     session_id: i32,
@@ -813,17 +866,18 @@ pub fn enqueue_hydration_by_uuid(
         );
         return tokio::spawn(async {});
     }
-    let pool = state.db_pool.clone();
-    let storage_base = state.config.recording.storage_path.clone();
-    let batch_size = state.config.recording.hydration_batch_size;
-    let missing_meta_grace =
-        Duration::from_secs(state.config.recording.hydration_missing_meta_grace_secs);
-    debug!(
-        session_uuid = %session_uuid,
-        grace_secs = grace.as_secs(),
-        "enqueue_hydration_by_uuid: scheduled"
-    );
-    tokio::spawn(async move {
+        let pool = state.db_pool.clone();
+        let storage_base = state.config.recording.storage_path.clone();
+        let batch_size = state.config.recording.hydration_batch_size;
+        let missing_meta_grace =
+            Duration::from_secs(state.config.recording.hydration_missing_meta_grace_secs);
+        let broadcast = state.broadcast.clone();
+        debug!(
+            session_uuid = %session_uuid,
+            grace_secs = grace.as_secs(),
+            "enqueue_hydration_by_uuid: scheduled"
+        );
+        tokio::spawn(async move {
         tokio::time::sleep(grace).await;
         // Resolve UUID -> id. If it cannot be found the task is a
         // no-op; this keeps the call-side allocation free.
@@ -856,6 +910,7 @@ pub fn enqueue_hydration_by_uuid(
             batch_size,
             storage_base,
             missing_meta_grace,
+            Some(broadcast),
         );
         match hydrator.hydrate_session_id(id).await {
             Ok(report) => {
@@ -918,6 +973,7 @@ pub fn enqueue_hydration(state: &AppState, session_id: i32, grace: Duration) -> 
     let batch_size = state.config.recording.hydration_batch_size;
     let missing_meta_grace =
         Duration::from_secs(state.config.recording.hydration_missing_meta_grace_secs);
+    let broadcast = state.broadcast.clone();
     debug!(
         session_id,
         grace_secs = grace.as_secs(),
@@ -931,6 +987,7 @@ pub fn enqueue_hydration(state: &AppState, session_id: i32, grace: Duration) -> 
             batch_size,
             storage_base,
             missing_meta_grace,
+            Some(broadcast),
         );
         match hydrator.hydrate_session_id(session_id).await {
             Ok(report) => {
@@ -1203,5 +1260,291 @@ mod tests {
         assert_eq!(FORMAT_ASCIICAST_V2, "asciicast-v2");
         assert_eq!(FORMAT_FMP4_DASH, "fmp4-dash");
         assert_eq!(FORMAT_FMP4_FLAT, "fmp4-flat");
+    }
+
+    // ========================================================================
+    // WebSocket auto-refresh (issue #29 follow-up): battle-tested layer
+    //
+    // The hydrator pushes a `recording_hydrated` WS notification on every
+    // state transition the Recording Details / List pages care about. The
+    // tests below pin BOTH the runtime behaviour (a real subscriber sees a
+    // well-formed payload) AND the static call-graph (every transition
+    // site fires the broadcast; error branches do NOT).
+    // ========================================================================
+
+    #[tokio::test]
+    async fn broadcast_recording_hydrated_with_none_is_a_silent_noop() {
+        // The CLI / offline batch contexts pass `None` and MUST NOT
+        // panic, log at error level, or block. The function is a
+        // straight-line return when broadcast is `None`.
+        let uuid = ::uuid::Uuid::new_v4();
+        broadcast_recording_hydrated(&None, &uuid).await;
+    }
+
+    #[tokio::test]
+    async fn broadcast_recording_hydrated_emits_on_notifications_channel() {
+        let svc = BroadcastService::new();
+        let mut rx = svc.subscribe(&WsChannel::Notifications).await;
+        let uuid = ::uuid::Uuid::parse_str("11111111-2222-3333-4444-555555555555").unwrap();
+        broadcast_recording_hydrated(&Some(svc.clone()), &uuid).await;
+        let payload = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv())
+            .await
+            .expect("WS message must arrive within 200ms")
+            .expect("subscriber must not be closed");
+        // OOB-formatted HTML envelope (BroadcastService::to_htmx_html).
+        assert!(
+            payload.contains(r#"id="jit-notification""#),
+            "must use the global jit-notification OOB target so it \
+             rides the existing /ws/notifications relay (no new socket)"
+        );
+        assert!(payload.contains("hx-swap-oob"), "must be an OOB swap");
+        // Body contract: filterable by the templates' indexOf checks.
+        assert!(
+            payload.contains(r#""type":"recording_hydrated""#),
+            "payload MUST carry the 'recording_hydrated' kind so the \
+             template's indexOf filter matches"
+        );
+        assert!(
+            payload.contains("11111111-2222-3333-4444-555555555555"),
+            "payload MUST embed the session_uuid so per-page filters \
+             can ignore unrelated hydration events"
+        );
+    }
+
+    #[tokio::test]
+    async fn broadcast_recording_hydrated_payload_carries_no_pii() {
+        // Anti-leak guard: only the (opaque) session_uuid travels on the
+        // global Notifications channel. Any future change adding e.g.
+        // requester_username, asset_name, or hostname to the payload
+        // MUST trip this test and force a deliberate review.
+        let svc = BroadcastService::new();
+        let mut rx = svc.subscribe(&WsChannel::Notifications).await;
+        let uuid = ::uuid::Uuid::nil();
+        broadcast_recording_hydrated(&Some(svc.clone()), &uuid).await;
+        let payload = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        // Whitelist of permitted JSON keys. Anything else is a leak.
+        for key in &[
+            "username",
+            "user_id",
+            "email",
+            "asset_name",
+            "hostname",
+            "ip",
+            "address",
+            "credential",
+        ] {
+            assert!(
+                !payload.contains(key),
+                "WS hydration payload must not carry `{}` -- only the \
+                 opaque session_uuid is allowed",
+                key
+            );
+        }
+    }
+
+    /// Source-grep helper: returns the body of a function that starts
+    /// at `signature`, balanced on `{`/`}` from the first `{` after
+    /// the signature. Brace-counter (not regex) so nested blocks
+    /// (match arms, `async move {}`, etc.) do not truncate the body.
+    fn fn_body(source: &str, signature: &str) -> String {
+        let start = source
+            .find(signature)
+            .unwrap_or_else(|| panic!("signature `{}` not found in source", signature));
+        let tail = &source[start..];
+        let open = tail
+            .find('{')
+            .unwrap_or_else(|| panic!("no `{{` after signature `{}`", signature));
+        let mut depth: i32 = 0;
+        let mut end = tail.len();
+        for (i, ch) in tail[open..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = open + i + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        tail[..end].to_string()
+    }
+
+    /// Return the line immediately preceding the first occurrence of
+    /// `needle` after `from`, trimmed. Used to assert the line ABOVE
+    /// `broadcast_recording_hydrated(...)` increments a success
+    /// counter (and never an error one).
+    fn line_before(body: &str, from: usize, needle: &str) -> String {
+        let idx = body[from..]
+            .find(needle)
+            .map(|i| from + i)
+            .unwrap_or_else(|| panic!("`{}` not found from offset {}", needle, from));
+        let prefix = &body[..idx];
+        let line_end = prefix
+            .rfind('\n')
+            .unwrap_or_else(|| panic!("no newline before `{}`", needle));
+        let line_start = prefix[..line_end].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        prefix[line_start..line_end].trim().to_string()
+    }
+
+    /// `tick()` MUST fire the broadcast on every Ok transition (4
+    /// branches: legacy-flat, persist_bundle, missing-meta past grace,
+    /// corrupt-meta) and MUST NOT fire it on the Err branches. A
+    /// regression here would silently break the Recording Details
+    /// auto-refresh.
+    #[test]
+    fn tick_broadcasts_after_every_finalization_transition() {
+        let src = include_str!("recording_hydrator.rs");
+        let body = fn_body(src, "    pub async fn tick(");
+        let count = body.matches("broadcast_recording_hydrated(").count();
+        assert_eq!(
+            count, 4,
+            "tick() must broadcast on EXACTLY 4 transitions: legacy-flat, \
+             persist_bundle, missing-meta past grace, corrupt-meta. \
+             Found {} occurrences -- adjust the call sites or this pin.",
+            count
+        );
+        // For each broadcast call, the IMMEDIATELY preceding line
+        // must increment a success counter -- NEVER `report.errored`.
+        // The `if let Err(e) = persist_bundle(...).await { ... } else
+        // { ... broadcast ... }` shape places the success branch at
+        // the right depth so this one-line window is unambiguous.
+        let mut cursor = 0usize;
+        let mut visited = 0usize;
+        while let Some(found) = body[cursor..].find("broadcast_recording_hydrated(") {
+            let prev = line_before(&body, cursor, "broadcast_recording_hydrated(");
+            assert!(
+                prev.starts_with("report.") && prev.contains("+= 1;"),
+                "tick() broadcast call #{} must follow a `report.<success> \
+                 += 1;` line; found: `{}`",
+                visited + 1,
+                prev
+            );
+            assert!(
+                !prev.contains("errored"),
+                "tick() must NOT broadcast in an error branch (a broken \
+                 transition would lie to the page); found: `{}`",
+                prev
+            );
+            cursor += found + "broadcast_recording_hydrated(".len();
+            visited += 1;
+        }
+        assert_eq!(visited, 4);
+    }
+
+    /// Same contract for the single-shot `hydrate_session_id` path.
+    #[test]
+    fn hydrate_session_id_broadcasts_after_every_finalization_transition() {
+        let src = include_str!("recording_hydrator.rs");
+        let body = fn_body(src, "pub async fn hydrate_session_id(");
+        let count = body.matches("broadcast_recording_hydrated(").count();
+        assert_eq!(
+            count, 4,
+            "hydrate_session_id() must broadcast on EXACTLY 4 transitions \
+             to mirror tick(). Found {}.",
+            count
+        );
+        let mut cursor = 0usize;
+        let mut visited = 0usize;
+        while let Some(found) = body[cursor..].find("broadcast_recording_hydrated(") {
+            let prev = line_before(&body, cursor, "broadcast_recording_hydrated(");
+            assert!(
+                prev.starts_with("report.") && prev.contains("+= 1;"),
+                "hydrate_session_id() broadcast call #{} must follow a \
+                 `report.<success> += 1;` line; found: `{}`",
+                visited + 1,
+                prev
+            );
+            assert!(
+                !prev.contains("errored"),
+                "hydrate_session_id() must NOT broadcast in an error branch; \
+                 found: `{}`",
+                prev
+            );
+            cursor += found + "broadcast_recording_hydrated(".len();
+            visited += 1;
+        }
+        assert_eq!(visited, 4);
+    }
+
+    /// Both PRIMARY enqueue paths MUST plumb the live `state.broadcast`
+    /// into the hydrator. Without this, an in-process hydration would
+    /// finalize the row but the page would not auto-refresh -- defeats
+    /// the entire feature.
+    #[test]
+    fn enqueue_hydration_passes_live_broadcast_to_constructor() {
+        let src = include_str!("recording_hydrator.rs");
+        for sig in [
+            "pub fn enqueue_hydration(",
+            "pub fn enqueue_hydration_by_uuid(",
+        ] {
+            let body = fn_body(src, sig);
+            assert!(
+                body.contains("state.broadcast.clone()"),
+                "{}: must clone state.broadcast before the spawn",
+                sig
+            );
+            assert!(
+                body.contains("Some(broadcast)"),
+                "{}: must pass `Some(broadcast)` to RecordingHydrator::new \
+                 so the in-process hydration can fire WS notifications",
+                sig
+            );
+        }
+    }
+
+    /// Pin: the constructor signature accepts the broadcast as the
+    /// LAST parameter (not Option-defaulted). A regression that
+    /// silently dropped the parameter would skip every WS push.
+    #[test]
+    fn constructor_signature_carries_broadcast_param() {
+        let src = include_str!("recording_hydrator.rs");
+        assert!(
+            src.contains("broadcast: Option<BroadcastService>,"),
+            "RecordingHydrator::new must accept `broadcast: \
+             Option<BroadcastService>` as a parameter (not a setter, \
+             not derived from another field)"
+        );
+        assert!(
+            src.contains("broadcast: Option<BroadcastService>,\n}"),
+            "RecordingHydrator must STORE the broadcast handle as the \
+             last field; otherwise the call sites cannot reach it"
+        );
+    }
+
+    /// Pin: the broadcast helper itself uses the agreed-upon
+    /// `Notifications` channel + `jit-notification` OOB target +
+    /// stable JSON shape. Changing any of these three would silently
+    /// break the page filters that read `detail.message.indexOf(...)`.
+    #[test]
+    fn broadcast_helper_uses_stable_wire_contract() {
+        let src = include_str!("recording_hydrator.rs");
+        let body = fn_body(src, "async fn broadcast_recording_hydrated(");
+        assert!(
+            body.contains("WsChannel::Notifications"),
+            "must use the global Notifications channel (the same one \
+             /ws/notifications relays to every authenticated user)"
+        );
+        assert!(
+            body.contains(r#""jit-notification""#),
+            "must keep the OOB target id `jit-notification` so the \
+             existing relay swallows the swap and emits \
+             `htmx:wsAfterMessage`"
+        );
+        assert!(
+            body.contains(r#""type":"recording_hydrated""#),
+            "JSON payload MUST embed `\"type\":\"recording_hydrated\"` \
+             verbatim -- the page filter is a substring match"
+        );
+        assert!(
+            body.contains(r#""session_uuid":"{}"#),
+            "JSON payload MUST embed the session_uuid so per-page \
+             filters can ignore unrelated hydration events"
+        );
     }
 }

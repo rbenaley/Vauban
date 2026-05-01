@@ -792,6 +792,7 @@ async fn test_bootstrap_exits_immediately_on_empty_backlog() {
         50,
         "recordings".to_string(),
         Duration::from_secs(300),
+        app.app_state.broadcast.clone(),
     );
     let r = tokio::time::timeout(Duration::from_secs(5), join).await;
     assert!(r.is_ok(), "bootstrap must exit in <5s on an empty backlog");

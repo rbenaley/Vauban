@@ -1053,3 +1053,114 @@ async fn test_play_page_header_button_links_to_recording_uuid_route() {
         "play page must not link to the old /sessions/{{id}} session-detail route"
     );
 }
+
+// ============================================================================
+// Issue #29 follow-up: WS-driven auto-refresh on hydration completion
+// ----------------------------------------------------------------------------
+// The Recording Details page reacts to a `recording_hydrated` WebSocket
+// message (broadcast by `services::recording_hydrator` after every
+// finalization transition) by refetching itself and swapping the
+// container. The pin tests below guard the wire contract on the
+// CLIENT side (template). The SERVER side is pinned in
+// `vauban-web/src/services/recording_hydrator.rs` (broadcast call
+// sites + payload shape).
+// ============================================================================
+
+const RECORDING_DETAIL_HTML: &str =
+    include_str!("../../templates/sessions/recording_detail.html");
+const RECORDING_LIST_HTML: &str =
+    include_str!("../../templates/sessions/recording_list.html");
+
+#[test]
+fn recording_detail_template_wraps_content_in_stable_container_id() {
+    // The `hx-target` of the WS-driven refresh trigger relies on a
+    // wrapper id that survives across renders. Removing or renaming
+    // it would break the swap silently.
+    assert!(
+        RECORDING_DETAIL_HTML.contains(r#"id="recording-detail-container""#),
+        "recording_detail.html must wrap its body in `id=\"recording-detail-container\"` \
+         so the WS auto-refresh hx-target/hx-select can find it"
+    );
+}
+
+#[test]
+fn recording_detail_template_carries_ws_refresh_trigger() {
+    // The hidden trigger uses HTMX's `htmx:wsAfterMessage` to pick up
+    // messages relayed through the inherited `/ws/notifications`
+    // socket (no extra connection). The filter MUST check both the
+    // event kind AND the current session UUID -- otherwise every
+    // open Recording Details tab would refetch on every hydration
+    // event, which is a thundering-herd footgun.
+    let body = RECORDING_DETAIL_HTML;
+    assert!(
+        body.contains("htmx:wsAfterMessage"),
+        "recording_detail.html must hook into `htmx:wsAfterMessage` \
+         (no client-side polling)"
+    );
+    assert!(
+        body.contains("'recording_hydrated'"),
+        "WS filter MUST match the literal `recording_hydrated` event \
+         kind (the hydrator's payload contract)"
+    );
+    assert!(
+        body.contains("{{ recording.session_uuid }}"),
+        "WS filter MUST narrow to THIS session's UUID; otherwise \
+         every Recording Details tab refetches on every hydration"
+    );
+    assert!(
+        body.contains("hx-select=\"#recording-detail-container\""),
+        "WS trigger must `hx-select` the wrapper container (server \
+         renders the FULL page, we cherry-pick the changing slice)"
+    );
+    assert!(
+        body.contains("hx-target=\"#recording-detail-container\""),
+        "WS trigger must `hx-target` the same wrapper container \
+         (outerHTML swap)"
+    );
+    assert!(
+        body.contains("hx-swap=\"outerHTML\""),
+        "WS trigger must use `outerHTML` swap to replace the wrapper \
+         (innerHTML would leak the previous container's children)"
+    );
+    assert!(
+        body.contains("throttle:1s"),
+        "WS trigger must throttle at 1s to coalesce bursts from \
+         consecutive hydrator transitions on the same row"
+    );
+}
+
+#[test]
+fn recording_detail_ws_trigger_is_hidden_from_layout() {
+    // The trigger is a layout-invisible HTMX hook -- visible would
+    // shift the page on hydration. Pin the `hidden` class so a
+    // cosmetic refactor cannot accidentally expose it.
+    let body = RECORDING_DETAIL_HTML;
+    let trigger_idx = body
+        .find(r#"id="recording-detail-ws-trigger""#)
+        .expect("WS trigger element must exist");
+    let window = &body[trigger_idx..trigger_idx.saturating_add(120)];
+    assert!(
+        window.contains("hidden"),
+        "WS trigger must carry the `hidden` class so it never affects \
+         the visible layout"
+    );
+}
+
+#[test]
+fn recording_list_template_extends_filter_to_hydration_events() {
+    // The list page already auto-refreshed on `recording_ready`
+    // (session-end). Now also reacts to `recording_hydrated` so the
+    // size-badge / format column reflects the integrity bundle as
+    // soon as it is persisted, with no manual reload.
+    let body = RECORDING_LIST_HTML;
+    assert!(
+        body.contains("'recording_ready'"),
+        "list filter must keep the existing `recording_ready` trigger \
+         (regression guard)"
+    );
+    assert!(
+        body.contains("'recording_hydrated'"),
+        "list filter must ALSO match `recording_hydrated` so the size \
+         column lights up after the hydrator finalises a row"
+    );
+}

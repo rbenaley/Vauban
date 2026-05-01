@@ -3,7 +3,15 @@
 {% block title %}Recording Details - {{ recording.asset_name }} - {{ vauban.brand_name }}{% endblock %}
 
 {% block content %}
-<div class="space-y-6">
+{# Issue #29 follow-up: live auto-refresh on hydration completion.
+   The hydrator broadcasts a `recording_hydrated` WebSocket message on
+   the `notifications` channel after every state transition (bundle
+   persisted / corrupt / legacy-flat). The hidden trigger below filters
+   the inbound message on BOTH the event type AND THIS session's UUID,
+   then refetches this very page and selects the wrapper container --
+   so panels update without a manual reload and unrelated hydration
+   events on other sessions are ignored. #}
+<div id="recording-detail-container" class="space-y-6">
 
     <!-- Breadcrumb (mobile-friendly: scrolls horizontally instead of wrapping) -->
     <nav class="flex overflow-x-auto" aria-label="Breadcrumb">
@@ -257,5 +265,19 @@
             Session UUID: <span class="font-mono">{{ recording.session_uuid }}</span>
         </p>
     </div>
+
+    {# Hidden WS-driven refresh trigger. Listens on the inherited
+       `ws-connect="/ws/notifications"` from base.html (no extra
+       socket), filters on `recording_hydrated` AND THIS session's
+       UUID, throttled to 1 s. Hydration is a one-shot transition per
+       row, so no `every Ns` fallback is needed here -- once the row
+       is finalized, the next page load shows the integrity panels
+       directly. #}
+    <div id="recording-detail-ws-trigger" class="hidden"
+         hx-get="/sessions/recordings/{{ recording.session_uuid }}"
+         hx-trigger="htmx:wsAfterMessage[detail.message&&detail.message.indexOf('recording_hydrated')>-1&&detail.message.indexOf('{{ recording.session_uuid }}')>-1] from:body throttle:1s"
+         hx-select="#recording-detail-container"
+         hx-target="#recording-detail-container"
+         hx-swap="outerHTML"></div>
 </div>
 {% endblock %}

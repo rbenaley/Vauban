@@ -744,6 +744,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let missing_meta_grace =
             std::time::Duration::from_secs(config.recording.hydration_missing_meta_grace_secs);
         // Boot bootstrap: detached, one-shot, exits when backlog empty.
+        // Pass the live broadcast handle so any hydration the bootstrap
+        // performs at boot also fires `recording_hydrated` WS events
+        // (Recording Details / List pages auto-refresh without polling).
         std::mem::drop(vauban_web::tasks::run_bootstrap_hydration(
             &handle,
             db_pool.clone(),
@@ -751,6 +754,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             config.recording.hydration_batch_size,
             config.recording.storage_path.clone(),
             missing_meta_grace,
+            app_state.broadcast.clone(),
         ));
         // Daily reconciliation: SAFETY NET, runs once a day.
         vauban_web::tasks::start_daily_reconciliation(
@@ -761,6 +765,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             config.recording.storage_path.clone(),
             missing_meta_grace,
             config.recording.hydration_daily_cron_hour_utc,
+            app_state.broadcast.clone(),
         );
     } else if config.recording.hydration_enabled {
         tracing::info!(

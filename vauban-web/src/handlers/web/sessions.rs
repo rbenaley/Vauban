@@ -1889,8 +1889,8 @@ async fn dispatch_approval_decision(
             // here is logged but never bubbles up -- the audit row is
             // already durable on the access-side, so the user has
             // learned the outcome from the WS notification anyway.
-            if let Some(uid) = requester_id {
-                if let Err(e) = queue_approval_email(
+            if let Some(uid) = requester_id
+                && let Err(e) = queue_approval_email(
                     state,
                     uid,
                     session_uuid,
@@ -1899,15 +1899,14 @@ async fn dispatch_approval_decision(
                     decision_reason_clone.as_deref(),
                 )
                 .await
-                {
-                    tracing::warn!(
-                        session_uuid = %session_uuid,
-                        decision = ?decision,
-                        error = %e,
-                        "Failed to queue approval-decision email \
-                         (audit log already recorded; admin can resend)"
-                    );
-                }
+            {
+                tracing::warn!(
+                    session_uuid = %session_uuid,
+                    decision = ?decision,
+                    error = %e,
+                    "Failed to queue approval-decision email \
+                     (audit log already recorded; admin can resend)"
+                );
             }
 
             Ok(ApprovalOutcome::Recorded {

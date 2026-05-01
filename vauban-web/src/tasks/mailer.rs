@@ -213,21 +213,21 @@ async fn drain_outbox_once(
     .map_err(|e| DrainError::Smtp(e.to_string()))?;
 
     let mut session = session;
-    if !mailer.smtp_username.is_empty() && mailer.smtp_encryption != SmtpEncryption::Plaintext {
-        if let Err(e) = session
+    if !mailer.smtp_username.is_empty()
+        && mailer.smtp_encryption != SmtpEncryption::Plaintext
+        && let Err(e) = session
             .auth_plain(&mailer.smtp_username, &mailer.smtp_password)
             .await
-        {
-            error!(
-                session_id = %session_id,
-                error = %e,
-                "SMTP AUTH failed; aborting batch and pushing retry"
-            );
-            // Don't try to QUIT in the middle of an AUTH error; the
-            // session might be in an undefined state.
-            push_batch_retry(state, &batch, &e.to_string()).await?;
-            return Ok(batch.len());
-        }
+    {
+        error!(
+            session_id = %session_id,
+            error = %e,
+            "SMTP AUTH failed; aborting batch and pushing retry"
+        );
+        // Don't try to QUIT in the middle of an AUTH error; the
+        // session might be in an undefined state.
+        push_batch_retry(state, &batch, &e.to_string()).await?;
+        return Ok(batch.len());
     }
 
     // Step 4: send each envelope.
@@ -529,7 +529,7 @@ fn backoff_after(attempts: i32) -> DateTime<Utc> {
 /// Pure helper for `backoff_after`. Extracted to keep the test surface
 /// clock-free.
 fn compute_backoff(attempts: i32) -> Duration {
-    let exp = attempts.max(1).min(20) as u32;
+    let exp = attempts.clamp(1, 20) as u32;
     let raw = BACKOFF_BASE.saturating_mul(1u32 << exp);
     if raw > BACKOFF_CAP { BACKOFF_CAP } else { raw }
 }

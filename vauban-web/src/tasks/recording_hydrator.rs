@@ -48,6 +48,7 @@ use tracing::{error, info};
 
 use crate::db::DbPool;
 use crate::ipc::SupervisorClient;
+use crate::services::broadcast::BroadcastService;
 use crate::services::recording_hydrator::{RecordingHydrator, TASK_NAME};
 
 /// One-shot bootstrap hydration. Scans `proxy_sessions` for any
@@ -58,9 +59,15 @@ use crate::services::recording_hydrator::{RecordingHydrator, TASK_NAME};
 /// `handle` MUST be a live tokio runtime handle (typically
 /// `tokio::runtime::Handle::current()` from inside `#[tokio::main]`).
 ///
+/// `broadcast` is the WebSocket relay used to push `recording_hydrated`
+/// notifications to live page sessions; pass the same handle as
+/// `AppState::broadcast` so the Recording Details / List pages auto-
+/// refresh once the bootstrap finalises a row (issue #29 follow-up).
+///
 /// Spawns a detached task and returns its `JoinHandle`. The boot
 /// path normally drops the handle (fire-and-forget); tests await it
 /// to assert end-of-bootstrap state.
+#[allow(clippy::too_many_arguments)]
 pub fn run_bootstrap_hydration(
     handle: &tokio::runtime::Handle,
     db_pool: DbPool,
@@ -68,6 +75,7 @@ pub fn run_bootstrap_hydration(
     batch_size: i64,
     storage_base: String,
     missing_meta_grace: Duration,
+    broadcast: BroadcastService,
 ) -> JoinHandle<()> {
     handle.spawn(async move {
         let started = std::time::Instant::now();
@@ -77,6 +85,7 @@ pub fn run_bootstrap_hydration(
             batch_size,
             storage_base,
             missing_meta_grace,
+            Some(broadcast),
         );
         let mut total_finalized = 0usize;
         let mut total_skipped_missing_meta = 0usize;
@@ -151,6 +160,7 @@ pub fn run_bootstrap_hydration(
 ///      saw `MissingMeta`.
 ///
 /// `handle` is forwarded to `spawn_periodic` (Handle-based spawn).
+#[allow(clippy::too_many_arguments)]
 pub fn start_daily_reconciliation(
     handle: tokio::runtime::Handle,
     db_pool: DbPool,
@@ -159,6 +169,7 @@ pub fn start_daily_reconciliation(
     storage_base: String,
     missing_meta_grace: Duration,
     hour_utc: u8,
+    broadcast: BroadcastService,
 ) {
     let now = Utc::now();
     let delay = next_cron_instant_utc(now, hour_utc);
@@ -182,11 +193,13 @@ pub fn start_daily_reconciliation(
             batch_size,
             storage_base.clone(),
             missing_meta_grace,
+            broadcast.clone(),
         )
         .await;
         let pool = db_pool;
         let sup = supervisor;
         let base = storage_base;
+        let bcast = broadcast;
         let h_for_periodic = handle_for_spawn.clone();
         shared::tasks::spawn_periodic(
             &handle_for_spawn,
@@ -196,6 +209,7 @@ pub fn start_daily_reconciliation(
                 let pool = pool.clone();
                 let sup = Arc::clone(&sup);
                 let base = base.clone();
+                let bcast = bcast.clone();
                 let h = h_for_periodic.clone();
                 async move {
                     let _ = run_bootstrap_hydration(
@@ -205,6 +219,7 @@ pub fn start_daily_reconciliation(
                         batch_size,
                         base,
                         missing_meta_grace,
+                        bcast,
                     )
                     .await;
                 }

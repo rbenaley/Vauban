@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{RwLock, broadcast};
-use tracing::{debug, trace};
+use tracing::{debug, info, trace};
 
 /// Default channel capacity for broadcast channels.
 const DEFAULT_CHANNEL_CAPACITY: usize = 100;
@@ -49,6 +49,50 @@ impl WsChannel {
             WsChannel::SessionsList => "sessions:list".to_string(),
             WsChannel::AdminAuthSessions => "admin:auth-sessions".to_string(),
         }
+    }
+
+    /// Whether this channel has low cardinality (a single instance
+    /// across the whole service) versus high cardinality (one
+    /// instance per session / per user / per ...).
+    ///
+    /// "Low" means a `BroadcastService::send` on this channel can be
+    /// safely logged at INFO level: there are at most a few of them
+    /// active at any time, and each emission is a meaningful
+    /// operational event (e.g. dashboard tick, JIT notification,
+    /// `recording_hydrated` push). "High" means the channel is one
+    /// of N instances scaling with concurrent sessions / users; INFO
+    /// would flood the log under load (e.g. RDP frames at 30-60 fps
+    /// per active session).
+    ///
+    /// See [`.cursor/rules/websocket-logging.mdc`] for the level
+    /// matrix and the procedure to follow when adding a new variant.
+    /// The exhaustive `match` (no `_ =>` arm) is deliberate: any
+    /// future variant MUST be classified explicitly here.
+    pub fn is_low_cardinality(&self) -> bool {
+        match self {
+            // Singleton channels: one instance per service.
+            WsChannel::DashboardStats
+            | WsChannel::ActiveSessions
+            | WsChannel::ActiveSessionsList
+            | WsChannel::RecentActivity
+            | WsChannel::Notifications
+            | WsChannel::SessionsList
+            | WsChannel::AdminAuthSessions => true,
+            // Parametric channels: one instance per session / user.
+            WsChannel::SessionLive(_)
+            | WsChannel::UserAuthSessions(_)
+            | WsChannel::UserApiKeys(_) => false,
+        }
+    }
+
+    /// String-keyed variant of [`is_low_cardinality`] used by
+    /// [`BroadcastService::send_raw`] callers that bypass the typed
+    /// enum. Unknown channel names default to `false` (high-cardinality)
+    /// to fail safe against future name drift logging at INFO.
+    pub fn is_low_cardinality_str(channel_name: &str) -> bool {
+        Self::parse(channel_name)
+            .map(|c| c.is_low_cardinality())
+            .unwrap_or(false)
     }
 
     /// Parse a channel from a string.
@@ -196,7 +240,14 @@ impl BroadcastService {
         if let Some(sender) = channels.get(channel_name) {
             match sender.send(html) {
                 Ok(count) => {
-                    debug!(channel = %channel_name, receivers = count, "Broadcast message sent");
+                    // Cardinality-aware level routing -- see
+                    // `WsChannel::is_low_cardinality` for the rationale
+                    // and the convention pinned by the broadcast tests.
+                    if WsChannel::is_low_cardinality_str(channel_name) {
+                        info!(channel = %channel_name, receivers = count, "Broadcast message sent");
+                    } else {
+                        debug!(channel = %channel_name, receivers = count, "Broadcast message sent");
+                    }
                     Ok(count)
                 }
                 Err(_) => {
@@ -975,6 +1026,145 @@ mod tests {
         assert_eq!(
             service.subscriber_count(&WsChannel::DashboardStats).await,
             1
+        );
+    }
+
+    // ========================================================================
+    // is_low_cardinality / level routing -- battle-tested classification
+    //
+    // Classifies every WsChannel variant explicitly. The match in
+    // `WsChannel::is_low_cardinality` is exhaustive (no `_ =>` arm), so
+    // a future variant cannot compile without being categorised. These
+    // drift-tests pin the *runtime* behaviour matches that
+    // categorisation, and lock the contract that BroadcastService::send_raw
+    // routes the success log to INFO for low-cardinality channels and
+    // DEBUG for high-cardinality ones (rationale: see the audit in
+    // `.cursor/rules/websocket-logging.mdc`).
+    // ========================================================================
+
+    #[test]
+    fn is_low_cardinality_classification_is_exhaustive() {
+        // Singleton channels: ONE per service. Logging at INFO is safe.
+        for low in &[
+            WsChannel::DashboardStats,
+            WsChannel::ActiveSessions,
+            WsChannel::ActiveSessionsList,
+            WsChannel::RecentActivity,
+            WsChannel::Notifications,
+            WsChannel::SessionsList,
+            WsChannel::AdminAuthSessions,
+        ] {
+            assert!(
+                low.is_low_cardinality(),
+                "{:?} is a singleton channel and must classify as \
+                 low-cardinality (info-loggable)",
+                low
+            );
+        }
+        // Parametric channels: scale with concurrent sessions / users.
+        // Logging at INFO would flood under load.
+        for high in &[
+            WsChannel::SessionLive("any".into()),
+            WsChannel::UserAuthSessions("any".into()),
+            WsChannel::UserApiKeys("any".into()),
+        ] {
+            assert!(
+                !high.is_low_cardinality(),
+                "{:?} is a per-instance channel and must classify as \
+                 high-cardinality (debug-only)",
+                high
+            );
+        }
+    }
+
+    #[test]
+    fn is_low_cardinality_str_round_trips_via_parse() {
+        // For every CANONICAL wire form, the string-keyed classifier
+        // must agree with the typed enum.
+        let cases: &[(&str, bool)] = &[
+            ("dashboard:stats", true),
+            ("dashboard:active-sessions", true),
+            ("sessions:active-list", true),
+            ("dashboard:recent-activity", true),
+            ("notifications", true),
+            ("sessions:list", true),
+            ("admin:auth-sessions", true),
+            ("session:abc-def", false),
+            ("user:42:auth-sessions", false),
+            ("user:42:api-keys", false),
+        ];
+        for (name, expected) in cases {
+            assert_eq!(
+                WsChannel::is_low_cardinality_str(name),
+                *expected,
+                "wire form `{}` must classify as low={}",
+                name,
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn is_low_cardinality_str_unknown_defaults_to_high() {
+        // Anti-leak guard: an unknown / future / typoed channel name
+        // MUST default to false (high-cardinality, DEBUG). Otherwise
+        // a careless `send_raw("custom-foo", ...)` could silently
+        // start logging at INFO on a yet-unclassified channel.
+        for unknown in &["", "foo", "custom", "session", "user:", "user::api"] {
+            assert!(
+                !WsChannel::is_low_cardinality_str(unknown),
+                "unknown channel name `{}` must default to high-cardinality \
+                 (DEBUG) -- never INFO",
+                unknown
+            );
+        }
+    }
+
+    /// Source-level pin on `BroadcastService::send_raw`: must route
+    /// the level via `WsChannel::is_low_cardinality_str(...)`. A future
+    /// edit that drops the routing (back to plain `debug!`) would
+    /// re-create the "broadcast invisible at INFO" pathology of the
+    /// audit; a future edit that drops the high-cardinality fallback
+    /// (forces INFO everywhere) would flood the log under load.
+    #[test]
+    fn send_raw_routes_log_level_via_cardinality_classifier() {
+        let src = include_str!("broadcast.rs");
+        // Locate the `send_raw` body via a brace counter so the pin
+        // does not break on the formatting / match arms inside.
+        let start = src.find("pub async fn send_raw(").expect("send_raw signature");
+        let tail = &src[start..];
+        let open = tail.find('{').expect("open brace after send_raw signature");
+        let mut depth: i32 = 0;
+        let mut end = tail.len();
+        for (i, ch) in tail[open..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = open + i + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let body = &tail[..end];
+        assert!(
+            body.contains("WsChannel::is_low_cardinality_str(channel_name)"),
+            "send_raw must gate the level on \
+             `WsChannel::is_low_cardinality_str(channel_name)` so a single \
+             classifier owns the convention. See `.cursor/rules/websocket-logging.mdc`."
+        );
+        assert!(
+            body.contains("info!(channel = %channel_name, receivers = count"),
+            "send_raw must emit the success log at INFO for low-cardinality \
+             channels (channel + receivers fields, canonical wording)"
+        );
+        assert!(
+            body.contains("debug!(channel = %channel_name, receivers = count"),
+            "send_raw must emit the success log at DEBUG for high-cardinality \
+             channels (so RDP frame fan-outs do not flood INFO)"
         );
     }
 }

@@ -352,7 +352,9 @@ pub async fn dashboard_ws(
     ws_guard: WsGuard,
 ) -> impl IntoResponse {
     let user = user.0;
-    info!(user = %user.username, "Dashboard WebSocket connection requested");
+    let channel = WsChannel::DashboardStats.as_str();
+    info!(channel = %channel, user = %user.username, user_uuid = %user.uuid,
+          "WebSocket connection requested");
     ws.on_upgrade(move |socket| handle_dashboard_socket(socket, state, user, ws_guard))
 }
 
@@ -364,8 +366,11 @@ async fn handle_dashboard_socket(
     _ws_guard: WsGuard,
 ) {
     let (mut sender, mut receiver) = socket.split();
+    let channel = WsChannel::DashboardStats.as_str();
+    let mut close_cause: &'static str = "unknown";
 
-    info!(user = %user.username, "Dashboard WebSocket connected");
+    info!(channel = %channel, user = %user.username, user_uuid = %user.uuid,
+          "WebSocket connected");
 
     // Send initial data immediately on connection
     if let Err(e) = send_initial_dashboard_data(&mut sender, &state).await {
@@ -403,15 +408,17 @@ async fn handle_dashboard_socket(
                         debug!(user = %user.username, "Received WS pong");
                     }
                     Some(Ok(Message::Close(_))) => {
-                        info!(user = %user.username, "Client requested close");
+                        close_cause = "close";
                         should_close = true;
                     }
                     Some(Err(e)) => {
-                        warn!(user = %user.username, error = %e, "WebSocket error");
+                        warn!(channel = %channel, user = %user.username, error = %e,
+                              "WebSocket recv error");
+                        close_cause = "error";
                         should_close = true;
                     }
                     None => {
-                        info!(user = %user.username, "WebSocket stream ended");
+                        close_cause = "stream_end";
                         should_close = true;
                     }
                     _ => {}
@@ -421,7 +428,8 @@ async fn handle_dashboard_socket(
             // Send periodic ping to keep connection alive
             _ = ping_interval.tick() => {
                 if sender.send(Message::Ping(vec![].into())).await.is_err() {
-                    warn!(user = %user.username, "Failed to send ping, closing");
+                    warn!(channel = %channel, user = %user.username, "Ping send failed");
+                    close_cause = "ping_fail";
                     should_close = true;
                 } else {
                     debug!(user = %user.username, "Sent WS ping");
@@ -470,7 +478,9 @@ async fn handle_dashboard_socket(
         }
     }
 
-    info!(user = %user.username, "Dashboard WebSocket disconnected");
+    info!(channel = %channel, user = %user.username, cause = %close_cause,
+          "WebSocket closed");
+    info!(channel = %channel, user = %user.username, "WebSocket disconnected");
 }
 
 /// Send initial dashboard data immediately on WebSocket connection.
@@ -659,11 +669,10 @@ pub async fn session_ws(
     ws_guard: WsGuard,
 ) -> impl IntoResponse {
     let user = user.0;
-    info!(
-        user = %user.username,
-        session_id = %session_id,
-        "Session WebSocket connection requested"
-    );
+    let channel = WsChannel::SessionLive(session_id.clone());
+    let channel_label = channel.as_str();
+    info!(channel = %channel_label, user = %user.username, user_uuid = %user.uuid,
+          session_id = %session_id, "WebSocket connection requested");
 
     ws.on_upgrade(move |socket| handle_session_socket(socket, state, session_id, user, ws_guard))
 }
@@ -677,78 +686,83 @@ async fn handle_session_socket(
     _ws_guard: WsGuard,
 ) {
     let (mut sender, mut receiver) = socket.split();
-
-    // Subscribe to session-specific channel
     let channel = WsChannel::SessionLive(session_id.clone());
+    let channel_label = channel.as_str();
     let mut session_rx = state.broadcast.subscribe(&channel).await;
+    let mut close_cause: &'static str = "unknown";
+    let mut should_close = false;
 
-    info!(
-        user = %user.username,
-        session_id = %session_id,
-        "Session WebSocket connected"
-    );
+    info!(channel = %channel_label, user = %user.username, user_uuid = %user.uuid,
+          session_id = %session_id, "WebSocket connected");
 
-    // Handle incoming messages
-    let user_clone = user.clone();
-    let session_id_clone = session_id.clone();
-    let incoming_task = tokio::spawn(async move {
-        while let Some(msg) = receiver.next().await {
-            match msg {
-                Ok(Message::Text(text)) => {
-                    debug!(
-                        user = %user_clone.username,
-                        session_id = %session_id_clone,
-                        message = %text,
-                        "Received session WS message"
-                    );
+    // Single tokio::select loop for uniformity with the other WS handlers.
+    // See `.cursor/rules/websocket-logging.mdc` for the rationale: a
+    // single loop owns `close_cause` so the lifecycle "WebSocket closed"
+    // line carries the canonical termination reason.
+    loop {
+        tokio::select! {
+            msg = receiver.next() => {
+                match msg {
+                    Some(Ok(Message::Text(text))) => {
+                        debug!(
+                            user = %user.username,
+                            session_id = %session_id,
+                            message = %text,
+                            "Received session WS message"
+                        );
+                    }
+                    Some(Ok(Message::Close(_))) => {
+                        close_cause = "close";
+                        should_close = true;
+                    }
+                    Some(Err(e)) => {
+                        warn!(
+                            channel = %channel_label,
+                            user = %user.username,
+                            session_id = %session_id,
+                            error = %e,
+                            "WebSocket recv error"
+                        );
+                        close_cause = "error";
+                        should_close = true;
+                    }
+                    None => {
+                        close_cause = "stream_end";
+                        should_close = true;
+                    }
+                    _ => {}
                 }
-                Ok(Message::Close(_)) => {
-                    info!(
-                        user = %user_clone.username,
-                        session_id = %session_id_clone,
-                        "Session WS close requested"
-                    );
-                    break;
+            }
+
+            result = session_rx.recv() => {
+                match result {
+                    Ok(html) => {
+                        if sender.send(Message::Text(html.into())).await.is_err() {
+                            close_cause = "send_fail";
+                            should_close = true;
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            channel = %channel_label,
+                            session_id = %session_id,
+                            error = %e,
+                            "Session channel lagged"
+                        );
+                    }
                 }
-                Err(e) => {
-                    warn!(
-                        user = %user_clone.username,
-                        session_id = %session_id_clone,
-                        error = %e,
-                        "Session WebSocket error"
-                    );
-                    break;
-                }
-                _ => {}
             }
         }
-    });
 
-    // Forward session updates to client
-    loop {
-        match session_rx.recv().await {
-            Ok(html) => {
-                if sender.send(Message::Text(html.into())).await.is_err() {
-                    break;
-                }
-            }
-            Err(e) => {
-                warn!(
-                    session_id = %session_id,
-                    error = %e,
-                    "Session channel lagged"
-                );
-            }
+        if should_close {
+            break;
         }
     }
 
-    // Cleanup
-    incoming_task.abort();
-    info!(
-        user = %user.username,
-        session_id = %session_id,
-        "Session WebSocket disconnected"
-    );
+    info!(channel = %channel_label, user = %user.username,
+          session_id = %session_id, cause = %close_cause, "WebSocket closed");
+    info!(channel = %channel_label, user = %user.username,
+          session_id = %session_id, "WebSocket disconnected");
 }
 
 /// Notifications WebSocket handler.
@@ -764,7 +778,9 @@ pub async fn notifications_ws(
     ws_guard: WsGuard,
 ) -> impl IntoResponse {
     let user = user.0;
-    info!(user = %user.username, "Notifications WebSocket connection requested");
+    let channel = WsChannel::Notifications.as_str();
+    info!(channel = %channel, user = %user.username, user_uuid = %user.uuid,
+          "WebSocket connection requested");
 
     // Compute token_hash from access_token cookie for personalized session identification
     let token_hash = jar
@@ -798,6 +814,7 @@ async fn handle_notifications_socket(
         .await;
 
     let (mut sender, mut receiver) = socket.split();
+    let channel = WsChannel::Notifications.as_str();
 
     // Subscribe to broadcast channels for other updates
     let mut notifications_rx = state.broadcast.subscribe(&WsChannel::Notifications).await;
@@ -807,15 +824,17 @@ async fn handle_notifications_socket(
         .await;
 
     info!(
+        channel = %channel,
         user = %user.username,
         user_uuid = %user.uuid,
         connection_id = %connection_id,
-        "Notifications WebSocket connected with personalized session support"
+        "WebSocket connected"
     );
 
     // Create ping interval to keep connection alive
     let mut ping_interval = interval(Duration::from_secs(PING_INTERVAL_SECS));
     let mut should_close = false;
+    let mut close_cause: &'static str = "unknown";
 
     loop {
         tokio::select! {
@@ -823,15 +842,17 @@ async fn handle_notifications_socket(
             msg = receiver.next() => {
                 match msg {
                     Some(Ok(Message::Close(_))) => {
-                        debug!(user = %user.username, "Client requested close");
+                        close_cause = "close";
                         should_close = true;
                     }
                     Some(Err(e)) => {
-                        warn!(user = %user.username, error = %e, "WebSocket error");
+                        warn!(channel = %channel, user = %user.username, error = %e,
+                              "WebSocket recv error");
+                        close_cause = "error";
                         should_close = true;
                     }
                     None => {
-                        debug!(user = %user.username, "WebSocket stream ended");
+                        close_cause = "stream_end";
                         should_close = true;
                     }
                     _ => {}
@@ -841,6 +862,7 @@ async fn handle_notifications_socket(
             // Send periodic ping to keep connection alive
             _ = ping_interval.tick() => {
                 if sender.send(Message::Ping(vec![].into())).await.is_err() {
+                    close_cause = "ping_fail";
                     should_close = true;
                 }
             }
@@ -878,6 +900,15 @@ async fn handle_notifications_socket(
         }
     }
 
+    info!(
+        channel = %channel,
+        user = %user.username,
+        user_uuid = %user.uuid,
+        connection_id = %connection_id,
+        cause = %close_cause,
+        "WebSocket closed"
+    );
+
     // Unregister this connection
     state
         .user_connections
@@ -885,9 +916,11 @@ async fn handle_notifications_socket(
         .await;
 
     info!(
+        channel = %channel,
         user = %user.username,
+        user_uuid = %user.uuid,
         connection_id = %connection_id,
-        "Notifications WebSocket disconnected"
+        "WebSocket disconnected"
     );
 }
 
@@ -911,7 +944,9 @@ pub async fn active_sessions_ws(
     ws: WebSocketUpgrade,
 ) -> axum::response::Response {
     let user = user.0;
-    info!(user = %user.username, "Active sessions list WebSocket connection requested");
+    let channel = WsChannel::ActiveSessionsList.as_str();
+    info!(channel = %channel, user = %user.username, user_uuid = %user.uuid,
+          "WebSocket connection requested");
     ws.on_upgrade(move |socket| handle_active_sessions_socket(socket, state, user, ws_guard))
         .into_response()
 }
@@ -924,8 +959,11 @@ async fn handle_active_sessions_socket(
     _ws_guard: WsGuard,
 ) {
     let (mut sender, mut receiver) = socket.split();
+    let channel = WsChannel::ActiveSessionsList.as_str();
+    let mut close_cause: &'static str = "unknown";
 
-    info!(user = %user.username, "Active sessions list WebSocket connected");
+    info!(channel = %channel, user = %user.username, user_uuid = %user.uuid,
+          "WebSocket connected");
 
     // Send initial data immediately on connection
     if let Err(e) = send_initial_active_sessions_data(&mut sender, &state).await {
@@ -962,15 +1000,17 @@ async fn handle_active_sessions_socket(
                         debug!(user = %user.username, "Received WS pong");
                     }
                     Some(Ok(Message::Close(_))) => {
-                        info!(user = %user.username, "Client requested close");
+                        close_cause = "close";
                         should_close = true;
                     }
                     Some(Err(e)) => {
-                        warn!(user = %user.username, error = %e, "WebSocket error");
+                        warn!(channel = %channel, user = %user.username, error = %e,
+                              "WebSocket recv error");
+                        close_cause = "error";
                         should_close = true;
                     }
                     None => {
-                        info!(user = %user.username, "WebSocket stream ended");
+                        close_cause = "stream_end";
                         should_close = true;
                     }
                     _ => {}
@@ -980,7 +1020,8 @@ async fn handle_active_sessions_socket(
             // Send periodic ping to keep connection alive
             _ = ping_interval.tick() => {
                 if sender.send(Message::Ping(vec![].into())).await.is_err() {
-                    warn!(user = %user.username, "Failed to send ping, closing");
+                    warn!(channel = %channel, user = %user.username, "Ping send failed");
+                    close_cause = "ping_fail";
                     should_close = true;
                 } else {
                     debug!(user = %user.username, "Sent WS ping");
@@ -992,6 +1033,7 @@ async fn handle_active_sessions_socket(
                 if let Ok(html) = result
                     && sender.send(Message::Text(html.into())).await.is_err()
                 {
+                    close_cause = "send_fail";
                     should_close = true;
                 }
             }
@@ -1002,7 +1044,9 @@ async fn handle_active_sessions_socket(
         }
     }
 
-    info!(user = %user.username, "Active sessions list WebSocket disconnected");
+    info!(channel = %channel, user = %user.username, cause = %close_cause,
+          "WebSocket closed");
+    info!(channel = %channel, user = %user.username, "WebSocket disconnected");
 }
 
 /// Send initial active sessions data immediately on WebSocket connection.
@@ -1145,7 +1189,9 @@ pub async fn session_list_ws(
     ws: WebSocketUpgrade,
 ) -> axum::response::Response {
     let user = user.0;
-    info!(user = %user.username, "Session list WebSocket connection requested");
+    let channel = WsChannel::SessionsList.as_str();
+    info!(channel = %channel, user = %user.username, user_uuid = %user.uuid,
+          "WebSocket connection requested");
     ws.on_upgrade(move |socket| handle_session_list_socket(socket, state, user, ws_guard))
         .into_response()
 }
@@ -1158,8 +1204,11 @@ async fn handle_session_list_socket(
     _ws_guard: WsGuard,
 ) {
     let (mut sender, mut receiver) = socket.split();
+    let channel = WsChannel::SessionsList.as_str();
+    let mut close_cause: &'static str = "unknown";
 
-    info!(user = %user.username, "Session list WebSocket connected");
+    info!(channel = %channel, user = %user.username, user_uuid = %user.uuid,
+          "WebSocket connected");
 
     if let Err(e) = send_initial_session_list_data(&mut sender, &state).await {
         error!(user = %user.username, error = %e, "Failed to send initial session list data");
@@ -1186,15 +1235,17 @@ async fn handle_session_list_socket(
                         debug!(user = %user.username, "Received WS pong");
                     }
                     Some(Ok(Message::Close(_))) => {
-                        info!(user = %user.username, "Client requested close");
+                        close_cause = "close";
                         should_close = true;
                     }
                     Some(Err(e)) => {
-                        warn!(user = %user.username, error = %e, "WebSocket error");
+                        warn!(channel = %channel, user = %user.username, error = %e,
+                              "WebSocket recv error");
+                        close_cause = "error";
                         should_close = true;
                     }
                     None => {
-                        info!(user = %user.username, "WebSocket stream ended");
+                        close_cause = "stream_end";
                         should_close = true;
                     }
                     _ => {}
@@ -1203,7 +1254,8 @@ async fn handle_session_list_socket(
 
             _ = ping_interval.tick() => {
                 if sender.send(Message::Ping(vec![].into())).await.is_err() {
-                    warn!(user = %user.username, "Failed to send ping, closing");
+                    warn!(channel = %channel, user = %user.username, "Ping send failed");
+                    close_cause = "ping_fail";
                     should_close = true;
                 } else {
                     debug!(user = %user.username, "Sent WS ping");
@@ -1214,6 +1266,7 @@ async fn handle_session_list_socket(
                 if let Ok(html) = result
                     && sender.send(Message::Text(html.into())).await.is_err()
                 {
+                    close_cause = "send_fail";
                     should_close = true;
                 }
             }
@@ -1224,7 +1277,9 @@ async fn handle_session_list_socket(
         }
     }
 
-    info!(user = %user.username, "Session list WebSocket disconnected");
+    info!(channel = %channel, user = %user.username, cause = %close_cause,
+          "WebSocket closed");
+    info!(channel = %channel, user = %user.username, "WebSocket disconnected");
 }
 
 /// Send initial session list data immediately on WebSocket connection.
@@ -1417,11 +1472,10 @@ pub async fn terminal_ws(
     ws_guard: WsGuard,
 ) -> impl IntoResponse {
     let user = user.0;
-    info!(
-        user = %user.username,
-        session_id = %session_id,
-        "Terminal WebSocket connection requested"
-    );
+    let channel = WsChannel::SessionLive(session_id.clone());
+    let channel_label = channel.as_str();
+    info!(channel = %channel_label, user = %user.username, user_uuid = %user.uuid,
+          session_id = %session_id, "WebSocket connection requested");
 
     ws.on_upgrade(move |socket| handle_terminal_socket(socket, state, session_id, user, ws_guard))
 }
@@ -1435,12 +1489,12 @@ async fn handle_terminal_socket(
     _ws_guard: WsGuard,
 ) {
     let (mut sender, mut receiver) = socket.split();
+    let channel = WsChannel::SessionLive(session_id.clone());
+    let channel_label = channel.as_str();
+    let mut close_cause: &'static str = "unknown";
 
-    info!(
-        user = %user.username,
-        session_id = %session_id,
-        "Terminal WebSocket connected"
-    );
+    info!(channel = %channel_label, user = %user.username, user_uuid = %user.uuid,
+          session_id = %session_id, "WebSocket connected");
 
     // Session ownership has been verified in terminal_ws() before the upgrade.
 
@@ -1541,19 +1595,22 @@ async fn handle_terminal_socket(
                         debug!(session_id = %session_id, "Received WS pong");
                     }
                     Some(Ok(Message::Close(_))) => {
-                        info!(session_id = %session_id, "Client requested close");
                         // Close the SSH session
                         if let Err(e) = proxy_client.close_session(&session_id) {
-                            warn!(session_id = %session_id, error = %e, "Failed to close SSH session");
+                            warn!(channel = %channel_label, session_id = %session_id,
+                                  error = %e, "Failed to close SSH session");
                         }
+                        close_cause = "close";
                         should_close = true;
                     }
                     Some(Err(e)) => {
-                        warn!(session_id = %session_id, error = %e, "WebSocket error");
+                        warn!(channel = %channel_label, session_id = %session_id,
+                              error = %e, "WebSocket recv error");
+                        close_cause = "error";
                         should_close = true;
                     }
                     None => {
-                        info!(session_id = %session_id, "WebSocket stream ended");
+                        close_cause = "stream_end";
                         should_close = true;
                     }
                 }
@@ -1565,20 +1622,24 @@ async fn handle_terminal_socket(
                     Some(data) => {
                         // Send binary data to terminal
                         if sender.send(Message::Binary(data.into())).await.is_err() {
-                            warn!(session_id = %session_id, "Failed to send SSH output to WebSocket");
+                            warn!(channel = %channel_label, session_id = %session_id,
+                                  "Failed to send SSH output to WebSocket");
+                            close_cause = "send_fail";
                             should_close = true;
                         }
                     }
                     None => {
                         // Channel closed - session ended (admin termination or proxy exit).
                         // Send Close(1000) so the browser does NOT auto-reconnect.
-                        warn!(session_id = %session_id, "SSH data channel closed");
+                        warn!(channel = %channel_label, session_id = %session_id,
+                              "SSH data channel closed");
                         let _ = sender.send(Message::Close(Some(
                             axum::extract::ws::CloseFrame {
                                 code: 1000,
                                 reason: "Session ended".into(),
                             },
                         ))).await;
+                        close_cause = "server_close";
                         should_close = true;
                     }
                 }
@@ -1587,7 +1648,9 @@ async fn handle_terminal_socket(
             // Send periodic ping
             _ = ping_interval.tick() => {
                 if sender.send(Message::Ping(vec![].into())).await.is_err() {
-                    warn!(session_id = %session_id, "Failed to send ping");
+                    warn!(channel = %channel_label, session_id = %session_id,
+                          "Ping send failed");
+                    close_cause = "ping_fail";
                     should_close = true;
                 }
             }
@@ -1597,6 +1660,9 @@ async fn handle_terminal_socket(
             break;
         }
     }
+
+    info!(channel = %channel_label, user = %user.username,
+          session_id = %session_id, cause = %close_cause, "WebSocket closed");
 
     // Unsubscribe from session data
     proxy_client.unsubscribe_session(&session_id).await;
@@ -1713,11 +1779,8 @@ async fn handle_terminal_socket(
         }
     }
 
-    info!(
-        user = %user.username,
-        session_id = %session_id,
-        "Terminal WebSocket disconnected"
-    );
+    info!(channel = %channel_label, user = %user.username,
+          session_id = %session_id, "WebSocket disconnected");
 }
 
 /// Terminal resize message from client.
@@ -1779,11 +1842,10 @@ pub async fn rdp_ws(
     ws_guard: WsGuard,
 ) -> impl IntoResponse {
     let user = user.0;
-    info!(
-        user = %user.username,
-        session_id = %session_id,
-        "RDP WebSocket connection requested"
-    );
+    let channel = WsChannel::SessionLive(session_id.clone());
+    let channel_label = channel.as_str();
+    info!(channel = %channel_label, user = %user.username, user_uuid = %user.uuid,
+          session_id = %session_id, "WebSocket connection requested");
 
     ws.on_upgrade(move |socket| handle_rdp_socket(socket, state, session_id, user, ws_guard))
 }
@@ -1799,12 +1861,12 @@ async fn handle_rdp_socket(
     use shared::messages::RdpInputEvent;
 
     let (mut sender, mut receiver) = socket.split();
+    let channel = WsChannel::SessionLive(session_id.clone());
+    let channel_label = channel.as_str();
+    let mut close_cause: &'static str = "unknown";
 
-    info!(
-        user = %user.username,
-        session_id = %session_id,
-        "RDP WebSocket connected"
-    );
+    info!(channel = %channel_label, user = %user.username, user_uuid = %user.uuid,
+          session_id = %session_id, "WebSocket connected");
 
     let proxy_client = match &state.rdp_proxy {
         Some(client) => client.clone(),
@@ -1894,22 +1956,25 @@ async fn handle_rdp_socket(
                     }
                     Some(Ok(Message::Ping(_))) | Some(Ok(Message::Pong(_))) => {}
                     Some(Ok(Message::Close(_))) => {
-                        info!(session_id = %session_id, "RDP client requested close");
                         let pc = proxy_client.clone();
                         let sid = session_id.clone();
                         if let Err(e) = tokio::task::spawn_blocking(move || {
                             pc.close_session(&sid)
                         }).await.unwrap_or_else(|e| Err(crate::error::AppError::Ipc(e.to_string()))) {
-                            warn!(session_id = %session_id, error = %e, "Failed to close RDP session");
+                            warn!(channel = %channel_label, session_id = %session_id,
+                                  error = %e, "Failed to close RDP session");
                         }
+                        close_cause = "close";
                         should_close = true;
                     }
                     Some(Err(e)) => {
-                        warn!(session_id = %session_id, error = %e, "RDP WebSocket error");
+                        warn!(channel = %channel_label, session_id = %session_id,
+                              error = %e, "WebSocket recv error");
+                        close_cause = "error";
                         should_close = true;
                     }
                     None => {
-                        info!(session_id = %session_id, "RDP WebSocket stream ended");
+                        close_cause = "stream_end";
                         should_close = true;
                     }
                     _ => {}
@@ -1969,13 +2034,15 @@ async fn handle_rdp_socket(
                     None => {
                         // Channel closed - session ended (admin termination or proxy exit).
                         // Send Close(1000) so the browser does NOT auto-reconnect.
-                        warn!(session_id = %session_id, "RDP display channel closed");
+                        warn!(channel = %channel_label, session_id = %session_id,
+                              "RDP display channel closed");
                         let _ = sender.send(Message::Close(Some(
                             axum::extract::ws::CloseFrame {
                                 code: 1000,
                                 reason: "Session ended".into(),
                             },
                         ))).await;
+                        close_cause = "server_close";
                         should_close = true;
                     }
                 }
@@ -1983,7 +2050,9 @@ async fn handle_rdp_socket(
 
             _ = ping_interval.tick() => {
                 if sender.send(Message::Ping(vec![].into())).await.is_err() {
-                    warn!(session_id = %session_id, "Failed to send ping");
+                    warn!(channel = %channel_label, session_id = %session_id,
+                          "Ping send failed");
+                    close_cause = "ping_fail";
                     should_close = true;
                 }
             }
@@ -1993,6 +2062,9 @@ async fn handle_rdp_socket(
             break;
         }
     }
+
+    info!(channel = %channel_label, user = %user.username,
+          session_id = %session_id, cause = %close_cause, "WebSocket closed");
 
     proxy_client.unsubscribe_session(&session_id).await;
 
@@ -2103,11 +2175,8 @@ async fn handle_rdp_socket(
         }
     }
 
-    info!(
-        user = %user.username,
-        session_id = %session_id,
-        "RDP WebSocket disconnected"
-    );
+    info!(channel = %channel_label, user = %user.username,
+          session_id = %session_id, "WebSocket disconnected");
 }
 
 #[cfg(test)]
