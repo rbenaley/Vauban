@@ -339,23 +339,167 @@ enum TerminalCommand {
 /// Ping interval to keep WebSocket connection alive.
 const PING_INTERVAL_SECS: u64 = 30;
 
-/// Dashboard WebSocket handler.
+/// Dashboard WebSocket handler (supervisor / Global view).
 ///
-/// Establishes a WebSocket connection for dashboard widgets.
-/// Subscribes to: stats, active-sessions, recent-activity.
+/// Establishes a WebSocket connection for the supervisor-facing
+/// Bastion Watch dashboard. Subscribes to: dashboard:stats (Global
+/// scope), active-sessions, recent-activity, notifications.
+///
+/// SECURITY (Bastion Watch isolation, defence-in-depth): the
+/// non-supervisor variant of the dashboard subscribes to
+/// `/ws/dashboard/personal` instead. We re-check
+/// `perms.sessions_supervise` here so a non-supervisor connecting
+/// to `/ws/dashboard` (whether by URL guess or by template
+/// regression) is rejected with 403 BEFORE the upgrade. The
+/// template's `ws-connect` attribute already routes them to the
+/// personal endpoint -- this is the belt to the template's
+/// suspenders.
 pub async fn dashboard_ws(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
     // SECURITY: layer 3 of WebSocket MFA enforcement. `WsAuthUser` rejects
     // pre-MFA tokens with 403 (no redirect) -- see `middleware::auth::WsAuthUser`.
     user: WsAuthUser,
+    perms: crate::auth::PermissionContext,
     ws_guard: WsGuard,
-) -> impl IntoResponse {
+) -> Response {
     let user = user.0;
     let channel = WsChannel::DashboardStats.as_str();
+    if !perms.sessions_supervise {
+        warn!(
+            user = %user.username, user_uuid = %user.uuid,
+            "WebSocket /ws/dashboard rejected: sessions:supervise required \
+             (use /ws/dashboard/personal for the user-scoped view)"
+        );
+        return axum::http::StatusCode::FORBIDDEN.into_response();
+    }
     info!(channel = %channel, user = %user.username, user_uuid = %user.uuid,
           "WebSocket connection requested");
     ws.on_upgrade(move |socket| handle_dashboard_socket(socket, state, user, ws_guard))
+        .into_response()
+}
+
+/// Per-user Bastion Watch dashboard WebSocket handler.
+///
+/// SECURITY (Bastion Watch isolation): non-supervisor users connect
+/// here. The handler subscribes ONLY to `WsChannel::DashboardStatsUser(self.uuid)`
+/// (a parametric, high-cardinality channel) so it cannot observe
+/// fragments produced for another user. The pusher computes the
+/// user-scoped snapshot under `DashboardScope::User(self.id)` (L2
+/// SQL filter) and broadcasts here.
+pub async fn dashboard_personal_ws(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+    user: WsAuthUser,
+    ws_guard: WsGuard,
+) -> impl IntoResponse {
+    let user = user.0;
+    let channel = WsChannel::DashboardStatsUser(user.uuid.clone()).as_str();
+    info!(channel = %channel, user = %user.username, user_uuid = %user.uuid,
+          "WebSocket connection requested");
+    ws.on_upgrade(move |socket| handle_dashboard_personal_socket(socket, state, user, ws_guard))
+}
+
+/// Per-user dashboard WS connection loop.
+///
+/// Mirrors [`handle_dashboard_socket`] minus the singleton stats
+/// subscription. The user channel is parametric and disappears as
+/// soon as the last subscriber drops, so no explicit cleanup is
+/// needed beyond the standard `BroadcastService` reaper.
+async fn handle_dashboard_personal_socket(
+    socket: WebSocket,
+    state: AppState,
+    user: AuthUser,
+    _ws_guard: WsGuard,
+) {
+    let (mut sender, mut receiver) = socket.split();
+    let target_channel = WsChannel::DashboardStatsUser(user.uuid.clone());
+    let channel = target_channel.as_str();
+    let mut close_cause: &'static str = "unknown";
+
+    info!(channel = %channel, user = %user.username, user_uuid = %user.uuid,
+          "WebSocket connected");
+
+    // No initial-data send: the client receives its first tile
+    // fragments at the next pusher tick (within 1 s on the fast
+    // tier). The full HTML page already carries the latest
+    // snapshot for the immediate render, so the WS is only
+    // responsible for live deltas.
+
+    let mut user_rx = state.broadcast.subscribe(&target_channel).await;
+    let mut notifications_rx = state.broadcast.subscribe(&WsChannel::Notifications).await;
+
+    let mut ping_interval = interval(Duration::from_secs(PING_INTERVAL_SECS));
+    let mut should_close = false;
+
+    loop {
+        tokio::select! {
+            msg = receiver.next() => {
+                match msg {
+                    Some(Ok(Message::Text(text))) => {
+                        debug!(user = %user.username, message = %text, "Received WS text message");
+                    }
+                    Some(Ok(Message::Ping(_))) => {
+                        debug!(user = %user.username, "Received WS ping");
+                    }
+                    Some(Ok(Message::Pong(_))) => {
+                        debug!(user = %user.username, "Received WS pong");
+                    }
+                    Some(Ok(Message::Close(_))) => {
+                        close_cause = "close";
+                        should_close = true;
+                    }
+                    Some(Err(e)) => {
+                        warn!(channel = %channel, user = %user.username, error = %e,
+                              "WebSocket recv error");
+                        close_cause = "error";
+                        should_close = true;
+                    }
+                    None => {
+                        close_cause = "stream_end";
+                        should_close = true;
+                    }
+                    _ => {}
+                }
+            }
+
+            _ = ping_interval.tick() => {
+                if sender.send(Message::Ping(vec![].into())).await.is_err() {
+                    warn!(channel = %channel, user = %user.username, "Ping send failed");
+                    close_cause = "ping_fail";
+                    should_close = true;
+                } else {
+                    debug!(user = %user.username, "Sent WS ping");
+                }
+            }
+
+            result = user_rx.recv() => {
+                if let Ok(html) = result
+                    && sender.send(Message::Text(html.into())).await.is_err()
+                {
+                    close_cause = "send_fail";
+                    should_close = true;
+                }
+            }
+
+            result = notifications_rx.recv() => {
+                if let Ok(html) = result
+                    && sender.send(Message::Text(html.into())).await.is_err()
+                {
+                    close_cause = "send_fail";
+                    should_close = true;
+                }
+            }
+        }
+
+        if should_close {
+            break;
+        }
+    }
+
+    info!(channel = %channel, user = %user.username, cause = %close_cause,
+          "WebSocket closed");
+    info!(channel = %channel, user = %user.username, "WebSocket disconnected");
 }
 
 /// Handle dashboard WebSocket connection.

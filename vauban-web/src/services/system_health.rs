@@ -19,7 +19,7 @@ use crate::schema::{email_outbox, proxy_sessions};
 use diesel::dsl::count_star;
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -185,27 +185,62 @@ impl HttpRateTracker {
     }
 }
 
-/// In-process LIVE-session count history.
+/// Identity key for the per-scope LIVE history rings.
 ///
-/// Drives the LIVE hero tile's sparkline on `bastion_watch`. The
-/// bucket-by-hour `proxy_sessions.created_at` query previously used
-/// for that sparkline conflated "openings per hour" with "active
-/// count over time" -- a session that opened at 00:30 and stayed
-/// alive until 03:00 surfaced as a single spike at hour 0 followed
-/// by a flat zero, giving the operator the false impression that
-/// the bastion had emptied. This tracker instead samples the live
-/// count at every snapshot computation (1 Hz fast tier) so the
-/// sparkline reflects actual live-count motion.
+/// Mirrors `crate::services::dashboard::DashboardScope` at the
+/// system-health layer (which is the lower of the two and must not
+/// depend on `dashboard`). A `From<DashboardScope> for ScopeKey`
+/// impl on the `dashboard` side keeps the conversion ergonomic.
+#[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
+pub enum ScopeKey {
+    /// Aggregate over every active session in the bastion. Used by
+    /// supervisors and the singleton DashboardStats channel.
+    Global,
+    /// Restricted to a single user's sessions (key = `users.id`).
+    /// Used by the per-user DashboardStatsUser(uuid) channel.
+    User(i32),
+}
+
+/// Per-scope live-session count history (Bastion Watch isolation).
 ///
-/// Buffer policy: bounded ring of `LIVE_HISTORY_CAP` samples
-/// (2 minutes at 1 Hz). Older samples are dropped on push. The
-/// tracker is started empty -- the sparkline progressively fills
-/// during the first 2 minutes after process boot, which the
-/// hero tile renders as a partially-populated trace.
+/// Each scope -- `Global` for supervisors, `User(id)` for the rest
+/// -- carries its own bounded ring of recently-observed live
+/// counts. The dashboard sparkline reads its scope's series; if
+/// the scope has never been sampled the series is empty and the
+/// tile renders the contractual flat midline (`Sparkline::from_series(&[])`).
+///
+/// Why per-scope? With a single global ring (the previous
+/// implementation), the LIVE sparkline trace for a non-supervisor
+/// user reflected the WHOLE bastion's active count, leaking the
+/// existence of other users' sessions. Splitting by scope is the
+/// L1/L2 type-system layer of the per-user isolation: the loader
+/// records under the SAME scope it queries, and the renderer reads
+/// the SAME scope it owns -- impossible to mix lanes by accident.
+///
+/// GC: idle scopes (no `record()` for `>= ttl`) are dropped by
+/// [`gc_idle_after`]. The pusher calls it on the slow tier (every
+/// 60 s) so a user who closed their dashboard 5 minutes ago does
+/// not accumulate state forever. Memory upper bound:
+/// `LIVE_HISTORY_CAP * 8 bytes per scope * scopes_active_within_ttl`.
 #[derive(Debug)]
 pub struct LiveSessionHistory {
-    samples: Mutex<VecDeque<u64>>,
+    rings: Mutex<HashMap<ScopeKey, ScopeRing>>,
     cap: usize,
+}
+
+#[derive(Debug)]
+struct ScopeRing {
+    samples: VecDeque<u64>,
+    last_seen: Instant,
+}
+
+impl ScopeRing {
+    fn with_capacity(cap: usize) -> Self {
+        Self {
+            samples: VecDeque::with_capacity(cap),
+            last_seen: Instant::now(),
+        }
+    }
 }
 
 impl Default for LiveSessionHistory {
@@ -218,50 +253,72 @@ impl LiveSessionHistory {
     pub fn new(cap: usize) -> Self {
         let cap = cap.max(2);
         Self {
-            samples: Mutex::new(VecDeque::with_capacity(cap)),
+            rings: Mutex::new(HashMap::new()),
             cap,
         }
     }
 
-    /// Record a new live-session count. Caps the buffer at `cap`
-    /// by dropping the oldest sample. Lock poisoning is recovered
-    /// transparently (the dashboard never panics from telemetry).
-    pub fn record(&self, count: u64) {
-        let mut g = self
-            .samples
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        g.push_back(count);
-        while g.len() > self.cap {
-            g.pop_front();
+    /// Record a new live-session count for the given scope. Caps
+    /// the buffer at `cap` by dropping the oldest sample. Lock
+    /// poisoning is recovered transparently -- the dashboard never
+    /// panics from telemetry.
+    pub fn record(&self, scope: ScopeKey, count: u64) {
+        let mut g = self.rings.lock().unwrap_or_else(|p| p.into_inner());
+        let cap = self.cap;
+        let ring = g.entry(scope).or_insert_with(|| ScopeRing::with_capacity(cap));
+        ring.samples.push_back(count);
+        while ring.samples.len() > cap {
+            ring.samples.pop_front();
         }
+        ring.last_seen = Instant::now();
     }
 
-    /// Snapshot the current series, oldest-first, suitable for
-    /// `Sparkline::from_series`. Returns an empty vector if the
-    /// tracker has not yet recorded any samples (the sparkline
-    /// renders as a flat midline in that case, by contract of
-    /// [`crate::services::dashboard::widgets::Sparkline`]).
-    pub fn series(&self) -> Vec<f32> {
-        let g = self
-            .samples
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        g.iter().map(|c| *c as f32).collect()
+    /// Snapshot the current series for `scope`, oldest-first,
+    /// suitable for `Sparkline::from_series`. Returns an empty
+    /// vector if the scope has never been recorded; the sparkline
+    /// then renders as a contractual flat midline (see
+    /// `crate::services::dashboard::widgets::Sparkline`).
+    pub fn series(&self, scope: ScopeKey) -> Vec<f32> {
+        let g = self.rings.lock().unwrap_or_else(|p| p.into_inner());
+        g.get(&scope)
+            .map(|r| r.samples.iter().map(|c| *c as f32).collect())
+            .unwrap_or_default()
     }
 
-    /// Number of samples currently buffered. Exposed for tests and
-    /// for a future "samples=N" structured field on the LIVE tile
-    /// caption.
-    pub fn len(&self) -> usize {
-        self.samples
-            .lock()
-            .map(|g| g.len())
-            .unwrap_or(0)
+    /// Number of samples buffered for `scope`. Exposed for tests
+    /// and for a possible future "samples=N" caption on the LIVE
+    /// tile.
+    pub fn len(&self, scope: ScopeKey) -> usize {
+        let g = self.rings.lock().unwrap_or_else(|p| p.into_inner());
+        g.get(&scope).map(|r| r.samples.len()).unwrap_or(0)
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
+    pub fn is_empty(&self, scope: ScopeKey) -> bool {
+        self.len(scope) == 0
+    }
+
+    /// Number of distinct scopes currently tracked. Useful for the
+    /// pusher's structured logging and for the GC unit test.
+    pub fn scope_count(&self) -> usize {
+        let g = self.rings.lock().unwrap_or_else(|p| p.into_inner());
+        g.len()
+    }
+
+    /// Drop scopes whose last `record()` was more than `ttl` ago.
+    /// Returns the number of dropped scopes (caller may surface as
+    /// a `debug!` field). The `Global` scope is never dropped --
+    /// it represents the supervisor/admin view that the pusher
+    /// keeps refreshing for as long as there is a subscriber on
+    /// `WsChannel::DashboardStats`.
+    pub fn gc_idle_after(&self, ttl: Duration) -> usize {
+        let mut g = self.rings.lock().unwrap_or_else(|p| p.into_inner());
+        let before = g.len();
+        let now = Instant::now();
+        g.retain(|key, ring| {
+            matches!(key, ScopeKey::Global)
+                || now.saturating_duration_since(ring.last_seen) < ttl
+        });
+        before.saturating_sub(g.len())
     }
 }
 
@@ -446,12 +503,12 @@ mod tests {
     #[test]
     fn live_session_history_records_and_returns_oldest_first_series() {
         let h = LiveSessionHistory::new(8);
-        assert!(h.is_empty());
+        assert!(h.is_empty(ScopeKey::Global));
         for v in [3u64, 5, 7, 5, 4] {
-            h.record(v);
+            h.record(ScopeKey::Global, v);
         }
-        assert_eq!(h.len(), 5);
-        let s = h.series();
+        assert_eq!(h.len(ScopeKey::Global), 5);
+        let s = h.series(ScopeKey::Global);
         assert_eq!(s, vec![3.0_f32, 5.0, 7.0, 5.0, 4.0]);
     }
 
@@ -459,21 +516,25 @@ mod tests {
     fn live_session_history_drops_oldest_when_capacity_exceeded() {
         let h = LiveSessionHistory::new(4);
         for v in 1..=10u64 {
-            h.record(v);
+            h.record(ScopeKey::Global, v);
         }
-        assert_eq!(h.len(), 4, "buffer must cap at `cap` samples");
+        assert_eq!(
+            h.len(ScopeKey::Global),
+            4,
+            "buffer must cap at `cap` samples"
+        );
         // Series MUST be the most-recent 4: 7, 8, 9, 10.
-        assert_eq!(h.series(), vec![7.0_f32, 8.0, 9.0, 10.0]);
+        assert_eq!(h.series(ScopeKey::Global), vec![7.0_f32, 8.0, 9.0, 10.0]);
     }
 
     #[test]
     fn live_session_history_default_uses_live_history_cap_constant() {
         let h = LiveSessionHistory::default();
         for v in 0..(LIVE_HISTORY_CAP as u64 + 50) {
-            h.record(v);
+            h.record(ScopeKey::Global, v);
         }
         assert_eq!(
-            h.len(),
+            h.len(ScopeKey::Global),
             LIVE_HISTORY_CAP,
             "default capacity MUST track the LIVE_HISTORY_CAP \
              constant so the dashboard's sparkline window is \
@@ -486,11 +547,91 @@ mod tests {
         // Cap of 0 / 1 would not produce a meaningful sparkline.
         // The constructor MUST clamp upwards.
         let h = LiveSessionHistory::new(0);
-        h.record(42);
-        h.record(43);
-        h.record(44);
-        assert_eq!(h.len(), 2, "cap=0 must clamp to 2 (min usable)");
-        assert_eq!(h.series(), vec![43.0_f32, 44.0]);
+        h.record(ScopeKey::Global, 42);
+        h.record(ScopeKey::Global, 43);
+        h.record(ScopeKey::Global, 44);
+        assert_eq!(
+            h.len(ScopeKey::Global),
+            2,
+            "cap=0 must clamp to 2 (min usable)"
+        );
+        assert_eq!(h.series(ScopeKey::Global), vec![43.0_f32, 44.0]);
+    }
+
+    // -------------------------------------------------------------
+    // Per-scope isolation pin tests (Bastion Watch L1/L2 layer)
+    // -------------------------------------------------------------
+
+    #[test]
+    fn live_session_history_scopes_are_isolated() {
+        let h = LiveSessionHistory::new(8);
+        h.record(ScopeKey::Global, 10);
+        h.record(ScopeKey::User(1), 1);
+        h.record(ScopeKey::User(2), 99);
+        assert_eq!(h.series(ScopeKey::Global), vec![10.0_f32]);
+        assert_eq!(
+            h.series(ScopeKey::User(1)),
+            vec![1.0_f32],
+            "User(1) MUST only see its own samples; sharing the \
+             ring with User(2)/Global would leak active counts"
+        );
+        assert_eq!(h.series(ScopeKey::User(2)), vec![99.0_f32]);
+        assert_eq!(h.scope_count(), 3);
+    }
+
+    #[test]
+    fn live_session_history_unknown_scope_returns_empty_series() {
+        let h = LiveSessionHistory::new(4);
+        // No record() at all -> any scope returns an empty series,
+        // which the Sparkline contract renders as a flat midline.
+        assert!(h.series(ScopeKey::Global).is_empty());
+        assert!(h.series(ScopeKey::User(42)).is_empty());
+    }
+
+    #[test]
+    fn live_session_history_gc_drops_idle_user_scopes_keeps_global() {
+        let h = LiveSessionHistory::new(4);
+        h.record(ScopeKey::Global, 7);
+        h.record(ScopeKey::User(1), 3);
+        h.record(ScopeKey::User(2), 5);
+        // Force last_seen back in time on User(1) only.
+        if let Ok(mut g) = h.rings.lock()
+            && let Some(r) = g.get_mut(&ScopeKey::User(1))
+        {
+            r.last_seen = Instant::now() - Duration::from_secs(10_000);
+        }
+        let dropped = h.gc_idle_after(Duration::from_secs(60));
+        assert_eq!(dropped, 1, "GC MUST drop the single idle user scope");
+        assert_eq!(h.scope_count(), 2);
+        assert!(
+            h.series(ScopeKey::User(1)).is_empty(),
+            "User(1) ring MUST be evicted by GC"
+        );
+        assert_eq!(
+            h.series(ScopeKey::Global),
+            vec![7.0_f32],
+            "Global ring MUST never be evicted by GC"
+        );
+        assert_eq!(h.series(ScopeKey::User(2)), vec![5.0_f32]);
+    }
+
+    #[test]
+    fn live_session_history_gc_protects_global_even_when_idle() {
+        let h = LiveSessionHistory::new(4);
+        h.record(ScopeKey::Global, 1);
+        // Pretend Global's last sample is ancient.
+        if let Ok(mut g) = h.rings.lock()
+            && let Some(r) = g.get_mut(&ScopeKey::Global)
+        {
+            r.last_seen = Instant::now() - Duration::from_secs(86_400);
+        }
+        let dropped = h.gc_idle_after(Duration::from_secs(60));
+        assert_eq!(
+            dropped, 0,
+            "GC MUST never evict Global (it represents the \
+             supervisor/admin view that the pusher keeps refreshing)"
+        );
+        assert_eq!(h.scope_count(), 1);
     }
 
     #[test]

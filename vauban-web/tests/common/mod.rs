@@ -356,6 +356,10 @@ fn build_test_router(state: AppState) -> Router {
     let ws_routes = Router::new()
         .route("/ws/dashboard", get(handlers::websocket::dashboard_ws))
         .route(
+            "/ws/dashboard/personal",
+            get(handlers::websocket::dashboard_personal_ws),
+        )
+        .route(
             "/ws/session/{id}",
             get(handlers::websocket::session_ws).layer(session_guard.clone()),
         )

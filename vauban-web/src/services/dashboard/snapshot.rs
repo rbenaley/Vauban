@@ -16,13 +16,62 @@ use crate::auth::permissions::PermissionContext;
 use crate::db::DbPool;
 use crate::middleware::WebAuthUser;
 use crate::services::dashboard::widgets::{Bar, Donut, Heatmap, Sparkline};
-use crate::services::system_health::{LiveSessionHistory, SystemHealth};
+use crate::services::system_health::{LiveSessionHistory, ScopeKey, SystemHealth};
 use crate::schema::{access_rules, assets, email_outbox, proxy_sessions, users};
 use chrono::{DateTime, Datelike, Duration, Timelike, Utc};
 use diesel::dsl::count_star;
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 use std::sync::Arc;
+
+/// Per-request data scope for Bastion Watch tiles.
+///
+/// SECURITY: this is the L1 (type system) layer of the dashboard's
+/// 5-layer per-user isolation. Every loader that touches
+/// `proxy_sessions` accepts a `DashboardScope` as a MANDATORY
+/// parameter -- the compiler refuses an oversight. The discriminant
+/// is itself derived from `PermissionContext::sessions_supervise`
+/// at the handler/pusher boundary (L3 Casbin gate); the concrete
+/// SQL filter is applied loader-side via [`apply_scope`] (L2).
+///
+/// `Global` -- the caller is a supervisor, all rows visible.
+/// `User(id)` -- the caller can only see their own `proxy_sessions`
+/// rows; queries inject `WHERE proxy_sessions.user_id = $id`.
+#[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
+pub enum DashboardScope {
+    Global,
+    User(i32),
+}
+
+impl DashboardScope {
+    /// Derive the scope from the request's permission context.
+    ///
+    /// `sessions_supervise == true` -> [`Self::Global`] (the caller
+    /// has the Casbin capability to look at every session, no
+    /// per-row filter is applied).
+    ///
+    /// `sessions_supervise == false` -> [`Self::User(user_id)`] (the
+    /// caller is restricted to rows they own).
+    ///
+    /// The `user_id` is the internal `users.id` (i32) for `eq()`
+    /// efficiency on the `proxy_sessions.user_id` foreign key.
+    pub fn from_perms(perms: &PermissionContext, user_id: i32) -> Self {
+        if perms.sessions_supervise {
+            Self::Global
+        } else {
+            Self::User(user_id)
+        }
+    }
+}
+
+impl From<DashboardScope> for ScopeKey {
+    fn from(s: DashboardScope) -> Self {
+        match s {
+            DashboardScope::Global => ScopeKey::Global,
+            DashboardScope::User(id) => ScopeKey::User(id),
+        }
+    }
+}
 
 /// Hero band: 4 to 5 KPI cards above the fold.
 #[derive(Debug, Clone)]
@@ -98,22 +147,23 @@ impl DashboardSnapshot {
         perms: &PermissionContext,
         system_health: Option<SystemHealth>,
         live_session_history: &Arc<LiveSessionHistory>,
+        scope: DashboardScope,
     ) -> Self {
         let user_uuid = auth_user.uuid.clone();
         let now = Utc::now();
 
         let (hero, live_sessions, evidence_chain, access_posture, heatmap, user_lens) = tokio::join!(
-            load_hero(db_pool, now, live_session_history),
-            load_live_sessions(db_pool, 10),
-            load_evidence_chain(db_pool, now),
+            load_hero(db_pool, now, scope, live_session_history),
+            load_live_sessions(db_pool, scope, 10),
+            load_evidence_chain(db_pool, scope),
             async {
-                if perms.admin_view {
+                if perms.sessions_supervise {
                     Some(load_access_posture(db_pool).await)
                 } else {
                     None
                 }
             },
-            load_heatmap(db_pool, now),
+            load_heatmap(db_pool, now, scope),
             load_user_lens(db_pool, user_uuid.as_str(), now),
         );
 
@@ -123,7 +173,15 @@ impl DashboardSnapshot {
             evidence_chain,
             access_posture,
             heatmap,
-            system_health: if perms.admin_view { system_health } else { None },
+            // SECURITY: gouvernance/infra (system_health, anomalies,
+            // access_posture) follow the same gate as the rest of the
+            // supervisor view. A non-supervisor never observes the
+            // pool / req-rate / outbox metrics.
+            system_health: if perms.sessions_supervise {
+                system_health
+            } else {
+                None
+            },
             user_lens,
             computed_at: now,
         }
@@ -133,8 +191,10 @@ impl DashboardSnapshot {
 pub(crate) async fn load_hero(
     db_pool: &DbPool,
     now: DateTime<Utc>,
+    scope: DashboardScope,
     live_session_history: &Arc<LiveSessionHistory>,
 ) -> HeroBand {
+    let scope_key: ScopeKey = scope.into();
     let mut conn = match db_pool.get().await {
         Ok(c) => c,
         Err(_) => {
@@ -149,56 +209,66 @@ pub(crate) async fn load_hero(
                 jit_queue: None,
                 evidence_total: 0,
                 health_label: "n/a",
-                spark_today: Sparkline::from_series(&live_session_history.series()),
+                spark_today: Sparkline::from_series(&live_session_history.series(scope_key)),
             };
         }
     };
-    let live: i64 = proxy_sessions::table
-        .filter(proxy_sessions::status.eq("active"))
-        .select(count_star())
-        .get_result(&mut conn)
-        .await
-        .unwrap_or(0);
+
+    // Helper: scope-aware count. The match is local so each query
+    // produces its own boxed Diesel pipeline (Diesel's typed query
+    // builder does not allow arming an `Or` after `.into_boxed()`
+    // with foreign tables). The closure captures `scope` and
+    // applies the L2 SQL filter consistently.
+    macro_rules! count_with_scope {
+        ($base:expr) => {{
+            match scope {
+                DashboardScope::Global => $base
+                    .select(count_star())
+                    .get_result::<i64>(&mut conn)
+                    .await
+                    .unwrap_or(0),
+                DashboardScope::User(uid) => $base
+                    .filter(proxy_sessions::user_id.eq(uid))
+                    .select(count_star())
+                    .get_result::<i64>(&mut conn)
+                    .await
+                    .unwrap_or(0),
+            }
+        }};
+    }
+
+    let live: i64 = count_with_scope!(
+        proxy_sessions::table.filter(proxy_sessions::status.eq("active"))
+    );
     let live_u64 = live.max(0) as u64;
-    // Push the freshly-observed live count into the rolling history
-    // BEFORE building the sparkline so the trace's last point is
-    // always the value displayed in the LIVE hero KPI.
-    live_session_history.record(live_u64);
+    // Push the freshly-observed live count into the per-scope
+    // rolling history BEFORE building the sparkline so the trace's
+    // last point is always the value displayed in the LIVE hero
+    // KPI of the same scope.
+    live_session_history.record(scope_key, live_u64);
     let day_start = now
         .date_naive()
         .and_hms_opt(0, 0, 0)
         .map(|d| d.and_utc())
         .unwrap_or(now);
-    let today: i64 = proxy_sessions::table
-        .filter(proxy_sessions::created_at.ge(day_start))
-        .select(count_star())
-        .get_result(&mut conn)
-        .await
-        .unwrap_or(0);
-    let today_recorded: i64 = proxy_sessions::table
-        .filter(proxy_sessions::created_at.ge(day_start))
-        .filter(proxy_sessions::is_recorded.eq(true))
-        .select(count_star())
-        .get_result(&mut conn)
-        .await
-        .unwrap_or(0);
-    let jit_queue: i64 = proxy_sessions::table
-        .filter(proxy_sessions::status.eq("pending"))
-        .select(count_star())
-        .get_result(&mut conn)
-        .await
-        .unwrap_or(0);
-    let evidence_total: i64 = proxy_sessions::table
-        .filter(proxy_sessions::recording_finalized_at.is_not_null())
-        .select(count_star())
-        .get_result(&mut conn)
-        .await
-        .unwrap_or(0);
-    // Spark = sliding window of recent live-session counts (NOT
-    // today's openings-per-hour, which lied: a long-lived session
-    // would surface as a single past spike then a flat zero, even
-    // though the live count was steady at 1).
-    let series = live_session_history.series();
+    let today: i64 = count_with_scope!(
+        proxy_sessions::table.filter(proxy_sessions::created_at.ge(day_start))
+    );
+    let today_recorded: i64 = count_with_scope!(
+        proxy_sessions::table
+            .filter(proxy_sessions::created_at.ge(day_start))
+            .filter(proxy_sessions::is_recorded.eq(true))
+    );
+    let jit_queue: i64 = count_with_scope!(
+        proxy_sessions::table.filter(proxy_sessions::status.eq("pending"))
+    );
+    let evidence_total: i64 = count_with_scope!(
+        proxy_sessions::table.filter(proxy_sessions::recording_finalized_at.is_not_null())
+    );
+    // Spark = sliding window of recent live-session counts for THIS
+    // scope (NOT a global aggregate -- that would leak the rest of
+    // the bastion's activity into every user's tile).
+    let series = live_session_history.series(scope_key);
     let spark = Sparkline::from_series(&series);
     let pct = if today > 0 {
         ((today_recorded as f64 / today as f64) * 100.0).round() as u8
@@ -216,7 +286,11 @@ pub(crate) async fn load_hero(
     }
 }
 
-pub(crate) async fn load_live_sessions(db_pool: &DbPool, limit: i64) -> Vec<LiveSession> {
+pub(crate) async fn load_live_sessions(
+    db_pool: &DbPool,
+    scope: DashboardScope,
+    limit: i64,
+) -> Vec<LiveSession> {
     let mut conn = match db_pool.get().await {
         Ok(c) => c,
         Err(_) => return Vec::new(),
@@ -231,25 +305,52 @@ pub(crate) async fn load_live_sessions(db_pool: &DbPool, limit: i64) -> Vec<Live
         bool,
         DateTime<Utc>,
     );
-    let rows: Vec<Row> = proxy_sessions::table
-        .inner_join(assets::table)
-        .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
-        .filter(proxy_sessions::status.eq("active"))
-        .select((
-            proxy_sessions::uuid,
-            assets::name,
-            assets::hostname,
-            users::username,
-            proxy_sessions::session_type,
-            proxy_sessions::connected_at,
-            proxy_sessions::is_recorded,
-            proxy_sessions::created_at,
-        ))
-        .order(proxy_sessions::created_at.desc())
-        .limit(limit)
-        .load(&mut conn)
-        .await
-        .unwrap_or_default();
+    // The live-sessions panel JOINs assets + users to surface a
+    // human-readable row. The L2 SQL filter on `proxy_sessions.user_id`
+    // is what guarantees a non-supervisor never observes a row
+    // belonging to another tenant. The match below threads `scope`
+    // through both branches without losing the typed query.
+    let rows: Vec<Row> = match scope {
+        DashboardScope::Global => proxy_sessions::table
+            .inner_join(assets::table)
+            .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
+            .filter(proxy_sessions::status.eq("active"))
+            .select((
+                proxy_sessions::uuid,
+                assets::name,
+                assets::hostname,
+                users::username,
+                proxy_sessions::session_type,
+                proxy_sessions::connected_at,
+                proxy_sessions::is_recorded,
+                proxy_sessions::created_at,
+            ))
+            .order(proxy_sessions::created_at.desc())
+            .limit(limit)
+            .load(&mut conn)
+            .await
+            .unwrap_or_default(),
+        DashboardScope::User(uid) => proxy_sessions::table
+            .inner_join(assets::table)
+            .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
+            .filter(proxy_sessions::status.eq("active"))
+            .filter(proxy_sessions::user_id.eq(uid))
+            .select((
+                proxy_sessions::uuid,
+                assets::name,
+                assets::hostname,
+                users::username,
+                proxy_sessions::session_type,
+                proxy_sessions::connected_at,
+                proxy_sessions::is_recorded,
+                proxy_sessions::created_at,
+            ))
+            .order(proxy_sessions::created_at.desc())
+            .limit(limit)
+            .load(&mut conn)
+            .await
+            .unwrap_or_default(),
+    };
     let now = Utc::now();
     rows.into_iter()
         .map(|(uuid, name, hostname, username, st, connected_at, recorded, created_at)| {
@@ -268,7 +369,10 @@ pub(crate) async fn load_live_sessions(db_pool: &DbPool, limit: i64) -> Vec<Live
         .collect()
 }
 
-pub(crate) async fn load_evidence_chain(db_pool: &DbPool, now: DateTime<Utc>) -> EvidenceChain {
+pub(crate) async fn load_evidence_chain(
+    db_pool: &DbPool,
+    scope: DashboardScope,
+) -> EvidenceChain {
     let mut conn = match db_pool.get().await {
         Ok(c) => c,
         Err(_) => {
@@ -281,39 +385,59 @@ pub(crate) async fn load_evidence_chain(db_pool: &DbPool, now: DateTime<Utc>) ->
             };
         }
     };
-    let recording_now: i64 = proxy_sessions::table
-        .filter(proxy_sessions::is_recorded.eq(true))
-        .filter(proxy_sessions::status.eq("active"))
-        .select(count_star())
-        .get_result(&mut conn)
-        .await
-        .unwrap_or(0);
-    let awaiting: i64 = proxy_sessions::table
-        .filter(proxy_sessions::is_recorded.eq(true))
-        .filter(proxy_sessions::recording_finalized_at.is_null())
-        .filter(proxy_sessions::disconnected_at.is_not_null())
-        .select(count_star())
-        .get_result(&mut conn)
-        .await
-        .unwrap_or(0);
-    let hydrated: i64 = proxy_sessions::table
-        .filter(proxy_sessions::recording_finalized_at.is_not_null())
-        .select(count_star())
-        .get_result(&mut conn)
-        .await
-        .unwrap_or(0);
-    let _ = now; // reserved for future "last 24h" filters
+
+    macro_rules! count_with_scope {
+        ($base:expr) => {{
+            match scope {
+                DashboardScope::Global => $base
+                    .select(count_star())
+                    .get_result::<i64>(&mut conn)
+                    .await
+                    .unwrap_or(0),
+                DashboardScope::User(uid) => $base
+                    .filter(proxy_sessions::user_id.eq(uid))
+                    .select(count_star())
+                    .get_result::<i64>(&mut conn)
+                    .await
+                    .unwrap_or(0),
+            }
+        }};
+    }
+
+    let recording_now: i64 = count_with_scope!(
+        proxy_sessions::table
+            .filter(proxy_sessions::is_recorded.eq(true))
+            .filter(proxy_sessions::status.eq("active"))
+    );
+    let awaiting: i64 = count_with_scope!(
+        proxy_sessions::table
+            .filter(proxy_sessions::is_recorded.eq(true))
+            .filter(proxy_sessions::recording_finalized_at.is_null())
+            .filter(proxy_sessions::disconnected_at.is_not_null())
+    );
+    let hydrated: i64 = count_with_scope!(
+        proxy_sessions::table.filter(proxy_sessions::recording_finalized_at.is_not_null())
+    );
     // Diesel `sum()` on `Nullable<Int8>` returns `Numeric`; rather
     // than pulling `bigdecimal` and risking precision loss, we sum
     // bytes client-side. The `recording_finalized_at` filter caps
     // the row count to actually finalised recordings, which is
     // bounded by the retention policy.
-    let sizes: Vec<Option<i64>> = proxy_sessions::table
-        .filter(proxy_sessions::recording_finalized_at.is_not_null())
-        .select(proxy_sessions::recording_size_bytes)
-        .load(&mut conn)
-        .await
-        .unwrap_or_default();
+    let sizes: Vec<Option<i64>> = match scope {
+        DashboardScope::Global => proxy_sessions::table
+            .filter(proxy_sessions::recording_finalized_at.is_not_null())
+            .select(proxy_sessions::recording_size_bytes)
+            .load(&mut conn)
+            .await
+            .unwrap_or_default(),
+        DashboardScope::User(uid) => proxy_sessions::table
+            .filter(proxy_sessions::recording_finalized_at.is_not_null())
+            .filter(proxy_sessions::user_id.eq(uid))
+            .select(proxy_sessions::recording_size_bytes)
+            .load(&mut conn)
+            .await
+            .unwrap_or_default(),
+    };
     let vault_total_bytes: i64 = sizes.into_iter().flatten().fold(0i64, i64::saturating_add);
     let donut = Donut::from_segments(vec![
         ("recording".to_string(), recording_now.max(0) as u64, "stroke-rose-500".to_string()),
@@ -386,18 +510,31 @@ pub(crate) async fn load_access_posture(db_pool: &DbPool) -> AccessPosture {
     }
 }
 
-pub(crate) async fn load_heatmap(db_pool: &DbPool, now: DateTime<Utc>) -> Heatmap {
+pub(crate) async fn load_heatmap(
+    db_pool: &DbPool,
+    now: DateTime<Utc>,
+    scope: DashboardScope,
+) -> Heatmap {
     let mut conn = match db_pool.get().await {
         Ok(c) => c,
         Err(_) => return Heatmap::from_grid(&[], &[]),
     };
     let cutoff = now - Duration::days(14);
-    let rows: Vec<DateTime<Utc>> = proxy_sessions::table
-        .filter(proxy_sessions::created_at.ge(cutoff))
-        .select(proxy_sessions::created_at)
-        .load(&mut conn)
-        .await
-        .unwrap_or_default();
+    let rows: Vec<DateTime<Utc>> = match scope {
+        DashboardScope::Global => proxy_sessions::table
+            .filter(proxy_sessions::created_at.ge(cutoff))
+            .select(proxy_sessions::created_at)
+            .load(&mut conn)
+            .await
+            .unwrap_or_default(),
+        DashboardScope::User(uid) => proxy_sessions::table
+            .filter(proxy_sessions::created_at.ge(cutoff))
+            .filter(proxy_sessions::user_id.eq(uid))
+            .select(proxy_sessions::created_at)
+            .load(&mut conn)
+            .await
+            .unwrap_or_default(),
+    };
     let mut grid: Vec<Vec<u32>> = (0..14).map(|_| vec![0u32; 24]).collect();
     let mut labels: Vec<String> = Vec::with_capacity(14);
     for d in 0..14 {
@@ -416,6 +553,35 @@ pub(crate) async fn load_heatmap(db_pool: &DbPool, now: DateTime<Utc>) -> Heatma
         }
     }
     Heatmap::from_grid(&grid, &labels)
+}
+
+/// Resolve a user UUID (from the JWT `sub` claim or a parametric
+/// channel name like `dashboard:user:<uuid>`) to the internal
+/// `users.id` (i32) used everywhere by the `proxy_sessions.user_id`
+/// foreign key.
+///
+/// Returns `None` if the UUID is malformed, the user is not found,
+/// or the DB pool is exhausted -- the caller treats `None` as "fall
+/// back to Global on the assumption the supervisor view is safer
+/// than fabricating a fake user_id" (the Bastion Watch handler does
+/// NOT do this; it surfaces a 500-equivalent fallback to a private
+/// scope, see [`crate::handlers::web::dashboard::dashboard_home`]).
+///
+/// SECURITY: never confuse a *missing* UUID with `User(0)` -- that
+/// would deny every row in the per-user filter (the safest
+/// degraded behaviour) but the caller MUST still prefer to surface
+/// an explicit failure rather than silently degrade. See the
+/// [`vauban-web/src/handlers/web/dashboard.rs`] usage for the
+/// fallback policy.
+pub async fn resolve_user_id_from_uuid(db_pool: &DbPool, user_uuid_str: &str) -> Option<i32> {
+    let user_uuid = ::uuid::Uuid::parse_str(user_uuid_str).ok()?;
+    let mut conn = db_pool.get().await.ok()?;
+    users::table
+        .filter(users::uuid.eq(user_uuid))
+        .select(users::id)
+        .get_result::<i32>(&mut conn)
+        .await
+        .ok()
 }
 
 async fn load_user_lens(db_pool: &DbPool, user_uuid_str: &str, now: DateTime<Utc>) -> UserLens {
@@ -461,6 +627,12 @@ async fn load_user_lens(db_pool: &DbPool, user_uuid_str: &str, now: DateTime<Utc
         bool,
         DateTime<Utc>,
     );
+    // load_user_lens is intrinsically user-scoped by `user_id` (the
+    // .filter row directly below). It does NOT participate in the
+    // DashboardScope contract because the user_id is sourced from
+    // the request's `WebAuthUser`, not from a Casbin gate -- the
+    // lens always shows the caller's own lane.
+    // allow-global-scope: see comment above
     let rows: Vec<Row> = proxy_sessions::table
         .inner_join(assets::table)
         .filter(proxy_sessions::user_id.eq(user_id))
@@ -495,6 +667,7 @@ async fn load_user_lens(db_pool: &DbPool, user_uuid_str: &str, now: DateTime<Utc
             }
         })
         .collect();
+    // allow-global-scope: same rationale as load_user_lens row above.
     let own_recordings_total: i64 = proxy_sessions::table
         .filter(proxy_sessions::user_id.eq(user_id))
         .filter(proxy_sessions::recording_finalized_at.is_not_null())

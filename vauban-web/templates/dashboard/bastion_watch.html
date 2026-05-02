@@ -7,7 +7,14 @@
    The page reads from the server; the server pushes via WS.
    No mutating HTMX verbs, no actionable elements. See
    .cursor/rules/dashboard-passivity.mdc for the full rule. #}
-<main hx-ext="ws" ws-connect="/ws/dashboard" class="space-y-4">
+{# SECURITY (Bastion Watch isolation, L3+): supervisors connect to the
+   singleton `dashboard:stats` channel via /ws/dashboard; everyone else
+   lands on the per-user, parametric `dashboard:user:<uuid>` channel
+   via /ws/dashboard/personal. The pusher computes a separate snapshot
+   for each scope under the L1/L2 type-system + SQL filter contract. #}
+<main hx-ext="ws"
+      ws-connect="{% if perms.sessions_supervise %}/ws/dashboard{% else %}/ws/dashboard/personal{% endif %}"
+      class="space-y-4">
   <header class="flex flex-wrap items-center justify-between gap-2">
     <h1 class="text-xl font-bold leading-tight text-gray-900 dark:text-gray-100 sm:text-2xl lg:text-3xl">
       Bastion Watch
@@ -28,7 +35,7 @@
      hero-band duplicate was pure visual noise. The remaining tiles
      fit a 4-up grid for admins and a 3-up grid for users without
      leaving an empty cell. #}
-  <section class="grid grid-cols-1 sm:grid-cols-2 {% if perms.admin_view %}lg:grid-cols-4{% else %}lg:grid-cols-3{% endif %} gap-3"
+  <section class="grid grid-cols-1 sm:grid-cols-2 {% if perms.sessions_supervise %}lg:grid-cols-4{% else %}lg:grid-cols-3{% endif %} gap-3"
            aria-label="Hero KPIs">
     <div id="dash-hero-live">
       {% include "dashboard/tiles/_hero_live.html" %}
@@ -36,7 +43,7 @@
     <div id="dash-hero-today">
       {% include "dashboard/tiles/_hero_today.html" %}
     </div>
-    {% if perms.admin_view %}
+    {% if perms.sessions_supervise %}
     <div id="dash-hero-jit">
       {% include "dashboard/tiles/_hero_jit.html" %}
     </div>
@@ -58,7 +65,7 @@
     <div id="dash-evidence-chain" class="rounded-lg ring-1 ring-gray-200 dark:ring-gray-700 bg-white dark:bg-gray-800 p-4">
       {% include "dashboard/tiles/_evidence_chain.html" %}
     </div>
-    {% if perms.admin_view %}
+    {% if perms.sessions_supervise %}
     <div id="dash-access-posture" class="rounded-lg ring-1 ring-gray-200 dark:ring-gray-700 bg-white dark:bg-gray-800 p-4">
       {% include "dashboard/tiles/_access_posture.html" %}
     </div>
@@ -77,7 +84,7 @@
     {% include "dashboard/tiles/_heatmap.html" %}
   </section>
 
-  {% if perms.admin_view %}
+  {% if perms.sessions_supervise %}
   <section id="dash-system-health" class="rounded-lg ring-1 ring-gray-200 dark:ring-gray-700 bg-white dark:bg-gray-800 p-4">
     {% include "dashboard/tiles/_system_health.html" %}
   </section>

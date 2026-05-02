@@ -13,5 +13,6 @@ pub mod snapshot;
 pub mod widgets;
 
 pub use snapshot::{
-    AccessPosture, DashboardSnapshot, EvidenceChain, HeroBand, LiveSession, UserLens,
+    AccessPosture, DashboardScope, DashboardSnapshot, EvidenceChain, HeroBand, LiveSession,
+    UserLens,
 };

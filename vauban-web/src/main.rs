@@ -1121,6 +1121,17 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
 
     let ws_routes = Router::new()
         .route("/ws/dashboard", get(handlers::websocket::dashboard_ws))
+        // SECURITY (Bastion Watch isolation): the per-user dashboard
+        // endpoint subscribes to `dashboard:user:<uuid>` -- a
+        // parametric, high-cardinality channel -- and is the
+        // fan-out for the L2 SQL-filtered snapshot computed by the
+        // pusher under `DashboardScope::User(self.id)`. Non-
+        // supervisor users land here; supervisors land on
+        // `/ws/dashboard` (singleton `DashboardStats`).
+        .route(
+            "/ws/dashboard/personal",
+            get(handlers::websocket::dashboard_personal_ws),
+        )
         // Session-specific routes get the ownership guard middleware
         .route(
             "/ws/session/{id}",

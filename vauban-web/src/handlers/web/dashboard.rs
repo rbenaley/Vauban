@@ -3,14 +3,22 @@ use super::*;
 use crate::models::session::SessionType;
 
 /// Dashboard home page -- the "Bastion Watch" passive operations
-/// console. Aggregates system_health + dashboard snapshot +
-/// anomalies (admin only) and renders the read-only template.
+/// console.
+///
+/// SECURITY (per-user isolation, L3 Casbin gate): the request
+/// scope is derived from `perms.sessions_supervise`. A supervisor
+/// (`sessions:supervise` granted by Casbin) sees the bastion-wide
+/// aggregate via `DashboardScope::Global`; every other caller is
+/// pinned to `DashboardScope::User(self.user_id)` so loaders inject
+/// `WHERE proxy_sessions.user_id = $1`. The compiler enforces the
+/// scope-as-mandatory-parameter contract on the loader signatures
+/// (L1) and the SQL filter is applied loader-side (L2).
 pub async fn dashboard_home(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
     perms: crate::auth::permissions::PermissionContext,
 ) -> Result<Response, AppError> {
-    use crate::services::dashboard::DashboardSnapshot;
+    use crate::services::dashboard::{DashboardScope, DashboardSnapshot, snapshot};
     use crate::templates::dashboard::BastionWatchTemplate;
 
     let user = Some(user_context_from_auth(&auth_user));
@@ -21,8 +29,27 @@ pub async fn dashboard_home(
             .await
             .into_fields();
 
-    // Cached system health (5 s TTL): cheap on the hot path.
-    let system_health = if perms.admin_view {
+    // Resolve the caller's user_id once for the scope decision.
+    // Fail-safe: if the user UUID cannot be resolved (corrupt JWT,
+    // user just deactivated, ...), pin to a sentinel `User(-1)`
+    // scope. -1 cannot match any row in `proxy_sessions.user_id`
+    // (positive serial), so the dashboard renders an empty view --
+    // strictly safer than upgrading to `Global` on resolution
+    // failure.
+    let scope = if perms.sessions_supervise {
+        DashboardScope::Global
+    } else {
+        match snapshot::resolve_user_id_from_uuid(&state.db_pool, &auth_user.uuid).await {
+            Some(uid) => DashboardScope::User(uid),
+            None => DashboardScope::User(-1),
+        }
+    };
+
+    // Cached system health (5 s TTL): cheap on the hot path. Gated
+    // on sessions_supervise (consistent with the rest of the
+    // gouvernance/infra surface) -- a non-supervisor never sees
+    // pool / req-rate / outbox state.
+    let system_health = if perms.sessions_supervise {
         Some(state.system_health_cache.snapshot().await)
     } else {
         None
@@ -34,10 +61,11 @@ pub async fn dashboard_home(
         &perms,
         system_health,
         &state.live_session_history,
+        scope,
     )
     .await;
 
-    let anomalies = if perms.admin_view {
+    let anomalies = if perms.sessions_supervise {
         crate::services::anomalies::detect_all(&state.db_pool).await
     } else {
         Vec::new()

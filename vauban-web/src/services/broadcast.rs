@@ -42,6 +42,13 @@ pub enum WsChannel {
     SessionsList,
     /// Admin auth sessions list updates (for /accounts/all-login-sessions page).
     AdminAuthSessions,
+    /// Bastion Watch dashboard updates scoped to a specific user.
+    /// One channel per non-supervisor user connected to the
+    /// `/ws/dashboard/personal` endpoint -- the pusher computes a
+    /// user-scoped snapshot (L1 type-system + L2 SQL filter) and
+    /// broadcasts the per-tile fragments here. High-cardinality:
+    /// scales with the number of dashboards open at any time.
+    DashboardStatsUser(String),
 }
 
 impl WsChannel {
@@ -58,8 +65,17 @@ impl WsChannel {
             WsChannel::UserApiKeys(user_id) => format!("user:{}:api-keys", user_id),
             WsChannel::SessionsList => "sessions:list".to_string(),
             WsChannel::AdminAuthSessions => "admin:auth-sessions".to_string(),
+            WsChannel::DashboardStatsUser(user_uuid) => {
+                format!("dashboard:user:{}", user_uuid)
+            }
         }
     }
+
+    /// Wire prefix shared by every parametric `DashboardStatsUser`
+    /// channel name. Centralised so the pusher's
+    /// `active_channels_with_prefix(...)` and the `parse(...)`
+    /// matcher cannot drift.
+    pub const DASHBOARD_USER_PREFIX: &'static str = "dashboard:user:";
 
     /// Whether this channel has low cardinality (a single instance
     /// across the whole service) versus high cardinality (one
@@ -89,9 +105,14 @@ impl WsChannel {
             | WsChannel::SessionsList
             | WsChannel::AdminAuthSessions => true,
             // Parametric channels: one instance per session / user.
+            // DashboardStatsUser is parametric because we open one
+            // per non-supervisor browser tab subscribed to the
+            // user-scoped dashboard; a singleton would force every
+            // tile broadcast to land at INFO and flood the log.
             WsChannel::SessionLive(_)
             | WsChannel::UserAuthSessions(_)
-            | WsChannel::UserApiKeys(_) => false,
+            | WsChannel::UserApiKeys(_)
+            | WsChannel::DashboardStatsUser(_) => false,
         }
     }
 
@@ -132,6 +153,10 @@ impl WsChannel {
                     .strip_suffix(":api-keys")?
                     .to_string();
                 Some(WsChannel::UserApiKeys(user_id))
+            }
+            s if s.starts_with(Self::DASHBOARD_USER_PREFIX) => {
+                let user_uuid = s.strip_prefix(Self::DASHBOARD_USER_PREFIX)?.to_string();
+                Some(WsChannel::DashboardStatsUser(user_uuid))
             }
             _ => None,
         }
@@ -450,6 +475,29 @@ impl BroadcastService {
         }
     }
 
+    /// List the names of channels currently registered whose key
+    /// starts with `prefix` AND has at least one live subscriber.
+    /// Used by the Bastion Watch dashboard pusher to enumerate the
+    /// per-user `dashboard:user:<uuid>` channels that need a fresh
+    /// per-tick snapshot. Channels with `receiver_count() == 0`
+    /// (e.g. a tab that just disconnected and not yet been removed
+    /// by `remove_channel`) are skipped so the pusher does not
+    /// compute snapshots for nobody.
+    ///
+    /// SECURITY: this is the discovery seam used to drive the
+    /// per-user broadcast loop. It MUST only return channel names;
+    /// it does not surface per-user payloads or sensitive state.
+    pub async fn active_channels_with_prefix(&self, prefix: &str) -> Vec<String> {
+        let channels = self.channels.read().await;
+        channels
+            .iter()
+            .filter(|(name, sender)| {
+                name.starts_with(prefix) && sender.receiver_count() > 0
+            })
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
     /// Remove a channel (useful for cleanup).
     pub async fn remove_channel(&self, channel: &WsChannel) {
         let channel_name = channel.as_str();
@@ -722,6 +770,68 @@ mod tests {
         assert_eq!(
             service.subscriber_count(&WsChannel::DashboardStats).await,
             2
+        );
+    }
+
+    #[tokio::test]
+    async fn active_channels_with_prefix_lists_only_subscribed_channels() {
+        let service = BroadcastService::new();
+        // Three subscribers across different channels, one of them
+        // a parametric DashboardStatsUser pseudo-uuid.
+        let _r1 = service
+            .subscribe(&WsChannel::DashboardStatsUser("alice".into()))
+            .await;
+        let _r2 = service
+            .subscribe(&WsChannel::DashboardStatsUser("bob".into()))
+            .await;
+        let _r3 = service.subscribe(&WsChannel::DashboardStats).await;
+
+        let mut found = service
+            .active_channels_with_prefix("dashboard:user:")
+            .await;
+        found.sort();
+        assert_eq!(
+            found,
+            vec![
+                "dashboard:user:alice".to_string(),
+                "dashboard:user:bob".to_string()
+            ],
+            "active_channels_with_prefix MUST return ONLY the \
+             dashboard:user:* names, never the singleton \
+             dashboard:stats"
+        );
+    }
+
+    #[tokio::test]
+    async fn active_channels_with_prefix_skips_zero_receiver_channels() {
+        let service = BroadcastService::new();
+        // Subscribe then drop -> sender lives in the registry but
+        // receiver_count() == 0. The pusher must NOT spend cycles on
+        // a snapshot for nobody.
+        {
+            let _r = service
+                .subscribe(&WsChannel::DashboardStatsUser("ghost".into()))
+                .await;
+        }
+        let found = service
+            .active_channels_with_prefix("dashboard:user:")
+            .await;
+        assert!(
+            found.is_empty(),
+            "channel with 0 receivers must be skipped (got {:?})",
+            found
+        );
+    }
+
+    #[tokio::test]
+    async fn active_channels_with_prefix_returns_empty_for_unknown_prefix() {
+        let service = BroadcastService::new();
+        let _r = service.subscribe(&WsChannel::DashboardStats).await;
+        assert!(
+            service
+                .active_channels_with_prefix("does-not-exist:")
+                .await
+                .is_empty()
         );
     }
 
@@ -1242,6 +1352,7 @@ mod tests {
             WsChannel::SessionLive("any".into()),
             WsChannel::UserAuthSessions("any".into()),
             WsChannel::UserApiKeys("any".into()),
+            WsChannel::DashboardStatsUser("any-uuid".into()),
         ] {
             assert!(
                 !high.is_low_cardinality(),
@@ -1267,6 +1378,7 @@ mod tests {
             ("session:abc-def", false),
             ("user:42:auth-sessions", false),
             ("user:42:api-keys", false),
+            ("dashboard:user:00000000-0000-0000-0000-000000000001", false),
         ];
         for (name, expected) in cases {
             assert_eq!(
@@ -1573,19 +1685,25 @@ mod tests {
     #[test]
     fn dashboard_pusher_uses_send_periodic_not_send() {
         let src = include_str!("../tasks/dashboard_pusher.rs");
-        // Tolerate whitespace / newline between `.send_periodic(`
-        // and `&WsChannel::` (rustfmt may wrap long arg lists). We
-        // only care that, anywhere in the file, every method call
-        // site that targets a `WsChannel::` literal goes through
-        // `.send_periodic(`.
+        // Tolerate whitespace / newline (rustfmt may wrap long arg
+        // lists) and tolerate either inline-channel callers
+        // (`.send_periodic(&WsChannel::Foo, ...)`) or routed-channel
+        // callers (`.send_periodic(target_channel, ...)`). The
+        // post-isolation pusher uses the latter so it can dispatch
+        // to `WsChannel::DashboardStats` (Global) or
+        // `WsChannel::DashboardStatsUser(uuid)` (per-user) at
+        // run-time. Bare `.send(...)` on the broadcast service is
+        // forbidden in this file regardless, because the pusher
+        // ticks on a 1 Hz scheduled stream and would flood INFO.
         let strip_ws = |s: &str| -> String { s.chars().filter(|c| !c.is_whitespace()).collect() };
         let compact = strip_ws(src);
-        let bad = compact.matches(".send(&WsChannel::").count();
-        let good = compact.matches(".send_periodic(&WsChannel::").count();
+        let bad = compact.matches(".send(&WsChannel::").count()
+            + compact.matches(".send(target_channel,").count();
+        let good = compact.matches(".send_periodic(").count();
         assert_eq!(
             bad, 0,
-            "dashboard_pusher.rs must not call `.send(&WsChannel::...)` \
-             on a scheduled tick -- use `.send_periodic(...)` so the \
+            "dashboard_pusher.rs must not call `.send(...)` on a \
+             scheduled tick -- use `.send_periodic(...)` so the \
              success log stays at DEBUG. Found {bad} occurrence(s)."
         );
         assert!(

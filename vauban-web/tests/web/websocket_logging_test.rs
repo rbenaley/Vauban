@@ -59,6 +59,7 @@ fn fn_body(source: &str, signature: &str) -> String {
 /// the four lifecycle events automatically).
 const HANDLERS: &[&str] = &[
     "async fn handle_dashboard_socket(",
+    "async fn handle_dashboard_personal_socket(",
     "async fn handle_session_socket(",
     "async fn handle_notifications_socket(",
     "async fn handle_active_sessions_socket(",
@@ -143,6 +144,7 @@ fn every_handler_emits_the_four_lifecycle_events_at_info_with_channel_field() {
 fn every_upgrade_wrapper_emits_connection_requested_at_info() {
     for sig in &[
         "pub async fn dashboard_ws(",
+        "pub async fn dashboard_personal_ws(",
         "pub async fn session_ws(",
         "pub async fn notifications_ws(",
         "pub async fn active_sessions_ws(",

@@ -84,24 +84,27 @@ fn admin_only_tiles_are_perms_gated() {
             .find(&needle)
             .unwrap_or_else(|| panic!("missing {needle}"));
         // Walk backwards looking for the nearest `{% if` -- it MUST
-        // be `{% if perms.admin_view %}` (or a `{% else %}` of a
-        // larger admin gate).
+        // be `{% if perms.sessions_supervise %}` (the per-user
+        // isolation refactor moved every dashboard gate from
+        // `admin_view` to `sessions_supervise`).
         let prefix = &page[..pos];
         let last_if = prefix.rfind("{% if ").unwrap_or(0);
         let last_endif = prefix.rfind("{% endif %}").unwrap_or(0);
         assert!(
             last_if > last_endif,
-            "tile `{}` MUST be inside an `{{% if perms.admin_view %}}` \
-             block; otherwise non-admin browsers would receive its WS \
+            "tile `{}` MUST be inside an `{{% if perms.sessions_supervise %}}` \
+             block; otherwise non-supervisor browsers would receive its WS \
              updates.",
             id
         );
         let if_block = &prefix[last_if..];
         assert!(
-            if_block.contains("perms.admin_view"),
+            if_block.contains("perms.sessions_supervise"),
             "tile `{}` is wrapped in an `if`, but the condition does \
-             not mention `perms.admin_view`. Replace the gate with \
-             one that delegates to Casbin via `PermissionContext`.",
+             not mention `perms.sessions_supervise`. The dashboard \
+             gates the supervisor surface on `sessions:supervise` \
+             (Casbin) -- a regression to `admin_view` would defeat \
+             the per-user isolation contract.",
             id
         );
     }
@@ -217,17 +220,20 @@ fn ws_targets_match_between_pusher_and_page() {
 }
 
 /// Pin: the dashboard `/` handler MUST query `system_health` only
-/// for admins, and MUST always run the snapshot loader (it is the
-/// page's primary read).
+/// for supervisors, and MUST always run the snapshot loader (it is
+/// the page's primary read). The gate moved from `admin_view` to
+/// `sessions_supervise` as part of the per-user isolation refactor.
 #[test]
-fn dashboard_handler_gates_system_health_on_admin_view() {
+fn dashboard_handler_gates_system_health_on_sessions_supervise() {
     let src = include_str!("../../src/handlers/web/dashboard.rs");
-    let needle = "if perms.admin_view";
+    let needle = "if perms.sessions_supervise";
     assert!(
         src.contains(needle),
         "dashboard_home MUST gate the system_health load on \
-         `perms.admin_view`. Without the gate, every user request \
-         would do a 5-query DB roundtrip just to discard the data."
+         `perms.sessions_supervise`. Without the gate, every user \
+         request would do a 5-query DB roundtrip just to discard \
+         the data, AND a non-supervisor would observe pool / \
+         req-rate / outbox state."
     );
     assert!(
         src.contains("DashboardSnapshot::load"),
@@ -316,18 +322,19 @@ fn pusher_skips_when_no_subscribers() {
 fn live_sparkline_uses_live_session_history_not_openings_per_hour() {
     let snap = include_str!("../../src/services/dashboard/snapshot.rs");
     assert!(
-        snap.contains("live_session_history.record(live_u64)"),
+        snap.contains("live_session_history.record(scope_key, live_u64)"),
         "load_hero MUST record the freshly-observed live count into \
-         the LiveSessionHistory before building the sparkline. A drift \
-         to recording AFTER, or skipping the record altogether, would \
-         show a sparkline whose last point lags the displayed KPI."
+         the LiveSessionHistory under the SAME scope_key it queries. \
+         A drift here (e.g. recording under Global from a User scope) \
+         would mix lanes and leak active counts across tenants."
     );
     assert!(
-        snap.contains("live_session_history.series()"),
+        snap.contains("live_session_history.series(scope_key)"),
         "load_hero MUST derive its sparkline series from \
-         LiveSessionHistory::series(). The previous \
-         build_today_sparkline() helper conflated openings-per-hour \
-         with active-count-over-time and was deliberately removed."
+         LiveSessionHistory::series(scope_key) on the SAME scope it \
+         queries. The previous build_today_sparkline() helper \
+         conflated openings-per-hour with active-count-over-time and \
+         was deliberately removed."
     );
     assert!(
         !snap.contains("fn build_today_sparkline"),
@@ -366,5 +373,168 @@ fn http_rate_middleware_is_mounted_on_common_layers() {
         "record_http_request MUST be layered ON common_layers, not \
          declared above it (otherwise a fresh refactor could move it \
          to a sub-router and silently un-cover most routes)."
+    );
+}
+
+// =====================================================================
+// Bastion Watch -- per-user isolation pin tests (5-layer defence)
+// =====================================================================
+
+fn snapshot_src() -> &'static str {
+    include_str!("../../src/services/dashboard/snapshot.rs")
+}
+
+fn handler_src() -> &'static str {
+    include_str!("../../src/handlers/web/dashboard.rs")
+}
+
+fn broadcast_src() -> &'static str {
+    include_str!("../../src/services/broadcast.rs")
+}
+
+/// Pin (L1 type system): every user-scopable loader MUST take a
+/// `scope: DashboardScope` parameter so the compiler refuses an
+/// oversight. Adding a new loader without the parameter would
+/// silently fall back to a global query.
+#[test]
+fn every_user_scopable_loader_takes_dashboard_scope() {
+    let src = snapshot_src();
+    for sig in &[
+        "pub(crate) async fn load_hero(",
+        "pub(crate) async fn load_live_sessions(",
+        "pub(crate) async fn load_evidence_chain(",
+        "pub(crate) async fn load_heatmap(",
+    ] {
+        let idx = src.find(sig).unwrap_or_else(|| {
+            panic!(
+                "loader signature `{}` not found in snapshot.rs -- did the \
+                 visibility or name drift?",
+                sig
+            )
+        });
+        // Look at the next 400 chars after the signature for the
+        // multi-line argument list.
+        let window = &src[idx..(idx + 400).min(src.len())];
+        assert!(
+            window.contains("scope: DashboardScope"),
+            "{} MUST accept `scope: DashboardScope` as a mandatory \
+             parameter (Bastion Watch isolation L1). See \
+             .cursor/rules/dashboard-passivity.mdc, section \
+             User-scope isolation.",
+            sig
+        );
+    }
+}
+
+/// Pin (L3 Casbin gate): the dashboard handler MUST derive its
+/// scope from `perms.sessions_supervise` -- not from a hard-coded
+/// `is_staff || is_superuser` shortcut, which would silently bypass
+/// custom Casbin policies.
+#[test]
+fn dashboard_handler_derives_scope_from_sessions_supervise() {
+    let src = handler_src();
+    assert!(
+        src.contains("perms.sessions_supervise"),
+        "dashboard_home MUST gate the scope decision on \
+         `perms.sessions_supervise`. A handler that uses \
+         `auth_user.is_staff` or hard-codes `Global` would defeat \
+         the L3 layer of the per-user isolation."
+    );
+    assert!(
+        src.contains("DashboardScope::Global") && src.contains("DashboardScope::User"),
+        "dashboard_home MUST construct both DashboardScope variants \
+         (Global for supervisors, User(id) for everyone else)."
+    );
+}
+
+/// Pin (L3 routing): the pusher MUST route per-user broadcasts on
+/// the `WsChannel::DashboardStatsUser(...)` parametric channel
+/// (high-cardinality), not on the singleton `DashboardStats`.
+#[test]
+fn dashboard_pusher_routes_users_to_dashboard_stats_user_channel() {
+    let src = pusher_src();
+    assert!(
+        src.contains("WsChannel::DashboardStatsUser("),
+        "dashboard_pusher MUST broadcast per-user snapshots on \
+         `WsChannel::DashboardStatsUser(uuid)`. Routing them on the \
+         singleton `DashboardStats` would re-leak global data to \
+         every supervisor sub."
+    );
+    assert!(
+        src.contains("active_channels_with_prefix("),
+        "dashboard_pusher MUST enumerate active per-user channels \
+         via BroadcastService::active_channels_with_prefix to drive \
+         the per-scope loop. Hard-coding the user list would bypass \
+         the live-subscriber GC."
+    );
+    assert!(
+        src.contains("gc_idle_after("),
+        "dashboard_pusher MUST call LiveSessionHistory::gc_idle_after \
+         on the slow tier to evict idle per-user rings (else memory \
+         grows linearly with the count of users who ever opened the \
+         dashboard)."
+    );
+}
+
+/// Pin (cardinality classification): `DashboardStatsUser(_)` MUST
+/// classify as high-cardinality -- one channel per non-supervisor
+/// browser tab. Logging it at INFO would flood the operator's
+/// terminal with one line per tile per second per user.
+#[test]
+fn ws_channel_dashboard_stats_user_is_high_cardinality() {
+    let src = broadcast_src();
+    assert!(
+        src.contains("WsChannel::DashboardStatsUser(_)"),
+        "broadcast.rs MUST list `WsChannel::DashboardStatsUser(_)` in \
+         its `is_low_cardinality` exhaustive match arms."
+    );
+    // Verify the variant is grouped with the high-cardinality arm.
+    let is_low_idx = src
+        .find("pub fn is_low_cardinality(&self) -> bool {")
+        .expect("is_low_cardinality must exist on WsChannel");
+    let body = &src[is_low_idx..(is_low_idx + 1500).min(src.len())];
+    let user_idx = body
+        .find("WsChannel::DashboardStatsUser(_)")
+        .expect("DashboardStatsUser arm must appear in is_low_cardinality body");
+    let false_idx = body.find("=> false")
+        .expect("is_low_cardinality must contain a `=> false` branch");
+    assert!(
+        user_idx < false_idx,
+        "WsChannel::DashboardStatsUser(_) MUST be on the high-cardinality \
+         (`=> false`) branch of is_low_cardinality. Routing it as low \
+         (`=> true`) would log every per-tile broadcast at INFO."
+    );
+}
+
+/// Pin (template gate alignment): `bastion_watch.html` MUST gate
+/// supervisor tiles on `perms.sessions_supervise`, NEVER on the
+/// looser `perms.admin_view` (which a Casbin policy could grant
+/// without granting supervise).
+#[test]
+fn template_gates_supervisor_tiles_on_sessions_supervise() {
+    let page = page_template_src();
+    assert!(
+        page.contains("perms.sessions_supervise"),
+        "bastion_watch.html MUST gate supervisor tiles on \
+         `perms.sessions_supervise` (the L3 Casbin gate of the \
+         Bastion Watch isolation contract)."
+    );
+    // The pre-isolation gate `perms.admin_view` MUST not appear in
+    // the page -- letting both gates coexist would create an
+    // ambiguous policy surface.
+    assert!(
+        !page.contains("perms.admin_view"),
+        "bastion_watch.html MUST NOT gate any tile on \
+         `perms.admin_view`; the per-user isolation refactor moved \
+         every dashboard tile to `perms.sessions_supervise`. \
+         Mixing both would let a `admin_view`-without-`sessions_supervise` \
+         user observe global telemetry."
+    );
+    // The WS endpoint MUST split on the same gate.
+    assert!(
+        page.contains("/ws/dashboard/personal"),
+        "bastion_watch.html MUST route non-supervisors to \
+         /ws/dashboard/personal so they receive only their own \
+         user-scoped fragments."
     );
 }
