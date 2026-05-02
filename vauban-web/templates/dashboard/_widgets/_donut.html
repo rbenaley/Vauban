@@ -1,0 +1,23 @@
+{# Bastion Watch donut -- requires `donut: Donut` in scope. #}
+<svg class="block mx-auto" width="140" height="140"
+     viewBox="0 0 42 42"
+     role="img" aria-label="distribution chart" focusable="false">
+  <circle cx="21" cy="21" r="15.915" fill="none"
+          class="stroke-gray-100 dark:stroke-gray-700" stroke-width="3" />
+  {% for seg in donut.segments %}
+  <circle cx="21" cy="21" r="15.915" fill="none"
+          class="{{ seg.stroke_class }}"
+          stroke-width="3"
+          stroke-dasharray="{{ seg.dasharray }}"
+          stroke-dashoffset="{{ seg.dashoffset }}"
+          aria-label="{{ seg.label }}: {{ seg.value }}" />
+  {% endfor %}
+  <text x="21" y="21" text-anchor="middle"
+        class="fill-gray-900 dark:fill-gray-100 font-mono" font-size="6">
+    {{ donut.total }}
+  </text>
+  <text x="21" y="27" text-anchor="middle"
+        class="fill-gray-500 dark:fill-gray-400" font-size="3">
+    total
+  </text>
+</svg>

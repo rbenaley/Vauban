@@ -1,0 +1,32 @@
+{# HERO -- JIT queue (admin only). #}
+<div class="h-full rounded-lg ring-1 ring-gray-200 dark:ring-gray-700 bg-white dark:bg-gray-800 p-4">
+  <div class="flex items-center justify-between mb-2">
+    <h3 class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+      JIT QUEUE
+    </h3>
+    <span class="font-mono text-xs text-amber-500 dark:text-amber-400">pending</span>
+  </div>
+  <div class="flex items-end justify-between gap-3">
+    {% match snapshot.hero.jit_queue %}
+    {% when Some with (n) %}
+    <div>
+      <p class="font-mono text-3xl font-bold {% if *n > 0 %}text-amber-600 dark:text-amber-400{% else %}text-gray-400 dark:text-gray-500{% endif %}">
+        {{ n }}
+      </p>
+      <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">awaiting approval</p>
+    </div>
+    <div>
+      {% if *n == 0 %}
+      <span class="text-emerald-500 dark:text-emerald-400 font-mono text-xs">CLEAR</span>
+      {% else %}
+      <span class="text-amber-500 dark:text-amber-400 font-mono text-xs">REVIEW</span>
+      {% endif %}
+    </div>
+    {% when None %}
+    <div>
+      <p class="font-mono text-3xl font-bold text-gray-400 dark:text-gray-500">--</p>
+      <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">no data</p>
+    </div>
+    {% endmatch %}
+  </div>
+</div>

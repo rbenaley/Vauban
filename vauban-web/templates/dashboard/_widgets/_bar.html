@@ -1,0 +1,11 @@
+{# Bastion Watch horizontal bar -- requires `bar: Bar` in scope. #}
+<div>
+  <div class="flex items-baseline justify-between mb-1">
+    <span class="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">{{ bar.label }}</span>
+    <span class="text-xs font-mono text-gray-700 dark:text-gray-300">{{ bar.value_label }}</span>
+  </div>
+  <div class="h-2 bg-gray-100 dark:bg-gray-700 rounded overflow-hidden">
+    <div class="h-2 {{ bar.color_class }}"
+         style="width: {{ bar.width_pct }}%"></div>
+  </div>
+</div>

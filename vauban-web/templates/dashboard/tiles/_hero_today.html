@@ -1,0 +1,25 @@
+{# HERO -- TODAY's sessions + recorded ratio. #}
+<div class="h-full rounded-lg ring-1 ring-gray-200 dark:ring-gray-700 bg-white dark:bg-gray-800 p-4">
+  <div class="flex items-center justify-between mb-2">
+    <h3 class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+      TODAY
+    </h3>
+    <span class="font-mono text-xs text-gray-400 dark:text-gray-500">24h</span>
+  </div>
+  <div class="flex items-end justify-between gap-3">
+    <div>
+      <p class="font-mono text-3xl font-bold text-vauban-600 dark:text-vauban-400">
+        {{ snapshot.hero.today }}
+      </p>
+      <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+        sessions opened
+      </p>
+    </div>
+    <div class="text-right">
+      <p class="font-mono text-lg font-semibold text-vauban-700 dark:text-vauban-300">
+        {{ snapshot.hero.today_recorded_pct }}%
+      </p>
+      <p class="text-xs text-gray-500 dark:text-gray-400">recorded</p>
+    </div>
+  </div>
+</div>

@@ -17,6 +17,12 @@ tailwind.config = {
                     800: '#075985',
                     900: '#0c4a6e',
                 }
+            },
+            // Bastion Watch heatmap requires a 24-column grid (one
+            // column per hour). Tailwind ships up to grid-cols-12 by
+            // default, hence the explicit extension.
+            gridTemplateColumns: {
+                '24': 'repeat(24, minmax(0, 1fr))'
             }
         }
     }

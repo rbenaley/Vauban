@@ -21,6 +21,7 @@ pub mod asset_user_admin_lifecycle_e2e_test;
 pub mod asset_user_zone_render_snapshot_test;
 pub mod assets_db_invariants_test;
 pub mod audit_authors_render_test;
+pub mod bastion_watch_test;
 pub mod boot_smoke_test;
 pub mod casbin_handler_eradication_web_test;
 pub mod dashboard_pages_test;

@@ -1,0 +1,44 @@
+{# PANEL -- LIVE SESSIONS (top 10). #}
+<div class="flex items-center justify-between mb-3">
+  <h2 class="text-sm font-semibold uppercase tracking-wide text-gray-700 dark:text-gray-200">
+    Live sessions
+  </h2>
+  <span class="font-mono text-xs text-gray-400 dark:text-gray-500">top 10</span>
+</div>
+{% if snapshot.live_sessions.is_empty() %}
+<p class="text-sm text-gray-500 dark:text-gray-400 py-6 text-center">
+  No active sessions.
+</p>
+{% else %}
+<ul class="divide-y divide-gray-100 dark:divide-gray-700">
+  {% for s in snapshot.live_sessions %}
+  <li class="py-2 flex items-center gap-3">
+    <span class="inline-flex h-6 w-6 items-center justify-center rounded
+      {% if s.session_type == "ssh" %}bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300{% else %}bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300{% endif %}
+      font-mono text-[10px] uppercase">
+      {{ s.session_type }}
+    </span>
+    <div class="flex-1 min-w-0">
+      <p class="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
+        {{ s.username }}
+        <span class="text-gray-400 dark:text-gray-500 mx-1">&rarr;</span>
+        {{ s.asset_name }}
+      </p>
+      <p class="text-xs text-gray-500 dark:text-gray-400 font-mono truncate">
+        {{ s.asset_hostname }}
+      </p>
+    </div>
+    <div class="text-right">
+      <p class="font-mono text-xs text-gray-700 dark:text-gray-300">
+        {% if s.duration_seconds < 60 %}{{ s.duration_seconds }}s{% else if s.duration_seconds < 3600 %}{{ s.duration_seconds / 60 }}m{% else %}{{ s.duration_seconds / 3600 }}h{% endif %}
+      </p>
+      {% if s.is_recorded %}
+      <span class="font-mono text-[10px] text-rose-600 dark:text-rose-400">REC</span>
+      {% else %}
+      <span class="font-mono text-[10px] text-gray-400 dark:text-gray-500">--</span>
+      {% endif %}
+    </div>
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}

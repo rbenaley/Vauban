@@ -4,6 +4,7 @@
 //! sandboxed services (Capsicum). The supervisor performs DNS resolution
 //! and TCP connect, then passes the FD to the target service via SCM_RIGHTS.
 
+use crate::services::broker_latency::BrokerLatencyTracker;
 use shared::ipc::{IpcChannel, recv_fd};
 use shared::messages::{ControlMessage, Message, SensitiveString, Service, ServiceStats};
 use std::collections::HashMap;
@@ -122,6 +123,11 @@ pub struct SupervisorClientInner {
     admin_db_pool: OnceLock<crate::db::DbPool>,
     /// Tokio runtime handle for running async admin commands from the sync IPC thread.
     tokio_handle: OnceLock<tokio::runtime::Handle>,
+    /// Sliding-window tracker for supervisor-brokered round-trip
+    /// latency. Updated from `request_tcp_connect` /
+    /// `request_smtp_connect` on success; consumed by the Bastion
+    /// Watch dashboard's "FD-passing latency" tile.
+    pub broker_latency: Arc<BrokerLatencyTracker>,
 }
 
 /// Async client for communication with the supervisor.
@@ -173,6 +179,7 @@ impl SupervisorClient {
             tls_cert_tx: Mutex::new(Some(tls_cert_tx)),
             admin_db_pool: OnceLock::new(),
             tokio_handle: OnceLock::new(),
+            broker_latency: Arc::new(BrokerLatencyTracker::default()),
         });
 
         let thread_inner = Arc::clone(&inner);
@@ -217,6 +224,13 @@ impl SupervisorClient {
             "Requesting TCP connect from supervisor"
         );
 
+        // Broker latency stopwatch: started right before we hand the
+        // request off to the supervisor IPC channel and stopped when
+        // we observe a successful response. Failure / timeout paths
+        // intentionally skip the record() so a misbehaving target
+        // (closed port, DNS failure) does not skew the dashboard p95.
+        let started_at = Instant::now();
+
         // Create response channel
         let (tx, rx) = oneshot::channel();
         {
@@ -250,7 +264,12 @@ impl SupervisorClient {
 
         // Wait for response with timeout
         match tokio::time::timeout(Duration::from_secs(30), rx).await {
-            Ok(Ok(result)) => Ok(result),
+            Ok(Ok(result)) => {
+                if result.success {
+                    self.inner.broker_latency.record(started_at.elapsed());
+                }
+                Ok(result)
+            }
             Ok(Err(_)) => {
                 // Channel dropped (shouldn't happen)
                 Err("Response channel dropped".to_string())
@@ -304,6 +323,10 @@ impl SupervisorClient {
             "Requesting SMTP broker from supervisor"
         );
 
+        // Same rationale as `request_tcp_connect`: only successful
+        // SMTP broker round-trips feed the dashboard tracker.
+        let started_at = Instant::now();
+
         let (tx, rx) = oneshot::channel();
         {
             let mut pending = self
@@ -333,7 +356,12 @@ impl SupervisorClient {
         }
 
         match tokio::time::timeout(timeout, rx).await {
-            Ok(Ok(result)) => Ok(result),
+            Ok(Ok(result)) => {
+                if result.success {
+                    self.inner.broker_latency.record(started_at.elapsed());
+                }
+                Ok(result)
+            }
             Ok(Err(_)) => Err("SMTP broker response channel dropped".to_string()),
             Err(_) => {
                 self.inner
@@ -405,6 +433,12 @@ impl SupervisorClient {
     /// Get a reference to the shared inner state (for statistics).
     pub fn inner(&self) -> &Arc<SupervisorClientInner> {
         &self.inner
+    }
+
+    /// Reference to the broker latency tracker shared with the
+    /// dashboard's "FD-passing latency" tile.
+    pub fn broker_latency(&self) -> &Arc<BrokerLatencyTracker> {
+        &self.inner.broker_latency
     }
 
     /// Get the raw FD passing socket (for receiving the listening socket from supervisor).

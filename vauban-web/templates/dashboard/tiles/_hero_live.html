@@ -1,0 +1,37 @@
+{# HERO -- LIVE sessions count.
+   Layout note: the sparkline shrinks (`flex-1 min-w-0`) and the
+   "active sessions" label is `whitespace-nowrap` so the tile keeps
+   the same intrinsic height as its hero-band siblings (TODAY, JIT,
+   EVIDENCE) when the row is laid out by the grid. Without this the
+   160 px-wide SVG starved the left column and the label wrapped on
+   two lines, making the LIVE tile visibly taller than the others. #}
+<div class="h-full rounded-lg ring-1 ring-gray-200 dark:ring-gray-700 bg-white dark:bg-gray-800 p-4">
+  <div class="flex items-center justify-between mb-2">
+    <h3 class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+      LIVE
+    </h3>
+    <span class="font-mono text-xs text-emerald-600 dark:text-emerald-400">&#9679; now</span>
+  </div>
+  <div class="flex items-end justify-between gap-3">
+    <div class="flex-shrink-0">
+      <p class="font-mono text-3xl font-bold text-emerald-600 dark:text-emerald-400">
+        {{ snapshot.hero.live }}
+      </p>
+      <p class="text-xs text-gray-500 dark:text-gray-400 mt-1 whitespace-nowrap">active sessions</p>
+    </div>
+    <div class="text-emerald-500 dark:text-emerald-400 flex-1 min-w-0">
+      <svg viewBox="0 0 160 40" preserveAspectRatio="none"
+           class="w-full h-10"
+           role="img" aria-label="live trend" focusable="false">
+        <polyline fill="none" stroke="currentColor" stroke-width="1.5"
+                  stroke-linecap="round" stroke-linejoin="round"
+                  vector-effect="non-scaling-stroke"
+                  points="{{ snapshot.hero.spark_today.points }}" />
+        <circle cx="{{ snapshot.hero.spark_today.last_x }}"
+                cy="{{ snapshot.hero.spark_today.last_y }}"
+                r="2" fill="currentColor"
+                vector-effect="non-scaling-stroke" />
+      </svg>
+    </div>
+  </div>
+</div>

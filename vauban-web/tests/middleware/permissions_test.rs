@@ -657,6 +657,23 @@ fn build_state_from(app: &TestApp) -> vauban_web::AppState {
             false,
             5,
         ),
+        http_rate: std::sync::Arc::new(
+            vauban_web::services::system_health::HttpRateTracker::new(),
+        ),
+        live_session_history: std::sync::Arc::new(
+            vauban_web::services::system_health::LiveSessionHistory::default(),
+        ),
+        system_health_cache: std::sync::Arc::new(
+            vauban_web::services::system_health::SystemHealthCache::new(
+                app.db_pool.clone(),
+                std::sync::Arc::new(
+                    vauban_web::services::broker_latency::BrokerLatencyTracker::default(),
+                ),
+                std::sync::Arc::new(
+                    vauban_web::services::system_health::HttpRateTracker::new(),
+                ),
+            ),
+        ),
     }
 }
 

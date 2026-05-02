@@ -1,0 +1,30 @@
+{# PANEL -- ANOMALIES (admin only). #}
+<div class="flex items-center justify-between mb-3">
+  <h2 class="text-sm font-semibold uppercase tracking-wide text-gray-700 dark:text-gray-200">
+    Anomalies
+  </h2>
+  <span class="font-mono text-xs text-gray-400 dark:text-gray-500">{{ anomalies.len() }}</span>
+</div>
+{% if anomalies.is_empty() %}
+<p class="text-sm text-emerald-600 dark:text-emerald-400 py-6 text-center font-mono">
+  CLEAR
+</p>
+<p class="text-xs text-gray-500 dark:text-gray-400 text-center -mt-4">
+  No anomalies detected.
+</p>
+{% else %}
+<ul class="space-y-2">
+  {% for a in anomalies %}
+  <li class="flex items-start gap-2 p-2 rounded {{ a.severity.css_class() }}">
+    <span class="font-mono text-[10px] uppercase tracking-wide mt-0.5">
+      {{ a.severity.label() }}
+    </span>
+    <div class="flex-1 min-w-0">
+      <p class="text-sm font-medium">{{ a.title }}</p>
+      <p class="text-xs opacity-80 mt-0.5">{{ a.detail }}</p>
+    </div>
+    <span class="font-mono text-sm font-bold">{{ a.count }}</span>
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}

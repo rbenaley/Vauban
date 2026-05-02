@@ -2,19 +2,48 @@
 use super::*;
 use crate::models::session::SessionType;
 
-/// Dashboard home page - requires authentication and MFA verification.
+/// Dashboard home page -- the "Bastion Watch" passive operations
+/// console. Aggregates system_health + dashboard snapshot +
+/// anomalies (admin only) and renders the read-only template.
 pub async fn dashboard_home(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    perms: crate::auth::permissions::PermissionContext,
 ) -> Result<Response, AppError> {
+    use crate::services::dashboard::DashboardSnapshot;
+    use crate::templates::dashboard::BastionWatchTemplate;
+
     let user = Some(user_context_from_auth(&auth_user));
-    let base = BaseTemplate::new("Dashboard".to_string(), user.clone()).with_current_path("/");
+    let base = BaseTemplate::new("Bastion Watch".to_string(), user.clone()).with_current_path("/");
 
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
             .await
             .into_fields();
-    let template = HomeTemplate {
+
+    // Cached system health (5 s TTL): cheap on the hot path.
+    let system_health = if perms.admin_view {
+        Some(state.system_health_cache.snapshot().await)
+    } else {
+        None
+    };
+
+    let snapshot = DashboardSnapshot::load(
+        &state.db_pool,
+        &auth_user,
+        &perms,
+        system_health,
+        &state.live_session_history,
+    )
+    .await;
+
+    let anomalies = if perms.admin_view {
+        crate::services::anomalies::detect_all(&state.db_pool).await
+    } else {
+        Vec::new()
+    };
+
+    let template = BastionWatchTemplate {
         title,
         user: user_ctx,
         vauban,
@@ -22,7 +51,9 @@ pub async fn dashboard_home(
         language_code,
         sidebar_content,
         header_user,
-        favorite_assets: Vec::new(), // TODO: Load from database
+        snapshot,
+        anomalies,
+        perms,
     };
 
     let html = template

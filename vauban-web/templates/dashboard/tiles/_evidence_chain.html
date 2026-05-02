@@ -1,0 +1,59 @@
+{# PANEL -- EVIDENCE CHAIN. #}
+<div class="flex items-center justify-between mb-3">
+  <h2 class="text-sm font-semibold uppercase tracking-wide text-gray-700 dark:text-gray-200">
+    Evidence chain
+  </h2>
+  <span class="font-mono text-xs text-gray-400 dark:text-gray-500">phases</span>
+</div>
+<div class="grid grid-cols-1 sm:grid-cols-3 gap-3 items-center">
+  <div class="text-center">
+    <svg class="block mx-auto" width="140" height="140"
+         viewBox="0 0 42 42"
+         role="img" aria-label="evidence distribution"
+         focusable="false">
+      <circle cx="21" cy="21" r="15.915" fill="none"
+              class="stroke-gray-100 dark:stroke-gray-700" stroke-width="3" />
+      {% for seg in snapshot.evidence_chain.donut.segments %}
+      <circle cx="21" cy="21" r="15.915" fill="none"
+              class="{{ seg.stroke_class }}" stroke-width="3"
+              stroke-dasharray="{{ seg.dasharray }}"
+              stroke-dashoffset="{{ seg.dashoffset }}"
+              aria-label="{{ seg.label }}: {{ seg.value }}" />
+      {% endfor %}
+      <text x="21" y="21" text-anchor="middle"
+            class="fill-gray-900 dark:fill-gray-100 font-mono" font-size="6">
+        {{ snapshot.evidence_chain.donut.total }}
+      </text>
+      <text x="21" y="27" text-anchor="middle"
+            class="fill-gray-500 dark:fill-gray-400" font-size="3">total</text>
+    </svg>
+  </div>
+  <div class="sm:col-span-2 space-y-2">
+    <div class="flex items-baseline justify-between">
+      <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide">recording</span>
+      <span class="font-mono text-sm text-rose-600 dark:text-rose-400">{{ snapshot.evidence_chain.recording_now }}</span>
+    </div>
+    <div class="flex items-baseline justify-between">
+      <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide">hydrating</span>
+      <span class="font-mono text-sm text-amber-600 dark:text-amber-400">{{ snapshot.evidence_chain.awaiting_hydration }}</span>
+    </div>
+    <div class="flex items-baseline justify-between">
+      <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide">vaulted</span>
+      <span class="font-mono text-sm text-emerald-600 dark:text-emerald-400">{{ snapshot.evidence_chain.hydrated_finalized }}</span>
+    </div>
+    <div class="flex items-baseline justify-between border-t border-gray-100 dark:border-gray-700 pt-2">
+      <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide">vault size</span>
+      <span class="font-mono text-sm text-gray-700 dark:text-gray-300">
+        {% if snapshot.evidence_chain.vault_total_bytes < 1024 %}
+        {{ snapshot.evidence_chain.vault_total_bytes }} B
+        {% else if snapshot.evidence_chain.vault_total_bytes < 1048576 %}
+        {{ snapshot.evidence_chain.vault_total_bytes / 1024 }} KB
+        {% else if snapshot.evidence_chain.vault_total_bytes < 1073741824 %}
+        {{ snapshot.evidence_chain.vault_total_bytes / 1048576 }} MB
+        {% else %}
+        {{ snapshot.evidence_chain.vault_total_bytes / 1073741824 }} GB
+        {% endif %}
+      </span>
+    </div>
+  </div>
+</div>

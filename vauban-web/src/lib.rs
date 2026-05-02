@@ -48,6 +48,7 @@ use services::broadcast::BroadcastService;
 use services::connections::{UserConnectionRegistry, WsConnectionCounter};
 use services::mailer::Mailer;
 use services::rate_limit::RateLimiter;
+use services::system_health::{HttpRateTracker, LiveSessionHistory, SystemHealthCache};
 use std::sync::Arc;
 
 pub mod static_assets;
@@ -96,6 +97,22 @@ pub struct AppState {
     /// the same DB transaction as the business mutation; the
     /// dispatcher task drains the outbox out-of-band.
     pub mailer: Mailer,
+    /// Sliding-window HTTP request rate tracker (Bastion Watch).
+    /// Updated by the `record_http_request` middleware on every
+    /// request, consumed by the SYSTEM HEALTH tile via
+    /// `system_health_cache`.
+    pub http_rate: Arc<HttpRateTracker>,
+    /// Sliding-window live-session count history (Bastion Watch
+    /// LIVE hero tile). Sampled at every dashboard snapshot
+    /// computation so the tile's sparkline reflects active-count
+    /// motion over the last ~2 minutes (NOT openings-per-hour,
+    /// which lied in the LIVE context: a long-running session
+    /// would surface as a single past spike then a flat zero).
+    pub live_session_history: Arc<LiveSessionHistory>,
+    /// 5 s-cached system-health snapshot for the Bastion Watch
+    /// dashboard. Re-uses `db_pool` and the supervisor's broker
+    /// latency tracker, so this struct is lightweight to clone.
+    pub system_health_cache: Arc<SystemHealthCache>,
 }
 
 #[cfg(test)]

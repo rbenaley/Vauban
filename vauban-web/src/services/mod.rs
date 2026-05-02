@@ -7,11 +7,14 @@
 //! credential-listing logic must go through encrypted-transit verbs in
 //! [`crate::ipc::vault::VaultCryptoClient`].
 pub mod access;
+pub mod anomalies;
 pub mod asset_membership;
 pub mod audit_authors;
 pub mod auth;
 pub mod broadcast;
+pub mod broker_latency;
 pub mod connections;
+pub mod dashboard;
 pub mod rate_limit;
 pub mod rbac;
 pub mod mailer;
@@ -19,6 +22,7 @@ pub mod recording_hydrator;
 pub mod role_invariants;
 pub mod session_access;
 pub mod smtp_client;
+pub mod system_health;
 pub mod virtual_group;
 
 pub use access::*;

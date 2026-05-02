@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+
+{% block title %}Bastion Watch - {{ vauban.brand_name }}{% endblock %}
+
+{% block content %}
+{# Bastion Watch -- a passive, role-aware operations radar.
+   The page reads from the server; the server pushes via WS.
+   No mutating HTMX verbs, no actionable elements. See
+   .cursor/rules/dashboard-passivity.mdc for the full rule. #}
+<main hx-ext="ws" ws-connect="/ws/dashboard" class="space-y-4">
+  <header class="flex flex-wrap items-center justify-between gap-2">
+    <h1 class="text-xl font-bold leading-tight text-gray-900 dark:text-gray-100 sm:text-2xl lg:text-3xl">
+      Bastion Watch
+    </h1>
+    <div class="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400 font-mono">
+      <span class="ws-status inline-flex h-2 w-2 rounded-full bg-emerald-500"></span>
+      <span>live</span>
+      <span aria-hidden="true">&middot;</span>
+      <span>updated {{ snapshot.computed_at.format("%H:%M:%S") }}</span>
+    </div>
+  </header>
+
+  {# ------------------------------------------------------------------
+     HERO BAND -- 4 KPIs admin / 3 KPIs user
+     ------------------------------------------------------------------
+     The HEALTH tile was retired: the System Health panel below
+     covers the same metric (FD-pass p95) at higher fidelity, so a
+     hero-band duplicate was pure visual noise. The remaining tiles
+     fit a 4-up grid for admins and a 3-up grid for users without
+     leaving an empty cell. #}
+  <section class="grid grid-cols-1 sm:grid-cols-2 {% if perms.admin_view %}lg:grid-cols-4{% else %}lg:grid-cols-3{% endif %} gap-3"
+           aria-label="Hero KPIs">
+    <div id="dash-hero-live">
+      {% include "dashboard/tiles/_hero_live.html" %}
+    </div>
+    <div id="dash-hero-today">
+      {% include "dashboard/tiles/_hero_today.html" %}
+    </div>
+    {% if perms.admin_view %}
+    <div id="dash-hero-jit">
+      {% include "dashboard/tiles/_hero_jit.html" %}
+    </div>
+    {% endif %}
+    <div id="dash-hero-evidence">
+      {% include "dashboard/tiles/_hero_evidence.html" %}
+    </div>
+  </section>
+
+  {# ------------------------------------------------------------------
+     BODY GRID -- live sessions / evidence chain (always)
+                  access posture / anomalies (admin only)
+                  user lens (user only, full-width)
+     ------------------------------------------------------------------ #}
+  <section class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+    <div id="dash-live-sessions" class="rounded-lg ring-1 ring-gray-200 dark:ring-gray-700 bg-white dark:bg-gray-800 p-4">
+      {% include "dashboard/tiles/_live_sessions.html" %}
+    </div>
+    <div id="dash-evidence-chain" class="rounded-lg ring-1 ring-gray-200 dark:ring-gray-700 bg-white dark:bg-gray-800 p-4">
+      {% include "dashboard/tiles/_evidence_chain.html" %}
+    </div>
+    {% if perms.admin_view %}
+    <div id="dash-access-posture" class="rounded-lg ring-1 ring-gray-200 dark:ring-gray-700 bg-white dark:bg-gray-800 p-4">
+      {% include "dashboard/tiles/_access_posture.html" %}
+    </div>
+    <div id="dash-anomalies" class="rounded-lg ring-1 ring-gray-200 dark:ring-gray-700 bg-white dark:bg-gray-800 p-4">
+      {% include "dashboard/tiles/_anomalies.html" %}
+    </div>
+    {% else %}
+    <div id="dash-user-lens" class="rounded-lg ring-1 ring-gray-200 dark:ring-gray-700 bg-white dark:bg-gray-800 p-4 lg:col-span-2">
+      {% include "dashboard/tiles/_user_lens.html" %}
+    </div>
+    {% endif %}
+  </section>
+
+  {# Heatmap full-width, visible to everyone #}
+  <section id="dash-heatmap" class="rounded-lg ring-1 ring-gray-200 dark:ring-gray-700 bg-white dark:bg-gray-800 p-4">
+    {% include "dashboard/tiles/_heatmap.html" %}
+  </section>
+
+  {% if perms.admin_view %}
+  <section id="dash-system-health" class="rounded-lg ring-1 ring-gray-200 dark:ring-gray-700 bg-white dark:bg-gray-800 p-4">
+    {% include "dashboard/tiles/_system_health.html" %}
+  </section>
+  {% endif %}
+</main>
+{% endblock %}

@@ -1,0 +1,40 @@
+{# PANEL -- ACCESS POSTURE (admin only). #}
+<div class="flex items-center justify-between mb-3">
+  <h2 class="text-sm font-semibold uppercase tracking-wide text-gray-700 dark:text-gray-200">
+    Access posture
+  </h2>
+  <span class="font-mono text-xs text-gray-400 dark:text-gray-500">guardrails</span>
+</div>
+{% match snapshot.access_posture %}
+{% when Some with (ap) %}
+<div class="space-y-3">
+  {% for bar in ap.bars %}
+  <div>
+    <div class="flex items-baseline justify-between mb-1">
+      <span class="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">{{ bar.label }}</span>
+      <span class="text-xs font-mono text-gray-700 dark:text-gray-300">{{ bar.value_label }}</span>
+    </div>
+    <div class="h-2 bg-gray-100 dark:bg-gray-700 rounded overflow-hidden">
+      <div class="h-2 {{ bar.color_class }}"
+           style="width: {{ bar.width_pct }}%"></div>
+    </div>
+  </div>
+  {% endfor %}
+  <div class="grid grid-cols-3 gap-2 pt-2 border-t border-gray-100 dark:border-gray-700">
+    <div class="text-center">
+      <p class="font-mono text-lg font-semibold text-emerald-600 dark:text-emerald-400">{{ ap.mfa_enabled_users }}</p>
+      <p class="text-[10px] uppercase text-gray-500 dark:text-gray-400">MFA on</p>
+    </div>
+    <div class="text-center">
+      <p class="font-mono text-lg font-semibold text-amber-600 dark:text-amber-400">{{ ap.mfa_disabled_users }}</p>
+      <p class="text-[10px] uppercase text-gray-500 dark:text-gray-400">MFA off</p>
+    </div>
+    <div class="text-center">
+      <p class="font-mono text-lg font-semibold text-vauban-600 dark:text-vauban-400">{{ ap.active_rules }}</p>
+      <p class="text-[10px] uppercase text-gray-500 dark:text-gray-400">rules</p>
+    </div>
+  </div>
+</div>
+{% when None %}
+<p class="text-sm text-gray-500 dark:text-gray-400 py-6 text-center">No access posture data.</p>
+{% endmatch %}

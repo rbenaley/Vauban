@@ -2,12 +2,22 @@
 ///
 /// Manages real-time updates to connected clients via channels.
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::sync::{RwLock, broadcast};
 use tracing::{debug, info, trace};
 
 /// Default channel capacity for broadcast channels.
 const DEFAULT_CHANNEL_CAPACITY: usize = 100;
+
+/// Coalesce identical periodic broadcast log lines emitted within
+/// this window into a single deferred line tagged with the
+/// structured `count = N` field. The dashboard pusher emits 4-12
+/// `Broadcast message sent` events per second per connected admin;
+/// without coalescing the operator's terminal becomes unreadable
+/// even at `debug!`. 1 s matches the fastest pusher cadence so a
+/// burst is always aggregated and flushed before the next tick.
+const PERIODIC_LOG_COALESCE_WINDOW: Duration = Duration::from_secs(1);
 
 /// Available WebSocket channels.
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
@@ -164,11 +174,110 @@ impl WsMessage {
     }
 }
 
+/// Coalescer for the `send_periodic` / `send_raw_periodic` log
+/// stream. Identical `(channel, receivers)` events that arrive
+/// within [`PERIODIC_LOG_COALESCE_WINDOW`] are buffered and emitted
+/// as a single `debug!` line carrying the aggregated count. The
+/// flush is opportunistic: it happens as a side-effect of the next
+/// `record(...)` call after the window has elapsed, so an idle
+/// stream does not trail a final line -- which is fine given the
+/// pusher always ticks. Using `std::sync::Mutex` (not `tokio::sync`)
+/// is deliberate: `record` is called from inside a `tokio::sync::
+/// RwLock` read guard and we MUST NOT await while holding it; the
+/// critical section is purely O(unique-keys) HashMap arithmetic.
+#[derive(Debug)]
+struct PeriodicLogCoalescer {
+    pending: Mutex<HashMap<(String, usize), u32>>,
+    last_flush: Mutex<Option<Instant>>,
+    window: Duration,
+}
+
+impl PeriodicLogCoalescer {
+    fn new(window: Duration) -> Self {
+        Self {
+            pending: Mutex::new(HashMap::new()),
+            last_flush: Mutex::new(None),
+            window,
+        }
+    }
+
+    /// Pure step function suitable for unit tests: returns the
+    /// drained batch (possibly empty) and bumps the counter for the
+    /// current event. The flush is "due" iff the window has elapsed
+    /// since the previous flush -- the very first call always opens
+    /// a fresh window with an empty drain.
+    fn step(
+        &self,
+        channel: &str,
+        receivers: usize,
+        now: Instant,
+    ) -> Vec<((String, usize), u32)> {
+        // Always lock in the same order (last_flush, pending) so two
+        // concurrent recorders never deadlock on each other.
+        let mut last = self
+            .last_flush
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let mut pending = self.pending.lock().unwrap_or_else(|p| p.into_inner());
+        let due = match *last {
+            Some(t) if now.saturating_duration_since(t) < self.window => false,
+            _ => {
+                *last = Some(now);
+                true
+            }
+        };
+        let drained: Vec<((String, usize), u32)> = if due {
+            std::mem::take(&mut *pending).into_iter().collect()
+        } else {
+            Vec::new()
+        };
+        *pending
+            .entry((channel.to_string(), receivers))
+            .or_insert(0) += 1;
+        drained
+    }
+
+    /// Record a periodic broadcast and emit any drained batch from
+    /// the previous window at `debug!`. The wording is uniform
+    /// (`"Broadcast message sent"`) across both branches; the
+    /// burst count is carried by the structured `count = N` field
+    /// when the same `(channel, receivers)` was emitted more than
+    /// once during the window. We deliberately do NOT also append
+    /// a `(N times)` suffix to the message body: log aggregators
+    /// (Loki, ELK, Datadog) pivot on the structured field, and
+    /// duplicating the value in the human-readable message body
+    /// would force grep-based readers to dedupe against themselves.
+    fn record(&self, channel: &str, receivers: usize) {
+        let drained = self.step(channel, receivers, Instant::now());
+        for ((ch, recv), cnt) in drained {
+            if cnt <= 1 {
+                debug!(
+                    channel = %ch,
+                    receivers = recv,
+                    "Broadcast message sent"
+                );
+            } else {
+                debug!(
+                    channel = %ch,
+                    receivers = recv,
+                    count = cnt,
+                    "Broadcast message sent"
+                );
+            }
+        }
+    }
+}
+
 /// Broadcast service for managing WebSocket channels.
 #[derive(Clone)]
 pub struct BroadcastService {
     channels: Arc<RwLock<HashMap<String, broadcast::Sender<String>>>>,
     capacity: usize,
+    /// Per-instance coalescer for `send_raw_periodic` log lines.
+    /// Wrapped in `Arc` so all clones of `BroadcastService` share
+    /// the same buffer (otherwise each clone would coalesce in
+    /// isolation and the operator would see duplicate burst lines).
+    periodic_coalescer: Arc<PeriodicLogCoalescer>,
 }
 
 impl BroadcastService {
@@ -177,6 +286,9 @@ impl BroadcastService {
         Self {
             channels: Arc::new(RwLock::new(HashMap::new())),
             capacity: DEFAULT_CHANNEL_CAPACITY,
+            periodic_coalescer: Arc::new(PeriodicLogCoalescer::new(
+                PERIODIC_LOG_COALESCE_WINDOW,
+            )),
         }
     }
 
@@ -185,6 +297,9 @@ impl BroadcastService {
         Self {
             channels: Arc::new(RwLock::new(HashMap::new())),
             capacity,
+            periodic_coalescer: Arc::new(PeriodicLogCoalescer::new(
+                PERIODIC_LOG_COALESCE_WINDOW,
+            )),
         }
     }
 
@@ -258,6 +373,66 @@ impl BroadcastService {
             }
         } else {
             // Channel doesn't exist yet (no subscribers) - this is normal, not a warning
+            trace!(channel = %channel_name, "Channel does not exist");
+            Err(())
+        }
+    }
+
+    /// Send a message that is part of a SCHEDULED, HIGH-FREQUENCY
+    /// stream (e.g. the Bastion Watch dashboard pusher ticking every
+    /// 1 s on `WsChannel::DashboardStats`).
+    ///
+    /// Unlike [`Self::send`], the success log is FORCED to `debug!`
+    /// regardless of the channel's cardinality classification. The
+    /// rationale: cardinality is "how many channel instances exist"
+    /// (orthogonal to volume), but a low-cardinality channel hammered
+    /// by a 1 Hz tick would still flood the operator's terminal --
+    /// 4 to 12 lines/s for a single connected admin in our case.
+    /// The operationally-meaningful event for a periodic stream is
+    /// "the pusher started" / "the pusher stopped" (which the
+    /// dispatcher logs at `info!` itself), not every tile push.
+    ///
+    /// Use [`Self::send`] for event-driven, low-frequency broadcasts
+    /// (notifications, `recording_hydrated`, JIT requests, ...) so
+    /// every meaningful event still surfaces at `info!` for ops.
+    pub async fn send_periodic(
+        &self,
+        channel: &WsChannel,
+        message: WsMessage,
+    ) -> Result<usize, ()> {
+        let channel_name = channel.as_str();
+        let html = message.to_htmx_html();
+        self.send_raw_periodic(&channel_name, html).await
+    }
+
+    /// String-keyed counterpart of [`Self::send_periodic`]. See that
+    /// method for the rationale; this entry point exists for callers
+    /// that already work with the wire-form channel name.
+    pub async fn send_raw_periodic(
+        &self,
+        channel_name: &str,
+        html: String,
+    ) -> Result<usize, ()> {
+        let channels = self.channels.read().await;
+
+        if let Some(sender) = channels.get(channel_name) {
+            match sender.send(html) {
+                Ok(count) => {
+                    // Coalesced debug log: identical lines emitted
+                    // within `PERIODIC_LOG_COALESCE_WINDOW` are folded
+                    // into a single deferred entry tagged with the
+                    // structured `count = N` field. See
+                    // `PeriodicLogCoalescer` for the contract and
+                    // `send_periodic` doc for the rationale.
+                    self.periodic_coalescer.record(channel_name, count);
+                    Ok(count)
+                }
+                Err(_) => {
+                    trace!(channel = %channel_name, "No receivers for broadcast");
+                    Ok(0)
+                }
+            }
+        } else {
             trace!(channel = %channel_name, "Channel does not exist");
             Err(())
         }
@@ -1165,6 +1340,259 @@ mod tests {
             body.contains("debug!(channel = %channel_name, receivers = count"),
             "send_raw must emit the success log at DEBUG for high-cardinality \
              channels (so RDP frame fan-outs do not flood INFO)"
+        );
+    }
+
+    /// Source-level pin on `BroadcastService::send_raw_periodic`:
+    /// must route every success through the `PeriodicLogCoalescer`
+    /// and NEVER emit `info!` directly. The coalescer itself logs
+    /// at `debug!` (pinned by `coalescer_record_emits_debug_only`).
+    /// A future edit that drops the coalescer (back to a per-event
+    /// `debug!`) re-creates the production flooding flagged after
+    /// the v0.7.0 dashboard refonte: 4-12 identical lines/s per
+    /// connected admin. A future edit that uses `info!` here would
+    /// regress the v0.7.0 fix that moved the periodic stream to
+    /// `debug!`.
+    #[test]
+    fn send_raw_periodic_routes_through_coalescer() {
+        let src = include_str!("broadcast.rs");
+        let start = src
+            .find("pub async fn send_raw_periodic(")
+            .expect("send_raw_periodic signature");
+        let tail = &src[start..];
+        let open = tail
+            .find('{')
+            .expect("open brace after send_raw_periodic signature");
+        let mut depth: i32 = 0;
+        let mut end = tail.len();
+        for (i, ch) in tail[open..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = open + i + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let body = &tail[..end];
+        assert!(
+            body.contains("self.periodic_coalescer.record(channel_name, count)"),
+            "send_raw_periodic must route success through \
+             `self.periodic_coalescer.record(channel_name, count)` \
+             so identical lines are folded into one entry tagged \
+             with the structured `count = N` field per coalesce \
+             window. See `PeriodicLogCoalescer`."
+        );
+        assert!(
+            !body.contains("info!(channel = %channel_name"),
+            "send_raw_periodic must NOT emit the success log at INFO \
+             -- the periodic stream is debug-only by design (see \
+             `.cursor/rules/websocket-logging.mdc` section 4.1)"
+        );
+        assert!(
+            !body.contains("debug!(channel = %channel_name, receivers = count"),
+            "send_raw_periodic must NOT emit per-event `debug!` \
+             directly -- go through `periodic_coalescer.record(...)` \
+             so bursts are coalesced. The direct `debug!` belongs to \
+             `send_raw` (event-driven path)."
+        );
+    }
+
+    /// Coalescer behavior: identical events within the window are
+    /// buffered; the first event past the window flushes the prior
+    /// batch with the aggregated count.
+    #[test]
+    fn coalescer_buffers_within_window_and_flushes_on_window_close() {
+        let c = PeriodicLogCoalescer::new(Duration::from_millis(100));
+        let t0 = Instant::now();
+        // First event opens a window. Drain is empty (no prior
+        // batch).
+        let drained = c.step("dashboard:stats", 2, t0);
+        assert!(drained.is_empty());
+        // Five more events within the window: all buffered, no
+        // flush.
+        for i in 1..=5 {
+            let drained = c.step(
+                "dashboard:stats",
+                2,
+                t0 + Duration::from_millis(10 * i),
+            );
+            assert!(drained.is_empty(), "iteration {i} unexpectedly flushed");
+        }
+        // Past the window: the prior batch (6 events on the same
+        // (channel, receivers) key) flushes as a single aggregated
+        // entry, and a new window opens with the current event.
+        let drained = c.step(
+            "dashboard:stats",
+            2,
+            t0 + Duration::from_millis(150),
+        );
+        assert_eq!(
+            drained,
+            vec![(("dashboard:stats".to_string(), 2usize), 6u32)],
+            "flush MUST fold all 6 within-window events into one \
+             entry with count = 6"
+        );
+    }
+
+    /// Coalescer keys on (channel, receivers): two distinct keys
+    /// must NOT be collapsed together.
+    #[test]
+    fn coalescer_keys_on_channel_and_receivers_pair() {
+        let c = PeriodicLogCoalescer::new(Duration::from_millis(100));
+        let t0 = Instant::now();
+        // Open the window.
+        let _ = c.step("dashboard:stats", 2, t0);
+        // Burst on three distinct keys.
+        for _ in 0..3 {
+            let _ = c.step("dashboard:stats", 2, t0 + Duration::from_millis(10));
+        }
+        for _ in 0..2 {
+            let _ = c.step("dashboard:stats", 5, t0 + Duration::from_millis(20));
+        }
+        for _ in 0..1 {
+            let _ = c.step("notifications", 1, t0 + Duration::from_millis(30));
+        }
+        // Past the window -> drain as a multimap.
+        let mut drained =
+            c.step("dashboard:stats", 2, t0 + Duration::from_millis(150));
+        drained.sort();
+        let mut expected: Vec<((String, usize), u32)> = vec![
+            (("dashboard:stats".into(), 2), 4), // 1 from the window-open call + 3 bursts
+            (("dashboard:stats".into(), 5), 2),
+            (("notifications".into(), 1), 1),
+        ];
+        expected.sort();
+        assert_eq!(drained, expected);
+    }
+
+    /// Coalescer is concurrency-safe: two threads recording the same
+    /// key in a tight loop must not lose increments and must not
+    /// panic on poisoned locks (the impl uses `into_inner()` to
+    /// recover from a poisoned `std::sync::Mutex`).
+    #[test]
+    fn coalescer_concurrent_record_does_not_drop_events() {
+        use std::sync::Arc;
+        use std::thread;
+
+        // 1-hour window so nothing flushes during the test; we read
+        // the buffered count at the end.
+        let c = Arc::new(PeriodicLogCoalescer::new(Duration::from_secs(3600)));
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let c = Arc::clone(&c);
+            handles.push(thread::spawn(move || {
+                let t0 = Instant::now();
+                for i in 0..250 {
+                    let _ = c.step("ch", 1, t0 + Duration::from_micros(i));
+                }
+            }));
+        }
+        for h in handles {
+            h.join().expect("thread join");
+        }
+        let pending = c.pending.lock().expect("lock");
+        let total: u32 = pending.values().sum();
+        assert_eq!(total, 4 * 250, "every increment MUST be recorded");
+    }
+
+    /// Pin: the periodic coalescer's `record` method emits at
+    /// `debug!` for both branches (count == 1 and count > 1) and
+    /// surfaces the burst count via the structured `count = N`
+    /// field (NOT via a redundant `(N times)` suffix in the
+    /// message body). A drift to `info!` here would re-flood the
+    /// INFO stream; a drift in the structured field would silently
+    /// drop the burst signal that log aggregators key on.
+    #[test]
+    fn coalescer_record_emits_debug_only_with_burst_count_field() {
+        let src = include_str!("broadcast.rs");
+        let start = src
+            .find("fn record(&self, channel: &str, receivers: usize)")
+            .expect("PeriodicLogCoalescer::record signature");
+        let tail = &src[start..];
+        let open = tail.find('{').expect("open brace");
+        let mut depth: i32 = 0;
+        let mut end = tail.len();
+        for (i, ch) in tail[open..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = open + i + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let body = &tail[..end];
+        // Two debug! calls: one for cnt == 1, one for cnt > 1.
+        let debug_count = body.matches("debug!(").count();
+        assert!(
+            debug_count >= 2,
+            "PeriodicLogCoalescer::record must emit at least two \
+             `debug!(...)` calls (one per branch). Found {}",
+            debug_count
+        );
+        assert!(
+            !body.contains("info!(") && !body.contains("warn!(") && !body.contains("error!("),
+            "PeriodicLogCoalescer::record must stay at `debug!` -- \
+             a higher level would defeat the whole point of \
+             coalescing the periodic stream."
+        );
+        assert!(
+            body.contains("count = cnt"),
+            "the burst branch MUST surface the burst count via the \
+             structured `count = N` field so log aggregators can \
+             pivot on it. A future drift that drops `count = cnt` \
+             would silently lose the burst signal."
+        );
+        // Anti-redundancy guard: the message body MUST NOT also
+        // carry a `(N times)` suffix. The structured `count = N`
+        // field already conveys the value; duplicating it in the
+        // human-readable body forces grep-based readers to dedupe
+        // the same number against itself.
+        assert!(
+            !body.contains("(N times)") && !body.contains("({} times)"),
+            "PeriodicLogCoalescer::record must NOT format `(N times)` \
+             in the message body -- the structured `count = N` field \
+             is the single source of truth for the burst size."
+        );
+    }
+
+    /// Cross-file source-grep: the Bastion Watch dashboard pusher MUST
+    /// route every per-tile broadcast through `send_periodic`, not
+    /// `send`. The pusher ticks at 1 Hz on the singleton
+    /// `WsChannel::DashboardStats`; a careless `.send(` here would
+    /// regress the log to INFO and flood the operator's console.
+    #[test]
+    fn dashboard_pusher_uses_send_periodic_not_send() {
+        let src = include_str!("../tasks/dashboard_pusher.rs");
+        // Tolerate whitespace / newline between `.send_periodic(`
+        // and `&WsChannel::` (rustfmt may wrap long arg lists). We
+        // only care that, anywhere in the file, every method call
+        // site that targets a `WsChannel::` literal goes through
+        // `.send_periodic(`.
+        let strip_ws = |s: &str| -> String { s.chars().filter(|c| !c.is_whitespace()).collect() };
+        let compact = strip_ws(src);
+        let bad = compact.matches(".send(&WsChannel::").count();
+        let good = compact.matches(".send_periodic(&WsChannel::").count();
+        assert_eq!(
+            bad, 0,
+            "dashboard_pusher.rs must not call `.send(&WsChannel::...)` \
+             on a scheduled tick -- use `.send_periodic(...)` so the \
+             success log stays at DEBUG. Found {bad} occurrence(s)."
+        );
+        assert!(
+            good >= 3,
+            "dashboard_pusher.rs is expected to broadcast through at \
+             least 3 `.send_periodic(...)` call sites (fast, medium, \
+             slow tier). Found only {good}."
         );
     }
 }

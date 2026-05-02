@@ -1,0 +1,20 @@
+{# Bastion Watch gauge -- requires `gauge: Gauge` in scope. #}
+<svg class="block mx-auto" width="120" height="120"
+     viewBox="0 0 100 100"
+     role="img" aria-label="{{ gauge.label_inner }} {{ gauge.label_outer }}"
+     focusable="false">
+  {# track (full 270deg arc) #}
+  <path d="M 22.93 77.07 A 40 40 0 1 1 77.07 77.07"
+        fill="none" stroke-width="8" class="stroke-gray-200 dark:stroke-gray-700" />
+  {# filled portion #}
+  <path d="{{ gauge.arc_path }}" fill="none" stroke-width="8"
+        stroke-linecap="round" stroke="currentColor" />
+  <text x="50" y="52" text-anchor="middle"
+        class="fill-gray-900 dark:fill-gray-100 font-mono" font-size="22">
+    {{ gauge.label_inner }}
+  </text>
+  <text x="50" y="70" text-anchor="middle"
+        class="fill-gray-500 dark:fill-gray-400" font-size="9">
+    {{ gauge.label_outer }}
+  </text>
+</svg>

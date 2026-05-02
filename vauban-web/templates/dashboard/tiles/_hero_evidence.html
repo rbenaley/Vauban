@@ -1,0 +1,23 @@
+{# HERO -- EVIDENCE total finalized recordings. #}
+<div class="h-full rounded-lg ring-1 ring-gray-200 dark:ring-gray-700 bg-white dark:bg-gray-800 p-4">
+  <div class="flex items-center justify-between mb-2">
+    <h3 class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+      EVIDENCE
+    </h3>
+    <span class="font-mono text-xs text-vauban-600 dark:text-vauban-400">vault</span>
+  </div>
+  <div class="flex items-end justify-between gap-3">
+    <div>
+      <p class="font-mono text-3xl font-bold text-vauban-700 dark:text-vauban-300">
+        {{ snapshot.hero.evidence_total }}
+      </p>
+      <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">recordings sealed</p>
+    </div>
+    <div class="text-right">
+      <p class="font-mono text-lg font-semibold text-emerald-600 dark:text-emerald-400">
+        {{ snapshot.evidence_chain.recording_now }}
+      </p>
+      <p class="text-xs text-gray-500 dark:text-gray-400">live</p>
+    </div>
+  </div>
+</div>

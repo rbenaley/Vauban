@@ -1,0 +1,35 @@
+{# PANEL -- ACTIVITY HEATMAP (14 days x 24 hours). #}
+<div class="flex items-center justify-between mb-3">
+  <h2 class="text-sm font-semibold uppercase tracking-wide text-gray-700 dark:text-gray-200">
+    Activity heatmap
+  </h2>
+  <span class="font-mono text-xs text-gray-400 dark:text-gray-500">14d x 24h</span>
+</div>
+<div class="flex flex-col gap-1">
+  {% for row in snapshot.heatmap.rows %}
+  <div class="flex items-center gap-1">
+    <span class="text-xs text-gray-500 dark:text-gray-400 w-12 truncate font-mono">{{ row.label }}</span>
+    <div class="grid grid-cols-24 gap-px flex-1">
+      {% for cell in row.cells %}
+      <span class="block h-3 rounded-sm
+        {% if cell.intensity == 0 %}bg-gray-100 dark:bg-gray-700
+        {% else if cell.intensity == 1 %}bg-vauban-100 dark:bg-vauban-900/60
+        {% else if cell.intensity == 2 %}bg-vauban-300 dark:bg-vauban-700
+        {% else if cell.intensity == 3 %}bg-vauban-500 dark:bg-vauban-500
+        {% else %}bg-vauban-700 dark:bg-vauban-300
+        {% endif %}"
+        title="{{ cell.count }}"></span>
+      {% endfor %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+<div class="flex items-center gap-2 mt-3 text-[10px] text-gray-500 dark:text-gray-400 uppercase tracking-wide">
+  <span>less</span>
+  <span class="block h-3 w-3 rounded-sm bg-gray-100 dark:bg-gray-700"></span>
+  <span class="block h-3 w-3 rounded-sm bg-vauban-100 dark:bg-vauban-900/60"></span>
+  <span class="block h-3 w-3 rounded-sm bg-vauban-300 dark:bg-vauban-700"></span>
+  <span class="block h-3 w-3 rounded-sm bg-vauban-500 dark:bg-vauban-500"></span>
+  <span class="block h-3 w-3 rounded-sm bg-vauban-700 dark:bg-vauban-300"></span>
+  <span>more</span>
+</div>

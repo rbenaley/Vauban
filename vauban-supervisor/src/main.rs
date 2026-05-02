@@ -1762,6 +1762,14 @@ fn handle_tcp_connect_request(
         session_token,
     } = payload;
 
+    // Broker latency stopwatch: covers gate checks + DNS + TCP connect
+    // + SCM_RIGHTS hand-off + child notify + reply. Sampled by the
+    // dashboard's "FD-passing latency" tile (`broker tcp connect
+    // complete` log line + `latency_us` field). The start point is
+    // here -- after destructuring -- so the measurement reflects the
+    // useful work the supervisor does on behalf of the caller.
+    let broker_started_at = Instant::now();
+
     // === Step 0: target_service routing (early reject unknown variants).
     //
     // Each accepted target has its own authorization gate:
@@ -2056,6 +2064,20 @@ fn handle_tcp_connect_request(
     if let Err(e) = requesting_channel.send(&response) {
         error!("Failed to send TcpConnectResponse to web: {}", e);
     }
+
+    // Broker round-trip latency, exposed via structured log for ops
+    // and consumed by the Bastion Watch dashboard via the BrokerLatency
+    // pin (we keep `as u64` deliberately -- a future drift to f64 would
+    // break Prometheus / log-based aggregators that key on integer
+    // microseconds).
+    let broker_latency_us = broker_started_at.elapsed().as_micros() as u64;
+    info!(
+        target_service = ?target_service,
+        host = %host,
+        port = port,
+        latency_us = broker_latency_us,
+        "broker tcp connect complete"
+    );
 
     // Keep the TcpStream alive until after the FD has been sent
     // The child will have its own copy of the FD after SCM_RIGHTS
@@ -4137,6 +4159,51 @@ mod tests {
                  mailer.allows() returns false; this is the audit trail \
                  a SOC will look for after an SSRF attempt.",
             );
+    }
+
+    /// Bastion Watch dashboard pin: every successful broker hand-off
+    /// MUST emit a structured `latency_us` field on the
+    /// `broker tcp connect complete` log line. The dashboard's
+    /// "FD-passing latency" tile aggregates these per-call samples
+    /// into the median / p95 displayed under SYSTEM HEALTH. A drift
+    /// to `as f64` would break Prometheus-style integer aggregators.
+    #[test]
+    fn test_supervisor_tcp_broker_emits_latency_us_on_success() {
+        let source = supervisor_prod_source();
+        let handler_start = source
+            .find("fn handle_tcp_connect_request(")
+            .expect("handle_tcp_connect_request must exist");
+        let handler = &source[handler_start..];
+        let handler_end = handler
+            .find("\nfn ")
+            .or_else(|| handler.find("\nasync fn "))
+            .unwrap_or(handler.len());
+        let handler = &handler[..handler_end];
+        assert!(
+            handler.contains("let broker_started_at = Instant::now();"),
+            "handle_tcp_connect_request MUST start a broker latency \
+             stopwatch (`broker_started_at = Instant::now();`) right \
+             after destructuring the payload, so the latency covers \
+             gate checks + DNS + TCP connect + SCM_RIGHTS hand-off."
+        );
+        assert!(
+            handler.contains("\"broker tcp connect complete\""),
+            "handle_tcp_connect_request MUST emit the canonical \
+             `broker tcp connect complete` info!() line on success; \
+             the Bastion Watch dashboard's FD-passing tile keys on \
+             this exact wording."
+        );
+        assert!(
+            handler.contains("latency_us = broker_latency_us,"),
+            "handle_tcp_connect_request MUST log `latency_us` as a \
+             structured field. A drift to `latency_ms` or to a free \
+             text format would break the dashboard aggregator."
+        );
+        assert!(
+            handler.contains("as u64"),
+            "broker latency MUST be cast to u64 microseconds; a drift \
+             to f64 would break log-based integer aggregators."
+        );
     }
 
     /// Issue #10: regression that disabled `mailer` denies a Web target.

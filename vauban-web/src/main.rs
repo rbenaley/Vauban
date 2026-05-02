@@ -99,6 +99,7 @@ use vauban_web::{
     handlers,
     ipc::{ProxyRdpClient, ProxySshClient},
     middleware,
+    services,
     services::auth::AuthService,
     services::broadcast::BroadcastService,
     services::rate_limit::RateLimiter,
@@ -695,6 +696,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.mailer.max_attempts,
     );
 
+    // Bastion Watch dashboard plumbing. Both trackers are cheap to
+    // create (a few atomics) and shared across the SYSTEM HEALTH
+    // tile, the HTTP middleware, and the dashboard pusher.
+    let http_rate = std::sync::Arc::new(
+        vauban_web::services::system_health::HttpRateTracker::new(),
+    );
+    let live_session_history = std::sync::Arc::new(
+        vauban_web::services::system_health::LiveSessionHistory::default(),
+    );
+    let broker_latency_tracker = supervisor_client
+        .as_ref()
+        .map(|c| std::sync::Arc::clone(c.broker_latency()))
+        .unwrap_or_else(|| {
+            // Dev mode without supervisor: stand-alone tracker that
+            // never receives samples (snapshot stays empty / "n/a").
+            std::sync::Arc::new(
+                vauban_web::services::broker_latency::BrokerLatencyTracker::default(),
+            )
+        });
+    let system_health_cache = std::sync::Arc::new(
+        vauban_web::services::system_health::SystemHealthCache::new(
+            db_pool.clone(),
+            broker_latency_tracker,
+            http_rate.clone(),
+        ),
+    );
+
     // Create application state
     let app_state = AppState {
         config: config.clone(),
@@ -712,6 +740,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         access_client,
         auth_ipc_client,
         mailer,
+        http_rate,
+        live_session_history,
+        system_health_cache,
     };
 
     // Start background tasks for WebSocket updates
@@ -728,6 +759,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // supervisor-brokered SMTP socket. No-op when the [mailer] block
     // is disabled.
     vauban_web::tasks::mailer::start_mailer_dispatcher(app_state.clone());
+
+    // Bastion Watch dashboard pusher: a single Tokio task that
+    // recomputes the dashboard snapshot every second and broadcasts
+    // per-tile HTML fragments via `WsChannel::DashboardStats`. It
+    // self-throttles when no subscriber is connected, so the cost is
+    // zero on an idle bastion.
+    vauban_web::tasks::dashboard_pusher::start_dashboard_pusher(app_state.clone());
 
     // Recording integrity hydrator (issue #29 / UX-28 v1.4):
     // event-driven. PRIMARY path = per-call-site `enqueue_hydration`
@@ -1576,6 +1614,17 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
         // Security headers (XSS, clickjacking, MIME sniffing protection)
         .layer(axum::middleware::from_fn(
             middleware::security::security_headers_middleware,
+        ))
+        // Bastion Watch HTTP rate accounting. Counts every request
+        // into a 60-bucket sliding window so the System Health
+        // tile's `req/s (60s avg)` reflects real traffic. The
+        // tracker is process-wide and shared with the dashboard
+        // pusher via `AppState.http_rate`. Mounted on the global
+        // common_layers so it covers EVERY route -- web, api, and
+        // ws -- and bench traffic (`wrk`, `oha`, ...) is counted.
+        .layer(axum::middleware::from_fn_with_state(
+            state.http_rate.clone(),
+            services::system_health::record_http_request,
         ))
         .layer(cors.clone())
         .layer(axum::middleware::from_fn_with_state(
