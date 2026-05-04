@@ -236,6 +236,56 @@ impl AccessIpcClient {
         }
     }
 
+    /// Request a session-token-shaped credential for a strictly
+    /// READ-ONLY diagnostic operation that does not open an upstream
+    /// SSH session (today: SSH host-key verify and admin host-key
+    /// fetch). The returned token is wire-compatible with one minted
+    /// by [`Self::issue_session_token`] and is accepted by the
+    /// supervisor's TCP broker and the proxy's session-token gate
+    /// without code changes.
+    ///
+    /// Authorisation contract: vauban-access gates ONLY on
+    /// `caller_has_assets_manage = true` -- the access-rule re-check
+    /// performed by `IssueSessionToken` is intentionally skipped. A
+    /// non-`assets:manage` caller (or any serialization failure)
+    /// collapses to `AccessResponse::SessionTokenDenied`, surfaced as
+    /// `Err(AppError::Authorization("Access denied"))` so the wire
+    /// reply is indistinguishable from a session-token denial.
+    ///
+    /// Pre-issue #34 the host-key paths used `IssueSessionToken`,
+    /// which silently denied admins without an explicit access rule
+    /// for the asset; the verify endpoint then fell back to a green
+    /// "Verified" fragment that hid the missing live verification.
+    /// Routing those callers through this verb closes the regression.
+    pub async fn issue_diagnostic_token(
+        &self,
+        params: shared::session_token::SessionTokenParams,
+        caller_has_assets_manage: bool,
+    ) -> AppResult<Vec<u8>> {
+        let resp = self
+            .send_access_request(AccessReq::IssueDiagnosticToken {
+                user_uuid: params.user_uuid,
+                asset_uuid: params.asset_uuid,
+                protocol: params.protocol,
+                host: params.host,
+                port: params.port,
+                target_service: params.target_service,
+                session_id: params.session_id,
+                caller_has_assets_manage,
+            })
+            .await?;
+        match resp {
+            AccessResp::SessionTokenIssued { token } => Ok(token),
+            AccessResp::SessionTokenDenied => {
+                Err(AppError::Authorization("Access denied".to_string()))
+            }
+            AccessResp::Error(e) => Err(AppError::Ipc(e)),
+            _ => Err(AppError::Ipc(
+                "unexpected response for IssueDiagnosticToken".to_string(),
+            )),
+        }
+    }
+
     pub async fn check_access_multi(
         &self,
         user_id: i32,

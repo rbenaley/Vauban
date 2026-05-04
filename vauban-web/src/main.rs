@@ -98,8 +98,7 @@ use vauban_web::{
     error::AppError,
     handlers,
     ipc::{ProxyRdpClient, ProxySshClient},
-    middleware,
-    services,
+    middleware, services,
     services::auth::AuthService,
     services::broadcast::BroadcastService,
     services::rate_limit::RateLimiter,
@@ -699,12 +698,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Bastion Watch dashboard plumbing. Both trackers are cheap to
     // create (a few atomics) and shared across the SYSTEM HEALTH
     // tile, the HTTP middleware, and the dashboard pusher.
-    let http_rate = std::sync::Arc::new(
-        vauban_web::services::system_health::HttpRateTracker::new(),
-    );
-    let live_session_history = std::sync::Arc::new(
-        vauban_web::services::system_health::LiveSessionHistory::default(),
-    );
+    let http_rate =
+        std::sync::Arc::new(vauban_web::services::system_health::HttpRateTracker::new());
+    let live_session_history =
+        std::sync::Arc::new(vauban_web::services::system_health::LiveSessionHistory::default());
     let broker_latency_tracker = supervisor_client
         .as_ref()
         .map(|c| std::sync::Arc::clone(c.broker_latency()))
@@ -715,13 +712,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 vauban_web::services::broker_latency::BrokerLatencyTracker::default(),
             )
         });
-    let system_health_cache = std::sync::Arc::new(
-        vauban_web::services::system_health::SystemHealthCache::new(
+    let system_health_cache =
+        std::sync::Arc::new(vauban_web::services::system_health::SystemHealthCache::new(
             db_pool.clone(),
             broker_latency_tracker,
             http_rate.clone(),
-        ),
-    );
+        ));
 
     // Create application state
     let app_state = AppState {
@@ -1367,14 +1363,18 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             "/assets/access/{uuid}/delete",
             post(handlers::web::delete_access_rule_web),
         )
-        // Issue #27: `/assets/{uuid}` GET stays in the user zone as the
-        // "connect / request access" page (gated `assets:read`). It
-        // never renders Edit / Delete / Fetch-Host-Key affordances --
-        // those live exclusively under `/assets/manage/{uuid}`. The
-        // template strips them, the handler stops at the access-rule
-        // check (so a caller without an access rule is told the asset
-        // does not exist, not 403, to avoid being a probing oracle).
-        .route("/assets/{uuid}", get(handlers::web::asset_user_view))
+        // Issue #34: the user-zone `/assets/{uuid}` detail page has
+        // been REMOVED. It used to load `description`, dates,
+        // ssh-host-key fingerprint and the full UUID for any caller
+        // with `assets:read` (ie. every user) -- including users who
+        // were about to OPEN the "Request Access" modal, which only
+        // needs `uuid`, `asset_type` and `require_mfa`. Those three
+        // fields now travel inside `AssetListItem` so the modaux
+        // (Request Access + Justification) are inlined on the
+        // `/assets` list and never require a detail page.  The
+        // legacy URL is parked on a constant 410 Gone (anti-enum,
+        // audit-friendly) -- see `gone_asset_user_view`.
+        .route("/assets/{uuid}", get(handlers::web::gone_asset_user_view))
         // Sessions pages
         .route("/sessions", get(handlers::web::session_list))
         .route(

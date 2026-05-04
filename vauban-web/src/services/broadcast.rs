@@ -231,18 +231,10 @@ impl PeriodicLogCoalescer {
     /// current event. The flush is "due" iff the window has elapsed
     /// since the previous flush -- the very first call always opens
     /// a fresh window with an empty drain.
-    fn step(
-        &self,
-        channel: &str,
-        receivers: usize,
-        now: Instant,
-    ) -> Vec<((String, usize), u32)> {
+    fn step(&self, channel: &str, receivers: usize, now: Instant) -> Vec<((String, usize), u32)> {
         // Always lock in the same order (last_flush, pending) so two
         // concurrent recorders never deadlock on each other.
-        let mut last = self
-            .last_flush
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let mut last = self.last_flush.lock().unwrap_or_else(|p| p.into_inner());
         let mut pending = self.pending.lock().unwrap_or_else(|p| p.into_inner());
         let due = match *last {
             Some(t) if now.saturating_duration_since(t) < self.window => false,
@@ -256,9 +248,7 @@ impl PeriodicLogCoalescer {
         } else {
             Vec::new()
         };
-        *pending
-            .entry((channel.to_string(), receivers))
-            .or_insert(0) += 1;
+        *pending.entry((channel.to_string(), receivers)).or_insert(0) += 1;
         drained
     }
 
@@ -311,9 +301,7 @@ impl BroadcastService {
         Self {
             channels: Arc::new(RwLock::new(HashMap::new())),
             capacity: DEFAULT_CHANNEL_CAPACITY,
-            periodic_coalescer: Arc::new(PeriodicLogCoalescer::new(
-                PERIODIC_LOG_COALESCE_WINDOW,
-            )),
+            periodic_coalescer: Arc::new(PeriodicLogCoalescer::new(PERIODIC_LOG_COALESCE_WINDOW)),
         }
     }
 
@@ -322,9 +310,7 @@ impl BroadcastService {
         Self {
             channels: Arc::new(RwLock::new(HashMap::new())),
             capacity,
-            periodic_coalescer: Arc::new(PeriodicLogCoalescer::new(
-                PERIODIC_LOG_COALESCE_WINDOW,
-            )),
+            periodic_coalescer: Arc::new(PeriodicLogCoalescer::new(PERIODIC_LOG_COALESCE_WINDOW)),
         }
     }
 
@@ -433,11 +419,7 @@ impl BroadcastService {
     /// String-keyed counterpart of [`Self::send_periodic`]. See that
     /// method for the rationale; this entry point exists for callers
     /// that already work with the wire-form channel name.
-    pub async fn send_raw_periodic(
-        &self,
-        channel_name: &str,
-        html: String,
-    ) -> Result<usize, ()> {
+    pub async fn send_raw_periodic(&self, channel_name: &str, html: String) -> Result<usize, ()> {
         let channels = self.channels.read().await;
 
         if let Some(sender) = channels.get(channel_name) {
@@ -491,9 +473,7 @@ impl BroadcastService {
         let channels = self.channels.read().await;
         channels
             .iter()
-            .filter(|(name, sender)| {
-                name.starts_with(prefix) && sender.receiver_count() > 0
-            })
+            .filter(|(name, sender)| name.starts_with(prefix) && sender.receiver_count() > 0)
             .map(|(name, _)| name.clone())
             .collect()
     }
@@ -786,9 +766,7 @@ mod tests {
             .await;
         let _r3 = service.subscribe(&WsChannel::DashboardStats).await;
 
-        let mut found = service
-            .active_channels_with_prefix("dashboard:user:")
-            .await;
+        let mut found = service.active_channels_with_prefix("dashboard:user:").await;
         found.sort();
         assert_eq!(
             found,
@@ -813,9 +791,7 @@ mod tests {
                 .subscribe(&WsChannel::DashboardStatsUser("ghost".into()))
                 .await;
         }
-        let found = service
-            .active_channels_with_prefix("dashboard:user:")
-            .await;
+        let found = service.active_channels_with_prefix("dashboard:user:").await;
         assert!(
             found.is_empty(),
             "channel with 0 receivers must be skipped (got {:?})",
@@ -1418,7 +1394,9 @@ mod tests {
         let src = include_str!("broadcast.rs");
         // Locate the `send_raw` body via a brace counter so the pin
         // does not break on the formatting / match arms inside.
-        let start = src.find("pub async fn send_raw(").expect("send_raw signature");
+        let start = src
+            .find("pub async fn send_raw(")
+            .expect("send_raw signature");
         let tail = &src[start..];
         let open = tail.find('{').expect("open brace after send_raw signature");
         let mut depth: i32 = 0;
@@ -1528,21 +1506,13 @@ mod tests {
         // Five more events within the window: all buffered, no
         // flush.
         for i in 1..=5 {
-            let drained = c.step(
-                "dashboard:stats",
-                2,
-                t0 + Duration::from_millis(10 * i),
-            );
+            let drained = c.step("dashboard:stats", 2, t0 + Duration::from_millis(10 * i));
             assert!(drained.is_empty(), "iteration {i} unexpectedly flushed");
         }
         // Past the window: the prior batch (6 events on the same
         // (channel, receivers) key) flushes as a single aggregated
         // entry, and a new window opens with the current event.
-        let drained = c.step(
-            "dashboard:stats",
-            2,
-            t0 + Duration::from_millis(150),
-        );
+        let drained = c.step("dashboard:stats", 2, t0 + Duration::from_millis(150));
         assert_eq!(
             drained,
             vec![(("dashboard:stats".to_string(), 2usize), 6u32)],
@@ -1570,8 +1540,7 @@ mod tests {
             let _ = c.step("notifications", 1, t0 + Duration::from_millis(30));
         }
         // Past the window -> drain as a multimap.
-        let mut drained =
-            c.step("dashboard:stats", 2, t0 + Duration::from_millis(150));
+        let mut drained = c.step("dashboard:stats", 2, t0 + Duration::from_millis(150));
         drained.sort();
         let mut expected: Vec<((String, usize), u32)> = vec![
             (("dashboard:stats".into(), 2), 4), // 1 from the window-open call + 3 bursts

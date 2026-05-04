@@ -706,6 +706,48 @@ pub enum AccessRequest {
         requesting_user_uuid: String,
         intent: SessionAccessIntent,
     },
+
+    /// SECURITY: Mint a session-token-shaped credential for a strictly
+    /// READ-ONLY diagnostic operation that does NOT open an actual SSH
+    /// session (today: SSH host-key verify and admin host-key fetch).
+    ///
+    /// The wire format and crypto match `IssueSessionToken` (same MAC
+    /// key, same anti-replay nonce, same `target_service`/`session_id`
+    /// bindings) so the supervisor's TCP broker and the proxy's
+    /// session-token gate accept it without modification. What changes
+    /// is the AUTHORISATION step on the vauban-access side:
+    ///
+    /// - `IssueSessionToken` re-runs `CheckAccessByUuid` (user must
+    ///   match an active access rule for the asset/protocol).
+    /// - `IssueDiagnosticToken` skips the access-rule re-check and
+    ///   gates ONLY on `caller_has_assets_manage = true`. Pre-issue
+    ///   #34 the host-key verify/fetch path used the session-token
+    ///   verb, which silently denied admins that did not happen to
+    ///   have an explicit access rule for the asset; the verify
+    ///   endpoint then fell back to a green "Verified" fragment based
+    ///   on the stored fingerprint, hiding the fact that nothing was
+    ///   live-verified. See `docs/technical/Vauban_AccessGuard_
+    ///   Architecture_EN(1.0).md` §3 for the contract.
+    ///
+    /// `caller_has_assets_manage` MUST be sourced from the request-
+    /// scoped `PermissionContext` (Casbin) on the vauban-web side; we
+    /// pass it explicitly because vauban-access does not own the
+    /// Casbin enforcer. A compromised vauban-web is contained by the
+    /// rest of the AccessGuard chain (TCP broker token check, proxy
+    /// `AccessGuard::authorize`).
+    ///
+    /// Wire compatibility: appended after `VerifySessionAccess`. New
+    /// variants MUST keep being appended at the end.
+    IssueDiagnosticToken {
+        user_uuid: String,
+        asset_uuid: String,
+        protocol: String,
+        host: String,
+        port: u16,
+        target_service: Service,
+        session_id: String,
+        caller_has_assets_manage: bool,
+    },
 }
 
 /// Access control response from vauban-access.

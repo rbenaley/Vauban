@@ -166,9 +166,7 @@ impl TestApp {
                     std::sync::Arc::new(
                         vauban_web::services::broker_latency::BrokerLatencyTracker::default(),
                     ),
-                    std::sync::Arc::new(
-                        vauban_web::services::system_health::HttpRateTracker::new(),
-                    ),
+                    std::sync::Arc::new(vauban_web::services::system_health::HttpRateTracker::new()),
                 ),
             ),
         };
@@ -485,6 +483,13 @@ fn build_test_router(state: AppState) -> Router {
             "/sessions/my-requests/{uuid}/cancel",
             post(handlers::web::cancel_access_request),
         )
+        // Issue #34: the inlined Request Access modal on /assets POSTs
+        // here. Mount it in the test router so the modal-driven flow is
+        // covered by `tests/web/asset_user_zone_no_leak_test.rs`.
+        .route(
+            "/sessions/request",
+            post(handlers::web::submit_access_request),
+        )
         .route("/sessions/active", get(handlers::web::active_sessions))
         .route(
             "/sessions/{uuid}/terminate",
@@ -503,7 +508,9 @@ fn build_test_router(state: AppState) -> Router {
         // tests targeting CRUD MUST use `/assets/manage/*`.
         // ----------------------------------------------------------------
         .route("/assets", get(handlers::web::asset_list))
-        .route("/assets/{uuid}", get(handlers::web::asset_user_view))
+        // Issue #34: the user-zone detail page has been removed
+        // (information leak). The legacy URL serves a constant 410.
+        .route("/assets/{uuid}", get(handlers::web::gone_asset_user_view))
         // ----------------------------------------------------------------
         // Issue #27: admin asset CRUD nest, mirrored from main.rs so
         // gate-matrix and anti-enumeration tests exercise the same

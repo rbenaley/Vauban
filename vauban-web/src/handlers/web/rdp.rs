@@ -240,12 +240,30 @@ pub async fn connect_rdp(
                     jit_max_duration = max_dur.or(access_result.max_session_duration);
                 }
                 None => {
-                    let detail_url = format!("/assets/{}#request-access", asset_uuid_str);
+                    // Issue #34: the user-zone /assets/{uuid} detail
+                    // page is gone (information leak surface). Emit
+                    // `HX-Trigger: show-access-request-modal` with
+                    // payload {asset_uuid, asset_type, require_mfa}
+                    // so the modal -- now inlined on /assets --
+                    // opens in-place. `connect_rdp` is HTMX-only
+                    // (see the rdp.rs prelude: every `htmx_error_response`
+                    // path assumes HTMX), so no JSON fallback is
+                    // needed here.
+                    let payload = serde_json::json!({
+                        "show-access-request-modal": {
+                            "asset_uuid": asset_uuid_str,
+                            "asset_type": "rdp",
+                            "require_mfa": access_result.require_mfa,
+                        }
+                    })
+                    .to_string();
                     return ([(
-                        axum::http::header::HeaderName::from_static("hx-redirect"),
-                        axum::http::header::HeaderValue::from_str(&detail_url).unwrap_or_else(
-                            |_| axum::http::header::HeaderValue::from_static("/assets"),
-                        ),
+                        axum::http::header::HeaderName::from_static("hx-trigger"),
+                        axum::http::header::HeaderValue::from_str(&payload).unwrap_or_else(|_| {
+                            axum::http::header::HeaderValue::from_static(
+                                r#"{"show-access-request-modal":{}}"#,
+                            )
+                        }),
                     )])
                     .into_response();
                 }

@@ -5,6 +5,14 @@ use askama::Template;
 use crate::templates::accounts::user_list::Pagination;
 
 /// Asset item for list display.
+///
+/// Issue #34: `require_mfa` is now carried per-row so the
+/// `Request Access` modal -- which is INLINED on `/assets` -- can
+/// know whether to render the TOTP field without a detour through a
+/// detail page. `require_mfa` is computed from the access_rules of
+/// the current user against this asset's groups (and the virtual
+/// all-assets group); same predicate as the legacy `asset_user_view`
+/// used. `requires_request` already follows the same per-user rule.
 #[derive(Debug, Clone)]
 pub struct AssetListItem {
     pub id: i32,
@@ -16,6 +24,10 @@ pub struct AssetListItem {
     pub status: String,     // "online", "offline", "maintenance"
     pub group_name: Option<String>,
     pub requires_request: bool,
+    /// Per-user, per-asset: true when the access rule covering this
+    /// asset for the current caller has `require_mfa = true`. Drives
+    /// the TOTP field of the inlined Request Access modal.
+    pub require_mfa: bool,
 }
 
 #[derive(Template)]
@@ -55,6 +67,7 @@ mod tests {
             status: "online".to_string(),
             group_name: Some("Production".to_string()),
             requires_request: false,
+            require_mfa: false,
         }
     }
 
@@ -439,13 +452,20 @@ mod tests {
         };
         let html = template.render().expect("should render");
         assert!(html.contains("Request"), "should show Request label");
+        // Issue #34: the per-row "Request" button now opens the inlined
+        // Alpine-driven modal via `$store.accessModal.open(...)` with
+        // the asset's uuid / type / require_mfa as arguments. The
+        // legacy `<a href=".../#request-access">` navigation pattern
+        // (which forced a detour through the now-removed
+        // `/assets/{uuid}` detail page) is no longer rendered.
         assert!(
-            html.contains("#request-access"),
-            "Request link should point to #request-access"
+            html.contains("$store.accessModal.open("),
+            "Request button must trigger the inlined Alpine accessModal"
         );
         assert!(
-            !html.contains("hx-post"),
-            "Request asset should not have Connect hx-post button"
+            !html.contains("#request-access"),
+            "Request button must NOT use the legacy hash navigation \
+             (the /assets/{{uuid}} detail page is gone, issue #34)"
         );
     }
 
@@ -521,13 +541,23 @@ mod tests {
         };
         let html = template.render().expect("should render");
         assert!(html.contains("Connect"), "should show Connect label");
+        // Issue #34: the per-row "Connect" button on a row that
+        // requires justification now opens the inlined Alpine
+        // justificationModal via
+        // `$store.justificationModal.open(uuid, type)` and the
+        // form submit posts via `htmx.ajax(...)` to the URL
+        // computed by `connectUrl()`.  No more hash detour through
+        // the removed detail page.
         assert!(
-            html.contains("#justify"),
-            "Connect link should point to #justify when justification is required"
+            html.contains("$store.justificationModal.open("),
+            "Connect button (require_justification on) must trigger \
+             the inlined Alpine justificationModal"
         );
         assert!(
-            !html.contains("hx-post"),
-            "Should not have direct hx-post when justification is required"
+            !html.contains("#justify"),
+            "Connect button must NOT use the legacy `#justify` hash \
+             navigation (the /assets/{{uuid}} detail page is gone, \
+             issue #34)"
         );
     }
 
@@ -569,9 +599,15 @@ mod tests {
         let html = template.render().expect("should render");
         assert!(html.contains("Request"), "should contain Request label");
         assert!(html.contains("Connect"), "should contain Connect label");
+        // Issue #34 -- per-row "Request" button drives the inlined
+        // Alpine modal; legacy hash link is gone.
         assert!(
-            html.contains("#request-access"),
-            "should have request-access link"
+            html.contains("$store.accessModal.open("),
+            "should have inlined accessModal trigger for the Request button"
+        );
+        assert!(
+            !html.contains("#request-access"),
+            "must not use legacy `#request-access` hash navigation"
         );
         assert!(html.contains("hx-post"), "should have hx-post button");
     }

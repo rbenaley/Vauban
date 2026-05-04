@@ -4,11 +4,58 @@
 // Alpine.js components are registered via Alpine.data() before Alpine initializes.
 
 document.addEventListener('alpine:init', function () {
-    // Global store for JIT access request modal (avoids nested x-data scope issues)
-    Alpine.store('accessModal', { show: false });
+    // Global store for JIT access request modal (issue #34).
+    //
+    // Per-asset data flows through this store: the per-row "Request"
+    // button on /assets calls `open(uuid, type, requireMfa)`, the
+    // modal's hidden form fields read `:value="$store.accessModal.*"`,
+    // and the TOTP block is conditionally rendered with
+    // `<template x-if="$store.accessModal.require_mfa">`. Issue #34
+    // moved the modal off the now-removed `/assets/{uuid}` detail
+    // page so non-approved users no longer fetch description / dates
+    // / ssh-host-key fingerprint just to submit a request.
+    Alpine.store('accessModal', {
+        show: false,
+        asset_uuid: '',
+        asset_type: '',
+        require_mfa: false,
+        open: function (uuid, type, requireMfa) {
+            this.asset_uuid = String(uuid || '');
+            this.asset_type = String(type || '');
+            this.require_mfa = !!requireMfa;
+            this.show = true;
+        },
+    });
 
-    // Global store for connection justification modal (SEC-03)
-    Alpine.store('justificationModal', { show: false });
+    // Global store for connection justification modal (SEC-03 + issue #34).
+    //
+    // Per-asset data flows through this store: the per-row "Connect"
+    // button (when `require_justification` is on) calls
+    // `open(uuid, type)`. The form submit uses
+    // `htmx.ajax('POST', $store.justificationModal.connectUrl(), {source: $el, swap: 'none'})`
+    // because Alpine `:hx-post` bindings don't compose reliably with
+    // the HTMX form submit handler that's already cached at
+    // template scan time. The programmatic `htmx.ajax()` path keeps
+    // the full htmx-request lifecycle (HX-Redirect, HX-Trigger,
+    // hx-indicator, htmx:after-request) so behaviour is identical
+    // to a static `hx-post` form.
+    Alpine.store('justificationModal', {
+        show: false,
+        asset_uuid: '',
+        asset_type: '',
+        open: function (uuid, type) {
+            this.asset_uuid = String(uuid || '');
+            this.asset_type = String(type || '');
+            this.show = true;
+        },
+        // Single source of truth for the SSH/RDP endpoint switch.
+        // Mirrors the static `hx-post` form on rows that don't
+        // require justification (asset_list.html).
+        connectUrl: function () {
+            var path = this.asset_type === 'rdp' ? 'connect-rdp' : 'connect';
+            return '/assets/' + encodeURIComponent(this.asset_uuid) + '/' + path;
+        },
+    });
 
     // Global store for the styled delete-confirmation modal (BUG-12 / issue #19).
     //
@@ -639,55 +686,38 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     });
 
-    // JIT access modal trigger from SSH/RDP handlers (HX-Trigger: show-access-request-modal)
-    document.body.addEventListener('show-access-request-modal', function () {
-        if (typeof Alpine !== 'undefined' && Alpine.store('accessModal')) {
-            Alpine.store('accessModal').show = true;
+    // JIT access modal trigger from SSH/RDP handlers
+    // (HX-Trigger: show-access-request-modal).
+    //
+    // Issue #34 - the legacy `HX-Redirect` to
+    // `/assets/{uuid}#request-access` was replaced by the SSH/RDP
+    // handlers emitting an `HX-Trigger` whose payload carries the
+    // asset_uuid, asset_type, require_mfa fields the modal needs.
+    // This avoids the page-load detour through the now-removed
+    // `/assets/{uuid}` detail page (information leak surface).
+    //
+    // Backward compatibility: if `event.detail` is empty (legacy
+    // payload-less trigger), the modal still opens but with empty
+    // store fields -- the form will then fail validation rather
+    // than submit with stale data.
+    document.body.addEventListener('show-access-request-modal', function (evt) {
+        if (typeof Alpine === 'undefined' || !Alpine.store('accessModal')) {
+            return;
+        }
+        var store = Alpine.store('accessModal');
+        var detail = evt.detail || {};
+        if (typeof store.open === 'function' && detail.asset_uuid) {
+            store.open(detail.asset_uuid, detail.asset_type || '', !!detail.require_mfa);
+        } else {
+            store.show = true;
         }
     });
 
-    // Auto-open JIT modal when landing on asset detail with #request-access hash
-    // (set by SSH/RDP handlers via HX-Redirect when approval is required)
-    if (window.location.hash === '#request-access') {
-        history.replaceState(null, '', window.location.pathname + window.location.search);
-        var waitForAlpine = setInterval(function () {
-            if (typeof Alpine !== 'undefined' && Alpine.store('accessModal')) {
-                Alpine.store('accessModal').show = true;
-                clearInterval(waitForAlpine);
-            }
-        }, 50);
-        setTimeout(function () { clearInterval(waitForAlpine); }, 3000);
-    }
-
-    // Auto-open justification modal when landing on asset detail with #justify hash
-    // (SEC-03: triggered from asset list "Connect" button when justification is required)
-    //
-    // Defense-in-depth: if the asset actually requires approval and no approved
-    // session exists yet (e.g., the user arrived here via a stale "Connect" link
-    // before the list page was refreshed), redirect to #request-access instead so
-    // the JIT modal opens and the user can submit the correct request form.
-    if (window.location.hash === '#justify') {
-        history.replaceState(null, '', window.location.pathname + window.location.search);
-        var policyEl = document.getElementById('asset-policy-state');
-        var requiresApproval = policyEl && policyEl.dataset.requireApproval === 'true';
-        var hasApproved = policyEl && policyEl.dataset.hasApprovedSession === 'true';
-        if (requiresApproval && !hasApproved) {
-            // Asset needs approval first — open the access-request modal instead.
-            var waitForAccess = setInterval(function () {
-                if (typeof Alpine !== 'undefined' && Alpine.store('accessModal')) {
-                    Alpine.store('accessModal').show = true;
-                    clearInterval(waitForAccess);
-                }
-            }, 50);
-            setTimeout(function () { clearInterval(waitForAccess); }, 3000);
-        } else {
-            var waitForJustify = setInterval(function () {
-                if (typeof Alpine !== 'undefined' && Alpine.store('justificationModal')) {
-                    Alpine.store('justificationModal').show = true;
-                    clearInterval(waitForJustify);
-                }
-            }, 50);
-            setTimeout(function () { clearInterval(waitForJustify); }, 3000);
-        }
-    }
+    // Issue #34 -- the legacy hash-router has been removed along
+    // with the `/assets/{uuid}` detail page. The two modaux are
+    // now driven entirely by per-row buttons on `/assets` (no
+    // nav, no hash, no client-side policy data island). Any old
+    // bookmark pointing at the legacy URL lands on a 410 Gone
+    // served by `gone_asset_user_view` and the user is invited
+    // to go back to `/assets`.
 });

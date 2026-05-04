@@ -219,6 +219,21 @@ pub async fn handle_access_request(pool: &DbPool, request: AccessRequest) -> Acc
             AccessResponse::SessionTokenDenied
         }
 
+        // SECURITY: same fail-closed safety net as `IssueSessionToken`.
+        // IssueDiagnosticToken also requires the MAC key and is routed
+        // ahead of this dispatch in `main.rs::handle_message`. Reaching
+        // this arm means the routing layer dropped the variant -- we
+        // refuse rather than panic so a misconfigured build never opens
+        // a token-shaped credential without crypto.
+        AccessRequest::IssueDiagnosticToken { .. } => {
+            warn!(
+                "IssueDiagnosticToken reached handle_access_request \
+                 dispatch; routing bug in vauban-access main loop. \
+                 Fail-closed deny."
+            );
+            AccessResponse::SessionTokenDenied
+        }
+
         AccessRequest::CheckApprovalEligibility {
             actor_user_uuid,
             session_uuid,
@@ -501,6 +516,58 @@ pub async fn handle_issue_session_token(
         Ok(bytes) => AccessResponse::SessionTokenIssued { token: bytes },
         Err(e) => {
             warn!(error = ?e, "IssueSessionToken: serialization failure, deny");
+            AccessResponse::SessionTokenDenied
+        }
+    }
+}
+
+/// Mint a session-token-shaped credential for a strictly read-only
+/// diagnostic operation (today: SSH host-key verify and admin
+/// host-key fetch).
+///
+/// Authorisation contract: gates ONLY on
+/// `caller_has_assets_manage = true`. The access-rule re-check
+/// performed by `handle_issue_session_token` is intentionally skipped
+/// here because the diagnostic path does NOT open an upstream SSH
+/// session (the russh handshake stops after key exchange) and the
+/// admins that need to fix a host-key mismatch typically have no
+/// explicit access rule for the asset.
+///
+/// Wire format and crypto match `handle_issue_session_token`: same
+/// MAC key, same anti-replay nonce, same field bindings. The
+/// supervisor's TCP broker and the proxy session-token gate accept
+/// the resulting token without code changes.
+///
+/// Fail-closed: any non-`assets:manage` caller, or any serialization
+/// failure, collapses to `AccessResponse::SessionTokenDenied`. The
+/// reply is intentionally indistinguishable from the
+/// `IssueSessionToken` denial so a probe cannot fingerprint which
+/// path was used.
+pub async fn handle_issue_diagnostic_token(
+    key: &TokenKey,
+    params: SessionTokenParams,
+    caller_has_assets_manage: bool,
+) -> AccessResponse {
+    if !caller_has_assets_manage {
+        info!(
+            user_uuid = %params.user_uuid,
+            asset_uuid = %params.asset_uuid,
+            protocol = %params.protocol,
+            session_id = %params.session_id,
+            "IssueDiagnosticToken denied: caller lacks assets:manage"
+        );
+        return AccessResponse::SessionTokenDenied;
+    }
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let token = SessionToken::mint(key, now, params);
+    match token.to_bytes() {
+        Ok(bytes) => AccessResponse::SessionTokenIssued { token: bytes },
+        Err(e) => {
+            warn!(error = ?e, "IssueDiagnosticToken: serialization failure, deny");
             AccessResponse::SessionTokenDenied
         }
     }

@@ -383,9 +383,19 @@ async fn test_web_rdp_connect_wrong_protocol_denied() {
 
 // =============================================================================
 // Asset Detail Access Control
+//
+// Issue #34: the user-zone `/assets/{uuid}` detail page has been
+// REMOVED (information leak surface). The route is now a constant
+// 410 Gone served by `gone_asset_user_view` -- regardless of who
+// is calling it. Instance-level access control is now enforced at
+// the connect verbs (`POST /assets/{uuid}/connect`,
+// `POST /assets/{uuid}/connect-rdp`) and at the catalogue list
+// filter (`GET /assets`); see `connect_ssh` / `connect_rdp` tests
+// in `jit_access_test.rs`. The three tests below now pin the 410
+// response so a future regression bringing the detail page back
+// trips CI immediately.
 // =============================================================================
 
-/// Regular user without access rule is denied asset detail.
 #[tokio::test]
 #[serial]
 async fn test_web_asset_detail_denied_without_access_rule() {
@@ -408,21 +418,13 @@ async fn test_web_asset_detail_denied_without_access_rule() {
         .add_header(COOKIE, format!("access_token={}", user.token))
         .await;
 
-    let status = response.status_code().as_u16();
-    assert!(
-        status == 303 || status == 403,
-        "Regular user without access rule should be redirected/denied from asset detail, got {}",
-        status
-    );
+    // Issue #34: 410 Gone for everyone -- the access-rule decision
+    // moved to the connect verbs.
+    assert_status(&response, 410);
 
     test_db::cleanup(&mut conn).await;
 }
 
-/// Admin (superuser) can view asset detail page.
-/// Note: In test env without Casbin, regular users are blocked by RBAC fallback
-/// before reaching instance-level checks. The instance-level access check is
-/// verified indirectly: `test_web_asset_detail_denied_without_access_rule`
-/// confirms denial, and the SSH/RDP connect tests verify instance-level checks.
 #[tokio::test]
 #[serial]
 async fn test_web_asset_detail_allowed_with_access_rule() {
@@ -431,8 +433,6 @@ async fn test_web_asset_detail_allowed_with_access_rule() {
 
     let admin_name = unique_name("w_det_ok_adm");
     let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
-    // Even admins now require an access_rule (no more superuser bypass) —
-    // see handlers::web::tests anti-regression suite.
     let ag = grant_user_full_access_to_new_group(
         &mut conn,
         admin.user.id,
@@ -450,21 +450,19 @@ async fn test_web_asset_detail_allowed_with_access_rule() {
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .await;
 
-    assert_status(&response, 200);
+    // Issue #34: even admins WITH an access rule now get 410 -- the
+    // detail page is removed; admin asset details live under
+    // `/assets/manage/{uuid}`.
+    assert_status(&response, 410);
     let body = response.text();
     assert!(
-        body.contains("w-det-ok-asset"),
-        "Admin should see asset detail"
+        !body.contains("w-det-ok-asset"),
+        "410 body MUST NOT echo the asset name (anti-enumeration, issue #34)"
     );
 
     test_db::cleanup(&mut conn).await;
 }
 
-/// Superuser without an access_rule MUST be denied (no more privileged-user
-/// bypass). The asset_detail handler now routes ALL users through the same
-/// `services::access::list_accessible_asset_ids` filter that
-/// `connect_ssh` / `connect_rdp` already enforce, so the previous "blue
-/// Connect button on an unreachable asset" inconsistency cannot happen.
 #[tokio::test]
 #[serial]
 async fn test_web_asset_detail_superuser_bypass() {
@@ -484,9 +482,10 @@ async fn test_web_asset_detail_superuser_bypass() {
         .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
         .await;
 
-    // Admin has no access_rule for this asset_group → flash redirect to
-    // /assets, exactly like a regular user would experience.
-    assert_status(&response, 303);
+    // Issue #34: 410 for everyone, including superusers without an
+    // access rule. The detail page can no longer be used as an
+    // existence oracle.
+    assert_status(&response, 410);
 
     test_db::cleanup(&mut conn).await;
 }

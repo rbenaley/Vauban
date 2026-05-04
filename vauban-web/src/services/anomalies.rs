@@ -48,9 +48,7 @@ impl Severity {
     /// surface readable behind the badge.
     pub fn css_class(self) -> &'static str {
         match self {
-            Severity::Info => {
-                "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-200"
-            }
+            Severity::Info => "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-200",
             Severity::Warning => {
                 "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
             }

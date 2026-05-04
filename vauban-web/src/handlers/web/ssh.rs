@@ -306,6 +306,95 @@ pub async fn connect_ssh(
             .into_response();
         }
 
+        // SECURITY (issue #34) -- mandatory host-key pin pre-flight.
+        //
+        // Runs AFTER the access-rule check so a user without access
+        // hears "No access rule" first (least-info-leak), and BEFORE
+        // any session-creation work (approval lookup, JIT request,
+        // `proxy_sessions` insert, supervisor TCP broker, IPC to
+        // vauban-access). Two refusal cases:
+        //
+        // 1. `connection_config.ssh_host_key_mismatch == true`: a
+        //    previous connection attempt detected the live server
+        //    presented a key that disagreed with the stored pin.
+        //    Until an admin re-fetches and pins the new key, every
+        //    new connection is suspect (we cannot tell whether the
+        //    operator rotated the key or whether we are facing a
+        //    MITM). Refuse rather than re-attempt.
+        //
+        // 2. `connection_config.ssh_host_key` is absent or empty: the
+        //    asset has no pinned key. Pre-#34 the code passed
+        //    `expected_host_key = None` to vauban-proxy-ssh, which
+        //    logged "INSECURE - accepting server key" and opened the
+        //    session against whatever key the server presented (TOFU
+        //    window indefinitely). Combined with the silent green
+        //    "Verified" fallback in `verify_ssh_host_key` (also
+        //    fixed in this issue), the operator never knew the pin
+        //    was missing. We close that window here: pinning is
+        //    mandatory, the admin must trigger
+        //    `/assets/manage/{uuid}/fetch-host-key` first.
+        //
+        // The forbidden phrases pinned by
+        // `tests/web/ssh_host_key_no_silent_green_test.rs` AND by
+        // `scripts/check_ssh_host_key_paths.sh` MUST appear here:
+        //   - "SSH host key mismatch detected on previous connection"
+        //   - "No SSH host key pinned"
+        let stored_host_key_preflight = asset
+            .connection_config
+            .get("ssh_host_key")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty());
+        let stored_mismatch_preflight = asset
+            .connection_config
+            .get("ssh_host_key_mismatch")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        if stored_mismatch_preflight {
+            tracing::warn!(
+                user = %auth_user.username,
+                asset = %asset.name,
+                asset_uuid = %asset_uuid,
+                "Refusing SSH connection: SSH host key mismatch detected on \
+                 previous connection. Admin must re-fetch and pin the new key."
+            );
+            let msg = "SSH host key mismatch detected on previous connection. \
+                       An admin must re-fetch and pin the new key before new \
+                       sessions are allowed.";
+            if is_htmx {
+                return htmx_error_response(msg);
+            }
+            return Json(ConnectSshResponse {
+                success: false,
+                session_id: None,
+                redirect_url: None,
+                error: Some(msg.to_string()),
+            })
+            .into_response();
+        }
+
+        if stored_host_key_preflight.is_none() {
+            tracing::warn!(
+                user = %auth_user.username,
+                asset = %asset.name,
+                asset_uuid = %asset_uuid,
+                "Refusing SSH connection: No SSH host key pinned for this asset. \
+                 Admin must fetch and pin the host key first."
+            );
+            let msg = "No SSH host key pinned for this asset. An admin must \
+                       fetch and pin the host key before sessions can be opened.";
+            if is_htmx {
+                return htmx_error_response(msg);
+            }
+            return Json(ConnectSshResponse {
+                success: false,
+                session_id: None,
+                redirect_url: None,
+                error: Some(msg.to_string()),
+            })
+            .into_response();
+        }
+
         if access_result.require_approval {
             // Find an approved session that has not expired.
             // Only consider approvals whose expires_at is still in the future
@@ -336,12 +425,37 @@ pub async fn connect_ssh(
                     jit_max_duration = max_dur.or(access_result.max_session_duration);
                 }
                 None => {
-                    let detail_url = format!("/assets/{}#request-access", asset_uuid_str);
+                    // Issue #34: the user-zone /assets/{uuid} detail page is
+                    // gone (information leak: description / dates / ssh-host-
+                    // key fingerprint were rendered for any caller with
+                    // `assets:read`).  We no longer redirect there.
+                    //
+                    // For HTMX clients we emit `HX-Trigger:
+                    // show-access-request-modal` whose JSON payload carries
+                    // the three fields the inlined modal needs (asset_uuid,
+                    // asset_type, require_mfa); the user is already on
+                    // /assets so the modal opens in-place.
+                    //
+                    // For non-HTMX clients (CLI / API) we point them at the
+                    // catalogue with a plain message; opening the request
+                    // is now a UI-only flow.
                     if is_htmx {
+                        let payload = serde_json::json!({
+                            "show-access-request-modal": {
+                                "asset_uuid": asset_uuid_str,
+                                "asset_type": "ssh",
+                                "require_mfa": access_result.require_mfa,
+                            }
+                        })
+                        .to_string();
                         return ([(
-                            axum::http::header::HeaderName::from_static("hx-redirect"),
-                            axum::http::header::HeaderValue::from_str(&detail_url).unwrap_or_else(
-                                |_| axum::http::header::HeaderValue::from_static("/assets"),
+                            axum::http::header::HeaderName::from_static("hx-trigger"),
+                            axum::http::header::HeaderValue::from_str(&payload).unwrap_or_else(
+                                |_| {
+                                    axum::http::header::HeaderValue::from_static(
+                                        r#"{"show-access-request-modal":{}}"#,
+                                    )
+                                },
                             ),
                         )])
                         .into_response();
@@ -349,9 +463,10 @@ pub async fn connect_ssh(
                     return Json(ConnectSshResponse {
                         success: false,
                         session_id: None,
-                        redirect_url: Some(detail_url),
+                        redirect_url: Some("/assets".to_string()),
                         error: Some(
-                            "Access requires approval. Please submit an access request first."
+                            "Access requires approval. Please submit an access \
+                             request from the /assets catalogue."
                                 .to_string(),
                         ),
                     })
@@ -823,6 +938,13 @@ pub async fn fetch_ssh_host_key(
         return htmx_error_response("Insufficient privileges: assets:manage required");
     }
 
+    // Issue #34: caller_has_assets_manage is structurally true here
+    // (we just gated on it). We forward it explicitly so the IPC layer
+    // can pick the diagnostic-token verb (which bypasses the access-
+    // rule re-check). Pre-#34 the host-key path used the session-token
+    // verb, silently denying admins without an explicit rule.
+    let assets_manage = perms.assets_manage;
+
     let confirm = params.get("confirm").map(|v| v == "true").unwrap_or(false);
 
     // Parse UUID
@@ -893,6 +1015,7 @@ pub async fn fetch_ssh_host_key(
         access_client: state.access_client.as_ref(),
         user_uuid: &auth_user.uuid,
         asset_uuid: &asset_uuid_str_for_token,
+        caller_has_assets_manage: assets_manage,
     };
     let (host_key, fingerprint) = match proxy_client
         .fetch_host_key(
@@ -1022,6 +1145,14 @@ pub async fn verify_ssh_host_key(
         return htmx_error_response("Insufficient privileges: assets:read required");
     }
 
+    // Issue #34: capture `assets:manage` so the IPC layer can pick the
+    // diagnostic-token verb (which bypasses the access-rule re-check).
+    // Pre-#34 every caller went through the session-token verb, which
+    // silently denied admins without an explicit access rule for the
+    // asset; the verify endpoint then fell back to a green "Verified"
+    // fragment on `Err`, hiding the missing live verification.
+    let assets_manage = perms.assets_manage;
+
     let asset_uuid = match Uuid::parse_str(&asset_uuid_str) {
         Ok(u) => u,
         Err(_) => return htmx_error_response("Invalid asset identifier"),
@@ -1097,12 +1228,21 @@ pub async fn verify_ssh_host_key(
     let proxy_client = match &state.ssh_proxy {
         Some(client) => client.clone(),
         None => {
-            // Proxy unavailable - fall back to stored state
-            tracing::debug!(asset_uuid = %asset_uuid, "SSH proxy not available, returning stored state");
+            // Proxy unavailable - we CANNOT confirm the live key
+            // matches what we have stored. The previous behaviour of
+            // returning the green "Verified" fragment was a security
+            // regression: a user / admin reading the page would have
+            // no way to tell live verification did not actually run.
+            // Return the amber "Could not verify" fragment instead.
+            tracing::debug!(
+                asset_uuid = %asset_uuid,
+                "SSH proxy not available; returning unverified-fallback fragment"
+            );
             let fp = stored_fingerprint.as_deref().unwrap_or("unknown");
-            let html = include_str!("../../../templates/assets/_ssh_host_key_fragment.html")
-                .replace("__FINGERPRINT__", fp)
-                .replace("__ASSET_UUID__", &uuid_str);
+            let html =
+                include_str!("../../../templates/assets/_ssh_host_key_unverified_fragment.html")
+                    .replace("__FINGERPRINT__", fp)
+                    .replace("__ASSET_UUID__", &uuid_str);
             return axum::response::Html(html).into_response();
         }
     };
@@ -1113,6 +1253,7 @@ pub async fn verify_ssh_host_key(
         access_client: state.access_client.as_ref(),
         user_uuid: &_auth_user.uuid,
         asset_uuid: &uuid_str_for_token,
+        caller_has_assets_manage: assets_manage,
     };
     match proxy_client
         .fetch_host_key(
@@ -1167,16 +1308,24 @@ pub async fn verify_ssh_host_key(
             }
         }
         Err(e) => {
-            // Connection to remote server failed - fall back to stored state
+            // Connection to remote server failed (network down,
+            // AccessGuard refused the diagnostic token, supervisor
+            // unreachable, ...). We CANNOT confirm the live key
+            // matches what we have stored: returning the green
+            // "Verified" fragment here would be a silent regression
+            // (the operator would think verification ran when it
+            // didn't). Return the amber "Could not verify" fragment.
             tracing::debug!(
                 asset_uuid = %asset_uuid,
                 error = %e,
-                "Could not verify host key against remote server, using stored state"
+                "Could not verify host key against remote server; \
+                 returning unverified-fallback fragment"
             );
             let fp = stored_fingerprint.as_deref().unwrap_or("unknown");
-            let html = include_str!("../../../templates/assets/_ssh_host_key_fragment.html")
-                .replace("__FINGERPRINT__", fp)
-                .replace("__ASSET_UUID__", &uuid_str);
+            let html =
+                include_str!("../../../templates/assets/_ssh_host_key_unverified_fragment.html")
+                    .replace("__FINGERPRINT__", fp)
+                    .replace("__ASSET_UUID__", &uuid_str);
             axum::response::Html(html).into_response()
         }
     }

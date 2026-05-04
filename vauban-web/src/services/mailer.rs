@@ -198,11 +198,12 @@ impl Mailer {
         };
 
         use crate::schema::email_outbox::dsl;
-        let insert_result: Result<i64, diesel::result::Error> = diesel::insert_into(dsl::email_outbox)
-            .values(&entry)
-            .returning(dsl::id)
-            .get_result(conn)
-            .await;
+        let insert_result: Result<i64, diesel::result::Error> =
+            diesel::insert_into(dsl::email_outbox)
+                .values(&entry)
+                .returning(dsl::id)
+                .get_result(conn)
+                .await;
 
         match insert_result {
             Ok(id) => {
@@ -249,7 +250,8 @@ pub fn hash_recipient(address: &str) -> String {
 /// the same UUID, so a retried handler never enqueues twice (the DB
 /// `UNIQUE(event_id)` constraint catches the duplicate).
 pub fn deterministic_event_id(kind: &str, business_key: &str, recipient: &str) -> Uuid {
-    let mut canonical = String::with_capacity(kind.len() + business_key.len() + recipient.len() + 2);
+    let mut canonical =
+        String::with_capacity(kind.len() + business_key.len() + recipient.len() + 2);
     canonical.push_str(kind);
     canonical.push('\0');
     canonical.push_str(business_key);
@@ -455,10 +457,7 @@ pub struct AccessRequestRejectedEvent {
 fn render_access_request_rejected(
     e: &AccessRequestRejectedEvent,
 ) -> Result<RenderedEmail, RenderError> {
-    let subject = format!(
-        "[Vauban] Access denied: {} ({})",
-        e.asset_name, e.protocol
-    );
+    let subject = format!("[Vauban] Access denied: {} ({})", e.asset_name, e.protocol);
     let mut text = render_header(&e.from_brand);
     text.push_str(&format!(
         "Your access request to {} ({}) was denied by {}.\n",
@@ -739,9 +738,7 @@ mod tests {
         // Pin: kind() strings are part of the on-disk taxonomy
         // (email_outbox.event_kind, telemetry, search filters). They
         // MUST not drift silently.
-        let cases: &[(EmailEvent, &str)] = &[
-            (fake_submitted_event(), "access_request.submitted"),
-        ];
+        let cases: &[(EmailEvent, &str)] = &[(fake_submitted_event(), "access_request.submitted")];
         for (event, expected) in cases {
             assert_eq!(event.kind(), *expected);
         }
@@ -757,7 +754,11 @@ mod tests {
         assert!(rendered.subject.starts_with("[Vauban]"));
         assert!(rendered.body_text.contains("bob"));
         assert!(rendered.body_text.contains("prod-db-01"));
-        assert!(rendered.body_text.contains("https://vauban.test/sessions/approvals/x"));
+        assert!(
+            rendered
+                .body_text
+                .contains("https://vauban.test/sessions/approvals/x")
+        );
         assert!(rendered.body_text.contains("incident #42"));
     }
 
@@ -799,7 +800,10 @@ mod tests {
             from_brand: "Vauban PAM".into(),
         });
         let r = event.render().unwrap();
-        assert!(r.body_text.contains("https://vauban.test/auth/reset?token=xyz"));
+        assert!(
+            r.body_text
+                .contains("https://vauban.test/auth/reset?token=xyz")
+        );
         assert!(r.body_text.contains("alice"));
     }
 

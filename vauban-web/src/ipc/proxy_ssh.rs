@@ -115,6 +115,18 @@ pub struct HostKeyFetchIdentity<'a> {
     pub access_client: &'a super::AccessIpcClient,
     pub user_uuid: &'a str,
     pub asset_uuid: &'a str,
+    /// Whether the original web caller holds Casbin `assets:manage`.
+    /// Sourced from the request-scoped `PermissionContext` in the
+    /// caller (`verify_ssh_host_key`, `fetch_ssh_host_key`). When
+    /// `true`, the host-key fetch path uses
+    /// [`super::AccessIpcClient::issue_diagnostic_token`] which
+    /// bypasses the access-rule re-check (admins typically have no
+    /// explicit rule on every asset). When `false`, the legacy
+    /// session-token verb is used so non-admin callers stay gated by
+    /// their access rule. Pre-issue #34 every caller used the legacy
+    /// verb, which silently denied the admin path and made the verify
+    /// endpoint fall back to a green "Verified" fragment.
+    pub caller_has_assets_manage: bool,
 }
 
 /// Response from opening an SSH session.
@@ -371,22 +383,39 @@ impl ProxySshClient {
             })?;
             let fetch_session_id = format!("fetch-hostkey-{}", request_id);
             // SECURITY: the supervisor's TCP broker is crypto-gated:
-            // every connect requires a fresh session token issued by
+            // every connect requires a fresh token minted by
             // vauban-access. The host-key fetch path is no exception
             // -- without this gate a compromised vauban-web could use
             // SshFetchHostKey to enumerate the internal network.
-            let session_token = identity
-                .access_client
-                .issue_session_token(shared::session_token::SessionTokenParams {
-                    session_id: fetch_session_id.clone(),
-                    user_uuid: identity.user_uuid.to_string(),
-                    asset_uuid: identity.asset_uuid.to_string(),
-                    protocol: "ssh".to_string(),
-                    host: host.to_string(),
-                    port,
-                    target_service: shared::messages::Service::ProxySsh,
-                })
-                .await?;
+            //
+            // Issue #34: route admin callers (`assets:manage`) to the
+            // diagnostic-token verb so the access-rule re-check is
+            // skipped (admins typically have no explicit rule per
+            // asset, and the legacy session-token verb silently denied
+            // them; the verify endpoint then fell back to a green
+            // "Verified" fragment that hid the missing live check).
+            // Non-admin callers stay on the legacy verb so they remain
+            // gated by their access rule.
+            let token_params = shared::session_token::SessionTokenParams {
+                session_id: fetch_session_id.clone(),
+                user_uuid: identity.user_uuid.to_string(),
+                asset_uuid: identity.asset_uuid.to_string(),
+                protocol: "ssh".to_string(),
+                host: host.to_string(),
+                port,
+                target_service: shared::messages::Service::ProxySsh,
+            };
+            let session_token = if identity.caller_has_assets_manage {
+                identity
+                    .access_client
+                    .issue_diagnostic_token(token_params, true)
+                    .await?
+            } else {
+                identity
+                    .access_client
+                    .issue_session_token(token_params)
+                    .await?
+            };
             debug!(
                 request_id = request_id,
                 fetch_session_id = %fetch_session_id,

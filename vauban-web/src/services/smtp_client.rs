@@ -210,9 +210,7 @@ impl SmtpSession {
         // Re-issue EHLO inside the TLS tunnel (RFC 3207 §4.2: the
         // SMTP client MUST discard any prior knowledge after STARTTLS
         // and re-issue EHLO).
-        session
-            .write_line("EHLO vauban-smtp-client")
-            .await?;
+        session.write_line("EHLO vauban-smtp-client").await?;
         let _ = session.read_response().await?;
         Ok(session)
     }
@@ -267,7 +265,8 @@ impl SmtpSession {
         // body data MAY contain CRLF (it's the message body); we
         // dot-stuff lines that start with '.'.
 
-        self.write_line(&format!("MAIL FROM:<{}>", env.from)).await?;
+        self.write_line(&format!("MAIL FROM:<{}>", env.from))
+            .await?;
         let resp = self.read_response().await?;
         if resp.code != 250 {
             return Err(SmtpError::Server {
@@ -539,8 +538,8 @@ mod tests {
 
     #[test]
     fn validate_no_crlf_rejects_combined_crlf() {
-        let err = validate_no_crlf("recipient", "victim@example.com\r\nBcc: leak@evil")
-            .unwrap_err();
+        let err =
+            validate_no_crlf("recipient", "victim@example.com\r\nBcc: leak@evil").unwrap_err();
         assert!(matches!(err, SmtpError::CrlfInjection { .. }));
     }
 
@@ -687,9 +686,7 @@ mod tests {
         });
 
         let stream = TcpStream::connect(addr).await.unwrap();
-        let mut session = SmtpSession::open(stream, "vauban-test")
-            .await
-            .unwrap();
+        let mut session = SmtpSession::open(stream, "vauban-test").await.unwrap();
         session
             .send(&MailEnvelope {
                 from: "vauban@example.test".into(),
@@ -750,9 +747,7 @@ mod tests {
         });
 
         let stream = TcpStream::connect(addr).await.unwrap();
-        let mut session = SmtpSession::open(stream, "vauban-test")
-            .await
-            .unwrap();
+        let mut session = SmtpSession::open(stream, "vauban-test").await.unwrap();
         session
             .send(&MailEnvelope {
                 from: "v@e.t".into(),
@@ -789,16 +784,11 @@ mod tests {
             write_half.write_all(b"250 OK\r\n").await.unwrap();
             line.clear();
             reader.read_line(&mut line).await.unwrap(); // MAIL
-            write_half
-                .write_all(b"550 user unknown\r\n")
-                .await
-                .unwrap();
+            write_half.write_all(b"550 user unknown\r\n").await.unwrap();
         });
 
         let stream = TcpStream::connect(addr).await.unwrap();
-        let mut session = SmtpSession::open(stream, "vauban-test")
-            .await
-            .unwrap();
+        let mut session = SmtpSession::open(stream, "vauban-test").await.unwrap();
         let err = session
             .send(&MailEnvelope {
                 from: "v@e.t".into(),
@@ -827,7 +817,9 @@ mod tests {
             reader.read_line(&mut line).await.unwrap();
             // Multi-line EHLO with three capabilities.
             write_half
-                .write_all(b"250-fake hi\r\n250-PIPELINING\r\n250-SIZE 35882577\r\n250 8BITMIME\r\n")
+                .write_all(
+                    b"250-fake hi\r\n250-PIPELINING\r\n250-SIZE 35882577\r\n250 8BITMIME\r\n",
+                )
                 .await
                 .unwrap();
             // QUIT and bye.
@@ -864,10 +856,7 @@ mod tests {
         let stream = TcpStream::connect(addr).await.unwrap();
         let mut session = SmtpSession::open(stream, "v").await.unwrap();
         let err = session
-            .auth_plain(
-                "user",
-                &secrecy::SecretString::new("pw".to_string().into()),
-            )
+            .auth_plain("user", &secrecy::SecretString::new("pw".to_string().into()))
             .await
             .unwrap_err();
         match err {

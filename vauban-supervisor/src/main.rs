@@ -940,11 +940,7 @@ fn watchdog_loop(
         }
 
         // Process incoming messages from services (TcpConnectRequest, RecordingFileRequest, etc.)
-        process_service_messages(
-            children,
-            &config.recording.storage_path,
-            &config.mailer,
-        );
+        process_service_messages(children, &config.recording.storage_path, &config.mailer);
 
         // Send heartbeats periodically
         if last_heartbeat.elapsed() >= heartbeat_interval {
@@ -4085,9 +4081,9 @@ mod tests {
         let web_branch_idx = handler
             .find("matches!(target_service, Service::Web)")
             .expect("Service::Web branch must exist");
-        let verify_idx = handler.find("SessionToken::verify_bytes(").expect(
-            "verify_bytes call must exist in the proxy (else) branch",
-        );
+        let verify_idx = handler
+            .find("SessionToken::verify_bytes(")
+            .expect("verify_bytes call must exist in the proxy (else) branch");
         assert!(
             web_branch_idx < verify_idx,
             "Service::Web branch MUST evaluate (and short-circuit) \
@@ -4143,10 +4139,13 @@ mod tests {
              that opens the mailer broker path (Issue #10).",
         );
         // The whitelist call must exist BEFORE we proceed to send the FD.
-        let allows_idx = handler[web_idx..].find("mailer.allows(").map(|i| web_idx + i).expect(
-            "handle_tcp_connect_request MUST call mailer.allows(host, port) \
+        let allows_idx = handler[web_idx..]
+            .find("mailer.allows(")
+            .map(|i| web_idx + i)
+            .expect(
+                "handle_tcp_connect_request MUST call mailer.allows(host, port) \
              on the Service::Web arm before connecting. SSRF guard, Issue #10.",
-        );
+            );
         // The fail-closed branch must call requesting_channel.send with a
         // failed TcpConnectResponse. We grep for the most distinctive
         // marker: the rejection log + the Access denied response that

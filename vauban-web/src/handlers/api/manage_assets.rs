@@ -541,6 +541,12 @@ pub async fn fetch_ssh_host_key_api(
         access_client: state.access_client.as_ref(),
         user_uuid: &user.uuid,
         asset_uuid: &asset_uuid_str_for_token,
+        // Issue #34: this endpoint is gated on `assets:manage` (line
+        // ~489), so the caller is structurally an admin. Forward the
+        // flag so the IPC layer picks the diagnostic-token verb and
+        // bypasses the access-rule re-check (admins typically have
+        // no explicit rule per asset).
+        caller_has_assets_manage: perms.assets_manage,
     };
     let (host_key, fingerprint) = proxy_client
         .fetch_host_key(

@@ -278,10 +278,8 @@ async fn dashboard_heatmap_user_scoped_aggregates_only_self() {
     let u1_id = create_simple_user(&mut conn, &u1_username).await;
     let u2_id = create_simple_user(&mut conn, &u2_username).await;
 
-    let u1_asset_id =
-        create_simple_ssh_asset(&mut conn, &unique_name("h1_asset"), u1_id).await;
-    let u2_asset_id =
-        create_simple_ssh_asset(&mut conn, &unique_name("h2_asset"), u2_id).await;
+    let u1_asset_id = create_simple_ssh_asset(&mut conn, &unique_name("h1_asset"), u1_id).await;
+    let u2_asset_id = create_simple_ssh_asset(&mut conn, &unique_name("h2_asset"), u2_id).await;
 
     let _ = create_test_session(&mut conn, u1_id, u1_asset_id, "ssh", "completed").await;
     for _ in 0..5 {

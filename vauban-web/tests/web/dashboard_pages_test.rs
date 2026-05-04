@@ -408,8 +408,12 @@ async fn test_asset_detail_with_sessions() {
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
+    // Issue #34: the user-zone /assets/{uuid} detail page is gone;
+    // the route serves a constant 410 Gone. Per-asset session
+    // history lives on the /assets/manage/{uuid} admin detail page
+    // and on /sessions filtered by asset.
     let status = response.status_code().as_u16();
-    assert!(status == 200 || status == 303);
+    assert_eq!(status, 410);
 }
 
 // =============================================================================

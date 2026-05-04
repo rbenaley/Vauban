@@ -866,18 +866,18 @@ pub fn enqueue_hydration_by_uuid(
         );
         return tokio::spawn(async {});
     }
-        let pool = state.db_pool.clone();
-        let storage_base = state.config.recording.storage_path.clone();
-        let batch_size = state.config.recording.hydration_batch_size;
-        let missing_meta_grace =
-            Duration::from_secs(state.config.recording.hydration_missing_meta_grace_secs);
-        let broadcast = state.broadcast.clone();
-        debug!(
-            session_uuid = %session_uuid,
-            grace_secs = grace.as_secs(),
-            "enqueue_hydration_by_uuid: scheduled"
-        );
-        tokio::spawn(async move {
+    let pool = state.db_pool.clone();
+    let storage_base = state.config.recording.storage_path.clone();
+    let batch_size = state.config.recording.hydration_batch_size;
+    let missing_meta_grace =
+        Duration::from_secs(state.config.recording.hydration_missing_meta_grace_secs);
+    let broadcast = state.broadcast.clone();
+    debug!(
+        session_uuid = %session_uuid,
+        grace_secs = grace.as_secs(),
+        "enqueue_hydration_by_uuid: scheduled"
+    );
+    tokio::spawn(async move {
         tokio::time::sleep(grace).await;
         // Resolve UUID -> id. If it cannot be found the task is a
         // no-op; this keeps the call-side allocation free.

@@ -173,17 +173,32 @@
                     </div>
                     <div class="flex flex-wrap items-center gap-2 sm:flex-shrink-0">
                         {# Issue #27 - asset zone split: no View link in the user zone.
-                           CRUD lives at /assets/manage/* (admin-only). #}
+                           CRUD lives at /assets/manage/* (admin-only).
+
+                           Issue #34 - Request Access / Justification modaux
+                           are inlined on this page (single include below the
+                           list). The `/assets/{uuid}` detail page that used
+                           to host them was an information-disclosure surface
+                           (description, dates, ssh-host-key fingerprint
+                           rendered for any caller with `assets:read`,
+                           including users who hadn't been granted access yet)
+                           and has been replaced by a constant 410. Per-row
+                           buttons populate the Alpine stores via `open(...)`
+                           with only the three fields the modaux need:
+                           `asset.uuid`, `asset.asset_type`,
+                           `asset.require_mfa`. #}
                         {% if asset.requires_request %}
-                        <a href="/assets/{{ asset.uuid }}#request-access"
-                           class="rounded-md bg-amber-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-amber-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600">
+                        <button type="button"
+                                @click="$store.accessModal.open('{{ asset.uuid }}', '{{ asset.asset_type }}', {{ asset.require_mfa }})"
+                                class="rounded-md bg-amber-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-amber-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600">
                             Request
-                        </a>
+                        </button>
                         {% else if require_justification %}
-                        <a href="/assets/{{ asset.uuid }}#justify"
-                           class="rounded-md bg-vauban-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-600">
+                        <button type="button"
+                                @click="$store.justificationModal.open('{{ asset.uuid }}', '{{ asset.asset_type }}')"
+                                class="rounded-md bg-vauban-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-600">
                             Connect
-                        </a>
+                        </button>
                         {% else %}
                         {# `htmx-request` is added by HTMX to the form (it carries `hx-post`),  #}
                         {# so all Tailwind selectors driving the spinner use the descendant     #}
@@ -335,6 +350,15 @@
          hx-target="#asset-list-container"
          hx-swap="outerHTML">
     </div>
+
+    {# Issue #34 -- inline modaux for Request Access (require_approval)
+       and Justification (require_justification). Included ONCE per page.
+       Per-row buttons populate the Alpine stores; modaux read store
+       fields (asset_uuid, asset_type, require_mfa) via :value bindings.
+       The legacy `/assets/{uuid}` detail page that used to host these
+       modaux is now a 410 Gone -- see `gone_asset_user_view`. #}
+    {% include "sessions/access_request_modal.html" %}
+    {% include "sessions/justification_modal.html" %}
 </div>
 {% endblock %}
 

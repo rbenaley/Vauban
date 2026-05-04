@@ -1,0 +1,43 @@
+<div id="ssh-host-key-section" class="p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg">
+  <div class="flex items-center justify-between">
+    <div>
+      <div class="flex items-center gap-2 text-amber-700 dark:text-amber-400">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"></path></svg>
+        <span class="font-medium">Could not verify host key</span>
+      </div>
+      <p class="mt-1 text-sm text-gray-600 dark:text-gray-400">
+        The remote server could not be reached for live verification
+        (proxy unavailable, network error, or AccessGuard refused the
+        diagnostic token). The fingerprint below is the one stored
+        in the database, NOT a confirmation that the live server
+        still presents the same key.
+      </p>
+      <p class="mt-1 text-sm text-gray-900 dark:text-white font-mono break-all">
+        <span class="text-xs text-amber-700 dark:text-amber-400 uppercase tracking-wide mr-2">stored, not live verified</span>
+        __FINGERPRINT__
+      </p>
+    </div>
+    <div class="flex flex-col gap-2 flex-shrink-0">
+      <button
+        hx-get="/assets/__ASSET_UUID__/verify-host-key"
+        hx-target="#ssh-host-key-section"
+        hx-swap="outerHTML"
+        hx-indicator="#host-key-loading"
+        class="px-3 py-1.5 text-sm bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300 rounded-md transition-colors">
+        Refresh
+      </button>
+      <button
+        hx-post="/assets/manage/__ASSET_UUID__/fetch-host-key"
+        hx-target="#ssh-host-key-section"
+        hx-swap="outerHTML"
+        hx-indicator="#host-key-loading"
+        class="px-3 py-1.5 text-sm bg-vauban-600 hover:bg-vauban-500 text-white rounded-md transition-colors flex items-center gap-2">
+        <svg class="w-4 h-4 htmx-indicator hidden animate-spin" id="host-key-loading" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+        </svg>
+        Re-fetch and pin
+      </button>
+    </div>
+  </div>
+</div>

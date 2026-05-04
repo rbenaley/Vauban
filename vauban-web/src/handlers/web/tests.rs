@@ -1461,27 +1461,6 @@ fn test_connect_rdp_no_longer_bypasses_access_rules_for_privileged_users() {
 // digits)" from the backend. The fix unifies the three surfaces on a single
 // `vauban-access` policy lookup. The guards below catch any regression.
 
-fn asset_detail_source() -> &'static str {
-    // Issue #27: the user-zone equivalent of the legacy `asset_detail`
-    // handler is now `asset_user_view` in `handlers/web/assets.rs`.
-    // The admin-zone CRUD `asset_detail` lives in `manage_assets.rs`
-    // and never opens a session, so the bypass guard does not apply
-    // there. The user-zone view is the surface that decides whether
-    // the rendered asset page shows a blue "Connect" or an orange
-    // "Request Access" button, so this is where the historical
-    // privileged-user bypass would resurface.
-    let full = include_str!("assets.rs");
-    let start = full
-        .find("pub async fn asset_user_view(")
-        .expect("asset_user_view handler must exist in handlers/web/assets.rs");
-    let after = &full[start..];
-    let end = after
-        .find("\npub async fn ")
-        .or_else(|| after.find("\npub fn "))
-        .unwrap_or(after.len());
-    &after[..end]
-}
-
 fn asset_list_source() -> &'static str {
     let full = include_str!("assets.rs");
     let start = full
@@ -1515,42 +1494,30 @@ const FORBIDDEN_PRIV_BYPASSES: &[&str] = &[
     "auth_user.is_staff || auth_user.is_superuser",
 ];
 
+/// Issue #34 -- the user-zone `/assets/{uuid}` detail page is gone.
+/// Used to be `asset_user_view`; replaced by `gone_asset_user_view`
+/// returning a constant 410. The detail page was the only surface that
+/// had to compute `require_approval` / `require_mfa` AND render them
+/// to the user, which had a high regression risk for the legacy
+/// privileged-user bypass.  Now that the page is gone the bypass
+/// surface is reduced to `asset_list` alone (per-row badge) and
+/// `submit_access_request` (POST gate); both still pinned below.
 #[test]
-fn test_asset_detail_no_longer_bypasses_access_rules_for_privileged_users() {
-    let body = asset_detail_source();
-    for pat in FORBIDDEN_PRIV_BYPASSES {
-        assert!(
-            !body.contains(pat),
-            "asset_detail MUST NOT short-circuit the access_rule lookup on \
-             is_superuser / is_staff (`{}` reintroduced). The rendering layer \
-             must agree with connect_ssh/connect_rdp and submit_access_request \
-             on whether the user needs to request approval, otherwise the UI \
-             will show a blue 'Connect' button on an approval-protected asset \
-             and the backend will then reject the submission with a bogus \
-             'MFA code is required' error.",
-            pat
-        );
-    }
-    // Issue #27: the user-zone `asset_user_view` derives
-    // `require_approval` / `require_mfa` directly from the
-    // `access_rules` table (joined to the asset's groups + the
-    // virtual all-assets group) instead of going through
-    // `services::access::can_access_asset`. The semantics are
-    // identical (same predicate, same scope) and crucially there is
-    // no `is_superuser` / `is_staff` short-circuit. Accept either
-    // form so we are not coupled to the exact lookup helper.
+fn test_asset_user_view_was_replaced_by_gone_handler() {
+    let full = include_str!("assets.rs");
     assert!(
-        body.contains("can_access_asset")
-            || (body.contains("require_approval.eq(true)")
-                && body.contains("require_mfa.eq(true)")),
-        "asset_user_view must compute `require_approval` / `require_mfa` \
-         from the real policy (either via services::access::can_access_asset \
-         or via direct access_rules SQL queries) for every user"
+        !full.contains("pub async fn asset_user_view("),
+        "asset_user_view handler MUST be removed (issue #34): the user-zone \
+         detail page leaked description / dates / ssh-host-key fingerprint \
+         to non-approved users. The route now serves a constant 410 via \
+         `gone_asset_user_view`, and the Request Access / Justification \
+         modaux are inlined on /assets."
     );
     assert!(
-        body.contains("list_accessible_asset_ids"),
-        "asset_user_view must call services::access::list_accessible_asset_ids \
-         for every user so the instance-level access filter applies uniformly"
+        full.contains("pub async fn gone_asset_user_view("),
+        "gone_asset_user_view handler MUST exist (issue #34) so the legacy \
+         /assets/{{uuid}} URL returns 410 Gone instead of 404 (audit-grep \
+         friendly, anti-enum)."
     );
 }
 

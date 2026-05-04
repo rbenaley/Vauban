@@ -505,12 +505,8 @@ fn recv_smtp_stream(
         )
     })?;
 
-    let owned_fd = recv_fd(fd_socket).map_err(|e| {
-        format!(
-            "request_id={}: recv_fd failed: {}",
-            request_id, e
-        )
-    })?;
+    let owned_fd = recv_fd(fd_socket)
+        .map_err(|e| format!("request_id={}: recv_fd failed: {}", request_id, e))?;
 
     let raw_fd = owned_fd.into_raw_fd();
     // SAFETY: `raw_fd` was just received via SCM_RIGHTS from the
@@ -520,8 +516,12 @@ fn recv_smtp_stream(
     std_stream
         .set_nonblocking(true)
         .map_err(|e| format!("request_id={}: set_nonblocking failed: {}", request_id, e))?;
-    tokio::net::TcpStream::from_std(std_stream)
-        .map_err(|e| format!("request_id={}: TcpStream::from_std failed: {}", request_id, e))
+    tokio::net::TcpStream::from_std(std_stream).map_err(|e| {
+        format!(
+            "request_id={}: TcpStream::from_std failed: {}",
+            request_id, e
+        )
+    })
 }
 
 /// Main loop for supervisor IPC communication thread.

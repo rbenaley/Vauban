@@ -53,7 +53,10 @@ impl Sparkline {
                 last_y: mid_y,
             };
         }
-        let xs: Vec<f32> = samples.iter().map(|s| if s.is_nan() { 0.0 } else { *s }).collect();
+        let xs: Vec<f32> = samples
+            .iter()
+            .map(|s| if s.is_nan() { 0.0 } else { *s })
+            .collect();
         let min = xs.iter().cloned().fold(f32::INFINITY, f32::min);
         let max = xs.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
         let range = (max - min).max(f32::EPSILON);
@@ -69,7 +72,9 @@ impl Sparkline {
             };
             // SVG Y axis grows downwards: invert.
             let normalised = (v - min) / range;
-            let y = (h as f32 - 1.0 - normalised * (h as f32 - 1.0)).round().max(0.0) as u32;
+            let y = (h as f32 - 1.0 - normalised * (h as f32 - 1.0))
+                .round()
+                .max(0.0) as u32;
             if i > 0 {
                 s.push(' ');
             }
@@ -102,7 +107,11 @@ pub struct Gauge {
 }
 
 impl Gauge {
-    pub fn new(percent: u8, label_inner: impl Into<String>, label_outer: impl Into<String>) -> Self {
+    pub fn new(
+        percent: u8,
+        label_inner: impl Into<String>,
+        label_outer: impl Into<String>,
+    ) -> Self {
         let p = percent.min(100);
         let path = arc_path_for_percent(p);
         Self {
@@ -287,7 +296,13 @@ pub struct Bar {
 }
 
 impl Bar {
-    pub fn new(value: u64, max: u64, color_class: impl Into<String>, label: impl Into<String>, value_label: impl Into<String>) -> Self {
+    pub fn new(
+        value: u64,
+        max: u64,
+        color_class: impl Into<String>,
+        label: impl Into<String>,
+        value_label: impl Into<String>,
+    ) -> Self {
         let pct = if max == 0 {
             0
         } else {
@@ -399,17 +414,21 @@ mod tests {
         let visible_sum: u32 = d
             .segments
             .iter()
-            .map(|s| s.dasharray.split_whitespace().next().unwrap_or("0").parse().unwrap_or(0))
+            .map(|s| {
+                s.dasharray
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("0")
+                    .parse()
+                    .unwrap_or(0)
+            })
             .sum();
         assert_eq!(visible_sum, 100);
     }
 
     #[test]
     fn heatmap_buckets_intensities_by_relative_max() {
-        let grid = vec![
-            vec![0, 5, 10, 50, 100],
-            vec![0, 0, 0, 0, 0],
-        ];
+        let grid = vec![vec![0, 5, 10, 50, 100], vec![0, 0, 0, 0, 0]];
         let h = Heatmap::from_grid(&grid, &["d0".to_string(), "d1".to_string()]);
         assert_eq!(h.max, 100);
         assert_eq!(h.rows[0].cells[0].intensity, 0);

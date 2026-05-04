@@ -141,8 +141,7 @@ fn dashboard_template_carries_no_actionable_widgets() {
 /// be a foot-gun.
 #[test]
 fn dashboard_tile_partials_carry_no_mutating_htmx() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("templates/dashboard/tiles");
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("templates/dashboard/tiles");
     let entries = std::fs::read_dir(&dir).expect("tile dir");
     let mut count = 0;
     for entry in entries {
@@ -204,10 +203,14 @@ fn ws_targets_match_between_pusher_and_page() {
             id
         );
         // Pusher references the id (transitively through the const).
-        let const_present = tiles
-            .lines()
-            .any(|line| line.contains(&format!("\"{}\";", id)) || line.contains(&format!("\"{}\",", id)));
-        assert!(const_present, "tile id `{}` MUST be a const in tiles.rs", id);
+        let const_present = tiles.lines().any(|line| {
+            line.contains(&format!("\"{}\";", id)) || line.contains(&format!("\"{}\",", id))
+        });
+        assert!(
+            const_present,
+            "tile id `{}` MUST be a const in tiles.rs",
+            id
+        );
     }
     // Sanity: pusher imports the const block.
     assert!(
@@ -294,7 +297,9 @@ fn tile_partials_embed_svg_primitives() {
 fn pusher_cadences_are_named_constants() {
     let src = pusher_src();
     assert!(
-        src.contains("CADENCE_FAST: Duration") && src.contains("CADENCE_MEDIUM: Duration") && src.contains("CADENCE_SLOW: Duration"),
+        src.contains("CADENCE_FAST: Duration")
+            && src.contains("CADENCE_MEDIUM: Duration")
+            && src.contains("CADENCE_SLOW: Duration"),
         "dashboard_pusher.rs MUST expose CADENCE_FAST / CADENCE_MEDIUM / CADENCE_SLOW so a single source-grep tells you the broadcast cadence."
     );
 }
@@ -496,7 +501,8 @@ fn ws_channel_dashboard_stats_user_is_high_cardinality() {
     let user_idx = body
         .find("WsChannel::DashboardStatsUser(_)")
         .expect("DashboardStatsUser arm must appear in is_low_cardinality body");
-    let false_idx = body.find("=> false")
+    let false_idx = body
+        .find("=> false")
         .expect("is_low_cardinality must contain a `=> false` branch");
     assert!(
         user_idx < false_idx,

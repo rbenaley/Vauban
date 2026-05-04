@@ -246,7 +246,10 @@ async fn test_asset_detail_accepts_uuid_not_integer_id() {
     let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
     let asset = create_test_ssh_asset(&mut conn, &unique_name("test-uuid-route-asset")).await;
 
-    // UUID-based URL should work
+    // Issue #34: the user-zone /assets/{uuid} detail page is gone;
+    // the route now serves a constant 410 Gone (audit-friendly,
+    // anti-enum). Asset details for admins live under
+    // /assets/manage/{uuid} (covered by manage_assets tests).
     let uuid_response = app
         .server
         .get(&format!("/assets/{}", asset.asset.uuid))
@@ -254,9 +257,9 @@ async fn test_asset_detail_accepts_uuid_not_integer_id() {
         .await;
 
     let status = uuid_response.status_code().as_u16();
-    assert!(
-        status == 200 || status == 303,
-        "Asset detail page should accept UUID in URL, got status {}",
+    assert_eq!(
+        status, 410,
+        "User-zone /assets/{{uuid}} must return 410 (issue #34); got {}",
         status
     );
 
@@ -986,9 +989,13 @@ async fn test_asset_button_shows_request_when_approval_required() {
         body.contains("Request"),
         "non-admin user with approval rule should see Request button"
     );
+    // Issue #34: per-row Request button now opens the inlined Alpine
+    // accessModal instead of navigating to the (now-removed)
+    // /assets/{uuid} detail page.
     assert!(
-        body.contains("#request-access"),
-        "Request button should link to #request-access"
+        body.contains("$store.accessModal.open("),
+        "Request button must trigger the inlined Alpine accessModal \
+         (issue #34: legacy `#request-access` hash navigation removed)"
     );
 
     test_db::cleanup(&mut conn).await;
@@ -1148,17 +1155,23 @@ async fn test_asset_button_shows_connect_for_admin() {
 
     assert_status(&response, 200);
     let body = response.text();
+    // Issue #34: admins are still subject to access rules, but the
+    // per-row Request button now opens the inlined Alpine accessModal
+    // (legacy `#request-access` hash navigation was removed).
     assert!(
-        body.contains("#request-access"),
-        "admin must see the Request link when the matching rule requires \
-         approval — no more privileged-user shortcut to a blue Connect \
-         button on an approval-protected asset."
+        body.contains("$store.accessModal.open("),
+        "admin must see the inlined Request modal trigger when the matching \
+         rule requires approval -- no more privileged-user shortcut to a \
+         blue Connect button on an approval-protected asset."
     );
 
     test_db::cleanup(&mut conn).await;
 }
 
-/// The "Request" button should link to the asset detail page with #request-access.
+/// Issue #34: the per-row "Request" button opens the inlined Alpine
+/// accessModal directly. The legacy `<a href="/assets/{uuid}#request-access">`
+/// pattern -- which forced a detour through the now-removed user-zone
+/// detail page -- has been replaced.
 #[tokio::test]
 #[serial]
 async fn test_asset_button_request_links_to_detail() {
@@ -1204,8 +1217,15 @@ async fn test_asset_button_request_links_to_detail() {
     assert_status(&response, 200);
     let body = response.text();
     assert!(
-        body.contains("/assets/") && body.contains("#request-access"),
-        "Request button should have href to /assets/{{uuid}}#request-access"
+        body.contains("$store.accessModal.open("),
+        "Request button must open the inlined Alpine accessModal \
+         (issue #34: the /assets/{{uuid}} detail page is gone, so the \
+         legacy `#request-access` hash navigation has no consumer left)"
+    );
+    assert!(
+        !body.contains("#request-access"),
+        "asset_list.html must NOT contain the legacy `#request-access` \
+         hash anywhere"
     );
 
     test_db::cleanup(&mut conn).await;

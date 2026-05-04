@@ -15,9 +15,9 @@
 use crate::auth::permissions::PermissionContext;
 use crate::db::DbPool;
 use crate::middleware::WebAuthUser;
+use crate::schema::{access_rules, assets, email_outbox, proxy_sessions, users};
 use crate::services::dashboard::widgets::{Bar, Donut, Heatmap, Sparkline};
 use crate::services::system_health::{LiveSessionHistory, ScopeKey, SystemHealth};
-use crate::schema::{access_rules, assets, email_outbox, proxy_sessions, users};
 use chrono::{DateTime, Datelike, Duration, Timelike, Utc};
 use diesel::dsl::count_star;
 use diesel::prelude::*;
@@ -237,9 +237,8 @@ pub(crate) async fn load_hero(
         }};
     }
 
-    let live: i64 = count_with_scope!(
-        proxy_sessions::table.filter(proxy_sessions::status.eq("active"))
-    );
+    let live: i64 =
+        count_with_scope!(proxy_sessions::table.filter(proxy_sessions::status.eq("active")));
     let live_u64 = live.max(0) as u64;
     // Push the freshly-observed live count into the per-scope
     // rolling history BEFORE building the sparkline so the trace's
@@ -251,17 +250,15 @@ pub(crate) async fn load_hero(
         .and_hms_opt(0, 0, 0)
         .map(|d| d.and_utc())
         .unwrap_or(now);
-    let today: i64 = count_with_scope!(
-        proxy_sessions::table.filter(proxy_sessions::created_at.ge(day_start))
-    );
+    let today: i64 =
+        count_with_scope!(proxy_sessions::table.filter(proxy_sessions::created_at.ge(day_start)));
     let today_recorded: i64 = count_with_scope!(
         proxy_sessions::table
             .filter(proxy_sessions::created_at.ge(day_start))
             .filter(proxy_sessions::is_recorded.eq(true))
     );
-    let jit_queue: i64 = count_with_scope!(
-        proxy_sessions::table.filter(proxy_sessions::status.eq("pending"))
-    );
+    let jit_queue: i64 =
+        count_with_scope!(proxy_sessions::table.filter(proxy_sessions::status.eq("pending")));
     let evidence_total: i64 = count_with_scope!(
         proxy_sessions::table.filter(proxy_sessions::recording_finalized_at.is_not_null())
     );
@@ -353,26 +350,25 @@ pub(crate) async fn load_live_sessions(
     };
     let now = Utc::now();
     rows.into_iter()
-        .map(|(uuid, name, hostname, username, st, connected_at, recorded, created_at)| {
-            let started_at = connected_at.unwrap_or(created_at);
-            LiveSession {
-                uuid,
-                asset_name: name,
-                asset_hostname: hostname,
-                username,
-                session_type: st,
-                started_at,
-                duration_seconds: now.signed_duration_since(started_at).num_seconds(),
-                is_recorded: recorded,
-            }
-        })
+        .map(
+            |(uuid, name, hostname, username, st, connected_at, recorded, created_at)| {
+                let started_at = connected_at.unwrap_or(created_at);
+                LiveSession {
+                    uuid,
+                    asset_name: name,
+                    asset_hostname: hostname,
+                    username,
+                    session_type: st,
+                    started_at,
+                    duration_seconds: now.signed_duration_since(started_at).num_seconds(),
+                    is_recorded: recorded,
+                }
+            },
+        )
         .collect()
 }
 
-pub(crate) async fn load_evidence_chain(
-    db_pool: &DbPool,
-    scope: DashboardScope,
-) -> EvidenceChain {
+pub(crate) async fn load_evidence_chain(db_pool: &DbPool, scope: DashboardScope) -> EvidenceChain {
     let mut conn = match db_pool.get().await {
         Ok(c) => c,
         Err(_) => {
@@ -440,9 +436,21 @@ pub(crate) async fn load_evidence_chain(
     };
     let vault_total_bytes: i64 = sizes.into_iter().flatten().fold(0i64, i64::saturating_add);
     let donut = Donut::from_segments(vec![
-        ("recording".to_string(), recording_now.max(0) as u64, "stroke-rose-500".to_string()),
-        ("hydrating".to_string(), awaiting.max(0) as u64, "stroke-amber-500".to_string()),
-        ("vaulted".to_string(), hydrated.max(0) as u64, "stroke-emerald-500".to_string()),
+        (
+            "recording".to_string(),
+            recording_now.max(0) as u64,
+            "stroke-rose-500".to_string(),
+        ),
+        (
+            "hydrating".to_string(),
+            awaiting.max(0) as u64,
+            "stroke-amber-500".to_string(),
+        ),
+        (
+            "vaulted".to_string(),
+            hydrated.max(0) as u64,
+            "stroke-emerald-500".to_string(),
+        ),
     ]);
     EvidenceChain {
         recording_now: recording_now.max(0) as u64,
@@ -653,19 +661,21 @@ async fn load_user_lens(db_pool: &DbPool, user_uuid_str: &str, now: DateTime<Utc
         .unwrap_or_default();
     let recent: Vec<LiveSession> = rows
         .into_iter()
-        .map(|(uuid, name, hostname, st, connected_at, recorded, created_at)| {
-            let started_at = connected_at.unwrap_or(created_at);
-            LiveSession {
-                uuid,
-                asset_name: name,
-                asset_hostname: hostname,
-                username: String::new(),
-                session_type: st,
-                started_at,
-                duration_seconds: now.signed_duration_since(started_at).num_seconds(),
-                is_recorded: recorded,
-            }
-        })
+        .map(
+            |(uuid, name, hostname, st, connected_at, recorded, created_at)| {
+                let started_at = connected_at.unwrap_or(created_at);
+                LiveSession {
+                    uuid,
+                    asset_name: name,
+                    asset_hostname: hostname,
+                    username: String::new(),
+                    session_type: st,
+                    started_at,
+                    duration_seconds: now.signed_duration_since(started_at).num_seconds(),
+                    is_recorded: recorded,
+                }
+            },
+        )
         .collect();
     // allow-global-scope: same rationale as load_user_lens row above.
     let own_recordings_total: i64 = proxy_sessions::table
@@ -690,8 +700,16 @@ mod tests {
     fn evidence_chain_donut_carries_three_phases() {
         let donut = Donut::from_segments(vec![
             ("recording".to_string(), 1u64, "stroke-rose-500".to_string()),
-            ("hydrating".to_string(), 2u64, "stroke-amber-500".to_string()),
-            ("vaulted".to_string(), 3u64, "stroke-emerald-500".to_string()),
+            (
+                "hydrating".to_string(),
+                2u64,
+                "stroke-amber-500".to_string(),
+            ),
+            (
+                "vaulted".to_string(),
+                3u64,
+                "stroke-emerald-500".to_string(),
+            ),
         ]);
         assert_eq!(donut.segments.len(), 3);
         assert_eq!(donut.total, 6);

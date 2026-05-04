@@ -4388,34 +4388,38 @@ async fn test_connect_ssh_marks_mismatch_on_failure() {
     );
 }
 
-/// Verify that the asset detail template auto-verifies the host key on
-/// page load and that the three states are available via HTMX fragments.
+/// Verify that the SSH host-key fragments still encode the three
+/// states (verified / mismatch / no-key) consumed by the admin
+/// `/assets/manage/{uuid}` detail page. Issue #34 removed the
+/// user-zone detail page (`templates/assets/asset_detail.html`)
+/// because it leaked description / dates / fingerprint to non-
+/// approved users; the verify-host-key HTMX endpoint and its
+/// fragments stay because the admin /manage detail page still
+/// drives them.
 #[tokio::test]
 #[serial]
 async fn test_asset_detail_template_three_host_key_states() {
-    let template_source = include_str!("../../templates/assets/asset_detail.html");
-
-    // The template must trigger auto-verification via HTMX on page load
+    // Admin /manage detail page must still call the verify endpoint
+    // and show the loading state.
+    let admin_detail = include_str!("../../templates/assets/manage/detail.html");
     assert!(
-        template_source.contains("verify-host-key"),
-        "asset_detail template must call verify-host-key endpoint"
+        admin_detail.contains("verify-host-key"),
+        "admin asset detail template must call verify-host-key endpoint"
     );
     assert!(
-        template_source.contains("hx-trigger"),
-        "asset_detail template must use hx-trigger for auto-verification"
+        admin_detail.contains("hx-trigger"),
+        "admin asset detail template must use hx-trigger for auto-verification"
     );
     assert!(
-        template_source.contains("Verifying host key"),
-        "asset_detail template must show a 'Verifying' loading state"
+        admin_detail.contains("Verifying host key"),
+        "admin asset detail template must show a 'Verifying' loading state"
     );
-
-    // State 2 (no key) is still rendered server-side
     assert!(
-        template_source.contains("No Host Key Stored"),
-        "asset_detail template must show 'No Host Key Stored' state"
+        admin_detail.contains("No Host Key Stored"),
+        "admin asset detail template must show 'No Host Key Stored' state"
     );
 
-    // States 1 (verified) and 3 (mismatch) are now in HTMX fragments
+    // States 1 (verified) and 3 (mismatch) remain in HTMX fragments.
     let verified_fragment = include_str!("../../templates/assets/_ssh_host_key_fragment.html");
     assert!(
         verified_fragment.contains("Host Key Verified"),
@@ -4443,15 +4447,19 @@ async fn test_asset_detail_template_three_host_key_states() {
     );
 }
 
-/// Verify that the AssetDetail struct has the ssh_host_key_mismatch field.
+/// Issue #34: the user-zone `AssetDetail` struct has been removed
+/// because the user-zone /assets/{uuid} detail page is gone. The
+/// ssh_host_key_mismatch field LIVES ON in the admin
+/// `ManageAssetDetail` struct, which is the surface the SSH host
+/// key fragments still feed into.
 #[tokio::test]
 #[serial]
 async fn test_asset_detail_struct_has_mismatch_field() {
-    let struct_source = include_str!("../../src/templates/assets/asset_detail.rs");
+    let struct_source = include_str!("../../src/templates/assets/manage/detail.rs");
 
     assert!(
-        struct_source.contains("ssh_host_key_mismatch: bool"),
-        "AssetDetail struct must have ssh_host_key_mismatch field"
+        struct_source.contains("ssh_host_key_mismatch"),
+        "ManageAssetDetail struct must keep the ssh_host_key_mismatch field"
     );
 }
 
@@ -6841,18 +6849,29 @@ fn test_sec03_justification_modal_template_exists() {
     );
 }
 
-/// Structural regression: asset_detail.html must include the justification
-/// modal and check require_justification.
+/// Structural regression: the SEC-03 justification modal MUST be
+/// inlined on the user-zone `/assets` list page (asset_list.html).
+/// Issue #34 removed the user-zone `/assets/{uuid}` detail page that
+/// used to host both modaux (information leak surface), so the
+/// modal is now included once at the bottom of the list and opened
+/// per-row by `$store.justificationModal.open(uuid, type)`.
 #[test]
-fn test_sec03_asset_detail_includes_justification_modal() {
-    let template = include_str!("../../templates/assets/asset_detail.html");
+fn test_sec03_asset_list_includes_justification_modal() {
+    let template = include_str!("../../templates/assets/asset_list.html");
     assert!(
         template.contains("justification_modal.html"),
-        "SEC-03: asset_detail.html must include justification_modal.html"
+        "SEC-03: asset_list.html must include justification_modal.html \
+         (issue #34: modaux are inlined on /assets, not on the removed \
+         /assets/{{uuid}} detail page)"
     );
     assert!(
         template.contains("require_justification"),
-        "SEC-03: asset_detail.html must check require_justification"
+        "SEC-03: asset_list.html must branch on require_justification"
+    );
+    assert!(
+        template.contains("$store.justificationModal.open("),
+        "SEC-03: per-row Connect button must open the inlined Alpine \
+         justificationModal store with the asset uuid + type"
     );
 }
 

@@ -525,6 +525,46 @@ fn handle_message(channel: &IpcChannel, state: &mut ServiceState, msg: Message) 
                             AccessResponse::SessionTokenDenied
                         }
                     },
+                    // SECURITY: IssueDiagnosticToken issues a session-token-
+                    // shaped credential for a strictly read-only diagnostic
+                    // operation (today: SSH host-key verify and fetch). Same
+                    // MAC key as IssueSessionToken so the supervisor and the
+                    // proxy accept the token without modification, but the
+                    // authorisation check skips the access-rule re-run and
+                    // gates only on `caller_has_assets_manage`. See the
+                    // shared::messages::AccessRequest::IssueDiagnosticToken
+                    // doc-comment for the full contract.
+                    AccessRequest::IssueDiagnosticToken {
+                        user_uuid,
+                        asset_uuid,
+                        protocol,
+                        host,
+                        port,
+                        target_service,
+                        session_id,
+                        caller_has_assets_manage,
+                    } => match &state.session_token_key {
+                        Some(key) => rt.block_on(handlers::handle_issue_diagnostic_token(
+                            key,
+                            shared::session_token::SessionTokenParams {
+                                session_id,
+                                user_uuid,
+                                asset_uuid,
+                                protocol,
+                                host,
+                                port,
+                                target_service,
+                            },
+                            caller_has_assets_manage,
+                        )),
+                        None => {
+                            warn!(
+                                "IssueDiagnosticToken request received but no \
+                                 MAC key loaded; fail-closed deny"
+                            );
+                            AccessResponse::SessionTokenDenied
+                        }
+                    },
                     other => rt.block_on(handlers::handle_access_request(pool, other)),
                 },
                 _ => {

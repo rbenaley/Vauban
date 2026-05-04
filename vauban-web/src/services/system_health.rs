@@ -14,16 +14,16 @@
 //! telemetry.
 
 use crate::db::DbPool;
-use crate::services::broker_latency::{BrokerLatencyTracker, LatencySnapshot};
 use crate::schema::{email_outbox, proxy_sessions};
+use crate::services::broker_latency::{BrokerLatencyTracker, LatencySnapshot};
 use diesel::dsl::count_star;
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
-use std::sync::Arc;
 use tracing::warn;
 
 /// Cache TTL: a fresh DB snapshot every 5 seconds at most.
@@ -265,7 +265,9 @@ impl LiveSessionHistory {
     pub fn record(&self, scope: ScopeKey, count: u64) {
         let mut g = self.rings.lock().unwrap_or_else(|p| p.into_inner());
         let cap = self.cap;
-        let ring = g.entry(scope).or_insert_with(|| ScopeRing::with_capacity(cap));
+        let ring = g
+            .entry(scope)
+            .or_insert_with(|| ScopeRing::with_capacity(cap));
         ring.samples.push_back(count);
         while ring.samples.len() > cap {
             ring.samples.pop_front();
@@ -315,8 +317,7 @@ impl LiveSessionHistory {
         let before = g.len();
         let now = Instant::now();
         g.retain(|key, ring| {
-            matches!(key, ScopeKey::Global)
-                || now.saturating_duration_since(ring.last_seen) < ttl
+            matches!(key, ScopeKey::Global) || now.saturating_duration_since(ring.last_seen) < ttl
         });
         before.saturating_sub(g.len())
     }

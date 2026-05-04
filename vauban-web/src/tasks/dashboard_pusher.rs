@@ -237,12 +237,11 @@ async fn push_for_scope(
     } else {
         None
     };
-    let snapshot = match load_snapshot_for_scope(app_state, scope, supervisor_view, system_health)
-        .await
-    {
-        Some(s) => s,
-        None => return,
-    };
+    let snapshot =
+        match load_snapshot_for_scope(app_state, scope, supervisor_view, system_health).await {
+            Some(s) => s,
+            None => return,
+        };
 
     if due_fast {
         push_fast(app_state, target_channel, &snapshot).await;
@@ -301,11 +300,7 @@ async fn load_snapshot_for_scope(
     })
 }
 
-async fn push_fast(
-    app_state: &AppState,
-    target_channel: &WsChannel,
-    snapshot: &DashboardSnapshot,
-) {
+async fn push_fast(app_state: &AppState, target_channel: &WsChannel, snapshot: &DashboardSnapshot) {
     let pairs: [(&str, String); 4] = [
         (
             TILE_HERO_LIVE,
@@ -396,11 +391,7 @@ async fn push_medium(
     }
 }
 
-async fn push_slow(
-    app_state: &AppState,
-    target_channel: &WsChannel,
-    snapshot: &DashboardSnapshot,
-) {
+async fn push_slow(app_state: &AppState, target_channel: &WsChannel, snapshot: &DashboardSnapshot) {
     let html = render_or_empty(&HeatmapTile {
         snapshot: snapshot.clone(),
     });

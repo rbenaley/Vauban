@@ -231,14 +231,17 @@ async fn test_asset_detail_with_malformed_uuid() {
         .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
         .await;
 
-    // Try various malformed UUIDs - all should redirect gracefully to /assets
+    // Issue #34: the user-zone /assets/{uuid} detail page is gone.
+    // The handler is constant 410 Gone for ANY input -- malformed
+    // UUID, valid-looking UUID, or even an empty path segment --
+    // because anti-enumeration requires byte-identical responses.
     let malformed_uuids = [
         "not-a-uuid",
         "12345",
         "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-        "123e4567-e89b-12d3-a456",                  // Too short
-        "123e4567-e89b-12d3-a456-4266141740001234", // Too long
-        "24d3cc30-d6c0-ooo7-be9a-978dd250ae3e",     // Invalid character 'o' in hex
+        "123e4567-e89b-12d3-a456",
+        "123e4567-e89b-12d3-a456-4266141740001234",
+        "24d3cc30-d6c0-ooo7-be9a-978dd250ae3e",
     ];
 
     for bad_uuid in malformed_uuids {
@@ -249,17 +252,11 @@ async fn test_asset_detail_with_malformed_uuid() {
             .await;
 
         let status = response.status_code().as_u16();
-        let location = response
-            .headers()
-            .get("location")
-            .and_then(|v| v.to_str().ok());
-
-        assert!(
-            status == 303 && location == Some("/assets"),
-            "Malformed UUID '{}' should redirect to /assets with 303, got status {} location {:?}",
-            bad_uuid,
-            status,
-            location
+        assert_eq!(
+            status, 410,
+            "Malformed UUID '{}' should also return 410 (issue #34: \
+             the route is constant 410 for every input); got {}",
+            bad_uuid, status
         );
     }
 }
@@ -376,6 +373,12 @@ async fn test_approval_detail_with_malformed_uuid() {
 // Flash Message Tests (verify redirects include flash cookies)
 // =============================================================================
 
+/// The flash-cookie redirect mechanism is the standard "soft 404"
+/// pattern across the user zone. Issue #34 removed `/assets/{uuid}`
+/// from the surfaces that emit it (it now serves a constant 410), so
+/// pin the same mechanism on `/accounts/users/{uuid}` instead -- the
+/// behaviour is identical and the test still locks down the flash
+/// pipeline.
 #[tokio::test]
 async fn test_not_found_redirect_sets_flash_cookie() {
     let app = TestApp::spawn().await;
@@ -392,13 +395,12 @@ async fn test_not_found_redirect_sets_flash_cookie() {
     let fake_uuid = Uuid::new_v4();
     let response = app
         .server
-        .get(&format!("/assets/{}", fake_uuid))
+        .get(&format!("/accounts/users/{}", fake_uuid))
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
     assert_status(&response, 303);
 
-    // Check that flash cookie is set
     let set_cookie = response
         .headers()
         .get("set-cookie")
@@ -412,18 +414,18 @@ async fn test_not_found_redirect_sets_flash_cookie() {
     );
 }
 
+/// Same rationale as `test_not_found_redirect_sets_flash_cookie`:
+/// `/assets/{uuid}` is now a hard 410, so the authorization-error
+/// flash redirect is exercised on `/accounts/users/{uuid}` instead.
 #[tokio::test]
 async fn test_authorization_error_redirect_sets_flash() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    // Create an asset
     let admin_name = unique_name("flash_auth_admin");
     let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
-    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("flash-asset"), admin_id).await;
-    let asset_uuid = get_asset_uuid(&mut conn, asset_id).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
 
-    // Create a normal user
     let user_name = unique_name("flash_auth_user");
     let user_id = create_simple_user(&mut conn, &user_name).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
@@ -432,16 +434,16 @@ async fn test_authorization_error_redirect_sets_flash() {
         .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
         .await;
 
-    // Normal user tries to access asset (forbidden)
+    // Normal user tries to open the user-edit form -- gated on
+    // users:write -> flash_redirect with an error cookie.
     let response = app
         .server
-        .get(&format!("/assets/{}", asset_uuid))
+        .get(&format!("/accounts/users/{}/edit", admin_uuid))
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
     assert_status(&response, 303);
 
-    // Check flash cookie is set with error
     let set_cookie = response
         .headers()
         .get("set-cookie")
@@ -1218,7 +1220,14 @@ async fn test_asset_group_edit_page_loads() {
 }
 
 // =============================================================================
-// Asset Detail Page Tests (LEFT JOIN with group info)
+// Asset Detail Page Tests
+//
+// Issue #34: the user-zone /assets/{uuid} GET handler is gone. The
+// route now serves a constant 410 Gone (information leak: the page
+// was rendering description / dates / ssh-host-key fingerprint to
+// every caller with `assets:read`, including users awaiting JIT
+// approval). The three tests below pin the 410 response so a
+// future regression bringing the page back trips CI.
 // =============================================================================
 
 #[tokio::test]
@@ -1241,12 +1250,7 @@ async fn test_asset_detail_page_loads() {
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
-    let status = response.status_code().as_u16();
-    assert!(
-        status == 200 || status == 303,
-        "Expected 200 or 303, got {}",
-        status
-    );
+    assert_status(&response, 410);
 }
 
 #[tokio::test]
@@ -1281,12 +1285,7 @@ async fn test_asset_detail_with_group() {
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
-    let status = response.status_code().as_u16();
-    assert!(
-        status == 200 || status == 303,
-        "Expected 200 or 303, got {}",
-        status
-    );
+    assert_status(&response, 410);
 }
 
 #[tokio::test]
@@ -1302,7 +1301,9 @@ async fn test_asset_detail_not_found() {
         )
         .await;
 
-    // Use a random UUID that doesn't exist
+    // Issue #34: 410 Gone for ANY UUID (existing or not, accessible
+    // or not) because the response is constant -- the route is no
+    // longer an existence oracle.
     let non_existent_uuid = Uuid::new_v4();
     let response = app
         .server
@@ -1310,13 +1311,7 @@ async fn test_asset_detail_not_found() {
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
-    // Not found redirects to list page with flash message
-    assert_status(&response, 303);
-    let location = response
-        .headers()
-        .get("location")
-        .and_then(|v| v.to_str().ok());
-    assert_eq!(location, Some("/assets"));
+    assert_status(&response, 410);
 }
 
 // =============================================================================
@@ -5842,17 +5837,19 @@ async fn test_active_sessions_requires_admin() {
 }
 
 #[tokio::test]
+/// Issue #34: the user-zone /assets/{uuid} detail page is gone.
+/// Both admins and regular users now hit a constant 410 Gone. The
+/// admin's path to per-asset details is /assets/manage/{uuid}
+/// (gated by `assets:manage`).
 async fn test_asset_detail_requires_admin() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
-    // Create an asset
     let admin_username = unique_name("admin_asset_det");
     let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
     let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("det-asset"), admin_id).await;
     let asset_uuid = get_asset_uuid(&mut conn, asset_id).await;
 
-    // Create a normal user
     let username = unique_name("normal_asset_det");
     let user_id = create_simple_user(&mut conn, &username).await;
     let user_uuid = get_user_uuid(&mut conn, user_id).await;
@@ -5867,18 +5864,7 @@ async fn test_asset_detail_requires_admin() {
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
-    // Non-admin users are redirected with flash message
-    let status = response.status_code().as_u16();
-    assert!(
-        status == 303,
-        "Normal user should be redirected from asset details, got {}",
-        status
-    );
-    let location = response
-        .headers()
-        .get("location")
-        .and_then(|v| v.to_str().ok());
-    assert_eq!(location, Some("/assets"));
+    assert_status(&response, 410);
 }
 
 // =============================================================================

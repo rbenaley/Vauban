@@ -855,3 +855,331 @@ mod tests {
         );
     }
 }
+
+// ==================== Behavioural tests for host-key verification ====================
+//
+// These tests spin up an in-process `russh::server` so we can exercise
+// the actual KEX path of [`SshSession::connect`] and [`fetch_host_key`]
+// against a controlled host key. They are the run-time counterpart of
+// the source-grep pin tests above (`test_check_server_key_*`), which
+// only catch wholesale wording regressions and would have happily let
+// the issue #34 silent green-fragment / no-pin TOFU regressions ship.
+//
+// What they cover (issue #34):
+//   - Test 1: pinning the actual server key lets KEX succeed (we then
+//             surface as `AuthenticationFailed` -- the fake server has
+//             no valid auth -- which proves the proxy ACCEPTED the
+//             host key. This is the only way to distinguish "KEX OK,
+//             auth refused" from "KEX rejected by `check_server_key`").
+//   - Test 2: pinning a DIFFERENT key makes `check_server_key` return
+//             `Ok(false)` and KEX is aborted, surfaced as
+//             `ConnectionFailed`. No auth packet is ever sent.
+//   - Test 3: with `expected_host_key = None` the proxy still accepts
+//             the connection (`Ok(true)` warning path); the strict
+//             "pin mandatory" gate is a vauban-web concern (Lot 3 in
+//             the plan, see `tests/web/ssh_host_key_e2e_test.rs`).
+//             This test pins down the proxy contract -- no silent
+//             refusal at this layer.
+//   - Test 4: `fetch_host_key` returns the live server key in OpenSSH
+//             form plus its SHA-256 fingerprint.
+//   - Test 5: `fetch_host_key` against a TCP target nobody listens on
+//             returns `Err(_)`, which is what the verify endpoint maps
+//             to the amber "Could not verify" fragment.
+#[cfg(test)]
+mod host_key_behavioural_tests {
+    use super::*;
+    use russh::keys::ssh_key::Algorithm;
+    use russh::keys::{HashAlg, PrivateKey, PublicKeyBase64};
+    use russh::server::{Auth, Config as ServerConfig, Handler as ServerHandler, Server};
+    use std::sync::Arc;
+    use tokio::net::TcpListener;
+
+    /// Empty server-side handler. Refuses every auth method so the
+    /// client side surfaces `SessionError::AuthenticationFailed` AFTER
+    /// a successful KEX (this is how we tell "KEX accepted" apart from
+    /// "KEX rejected by `check_server_key`"). The default `Handler`
+    /// methods already refuse everything; we just nail the `Error`
+    /// type.
+    struct RefusingHandler;
+
+    impl ServerHandler for RefusingHandler {
+        type Error = russh::Error;
+
+        async fn auth_password(
+            &mut self,
+            _user: &str,
+            _password: &str,
+        ) -> Result<Auth, Self::Error> {
+            Ok(Auth::reject())
+        }
+    }
+
+    struct FakeServer;
+    impl Server for FakeServer {
+        type Handler = RefusingHandler;
+        fn new_client(&mut self, _peer_addr: Option<std::net::SocketAddr>) -> Self::Handler {
+            RefusingHandler
+        }
+    }
+
+    /// Build a fresh ed25519 private key. Centralised so every test
+    /// uses the same RNG plumbing (and we only need to bump it in one
+    /// place if russh's `rand_core` major version moves).
+    fn fresh_ed25519_key() -> PrivateKey {
+        PrivateKey::random(&mut rand_core::OsRng, Algorithm::Ed25519)
+            .expect("Ed25519 key generation must succeed")
+    }
+
+    /// Render a `PrivateKey`'s public part in the canonical OpenSSH
+    /// one-line format the rest of vauban stores in the DB
+    /// (`ssh_host_key`). Matches what `russh::keys::PublicKey::to_openssh`
+    /// emits server-side.
+    fn openssh_public(key: &PrivateKey) -> String {
+        let pk = key.public_key();
+        let blob = pk.public_key_base64();
+        let algo = match pk.algorithm() {
+            Algorithm::Ed25519 => "ssh-ed25519",
+            other => {
+                panic!("test fixture only generates Ed25519 keys, got {:?}", other)
+            }
+        };
+        format!("{} {}", algo, blob)
+    }
+
+    /// Spawn a fake russh server on `127.0.0.1:0`. Returns the bound
+    /// address and a `oneshot::Sender` whose drop will tear the server
+    /// down. The accept loop runs in a tokio task and tolerates
+    /// `run_stream` errors so a client that aborts mid-KEX (test 2)
+    /// does not crash the listener.
+    async fn spawn_fake_ssh_server(
+        host_key: PrivateKey,
+    ) -> (std::net::SocketAddr, tokio::sync::oneshot::Sender<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind 127.0.0.1:0 must succeed");
+        let addr = listener
+            .local_addr()
+            .expect("freshly bound listener has a local_addr");
+        let config = Arc::new(ServerConfig {
+            keys: vec![host_key],
+            // Tight timeouts to keep tests fast even when a client
+            // aborts mid-KEX (test 2). Default is 10 minutes.
+            inactivity_timeout: Some(std::time::Duration::from_secs(5)),
+            ..Default::default()
+        });
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = &mut shutdown_rx => {
+                        tracing::debug!("fake ssh server shutting down");
+                        break;
+                    }
+                    accept = listener.accept() => {
+                        let (stream, _) = match accept {
+                            Ok(v) => v,
+                            Err(e) => {
+                                tracing::debug!(error = %e, "fake ssh server accept error");
+                                break;
+                            }
+                        };
+                        let cfg = Arc::clone(&config);
+                        tokio::spawn(async move {
+                            // run_stream returns an error if the client
+                            // aborts (test 2: mismatch -> KEX aborted).
+                            // Swallow it; the test asserts on the client
+                            // side.
+                            let _ = russh::server::run_stream(
+                                cfg,
+                                stream,
+                                RefusingHandler,
+                            ).await;
+                        });
+                    }
+                }
+            }
+        });
+
+        // Make the unused `Server` impl reachable so we keep the type
+        // consistent with the russh API surface (some russh helpers
+        // require a `Server` even when we drive `run_stream` directly;
+        // keeping the impl prevents drift if the test later switches
+        // to `run_on_socket`).
+        let _ = FakeServer;
+
+        (addr, shutdown_tx)
+    }
+
+    fn ssh_session_config(
+        addr: std::net::SocketAddr,
+        expected_host_key: Option<String>,
+    ) -> SessionConfig {
+        SessionConfig {
+            session_id: "host-key-behavioural-test".to_string(),
+            user_id: "test-user".to_string(),
+            asset_id: "test-asset".to_string(),
+            host: addr.ip().to_string(),
+            port: addr.port(),
+            username: "tester".to_string(),
+            terminal_cols: 80,
+            terminal_rows: 24,
+            credential: SshCredential::Password(SecretString::from("does-not-matter".to_string())),
+            preconnected_fd: None,
+            expected_host_key,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn connect_with_matching_host_key_passes_kex_and_fails_at_auth() {
+        let host_key = fresh_ed25519_key();
+        let openssh = openssh_public(&host_key);
+        let (addr, _shutdown) = spawn_fake_ssh_server(host_key).await;
+
+        let config = ssh_session_config(addr, Some(openssh));
+        let result = SshSession::connect(config).await;
+
+        match result {
+            Ok(_) => panic!(
+                "fake server refuses every auth, SshSession::connect must \
+                 NOT succeed; that it did means the test fixture is broken"
+            ),
+            Err(SessionError::AuthenticationFailed(_)) => {
+                // Expected: KEX accepted by check_server_key, then the
+                // fake server refused the password auth. This proves
+                // the matching host key was accepted.
+            }
+            Err(other) => panic!(
+                "expected AuthenticationFailed (KEX accepted, auth refused), \
+                 got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn connect_with_mismatched_host_key_refuses_kex() {
+        let server_key = fresh_ed25519_key();
+        let other_key = fresh_ed25519_key();
+        let pinned_other = openssh_public(&other_key);
+        // Sanity: the two keys must differ. random() is overwhelmingly
+        // unlikely to collide but a stuck RNG would silently weaken
+        // the test, so make the property explicit.
+        assert_ne!(
+            openssh_public(&server_key),
+            pinned_other,
+            "test fixture must generate two distinct Ed25519 keys"
+        );
+
+        let (addr, _shutdown) = spawn_fake_ssh_server(server_key).await;
+
+        let config = ssh_session_config(addr, Some(pinned_other));
+        let result = SshSession::connect(config).await;
+
+        match result {
+            Ok(_) => panic!(
+                "host key mismatch must refuse KEX, but SshSession::connect \
+                 returned Ok -- this is the regression issue #34 was about"
+            ),
+            Err(SessionError::ConnectionFailed(_)) => {
+                // Expected: check_server_key returned Ok(false), russh
+                // aborted the handshake before any auth packet.
+            }
+            Err(SessionError::AuthenticationFailed(_)) => {
+                panic!(
+                    "expected ConnectionFailed (KEX aborted by \
+                     check_server_key), got AuthenticationFailed -- \
+                     this means the mismatched key was accepted"
+                )
+            }
+            Err(other) => panic!("expected ConnectionFailed (KEX aborted), got {:?}", other),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn connect_with_no_expected_key_passes_kex_at_proxy_layer() {
+        // Issue #34 strict-pin policy is enforced ONE level up
+        // (vauban-web `connect_ssh` pre-flight refuses when no key is
+        // pinned). At this layer we keep the historical "warn but
+        // accept" behaviour so admins can still call `fetch_host_key`
+        // for the very first pin. This test pins down that contract.
+        let host_key = fresh_ed25519_key();
+        let (addr, _shutdown) = spawn_fake_ssh_server(host_key).await;
+
+        let config = ssh_session_config(addr, None);
+        let result = SshSession::connect(config).await;
+
+        match result {
+            Err(SessionError::AuthenticationFailed(_)) => {
+                // KEX accepted (no pin, warning path), auth refused.
+            }
+            Err(SessionError::ConnectionFailed(e)) => panic!(
+                "expected proxy layer to accept KEX when no key is \
+                 pinned (the strict pin gate lives in vauban-web), got \
+                 ConnectionFailed: {}",
+                e
+            ),
+            Err(other) => panic!(
+                "expected AuthenticationFailed (KEX accepted, auth \
+                 refused), got {:?}",
+                other
+            ),
+            Ok(_) => panic!(
+                "fake server refuses every auth, so SshSession::connect \
+                 must NOT return Ok"
+            ),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fetch_host_key_returns_actual_server_key() {
+        let host_key = fresh_ed25519_key();
+        let expected_openssh = openssh_public(&host_key);
+        let expected_fp = host_key
+            .public_key()
+            .fingerprint(HashAlg::Sha256)
+            .to_string();
+        let (addr, _shutdown) = spawn_fake_ssh_server(host_key).await;
+
+        let result = fetch_host_key(&addr.ip().to_string(), addr.port(), None).await;
+
+        match result {
+            Ok((key, fp)) => {
+                assert_eq!(
+                    key.trim(),
+                    expected_openssh.trim(),
+                    "fetch_host_key must return the server's actual \
+                     OpenSSH-format public key"
+                );
+                assert_eq!(
+                    fp, expected_fp,
+                    "fetch_host_key must return the server's SHA-256 \
+                     fingerprint"
+                );
+            }
+            Err(e) => panic!(
+                "fetch_host_key against a live fake server must \
+                 succeed, got {:?}",
+                e
+            ),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fetch_host_key_returns_err_when_server_unreachable() {
+        // Bind a TCP listener just to grab a free port, then drop it
+        // so nobody listens on that port for the duration of the test.
+        let probe = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let dead_addr = probe.local_addr().unwrap();
+        drop(probe);
+
+        let result = fetch_host_key(&dead_addr.ip().to_string(), dead_addr.port(), None).await;
+
+        assert!(
+            result.is_err(),
+            "fetch_host_key against an unreachable target must Err -- \
+             this is what the verify endpoint maps to the amber \"Could \
+             not verify\" fragment (issue #34)"
+        );
+    }
+}

@@ -2187,7 +2187,7 @@ async fn test_asset_detail_shows_connect_when_approved() {
         &ag_uuid,
     )
     .await;
-    let asset_uuid = get_asset_uuid(&mut conn, asset_id).await;
+    let _asset_uuid = get_asset_uuid(&mut conn, asset_id).await;
 
     create_test_access_rule_with_constraints(
         &mut conn,
@@ -2207,9 +2207,13 @@ async fn test_asset_detail_shows_connect_when_approved() {
         .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
         .await;
 
+    // Issue #34: the user-zone /assets/{uuid} detail page is gone.
+    // Connect / Request semantics moved to the /assets list (per-row
+    // button -> inlined Alpine modal). Read the LIST page instead and
+    // assert on the row's button.
     let response = app
         .server
-        .get(&format!("/assets/{}", asset_uuid))
+        .get("/assets")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
@@ -2218,16 +2222,13 @@ async fn test_asset_detail_shows_connect_when_approved() {
 
     assert!(
         body.contains("Connect"),
-        "page must show Connect button when approved session exists"
-    );
-    assert!(
-        !body.contains("Request Access"),
-        "page must NOT show Request Access when approved session exists"
+        "asset list must show the Connect button when an approved \
+         session exists for the user/asset"
     );
 }
 
-/// When no approved session exists, the asset detail page must show
-/// Request Access (not Connect) for assets with require_approval.
+/// When no approved session exists, the asset list must show
+/// Request (not Connect) for assets with require_approval.
 #[tokio::test]
 async fn test_asset_detail_shows_request_when_no_approval() {
     let app = TestApp::spawn().await;
@@ -2270,23 +2271,31 @@ async fn test_asset_detail_shows_request_when_no_approval() {
         .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
         .await;
 
+    // Issue #34: assert on the /assets list (where the modaux are
+    // now inlined), not on the gone /assets/{uuid} detail page.
     let response = app
         .server
-        .get(&format!("/assets/{}", asset_uuid))
+        .get("/assets")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
     assert_status(&response, 200);
     let body = response.text();
+    let _asset_uuid_unused = asset_uuid;
 
     assert!(
-        body.contains("Request Access"),
-        "page must show Request Access when no approved session exists"
+        body.contains("Request"),
+        "asset list must show the Request button for an asset that \
+         requires approval and has no approved session yet"
+    );
+    assert!(
+        body.contains("$store.accessModal.open("),
+        "Request button must trigger the inlined Alpine accessModal"
     );
 }
 
-/// When an approved session has expired, the asset detail page must show
-/// Request Access even though the session record exists.
+/// When an approved session has expired, the asset list must show
+/// Request even though the session record exists.
 #[tokio::test]
 async fn test_asset_detail_shows_request_when_approval_expired() {
     let app = TestApp::spawn().await;
@@ -2330,18 +2339,25 @@ async fn test_asset_detail_shows_request_when_approval_expired() {
         .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
         .await;
 
+    // Issue #34: assert on the /assets list, not on the gone detail page.
     let response = app
         .server
-        .get(&format!("/assets/{}", asset_uuid))
+        .get("/assets")
         .add_header(COOKIE, format!("access_token={}", token))
         .await;
 
     assert_status(&response, 200);
     let body = response.text();
+    let _asset_uuid_unused = asset_uuid;
 
     assert!(
-        body.contains("Request Access"),
-        "page must show Request Access when approved session has expired"
+        body.contains("Request"),
+        "asset list must show the Request button when the approved \
+         session has expired and a fresh request is needed"
+    );
+    assert!(
+        body.contains("$store.accessModal.open("),
+        "Request button must trigger the inlined Alpine accessModal"
     );
 }
 

@@ -32,7 +32,9 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use diesel::prelude::*;
-use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl, scoped_futures::ScopedFutureExt};
+use diesel_async::{
+    AsyncConnection, AsyncPgConnection, RunQueryDsl, scoped_futures::ScopedFutureExt,
+};
 use rustls::ClientConfig;
 use tokio::time::Instant;
 use tracing::{debug, error, info, warn};
@@ -355,11 +357,7 @@ async fn pull_batch(
             async move {
                 dsl::email_outbox
                     .filter(dsl::status.eq(OutboxStatus::Pending.as_str()))
-                    .filter(
-                        dsl::next_retry_at
-                            .is_null()
-                            .or(dsl::next_retry_at.le(now)),
-                    )
+                    .filter(dsl::next_retry_at.is_null().or(dsl::next_retry_at.le(now)))
                     .order(dsl::id.asc())
                     .limit(batch_size)
                     .for_update()
@@ -522,8 +520,7 @@ async fn push_batch_retry(
 /// | 7+       | 60 min |
 fn backoff_after(attempts: i32) -> DateTime<Utc> {
     let wait = compute_backoff(attempts);
-    Utc::now()
-        + chrono::Duration::from_std(wait).unwrap_or_else(|_| chrono::Duration::seconds(60))
+    Utc::now() + chrono::Duration::from_std(wait).unwrap_or_else(|_| chrono::Duration::seconds(60))
 }
 
 /// Pure helper for `backoff_after`. Extracted to keep the test surface
@@ -661,7 +658,10 @@ mod tests {
         let row = fake_row(1, 0);
         let env = build_envelope(&m, &row);
         assert!(env.data.contains("Subject: [Vauban] hi\r\n"));
-        assert!(env.data.contains("X-Vauban-Event: access_request.submitted"));
+        assert!(
+            env.data
+                .contains("X-Vauban-Event: access_request.submitted")
+        );
         assert!(env.data.contains("Message-ID:"));
         assert!(env.data.contains("MIME-Version: 1.0"));
     }

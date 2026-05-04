@@ -1973,11 +1973,7 @@ async fn queue_submitted_emails(
 
     let mut errors: Vec<String> = Vec::new();
     for (email, username) in approver_emails {
-        let event_id = deterministic_event_id(
-            "access_request.submitted",
-            &business_key,
-            &email,
-        );
+        let event_id = deterministic_event_id("access_request.submitted", &business_key, &email);
         let event = EmailEvent::AccessRequestSubmitted(AccessRequestSubmittedEvent {
             event_id,
             recipient: EmailRecipient::new(email, username),
@@ -2053,8 +2049,7 @@ async fn queue_approval_email(
 
     let recipient = EmailRecipient::bare(&req_email);
     let business_key = format!("{}:{:?}", session_uuid, decision);
-    let event_id =
-        deterministic_event_id(decision_kind_str(decision), &business_key, &req_email);
+    let event_id = deterministic_event_id(decision_kind_str(decision), &business_key, &req_email);
 
     let event = match decision {
         shared::messages::ApprovalDecisionKind::Approve => {

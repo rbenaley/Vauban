@@ -41,17 +41,9 @@ use crate::common;
 /// `email_outbox.event_id` UNIQUE constraint would otherwise resurface
 /// rows from a previous run).
 fn fake_event(recipient: &str, business_key: &str) -> EmailEvent {
-    let unique_key = format!(
-        "{}-{}",
-        business_key,
-        Uuid::new_v4().simple()
-    );
+    let unique_key = format!("{}-{}", business_key, Uuid::new_v4().simple());
     EmailEvent::AccessRequestApproved(AccessRequestApprovedEvent {
-        event_id: deterministic_event_id(
-            "access_request.approved",
-            &unique_key,
-            recipient,
-        ),
+        event_id: deterministic_event_id("access_request.approved", &unique_key, recipient),
         recipient: EmailRecipient::bare(recipient),
         asset_name: "prod-db-01".into(),
         protocol: "ssh".into(),

@@ -188,6 +188,7 @@ fn one_asset() -> AssetListItem {
         status: "online".to_string(),
         group_name: Some("Production".to_string()),
         requires_request: false,
+        require_mfa: false,
     }
 }
 

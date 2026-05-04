@@ -1,5 +1,29 @@
-<!-- Connection Justification Modal (SEC-03) - Alpine.js driven -->
-<!-- Included in asset_detail.html; triggered when require_justification is true -->
+<!--
+  Connection Justification Modal (SEC-03) -- Alpine.js driven, Issue #34.
+
+  Included ONCE per page, formerly on `asset_detail.html` (now gone),
+  rendered on `asset_list.html`.  All asset-specific data flows
+  through the `justificationModal` Alpine store, populated by the
+  per-row "Connect" button via
+  `$store.justificationModal.open(uuid, type)` when the platform
+  requires a justification before connecting.
+
+  HTMX target URL is computed client-side from the store. We use
+  `@submit.prevent` + `htmx.ajax()` (and NOT `:hx-post`) because
+  Alpine's `:hx-post` binding fires AFTER HTMX has already cached
+  the form's submit handler with whatever the static `hx-post` was
+  at scan time. The `htmx.ajax()` programmatic API is the
+  HTMX-recommended pattern when the URL is known only at click
+  time, and it preserves htmx-request lifecycle events
+  (`htmx:configRequest`, `htmx:afterRequest`, `HX-Redirect`,
+  `HX-Trigger`) -- including the `show-access-request-modal`
+  trigger emitted by `connect_ssh` / `connect_rdp` when approval is
+  required.
+
+  The `connectUrl()` method is the single source of truth for the
+  SSH/RDP endpoint switch; the static form on rows that don't
+  require justification (asset_list.html) is the mirror image.
+-->
 <div x-show="$store.justificationModal.show"
      x-transition:enter="transition ease-out duration-300"
      x-transition:enter-start="opacity-0"
@@ -10,10 +34,9 @@
      class="fixed inset-0 z-50 overflow-y-auto"
      x-cloak>
     <div class="flex min-h-full items-end justify-center p-4 text-center sm:items-center sm:p-0">
-        <!-- Backdrop -->
-        <div class="fixed inset-0 bg-gray-500/75 dark:bg-gray-900/75 transition-opacity" @click="$store.justificationModal.show = false"></div>
+        <div class="fixed inset-0 bg-gray-500/75 dark:bg-gray-900/75 transition-opacity"
+             @click="$store.justificationModal.show = false"></div>
 
-        <!-- Modal panel -->
         <div x-show="$store.justificationModal.show"
              x-transition:enter="transition ease-out duration-300"
              x-transition:enter-start="opacity-0 translate-y-4 sm:translate-y-0 sm:scale-95"
@@ -47,18 +70,17 @@
                         Please provide a reason for connecting to this asset. This will be recorded for audit purposes.
                     </p>
 
-                    <form hx-post="/assets/{{ asset.uuid }}/{%- if asset.asset_type == "rdp" -%}connect-rdp{%- else -%}connect{%- endif -%}"
-                          hx-swap="none"
+                    <form @submit.prevent="htmx.ajax('POST', $store.justificationModal.connectUrl(), {source: $el, swap: 'none'})"
                           class="mt-4 space-y-4"
                           x-data="csrf"
                           @htmx:after-request="if(event.detail.successful) $store.justificationModal.show = false">
                         <input type="hidden" name="csrf_token" x-model="token" />
 
                         <div>
-                            <label for="justification" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                            <label for="justification-modal-text" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
                                 Justification <span class="text-red-500">*</span>
                             </label>
-                            <textarea id="justification"
+                            <textarea id="justification-modal-text"
                                       name="justification"
                                       rows="3"
                                       required

@@ -1066,10 +1066,8 @@ async fn test_play_page_header_button_links_to_recording_uuid_route() {
 // sites + payload shape).
 // ============================================================================
 
-const RECORDING_DETAIL_HTML: &str =
-    include_str!("../../templates/sessions/recording_detail.html");
-const RECORDING_LIST_HTML: &str =
-    include_str!("../../templates/sessions/recording_list.html");
+const RECORDING_DETAIL_HTML: &str = include_str!("../../templates/sessions/recording_detail.html");
+const RECORDING_LIST_HTML: &str = include_str!("../../templates/sessions/recording_list.html");
 
 #[test]
 fn recording_detail_template_wraps_content_in_stable_container_id() {

@@ -40,3 +40,12 @@ secrecy.workspace = true
 # Testing utilities
 tokio = { workspace = true, features = ["test-util"] }
 nix.workspace = true
+# RNG used by `russh::keys::PrivateKey::random` in the host-key
+# behavioural tests. Pinned to 0.6 to match the `rand_core` major
+# version russh's underlying ssh-key fork depends on (see Cargo.lock:
+# `internal-russh-forked-ssh-key` -> `rand_core 0.6.4`). Bumping the
+# major here without bumping russh's transitive dep would silently
+# spawn a duplicate `rand_core` and break the `CryptoRngCore` impl
+# resolution at the call site.
+rand_core = { version = "0.6", features = ["std"] }
+async-trait.workspace = true

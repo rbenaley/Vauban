@@ -1,5 +1,19 @@
-<!-- JIT Access Request Modal - Alpine.js driven -->
-<!-- Always included in asset_detail.html; triggered by button click or HX-Trigger from ssh/rdp handlers -->
+<!--
+  JIT Access Request Modal -- Alpine.js driven, Issue #34.
+
+  Included ONCE per page (formerly on `asset_detail.html`, now on
+  `asset_list.html`).  All asset-specific data flows through the
+  `accessModal` Alpine store, populated by the per-row "Request"
+  button via `$store.accessModal.open(uuid, type, requireMfa)`.
+  This keeps the user zone free of any per-asset detail page (which
+  used to leak description / dates / ssh-host-key fingerprint to
+  non-approved users -- see `gone_asset_user_view`).
+
+  HTMX swaps the form on success and hides the modal.  The TOTP
+  input is conditionally rendered with `<template x-if>` so the DOM
+  never carries a hidden TOTP field for assets that don't require
+  it (battle-tested: prevents stale value leakage between rows).
+-->
 <div x-show="$store.accessModal.show"
      x-transition:enter="transition ease-out duration-300"
      x-transition:enter-start="opacity-0"
@@ -10,10 +24,9 @@
      class="fixed inset-0 z-50 overflow-y-auto"
      x-cloak>
     <div class="flex min-h-full items-end justify-center p-4 text-center sm:items-center sm:p-0">
-        <!-- Backdrop -->
-        <div class="fixed inset-0 bg-gray-500/75 dark:bg-gray-900/75 transition-opacity" @click="$store.accessModal.show = false"></div>
+        <div class="fixed inset-0 bg-gray-500/75 dark:bg-gray-900/75 transition-opacity"
+             @click="$store.accessModal.show = false"></div>
 
-        <!-- Modal panel -->
         <div x-show="$store.accessModal.show"
              x-transition:enter="transition ease-out duration-300"
              x-transition:enter-start="opacity-0 translate-y-4 sm:translate-y-0 sm:scale-95"
@@ -53,14 +66,14 @@
                           x-data="csrf"
                           @htmx:after-request="if(event.detail.successful) $store.accessModal.show = false">
                         <input type="hidden" name="csrf_token" x-model="token" />
-                        <input type="hidden" name="asset_uuid" value="{{ asset.uuid }}" />
-                        <input type="hidden" name="session_type" value="{{ asset.asset_type }}" />
+                        <input type="hidden" name="asset_uuid" :value="$store.accessModal.asset_uuid" />
+                        <input type="hidden" name="session_type" :value="$store.accessModal.asset_type" />
 
                         <div>
-                            <label for="justification" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                            <label for="access-modal-justification" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
                                 Justification <span class="text-red-500">*</span>
                             </label>
-                            <textarea id="justification"
+                            <textarea id="access-modal-justification"
                                       name="justification"
                                       rows="3"
                                       required
@@ -73,26 +86,26 @@
                             </p>
                         </div>
 
-                        {% if asset.require_mfa %}
-                        <div>
-                            <label for="totp_code" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                                MFA Code <span class="text-red-500">*</span>
-                            </label>
-                            <input type="text"
-                                   id="totp_code"
-                                   name="totp_code"
-                                   required
-                                   autocomplete="one-time-code"
-                                   inputmode="numeric"
-                                   pattern="[0-9]{6}"
-                                   maxlength="6"
-                                   placeholder="Enter 6-digit code"
-                                   class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm" />
-                            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                                Enter the code from your authenticator app.
-                            </p>
-                        </div>
-                        {% endif %}
+                        <template x-if="$store.accessModal.require_mfa">
+                            <div>
+                                <label for="access-modal-totp" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                                    MFA Code <span class="text-red-500">*</span>
+                                </label>
+                                <input type="text"
+                                       id="access-modal-totp"
+                                       name="totp_code"
+                                       required
+                                       autocomplete="one-time-code"
+                                       inputmode="numeric"
+                                       pattern="[0-9]{6}"
+                                       maxlength="6"
+                                       placeholder="Enter 6-digit code"
+                                       class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm" />
+                                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                                    Enter the code from your authenticator app.
+                                </p>
+                            </div>
+                        </template>
 
                         <div class="mt-5 sm:mt-4 sm:flex sm:flex-row-reverse gap-3">
                             <button type="submit"

@@ -129,14 +129,15 @@ async fn test_asset_detail_with_malformed_uuid() {
         .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
         .await;
 
-    // Try various malformed UUIDs - all should redirect gracefully to /assets
+    // Issue #34: /assets/{uuid} now serves a constant 410 Gone for
+    // ANY input -- the route is no longer an existence oracle.
     let malformed_uuids = [
         "not-a-uuid",
         "12345",
         "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-        "123e4567-e89b-12d3-a456",                  // Too short
-        "123e4567-e89b-12d3-a456-4266141740001234", // Too long
-        "24d3cc30-d6c0-ooo7-be9a-978dd250ae3e",     // Invalid character 'o' in hex
+        "123e4567-e89b-12d3-a456",
+        "123e4567-e89b-12d3-a456-4266141740001234",
+        "24d3cc30-d6c0-ooo7-be9a-978dd250ae3e",
     ];
 
     for bad_uuid in malformed_uuids {
@@ -147,17 +148,12 @@ async fn test_asset_detail_with_malformed_uuid() {
             .await;
 
         let status = response.status_code().as_u16();
-        let location = response
-            .headers()
-            .get("location")
-            .and_then(|v| v.to_str().ok());
 
-        assert!(
-            status == 303 && location == Some("/assets"),
-            "Malformed UUID '{}' should redirect to /assets with 303, got status {} location {:?}",
-            bad_uuid,
-            status,
-            location
+        assert_eq!(
+            status, 410,
+            "Malformed UUID '{}' should also return 410 (issue #34: \
+             constant response, anti-enumeration); got {}",
+            bad_uuid, status
         );
     }
 }
