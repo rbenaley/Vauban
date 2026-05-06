@@ -76,20 +76,52 @@
                 </dd>
             </div>
             <div class="px-4 py-3 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6"
-                 x-data="{ showKey: false }">
+                 x-data="{ showKey: false, copied: false,
+                           copy() {
+                             const txt = $el.dataset.pubkey;
+                             const restore = () => { this.copied = true; setTimeout(() => this.copied = false, 1500); };
+                             if (navigator.clipboard && window.isSecureContext) {
+                               navigator.clipboard.writeText(txt).then(restore).catch(() => restore());
+                             } else {
+                               const ta = document.createElement('textarea');
+                               ta.value = txt; document.body.appendChild(ta);
+                               ta.select(); document.execCommand('copy');
+                               document.body.removeChild(ta); restore();
+                             }
+                           } }"
+                 data-pubkey="{{ r.full_public_key }}">
                 <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Public key</dt>
                 <dd class="mt-1 text-sm text-gray-900 dark:text-white sm:col-span-2 sm:mt-0">
-                    <button type="button" @click="showKey = true"
-                            class="inline-flex items-center rounded-md bg-white dark:bg-gray-700 px-3 py-1.5 text-sm font-semibold text-gray-900 dark:text-white shadow-sm ring-1 ring-inset ring-gray-300 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600">
-                        Show full public key
-                    </button>
+                    {# The copy button lives NEXT TO "Show full public key"
+                       (not inside the modal): the operator can either
+                       inspect the key (modal) OR copy it directly,
+                       without the extra click of opening the modal. #}
+                    <div class="flex flex-wrap items-center gap-2">
+                        <button type="button" @click="showKey = true"
+                                class="inline-flex items-center rounded-md bg-white dark:bg-gray-700 px-3 py-1.5 text-sm font-semibold text-gray-900 dark:text-white shadow-sm ring-1 ring-inset ring-gray-300 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600">
+                            Show full public key
+                        </button>
+                        <button type="button"
+                                @click="copy()"
+                                :title="copied ? 'Copied!' : 'Copy public key'"
+                                :aria-label="copied ? 'Copied' : 'Copy public key to clipboard'"
+                                data-testid="iacs-request-pubkey-copy"
+                                class="inline-flex items-center justify-center rounded-md bg-white dark:bg-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-100 p-1.5 ring-1 ring-inset ring-gray-300 dark:ring-gray-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-500">
+                            <svg x-show="!copied" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 8.25V6a2.25 2.25 0 0 0-2.25-2.25H6A2.25 2.25 0 0 0 3.75 6v8.25A2.25 2.25 0 0 0 6 16.5h2.25m8.25-8.25H18a2.25 2.25 0 0 1 2.25 2.25V18A2.25 2.25 0 0 1 18 20.25h-7.5A2.25 2.25 0 0 1 8.25 18v-1.5m8.25-8.25h-6a2.25 2.25 0 0 0-2.25 2.25v6"/>
+                            </svg>
+                            <svg x-show="copied" x-cloak class="h-4 w-4 text-green-600 dark:text-green-400" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
+                            </svg>
+                        </button>
+                    </div>
                     <div x-show="showKey" x-cloak
                          class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
                          @keydown.escape.window="showKey = false">
                         <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full max-w-2xl mx-4 p-6"
                              @click.outside="showKey = false">
                             <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">Full public key</h3>
-                            <pre class="bg-gray-100 dark:bg-gray-900 text-xs text-gray-800 dark:text-gray-200 rounded p-3 overflow-x-auto break-all whitespace-pre-wrap">{{ r.full_public_key }}</pre>
+                            <pre data-testid="iacs-request-pubkey" class="bg-gray-100 dark:bg-gray-900 text-xs text-gray-800 dark:text-gray-200 rounded p-3 overflow-x-auto break-all whitespace-pre-wrap">{{ r.full_public_key }}</pre>
                             <div class="mt-4 flex justify-end">
                                 <button type="button" @click="showKey = false"
                                         class="rounded-md bg-white dark:bg-gray-700 px-3 py-2 text-sm font-semibold text-gray-900 dark:text-white shadow-sm ring-1 ring-inset ring-gray-300 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600">
@@ -221,20 +253,48 @@
                 </dd>
             </div>
             <div class="px-4 py-3 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6"
-                 x-data="{ showKey: false }">
+                 x-data="{ showKey: false, copied: false,
+                           copy() {
+                             const txt = $el.dataset.pubkey;
+                             const restore = () => { this.copied = true; setTimeout(() => this.copied = false, 1500); };
+                             if (navigator.clipboard && window.isSecureContext) {
+                               navigator.clipboard.writeText(txt).then(restore).catch(() => restore());
+                             } else {
+                               const ta = document.createElement('textarea');
+                               ta.value = txt; document.body.appendChild(ta);
+                               ta.select(); document.execCommand('copy');
+                               document.body.removeChild(ta); restore();
+                             }
+                           } }"
+                 data-pubkey="{{ e.full_public_key }}">
                 <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Public key</dt>
                 <dd class="mt-1 text-sm text-gray-900 dark:text-white sm:col-span-2 sm:mt-0">
-                    <button type="button" @click="showKey = true"
-                            class="inline-flex items-center rounded-md bg-white dark:bg-gray-700 px-3 py-1.5 text-sm font-semibold text-gray-900 dark:text-white shadow-sm ring-1 ring-inset ring-gray-300 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600">
-                        Show full public key
-                    </button>
+                    <div class="flex flex-wrap items-center gap-2">
+                        <button type="button" @click="showKey = true"
+                                class="inline-flex items-center rounded-md bg-white dark:bg-gray-700 px-3 py-1.5 text-sm font-semibold text-gray-900 dark:text-white shadow-sm ring-1 ring-inset ring-gray-300 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600">
+                            Show full public key
+                        </button>
+                        <button type="button"
+                                @click="copy()"
+                                :title="copied ? 'Copied!' : 'Copy public key'"
+                                :aria-label="copied ? 'Copied' : 'Copy public key to clipboard'"
+                                data-testid="iacs-ews-pubkey-copy"
+                                class="inline-flex items-center justify-center rounded-md bg-white dark:bg-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-100 p-1.5 ring-1 ring-inset ring-gray-300 dark:ring-gray-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-500">
+                            <svg x-show="!copied" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 8.25V6a2.25 2.25 0 0 0-2.25-2.25H6A2.25 2.25 0 0 0 3.75 6v8.25A2.25 2.25 0 0 0 6 16.5h2.25m8.25-8.25H18a2.25 2.25 0 0 1 2.25 2.25V18A2.25 2.25 0 0 1 18 20.25h-7.5A2.25 2.25 0 0 1 8.25 18v-1.5m8.25-8.25h-6a2.25 2.25 0 0 0-2.25 2.25v6"/>
+                            </svg>
+                            <svg x-show="copied" x-cloak class="h-4 w-4 text-green-600 dark:text-green-400" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
+                            </svg>
+                        </button>
+                    </div>
                     <div x-show="showKey" x-cloak
                          class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
                          @keydown.escape.window="showKey = false">
                         <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full max-w-2xl mx-4 p-6"
                              @click.outside="showKey = false">
                             <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">Full public key</h3>
-                            <pre class="bg-gray-100 dark:bg-gray-900 text-xs text-gray-800 dark:text-gray-200 rounded p-3 overflow-x-auto break-all whitespace-pre-wrap">{{ e.full_public_key }}</pre>
+                            <pre data-testid="iacs-ews-pubkey" class="bg-gray-100 dark:bg-gray-900 text-xs text-gray-800 dark:text-gray-200 rounded p-3 overflow-x-auto break-all whitespace-pre-wrap">{{ e.full_public_key }}</pre>
                             <div class="mt-4 flex justify-end">
                                 <button type="button" @click="showKey = false"
                                         class="rounded-md bg-white dark:bg-gray-700 px-3 py-2 text-sm font-semibold text-gray-900 dark:text-white shadow-sm ring-1 ring-inset ring-gray-300 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600">

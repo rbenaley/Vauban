@@ -27,9 +27,13 @@
 use super::*;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
+use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::services::iacs::{self as iacs_service, IacsError};
+use crate::templates::iacs::admin_list::{
+    EWS_PAGE_SIZE, PENDING_PAGE_SIZE, TAB_ACTIVE, TAB_OFFBOARDED,
+};
 use crate::templates::iacs::{
     AdminDetailTemplate, AdminEwsRow, AdminListTemplate, AdminPendingRequest, EwsDetail, MyEwsItem,
     MyEwsState, OnboardFormPrefill, OnboardFormTemplate, RequestDetail,
@@ -874,23 +878,65 @@ pub async fn load_my_ews_items(state: &AppState, user_id: i32) -> Result<Vec<MyE
 // handler outside of the nest still fails closed -- mirroring the
 // `/assets/manage` defence-in-depth pattern.
 
-const ADMIN_PAGE_LIMIT: i64 = 50;
-
 /// Render the admin landing page (`GET /iacs/admin`).
 ///
-/// Aggregates pending onboarding requests (top section) and active /
-/// disabled / offboarded EWS rows (bottom section) so an operator
-/// can review the entire IACS surface at a glance.
+/// Aggregates two paginated collections:
+///
+/// 1. Pending onboarding requests (top section, `PENDING_PAGE_SIZE`
+///    rows per page, query parameter `pending_page`). The total
+///    count is shown in the section header so an operator
+///    notices a backlog at a glance.
+/// 2. Engineering Workstations grouped under two tabs (`Active` /
+///    `Offboarded`). The active tab is selected via `?tab=...` and
+///    paginated independently with `EWS_PAGE_SIZE` rows per page
+///    (query parameter `ews_page`). A single live-search box
+///    (`?search=...`) filters by `users.username` OR `ews.name`
+///    via case-insensitive `ILIKE %...%`. Tab and search are
+///    mutually orthogonal: a search inside the Offboarded tab
+///    only filters offboarded EWS, never bleeds into active rows.
+///
+/// All four query parameters are optional; defaults are
+/// `pending_page=1`, `ews_page=1`, `tab=active`, no search filter.
+/// Out-of-range pages are clamped to the last available page so a
+/// stale link from a paginated email never 404s.
+#[allow(clippy::too_many_lines)]
 pub async fn iacs_admin_list(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
+    Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
     if !perms.iacs_manage {
         return Err(AppError::NotFound("Not Found".to_string()));
     }
+
+    // ---- Parse query parameters ------------------------------------
+    let pending_page: i64 = params
+        .get("pending_page")
+        .and_then(|s| s.parse::<i64>().ok())
+        .unwrap_or(1)
+        .max(1);
+    let ews_page: i64 = params
+        .get("ews_page")
+        .and_then(|s| s.parse::<i64>().ok())
+        .unwrap_or(1)
+        .max(1);
+    let tab = params.get("tab").map(|s| s.as_str()).unwrap_or(TAB_ACTIVE);
+    let tab = if tab == TAB_OFFBOARDED {
+        TAB_OFFBOARDED
+    } else {
+        TAB_ACTIVE
+    };
+    // Search is sanitized to strip any control character; further
+    // narrowing happens at the DB layer via `like_contains`. An empty
+    // string after trim collapses to `None` so the address bar does
+    // not carry a useless `?search=` suffix.
+    let search_filter: Option<String> = params
+        .get("search")
+        .map(|s| sanitize(s.trim()))
+        .filter(|s| !s.is_empty());
 
     let mut conn = state
         .db_pool
@@ -900,12 +946,26 @@ pub async fn iacs_admin_list(
 
     use crate::schema::{ews, ews_onboarding_requests as r, users};
 
+    // ---- Pending requests (paginated, no search) -------------------
+    let pending_total: i64 = r::table
+        .filter(r::status.eq("pending"))
+        .count()
+        .get_result(&mut conn)
+        .await
+        .unwrap_or(0);
+    let pending_total_pages = ((pending_total as f64) / (PENDING_PAGE_SIZE as f64))
+        .ceil()
+        .max(1.0) as i64;
+    let pending_page = pending_page.min(pending_total_pages);
+    let pending_offset = (pending_page - 1) * PENDING_PAGE_SIZE;
+
     #[allow(clippy::type_complexity)]
     let pending_rows: Vec<(Uuid, String, String, String, String, String, DateTime<Utc>)> = r::table
         .inner_join(users::table.on(users::id.eq(r::user_id)))
         .filter(r::status.eq("pending"))
         .order(r::created_at.desc())
-        .limit(ADMIN_PAGE_LIMIT)
+        .limit(PENDING_PAGE_SIZE)
+        .offset(pending_offset)
         .select((
             r::uuid,
             users::username,
@@ -919,8 +979,53 @@ pub async fn iacs_admin_list(
         .await
         .map_err(AppError::Database)?;
 
+    // ---- EWS rows (tab + search + pagination) ----------------------
+    // The active tab maps to `offboarded_at IS NULL` (which covers
+    // BOTH `active` and `disabled` rows -- a disabled EWS is just a
+    // temporarily-suspended active EWS, see services/iacs.rs).  The
+    // offboarded tab is the strict complement.
+    let mut count_query = ews::table
+        .inner_join(users::table.on(users::id.eq(ews::user_id)))
+        .into_boxed();
+    if tab == TAB_ACTIVE {
+        count_query = count_query.filter(ews::offboarded_at.is_null());
+    } else {
+        count_query = count_query.filter(ews::offboarded_at.is_not_null());
+    }
+    if let Some(ref s) = search_filter {
+        let pattern = crate::db::like_contains(s);
+        count_query = count_query.filter(
+            users::username
+                .ilike(pattern.clone())
+                .or(ews::name.ilike(pattern)),
+        );
+    }
+    let ews_total: i64 = count_query.count().get_result(&mut conn).await.unwrap_or(0);
+    let ews_total_pages = ((ews_total as f64) / (EWS_PAGE_SIZE as f64))
+        .ceil()
+        .max(1.0) as i64;
+    let ews_page = ews_page.min(ews_total_pages);
+    let ews_offset = (ews_page - 1) * EWS_PAGE_SIZE;
+
+    let mut data_query = ews::table
+        .inner_join(users::table.on(users::id.eq(ews::user_id)))
+        .into_boxed();
+    if tab == TAB_ACTIVE {
+        data_query = data_query.filter(ews::offboarded_at.is_null());
+    } else {
+        data_query = data_query.filter(ews::offboarded_at.is_not_null());
+    }
+    if let Some(ref s) = search_filter {
+        let pattern = crate::db::like_contains(s);
+        data_query = data_query.filter(
+            users::username
+                .ilike(pattern.clone())
+                .or(ews::name.ilike(pattern)),
+        );
+    }
+
     #[allow(clippy::type_complexity)]
-    let ews_rows: Vec<(
+    let ews_data: Vec<(
         Uuid,
         String,
         String,
@@ -929,10 +1034,10 @@ pub async fn iacs_admin_list(
         Option<DateTime<Utc>>,
         Option<DateTime<Utc>>,
         DateTime<Utc>,
-    )> = ews::table
-        .inner_join(users::table.on(users::id.eq(ews::user_id)))
+    )> = data_query
         .order(ews::created_at.desc())
-        .limit(ADMIN_PAGE_LIMIT)
+        .limit(EWS_PAGE_SIZE)
+        .offset(ews_offset)
         .select((
             ews::uuid,
             users::username,
@@ -975,7 +1080,7 @@ pub async fn iacs_admin_list(
         )
         .collect();
 
-    let ews_rows: Vec<AdminEwsRow> = ews_rows
+    let ews_rows: Vec<AdminEwsRow> = ews_data
         .into_iter()
         .map(
             |(uuid, username, name, algo, fp, disabled_at, offboarded_at, created)| {
@@ -1000,6 +1105,42 @@ pub async fn iacs_admin_list(
             },
         )
         .collect();
+
+    use crate::templates::accounts::user_list::Pagination;
+
+    let pending_pagination = if pending_total > 0 {
+        let start_index = pending_offset + 1;
+        let end_index = (pending_offset + PENDING_PAGE_SIZE).min(pending_total);
+        Some(Pagination {
+            current_page: pending_page as i32,
+            total_pages: pending_total_pages as i32,
+            total_items: pending_total as i32,
+            items_per_page: PENDING_PAGE_SIZE as i32,
+            has_previous: pending_page > 1,
+            has_next: pending_page < pending_total_pages,
+            start_index: start_index as i32,
+            end_index: end_index as i32,
+        })
+    } else {
+        None
+    };
+
+    let ews_pagination = if ews_total > 0 {
+        let start_index = ews_offset + 1;
+        let end_index = (ews_offset + EWS_PAGE_SIZE).min(ews_total);
+        Some(Pagination {
+            current_page: ews_page as i32,
+            total_pages: ews_total_pages as i32,
+            total_items: ews_total as i32,
+            items_per_page: EWS_PAGE_SIZE as i32,
+            has_previous: ews_page > 1,
+            has_next: ews_page < ews_total_pages,
+            start_index: start_index as i32,
+            end_index: end_index as i32,
+        })
+    } else {
+        None
+    };
 
     let flash_messages = flash_messages_for_template(&incoming_flash);
     let user = Some(user_context_from_auth(&auth_user));
@@ -1026,7 +1167,11 @@ pub async fn iacs_admin_list(
         header_user,
         csrf_token,
         pending_requests,
+        pending_pagination,
+        ews_tab: tab.to_string(),
         ews_rows,
+        ews_pagination,
+        ews_search: search_filter,
     };
     let html = template
         .render()

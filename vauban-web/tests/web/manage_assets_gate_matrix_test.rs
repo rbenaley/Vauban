@@ -340,6 +340,102 @@ async fn api_routes_refuse_unauthenticated() {
     }
 }
 
+/// User-reported bug: an admin whose JWT had just expired clicked
+/// a link to `/assets/manage` and was served a JSON 403 body with
+/// `Insufficient privileges: assets:manage required`. Browsers
+/// cannot make sense of that -- the caller is UN-authenticated,
+/// not unauthorized. Every web route fronted by
+/// `require_assets_manage` MUST therefore redirect to `/login`
+/// (303 See Other, `Location: /login`) when the JWT cookie is
+/// missing, NOT yield a JSON 403.
+#[tokio::test]
+#[serial]
+async fn web_routes_redirect_to_login_when_unauthenticated() {
+    let app = TestApp::spawn().await;
+
+    for route in WEB_ROUTES {
+        let status = send(app, route, None).await;
+        let resp = match route.method {
+            Method::Get => app.server.get(&resolved_path(route)).await,
+            Method::Post => app.server.post(&resolved_path(route)).await,
+            Method::Put => app.server.put(&resolved_path(route)).await,
+        };
+        assert_eq!(
+            status, 303,
+            "{} {} MUST redirect to /login (303) on missing JWT, got {}",
+            method_str(route.method),
+            route.path_template,
+            status
+        );
+        let location = resp
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert_eq!(
+            location, "/login",
+            "{} {} Location header must be /login (was {location:?})",
+            method_str(route.method),
+            route.path_template
+        );
+        let body = resp.text();
+        assert!(
+            !body.contains("Insufficient privileges: assets:manage required"),
+            "{} {} body MUST NOT carry the JSON 403 'Insufficient privileges' message \
+             on an unauthenticated request (regression of the user-reported bug)",
+            method_str(route.method),
+            route.path_template
+        );
+    }
+}
+
+/// API counterpart of `web_routes_redirect_to_login_when_unauthenticated`:
+/// every `/api/v1/assets/manage/*` route MUST yield 401 JSON when
+/// no JWT is presented -- never a 303 redirect. M2M / curl / IaC
+/// callers cannot follow an HTML redirect and rely on a stable
+/// 401 to detect "credentials expired, re-authenticate".
+#[tokio::test]
+#[serial]
+async fn api_routes_return_401_when_unauthenticated() {
+    let app = TestApp::spawn().await;
+
+    for route in API_ROUTES {
+        let status = send(app, route, None).await;
+        let resp = match route.method {
+            Method::Get => app.server.get(&resolved_path(route)).await,
+            Method::Post => app.server.post(&resolved_path(route)).await,
+            Method::Put => app.server.put(&resolved_path(route)).await,
+        };
+        assert_eq!(
+            status, 401,
+            "{} {} MUST return 401 (Authentication required) on missing JWT, got {}",
+            method_str(route.method),
+            route.path_template,
+            status
+        );
+        assert!(
+            resp.headers().get("location").is_none(),
+            "{} {} 401 response MUST NOT carry a Location header (no redirect for API)",
+            method_str(route.method),
+            route.path_template
+        );
+    }
+}
+
+/// Resolve a `Route::path_template` into a concrete URI for the
+/// new redirect/401 unauthenticated tests. `WEB_ROUTES` and
+/// `API_ROUTES` both expand `{uuid}` to a synthetic UUID so the
+/// gate is hit BEFORE any handler-level UUID validation.
+fn resolved_path(route: &Route) -> String {
+    if route.needs_uuid {
+        route
+            .path_template
+            .replace("{uuid}", &Uuid::new_v4().to_string())
+    } else {
+        route.path_template.to_string()
+    }
+}
+
 /// Method isolation: `/assets/manage/deleted` accepts GET only.
 /// A POST to that exact path MUST return 405 Method Not Allowed.
 /// This pins the route shape (no accidental method conflation —

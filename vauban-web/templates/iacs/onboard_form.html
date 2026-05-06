@@ -53,8 +53,46 @@
             </nav>
         </div>
 
-        <div class="mt-4" x-show="tab === 'unix'">
-            <pre class="rounded-md bg-gray-900 text-gray-100 text-xs sm:text-sm p-3 overflow-x-auto"><code>ssh-keygen -t ed25519 -C "VAUBAN" -N "" -f ~/.ssh/id_VAUBAN</code></pre>
+        {# Copy-to-clipboard pattern shared by both OS tabs.  The
+           command sits on a single line inside the `<pre><code>`
+           block; the copy button is overlaid in the top-right
+           corner via `absolute top-2 right-2`, mirroring the
+           "code-block + copy" affordance ChatGPT / Claude use.
+           The `<pre>` reserves `pr-12` so the button never
+           overlaps the rightmost characters of the command.
+           The Alpine state holds the command literal so copy()
+           writes it to the clipboard without DOM scraping; the
+           hidden-textarea + execCommand fallback covers older
+           browsers and any HTTP (non-secure-context) deployment. #}
+        <div class="mt-4" x-show="tab === 'unix'"
+             x-data="{ cmd: 'ssh-keygen -t ed25519 -C &quot;VAUBAN&quot; -N &quot;&quot; -f ~/.ssh/id_VAUBAN', copied: false,
+                       copy() {
+                         const restore = () => { this.copied = true; setTimeout(() => this.copied = false, 1500); };
+                         if (navigator.clipboard && window.isSecureContext) {
+                           navigator.clipboard.writeText(this.cmd).then(restore).catch(() => restore());
+                         } else {
+                           const ta = document.createElement('textarea');
+                           ta.value = this.cmd; document.body.appendChild(ta);
+                           ta.select(); document.execCommand('copy');
+                           document.body.removeChild(ta); restore();
+                         }
+                       } }">
+            <div class="relative">
+                <pre class="rounded-md bg-gray-900 text-gray-100 text-xs sm:text-sm p-3 pr-12 overflow-x-auto"><code data-testid="ssh-keygen-unix">ssh-keygen -t ed25519 -C "VAUBAN" -N "" -f ~/.ssh/id_VAUBAN</code></pre>
+                <button type="button"
+                        @click="copy()"
+                        :title="copied ? 'Copied!' : 'Copy command'"
+                        :aria-label="copied ? 'Copied' : 'Copy command to clipboard'"
+                        data-testid="ssh-keygen-unix-copy"
+                        class="absolute top-2 right-2 inline-flex items-center justify-center rounded-md hover:bg-gray-800 text-gray-300 hover:text-white p-1.5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-500">
+                    <svg x-show="!copied" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 8.25V6a2.25 2.25 0 0 0-2.25-2.25H6A2.25 2.25 0 0 0 3.75 6v8.25A2.25 2.25 0 0 0 6 16.5h2.25m8.25-8.25H18a2.25 2.25 0 0 1 2.25 2.25V18A2.25 2.25 0 0 1 18 20.25h-7.5A2.25 2.25 0 0 1 8.25 18v-1.5m8.25-8.25h-6a2.25 2.25 0 0 0-2.25 2.25v6"/>
+                    </svg>
+                    <svg x-show="copied" x-cloak class="h-4 w-4 text-green-400" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
+                    </svg>
+                </button>
+            </div>
             <p class="mt-2 text-xs text-gray-500 dark:text-gray-400 break-words">
                 Your public key file lives at
                 <code>$HOME/.ssh/id_VAUBAN.pub</code>
@@ -62,8 +100,35 @@
             </p>
         </div>
 
-        <div class="mt-4" x-show="tab === 'windows'">
-            <pre class="rounded-md bg-gray-900 text-gray-100 text-xs sm:text-sm p-3 overflow-x-auto"><code>ssh-keygen -t ed25519 -C "VAUBAN" -N '""' -f "$env:USERPROFILE\.ssh\id_VAUBAN"</code></pre>
+        <div class="mt-4" x-show="tab === 'windows'"
+             x-data="{ cmd: 'ssh-keygen -t ed25519 -C &quot;VAUBAN&quot; -N \'&quot;&quot;\' -f &quot;$env:USERPROFILE\\.ssh\\id_VAUBAN&quot;', copied: false,
+                       copy() {
+                         const restore = () => { this.copied = true; setTimeout(() => this.copied = false, 1500); };
+                         if (navigator.clipboard && window.isSecureContext) {
+                           navigator.clipboard.writeText(this.cmd).then(restore).catch(() => restore());
+                         } else {
+                           const ta = document.createElement('textarea');
+                           ta.value = this.cmd; document.body.appendChild(ta);
+                           ta.select(); document.execCommand('copy');
+                           document.body.removeChild(ta); restore();
+                         }
+                       } }">
+            <div class="relative">
+                <pre class="rounded-md bg-gray-900 text-gray-100 text-xs sm:text-sm p-3 pr-12 overflow-x-auto"><code data-testid="ssh-keygen-windows">ssh-keygen -t ed25519 -C "VAUBAN" -N '""' -f "$env:USERPROFILE\.ssh\id_VAUBAN"</code></pre>
+                <button type="button"
+                        @click="copy()"
+                        :title="copied ? 'Copied!' : 'Copy command'"
+                        :aria-label="copied ? 'Copied' : 'Copy command to clipboard'"
+                        data-testid="ssh-keygen-windows-copy"
+                        class="absolute top-2 right-2 inline-flex items-center justify-center rounded-md hover:bg-gray-800 text-gray-300 hover:text-white p-1.5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-500">
+                    <svg x-show="!copied" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 8.25V6a2.25 2.25 0 0 0-2.25-2.25H6A2.25 2.25 0 0 0 3.75 6v8.25A2.25 2.25 0 0 0 6 16.5h2.25m8.25-8.25H18a2.25 2.25 0 0 1 2.25 2.25V18A2.25 2.25 0 0 1 18 20.25h-7.5A2.25 2.25 0 0 1 8.25 18v-1.5m8.25-8.25h-6a2.25 2.25 0 0 0-2.25 2.25v6"/>
+                    </svg>
+                    <svg x-show="copied" x-cloak class="h-4 w-4 text-green-400" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
+                    </svg>
+                </button>
+            </div>
             <p class="mt-2 text-xs text-gray-500 dark:text-gray-400 break-words">
                 Your public key file lives at
                 <code>%USERPROFILE%\.ssh\id_VAUBAN.pub</code>

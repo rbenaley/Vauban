@@ -16,15 +16,17 @@
     </div>
 
     {# ============================================================
-       Pending onboarding requests
+       Pending onboarding requests (paginated, 3 / page)
        ============================================================ #}
-    <section class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+    <section id="iacs-pending-section" class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
         <div class="px-4 py-3 sm:px-6 border-b border-gray-200 dark:border-gray-700 bg-yellow-50 dark:bg-yellow-900/20">
             <h3 class="text-sm font-semibold text-yellow-900 dark:text-yellow-200">
                 Pending onboarding requests
+                {% if let Some(pg) = pending_pagination.as_ref() %}
                 <span class="ml-2 inline-flex items-center rounded-full bg-yellow-100 dark:bg-yellow-900/50 px-2 py-0.5 text-xs font-medium text-yellow-800 dark:text-yellow-300">
-                    {{ pending_requests.len() }}
+                    {{ pg.total_items }}
                 </span>
+                {% endif %}
             </h3>
         </div>
         {% if pending_requests.is_empty() %}
@@ -107,24 +109,178 @@
             </li>
             {% endfor %}
         </ul>
+
+        {# Pagination -- only render when there are at least two pages.
+           Reuses the visual language of /accounts/users so the operator
+           muscle-memory carries over. The query suffix preserves the
+           current EWS tab + search via `pending_qs()` so paginating
+           pending requests does not reset the EWS view below. #}
+        {% if let Some(pg) = pending_pagination.as_ref() %}
+        {% if pg.total_pages > 1 %}
+        <div data-testid="iacs-pending-pagination"
+             class="bg-white dark:bg-gray-800 px-4 py-3 flex items-center justify-between border-t border-gray-200 dark:border-gray-700 sm:px-6">
+            <div class="flex-1 flex justify-between sm:hidden">
+                {% if pg.has_previous %}
+                <a href="?pending_page={{ pg.current_page - 1 }}{{ self.pending_qs() }}#iacs-pending-section"
+                   class="relative inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-300">
+                    Previous
+                </a>
+                {% endif %}
+                {% if pg.has_next %}
+                <a href="?pending_page={{ pg.current_page + 1 }}{{ self.pending_qs() }}#iacs-pending-section"
+                   class="relative ml-3 inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-300">
+                    Next
+                </a>
+                {% endif %}
+            </div>
+            <div class="hidden sm:flex sm:flex-1 sm:items-center sm:justify-between">
+                <div>
+                    <p class="text-sm text-gray-700 dark:text-gray-300">
+                        Showing <span class="font-medium">{{ pg.start_index }}</span> to
+                        <span class="font-medium">{{ pg.end_index }}</span> of
+                        <span class="font-medium">{{ pg.total_items }}</span> results
+                    </p>
+                </div>
+                <div>
+                    <nav class="isolate inline-flex -space-x-px rounded-md shadow-sm" aria-label="Pagination">
+                        {% if pg.has_previous %}
+                        <a href="?pending_page={{ pg.current_page - 1 }}{{ self.pending_qs() }}#iacs-pending-section"
+                           class="relative inline-flex items-center px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 dark:ring-gray-600 dark:hover:bg-gray-700 rounded-l-md">
+                            <span class="sr-only">Previous</span>&laquo;
+                        </a>
+                        {% endif %}
+                        {% for num in pg.page_range() %}
+                        {% if num == pg.current_page %}
+                        <span aria-current="page" class="relative z-10 inline-flex items-center bg-vauban-600 px-4 py-2 text-sm font-semibold text-white">{{ num }}</span>
+                        {% else %}
+                        <a href="?pending_page={{ num }}{{ self.pending_qs() }}#iacs-pending-section"
+                           class="relative inline-flex items-center px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 dark:text-gray-100 dark:ring-gray-600 dark:hover:bg-gray-700">{{ num }}</a>
+                        {% endif %}
+                        {% endfor %}
+                        {% if pg.has_next %}
+                        <a href="?pending_page={{ pg.current_page + 1 }}{{ self.pending_qs() }}#iacs-pending-section"
+                           class="relative inline-flex items-center px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 dark:ring-gray-600 dark:hover:bg-gray-700 rounded-r-md">
+                            <span class="sr-only">Next</span>&raquo;
+                        </a>
+                        {% endif %}
+                    </nav>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+        {% endif %}
         {% endif %}
     </section>
 
     {# ============================================================
-       Engineering Workstations
+       Engineering Workstations -- Active / Offboarded tabs +
+       HTMX-driven search + pagination (5 / page)
        ============================================================ #}
-    <section class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+    <section id="iacs-ews-section" class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
         <div class="px-4 py-3 sm:px-6 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40">
             <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-200">
                 Engineering Workstations
+                {% if let Some(pg) = ews_pagination.as_ref() %}
                 <span class="ml-2 inline-flex items-center rounded-full bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-xs font-medium text-gray-800 dark:text-gray-300">
-                    {{ ews_rows.len() }}
+                    {{ pg.total_items }}
                 </span>
+                {% endif %}
             </h3>
         </div>
+
+        {# Tab nav.  We deliberately use plain `<a>` links (server-side
+           navigation) instead of an Alpine.js client-side toggle: the
+           tab switch is also a query-state switch (`?tab=...`) which
+           drives a fresh DB query (`offboarded_at IS NULL` vs `IS NOT
+           NULL`) -- there is no client-side data to filter, so a
+           client-side tab would still need a round-trip to fetch the
+           rows. Keeping it as a link also gives us free deep-linking,
+           Back-button reproducibility, and works without JavaScript. #}
+        <div class="border-b border-gray-200 dark:border-gray-700 px-4 sm:px-6">
+            <nav class="-mb-px flex flex-wrap gap-x-6 gap-y-1" aria-label="EWS tabs">
+                {% if self.is_active_tab() %}
+                <span data-testid="iacs-tab-active" aria-current="page"
+                      class="whitespace-nowrap border-b-2 border-vauban-500 py-3 px-1 text-sm font-medium text-vauban-600 dark:text-vauban-400">
+                    Active
+                </span>
+                {% else %}
+                <a data-testid="iacs-tab-active"
+                   href="?tab=active{% if let Some(s) = ews_search.as_ref() %}&search={{ s }}{% endif %}#iacs-ews-section"
+                   class="whitespace-nowrap border-b-2 border-transparent py-3 px-1 text-sm font-medium text-gray-500 dark:text-gray-400 hover:border-gray-300 hover:text-gray-700 dark:hover:text-gray-200">
+                    Active
+                </a>
+                {% endif %}
+                {% if self.is_offboarded_tab() %}
+                <span data-testid="iacs-tab-offboarded" aria-current="page"
+                      class="whitespace-nowrap border-b-2 border-vauban-500 py-3 px-1 text-sm font-medium text-vauban-600 dark:text-vauban-400">
+                    Offboarded
+                </span>
+                {% else %}
+                <a data-testid="iacs-tab-offboarded"
+                   href="?tab=offboarded{% if let Some(s) = ews_search.as_ref() %}&search={{ s }}{% endif %}#iacs-ews-section"
+                   class="whitespace-nowrap border-b-2 border-transparent py-3 px-1 text-sm font-medium text-gray-500 dark:text-gray-400 hover:border-gray-300 hover:text-gray-700 dark:hover:text-gray-200">
+                    Offboarded
+                </a>
+                {% endif %}
+            </nav>
+        </div>
+
+        {# HTMX search box.  Mirrors the `/assets` and `/accounts/users`
+           live-filter pattern: typing fires `hx-get="/iacs/admin"`, the
+           handler returns the full page, HTMX picks `#iacs-ews-section`
+           via `hx-select` and swaps it.  `hx-include` carries the tab
+           state forward so a search query does not reset the tab.
+           `hx-push-url=true` keeps the address bar in sync so refresh
+           and Back reproduce the same view. #}
+        <div class="px-4 sm:px-6 py-3 bg-white dark:bg-gray-800">
+            <label for="iacs-ews-search" class="sr-only">Search EWS</label>
+            <div class="relative">
+                <div class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
+                    <svg class="h-5 w-5 text-gray-400" viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clip-rule="evenodd"/>
+                    </svg>
+                </div>
+                <input type="search" name="search" id="iacs-ews-search"
+                       data-testid="iacs-ews-search"
+                       value="{% if let Some(s) = ews_search.as_ref() %}{{ s }}{% endif %}"
+                       placeholder="Search by username or EWS name..."
+                       autocomplete="off"
+                       hx-get="/iacs/admin"
+                       hx-trigger="input changed delay:300ms, search"
+                       hx-target="#iacs-ews-section"
+                       hx-select="#iacs-ews-section"
+                       hx-swap="outerHTML"
+                       hx-include="[name='search'], [name='tab']"
+                       hx-push-url="true"
+                       hx-indicator="#iacs-ews-indicator"
+                       class="block w-full rounded-md border-0 py-2 pl-10 pr-3 text-gray-900 dark:text-white ring-1 ring-inset ring-gray-300 dark:ring-gray-600 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-vauban-600 dark:bg-gray-700 sm:text-sm">
+                <input type="hidden" name="tab" value="{{ ews_tab }}" />
+            </div>
+            <div id="iacs-ews-indicator"
+                 class="htmx-indicator pointer-events-none flex items-center justify-end gap-2 mt-1 text-xs text-gray-500 dark:text-gray-400 transition-opacity opacity-0 [&.htmx-request]:opacity-100">
+                <svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <span>Updating...</span>
+            </div>
+        </div>
+
         {% if ews_rows.is_empty() %}
         <div class="px-4 py-8 sm:px-6 text-center text-sm text-gray-500 dark:text-gray-400">
-            No EWS registered.
+            {% if let Some(s) = ews_search.as_ref() %}
+                {% if !s.is_empty() %}
+                No EWS match the search "{{ s }}" in the {{ ews_tab }} tab.
+                {% else %}
+                No EWS in the {{ ews_tab }} tab.
+                {% endif %}
+            {% else %}
+                {% if self.is_offboarded_tab() %}
+                No offboarded EWS.
+                {% else %}
+                No EWS registered.
+                {% endif %}
+            {% endif %}
         </div>
         {% else %}
         <ul role="list" class="divide-y divide-gray-200 dark:divide-gray-700">
@@ -180,11 +336,10 @@
                         {% endif %}
                         {% if !row.is_offboarded() %}
                         <form method="post" action="/iacs/admin/ews/{{ row.ews_uuid }}/offboard"
-                              hx-confirm="Offboarding is irreversible. Continue?">
+                              onsubmit="return confirm('Offboarding is irreversible. Continue?');">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
                             <button type="submit"
-                                    class="inline-flex items-center rounded-md bg-red-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-red-500"
-                                    onclick="return confirm('Offboarding is irreversible. Continue?');">
+                                    class="inline-flex items-center rounded-md bg-red-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-red-500">
                                 Offboard
                             </button>
                         </form>
@@ -198,6 +353,64 @@
             </li>
             {% endfor %}
         </ul>
+
+        {# EWS pagination.  Tab and search filters are preserved via
+           `ews_qs()` so paginating in tab Active with a search filter
+           keeps both. #}
+        {% if let Some(pg) = ews_pagination.as_ref() %}
+        {% if pg.total_pages > 1 %}
+        <div data-testid="iacs-ews-pagination"
+             class="bg-white dark:bg-gray-800 px-4 py-3 flex items-center justify-between border-t border-gray-200 dark:border-gray-700 sm:px-6">
+            <div class="flex-1 flex justify-between sm:hidden">
+                {% if pg.has_previous %}
+                <a href="?ews_page={{ pg.current_page - 1 }}{{ self.ews_qs() }}#iacs-ews-section"
+                   class="relative inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-300">
+                    Previous
+                </a>
+                {% endif %}
+                {% if pg.has_next %}
+                <a href="?ews_page={{ pg.current_page + 1 }}{{ self.ews_qs() }}#iacs-ews-section"
+                   class="relative ml-3 inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-300">
+                    Next
+                </a>
+                {% endif %}
+            </div>
+            <div class="hidden sm:flex sm:flex-1 sm:items-center sm:justify-between">
+                <div>
+                    <p class="text-sm text-gray-700 dark:text-gray-300">
+                        Showing <span class="font-medium">{{ pg.start_index }}</span> to
+                        <span class="font-medium">{{ pg.end_index }}</span> of
+                        <span class="font-medium">{{ pg.total_items }}</span> results
+                    </p>
+                </div>
+                <div>
+                    <nav class="isolate inline-flex -space-x-px rounded-md shadow-sm" aria-label="Pagination">
+                        {% if pg.has_previous %}
+                        <a href="?ews_page={{ pg.current_page - 1 }}{{ self.ews_qs() }}#iacs-ews-section"
+                           class="relative inline-flex items-center px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 dark:ring-gray-600 dark:hover:bg-gray-700 rounded-l-md">
+                            <span class="sr-only">Previous</span>&laquo;
+                        </a>
+                        {% endif %}
+                        {% for num in pg.page_range() %}
+                        {% if num == pg.current_page %}
+                        <span aria-current="page" class="relative z-10 inline-flex items-center bg-vauban-600 px-4 py-2 text-sm font-semibold text-white">{{ num }}</span>
+                        {% else %}
+                        <a href="?ews_page={{ num }}{{ self.ews_qs() }}#iacs-ews-section"
+                           class="relative inline-flex items-center px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 dark:text-gray-100 dark:ring-gray-600 dark:hover:bg-gray-700">{{ num }}</a>
+                        {% endif %}
+                        {% endfor %}
+                        {% if pg.has_next %}
+                        <a href="?ews_page={{ pg.current_page + 1 }}{{ self.ews_qs() }}#iacs-ews-section"
+                           class="relative inline-flex items-center px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 dark:ring-gray-600 dark:hover:bg-gray-700 rounded-r-md">
+                            <span class="sr-only">Next</span>&raquo;
+                        </a>
+                        {% endif %}
+                    </nav>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+        {% endif %}
         {% endif %}
     </section>
 </div>

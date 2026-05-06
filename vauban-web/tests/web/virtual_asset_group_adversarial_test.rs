@@ -320,24 +320,53 @@ async fn a51_concurrency_under_churn() {
     let access_client = app._access_service.access_client.clone();
     let pool = app.db_pool.clone();
 
+    // The pool's `max_size` is sized for the test fleet (95) but the
+    // Postgres SERVER budget (`max_connections`, default 100, minus
+    // `superuser_reserved_connections` and minus whatever `vauban-web`
+    // / `vauban-access` are already holding open) is the real cap.
+    // Without bounding the in-flight acquisitions, 64 simultaneous
+    // `pool.get().await` calls each open a fresh Postgres connection
+    // and saturate the server, surfacing as
+    // `CouldntSetupConfiguration("remaining connection slots are
+    // reserved for roles with the SUPERUSER attribute")`.
+    //
+    // The signal we want to pin in this test is "many concurrent
+    // invocations of `list_accessible_asset_ids` interleaved with
+    // writers", not "open as many sockets as the server allows". So
+    // we keep the 64 spawned readers (genuine concurrency: 64 tasks
+    // racing each other across an 8-thread runtime) but cap the
+    // in-flight Postgres connections via a Semaphore. 16 is well
+    // below any reasonable per-database budget and yields enough
+    // overlap for the path under test.
+    use std::sync::Arc;
+    use tokio::sync::Semaphore;
+    let conn_budget = Arc::new(Semaphore::new(16));
+
     // Spawn 64 concurrent readers.
     let mut readers = Vec::new();
     for i in 0..64 {
         let access_client = access_client.clone();
         let pool = pool.clone();
+        let budget = conn_budget.clone();
         readers.push(tokio::spawn(async move {
+            let _permit = budget.acquire().await.expect("conn budget");
             let mut conn = pool.get().await.expect("conn");
             let res = access::list_accessible_asset_ids(&access_client, &mut conn, user_id).await;
             (i, res)
         }));
     }
 
-    // Concurrent churn: a few inserts and soft-deletes.
+    // Concurrent churn: a few inserts and soft-deletes. The writer
+    // is sequential (one connection at a time inside the loop) but
+    // shares the same connection budget so it competes fairly with
+    // the readers.
     let pool_w = pool.clone();
     let admin_id = admin.user.id;
     let ag_clone = ag;
+    let budget_w = conn_budget.clone();
     let writer = tokio::spawn(async move {
         for i in 0..8u32 {
+            let _permit = budget_w.acquire().await.expect("conn budget");
             let mut conn = pool_w.get().await.expect("conn");
             let id = create_test_asset_in_group(
                 &mut conn,

@@ -32,6 +32,7 @@ pub mod delete_confirm_flow_test;
 pub mod group_member_search_test;
 pub mod htmx_input_name_test;
 pub mod htmx_live_filter_test;
+pub mod iacs_admin_ux_test;
 pub mod iacs_kill_switch_test;
 pub mod iacs_my_requests_render_test;
 pub mod iacs_test;
