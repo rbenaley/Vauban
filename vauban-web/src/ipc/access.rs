@@ -10,8 +10,9 @@ use shared::ipc::IpcChannel;
 use shared::messages::{
     AccessCheckResult, AccessCheckResultEntry, AccessRequest as AccessReq,
     AccessResponse as AccessResp, AccessRuleData, AccessRuleInfo, AccessibleGroupEntry,
-    ApprovalDecisionKind, ApprovalDenyReason, AssetGroupInfo, GroupOption, IpcPage, IpcPageParams,
-    Message, RbacResult, SessionAccessDecision, SessionAccessIntent, VaubanGroupInfo,
+    ApprovalDecisionKind, ApprovalDenyReason, AssetGroupInfo, EwsDecisionKind, EwsDenyReason,
+    GroupOption, IpcPage, IpcPageParams, Message, RbacResult, SessionAccessDecision,
+    SessionAccessIntent, VaubanGroupInfo,
 };
 use std::collections::HashMap;
 use std::io;
@@ -404,6 +405,219 @@ impl AccessIpcClient {
             _ => Err(AppError::Ipc(
                 "unexpected response for RecordApprovalDecision".into(),
             )),
+        }
+    }
+
+    // ===================================================================
+    // IACS / EWS onboarding -- thin IPC wrappers calling the atomic
+    // handlers in `vauban-access::iacs`. Every wrapper returns
+    // `AppResult<Result<<success>, EwsDenyReason>>` so the handler can
+    // pattern-match on (a) IPC errors and (b) structured business
+    // denials separately.
+    //
+    // `actor_ip` MUST come from `middleware::resolve_client_ip` -- raw
+    // peer_addr behind a reverse proxy would log a spoofable IP in the
+    // audit trail.
+    // ===================================================================
+
+    /// Submit a new EWS onboarding request.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn submit_ews_onboarding(
+        &self,
+        actor_user_uuid: &str,
+        name: String,
+        public_key: String,
+        public_key_fingerprint: String,
+        key_algo: String,
+        justification: String,
+        max_ews_per_user: u32,
+        actor_ip: Option<String>,
+    ) -> AppResult<Result<(String, i64), EwsDenyReason>> {
+        let resp = self
+            .send_access_request(AccessReq::SubmitEwsOnboarding {
+                actor_user_uuid: actor_user_uuid.to_string(),
+                name,
+                public_key,
+                public_key_fingerprint,
+                key_algo,
+                justification,
+                max_ews_per_user,
+                actor_ip,
+            })
+            .await?;
+        match resp {
+            AccessResp::EwsRequestSubmitted {
+                request_uuid,
+                audit_log_id,
+            } => Ok(Ok((request_uuid, audit_log_id))),
+            AccessResp::EwsDecisionDenied { reason } => Ok(Err(reason)),
+            AccessResp::Error(e) => Err(AppError::Ipc(e)),
+            _ => Err(AppError::Ipc(
+                "unexpected response for SubmitEwsOnboarding".into(),
+            )),
+        }
+    }
+
+    /// Edit a pending EWS request.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn edit_ews_request(
+        &self,
+        actor_user_uuid: &str,
+        request_uuid: &str,
+        name: String,
+        public_key: String,
+        public_key_fingerprint: String,
+        key_algo: String,
+        justification: String,
+        actor_ip: Option<String>,
+    ) -> AppResult<Result<i64, EwsDenyReason>> {
+        let resp = self
+            .send_access_request(AccessReq::EditEwsRequest {
+                actor_user_uuid: actor_user_uuid.to_string(),
+                request_uuid: request_uuid.to_string(),
+                name,
+                public_key,
+                public_key_fingerprint,
+                key_algo,
+                justification,
+                actor_ip,
+            })
+            .await?;
+        match resp {
+            AccessResp::EwsRequestEdited { audit_log_id } => Ok(Ok(audit_log_id)),
+            AccessResp::EwsDecisionDenied { reason } => Ok(Err(reason)),
+            AccessResp::Error(e) => Err(AppError::Ipc(e)),
+            _ => Err(AppError::Ipc(
+                "unexpected response for EditEwsRequest".into(),
+            )),
+        }
+    }
+
+    /// Cancel a pending EWS request.
+    pub async fn cancel_ews_request(
+        &self,
+        actor_user_uuid: &str,
+        request_uuid: &str,
+        actor_ip: Option<String>,
+    ) -> AppResult<Result<i64, EwsDenyReason>> {
+        let resp = self
+            .send_access_request(AccessReq::CancelEwsRequest {
+                actor_user_uuid: actor_user_uuid.to_string(),
+                request_uuid: request_uuid.to_string(),
+                actor_ip,
+            })
+            .await?;
+        match resp {
+            AccessResp::EwsRequestCancelled { audit_log_id } => Ok(Ok(audit_log_id)),
+            AccessResp::EwsDecisionDenied { reason } => Ok(Err(reason)),
+            AccessResp::Error(e) => Err(AppError::Ipc(e)),
+            _ => Err(AppError::Ipc(
+                "unexpected response for CancelEwsRequest".into(),
+            )),
+        }
+    }
+
+    /// Approve / reject an EWS onboarding request. On approve the
+    /// `Ok` payload carries the freshly created `ews.uuid`.
+    pub async fn record_ews_decision(
+        &self,
+        actor_user_uuid: &str,
+        request_uuid: &str,
+        decision: EwsDecisionKind,
+        decision_reason: Option<String>,
+        actor_ip: Option<String>,
+    ) -> AppResult<Result<(i64, Option<String>), EwsDenyReason>> {
+        let resp = self
+            .send_access_request(AccessReq::RecordEwsDecision {
+                actor_user_uuid: actor_user_uuid.to_string(),
+                request_uuid: request_uuid.to_string(),
+                decision,
+                decision_reason,
+                actor_ip,
+            })
+            .await?;
+        match resp {
+            AccessResp::EwsDecisionRecorded {
+                audit_log_id,
+                ews_uuid,
+            } => Ok(Ok((audit_log_id, ews_uuid))),
+            AccessResp::EwsDecisionDenied { reason } => Ok(Err(reason)),
+            AccessResp::Error(e) => Err(AppError::Ipc(e)),
+            _ => Err(AppError::Ipc(
+                "unexpected response for RecordEwsDecision".into(),
+            )),
+        }
+    }
+
+    /// Disable an active EWS (reversible).
+    pub async fn disable_ews(
+        &self,
+        actor_user_uuid: &str,
+        ews_uuid: &str,
+        actor_ip: Option<String>,
+    ) -> AppResult<Result<i64, EwsDenyReason>> {
+        let resp = self
+            .send_access_request(AccessReq::DisableEws {
+                actor_user_uuid: actor_user_uuid.to_string(),
+                ews_uuid: ews_uuid.to_string(),
+                actor_ip,
+            })
+            .await?;
+        match resp {
+            AccessResp::EwsStateChanged { audit_log_id } => Ok(Ok(audit_log_id)),
+            AccessResp::EwsDecisionDenied { reason } => Ok(Err(reason)),
+            AccessResp::Error(e) => Err(AppError::Ipc(e)),
+            _ => Err(AppError::Ipc("unexpected response for DisableEws".into())),
+        }
+    }
+
+    /// Re-enable a disabled EWS.
+    pub async fn enable_ews(
+        &self,
+        actor_user_uuid: &str,
+        ews_uuid: &str,
+        actor_ip: Option<String>,
+    ) -> AppResult<Result<i64, EwsDenyReason>> {
+        let resp = self
+            .send_access_request(AccessReq::EnableEws {
+                actor_user_uuid: actor_user_uuid.to_string(),
+                ews_uuid: ews_uuid.to_string(),
+                actor_ip,
+            })
+            .await?;
+        match resp {
+            AccessResp::EwsStateChanged { audit_log_id } => Ok(Ok(audit_log_id)),
+            AccessResp::EwsDecisionDenied { reason } => Ok(Err(reason)),
+            AccessResp::Error(e) => Err(AppError::Ipc(e)),
+            _ => Err(AppError::Ipc("unexpected response for EnableEws".into())),
+        }
+    }
+
+    /// Offboard an EWS (irreversible). `on_behalf_of_self == true`
+    /// is the auto-offboard path (gated on `iacs_request`); `false`
+    /// is the admin offboard path (gated on `iacs_manage`).
+    pub async fn offboard_ews(
+        &self,
+        actor_user_uuid: &str,
+        ews_uuid: &str,
+        on_behalf_of_self: bool,
+        decision_reason: Option<String>,
+        actor_ip: Option<String>,
+    ) -> AppResult<Result<i64, EwsDenyReason>> {
+        let resp = self
+            .send_access_request(AccessReq::OffboardEws {
+                actor_user_uuid: actor_user_uuid.to_string(),
+                ews_uuid: ews_uuid.to_string(),
+                on_behalf_of_self,
+                decision_reason,
+                actor_ip,
+            })
+            .await?;
+        match resp {
+            AccessResp::EwsStateChanged { audit_log_id } => Ok(Ok(audit_log_id)),
+            AccessResp::EwsDecisionDenied { reason } => Ok(Err(reason)),
+            AccessResp::Error(e) => Err(AppError::Ipc(e)),
+            _ => Err(AppError::Ipc("unexpected response for OffboardEws".into())),
         }
     }
 

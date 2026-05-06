@@ -3,18 +3,63 @@
 {% block title %}My Requests - {{ vauban.brand_name }}{% endblock %}
 
 {% block content %}
-<div class="space-y-6">
+{# When iacs_visible=true the page is a two-tab view (Access / EWS).
+   The tab state is mirrored in the URL via ?tab=access|ews so the
+   user can deep-link to a specific tab and EWS-mutating handlers
+   (submit / edit / cancel / offboard-self) can redirect back to
+   ?tab=ews so the user lands on the freshly-mutated row.
+
+   When iacs_visible=false the legacy single-section layout is
+   rendered (no tab nav, no EWS section). That kicks in either when
+   the kill-switch is off (`[industrial].enabled = false`) or when
+   the caller lacks `iacs:read` -- in both cases the EWS surface
+   must be hidden entirely (anti-leak). #}
+<div class="space-y-6"
+     {% if iacs_visible %}x-data="{ tab: new URLSearchParams(window.location.search).get('tab') === 'ews' ? 'ews' : 'access' }"
+     x-init="$watch('tab', t => { const url = new URL(window.location); url.searchParams.set('tab', t); window.history.replaceState({}, '', url); })"{% endif %}>
     <!-- Header -->
     <div class="md:flex md:items-center md:justify-between">
         <div class="min-w-0 flex-1">
             <h2 class="text-xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-2xl lg:text-3xl sm:tracking-tight">
-                My Access Requests
+                My Requests
             </h2>
             <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
-                Track the status of your access requests
+                Track the status of your access requests and Engineering Workstations
             </p>
         </div>
     </div>
+
+    {% if iacs_visible %}
+    <!-- Tabs -->
+    <div class="border-b border-gray-200 dark:border-gray-700">
+        <nav class="-mb-px flex flex-wrap gap-x-4 sm:gap-x-8" aria-label="Tabs">
+            <button type="button"
+                    role="tab"
+                    @click="tab = 'access'"
+                    :aria-selected="tab === 'access'"
+                    :class="tab === 'access' ? 'border-vauban-500 text-vauban-600 dark:text-vauban-400' : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:border-gray-300'"
+                    class="whitespace-nowrap border-b-2 py-3 px-1 text-sm font-medium">
+                Access
+                {% if !requests.is_empty() %}
+                <span :class="tab === 'access' ? 'bg-vauban-100 text-vauban-700 dark:bg-vauban-900/50 dark:text-vauban-300' : 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300'"
+                      class="ml-1.5 inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium">{{ requests.len() }}</span>
+                {% endif %}
+            </button>
+            <button type="button"
+                    role="tab"
+                    @click="tab = 'ews'"
+                    :aria-selected="tab === 'ews'"
+                    :class="tab === 'ews' ? 'border-vauban-500 text-vauban-600 dark:text-vauban-400' : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:border-gray-300'"
+                    class="whitespace-nowrap border-b-2 py-3 px-1 text-sm font-medium">
+                EWS
+                {% if !ews_items.is_empty() %}
+                <span :class="tab === 'ews' ? 'bg-vauban-100 text-vauban-700 dark:bg-vauban-900/50 dark:text-vauban-300' : 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300'"
+                      class="ml-1.5 inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium">{{ ews_items.len() }}</span>
+                {% endif %}
+            </button>
+        </nav>
+    </div>
+    {% endif %}
 
     <!-- OOB swap target for JIT notifications; triggers list reload on status changes -->
     <div id="jit-notification" class="hidden"
@@ -25,181 +70,289 @@
          hx-swap="outerHTML">
     </div>
 
-    <!-- Requests list -->
-    <div id="my-requests-list" class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
-        {% if !requests.is_empty() %}
-        <ul role="list" class="divide-y divide-gray-200 dark:divide-gray-700">
-            {% for req in requests %}
-            <li class="px-4 py-4 sm:px-6">
-                <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                    <div class="flex items-start space-x-3 sm:space-x-4 min-w-0">
-                        <div class="flex-shrink-0">
-                            <span class="inline-flex h-10 w-10 items-center justify-center rounded-full
-                                {% if req.asset_type == "ssh" %}bg-green-100 dark:bg-green-900/50
-                                {% else if req.asset_type == "rdp" %}bg-blue-100 dark:bg-blue-900/50
-                                {% else %}bg-purple-100 dark:bg-purple-900/50{% endif %}">
-                                <span class="text-xs font-bold
-                                    {% if req.asset_type == "ssh" %}text-green-600 dark:text-green-400
-                                    {% else if req.asset_type == "rdp" %}text-blue-600 dark:text-blue-400
-                                    {% else %}text-purple-600 dark:text-purple-400{% endif %}">
-                                    {{ req.session_type|upper }}
-                                </span>
-                            </span>
-                        </div>
-                        <div class="flex-1 min-w-0">
-                            <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
-                                <p class="text-sm font-medium text-gray-900 dark:text-white break-words">
-                                    {{ req.asset_name }}
-                                </p>
-                                <span class="text-gray-400 dark:text-gray-500 text-xs break-all">({{ req.asset_hostname }})</span>
-                                <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {{ req.status_class() }}">
-                                    {{ req.status_label() }}
+    <!-- ACCESS TAB -->
+    <div id="access-tab" {% if iacs_visible %}x-show="tab === 'access'" x-cloak{% endif %}>
+        <!-- Requests list -->
+        <div id="my-requests-list" class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+            {% if !requests.is_empty() %}
+            <ul role="list" class="divide-y divide-gray-200 dark:divide-gray-700">
+                {% for req in requests %}
+                <li class="px-4 py-4 sm:px-6">
+                    <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div class="flex items-start space-x-3 sm:space-x-4 min-w-0">
+                            <div class="flex-shrink-0">
+                                <span class="inline-flex h-10 w-10 items-center justify-center rounded-full
+                                    {% if req.asset_type == "ssh" %}bg-green-100 dark:bg-green-900/50
+                                    {% else if req.asset_type == "rdp" %}bg-blue-100 dark:bg-blue-900/50
+                                    {% else %}bg-purple-100 dark:bg-purple-900/50{% endif %}">
+                                    <span class="text-xs font-bold
+                                        {% if req.asset_type == "ssh" %}text-green-600 dark:text-green-400
+                                        {% else if req.asset_type == "rdp" %}text-blue-600 dark:text-blue-400
+                                        {% else %}text-purple-600 dark:text-purple-400{% endif %}">
+                                        {{ req.session_type|upper }}
+                                    </span>
                                 </span>
                             </div>
-                            <div class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-gray-500 dark:text-gray-400">
-                                <span>Requested {{ req.created_at }}</span>
-                                {% if let Some(at) = req.approved_at.as_ref() %}
-                                <span class="hidden sm:inline">&middot;</span>
-                                <span>
-                                    {% if req.status == "rejected" %}Rejected{% else %}Approved{% endif %}
-                                    {{ at }}
-                                    {% if let Some(by) = req.approved_by.as_ref() %}
-                                    by {{ by }}
+                            <div class="flex-1 min-w-0">
+                                <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                    <p class="text-sm font-medium text-gray-900 dark:text-white break-words">
+                                        {{ req.asset_name }}
+                                    </p>
+                                    <span class="text-gray-400 dark:text-gray-500 text-xs break-all">({{ req.asset_hostname }})</span>
+                                    <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {{ req.status_class() }}">
+                                        {{ req.status_label() }}
+                                    </span>
+                                </div>
+                                <div class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-gray-500 dark:text-gray-400">
+                                    <span>Requested {{ req.created_at }}</span>
+                                    {% if let Some(at) = req.approved_at.as_ref() %}
+                                    <span class="hidden sm:inline">&middot;</span>
+                                    <span>
+                                        {% if req.status == "rejected" %}Rejected{% else %}Approved{% endif %}
+                                        {{ at }}
+                                        {% if let Some(by) = req.approved_by.as_ref() %}
+                                        by {{ by }}
+                                        {% endif %}
+                                    </span>
                                     {% endif %}
-                                </span>
+                                    <span class="hidden sm:inline">&middot;</span>
+                                    <span class="inline-flex items-center space-x-1">
+                                        <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                                        </svg>
+                                        <span>{{ req.duration_display() }}</span>
+                                    </span>
+                                </div>
+                                {% if let Some(just) = req.justification.as_ref() %}
+                                <p class="mt-1 text-sm text-gray-600 dark:text-gray-300 line-clamp-2 break-words">
+                                    {{ just }}
+                                </p>
                                 {% endif %}
-                                <span class="hidden sm:inline">&middot;</span>
-                                <span class="inline-flex items-center space-x-1">
-                                    <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                                    </svg>
-                                    <span>{{ req.duration_display() }}</span>
-                                </span>
                             </div>
-                            {% if let Some(just) = req.justification.as_ref() %}
-                            <p class="mt-1 text-sm text-gray-600 dark:text-gray-300 line-clamp-2 break-words">
-                                {{ just }}
-                            </p>
+                        </div>
+                        <div class="flex items-center gap-2 sm:flex-shrink-0">
+                            {% if req.is_approved() %}
+                            <a href="/assets/{{ req.uuid }}"
+                               class="inline-flex items-center rounded-md bg-vauban-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500">
+                                <svg class="-ml-0.5 mr-1 h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                                    <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd"/>
+                                </svg>
+                                Connect
+                            </a>
+                            {% endif %}
+                            {% if req.is_pending() %}
+                            <form method="post" action="/sessions/my-requests/{{ req.uuid }}/cancel" x-data="csrf">
+                                <input type="hidden" name="csrf_token" x-model="token" />
+                                <button type="submit"
+                                        class="inline-flex items-center rounded-md bg-gray-100 dark:bg-gray-700 px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600">
+                                    Cancel
+                                </button>
+                            </form>
                             {% endif %}
                         </div>
                     </div>
-                    <div class="flex items-center gap-2 sm:flex-shrink-0">
-                        {% if req.is_approved() %}
-                        <a href="/assets/{{ req.uuid }}"
-                           class="inline-flex items-center rounded-md bg-vauban-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500">
-                            <svg class="-ml-0.5 mr-1 h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                                <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd"/>
-                            </svg>
-                            Connect
-                        </a>
-                        {% endif %}
-                        {% if req.is_pending() %}
-                        <form method="post" action="/sessions/my-requests/{{ req.uuid }}/cancel" x-data="csrf">
-                            <input type="hidden" name="csrf_token" x-model="token" />
-                            <button type="submit"
-                                    class="inline-flex items-center rounded-md bg-gray-100 dark:bg-gray-700 px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600">
-                                Cancel
-                            </button>
-                        </form>
-                        {% endif %}
+                </li>
+                {% endfor %}
+            </ul>
+
+            {% if let Some(pg) = pagination.as_ref() %}
+            <div class="bg-white dark:bg-gray-800 px-4 py-3 flex items-center justify-between border-t border-gray-200 dark:border-gray-700 sm:px-6">
+                <div class="flex-1 flex justify-between sm:hidden">
+                    {% if pg.has_previous %}
+                    <a href="?page={{ pg.current_page - 1 }}"
+                       class="relative inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-300">
+                        Previous
+                    </a>
+                    {% endif %}
+                    {% if pg.has_next %}
+                    <a href="?page={{ pg.current_page + 1 }}"
+                       class="relative ml-3 inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-300">
+                        Next
+                    </a>
+                    {% endif %}
+                </div>
+                <div class="hidden sm:flex sm:flex-1 sm:items-center sm:justify-between">
+                    <div>
+                        <p class="text-sm text-gray-700 dark:text-gray-300">
+                            Showing <span class="font-medium">{{ pg.start_index }}</span> to <span class="font-medium">{{ pg.end_index }}</span>
+                            of <span class="font-medium">{{ pg.total_items }}</span> results
+                        </p>
+                    </div>
+                    <div>
+                        <nav class="isolate inline-flex -space-x-px rounded-md shadow-sm" aria-label="Pagination">
+                            {% if pg.has_previous %}
+                            <a href="?page=1"
+                               class="relative inline-flex items-center rounded-l-md px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 dark:ring-gray-600 dark:hover:bg-gray-700"
+                               title="First page">
+                                <span class="sr-only">First</span>
+                                <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                                    <path fill-rule="evenodd" d="M15.79 14.77a.75.75 0 01-1.06.02l-4.5-4.25a.75.75 0 010-1.08l4.5-4.25a.75.75 0 111.06 1.06L11.832 10l3.938 3.71a.75.75 0 01.02 1.06z" clip-rule="evenodd"/>
+                                    <path fill-rule="evenodd" d="M9.79 14.77a.75.75 0 01-1.06.02l-4.5-4.25a.75.75 0 010-1.08l4.5-4.25a.75.75 0 111.06 1.06L5.832 10l3.938 3.71a.75.75 0 01.02 1.06z" clip-rule="evenodd"/>
+                                </svg>
+                            </a>
+                            <a href="?page={{ pg.current_page - 1 }}"
+                               class="relative inline-flex items-center px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 dark:ring-gray-600 dark:hover:bg-gray-700"
+                               title="Previous page">
+                                <span class="sr-only">Previous</span>
+                                <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                                    <path fill-rule="evenodd" d="M12.79 5.23a.75.75 0 01-.02 1.06L8.832 10l3.938 3.71a.75.75 0 11-1.04 1.08l-4.5-4.25a.75.75 0 010-1.08l4.5-4.25a.75.75 0 011.06.02z" clip-rule="evenodd"/>
+                                </svg>
+                            </a>
+                            {% endif %}
+                            {% for num in pg.page_range() %}
+                            {% if num == pg.current_page %}
+                            <span aria-current="page" class="relative z-10 inline-flex items-center bg-vauban-600 px-4 py-2 text-sm font-semibold text-white focus:z-20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-600">
+                                {{ num }}
+                            </span>
+                            {% else %}
+                            <a href="?page={{ num }}"
+                               class="relative inline-flex items-center px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 dark:text-gray-100 dark:ring-gray-600 dark:hover:bg-gray-700">
+                                {{ num }}
+                            </a>
+                            {% endif %}
+                            {% endfor %}
+                            {% if pg.has_next %}
+                            <a href="?page={{ pg.current_page + 1 }}"
+                               class="relative inline-flex items-center px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 dark:ring-gray-600 dark:hover:bg-gray-700"
+                               title="Next page">
+                                <span class="sr-only">Next</span>
+                                <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                                    <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd"/>
+                                </svg>
+                            </a>
+                            <a href="?page={{ pg.total_pages }}"
+                               class="relative inline-flex items-center rounded-r-md px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 dark:ring-gray-600 dark:hover:bg-gray-700"
+                               title="Last page">
+                                <span class="sr-only">Last</span>
+                                <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                                    <path fill-rule="evenodd" d="M4.21 5.23a.75.75 0 011.06-.02l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-1.06L8.168 10 4.23 6.29a.75.75 0 01-.02-1.06z" clip-rule="evenodd"/>
+                                    <path fill-rule="evenodd" d="M10.21 5.23a.75.75 0 011.06-.02l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-1.06L14.168 10 10.23 6.29a.75.75 0 01-.02-1.06z" clip-rule="evenodd"/>
+                                </svg>
+                            </a>
+                            {% endif %}
+                        </nav>
                     </div>
                 </div>
-            </li>
-            {% endfor %}
-        </ul>
-
-        {% if let Some(pg) = pagination.as_ref() %}
-        <div class="bg-white dark:bg-gray-800 px-4 py-3 flex items-center justify-between border-t border-gray-200 dark:border-gray-700 sm:px-6">
-            <div class="flex-1 flex justify-between sm:hidden">
-                {% if pg.has_previous %}
-                <a href="?page={{ pg.current_page - 1 }}"
-                   class="relative inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-300">
-                    Previous
-                </a>
-                {% endif %}
-                {% if pg.has_next %}
-                <a href="?page={{ pg.current_page + 1 }}"
-                   class="relative ml-3 inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-300">
-                    Next
-                </a>
-                {% endif %}
             </div>
-            <div class="hidden sm:flex sm:flex-1 sm:items-center sm:justify-between">
-                <div>
-                    <p class="text-sm text-gray-700 dark:text-gray-300">
-                        Showing <span class="font-medium">{{ pg.start_index }}</span> to <span class="font-medium">{{ pg.end_index }}</span>
-                        of <span class="font-medium">{{ pg.total_items }}</span> results
-                    </p>
-                </div>
-                <div>
-                    <nav class="isolate inline-flex -space-x-px rounded-md shadow-sm" aria-label="Pagination">
-                        {% if pg.has_previous %}
-                        <a href="?page=1"
-                           class="relative inline-flex items-center rounded-l-md px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 dark:ring-gray-600 dark:hover:bg-gray-700"
-                           title="First page">
-                            <span class="sr-only">First</span>
-                            <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                                <path fill-rule="evenodd" d="M15.79 14.77a.75.75 0 01-1.06.02l-4.5-4.25a.75.75 0 010-1.08l4.5-4.25a.75.75 0 111.06 1.06L11.832 10l3.938 3.71a.75.75 0 01.02 1.06z" clip-rule="evenodd"/>
-                                <path fill-rule="evenodd" d="M9.79 14.77a.75.75 0 01-1.06.02l-4.5-4.25a.75.75 0 010-1.08l4.5-4.25a.75.75 0 111.06 1.06L5.832 10l3.938 3.71a.75.75 0 01.02 1.06z" clip-rule="evenodd"/>
-                            </svg>
-                        </a>
-                        <a href="?page={{ pg.current_page - 1 }}"
-                           class="relative inline-flex items-center px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 dark:ring-gray-600 dark:hover:bg-gray-700"
-                           title="Previous page">
-                            <span class="sr-only">Previous</span>
-                            <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                                <path fill-rule="evenodd" d="M12.79 5.23a.75.75 0 01-.02 1.06L8.832 10l3.938 3.71a.75.75 0 11-1.04 1.08l-4.5-4.25a.75.75 0 010-1.08l4.5-4.25a.75.75 0 011.06.02z" clip-rule="evenodd"/>
-                            </svg>
-                        </a>
-                        {% endif %}
-                        {% for num in pg.page_range() %}
-                        {% if num == pg.current_page %}
-                        <span aria-current="page" class="relative z-10 inline-flex items-center bg-vauban-600 px-4 py-2 text-sm font-semibold text-white focus:z-20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-600">
-                            {{ num }}
-                        </span>
-                        {% else %}
-                        <a href="?page={{ num }}"
-                           class="relative inline-flex items-center px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 dark:text-gray-100 dark:ring-gray-600 dark:hover:bg-gray-700">
-                            {{ num }}
-                        </a>
-                        {% endif %}
-                        {% endfor %}
-                        {% if pg.has_next %}
-                        <a href="?page={{ pg.current_page + 1 }}"
-                           class="relative inline-flex items-center px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 dark:ring-gray-600 dark:hover:bg-gray-700"
-                           title="Next page">
-                            <span class="sr-only">Next</span>
-                            <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                                <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd"/>
-                            </svg>
-                        </a>
-                        <a href="?page={{ pg.total_pages }}"
-                           class="relative inline-flex items-center rounded-r-md px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 dark:ring-gray-600 dark:hover:bg-gray-700"
-                           title="Last page">
-                            <span class="sr-only">Last</span>
-                            <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                                <path fill-rule="evenodd" d="M4.21 5.23a.75.75 0 011.06-.02l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-1.06L8.168 10 4.23 6.29a.75.75 0 01-.02-1.06z" clip-rule="evenodd"/>
-                                <path fill-rule="evenodd" d="M10.21 5.23a.75.75 0 011.06-.02l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-1.06L14.168 10 10.23 6.29a.75.75 0 01-.02-1.06z" clip-rule="evenodd"/>
-                            </svg>
-                        </a>
-                        {% endif %}
-                    </nav>
-                </div>
-            </div>
-        </div>
-        {% endif %}
+            {% endif %}
 
-        {% else %}
-        <div class="px-4 py-12 sm:px-6 text-center">
-            <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
-            </svg>
-            <h3 class="mt-2 text-sm font-semibold text-gray-900 dark:text-white">No access requests</h3>
-            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
-                You haven't submitted any access requests yet.
-            </p>
+            {% else %}
+            <div class="px-4 py-12 sm:px-6 text-center">
+                <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                </svg>
+                <h3 class="mt-2 text-sm font-semibold text-gray-900 dark:text-white">No access requests</h3>
+                <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                    You haven't submitted any access requests yet.
+                </p>
+            </div>
+            {% endif %}
         </div>
-        {% endif %}
     </div>
+
+    {% if iacs_visible %}
+    <!-- EWS TAB -->
+    <div id="ews-tab" x-show="tab === 'ews'" x-cloak>
+        <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+            {% if !ews_items.is_empty() %}
+            <ul role="list" class="divide-y divide-gray-200 dark:divide-gray-700">
+                {% for ews in ews_items %}
+                <li class="px-4 py-4 sm:px-6">
+                    <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div class="flex items-start space-x-3 sm:space-x-4 min-w-0">
+                            <div class="flex-shrink-0">
+                                <span class="inline-flex h-10 w-10 items-center justify-center rounded-full bg-purple-100 text-purple-600 dark:bg-purple-900/50 dark:text-purple-400">
+                                    <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.25 21h19.5M3 21V12l3-4v4l3-4v4l3-4v4l3-4v4l3-4v4l3-4v4V21L13.5 21V16H10.5V21H3M4.75 10.25V4.75H7.25V10.25H4.75Z"/>
+                                    </svg>
+                                </span>
+                            </div>
+                            <div class="flex-1 min-w-0">
+                                <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                    <p class="text-sm font-medium text-gray-900 dark:text-white break-words">
+                                        {{ ews.name }}
+                                    </p>
+                                    <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {{ ews.state_class() }}">
+                                        {{ ews.state_label() }}
+                                    </span>
+                                </div>
+                                <div class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-gray-500 dark:text-gray-400">
+                                    <span class="font-mono break-all">SHA-256:{{ ews.fingerprint_short }}</span>
+                                    <span class="hidden sm:inline">&middot;</span>
+                                    <span>{{ ews.key_algo }}</span>
+                                    <span class="hidden sm:inline">&middot;</span>
+                                    <span>Submitted {{ ews.created_at }}</span>
+                                    {% if let Some(at) = ews.decided_at.as_ref() %}
+                                    <span class="hidden sm:inline">&middot;</span>
+                                    <span>Decided {{ at }}</span>
+                                    {% endif %}
+                                </div>
+                                {% if let Some(reason) = ews.rejection_reason.as_ref() %}
+                                <p class="mt-1 text-sm text-red-600 dark:text-red-400 break-words">
+                                    <span class="font-semibold">Rejection reason:</span> {{ reason }}
+                                </p>
+                                {% endif %}
+                                {% if let Some(just) = ews.justification.as_ref() %}
+                                <p class="mt-1 text-sm text-gray-600 dark:text-gray-300 line-clamp-2 break-words">
+                                    {{ just }}
+                                </p>
+                                {% endif %}
+                            </div>
+                        </div>
+                        {% if iacs_request_allowed %}
+                        <div class="flex flex-wrap items-center gap-2 sm:flex-shrink-0">
+                            {% if ews.is_pending() %}
+                            <a href="/iacs/onboard/{{ ews.uuid }}/edit-form"
+                               class="inline-flex items-center rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600">
+                                Edit
+                            </a>
+                            <form method="post"
+                                  action="/iacs/onboard/{{ ews.uuid }}/cancel"
+                                  class="inline">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                                <button type="submit"
+                                        class="inline-flex items-center rounded-md bg-gray-100 dark:bg-gray-700 px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600">
+                                    Cancel
+                                </button>
+                            </form>
+                            {% endif %}
+                            {% if ews.allows_self_offboard() %}
+                            <form method="post"
+                                  action="/iacs/{{ ews.uuid }}/offboard-self"
+                                  class="inline"
+                                  onsubmit="return confirm('Offboard this EWS? This action is irreversible: the public key will no longer be usable.');">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                                <button type="submit"
+                                        class="inline-flex items-center rounded-md bg-red-100 dark:bg-red-900/50 px-3 py-1.5 text-sm font-medium text-red-700 dark:text-red-300 hover:bg-red-200 dark:hover:bg-red-900/80">
+                                    Offboard
+                                </button>
+                            </form>
+                            {% endif %}
+                        </div>
+                        {% endif %}
+                    </div>
+                </li>
+                {% endfor %}
+            </ul>
+            {% else %}
+            <div class="px-4 py-12 sm:px-6 text-center">
+                <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.25 21h19.5M3 21V12l3-4v4l3-4v4l3-4v4l3-4v4l3-4v4l3-4v4V21L13.5 21V16H10.5V21H3M4.75 10.25V4.75H7.25V10.25H4.75Z"/>
+                </svg>
+                <h3 class="mt-2 text-sm font-semibold text-gray-900 dark:text-white">No EWS registered</h3>
+                <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                    {% if iacs_request_allowed %}
+                    Use the <a href="/iacs/onboard" class="text-vauban-600 hover:underline">Onboard EWS</a>
+                    button to register one.
+                    {% else %}
+                    You haven't registered any Engineering Workstation yet.
+                    {% endif %}
+                </p>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
 </div>
 {% endblock %}
+</parameter>

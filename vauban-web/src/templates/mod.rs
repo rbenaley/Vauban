@@ -6,6 +6,7 @@ pub mod audit;
 /// This module contains all template structs and shared types for Askama templates.
 pub mod base;
 pub mod dashboard;
+pub mod iacs;
 pub mod partials;
 pub mod sessions;
 

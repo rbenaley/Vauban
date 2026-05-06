@@ -2255,6 +2255,8 @@ const MY_REQUESTS_PER_PAGE: i64 = 30;
 pub async fn my_requests(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    perms: crate::auth::PermissionContext,
+    jar: CookieJar,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
@@ -2407,6 +2409,29 @@ pub async fn my_requests(
         None
     };
 
+    // IACS / EWS section integration (palier 6).
+    //
+    // The kill-switch is encoded in `perms.iacs_read` (the
+    // permission_context_middleware forces it to `false` when
+    // `[industrial].enabled = false`), so a single boolean
+    // collapses both the Casbin and the kill-switch decisions.
+    let iacs_visible = perms.iacs_read;
+    let iacs_request_allowed = perms.iacs_request;
+    let ews_items = if iacs_visible {
+        crate::handlers::web::iacs::load_my_ews_items(&state, user_id)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "load_my_ews_items failed; rendering empty");
+                Vec::new()
+            })
+    } else {
+        Vec::new()
+    };
+    let csrf_token_for_forms = jar
+        .get(crate::middleware::csrf::CSRF_COOKIE_NAME)
+        .map(|c| c.value().to_string())
+        .unwrap_or_default();
+
     let template = crate::templates::sessions::my_requests::MyRequestsTemplate {
         title,
         user: user_ctx,
@@ -2417,6 +2442,10 @@ pub async fn my_requests(
         header_user,
         requests,
         pagination,
+        iacs_visible,
+        iacs_request_allowed,
+        ews_items,
+        csrf_token: csrf_token_for_forms,
     };
 
     let html = template

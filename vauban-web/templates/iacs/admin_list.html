@@ -1,0 +1,204 @@
+{% extends "base.html" %}
+
+{% block title %}IACS - {{ vauban.brand_name }}{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <div class="md:flex md:items-center md:justify-between">
+        <div class="min-w-0 flex-1">
+            <h2 class="text-xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-2xl lg:text-3xl sm:tracking-tight">
+                Industrial Access Control (IACS)
+            </h2>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                Review onboarding requests and manage Engineering Workstations.
+            </p>
+        </div>
+    </div>
+
+    {# ============================================================
+       Pending onboarding requests
+       ============================================================ #}
+    <section class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+        <div class="px-4 py-3 sm:px-6 border-b border-gray-200 dark:border-gray-700 bg-yellow-50 dark:bg-yellow-900/20">
+            <h3 class="text-sm font-semibold text-yellow-900 dark:text-yellow-200">
+                Pending onboarding requests
+                <span class="ml-2 inline-flex items-center rounded-full bg-yellow-100 dark:bg-yellow-900/50 px-2 py-0.5 text-xs font-medium text-yellow-800 dark:text-yellow-300">
+                    {{ pending_requests.len() }}
+                </span>
+            </h3>
+        </div>
+        {% if pending_requests.is_empty() %}
+        <div class="px-4 py-8 sm:px-6 text-center text-sm text-gray-500 dark:text-gray-400">
+            No pending requests.
+        </div>
+        {% else %}
+        <ul role="list" class="divide-y divide-gray-200 dark:divide-gray-700">
+            {% for req in pending_requests %}
+            <li class="px-4 py-4 sm:px-6">
+                <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                    <div class="flex-1 min-w-0">
+                        <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+                            <span class="text-sm font-medium text-gray-900 dark:text-white break-words">
+                                {{ req.requester_username }}
+                            </span>
+                            <span class="text-gray-400 dark:text-gray-500">&rarr;</span>
+                            <span class="text-sm font-medium text-gray-900 dark:text-white break-words">
+                                {{ req.ews_name }}
+                            </span>
+                        </div>
+                        <div class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-gray-500 dark:text-gray-400">
+                            <span class="uppercase font-semibold">{{ req.key_algo }}</span>
+                            <span class="hidden sm:inline">&bull;</span>
+                            <span class="font-mono break-all">{{ req.fingerprint_short }}</span>
+                            <span class="hidden sm:inline">&bull;</span>
+                            <span>{{ req.created_at }}</span>
+                        </div>
+                        <p class="mt-2 text-sm text-gray-700 dark:text-gray-200 break-words line-clamp-2">
+                            {{ req.justification }}
+                        </p>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-2 lg:flex-nowrap lg:flex-shrink-0">
+                        <form method="post" action="/iacs/admin/request/{{ req.request_uuid }}/approve">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                            <button type="submit"
+                                    class="inline-flex items-center rounded-md bg-green-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-green-500">
+                                Approve
+                            </button>
+                        </form>
+                        <div x-data="{ showRejectModal: false, rejectReason: '' }">
+                            <button type="button" @click="showRejectModal = true"
+                                    class="inline-flex items-center rounded-md bg-red-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-red-500">
+                                Reject
+                            </button>
+                            <div x-show="showRejectModal" x-cloak
+                                 class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+                                 @keydown.escape.window="showRejectModal = false">
+                                <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full max-w-md mx-4 p-6"
+                                     @click.outside="showRejectModal = false">
+                                    <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">Reject EWS request</h3>
+                                    <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">
+                                        Provide a reason. The requester is informed by email.
+                                    </p>
+                                    <form method="post" action="/iacs/admin/request/{{ req.request_uuid }}/reject">
+                                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                                        <textarea name="reason" x-model="rejectReason" required minlength="5"
+                                                  rows="3" placeholder="Reason for rejection..."
+                                                  class="w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"></textarea>
+                                        <div class="mt-4 flex justify-end gap-2">
+                                            <button type="button" @click="showRejectModal = false"
+                                                    class="rounded-md bg-white dark:bg-gray-700 px-3 py-2 text-sm font-semibold text-gray-900 dark:text-white shadow-sm ring-1 ring-inset ring-gray-300 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600">
+                                                Cancel
+                                            </button>
+                                            <button type="submit" :disabled="rejectReason.trim().length < 5"
+                                                    class="rounded-md bg-red-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-red-500 disabled:opacity-50 disabled:cursor-not-allowed">
+                                                Confirm rejection
+                                            </button>
+                                        </div>
+                                    </form>
+                                </div>
+                            </div>
+                        </div>
+                        <a href="/iacs/admin/request/{{ req.request_uuid }}"
+                           class="inline-flex items-center rounded-md bg-vauban-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500">
+                            Details
+                        </a>
+                    </div>
+                </div>
+            </li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+    </section>
+
+    {# ============================================================
+       Engineering Workstations
+       ============================================================ #}
+    <section class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+        <div class="px-4 py-3 sm:px-6 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40">
+            <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-200">
+                Engineering Workstations
+                <span class="ml-2 inline-flex items-center rounded-full bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-xs font-medium text-gray-800 dark:text-gray-300">
+                    {{ ews_rows.len() }}
+                </span>
+            </h3>
+        </div>
+        {% if ews_rows.is_empty() %}
+        <div class="px-4 py-8 sm:px-6 text-center text-sm text-gray-500 dark:text-gray-400">
+            No EWS registered.
+        </div>
+        {% else %}
+        <ul role="list" class="divide-y divide-gray-200 dark:divide-gray-700">
+            {% for row in ews_rows %}
+            <li class="px-4 py-4 sm:px-6">
+                <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                    <div class="flex-1 min-w-0">
+                        <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+                            <span class="text-sm font-medium text-gray-900 dark:text-white break-words">
+                                {{ row.owner_username }}
+                            </span>
+                            <span class="text-gray-400 dark:text-gray-500">&rarr;</span>
+                            <span class="text-sm font-medium text-gray-900 dark:text-white break-words">
+                                {{ row.name }}
+                            </span>
+                            <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {{ row.state_class() }}">
+                                {{ row.state|capitalize }}
+                            </span>
+                        </div>
+                        <div class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-gray-500 dark:text-gray-400">
+                            <span class="uppercase font-semibold">{{ row.key_algo }}</span>
+                            <span class="hidden sm:inline">&bull;</span>
+                            <span class="font-mono break-all">{{ row.fingerprint_short }}</span>
+                            <span class="hidden sm:inline">&bull;</span>
+                            <span>created {{ row.created_at }}</span>
+                            {% if let Some(d) = row.disabled_at.as_ref() %}
+                            <span class="hidden sm:inline">&bull;</span>
+                            <span>disabled {{ d }}</span>
+                            {% endif %}
+                            {% if let Some(o) = row.offboarded_at.as_ref() %}
+                            <span class="hidden sm:inline">&bull;</span>
+                            <span>offboarded {{ o }}</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-2 lg:flex-nowrap lg:flex-shrink-0">
+                        {% if row.is_active() %}
+                        <form method="post" action="/iacs/admin/ews/{{ row.ews_uuid }}/disable">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                            <button type="submit"
+                                    class="inline-flex items-center rounded-md bg-yellow-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-yellow-500">
+                                Disable
+                            </button>
+                        </form>
+                        {% else if row.is_disabled() %}
+                        <form method="post" action="/iacs/admin/ews/{{ row.ews_uuid }}/enable">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                            <button type="submit"
+                                    class="inline-flex items-center rounded-md bg-green-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-green-500">
+                                Enable
+                            </button>
+                        </form>
+                        {% endif %}
+                        {% if !row.is_offboarded() %}
+                        <form method="post" action="/iacs/admin/ews/{{ row.ews_uuid }}/offboard"
+                              hx-confirm="Offboarding is irreversible. Continue?">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                            <button type="submit"
+                                    class="inline-flex items-center rounded-md bg-red-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-red-500"
+                                    onclick="return confirm('Offboarding is irreversible. Continue?');">
+                                Offboard
+                            </button>
+                        </form>
+                        {% endif %}
+                        <a href="/iacs/admin/ews/{{ row.ews_uuid }}"
+                           class="inline-flex items-center rounded-md bg-vauban-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500">
+                            Details
+                        </a>
+                    </div>
+                </div>
+            </li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+    </section>
+</div>
+{% endblock %}

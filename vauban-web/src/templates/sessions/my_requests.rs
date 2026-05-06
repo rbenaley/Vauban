@@ -293,6 +293,10 @@ mod tests {
                 make_item("approved", None),
             ],
             pagination: None,
+            iacs_visible: false,
+            iacs_request_allowed: false,
+            ews_items: Vec::new(),
+            csrf_token: "tk".to_string(),
         };
 
         let html = template.render().expect("template should render");
@@ -346,6 +350,10 @@ mod tests {
                 header_user: None,
                 requests: vec![make_item(status, Some(3600))],
                 pagination: None,
+                iacs_visible: false,
+                iacs_request_allowed: false,
+                ews_items: Vec::new(),
+                csrf_token: "tk".to_string(),
             };
 
             let html = template
@@ -385,6 +393,10 @@ mod tests {
             header_user: None,
             requests: Vec::new(),
             pagination: None,
+            iacs_visible: false,
+            iacs_request_allowed: false,
+            ews_items: Vec::new(),
+            csrf_token: "tk".to_string(),
         };
 
         let html = template.render().expect("template should render");
@@ -420,6 +432,10 @@ mod tests {
             header_user: None,
             requests: items,
             pagination,
+            iacs_visible: false,
+            iacs_request_allowed: false,
+            ews_items: Vec::new(),
+            csrf_token: "tk".to_string(),
         }
     }
 
@@ -567,4 +583,21 @@ pub struct MyRequestsTemplate {
     pub header_user: Option<crate::templates::base::UserContext>,
     pub requests: Vec<MyRequestItem>,
     pub pagination: Option<Pagination>,
+    /// IACS / EWS section.
+    ///
+    /// `iacs_visible` is the kill-switch + Casbin gate (`iacs_read`)
+    /// pre-resolved by the handler so the template stays a pure
+    /// projection. When `false`, the entire "My EWS" block is
+    /// suppressed -- including the heading -- and `ews_items` is
+    /// guaranteed empty by the handler.
+    pub iacs_visible: bool,
+    /// True when the caller may submit / edit / cancel / auto-offboard
+    /// (`iacs_request`). Drives the "Onboard EWS" CTA and the per-row
+    /// owner-actionable buttons.
+    pub iacs_request_allowed: bool,
+    /// Per-user EWS rows (pending requests AND approved EWS folded
+    /// into a single ordered list, newest first).
+    pub ews_items: Vec<crate::templates::iacs::MyEwsItem>,
+    /// CSRF token reused by the inlined cancel / offboard-self forms.
+    pub csrf_token: String,
 }

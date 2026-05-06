@@ -75,6 +75,9 @@ fn admin_perms() -> PermissionContext {
         groups_manage_members: true,
         sessions_supervise: true,
         sessions_bypass_access_rules: true,
+        iacs_request: true,
+        iacs_read: true,
+        iacs_manage: true,
     }
 }
 
@@ -101,7 +104,9 @@ fn make_sidebar(user: UserContext, perms: PermissionContext) -> SidebarContentTe
         is_approvals: false,
         is_access_rules: false,
         is_my_requests: false,
+        is_iacs: false,
         pending_approval_count: 0,
+        pending_iacs_count: 0,
         perms,
     }
 }

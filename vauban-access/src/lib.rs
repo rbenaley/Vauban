@@ -18,8 +18,11 @@
 pub mod admin_count;
 pub mod db;
 pub mod handlers;
+pub mod iacs;
 pub mod virtual_group;
 pub use vauban_db::schema;
 
 #[cfg(test)]
 mod approval_audit_tests;
+#[cfg(test)]
+mod iacs_audit_tests;

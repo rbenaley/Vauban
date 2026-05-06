@@ -761,6 +761,73 @@ fn build_test_router(state: AppState) -> Router {
             "/ws/terminal/{session_id}",
             get(handlers::websocket::terminal_ws).layer(session_guard),
         )
+        // ----------------------------------------------------------------
+        // IACS / EWS user-zone routes (palier 6). Mirrors production
+        // main.rs so the integration tests exercise the same handler
+        // chain (auth + permission_context + iacs_request gate).
+        // ----------------------------------------------------------------
+        .route(
+            "/iacs/onboard",
+            get(handlers::web::iacs::iacs_onboard_form)
+                .post(handlers::web::iacs::iacs_submit_onboarding),
+        )
+        .route(
+            "/iacs/onboard/{uuid}/edit-form",
+            get(handlers::web::iacs::iacs_edit_form),
+        )
+        .route(
+            "/iacs/onboard/{uuid}/edit",
+            post(handlers::web::iacs::iacs_edit_request),
+        )
+        .route(
+            "/iacs/onboard/{uuid}/cancel",
+            post(handlers::web::iacs::iacs_cancel_request),
+        )
+        .route(
+            "/iacs/{uuid}/offboard-self",
+            post(handlers::web::iacs::iacs_offboard_self),
+        )
+        // ----------------------------------------------------------------
+        // IACS admin nest (palier 7). Mirrors production: each handler
+        // re-checks `iacs_manage` AND the route layer fails closed
+        // BEFORE the handler runs (anti-enumeration parity).
+        // ----------------------------------------------------------------
+        .nest(
+            "/iacs/admin",
+            Router::new()
+                .route("/", get(handlers::web::iacs::iacs_admin_list))
+                .route(
+                    "/request/{uuid}",
+                    get(handlers::web::iacs::iacs_admin_request_detail),
+                )
+                .route(
+                    "/request/{uuid}/approve",
+                    post(handlers::web::iacs::iacs_admin_approve),
+                )
+                .route(
+                    "/request/{uuid}/reject",
+                    post(handlers::web::iacs::iacs_admin_reject),
+                )
+                .route(
+                    "/ews/{uuid}",
+                    get(handlers::web::iacs::iacs_admin_ews_detail),
+                )
+                .route(
+                    "/ews/{uuid}/disable",
+                    post(handlers::web::iacs::iacs_admin_disable),
+                )
+                .route(
+                    "/ews/{uuid}/enable",
+                    post(handlers::web::iacs::iacs_admin_enable),
+                )
+                .route(
+                    "/ews/{uuid}/offboard",
+                    post(handlers::web::iacs::iacs_admin_offboard),
+                )
+                .route_layer(axum::middleware::from_fn(
+                    middleware::require_iacs_manage::require_iacs_manage,
+                )),
+        )
         // Static file serving
         .route("/static/{*path}", get(serve_static_test))
         // Health check

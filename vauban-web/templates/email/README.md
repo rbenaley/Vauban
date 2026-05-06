@@ -19,6 +19,10 @@ event.
 | `user.locked_after_failed_attempts`     | user + admins           | `user_locked.txt`                          |
 | `user.mfa_reset_by_admin`               | user                    | `user_mfa_reset.txt`                       |
 | `security.mono_admin_detected`          | superusers              | `security_mono_admin.txt`                  |
+| `iacs.onboard_submitted`                | superusers              | `iacs_onboard_submitted.txt`               |
+| `iacs.onboard_approved`                 | requester               | `iacs_onboard_approved.txt`                |
+| `iacs.onboard_rejected`                 | requester               | `iacs_onboard_rejected.txt`                |
+| `iacs.offboarded`                       | EWS owner               | `iacs_offboarded.txt`                      |
 
 ## Conventions
 

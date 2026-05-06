@@ -273,6 +273,116 @@ pub async fn handle_access_request(pool: &DbPool, request: AccessRequest) -> Acc
             handle_verify_session_access(&mut conn, &session_uuid, &requesting_user_uuid, intent)
                 .await
         }
+
+        // ===================================================================
+        // IACS / EWS onboarding -- atomic decisions in vauban-access::iacs.
+        // Every variant runs in a Diesel transaction with audit append-only.
+        // ===================================================================
+        AccessRequest::SubmitEwsOnboarding {
+            actor_user_uuid,
+            name,
+            public_key,
+            public_key_fingerprint,
+            key_algo,
+            justification,
+            max_ews_per_user,
+            actor_ip,
+        } => {
+            crate::iacs::handle_submit_ews_onboarding(
+                &mut conn,
+                &actor_user_uuid,
+                name,
+                public_key,
+                public_key_fingerprint,
+                key_algo,
+                justification,
+                max_ews_per_user,
+                actor_ip,
+            )
+            .await
+        }
+        AccessRequest::EditEwsRequest {
+            actor_user_uuid,
+            request_uuid,
+            name,
+            public_key,
+            public_key_fingerprint,
+            key_algo,
+            justification,
+            actor_ip,
+        } => {
+            crate::iacs::handle_edit_ews_request(
+                &mut conn,
+                &actor_user_uuid,
+                &request_uuid,
+                name,
+                public_key,
+                public_key_fingerprint,
+                key_algo,
+                justification,
+                actor_ip,
+            )
+            .await
+        }
+        AccessRequest::CancelEwsRequest {
+            actor_user_uuid,
+            request_uuid,
+            actor_ip,
+        } => {
+            crate::iacs::handle_cancel_ews_request(
+                &mut conn,
+                &actor_user_uuid,
+                &request_uuid,
+                actor_ip,
+            )
+            .await
+        }
+        AccessRequest::RecordEwsDecision {
+            actor_user_uuid,
+            request_uuid,
+            decision,
+            decision_reason,
+            actor_ip,
+        } => {
+            crate::iacs::handle_record_ews_decision(
+                &mut conn,
+                &actor_user_uuid,
+                &request_uuid,
+                decision,
+                decision_reason,
+                actor_ip,
+            )
+            .await
+        }
+        AccessRequest::DisableEws {
+            actor_user_uuid,
+            ews_uuid,
+            actor_ip,
+        } => {
+            crate::iacs::handle_disable_ews(&mut conn, &actor_user_uuid, &ews_uuid, actor_ip).await
+        }
+        AccessRequest::EnableEws {
+            actor_user_uuid,
+            ews_uuid,
+            actor_ip,
+        } => crate::iacs::handle_enable_ews(&mut conn, &actor_user_uuid, &ews_uuid, actor_ip).await,
+        AccessRequest::OffboardEws {
+            actor_user_uuid,
+            ews_uuid,
+            on_behalf_of_self,
+            decision_reason,
+            actor_ip,
+        } => {
+            crate::iacs::handle_offboard_ews(
+                &mut conn,
+                &actor_user_uuid,
+                &ews_uuid,
+                on_behalf_of_self,
+                decision_reason,
+                actor_ip,
+            )
+            .await
+        }
     }
 }
 
@@ -3018,9 +3128,14 @@ mod tests {
         );
 
         // Dependent/junction tables are cleaned first (no cap needed).
+        // IACS tables are TRUNCATEd alongside the rest because their FKs to
+        // `users` use ON DELETE RESTRICT (intentional in production: an
+        // active EWS owner cannot be silently hard-deleted), which would
+        // otherwise block the per-batch user prune below.
         diesel::sql_query(
             "TRUNCATE access_rules, user_groups, asset_asset_groups, \
-             proxy_sessions, auth_sessions, api_keys, assets CASCADE",
+             proxy_sessions, auth_sessions, api_keys, assets, \
+             ews, ews_onboarding_requests, ews_audit_log CASCADE",
         )
         .execute(&mut conn)
         .await

@@ -174,6 +174,7 @@ fn make_asset_list(
             ("offline".into(), "Offline".into()),
         ],
         require_justification: true,
+        iacs_request_allowed: false,
     }
 }
 

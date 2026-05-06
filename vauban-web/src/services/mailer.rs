@@ -281,6 +281,19 @@ pub enum EmailEvent {
     UserLockedAfterFailedAttempts(UserLockedAfterFailedAttemptsEvent),
     UserMfaResetByAdmin(UserMfaResetByAdminEvent),
     SecurityMonoAdminDetected(SecurityMonoAdminDetectedEvent),
+    /// IACS: a new EWS onboarding request has been submitted -- one
+    /// notification per active superuser so an admin reviews it.
+    IacsOnboardSubmitted(IacsOnboardSubmittedEvent),
+    /// IACS: an admin approved the EWS onboarding request -- the
+    /// requester is informed.
+    IacsOnboardApproved(IacsOnboardApprovedEvent),
+    /// IACS: an admin rejected the request -- the requester is told
+    /// the reason.
+    IacsOnboardRejected(IacsOnboardRejectedEvent),
+    /// IACS: an admin offboarded the EWS (irreversible). The owner
+    /// is informed (auto-offboard does not trigger this notification
+    /// -- the user already knows).
+    IacsOffboarded(IacsOffboardedEvent),
 }
 
 impl EmailEvent {
@@ -295,6 +308,10 @@ impl EmailEvent {
             Self::UserLockedAfterFailedAttempts(_) => "user.locked_after_failed_attempts",
             Self::UserMfaResetByAdmin(_) => "user.mfa_reset_by_admin",
             Self::SecurityMonoAdminDetected(_) => "security.mono_admin_detected",
+            Self::IacsOnboardSubmitted(_) => "iacs.onboard_submitted",
+            Self::IacsOnboardApproved(_) => "iacs.onboard_approved",
+            Self::IacsOnboardRejected(_) => "iacs.onboard_rejected",
+            Self::IacsOffboarded(_) => "iacs.offboarded",
         }
     }
 
@@ -309,6 +326,10 @@ impl EmailEvent {
             Self::UserLockedAfterFailedAttempts(e) => e.event_id,
             Self::UserMfaResetByAdmin(e) => e.event_id,
             Self::SecurityMonoAdminDetected(e) => e.event_id,
+            Self::IacsOnboardSubmitted(e) => e.event_id,
+            Self::IacsOnboardApproved(e) => e.event_id,
+            Self::IacsOnboardRejected(e) => e.event_id,
+            Self::IacsOffboarded(e) => e.event_id,
         }
     }
 
@@ -323,6 +344,10 @@ impl EmailEvent {
             Self::UserLockedAfterFailedAttempts(e) => &e.recipient,
             Self::UserMfaResetByAdmin(e) => &e.recipient,
             Self::SecurityMonoAdminDetected(e) => &e.recipient,
+            Self::IacsOnboardSubmitted(e) => &e.recipient,
+            Self::IacsOnboardApproved(e) => &e.recipient,
+            Self::IacsOnboardRejected(e) => &e.recipient,
+            Self::IacsOffboarded(e) => &e.recipient,
         }
     }
 
@@ -341,6 +366,10 @@ impl EmailEvent {
             Self::UserLockedAfterFailedAttempts(e) => render_user_locked(e),
             Self::UserMfaResetByAdmin(e) => render_user_mfa_reset(e),
             Self::SecurityMonoAdminDetected(e) => render_security_mono_admin(e),
+            Self::IacsOnboardSubmitted(e) => render_iacs_onboard_submitted(e),
+            Self::IacsOnboardApproved(e) => render_iacs_onboard_approved(e),
+            Self::IacsOnboardRejected(e) => render_iacs_onboard_rejected(e),
+            Self::IacsOffboarded(e) => render_iacs_offboarded(e),
         }
     }
 }
@@ -652,6 +681,173 @@ fn render_security_mono_admin(
 }
 
 // ============================================================================
+// IACS / EWS onboarding (Issue #IACS, palier 5)
+// ============================================================================
+//
+// Four event types mirror the JIT lifecycle:
+//   * IacsOnboardSubmitted -- one row per active superuser, business_key
+//     is the request UUID so retries collapse on (kind, request, admin).
+//   * IacsOnboardApproved / IacsOnboardRejected -- single row addressed
+//     to the requester; business_key is the request UUID.
+//   * IacsOffboarded -- single row addressed to the EWS owner; business
+//     key is the EWS UUID. Auto-offboard (kill-switch / cascade) does
+//     NOT enqueue this notification: callers decide whether the user
+//     deserves a heads-up (today, only an explicit admin offboard does).
+//
+// Subject lines never carry user-controlled values verbatim: the EWS
+// name is rendered in the body, never in the subject, to keep mail
+// filters predictable. The renderer is plain text -- the dispatcher
+// lifts CRLF safety from `Mailer::queue` so we do not have to sanitise
+// here, but justifications and rejection reasons go through
+// `validate_no_crlf` upstream when appropriate.
+
+#[derive(Debug, Clone)]
+pub struct IacsOnboardSubmittedEvent {
+    pub event_id: Uuid,
+    pub recipient: EmailRecipient,
+    pub requester_username: String,
+    pub ews_name: String,
+    pub fingerprint: String,
+    pub justification: Option<String>,
+    pub admin_url: String,
+    pub base_url: String,
+    pub from_brand: String,
+}
+
+fn render_iacs_onboard_submitted(
+    e: &IacsOnboardSubmittedEvent,
+) -> Result<RenderedEmail, RenderError> {
+    let subject = format!(
+        "[Vauban] EWS onboarding request from {}",
+        e.requester_username
+    );
+    let mut text = render_header(&e.from_brand);
+    text.push_str(&format!(
+        "{} submitted an EWS onboarding request.\n",
+        e.requester_username
+    ));
+    text.push_str(&format!("EWS name: {}\n", e.ews_name));
+    text.push_str(&format!(
+        "Public key fingerprint (SHA-256): {}\n",
+        e.fingerprint
+    ));
+    if let Some(j) = &e.justification {
+        text.push_str(&format!("\nJustification:\n{}\n", j));
+    }
+    text.push_str(&format!("\nReview the request: {}\n", e.admin_url));
+    text.push_str(&render_footer(&e.base_url));
+    Ok(RenderedEmail {
+        subject,
+        body_text: text,
+        body_html: None,
+    })
+}
+
+#[derive(Debug, Clone)]
+pub struct IacsOnboardApprovedEvent {
+    pub event_id: Uuid,
+    pub recipient: EmailRecipient,
+    pub ews_name: String,
+    pub fingerprint: String,
+    pub approver_username: String,
+    pub my_requests_url: String,
+    pub base_url: String,
+    pub from_brand: String,
+}
+
+fn render_iacs_onboard_approved(
+    e: &IacsOnboardApprovedEvent,
+) -> Result<RenderedEmail, RenderError> {
+    let subject = format!("[Vauban] EWS approved: {}", e.ews_name);
+    let mut text = render_header(&e.from_brand);
+    text.push_str(&format!(
+        "Your EWS onboarding request was approved by {}.\n",
+        e.approver_username
+    ));
+    text.push_str(&format!("EWS name: {}\n", e.ews_name));
+    text.push_str(&format!(
+        "Public key fingerprint (SHA-256): {}\n",
+        e.fingerprint
+    ));
+    text.push_str(&format!("\nView your requests: {}\n", e.my_requests_url));
+    text.push_str(&render_footer(&e.base_url));
+    Ok(RenderedEmail {
+        subject,
+        body_text: text,
+        body_html: None,
+    })
+}
+
+#[derive(Debug, Clone)]
+pub struct IacsOnboardRejectedEvent {
+    pub event_id: Uuid,
+    pub recipient: EmailRecipient,
+    pub ews_name: String,
+    pub approver_username: String,
+    pub reason: String,
+    pub my_requests_url: String,
+    pub base_url: String,
+    pub from_brand: String,
+}
+
+fn render_iacs_onboard_rejected(
+    e: &IacsOnboardRejectedEvent,
+) -> Result<RenderedEmail, RenderError> {
+    let subject = format!("[Vauban] EWS denied: {}", e.ews_name);
+    let mut text = render_header(&e.from_brand);
+    text.push_str(&format!(
+        "Your EWS onboarding request was denied by {}.\n",
+        e.approver_username
+    ));
+    text.push_str(&format!("EWS name: {}\n", e.ews_name));
+    text.push_str(&format!("\nReason: {}\n", e.reason));
+    text.push_str(&format!("\nView your requests: {}\n", e.my_requests_url));
+    text.push_str(&render_footer(&e.base_url));
+    Ok(RenderedEmail {
+        subject,
+        body_text: text,
+        body_html: None,
+    })
+}
+
+#[derive(Debug, Clone)]
+pub struct IacsOffboardedEvent {
+    pub event_id: Uuid,
+    pub recipient: EmailRecipient,
+    pub ews_name: String,
+    pub fingerprint: String,
+    pub admin_username: String,
+    pub base_url: String,
+    pub from_brand: String,
+}
+
+fn render_iacs_offboarded(e: &IacsOffboardedEvent) -> Result<RenderedEmail, RenderError> {
+    let subject = format!("[Vauban] EWS offboarded: {}", e.ews_name);
+    let mut text = render_header(&e.from_brand);
+    text.push_str(&format!(
+        "Your EWS was offboarded by administrator {}. This action is \
+         irreversible: any active SSH tunnel was terminated and the \
+         public key can no longer be used to reach Vauban.\n",
+        e.admin_username
+    ));
+    text.push_str(&format!("EWS name: {}\n", e.ews_name));
+    text.push_str(&format!(
+        "Public key fingerprint (SHA-256): {}\n",
+        e.fingerprint
+    ));
+    text.push_str(
+        "\nIf you still need an EWS, generate a fresh key pair and submit \
+         a new onboarding request from the Vauban console.\n",
+    );
+    text.push_str(&render_footer(&e.base_url));
+    Ok(RenderedEmail {
+        subject,
+        body_text: text,
+        body_html: None,
+    })
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -856,5 +1052,203 @@ mod tests {
         let m = Mailer::new(Arc::clone(&n), true, 5);
         let h = m.notify_handle();
         assert!(Arc::ptr_eq(&n, &h));
+    }
+
+    fn iacs_fp() -> &'static str {
+        // Stable test fingerprint, does not need to be a real SHA-256.
+        "ab12cd34ef56ab12cd34ef56ab12cd34ef56ab12cd34ef56ab12cd34ef56ab12"
+    }
+
+    #[test]
+    fn render_iacs_onboard_submitted_includes_actor_fingerprint_and_url() {
+        let event = EmailEvent::IacsOnboardSubmitted(IacsOnboardSubmittedEvent {
+            event_id: Uuid::nil(),
+            recipient: fake_recipient(),
+            requester_username: "bob".into(),
+            ews_name: "factory-ews-01".into(),
+            fingerprint: iacs_fp().into(),
+            justification: Some("Onboard for plant rollout".into()),
+            admin_url: "https://vauban.test/iacs/requests/x".into(),
+            base_url: "https://vauban.test".into(),
+            from_brand: "Vauban PAM".into(),
+        });
+        let r = event.render().unwrap();
+        assert!(r.subject.starts_with("[Vauban]"));
+        assert!(r.subject.contains("bob"));
+        assert!(r.body_text.contains("factory-ews-01"));
+        assert!(r.body_text.contains(iacs_fp()));
+        assert!(r.body_text.contains("Onboard for plant rollout"));
+        assert!(r.body_text.contains("https://vauban.test/iacs/requests/x"));
+    }
+
+    #[test]
+    fn render_iacs_onboard_approved_includes_approver_and_my_requests_url() {
+        let event = EmailEvent::IacsOnboardApproved(IacsOnboardApprovedEvent {
+            event_id: Uuid::nil(),
+            recipient: fake_recipient(),
+            ews_name: "factory-ews-01".into(),
+            fingerprint: iacs_fp().into(),
+            approver_username: "carol".into(),
+            my_requests_url: "https://vauban.test/sessions/my-requests".into(),
+            base_url: "https://vauban.test".into(),
+            from_brand: "Vauban PAM".into(),
+        });
+        let r = event.render().unwrap();
+        assert!(r.subject.contains("approved"));
+        assert!(r.subject.contains("factory-ews-01"));
+        assert!(r.body_text.contains("carol"));
+        assert!(r.body_text.contains(iacs_fp()));
+        assert!(
+            r.body_text
+                .contains("https://vauban.test/sessions/my-requests")
+        );
+    }
+
+    #[test]
+    fn render_iacs_onboard_rejected_includes_reason() {
+        let event = EmailEvent::IacsOnboardRejected(IacsOnboardRejectedEvent {
+            event_id: Uuid::nil(),
+            recipient: fake_recipient(),
+            ews_name: "factory-ews-01".into(),
+            approver_username: "carol".into(),
+            reason: "Justification insufficient".into(),
+            my_requests_url: "https://vauban.test/sessions/my-requests".into(),
+            base_url: "https://vauban.test".into(),
+            from_brand: "Vauban PAM".into(),
+        });
+        let r = event.render().unwrap();
+        assert!(r.subject.contains("denied"));
+        assert!(r.body_text.contains("carol"));
+        assert!(r.body_text.contains("Justification insufficient"));
+    }
+
+    #[test]
+    fn render_iacs_offboarded_warns_irreversible_and_includes_fingerprint() {
+        let event = EmailEvent::IacsOffboarded(IacsOffboardedEvent {
+            event_id: Uuid::nil(),
+            recipient: fake_recipient(),
+            ews_name: "factory-ews-01".into(),
+            fingerprint: iacs_fp().into(),
+            admin_username: "carol".into(),
+            base_url: "https://vauban.test".into(),
+            from_brand: "Vauban PAM".into(),
+        });
+        let r = event.render().unwrap();
+        assert!(r.subject.contains("offboarded"));
+        assert!(r.body_text.contains("carol"));
+        assert!(r.body_text.contains(iacs_fp()));
+        assert!(r.body_text.contains("irreversible"));
+    }
+
+    #[test]
+    fn iacs_event_kinds_match_taxonomy() {
+        let cases: &[(&str, EmailEvent)] = &[
+            (
+                "iacs.onboard_submitted",
+                EmailEvent::IacsOnboardSubmitted(IacsOnboardSubmittedEvent {
+                    event_id: Uuid::nil(),
+                    recipient: fake_recipient(),
+                    requester_username: "bob".into(),
+                    ews_name: "ews".into(),
+                    fingerprint: iacs_fp().into(),
+                    justification: None,
+                    admin_url: "u".into(),
+                    base_url: "b".into(),
+                    from_brand: "br".into(),
+                }),
+            ),
+            (
+                "iacs.onboard_approved",
+                EmailEvent::IacsOnboardApproved(IacsOnboardApprovedEvent {
+                    event_id: Uuid::nil(),
+                    recipient: fake_recipient(),
+                    ews_name: "ews".into(),
+                    fingerprint: iacs_fp().into(),
+                    approver_username: "c".into(),
+                    my_requests_url: "u".into(),
+                    base_url: "b".into(),
+                    from_brand: "br".into(),
+                }),
+            ),
+            (
+                "iacs.onboard_rejected",
+                EmailEvent::IacsOnboardRejected(IacsOnboardRejectedEvent {
+                    event_id: Uuid::nil(),
+                    recipient: fake_recipient(),
+                    ews_name: "ews".into(),
+                    approver_username: "c".into(),
+                    reason: "r".into(),
+                    my_requests_url: "u".into(),
+                    base_url: "b".into(),
+                    from_brand: "br".into(),
+                }),
+            ),
+            (
+                "iacs.offboarded",
+                EmailEvent::IacsOffboarded(IacsOffboardedEvent {
+                    event_id: Uuid::nil(),
+                    recipient: fake_recipient(),
+                    ews_name: "ews".into(),
+                    fingerprint: iacs_fp().into(),
+                    admin_username: "c".into(),
+                    base_url: "b".into(),
+                    from_brand: "br".into(),
+                }),
+            ),
+        ];
+        for (expected, event) in cases {
+            assert_eq!(event.kind(), *expected);
+        }
+    }
+
+    #[test]
+    fn iacs_event_render_subjects_have_no_crlf() {
+        let evts = [
+            EmailEvent::IacsOnboardSubmitted(IacsOnboardSubmittedEvent {
+                event_id: Uuid::nil(),
+                recipient: fake_recipient(),
+                requester_username: "bob".into(),
+                ews_name: "ews-1".into(),
+                fingerprint: iacs_fp().into(),
+                justification: None,
+                admin_url: "u".into(),
+                base_url: "b".into(),
+                from_brand: "br".into(),
+            }),
+            EmailEvent::IacsOnboardApproved(IacsOnboardApprovedEvent {
+                event_id: Uuid::nil(),
+                recipient: fake_recipient(),
+                ews_name: "ews-1".into(),
+                fingerprint: iacs_fp().into(),
+                approver_username: "c".into(),
+                my_requests_url: "u".into(),
+                base_url: "b".into(),
+                from_brand: "br".into(),
+            }),
+            EmailEvent::IacsOnboardRejected(IacsOnboardRejectedEvent {
+                event_id: Uuid::nil(),
+                recipient: fake_recipient(),
+                ews_name: "ews-1".into(),
+                approver_username: "c".into(),
+                reason: "r".into(),
+                my_requests_url: "u".into(),
+                base_url: "b".into(),
+                from_brand: "br".into(),
+            }),
+            EmailEvent::IacsOffboarded(IacsOffboardedEvent {
+                event_id: Uuid::nil(),
+                recipient: fake_recipient(),
+                ews_name: "ews-1".into(),
+                fingerprint: iacs_fp().into(),
+                admin_username: "c".into(),
+                base_url: "b".into(),
+                from_brand: "br".into(),
+            }),
+        ];
+        for e in &evts {
+            let r = e.render().unwrap();
+            assert!(!r.subject.contains('\r'));
+            assert!(!r.subject.contains('\n'));
+        }
     }
 }

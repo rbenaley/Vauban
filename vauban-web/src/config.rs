@@ -243,6 +243,11 @@ pub struct Config {
     /// Email notification (Issue #10) configuration.
     #[serde(default)]
     pub mailer: MailerConfig,
+    /// Industrial / IACS module (preliminary scaffolding for future
+    /// IACS asset support). Carries the global kill-switch for the
+    /// EWS onboarding flow.
+    #[serde(default)]
+    pub industrial: IndustrialConfig,
 }
 
 debug_redacted_struct!(
@@ -904,6 +909,53 @@ impl std::fmt::Debug for MailerConfig {
             .field("smtp_timeout_secs", &self.smtp_timeout_secs)
             .field("broker_timeout_secs", &self.broker_timeout_secs)
             .finish()
+    }
+}
+
+/// IACS / industrial module configuration.
+///
+/// Carries the global kill-switch for the EWS onboarding flow introduced
+/// as a preliminary scaffolding for future IACS asset support.
+///
+/// When `enabled` is false:
+///   - the IACS sidebar entry is hidden,
+///   - the "Onboard EWS" button on `/assets` is hidden,
+///   - every `/iacs/*` route returns 404 (anti-enumeration),
+///   - `PermissionContext::iacs_*` flags are forced to `false` regardless
+///     of the Casbin policy (kill-switch precedence).
+///
+/// Existing rows in `ews_*` tables are preserved on disk (the kill-switch
+/// only affects the UI / API surface). Re-enabling exposes them again.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct IndustrialConfig {
+    /// Master switch. Default `true` -- the IACS module is part of the
+    /// shipped feature set.
+    #[serde(default = "IndustrialConfig::default_enabled")]
+    pub enabled: bool,
+
+    /// Maximum number of EWS (active + pending) per user. `0` means
+    /// no limit. Default `0`. The cap is enforced inside the
+    /// `vauban-access` `SubmitEwsOnboarding` transaction.
+    #[serde(default = "IndustrialConfig::default_max_ews_per_user")]
+    pub max_ews_per_user: u32,
+}
+
+impl IndustrialConfig {
+    fn default_enabled() -> bool {
+        true
+    }
+
+    fn default_max_ews_per_user() -> u32 {
+        0
+    }
+}
+
+impl Default for IndustrialConfig {
+    fn default() -> Self {
+        Self {
+            enabled: Self::default_enabled(),
+            max_ews_per_user: Self::default_max_ews_per_user(),
+        }
     }
 }
 

@@ -49,6 +49,13 @@ pub enum WsChannel {
     /// broadcasts the per-tile fragments here. High-cardinality:
     /// scales with the number of dashboards open at any time.
     DashboardStatsUser(String),
+    /// IACS / EWS pending-onboarding-request count (sidebar badge,
+    /// admin section). Singleton: one fan-out per service feeding
+    /// every connected `iacs_manage`-capable admin. Low-cardinality
+    /// because each onboarding submit / cancel / decision emits at
+    /// most one event -- worth surfacing at INFO. See
+    /// `.cursor/rules/websocket-logging.mdc` for the level matrix.
+    IacsRequests,
 }
 
 impl WsChannel {
@@ -68,6 +75,7 @@ impl WsChannel {
             WsChannel::DashboardStatsUser(user_uuid) => {
                 format!("dashboard:user:{}", user_uuid)
             }
+            WsChannel::IacsRequests => "iacs:requests".to_string(),
         }
     }
 
@@ -103,7 +111,8 @@ impl WsChannel {
             | WsChannel::RecentActivity
             | WsChannel::Notifications
             | WsChannel::SessionsList
-            | WsChannel::AdminAuthSessions => true,
+            | WsChannel::AdminAuthSessions
+            | WsChannel::IacsRequests => true,
             // Parametric channels: one instance per session / user.
             // DashboardStatsUser is parametric because we open one
             // per non-supervisor browser tab subscribed to the
@@ -136,6 +145,7 @@ impl WsChannel {
             "admin:auth-sessions" => Some(WsChannel::AdminAuthSessions),
             "dashboard:recent-activity" => Some(WsChannel::RecentActivity),
             "notifications" => Some(WsChannel::Notifications),
+            "iacs:requests" => Some(WsChannel::IacsRequests),
             s if s.starts_with("session:") => {
                 let id = s.strip_prefix("session:")?.to_string();
                 Some(WsChannel::SessionLive(id))
@@ -1314,6 +1324,7 @@ mod tests {
             WsChannel::Notifications,
             WsChannel::SessionsList,
             WsChannel::AdminAuthSessions,
+            WsChannel::IacsRequests,
         ] {
             assert!(
                 low.is_low_cardinality(),
@@ -1351,6 +1362,7 @@ mod tests {
             ("notifications", true),
             ("sessions:list", true),
             ("admin:auth-sessions", true),
+            ("iacs:requests", true),
             ("session:abc-def", false),
             ("user:42:auth-sessions", false),
             ("user:42:api-keys", false),

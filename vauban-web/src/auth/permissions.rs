@@ -77,6 +77,26 @@ pub struct PermissionContext {
     pub admin_view: bool,
     pub profile_read: bool,
     pub profile_write: bool,
+    /// Submit a new EWS onboarding request (`POST /iacs/onboard`),
+    /// edit a pending request, cancel a pending request, or
+    /// auto-offboard one of the caller's own approved EWS. Granted to
+    /// every `role:user` by default; the per-deployment Casbin policy
+    /// can narrow the scope further.
+    ///
+    /// Subject to the global kill-switch: when
+    /// `config.industrial.enabled == false`, this flag is forced to
+    /// `false` regardless of the policy decision (the IACS surface is
+    /// fully hidden / 404'd in that mode).
+    pub iacs_request: bool,
+    /// Read the caller's own EWS catalogue (in `/sessions/my-requests`
+    /// and equivalent self-service pages). Granted to every
+    /// `role:user`. Subject to the same kill-switch as `iacs_request`.
+    pub iacs_read: bool,
+    /// Admin CRUD on the IACS / EWS surface (admin list, approve,
+    /// reject with reason, disable, enable, offboard). Granted to
+    /// `role:staff` and `role:superuser` (via wildcard). Subject to
+    /// the same kill-switch as `iacs_request`.
+    pub iacs_manage: bool,
 }
 
 impl PermissionContext {
@@ -107,6 +127,9 @@ impl PermissionContext {
             admin_view,
             profile_read,
             profile_write,
+            iacs_request,
+            iacs_read,
+            iacs_manage,
         ) = tokio::join!(
             check_rbac(state, user, "users", "read"),
             check_rbac(state, user, "users", "write"),
@@ -128,7 +151,17 @@ impl PermissionContext {
             check_rbac(state, user, "admin", "view"),
             check_rbac(state, user, "profile", "read"),
             check_rbac(state, user, "profile", "write"),
+            check_rbac(state, user, "iacs", "request"),
+            check_rbac(state, user, "iacs", "read"),
+            check_rbac(state, user, "iacs", "manage"),
         );
+
+        // Kill-switch precedence: `[industrial].enabled = false` forces
+        // every `iacs_*` permission to `false` regardless of the policy
+        // decision. The flag is meant to fully hide the IACS surface
+        // (sidebar, routes, button); a partial gate would leak the
+        // module's existence via 403 responses or partial UI elements.
+        let industrial_enabled = state.config.industrial.enabled;
 
         Self {
             users_read,
@@ -151,6 +184,9 @@ impl PermissionContext {
             admin_view,
             profile_read,
             profile_write,
+            iacs_request: iacs_request && industrial_enabled,
+            iacs_read: iacs_read && industrial_enabled,
+            iacs_manage: iacs_manage && industrial_enabled,
         }
     }
 }
@@ -246,6 +282,9 @@ mod tests {
         assert!(!ctx.admin_view);
         assert!(!ctx.profile_read);
         assert!(!ctx.profile_write);
+        assert!(!ctx.iacs_request);
+        assert!(!ctx.iacs_read);
+        assert!(!ctx.iacs_manage);
     }
 
     #[test]

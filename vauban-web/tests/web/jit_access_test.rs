@@ -689,15 +689,18 @@ async fn test_sidebar_shows_approval_badge_for_admin() {
     let body = response.text();
     assert!(body.contains("Approvals"));
 
-    let badge_anchor = "ml-auto inline-flex items-center rounded-full bg-vauban-600";
-    let start = body
-        .find(badge_anchor)
-        .expect("pending approval badge in admin sidebar");
-    let rel = &body[start..];
+    // Pin the lookup on the stable approval-badge id so adding a
+    // sibling sidebar badge (e.g. IACS) cannot shadow this assertion
+    // by being hit first by a generic `bg-vauban-600` match.
+    let badge_id_anchor = r#"id="sidebar-approval-badge""#;
+    let id_start = body
+        .find(badge_id_anchor)
+        .expect("approval badge id in admin sidebar");
+    let rel = &body[id_start..];
     let end_rel = rel.find("</span>").expect("badge span closes");
     let chunk = &rel[..end_rel];
-    let open = chunk.rfind("\">").expect("opening span closes with \">");
-    let badge_text = chunk[open + 2..].trim();
+    let open = chunk.rfind('>').expect("opening span tag closes with >");
+    let badge_text = chunk[open + 1..].trim();
     assert_eq!(
         badge_text,
         expected_pending.to_string(),

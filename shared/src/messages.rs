@@ -391,6 +391,96 @@ impl ApprovalDenyReason {
     }
 }
 
+/// IACS / EWS onboarding decision kind. Pinned in `shared` so every
+/// layer (vauban-access transactional decision, vauban-web handler,
+/// templates) speaks the same vocabulary -- no string-typed dispatch.
+///
+/// Wire compatibility: append-only. Adding a variant requires a
+/// downstream `match` update in `vauban-access` and a Casbin policy
+/// review.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EwsDecisionKind {
+    Approve,
+    Reject,
+}
+
+impl EwsDecisionKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Approve => "approve",
+            Self::Reject => "reject",
+        }
+    }
+}
+
+/// Structured reason returned when an IACS / EWS write operation
+/// (submit, edit, cancel, approve, reject, disable, enable, offboard)
+/// is denied by the in-transaction re-check on the `vauban-access`
+/// side. Pinned in `shared` so vauban-web can surface a localised
+/// flash message and tests can pin every adversarial path to a stable
+/// variant.
+///
+/// Wire compatibility: append-only. Every new deny path forces an
+/// explicit Rust enum addition + a Tier-2 IPC test update.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EwsDenyReason {
+    /// The supplied UUID does not match any `ews_onboarding_requests`
+    /// row.
+    RequestNotFound,
+    /// The supplied UUID does not match any `ews` row.
+    EwsNotFound,
+    /// The request is no longer in `status='pending'` (already
+    /// approved, rejected, or cancelled). Edit / cancel / decide all
+    /// share this denial.
+    RequestNotPending,
+    /// The EWS row is already offboarded (irreversible). Disable /
+    /// enable / offboard reject; only the audit trail can still be
+    /// read.
+    EwsAlreadyOffboarded,
+    /// The fingerprint is currently locked by another active or
+    /// disabled EWS row, OR by another pending request the actor
+    /// did not own. Surface verbatim in the form so the requester
+    /// rotates their key.
+    KeyAlreadyUsed,
+    /// The requester already owns `industrial.max_ews_per_user`
+    /// active or pending EWS rows. The cap is enforced inside the
+    /// `SubmitEwsOnboarding` transaction.
+    MaxEwsPerUserReached,
+    /// Caller cannot mutate this resource (e.g. user trying to edit
+    /// or cancel another user's pending request, or auto-offboard an
+    /// EWS that is not theirs). Anti-enumeration: the handler should
+    /// collapse this into a 404.
+    NotOwner,
+    /// The user account referenced by the request / EWS has been
+    /// disabled or soft-deleted between the time the row was created
+    /// and the decision; the operation is moot.
+    TargetUserDisabled,
+}
+
+impl EwsDenyReason {
+    /// Human-readable label for flash messages. Not used as a primary
+    /// key by callers (they `match` on the variant) but pinned for UI
+    /// consistency.
+    pub fn as_message(&self) -> &'static str {
+        match self {
+            Self::RequestNotFound => "Onboarding request not found",
+            Self::EwsNotFound => "EWS not found",
+            Self::RequestNotPending => "This request has already been processed",
+            Self::EwsAlreadyOffboarded => {
+                "This EWS has already been offboarded; offboarding is irreversible"
+            }
+            Self::KeyAlreadyUsed => {
+                "This SSH public key is already registered against another active EWS"
+            }
+            Self::MaxEwsPerUserReached => {
+                "You have reached the maximum number of EWS allowed per user"
+            }
+            Self::NotOwner => "You cannot perform this action on another user's resource",
+            Self::TargetUserDisabled => "The target user account is no longer active",
+        }
+    }
+}
+
 /// Caller intent for `AccessRequest::VerifySessionAccess`. Advisory
 /// for the policy decision (each variant returns the same instance-
 /// level decision); used by vauban-access for structured audit logs
@@ -748,6 +838,115 @@ pub enum AccessRequest {
         session_id: String,
         caller_has_assets_manage: bool,
     },
+
+    // ===================================================================
+    // IACS / EWS onboarding -- atomic decisions executed in vauban-access.
+    //
+    // Every variant runs in a `SERIALIZABLE` Diesel transaction with
+    // automatic 40001 retry, mirrors the JIT `RecordApprovalDecision`
+    // pattern, and inserts the matching `ews_audit_log` row in the same
+    // transaction so the audit trail can never drift from the business
+    // state. The PostgreSQL `block_ews_audit_log_mutation` trigger pins
+    // the append-only contract at the lowest layer.
+    //
+    // Anti-enumeration: every "not yours" denial collapses to
+    // `EwsDenyReason::NotOwner` (handler turns it into 404).
+    //
+    // Wire compatibility: appended after `IssueDiagnosticToken`. New
+    // variants MUST keep being appended at the end.
+    // ===================================================================
+    /// Submit a new EWS onboarding request. Validates uniqueness of the
+    /// fingerprint inside the transaction (TOCTOU defense), enforces
+    /// `max_ews_per_user` if non-zero, snapshots the actor for the
+    /// `submitted` audit row.
+    SubmitEwsOnboarding {
+        actor_user_uuid: String,
+        name: String,
+        public_key: String,
+        public_key_fingerprint: String,
+        key_algo: String,
+        justification: String,
+        /// Mirror of `config.industrial.max_ews_per_user`. `0` means no
+        /// cap. Passed explicitly so `vauban-access` does not need to
+        /// own the TOML config; a compromised vauban-web is contained
+        /// by the rest of the audit chain.
+        max_ews_per_user: u32,
+        actor_ip: Option<String>,
+    },
+
+    /// Edit a pending request the actor owns. The CHECK constraint
+    /// `ews_request_decision_consistency` and an in-transaction
+    /// `status = 'pending' AND user_id = actor` re-check defend
+    /// against TOCTOU concurrent decision.
+    EditEwsRequest {
+        actor_user_uuid: String,
+        request_uuid: String,
+        name: String,
+        public_key: String,
+        public_key_fingerprint: String,
+        key_algo: String,
+        justification: String,
+        actor_ip: Option<String>,
+    },
+
+    /// Cancel a pending request the actor owns. Soft transition to
+    /// `status='cancelled'` (the row stays for audit; a fresh
+    /// re-submission is a NEW row).
+    CancelEwsRequest {
+        actor_user_uuid: String,
+        request_uuid: String,
+        actor_ip: Option<String>,
+    },
+
+    /// Persist an admin's approval / rejection decision on a pending
+    /// request AND insert the matching `ews_audit_log` row. On
+    /// approve, also creates the `ews` row in the same transaction;
+    /// on reject, requires `decision_reason` (validated server-side).
+    RecordEwsDecision {
+        actor_user_uuid: String,
+        request_uuid: String,
+        decision: EwsDecisionKind,
+        /// Mandatory when `decision == Reject`; ignored otherwise.
+        decision_reason: Option<String>,
+        actor_ip: Option<String>,
+    },
+
+    /// Suspend an active EWS (reversible). Disabling does NOT release
+    /// the public-key fingerprint -- only offboarding does (see
+    /// `OffboardEws`). The `ews_audit_log` row carries `event='disabled'`.
+    DisableEws {
+        actor_user_uuid: String,
+        ews_uuid: String,
+        actor_ip: Option<String>,
+    },
+
+    /// Re-enable a disabled EWS. The `ews_audit_log` row carries
+    /// `event='enabled'`.
+    EnableEws {
+        actor_user_uuid: String,
+        ews_uuid: String,
+        actor_ip: Option<String>,
+    },
+
+    /// Offboard an EWS (irreversible soft-delete). Releases the
+    /// fingerprint so the user can re-submit the same key on a fresh
+    /// onboarding request. The hook `terminate_ssh_tunnels_for_ews`
+    /// is invoked from the same transaction (no-op stub for this
+    /// preliminary iteration; long-running SSH tunnels from the EWS
+    /// to Vauban will arrive with the IACS asset feature).
+    ///
+    /// `on_behalf_of_self == true` means the user is auto-offboarding
+    /// their own EWS via `/iacs/{uuid}/offboard-self` (gated on
+    /// `iacs_request`); `false` means an admin offboard via
+    /// `/iacs/{uuid}/offboard` (gated on `iacs_manage`). Both write
+    /// the same audit row but the `decision_reason` defaults differ.
+    OffboardEws {
+        actor_user_uuid: String,
+        ews_uuid: String,
+        on_behalf_of_self: bool,
+        decision_reason: Option<String>,
+        actor_ip: Option<String>,
+    },
 }
 
 /// Access control response from vauban-access.
@@ -832,6 +1031,44 @@ pub enum AccessResponse {
     /// Wire compatibility: appended after `ApprovalDenied`.
     SessionAccessChecked {
         decision: SessionAccessDecision,
+    },
+
+    // ===================================================================
+    // IACS / EWS onboarding replies. Wire compatibility: appended at
+    // the end. Each variant pairs with one or more `AccessRequest`
+    // siblings (above). On any in-transaction re-check failure, the
+    // reply is `EwsDecisionDenied { reason }`; success replies carry
+    // the freshly-inserted `audit_log_id` so vauban-web can cross-
+    // reference with the HTTP request_id.
+    // ===================================================================
+    /// Successful reply to `SubmitEwsOnboarding`.
+    EwsRequestSubmitted {
+        request_uuid: String,
+        audit_log_id: i64,
+    },
+    /// Successful reply to `EditEwsRequest`.
+    EwsRequestEdited {
+        audit_log_id: i64,
+    },
+    /// Successful reply to `CancelEwsRequest`.
+    EwsRequestCancelled {
+        audit_log_id: i64,
+    },
+    /// Successful reply to `RecordEwsDecision`. `ews_uuid` is `Some`
+    /// on Approve (the freshly-created `ews` row) and `None` on
+    /// Reject.
+    EwsDecisionRecorded {
+        audit_log_id: i64,
+        ews_uuid: Option<String>,
+    },
+    /// Successful reply to `DisableEws`, `EnableEws`, and `OffboardEws`.
+    EwsStateChanged {
+        audit_log_id: i64,
+    },
+    /// Fail-closed reply for every IACS write operation. The session/
+    /// EWS row remains in its previous state.
+    EwsDecisionDenied {
+        reason: EwsDenyReason,
     },
 }
 

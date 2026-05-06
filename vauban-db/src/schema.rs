@@ -148,6 +148,77 @@ diesel::table! {
 }
 
 diesel::table! {
+    ews (id) {
+        id -> Int8,
+        uuid -> Uuid,
+        request_uuid -> Uuid,
+        user_id -> Int4,
+        #[max_length = 128]
+        name -> Varchar,
+        public_key -> Text,
+        #[max_length = 64]
+        public_key_fingerprint -> Varchar,
+        #[max_length = 40]
+        key_algo -> Varchar,
+        disabled_by_id -> Nullable<Int4>,
+        disabled_at -> Nullable<Timestamptz>,
+        offboarded_by_id -> Nullable<Int4>,
+        offboarded_at -> Nullable<Timestamptz>,
+        created_at -> Timestamptz,
+        updated_at -> Timestamptz,
+    }
+}
+
+diesel::table! {
+    ews_audit_log (id) {
+        id -> Int8,
+        ews_uuid -> Nullable<Uuid>,
+        request_uuid -> Nullable<Uuid>,
+        #[max_length = 20]
+        event -> Varchar,
+        actor_user_id -> Nullable<Int4>,
+        #[max_length = 150]
+        actor_username -> Varchar,
+        target_user_id -> Nullable<Int4>,
+        #[max_length = 150]
+        target_username -> Varchar,
+        #[max_length = 128]
+        ews_name -> Varchar,
+        #[max_length = 64]
+        public_key_fingerprint -> Varchar,
+        decision_reason -> Nullable<Text>,
+        actor_ip -> Nullable<Inet>,
+        #[max_length = 64]
+        request_id -> Nullable<Varchar>,
+        created_at -> Timestamptz,
+    }
+}
+
+diesel::table! {
+    ews_onboarding_requests (id) {
+        id -> Int8,
+        uuid -> Uuid,
+        user_id -> Int4,
+        #[max_length = 128]
+        name -> Varchar,
+        public_key -> Text,
+        #[max_length = 64]
+        public_key_fingerprint -> Varchar,
+        #[max_length = 40]
+        key_algo -> Varchar,
+        #[max_length = 250]
+        justification -> Varchar,
+        #[max_length = 10]
+        status -> Varchar,
+        decision_reason -> Nullable<Text>,
+        decided_by_id -> Nullable<Int4>,
+        decided_at -> Nullable<Timestamptz>,
+        created_at -> Timestamptz,
+        updated_at -> Timestamptz,
+    }
+}
+
+diesel::table! {
     email_outbox (id) {
         id -> Int8,
         event_id -> Uuid,
@@ -310,6 +381,9 @@ diesel::allow_tables_to_appear_in_same_query!(
     assets,
     auth_sessions,
     email_outbox,
+    ews,
+    ews_audit_log,
+    ews_onboarding_requests,
     proxy_sessions,
     user_groups,
     users,

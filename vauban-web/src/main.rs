@@ -1436,6 +1436,35 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             "/sessions/my-requests/{uuid}/cancel",
             post(handlers::web::cancel_access_request),
         )
+        // IACS / EWS user-zone routes (palier 6).
+        //
+        // The kill-switch is enforced via `perms.iacs_request`
+        // (collapsed to `false` by `permission_context_middleware`
+        // when `[industrial].enabled = false`); each handler
+        // re-asserts the flag and returns 404 on a deny path so the
+        // module's existence is not leaked via 403s. Admin-zone
+        // routes (gated by `iacs:manage`) land in palier 7.
+        .route(
+            "/iacs/onboard",
+            get(handlers::web::iacs::iacs_onboard_form)
+                .post(handlers::web::iacs::iacs_submit_onboarding),
+        )
+        .route(
+            "/iacs/onboard/{uuid}/edit-form",
+            get(handlers::web::iacs::iacs_edit_form),
+        )
+        .route(
+            "/iacs/onboard/{uuid}/edit",
+            post(handlers::web::iacs::iacs_edit_request),
+        )
+        .route(
+            "/iacs/onboard/{uuid}/cancel",
+            post(handlers::web::iacs::iacs_cancel_request),
+        )
+        .route(
+            "/iacs/{uuid}/offboard-self",
+            post(handlers::web::iacs::iacs_offboard_self),
+        )
         .route("/sessions/active", get(handlers::web::active_sessions))
         // SSH connection endpoints (user zone: opening sessions)
         .route("/assets/{uuid}/connect", post(handlers::web::connect_ssh))
@@ -1501,6 +1530,59 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
         ));
 
     let web_routes = web_routes.nest("/assets/manage", manage_assets_routes);
+
+    // --------------------------------------------------------------------
+    // Palier 7 -- IACS ADMIN MANAGEMENT (`/iacs/admin/*`)
+    // --------------------------------------------------------------------
+    //
+    // Mirrors the `/assets/manage` defence-in-depth pattern: the
+    // entire sub-tree is fenced by `route_layer(require_iacs_manage)`
+    // so a non-admin gets 403 BEFORE the handler runs (anti-
+    // enumeration: `/iacs/admin/{random-uuid}` cannot be used as an
+    // oracle for EWS / request existence). Each handler ALSO
+    // re-asserts `perms.iacs_manage` at the top of its body so a
+    // routing misconfiguration that hoists a handler outside of the
+    // nest still fails closed.
+    //
+    // Kill-switch interaction: when `[industrial].enabled = false`
+    // the `permission_context_middleware` collapses `iacs_manage` to
+    // `false`; the route_layer then refuses every admin-zone request
+    // exactly as if the caller lacked the Casbin permission.
+    let iacs_admin_routes = Router::new()
+        .route("/", get(handlers::web::iacs::iacs_admin_list))
+        .route(
+            "/request/{uuid}",
+            get(handlers::web::iacs::iacs_admin_request_detail),
+        )
+        .route(
+            "/request/{uuid}/approve",
+            post(handlers::web::iacs::iacs_admin_approve),
+        )
+        .route(
+            "/request/{uuid}/reject",
+            post(handlers::web::iacs::iacs_admin_reject),
+        )
+        .route(
+            "/ews/{uuid}",
+            get(handlers::web::iacs::iacs_admin_ews_detail),
+        )
+        .route(
+            "/ews/{uuid}/disable",
+            post(handlers::web::iacs::iacs_admin_disable),
+        )
+        .route(
+            "/ews/{uuid}/enable",
+            post(handlers::web::iacs::iacs_admin_enable),
+        )
+        .route(
+            "/ews/{uuid}/offboard",
+            post(handlers::web::iacs::iacs_admin_offboard),
+        )
+        .route_layer(axum::middleware::from_fn(
+            middleware::require_iacs_manage::require_iacs_manage,
+        ));
+
+    let web_routes = web_routes.nest("/iacs/admin", iacs_admin_routes);
 
     // ==========================================================================
     // API ROUTES - Conditionally active based on config.api.enabled

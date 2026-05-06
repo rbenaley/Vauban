@@ -69,6 +69,7 @@ mod assets;
 mod audit;
 mod dashboard;
 mod groups;
+pub mod iacs;
 mod manage_assets;
 mod rdp;
 mod sessions;
@@ -81,6 +82,7 @@ pub use assets::*;
 pub use audit::*;
 pub use dashboard::*;
 pub use groups::*;
+pub use iacs::*;
 pub use manage_assets::*;
 pub use rdp::*;
 pub use sessions::*;
@@ -127,7 +129,19 @@ pub(crate) async fn apply_sidebar_rbac(
 ) -> crate::templates::base::BaseTemplate {
     let perms = crate::auth::PermissionContext::load(state, auth_user).await;
     let admin = perms.admin_view;
+    let iacs_manage = perms.iacs_manage;
     let mut base = base.with_perms(perms);
+
+    if iacs_manage && let Ok(mut conn) = state.db_pool.get().await {
+        use crate::schema::ews_onboarding_requests;
+        let count: i64 = ews_onboarding_requests::table
+            .filter(ews_onboarding_requests::status.eq("pending"))
+            .count()
+            .get_result(&mut conn)
+            .await
+            .unwrap_or(0);
+        base = base.with_pending_iacs_count(count);
+    }
 
     if admin && let Ok(mut conn) = state.db_pool.get().await {
         // Exclude the viewer's own pending requests from the badge:

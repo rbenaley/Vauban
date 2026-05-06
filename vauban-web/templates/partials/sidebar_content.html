@@ -86,6 +86,32 @@
                     </li>
                     {% endif %}
 
+                    {# IACS / EWS admin entry (palier 8 of the IACS roll-out).
+                       Sits between Assets and Users intentionally: IACS is
+                       a sibling of Assets in the operational hierarchy
+                       (industrial control plane vs. IT control plane), and
+                       both predate identity management. The kill-switch
+                       is enforced upstream: when `[industrial].enabled =
+                       false`, `permission_context_middleware` collapses
+                       `iacs_manage` to false so this `{% if %}` block is
+                       skipped and the entry disappears entirely. The icon
+                       is a custom sawtooth-roof factory glyph: closed
+                       right wall, centred bay door, north-light roof,
+                       and a small chimney on the left. Visually distinct
+                       from Assets / Users icons in the same sidebar. #}
+                    {% if sc.perms.iacs_manage %}
+                    <li>
+                        <a href="/iacs/admin"
+                           class="group flex gap-x-3 rounded-md p-2 text-sm font-semibold leading-6 {% if sc.is_iacs %}bg-gray-800 text-white{% else %}text-gray-400 hover:bg-gray-800 hover:text-white{% endif %}">
+                            <svg class="h-6 w-6 shrink-0" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 21h19.5M3 21V12l3-4v4l3-4v4l3-4v4l3-4v4l3-4v4l3-4v4V21L13.5 21V16H10.5V21H3M4.75 10.25V4.75H7.25V10.25H4.75Z"/>
+                            </svg>
+                            IACS
+                            <span id="sidebar-iacs-badge" {% if sc.pending_iacs_count > 0 %}class="ml-auto inline-flex items-center rounded-full bg-vauban-600 px-2 py-0.5 text-xs font-medium text-white"{% endif %}>{% if sc.pending_iacs_count > 0 %}{{ sc.pending_iacs_count }}{% endif %}</span>
+                        </a>
+                    </li>
+                    {% endif %}
+
                     <!-- Users -->
                     <li>
                         <a href="/accounts/users"

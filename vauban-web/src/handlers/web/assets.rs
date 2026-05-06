@@ -33,7 +33,7 @@ const ASSETS_PER_PAGE: i64 = 30;
 pub async fn asset_list(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
-    _perms: crate::auth::PermissionContext,
+    perms: crate::auth::PermissionContext,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
@@ -347,6 +347,7 @@ pub async fn asset_list(
             ("maintenance".to_string(), "Maintenance".to_string()),
         ],
         require_justification: state.config.security.require_justification,
+        iacs_request_allowed: perms.iacs_request,
     };
 
     let html = template

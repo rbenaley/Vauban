@@ -92,7 +92,9 @@ impl BaseTemplate {
             is_approvals: false,
             is_access_rules: false,
             is_my_requests: false,
+            is_iacs: false,
             pending_approval_count: 0,
+            pending_iacs_count: 0,
             perms: PermissionContext::default(),
         });
 
@@ -150,7 +152,16 @@ impl BaseTemplate {
                 is_approvals: path.contains("/approvals"),
                 is_access_rules: path.contains("/access"),
                 is_my_requests: path.contains("/my-requests"),
+                // The IACS sidebar entry covers BOTH the user-zone
+                // onboarding form (`/iacs/onboard`) and the admin
+                // landing page (`/iacs/admin`). The form is only ever
+                // reached via "Onboard EWS" from `/assets`, so
+                // highlighting the IACS entry on either path keeps
+                // the navigation context intuitive for users while
+                // also flagging the admin section to operators.
+                is_iacs: path.starts_with("/iacs"),
                 pending_approval_count: 0,
+                pending_iacs_count: 0,
                 perms: preserved_perms,
             });
         }
@@ -172,6 +183,15 @@ impl BaseTemplate {
     pub fn with_pending_approval_count(mut self, count: i64) -> Self {
         if let Some(ref mut sidebar) = self.sidebar_content {
             sidebar.pending_approval_count = count;
+        }
+        self
+    }
+
+    /// Set the count of pending IACS / EWS onboarding requests
+    /// (rendered as a badge next to the IACS sidebar entry).
+    pub fn with_pending_iacs_count(mut self, count: i64) -> Self {
+        if let Some(ref mut sidebar) = self.sidebar_content {
+            sidebar.pending_iacs_count = count;
         }
         self
     }

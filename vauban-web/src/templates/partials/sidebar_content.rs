@@ -25,8 +25,15 @@ pub struct SidebarContentTemplate {
     pub is_approvals: bool,
     pub is_access_rules: bool,
     pub is_my_requests: bool,
+    /// Active state for the IACS admin landing page (`/iacs/admin`).
+    pub is_iacs: bool,
     /// Number of pending approval requests (shown as badge for admins).
     pub pending_approval_count: i64,
+    /// Number of pending IACS / EWS onboarding requests (shown as a
+    /// badge next to the IACS sidebar entry for `iacs_manage`-capable
+    /// admins). Loaded by [`crate::handlers::web::apply_sidebar_rbac`]
+    /// in the same pass as `pending_approval_count`.
+    pub pending_iacs_count: i64,
     /// Casbin-backed permission context. Sole source of truth for UI gates.
     pub perms: PermissionContext,
 }
@@ -78,7 +85,9 @@ mod tests {
             is_approvals: false,
             is_access_rules: false,
             is_my_requests: false,
+            is_iacs: false,
             pending_approval_count: 0,
+            pending_iacs_count: 0,
             perms,
         }
     }
@@ -105,6 +114,9 @@ mod tests {
             groups_manage_members: true,
             sessions_supervise: true,
             sessions_bypass_access_rules: true,
+            iacs_request: true,
+            iacs_read: true,
+            iacs_manage: true,
         }
     }
 

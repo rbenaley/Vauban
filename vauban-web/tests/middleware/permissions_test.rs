@@ -119,6 +119,7 @@ async fn check_rbac_staff_grants_admin_set_only() {
         ("auth_sessions", "read"),
         ("auth_sessions", "write"),
         ("admin", "view"),
+        ("iacs", "manage"),
     ];
 
     for (resource, action) in TRACKED_PERMS {
@@ -152,6 +153,8 @@ async fn check_rbac_user_grants_only_self_serve_set() {
         ("profile", "read"),
         ("profile", "write"),
         ("sessions", "read"),
+        ("iacs", "request"),
+        ("iacs", "read"),
     ];
 
     for (resource, action) in TRACKED_PERMS {
@@ -600,6 +603,9 @@ const TRACKED_PERMS: &[(&str, &str)] = &[
     ("admin", "view"),
     ("profile", "read"),
     ("profile", "write"),
+    ("iacs", "request"),
+    ("iacs", "read"),
+    ("iacs", "manage"),
 ];
 
 async fn manual_load(state: &vauban_web::AppState, user: &AuthUser) -> PermissionContext {
@@ -625,6 +631,9 @@ async fn manual_load(state: &vauban_web::AppState, user: &AuthUser) -> Permissio
         admin_view: check_rbac(state, user, "admin", "view").await,
         profile_read: check_rbac(state, user, "profile", "read").await,
         profile_write: check_rbac(state, user, "profile", "write").await,
+        iacs_request: check_rbac(state, user, "iacs", "request").await,
+        iacs_read: check_rbac(state, user, "iacs", "read").await,
+        iacs_manage: check_rbac(state, user, "iacs", "manage").await,
     }
 }
 

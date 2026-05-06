@@ -50,6 +50,15 @@ pub struct AssetListTemplate {
     pub statuses: Vec<(String, String)>,
     /// Whether to require justification before connecting (SEC-03).
     pub require_justification: bool,
+    /// IACS / EWS onboarding affordance gating.
+    ///
+    /// `iacs_request_allowed` is the kill-switch + Casbin gate
+    /// (`iacs_request`) pre-resolved by the handler; when `false`, the
+    /// "Onboard EWS" button next to "Groups" is suppressed entirely.
+    /// The flag is set verbatim from `perms.iacs_request`, which the
+    /// `permission_context_middleware` already collapses to `false`
+    /// when `[industrial].enabled = false`.
+    pub iacs_request_allowed: bool,
 }
 
 #[cfg(test)]
@@ -159,6 +168,7 @@ mod tests {
             asset_types: vec![],
             statuses: vec![],
             require_justification: true,
+            iacs_request_allowed: false,
         };
 
         let result = template.render();
@@ -219,6 +229,7 @@ mod tests {
             asset_types: vec![],
             statuses: vec![],
             require_justification: true,
+            iacs_request_allowed: false,
         }
     }
 
@@ -449,6 +460,7 @@ mod tests {
             asset_types: vec![],
             statuses: vec![],
             require_justification: true,
+            iacs_request_allowed: false,
         };
         let html = template.render().expect("should render");
         assert!(html.contains("Request"), "should show Request label");
@@ -499,6 +511,7 @@ mod tests {
             asset_types: vec![],
             statuses: vec![],
             require_justification: false,
+            iacs_request_allowed: false,
         };
         let html = template.render().expect("should render");
         assert!(html.contains("Connect"), "should show Connect label");
@@ -538,6 +551,7 @@ mod tests {
             asset_types: vec![],
             statuses: vec![],
             require_justification: true,
+            iacs_request_allowed: false,
         };
         let html = template.render().expect("should render");
         assert!(html.contains("Connect"), "should show Connect label");
@@ -595,6 +609,7 @@ mod tests {
             asset_types: vec![],
             statuses: vec![],
             require_justification: false,
+            iacs_request_allowed: false,
         };
         let html = template.render().expect("should render");
         assert!(html.contains("Request"), "should contain Request label");

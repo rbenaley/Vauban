@@ -85,6 +85,7 @@ fn user_zone_list_renders_connect_only_no_admin_buttons() {
         asset_types: vec![],
         statuses: vec![],
         require_justification: false,
+        iacs_request_allowed: false,
     };
 
     let html = template.render().expect("AssetListTemplate must render");
@@ -138,6 +139,7 @@ fn user_zone_list_inlines_request_modal_no_detail_page_link() {
         asset_types: vec![],
         statuses: vec![],
         require_justification: false,
+        iacs_request_allowed: false,
     };
 
     let html = template.render().expect("AssetListTemplate must render");

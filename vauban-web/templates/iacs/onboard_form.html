@@ -1,0 +1,153 @@
+{% extends "base.html" %}
+
+{% block title %}Onboard EWS - {{ vauban.brand_name }}{% endblock %}
+
+{% block content %}
+<div class="space-y-6 max-w-3xl mx-auto">
+    <div class="md:flex md:items-center md:justify-between">
+        <div class="min-w-0 flex-1">
+            <h2 class="text-xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-2xl lg:text-3xl sm:tracking-tight">
+                {{ self.heading() }}
+            </h2>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                Register an Engineering Workstation (EWS) by submitting its
+                SSH public key. An administrator will review the request
+                before the workstation can reach Vauban.
+            </p>
+            {% if max_ews_per_user > 0 %}
+            <p class="mt-1 text-xs text-gray-400 dark:text-gray-500">
+                You may register up to <span class="font-semibold">{{ self.cap_label() }}</span>
+                EWS on this Vauban deployment.
+            </p>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Step 1: generate the SSH key pair -->
+    <div class="bg-white dark:bg-gray-800 shadow rounded-lg p-4 sm:p-6"
+         x-data="{ tab: 'unix' }">
+        <h3 class="text-base font-semibold text-gray-900 dark:text-white">
+            Step 1 &mdash; Generate the SSH key pair on your EWS
+        </h3>
+        <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+            Run the matching command in a terminal on your workstation.
+            The generated key pair stays on your EWS; only the
+            <code class="text-xs">id_VAUBAN.pub</code> file is uploaded
+            below.
+        </p>
+
+        <div class="mt-4 border-b border-gray-200 dark:border-gray-700">
+            <nav class="-mb-px flex flex-wrap gap-x-6 gap-y-1" aria-label="OS tabs">
+                <button type="button"
+                        @click="tab = 'unix'"
+                        :class="tab === 'unix' ? 'border-vauban-500 text-vauban-600 dark:text-vauban-400' : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:border-gray-300'"
+                        class="whitespace-nowrap border-b-2 py-2 px-1 text-sm font-medium">
+                    Mac / Linux
+                </button>
+                <button type="button"
+                        @click="tab = 'windows'"
+                        :class="tab === 'windows' ? 'border-vauban-500 text-vauban-600 dark:text-vauban-400' : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:border-gray-300'"
+                        class="whitespace-nowrap border-b-2 py-2 px-1 text-sm font-medium">
+                    Windows
+                </button>
+            </nav>
+        </div>
+
+        <div class="mt-4" x-show="tab === 'unix'">
+            <pre class="rounded-md bg-gray-900 text-gray-100 text-xs sm:text-sm p-3 overflow-x-auto"><code>ssh-keygen -t ed25519 -C "VAUBAN" -N "" -f ~/.ssh/id_VAUBAN</code></pre>
+            <p class="mt-2 text-xs text-gray-500 dark:text-gray-400 break-words">
+                Your public key file lives at
+                <code>$HOME/.ssh/id_VAUBAN.pub</code>
+                (e.g. <code>/home/john/.ssh/id_VAUBAN.pub</code>).
+            </p>
+        </div>
+
+        <div class="mt-4" x-show="tab === 'windows'">
+            <pre class="rounded-md bg-gray-900 text-gray-100 text-xs sm:text-sm p-3 overflow-x-auto"><code>ssh-keygen -t ed25519 -C "VAUBAN" -N '""' -f "$env:USERPROFILE\.ssh\id_VAUBAN"</code></pre>
+            <p class="mt-2 text-xs text-gray-500 dark:text-gray-400 break-words">
+                Your public key file lives at
+                <code>%USERPROFILE%\.ssh\id_VAUBAN.pub</code>
+                (e.g. <code>C:\Users\john\.ssh\id_VAUBAN.pub</code>).
+            </p>
+        </div>
+    </div>
+
+    <!-- Step 2: registration form -->
+    <form method="post" action="{{ self.form_action() }}"
+          x-data="csrf"
+          class="bg-white dark:bg-gray-800 shadow rounded-lg p-4 sm:p-6 space-y-4">
+        <input type="hidden" name="csrf_token" x-model="token" />
+
+        <h3 class="text-base font-semibold text-gray-900 dark:text-white">
+            Step 2 &mdash; Submit your registration
+        </h3>
+
+        <div>
+            <label for="ews-name" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                EWS name
+            </label>
+            <input type="text"
+                   id="ews-name"
+                   name="name"
+                   value="{{ prefill.name }}"
+                   maxlength="128"
+                   required
+                   placeholder="factory-floor-ews-01"
+                   autocomplete="off"
+                   class="mt-1 block w-full rounded-md border-0 py-2 px-3 text-gray-900 dark:text-white ring-1 ring-inset ring-gray-300 dark:ring-gray-600 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-vauban-600 dark:bg-gray-700 sm:text-sm">
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                A human-readable label that helps administrators
+                recognise this workstation.
+            </p>
+        </div>
+
+        <div>
+            <label for="ews-pub" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                Public key (<code>id_VAUBAN.pub</code>)
+            </label>
+            <textarea id="ews-pub"
+                      name="public_key"
+                      rows="4"
+                      required
+                      placeholder="ssh-ed25519 AAAAC3Nz... VAUBAN"
+                      autocomplete="off"
+                      spellcheck="false"
+                      class="mt-1 block w-full rounded-md border-0 py-2 px-3 font-mono text-xs text-gray-900 dark:text-white ring-1 ring-inset ring-gray-300 dark:ring-gray-600 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-vauban-600 dark:bg-gray-700">{{ prefill.public_key }}</textarea>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400 break-words">
+                Paste the entire content of the
+                <code>id_VAUBAN.pub</code> file. Only
+                <code>ssh-ed25519</code> and
+                <code>sk-ssh-ed25519@openssh.com</code> keys are
+                accepted.
+            </p>
+        </div>
+
+        <div>
+            <label for="ews-just" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                Justification
+            </label>
+            <textarea id="ews-just"
+                      name="justification"
+                      rows="3"
+                      maxlength="250"
+                      required
+                      placeholder="Why does this workstation need to reach Vauban?"
+                      class="mt-1 block w-full rounded-md border-0 py-2 px-3 text-gray-900 dark:text-white ring-1 ring-inset ring-gray-300 dark:ring-gray-600 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-vauban-600 dark:bg-gray-700 sm:text-sm">{{ prefill.justification }}</textarea>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                Up to 250 characters of plain text. No markdown.
+            </p>
+        </div>
+
+        <div class="flex flex-wrap gap-2 pt-2 sm:flex-nowrap sm:justify-end sm:space-x-3">
+            <a href="/sessions/my-requests"
+               class="inline-flex items-center rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm font-semibold text-gray-700 dark:text-gray-300 shadow-sm hover:bg-gray-50 dark:hover:bg-gray-600">
+                Cancel
+            </a>
+            <button type="submit"
+                    class="inline-flex items-center rounded-md bg-vauban-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-600">
+                {% if self.is_edit() %}Save changes{% else %}Submit for review{% endif %}
+            </button>
+        </div>
+    </form>
+</div>
+{% endblock %}

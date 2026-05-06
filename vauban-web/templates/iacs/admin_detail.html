@@ -1,0 +1,310 @@
+{% extends "base.html" %}
+
+{% block title %}IACS detail - {{ vauban.brand_name }}{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <!-- Breadcrumb + header -->
+    <div>
+        <nav class="flex overflow-x-auto" aria-label="Breadcrumb">
+            <ol class="flex items-center space-x-2 whitespace-nowrap">
+                <li>
+                    <a href="/iacs/admin" class="text-sm font-medium text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300">IACS</a>
+                </li>
+                <li>
+                    <div class="flex items-center">
+                        <svg class="h-5 w-5 flex-shrink-0 text-gray-300 dark:text-gray-600" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd"/>
+                        </svg>
+                        <span class="ml-2 text-sm font-medium text-gray-500 dark:text-gray-400">
+                            {% if kind == "request" %}Onboarding request{% else %}Engineering Workstation{% endif %}
+                        </span>
+                    </div>
+                </li>
+            </ol>
+        </nav>
+        <h2 class="mt-2 text-xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-2xl lg:text-3xl sm:tracking-tight">
+            {% if kind == "request" && let Some(r) = request.as_ref() %}
+            Request from {{ r.requester_username }}
+            {% else if kind == "ews" && let Some(e) = ews.as_ref() %}
+            EWS {{ e.name }}
+            {% else %}
+            IACS detail
+            {% endif %}
+        </h2>
+    </div>
+
+    {# ============================================================
+       REQUEST DETAIL
+       ============================================================ #}
+    {% if kind == "request" && let Some(r) = request.as_ref() %}
+    <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+        <div class="px-4 py-4 sm:px-6 border-b border-gray-200 dark:border-gray-700">
+            <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+                <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-200">Onboarding request</h3>
+                <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {{ r.status_class() }}">
+                    {{ r.status|capitalize }}
+                </span>
+            </div>
+        </div>
+        <dl class="divide-y divide-gray-200 dark:divide-gray-700">
+            <div class="px-4 py-3 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Requester</dt>
+                <dd class="mt-1 text-sm text-gray-900 dark:text-white sm:col-span-2 sm:mt-0 break-words">
+                    {{ r.requester_username }}
+                    {% if let Some(email) = r.requester_email.as_ref() %}
+                    <span class="text-gray-500 dark:text-gray-400">&lt;{{ email }}&gt;</span>
+                    {% endif %}
+                </dd>
+            </div>
+            <div class="px-4 py-3 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">EWS name</dt>
+                <dd class="mt-1 text-sm text-gray-900 dark:text-white sm:col-span-2 sm:mt-0 break-words">
+                    {{ r.ews_name }}
+                </dd>
+            </div>
+            <div class="px-4 py-3 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Algorithm</dt>
+                <dd class="mt-1 text-sm text-gray-900 dark:text-white sm:col-span-2 sm:mt-0">
+                    <code class="text-xs">{{ r.key_algo }}</code>
+                </dd>
+            </div>
+            <div class="px-4 py-3 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">SHA-256 fingerprint</dt>
+                <dd class="mt-1 text-sm text-gray-900 dark:text-white sm:col-span-2 sm:mt-0 font-mono break-all">
+                    {{ r.fingerprint_full }}
+                </dd>
+            </div>
+            <div class="px-4 py-3 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6"
+                 x-data="{ showKey: false }">
+                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Public key</dt>
+                <dd class="mt-1 text-sm text-gray-900 dark:text-white sm:col-span-2 sm:mt-0">
+                    <button type="button" @click="showKey = true"
+                            class="inline-flex items-center rounded-md bg-white dark:bg-gray-700 px-3 py-1.5 text-sm font-semibold text-gray-900 dark:text-white shadow-sm ring-1 ring-inset ring-gray-300 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600">
+                        Show full public key
+                    </button>
+                    <div x-show="showKey" x-cloak
+                         class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+                         @keydown.escape.window="showKey = false">
+                        <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full max-w-2xl mx-4 p-6"
+                             @click.outside="showKey = false">
+                            <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">Full public key</h3>
+                            <pre class="bg-gray-100 dark:bg-gray-900 text-xs text-gray-800 dark:text-gray-200 rounded p-3 overflow-x-auto break-all whitespace-pre-wrap">{{ r.full_public_key }}</pre>
+                            <div class="mt-4 flex justify-end">
+                                <button type="button" @click="showKey = false"
+                                        class="rounded-md bg-white dark:bg-gray-700 px-3 py-2 text-sm font-semibold text-gray-900 dark:text-white shadow-sm ring-1 ring-inset ring-gray-300 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600">
+                                    Close
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </dd>
+            </div>
+            <div class="px-4 py-3 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Justification</dt>
+                <dd class="mt-1 text-sm text-gray-900 dark:text-white sm:col-span-2 sm:mt-0 break-words whitespace-pre-line">
+                    {{ r.justification }}
+                </dd>
+            </div>
+            <div class="px-4 py-3 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Submitted</dt>
+                <dd class="mt-1 text-sm text-gray-900 dark:text-white sm:col-span-2 sm:mt-0">
+                    {{ r.created_at }}
+                </dd>
+            </div>
+            {% if let Some(decided_by) = r.decided_by_username.as_ref() %}
+            <div class="px-4 py-3 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6 bg-gray-50 dark:bg-gray-900/40">
+                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">
+                    {% if r.is_approved() %}Approved by{% else if r.is_rejected() %}Rejected by{% else %}Decided by{% endif %}
+                </dt>
+                <dd class="mt-1 text-sm text-gray-900 dark:text-white sm:col-span-2 sm:mt-0">
+                    {{ decided_by }}
+                    {% if let Some(at) = r.decided_at.as_ref() %}
+                    &mdash; <span class="text-gray-500 dark:text-gray-400">{{ at }}</span>
+                    {% endif %}
+                </dd>
+            </div>
+            {% if let Some(reason) = r.decision_reason.as_ref() %}
+            <div class="px-4 py-3 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Reason</dt>
+                <dd class="mt-1 text-sm text-gray-900 dark:text-white sm:col-span-2 sm:mt-0 break-words whitespace-pre-line">
+                    {{ reason }}
+                </dd>
+            </div>
+            {% endif %}
+            {% endif %}
+        </dl>
+
+        {% if r.is_pending() %}
+        <div class="px-4 py-4 sm:px-6 border-t border-gray-200 dark:border-gray-700 flex flex-wrap gap-3">
+            <form method="post" action="/iacs/admin/request/{{ r.request_uuid }}/approve">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                <button type="submit"
+                        class="inline-flex items-center rounded-md bg-green-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-green-500">
+                    Approve
+                </button>
+            </form>
+            <div x-data="{ showRejectModal: false, rejectReason: '' }">
+                <button type="button" @click="showRejectModal = true"
+                        class="inline-flex items-center rounded-md bg-red-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-red-500">
+                    Reject
+                </button>
+                <div x-show="showRejectModal" x-cloak
+                     class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+                     @keydown.escape.window="showRejectModal = false">
+                    <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full max-w-md mx-4 p-6"
+                         @click.outside="showRejectModal = false">
+                        <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">Reject EWS request</h3>
+                        <form method="post" action="/iacs/admin/request/{{ r.request_uuid }}/reject">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                            <textarea name="reason" x-model="rejectReason" required minlength="5"
+                                      rows="3" placeholder="Reason for rejection..."
+                                      class="w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"></textarea>
+                            <div class="mt-4 flex justify-end gap-2">
+                                <button type="button" @click="showRejectModal = false"
+                                        class="rounded-md bg-white dark:bg-gray-700 px-3 py-2 text-sm font-semibold text-gray-900 dark:text-white shadow-sm ring-1 ring-inset ring-gray-300 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600">
+                                    Cancel
+                                </button>
+                                <button type="submit" :disabled="rejectReason.trim().length < 5"
+                                        class="rounded-md bg-red-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-red-500 disabled:opacity-50 disabled:cursor-not-allowed">
+                                    Confirm rejection
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    {# ============================================================
+       EWS DETAIL
+       ============================================================ #}
+    {% if kind == "ews" && let Some(e) = ews.as_ref() %}
+    <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+        <div class="px-4 py-4 sm:px-6 border-b border-gray-200 dark:border-gray-700">
+            <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+                <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-200">Engineering Workstation</h3>
+                <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {{ e.state_class() }}">
+                    {{ e.state|capitalize }}
+                </span>
+            </div>
+        </div>
+        <dl class="divide-y divide-gray-200 dark:divide-gray-700">
+            <div class="px-4 py-3 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Owner</dt>
+                <dd class="mt-1 text-sm text-gray-900 dark:text-white sm:col-span-2 sm:mt-0 break-words">
+                    {{ e.owner_username }}
+                    {% if let Some(email) = e.owner_email.as_ref() %}
+                    <span class="text-gray-500 dark:text-gray-400">&lt;{{ email }}&gt;</span>
+                    {% endif %}
+                </dd>
+            </div>
+            <div class="px-4 py-3 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Name</dt>
+                <dd class="mt-1 text-sm text-gray-900 dark:text-white sm:col-span-2 sm:mt-0 break-words">
+                    {{ e.name }}
+                </dd>
+            </div>
+            <div class="px-4 py-3 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Algorithm</dt>
+                <dd class="mt-1 text-sm text-gray-900 dark:text-white sm:col-span-2 sm:mt-0">
+                    <code class="text-xs">{{ e.key_algo }}</code>
+                </dd>
+            </div>
+            <div class="px-4 py-3 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">SHA-256 fingerprint</dt>
+                <dd class="mt-1 text-sm text-gray-900 dark:text-white sm:col-span-2 sm:mt-0 font-mono break-all">
+                    {{ e.fingerprint_full }}
+                </dd>
+            </div>
+            <div class="px-4 py-3 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6"
+                 x-data="{ showKey: false }">
+                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Public key</dt>
+                <dd class="mt-1 text-sm text-gray-900 dark:text-white sm:col-span-2 sm:mt-0">
+                    <button type="button" @click="showKey = true"
+                            class="inline-flex items-center rounded-md bg-white dark:bg-gray-700 px-3 py-1.5 text-sm font-semibold text-gray-900 dark:text-white shadow-sm ring-1 ring-inset ring-gray-300 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600">
+                        Show full public key
+                    </button>
+                    <div x-show="showKey" x-cloak
+                         class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+                         @keydown.escape.window="showKey = false">
+                        <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full max-w-2xl mx-4 p-6"
+                             @click.outside="showKey = false">
+                            <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">Full public key</h3>
+                            <pre class="bg-gray-100 dark:bg-gray-900 text-xs text-gray-800 dark:text-gray-200 rounded p-3 overflow-x-auto break-all whitespace-pre-wrap">{{ e.full_public_key }}</pre>
+                            <div class="mt-4 flex justify-end">
+                                <button type="button" @click="showKey = false"
+                                        class="rounded-md bg-white dark:bg-gray-700 px-3 py-2 text-sm font-semibold text-gray-900 dark:text-white shadow-sm ring-1 ring-inset ring-gray-300 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600">
+                                    Close
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </dd>
+            </div>
+            <div class="px-4 py-3 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Onboarded</dt>
+                <dd class="mt-1 text-sm text-gray-900 dark:text-white sm:col-span-2 sm:mt-0">
+                    {{ e.created_at }}
+                </dd>
+            </div>
+            {% if let Some(at) = e.disabled_at.as_ref() %}
+            <div class="px-4 py-3 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6 bg-gray-50 dark:bg-gray-900/40">
+                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Disabled</dt>
+                <dd class="mt-1 text-sm text-gray-900 dark:text-white sm:col-span-2 sm:mt-0">
+                    {{ at }}
+                    {% if let Some(by) = e.disabled_by_username.as_ref() %}
+                    by {{ by }}
+                    {% endif %}
+                </dd>
+            </div>
+            {% endif %}
+            {% if let Some(at) = e.offboarded_at.as_ref() %}
+            <div class="px-4 py-3 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6 bg-orange-50 dark:bg-orange-900/20">
+                <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Offboarded</dt>
+                <dd class="mt-1 text-sm text-gray-900 dark:text-white sm:col-span-2 sm:mt-0">
+                    {{ at }}
+                    {% if let Some(by) = e.offboarded_by_username.as_ref() %}
+                    by {{ by }}
+                    {% endif %}
+                </dd>
+            </div>
+            {% endif %}
+        </dl>
+
+        {% if !e.is_offboarded() %}
+        <div class="px-4 py-4 sm:px-6 border-t border-gray-200 dark:border-gray-700 flex flex-wrap gap-3">
+            {% if e.is_active() %}
+            <form method="post" action="/iacs/admin/ews/{{ e.ews_uuid }}/disable">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                <button type="submit"
+                        class="inline-flex items-center rounded-md bg-yellow-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-yellow-500">
+                    Disable
+                </button>
+            </form>
+            {% else if e.is_disabled() %}
+            <form method="post" action="/iacs/admin/ews/{{ e.ews_uuid }}/enable">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                <button type="submit"
+                        class="inline-flex items-center rounded-md bg-green-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-green-500">
+                    Enable
+                </button>
+            </form>
+            {% endif %}
+            <form method="post" action="/iacs/admin/ews/{{ e.ews_uuid }}/offboard"
+                  onsubmit="return confirm('Offboarding is irreversible. Continue?');">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                <button type="submit"
+                        class="inline-flex items-center rounded-md bg-red-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-red-500">
+                    Offboard
+                </button>
+            </form>
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
