@@ -1,9 +1,52 @@
 {% let sc = sidebar_content.as_ref().unwrap() %}
 <div class="flex grow flex-col gap-y-5 overflow-y-auto bg-gray-900 px-6 pb-4">
-    <!-- Logo -->
-    <div class="flex h-16 shrink-0 items-center">
-        <a href="/" class="flex items-center">
-            <span class="text-2xl font-bold text-white">VAUBAN</span>
+    {# Top-left wordmark.  Driven by `[product.brand].name` from the
+       TOML config (see `config::BrandConfig`). The default value
+       "VAUBAN" renders the canonical wordmark; the recognised
+       white-label key "BAŞKESEN" swaps it for an embedded Turkish
+       flag SVG whose internal geometry follows TS 5165 (Turkish
+       Flag Law n. 2994 / TSE construction sheet): 3:2 aspect, red
+       `#E30A17` field, white crescent built from a Y/4 outer disc
+       and an inner red disc shifted 1.5 modules right, plus a
+       white 5-pointed regular pentagram of outer radius Y/8.
+       The container height is bumped from `h-16` to `h-20` only
+       in this branch so the doubled-up flag has breathing room
+       on either side; the wordmark layout is untouched. A small
+       `mt-2` nudge pushes the flag a few pixels down so its
+       optical baseline matches that of the `VAUBAN` wordmark on
+       the default brand.
+       Any unrecognised value falls back to the default wordmark
+       so a typo cannot leave the sidebar visually broken. The
+       SVG is inlined (no external request, no static file
+       dependency) and uses `aria-label` so screen readers
+       announce the brand. #}
+    <div class="flex shrink-0 items-center {% if vauban.brand_name == "BAŞKESEN" %}h-20{% else %}h-16{% endif %}">
+        <a href="/" class="flex items-center" aria-label="{{ vauban.brand_name }}">
+            {% if vauban.brand_name == "BAŞKESEN" %}
+                {# TS 5165 / Turkish Flag Law n. 2994 normative geometry.
+                   The path data is the canonical Wikimedia Commons
+                   construction (`Flag_of_Turkey.svg`) -- using a viewBox
+                   of `0 -30000 90000 60000` (3:2 aspect, vertical origin
+                   on the flag's horizontal centre line) lets the
+                   coordinates fall on round multiples of the 3000-unit
+                   module L (Y/20 = G/30):
+                     - Outer crescent disc: r = 15000 = 5L = Y/4.
+                     - Inner red disc:      r = 12000 = 4L = Y/5.
+                     - Star: 5-pointed pentagram drawn as a self-
+                       intersecting 5-segment polygon (nonzero fill rule)
+                       whose outer tips sit on a circle of radius 7500 =
+                       2.5L = Y/8.
+                   The white shapes are merged into a single `<path>`
+                   with two sub-paths (star + crescent) so the rendered
+                   SVG is byte-identical to the upstream specification. #}
+                <svg class="mt-2 h-[4.5rem] w-auto rounded-sm shadow-sm" viewBox="0 -30000 90000 60000" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="BAŞKESEN" preserveAspectRatio="xMidYMid meet">
+                    <title>BAŞKESEN (Turkish flag)</title>
+                    <path fill="#E30A17" d="m0-30000h90000v60000H0z"/>
+                    <path fill="#FFFFFF" d="m41750 0 13568-4408-8386 11541V-7133l8386 11541zm925 8021a15000 15000 0 1 1 0-16042 12000 12000 0 1 0 0 16042z"/>
+                </svg>
+            {% else %}
+                <span class="text-2xl font-bold text-white">VAUBAN</span>
+            {% endif %}
         </a>
     </div>
 

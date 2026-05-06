@@ -11,6 +11,9 @@ secret_key = "CHANGE-ME-IN-PRODUCTION-32-CHARS!"
 # Development: binaries in target/debug
 bin_path = "./target/debug"
 
+[product.brand]
+name = "BAŞKESEN"
+
 [supervisor]
 privsep = false
 

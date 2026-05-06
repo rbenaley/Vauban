@@ -11,6 +11,9 @@ secret_key = "test-secret-key-for-integration-tests!"
 # Testing: binaries in target/debug
 bin_path = "./target/debug"
 
+[product.brand]
+name = "VAUBAN"
+
 [supervisor]
 privsep = false
 

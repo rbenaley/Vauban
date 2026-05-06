@@ -10,6 +10,42 @@ pub struct FlashMessage {
     pub message: String,
 }
 
+/// Process-wide cache for the configured brand name.
+///
+/// Populated exactly once at startup by [`set_brand_name`] (called from
+/// `main::main` after the TOML config has been loaded). Every
+/// [`VaubanConfig::default`] -- and therefore every Askama page rendered
+/// by [`BaseTemplate::new`] -- reads through this cell so the wordmark
+/// in the top-left of the sidebar matches the operator's
+/// `[product.brand].name` directive without each handler having to
+/// thread the brand explicitly.
+///
+/// The cell is intentionally write-once: the brand is part of the
+/// boot configuration and changing it at runtime would create a
+/// confusing "half-rebranded" UI for in-flight requests. A second
+/// call to `set_brand_name` is a no-op (the first value wins).
+static BRAND_NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Install the brand name read from `[product.brand].name`. Called
+/// exactly once at startup. Subsequent calls are no-ops -- the first
+/// caller wins, which matches the boot-config-only contract.
+pub fn set_brand_name(name: String) {
+    let _ = BRAND_NAME.set(name);
+}
+
+/// Read the configured brand, falling back to `"VAUBAN"` if the cell
+/// has not been initialised (e.g. unit tests that build a
+/// [`VaubanConfig`] without going through `main`). Public so the
+/// templates module can also expose it through context structs that
+/// don't carry a full [`VaubanConfig`] (no current consumer needs
+/// that yet, but the helper is the canonical read accessor).
+pub fn brand_name() -> String {
+    BRAND_NAME
+        .get()
+        .cloned()
+        .unwrap_or_else(|| "VAUBAN".to_string())
+}
+
 /// Vauban configuration for templates.
 #[derive(Debug, Clone)]
 pub struct VaubanConfig {
@@ -22,7 +58,11 @@ pub struct VaubanConfig {
 impl Default for VaubanConfig {
     fn default() -> Self {
         Self {
-            brand_name: "VAUBAN".to_string(),
+            // Read through the process-wide cell so every page picks
+            // up the operator-configured brand. Tests that construct
+            // a `VaubanConfig` directly (without booting the cell)
+            // see the canonical `"VAUBAN"` fallback.
+            brand_name: brand_name(),
             brand_logo: None,
             theme: "dark".to_string(),
             version: format!(
@@ -537,5 +577,116 @@ mod tests {
         let base = BaseTemplate::new("Dashboard".to_string(), Some(user));
         let result = base.render();
         assert!(result.is_ok(), "BaseTemplate with user should render");
+    }
+
+    // ==================== Brand sidebar wordmark ====================
+    //
+    // The sidebar renders a different top-left visual depending on
+    // `vauban.brand_name`:
+    //   - "VAUBAN" (default) -> the wordmark `<span>VAUBAN</span>`.
+    //   - "BAŞKESEN"          -> an embedded SVG of the Turkish flag.
+    //   - any other value     -> falls back to the wordmark.
+    // The three tests below pin each branch by rendering a real
+    // `BaseTemplate` (with a user, so the sidebar partial is
+    // included) and grepping the produced HTML.
+
+    #[test]
+    fn brand_default_vauban_renders_wordmark_in_sidebar() {
+        let user = create_test_user();
+        let base = BaseTemplate::new("Dashboard".to_string(), Some(user));
+        let html = unwrap_ok!(base.render());
+        assert!(
+            html.contains(">VAUBAN<"),
+            "default brand must render the canonical <span>VAUBAN</span> wordmark in the \
+             sidebar; got HTML missing the literal '>VAUBAN<'"
+        );
+        assert!(
+            !html.contains("BAŞKESEN"),
+            "default brand must NOT leak the BAŞKESEN white-label key into the rendered HTML"
+        );
+        // Anti-leak: the Turkish-flag SVG title must only appear
+        // when the BAŞKESEN brand is active.
+        assert!(
+            !html.contains("Turkish flag"),
+            "default brand must NOT render the Turkish-flag SVG"
+        );
+    }
+
+    #[test]
+    fn brand_baskesen_renders_turkish_flag_svg_in_sidebar() {
+        let user = create_test_user();
+        let mut base = BaseTemplate::new("Dashboard".to_string(), Some(user));
+        // The OnceLock cache may not be initialised in this test
+        // process, so we set the field directly on the struct --
+        // exercising the same code path the production renderer hits
+        // after `set_brand_name` has populated the cache.
+        base.vauban.brand_name = "BAŞKESEN".to_string();
+        let html = unwrap_ok!(base.render());
+
+        // Must render the flag artefacts: the canonical fill colour
+        // (#E30A17 -- the Turkish-flag red), the SVG <title> the
+        // template carries for screen readers, and the BAŞKESEN
+        // string in the aria-label of the <a> element.
+        assert!(
+            html.contains("#E30A17"),
+            "BAŞKESEN brand must render the SVG with the Turkish-flag red (#E30A17)"
+        );
+        assert!(
+            html.contains("Turkish flag"),
+            "BAŞKESEN brand must render the SVG <title>'BAŞKESEN (Turkish flag)'"
+        );
+        assert!(
+            html.contains(r#"aria-label="BAŞKESEN""#),
+            "BAŞKESEN brand must surface the brand string on the wordmark anchor"
+        );
+
+        // Must NOT render the wordmark fallback. The grep is
+        // anchored on `>VAUBAN<` (the literal `<span>VAUBAN</span>`
+        // text-node) so unrelated mentions of "VAUBAN" elsewhere in
+        // the page (meta description, helper anchors) don't false-
+        // positive the negative assertion.
+        assert!(
+            !html.contains(">VAUBAN<"),
+            "BAŞKESEN brand must NOT render the <span>VAUBAN</span> wordmark fallback"
+        );
+    }
+
+    #[test]
+    fn brand_unknown_value_falls_back_to_vauban_wordmark() {
+        // Pin: a value that is neither "VAUBAN" nor a recognised
+        // white-label key (here a plausible-looking but unsupported
+        // brand) MUST render the canonical wordmark, not the SVG.
+        // This protects operators from a typo in their config -- the
+        // sidebar never ends up visually broken.
+        let user = create_test_user();
+        let mut base = BaseTemplate::new("Dashboard".to_string(), Some(user));
+        base.vauban.brand_name = "Acme Corp".to_string();
+        let html = unwrap_ok!(base.render());
+        assert!(
+            html.contains(">VAUBAN<"),
+            "unknown brand must fall back to the <span>VAUBAN</span> wordmark"
+        );
+        assert!(
+            !html.contains("Turkish flag"),
+            "unknown brand must NOT trigger the Turkish-flag SVG"
+        );
+    }
+
+    // ==================== Brand cell (set_brand_name / brand_name) ====================
+
+    #[test]
+    fn brand_name_helper_falls_back_to_vauban_when_uninitialised() {
+        // Defensive: code paths that build a `VaubanConfig::default()`
+        // before `main` has had a chance to install the brand (early
+        // boot, unit tests, embedded smoke checks) must still see
+        // the canonical wordmark. The OnceLock cell may already be
+        // populated by another test in the same binary, in which
+        // case we simply assert that the value is non-empty -- the
+        // contract we care about is "no panics, no empty string".
+        let value = brand_name();
+        assert!(
+            !value.is_empty(),
+            "brand_name() must never return an empty string"
+        );
     }
 }

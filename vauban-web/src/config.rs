@@ -248,6 +248,12 @@ pub struct Config {
     /// EWS onboarding flow.
     #[serde(default)]
     pub industrial: IndustrialConfig,
+    /// White-label / branding configuration. Currently only carries
+    /// `[product.brand].name` -- the visible brand displayed in the
+    /// top-left corner of every sidebar-bearing page. Defaults to
+    /// `"VAUBAN"` (no white-label).
+    #[serde(default)]
+    pub product: ProductConfig,
 }
 
 debug_redacted_struct!(
@@ -959,6 +965,62 @@ impl Default for IndustrialConfig {
     }
 }
 
+// =============================================================================
+// PRODUCT / BRANDING (white-label)
+// =============================================================================
+
+/// White-label container. Currently only nests the brand block; future
+/// product-level options (legal notice text, support email, ...) will
+/// land here without breaking the existing `[product.brand]` namespace.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct ProductConfig {
+    #[serde(default)]
+    pub brand: BrandConfig,
+}
+
+/// Brand block. The single moving piece is `name`, which is rendered
+/// in the top-left of every sidebar-bearing page via the Askama
+/// template `partials/sidebar_content.html`.
+///
+/// # Special-cased values
+///
+/// - `"VAUBAN"` (default): the canonical wordmark is rendered.
+/// - any other value: the wordmark is replaced by the visual
+///   representation associated with that brand (currently only one
+///   such mapping exists -- `"BAŞKESEN"` swaps in the Turkish flag
+///   as an embedded SVG). A value that is neither `"VAUBAN"` nor a
+///   known white-label key falls back to the default wordmark, so
+///   the sidebar never breaks visually if an operator introduces a
+///   typo or sets an unrecognised name.
+///
+/// The contract is intentionally string-based (rather than an enum)
+/// so future white-label brands can be added by extending the
+/// template's match arms without a config schema change.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct BrandConfig {
+    #[serde(default = "BrandConfig::default_name")]
+    pub name: String,
+}
+
+impl BrandConfig {
+    /// Canonical default brand name. Kept as a const so unit tests
+    /// and the [`crate::templates::base::VaubanConfig`] fallback can
+    /// reference the exact same literal.
+    pub const DEFAULT_NAME: &'static str = "VAUBAN";
+
+    fn default_name() -> String {
+        Self::DEFAULT_NAME.to_string()
+    }
+}
+
+impl Default for BrandConfig {
+    fn default() -> Self {
+        Self {
+            name: Self::default_name(),
+        }
+    }
+}
+
 impl Config {
     /// Load configuration from TOML files.
     ///
@@ -1287,6 +1349,99 @@ pub mod test_fixtures {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ==================== ProductConfig / BrandConfig (white-label) ====================
+
+    /// Default contract: a TOML file that omits the `[product]` section
+    /// MUST behave as if the operator had explicitly written
+    /// `[product.brand] name = "VAUBAN"`. Without this, the sidebar
+    /// would silently render an empty wordmark on every existing
+    /// deployment that has not yet migrated its `vauban.conf`.
+    #[test]
+    fn brand_config_default_is_vauban() {
+        let cfg = BrandConfig::default();
+        assert_eq!(cfg.name, "VAUBAN");
+        assert_eq!(cfg.name, BrandConfig::DEFAULT_NAME);
+    }
+
+    #[test]
+    fn product_config_default_brand_is_vauban() {
+        let cfg = ProductConfig::default();
+        assert_eq!(cfg.brand.name, "VAUBAN");
+    }
+
+    /// Helper: parse `<toml_str>` through the SAME parser the
+    /// production loader uses (`config::File::from_str` +
+    /// `try_deserialize`). Goes through `config::Value` first so an
+    /// unknown top-level field doesn't fail; the goal is to pin the
+    /// `[product.brand]` deserialisation, not the full Config schema.
+    fn parse_product_section(toml_str: &str) -> ProductConfig {
+        #[derive(Deserialize)]
+        struct Wrapper {
+            #[serde(default)]
+            product: ProductConfig,
+        }
+        let settings = config::Config::builder()
+            .add_source(config::File::from_str(toml_str, config::FileFormat::Toml))
+            .build()
+            .expect("toml builds");
+        let wrapped: Wrapper = settings.try_deserialize().expect("deserialize");
+        wrapped.product
+    }
+
+    /// Round-trip: the canonical TOML shape `[product.brand]` with
+    /// `name = "VAUBAN"` parses into the matching struct via the
+    /// production parser.
+    #[test]
+    fn product_config_parses_canonical_toml() {
+        let toml_str = r#"
+            [product.brand]
+            name = "VAUBAN"
+        "#;
+        let cfg = parse_product_section(toml_str);
+        assert_eq!(cfg.brand.name, "VAUBAN");
+    }
+
+    /// White-label round-trip: an operator that writes the special
+    /// value `"BAŞKESEN"` (the string the sidebar template uses to
+    /// pivot to the Turkish-flag SVG) parses byte-for-byte without
+    /// any normalisation. The dotted Turkish "Ş" (U+015E) MUST
+    /// round-trip cleanly through TOML's UTF-8 layer.
+    #[test]
+    fn product_config_parses_baskesen_with_turkish_s() {
+        let toml_str = r#"
+            [product.brand]
+            name = "BAŞKESEN"
+        "#;
+        let cfg = parse_product_section(toml_str);
+        assert_eq!(cfg.brand.name, "BAŞKESEN");
+        // Defensive byte-level pin: the Turkish "Ş" (U+015E) is
+        // encoded as 0xC5 0x9E in UTF-8. A normalisation regression
+        // (e.g. NFKC fold to "S") would break the template match.
+        assert!(
+            cfg.brand.name.contains('Ş'),
+            "Turkish capital S with cedilla MUST round-trip; got {:?}",
+            cfg.brand.name
+        );
+    }
+
+    /// Missing `[product]` section -> default brand. This pins the
+    /// "no white-label by default" contract.
+    #[test]
+    fn config_without_product_section_defaults_to_vauban() {
+        let parsed = parse_product_section("# no [product] section\n");
+        assert_eq!(parsed.brand.name, "VAUBAN");
+    }
+
+    /// Empty `[product]` section but missing `[product.brand]` ->
+    /// `brand` falls back to its own default (`name = "VAUBAN"`).
+    /// Pins that the inner `#[serde(default)]` works independently
+    /// of the outer one.
+    #[test]
+    fn product_section_without_brand_block_defaults_to_vauban() {
+        let cfg = parse_product_section("[product]\n");
+        assert_eq!(cfg.brand.name, "VAUBAN");
+    }
 
     // ==================== RecordingConfig::validate (issue #29 v1.4) ====================
 

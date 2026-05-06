@@ -213,3 +213,19 @@ storage_path = "recordings"
 # Per-protocol recording flags.
 rdp = true
 ssh = true
+
+# ==============================================================================
+# PRODUCT / BRANDING (white-label)
+# ==============================================================================
+#
+# `[product.brand].name` is the wordmark rendered in the top-left of every
+# sidebar-bearing page. Default is "VAUBAN" (no white-label). A small
+# catalogue of recognised values swaps the wordmark for an embedded SVG:
+#
+#   - "BAŞKESEN" -> Turkish flag SVG (red field, white crescent + star).
+#
+# Any other value falls back to the default "VAUBAN" wordmark, so
+# operators can experiment without breaking the sidebar visually.
+
+[product.brand]
+name = "VAUBAN"

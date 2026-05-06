@@ -361,6 +361,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Starting VAUBAN Web"
     );
 
+    // Install the configured brand name (`[product.brand].name`) into
+    // the process-wide template cell so every Askama page picks up
+    // the white-label wordmark in the sidebar's top-left corner. The
+    // call is idempotent: only the first value wins, matching the
+    // boot-config-only contract documented on `set_brand_name`.
+    vauban_web::templates::base::set_brand_name(config.product.brand.name.clone());
+    tracing::info!(brand = %config.product.brand.name, "Brand name installed");
+
     // ========================================================================
     // PHASE 1: Open all resources BEFORE entering Capsicum sandbox
     // After cap_enter(), no new file descriptors can be opened.
