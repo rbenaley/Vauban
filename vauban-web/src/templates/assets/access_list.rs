@@ -1,3 +1,4 @@
+use crate::models::AssetType;
 use crate::templates::accounts::user_list::Pagination;
 use crate::templates::base::{FlashMessage, UserContext, VaubanConfig};
 /// VAUBAN Web - Access list template.
@@ -28,7 +29,7 @@ impl AccessRuleListItem {
     pub fn protocols_display(&self) -> String {
         self.allowed_protocols
             .iter()
-            .map(|p| p.to_uppercase())
+            .map(|p| AssetType::format_access_rule_protocol(p))
             .collect::<Vec<_>>()
             .join(", ")
     }
@@ -129,5 +130,31 @@ mod tests {
             require_approval: false,
         };
         assert_eq!(item.protocols_display(), "SSH, RDP");
+    }
+
+    #[test]
+    fn test_protocols_display_iacs_family() {
+        let item = AccessRuleListItem {
+            uuid: "u".to_string(),
+            name: "r".to_string(),
+            user_group_name: "g".to_string(),
+            asset_group_name: "a".to_string(),
+            allowed_protocols: vec![
+                "ssh".to_string(),
+                "rdp".to_string(),
+                "iacs_modbus".to_string(),
+                "iacs_opcua".to_string(),
+                "iacs_profinet".to_string(),
+                "iacs_iec104".to_string(),
+                "iacs_tcp".to_string(),
+            ],
+            is_active: true,
+            require_mfa: false,
+            require_approval: false,
+        };
+        assert_eq!(
+            item.protocols_display(),
+            "SSH, RDP, Modbus, OPC UA, PROFINET, IEC-104, IACS (TCP)"
+        );
     }
 }

@@ -16,6 +16,7 @@ pub mod broker_latency;
 pub mod connections;
 pub mod dashboard;
 pub mod iacs;
+pub mod iacs_tunnel;
 pub mod mailer;
 pub mod rate_limit;
 pub mod rbac;

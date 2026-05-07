@@ -102,7 +102,21 @@ pub async fn create_asset(
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
-    let default_port = request.port.unwrap_or(request.asset_type.default_port());
+    // `default_port()` is `None` for the IACS catch-all (`iacs_tcp`),
+    // which carries no IANA-assigned port. The API must require an
+    // explicit `port` in that case rather than silently picking 0.
+    let default_port = match request.port {
+        Some(p) => p,
+        None => match request.asset_type.default_port() {
+            Some(p) => p,
+            None => {
+                return Err(AppError::Validation(
+                    "`port` is required for IACS catch-all asset types (no protocol-default port)"
+                        .to_string(),
+                ));
+            }
+        },
+    };
 
     let strip = |s: &str| -> String {
         ammonia::Builder::new()

@@ -146,6 +146,12 @@
                 <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div class="flex items-start space-x-3 sm:space-x-4 min-w-0">
                         <div class="flex-shrink-0">
+                            {# IACS pictogram parity with the manage list and
+                               the IACS sidebar entry
+                               (templates/partials/sidebar_content.html).
+                               Pre-IACS the `else` arm fell through to the
+                               RDP-monitor SVG (operator-reported visual
+                               regression 2026-05-08). #}
                             <span class="inline-flex h-10 w-10 items-center justify-center rounded-full
                                 {% if asset.asset_type == "ssh" %}bg-green-100 text-green-600 dark:bg-green-900/50 dark:text-green-400
                                 {% elif asset.asset_type == "rdp" %}bg-blue-100 text-blue-600 dark:bg-blue-900/50 dark:text-blue-400
@@ -158,9 +164,13 @@
                                 <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17.25v1.007a3 3 0 01-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0115 18.257V17.25m6-12V15a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 15V5.25m18 0A2.25 2.25 0 0018.75 3H5.25A2.25 2.25 0 003 5.25m18 0V12a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 12V5.25"/>
                                 </svg>
+                                {% elif asset.is_iacs %}
+                                <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 21h19.5M3 21V12l3-4v4l3-4v4l3-4v4l3-4v4l3-4v4l3-4v4V21L13.5 21V16H10.5V21H3M4.75 10.25V4.75H7.25V10.25H4.75Z"/>
+                                </svg>
                                 {% else %}
                                 <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17.25v1.007a3 3 0 01-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0115 18.257V17.25m6-12V15a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 15V5.25m18 0A2.25 2.25 0 0018.75 3H5.25A2.25 2.25 0 003 5.25m18 0V12a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 12V5.25"/>
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5.25 14.25h13.5m-13.5 0a3 3 0 01-3-3m3 3a3 3 0 100 6h13.5a3 3 0 100-6m-16.5-3a3 3 0 013-3h13.5a3 3 0 013 3m-19.5 0a4.5 4.5 0 01.9-2.7L5.737 5.1a3.375 3.375 0 012.7-1.35h7.126c1.062 0 2.062.5 2.7 1.35l2.587 3.45a4.5 4.5 0 01.9 2.7m0 0a3 3 0 01-3 3m0 3h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008zm-3 6h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008z"/>
                                 </svg>
                                 {% endif %}
                             </span>
@@ -177,6 +187,14 @@
                                     {% else %}bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300{% endif %}">
                                     {{ asset.status|upper }}
                                 </span>
+                                {# IACS protocol pill: same row as status; purple matches
+                                   the factory icon (`bg-purple-100`) so MAINTENANCE
+                                   (yellow) stays visually distinct. #}
+                                {% if asset.is_iacs %}
+                                <span class="inline-flex items-center rounded-md bg-purple-50 dark:bg-purple-900/30 px-1.5 py-0.5 text-xs font-medium text-purple-700 dark:text-purple-300 ring-1 ring-inset ring-purple-700/10 dark:ring-purple-300/20">
+                                    IACS{% if !asset.iacs_protocol_label.is_empty() %} &middot; {{ asset.iacs_protocol_label }}{% endif %}
+                                </span>
+                                {% endif %}
                             </div>
                             <p class="text-sm text-gray-500 dark:text-gray-400 break-all">
                                 {{ asset.hostname }}:{{ asset.port }}
@@ -202,7 +220,50 @@
                            with only the three fields the modaux need:
                            `asset.uuid`, `asset.asset_type`,
                            `asset.require_mfa`. #}
-                        {% if asset.requires_request %}
+                        {% if asset.is_iacs %}
+                        {# IACS Connect button (lot L2 -- Connect blue + EWS gate).
+                           Three-way decision tree:
+                             1. Casbin/kill-switch denies (`!iacs_connect_allowed`)
+                                -> button hidden entirely, NOT replaced by a
+                                tooltip: that would leak the existence of
+                                the IACS surface to a user who is not
+                                supposed to know.
+                             2. User has no active EWS -> tooltip with a
+                                link to /iacs/onboard (constructive).
+                             3. Otherwise -> hx-post to
+                                `/assets/{uuid}/connect-iacs`. The blue
+                                background (`bg-vauban-600`) matches the
+                                regular Connect button per the L2 spec. #}
+                        {% if iacs_connect_allowed %}
+                            {% if user_has_active_ews %}
+                            <form hx-post="/assets/{{ asset.uuid }}/connect-iacs"
+                                  hx-swap="none"
+                                  x-data="csrf"
+                                  class="inline">
+                                <input type="hidden" name="csrf_token" x-model="token" />
+                                <button type="submit"
+                                        data-testid="connect-iacs-btn"
+                                        class="rounded-md bg-vauban-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-600 [.htmx-request_&]:opacity-50 [.htmx-request_&]:cursor-wait">
+                                    <span class="[.htmx-request_&]:hidden">Connect</span>
+                                    <span class="hidden [.htmx-request_&]:inline-flex items-center">
+                                        <svg class="animate-spin -ml-0.5 mr-1 h-4 w-4" fill="none" viewBox="0 0 24 24">
+                                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                        </svg>
+                                        Opening tunnel...
+                                    </span>
+                                </button>
+                            </form>
+                            {% else %}
+                            <a href="/iacs/onboard"
+                               data-testid="connect-iacs-no-ews"
+                               title="No active Engineering Workstation -- onboard one to open IACS tunnels."
+                               class="inline-flex items-center rounded-md border border-dashed border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/30 px-3 py-1.5 text-sm font-semibold text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900/50">
+                                Onboard EWS first
+                            </a>
+                            {% endif %}
+                        {% endif %}
+                        {% else if asset.requires_request %}
                         <button type="button"
                                 @click="$store.accessModal.open('{{ asset.uuid }}', '{{ asset.asset_type }}', {{ asset.require_mfa }})"
                                 class="rounded-md bg-amber-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-amber-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600">

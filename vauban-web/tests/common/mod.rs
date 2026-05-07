@@ -169,6 +169,8 @@ impl TestApp {
                     std::sync::Arc::new(vauban_web::services::system_health::HttpRateTracker::new()),
                 ),
             ),
+            iacs_tunnel_registry:
+                vauban_web::services::iacs_tunnel::TunnelRegistry::new(),
         };
 
         // Build router
@@ -211,12 +213,14 @@ impl TestApp {
         use vauban_web::models::NewAuthSession;
         use vauban_web::schema::{auth_sessions, users};
 
+        let session_uuid = uuid::Uuid::new_v4();
         let token = unwrap_ok!(self.auth_service.generate_access_token(
             user_uuid,
             username,
             true,
             is_superuser,
-            is_staff
+            is_staff,
+            Some(session_uuid),
         ));
 
         // Create session in database for this token
@@ -270,7 +274,7 @@ impl TestApp {
         // combinations) can coexist without tripping the
         // `uniq_auth_sessions_per_device` UNIQUE index.
         let new_session = NewAuthSession {
-            uuid: uuid::Uuid::new_v4(),
+            uuid: session_uuid,
             user_id,
             token_hash: token_hash.clone(),
             ip_address: ip,
@@ -737,6 +741,16 @@ fn build_test_router(state: AppState) -> Router {
         .route(
             "/assets/{uuid}/connect-rdp",
             post(handlers::web::connect_rdp),
+        )
+        // IACS tunnel session endpoints (L2/L4): mirror the prod
+        // Router so the integration suite covers the same surface.
+        .route(
+            "/assets/{uuid}/connect-iacs",
+            post(handlers::web::connect_iacs),
+        )
+        .route(
+            "/sessions/{uuid}/iacs/status",
+            get(handlers::web::iacs_tunnel_status_page),
         )
         .route("/sessions/rdp/{session_id}", get(handlers::web::rdp_page))
         // SSH host key management

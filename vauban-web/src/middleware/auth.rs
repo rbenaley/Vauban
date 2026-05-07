@@ -9,14 +9,16 @@ use axum::{
     response::Response,
 };
 use axum_extra::extract::CookieJar;
+use axum_extra::extract::cookie::{Cookie, SameSite};
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_256};
+use uuid::Uuid;
 
 use crate::AppState;
 use crate::error::AppError;
-use crate::schema::auth_sessions;
+use crate::schema::{auth_sessions, users};
 
 /// Authenticated user context.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -176,25 +178,35 @@ pub async fn auth_middleware(
     mut request: Request,
     next: Next,
 ) -> Result<Response, AppError> {
-    // Try to get token from Authorization header or cookie
-    let token = extract_token(&jar, &request)?;
+    let token_info = extract_token_with_source(&jar, &request)?;
 
-    if let Some(token) = token {
+    if let Some((source, token)) = token_info {
         match state.auth_service.verify_token(&token) {
             Ok(claims) => {
-                // Verify session exists in database and check timeouts
-                if let Some(token_hash) = verify_session_with_timeouts(&state, &token).await {
+                if let Some(session_uuid) =
+                    verify_session_with_timeouts(&state, &token, &claims).await
+                {
                     let user = AuthUser {
-                        uuid: claims.sub,
-                        username: claims.username,
+                        uuid: claims.sub.clone(),
+                        username: claims.username.clone(),
                         mfa_verified: claims.mfa_verified,
                         is_superuser: claims.is_superuser,
                         is_staff: claims.is_staff,
                     };
                     request.extensions_mut().insert(user);
 
-                    // Update last_activity in the background
-                    update_last_activity(&state, &token_hash).await;
+                    update_last_activity(&state, session_uuid).await;
+
+                    let mut response = next.run(request).await;
+                    maybe_rotate_access_cookie(
+                        &state,
+                        &claims,
+                        session_uuid,
+                        &source,
+                        &mut response,
+                    )
+                    .await;
+                    return Ok(response);
                 } else {
                     tracing::debug!("Session not found in database (revoked or expired)");
                 }
@@ -211,83 +223,180 @@ pub async fn auth_middleware(
 }
 
 /// Verify that the session exists in the database and check timeout constraints.
-/// Returns the token_hash if valid, None if session is invalid or expired.
+/// Returns the `auth_sessions.uuid` if valid.
+///
+/// When the JWT carries `jti`, the row is keyed by `(jti, sub)` so rotated
+/// access tokens (new `token_hash`) still match the same session. Legacy
+/// tokens without `jti` fall back to lookup by `token_hash` of the presented
+/// bearer.
 ///
 /// Checks:
 /// 1. Session exists and has not been revoked
 /// 2. Session has not exceeded max_duration (created_at + session_max_duration_secs)
 /// 3. Session has not exceeded idle timeout (last_activity + session_idle_timeout_secs)
-async fn verify_session_with_timeouts(state: &AppState, token: &str) -> Option<String> {
-    // Hash the token
+async fn verify_session_with_timeouts(
+    state: &AppState,
+    token: &str,
+    claims: &crate::services::auth::Claims,
+) -> Option<Uuid> {
     let mut hasher = Sha3_256::new();
     hasher.update(token.as_bytes());
     let token_hash = format!("{:x}", hasher.finalize());
 
-    // Check database
-    if let Ok(mut conn) = state.db_pool.get().await {
-        let now = chrono::Utc::now();
-        let idle_timeout_secs = state.config.security.session_idle_timeout_secs as i64;
-        let max_duration_secs = state.config.security.session_max_duration_secs as i64;
+    let Ok(mut conn) = state.db_pool.get().await else {
+        tracing::warn!("Database unavailable for session verification; denying token");
+        return None;
+    };
 
-        // Calculate the cutoff times
-        let idle_cutoff = now - chrono::Duration::seconds(idle_timeout_secs);
-        let max_duration_cutoff = now - chrono::Duration::seconds(max_duration_secs);
+    let now = chrono::Utc::now();
+    let idle_timeout_secs = state.config.security.session_idle_timeout_secs as i64;
+    let max_duration_secs = state.config.security.session_max_duration_secs as i64;
 
-        // Check if session exists and is within both timeout constraints
-        let exists: Result<i64, _> = auth_sessions::table
-            .filter(auth_sessions::token_hash.eq(&token_hash))
-            // Session must not be past its max lifetime
+    let idle_cutoff = now - chrono::Duration::seconds(idle_timeout_secs);
+    let max_duration_cutoff = now - chrono::Duration::seconds(max_duration_secs);
+
+    if let Some(ref jti_str) = claims.jti
+        && let (Ok(session_uuid), Ok(user_uuid)) =
+            (Uuid::parse_str(jti_str), Uuid::parse_str(&claims.sub))
+    {
+        let count: i64 = auth_sessions::table
+            .inner_join(users::table.on(users::id.eq(auth_sessions::user_id)))
+            .filter(auth_sessions::uuid.eq(session_uuid))
+            .filter(users::uuid.eq(user_uuid))
             .filter(auth_sessions::created_at.gt(max_duration_cutoff))
-            // Session must have been active recently
             .filter(auth_sessions::last_activity.gt(idle_cutoff))
             .count()
             .get_result(&mut conn)
-            .await;
-
-        if matches!(exists, Ok(count) if count > 0) {
-            Some(token_hash)
-        } else {
-            None
+            .await
+            .unwrap_or(0);
+        if count > 0 {
+            return Some(session_uuid);
         }
-    } else {
-        // Fail closed: if session verification cannot be performed, deny auth.
-        tracing::warn!("Database unavailable for session verification; denying token");
-        None
     }
+
+    let user_uuid = Uuid::parse_str(&claims.sub).ok()?;
+    auth_sessions::table
+        .inner_join(users::table.on(users::id.eq(auth_sessions::user_id)))
+        .filter(auth_sessions::token_hash.eq(&token_hash))
+        .filter(users::uuid.eq(user_uuid))
+        .filter(auth_sessions::created_at.gt(max_duration_cutoff))
+        .filter(auth_sessions::last_activity.gt(idle_cutoff))
+        .select(auth_sessions::uuid)
+        .first::<Uuid>(&mut conn)
+        .await
+        .optional()
+        .ok()
+        .flatten()
 }
 
 /// Update the last_activity timestamp for the session.
 /// This is called on each authenticated request to track user activity.
-async fn update_last_activity(state: &AppState, token_hash: &str) {
+async fn update_last_activity(state: &AppState, session_uuid: Uuid) {
     if let Ok(mut conn) = state.db_pool.get().await {
-        let _ =
-            diesel::update(auth_sessions::table.filter(auth_sessions::token_hash.eq(token_hash)))
-                .set(auth_sessions::last_activity.eq(chrono::Utc::now()))
-                .execute(&mut conn)
-                .await;
+        let _ = diesel::update(
+            auth_sessions::table.filter(auth_sessions::uuid.eq(session_uuid)),
+        )
+        .set(auth_sessions::last_activity.eq(chrono::Utc::now()))
+        .execute(&mut conn)
+        .await;
     }
 }
 
-/// Extract token from Authorization header or cookie.
+/// Where the bearer access token was read from (Bearer wins over cookie).
+#[derive(Debug, Clone)]
+enum TokenSource {
+    Bearer,
+    Cookie,
+}
+
+/// Extract `(source, token)` from Authorization header or cookie.
 ///
 /// Per RFC 7235 s2.1 and RFC 6750 s2.1, the "Bearer" authentication scheme
 /// must be compared case-insensitively.
-fn extract_token(jar: &CookieJar, request: &Request) -> Result<Option<String>, AppError> {
-    // Try Authorization header first (case-insensitive "Bearer " prefix per RFC 7235)
+fn extract_token_with_source(
+    jar: &CookieJar,
+    request: &Request,
+) -> Result<Option<(TokenSource, String)>, AppError> {
     if let Some(auth_header) = request.headers().get("Authorization")
         && let Ok(auth_str) = auth_header.to_str()
         && auth_str.len() >= 7
         && auth_str[..7].eq_ignore_ascii_case("bearer ")
     {
-        return Ok(Some(auth_str[7..].to_string()));
+        return Ok(Some((TokenSource::Bearer, auth_str[7..].to_string())));
     }
 
-    // Try cookie
     if let Some(token_cookie) = jar.get("access_token") {
-        return Ok(Some(token_cookie.value().to_string()));
+        return Ok(Some((
+            TokenSource::Cookie,
+            token_cookie.value().to_string(),
+        )));
     }
 
     Ok(None)
+}
+
+async fn maybe_rotate_access_cookie(
+    state: &AppState,
+    claims: &crate::services::auth::Claims,
+    session_uuid: Uuid,
+    source: &TokenSource,
+    response: &mut Response,
+) {
+    if !matches!(source, TokenSource::Cookie) {
+        return;
+    }
+
+    let now = chrono::Utc::now().timestamp();
+    let renew_within = state.auth_service.access_token_renew_if_expires_within_seconds();
+    if claims.exp - now > renew_within {
+        return;
+    }
+
+    let Ok(new_token) = state.auth_service.generate_access_token(
+        &claims.sub,
+        &claims.username,
+        claims.mfa_verified,
+        claims.is_superuser,
+        claims.is_staff,
+        Some(session_uuid),
+    ) else {
+        return;
+    };
+
+    let mut hasher = Sha3_256::new();
+    hasher.update(new_token.as_bytes());
+    let new_hash = format!("{:x}", hasher.finalize());
+    let now_ts = chrono::Utc::now();
+
+    let Ok(mut conn) = state.db_pool.get().await else {
+        return;
+    };
+
+    let updated = diesel::update(auth_sessions::table.filter(auth_sessions::uuid.eq(session_uuid)))
+        .set((
+            auth_sessions::token_hash.eq(new_hash),
+            auth_sessions::last_activity.eq(now_ts),
+        ))
+        .execute(&mut conn)
+        .await
+        .unwrap_or(0);
+
+    if updated == 0 {
+        return;
+    }
+
+    let cookie = Cookie::build(("access_token", new_token))
+        .path("/")
+        .http_only(true)
+        .secure(true)
+        .same_site(SameSite::Lax)
+        .build();
+
+    if let Ok(header_value) = cookie.to_string().parse() {
+        response
+            .headers_mut()
+            .append(axum::http::header::SET_COOKIE, header_value);
+    }
 }
 
 /// Require authentication.
@@ -299,19 +408,18 @@ pub async fn require_auth(
     request: Request,
     next: Next,
 ) -> Result<Response, AppError> {
-    let token = extract_token(&jar, &request)?
+    let (source, token) = extract_token_with_source(&jar, &request)?
         .ok_or_else(|| AppError::Auth("Authentication required".to_string()))?;
 
     let claims = state.auth_service.verify_token(&token)?;
 
-    // Verify session exists in database and check timeouts (revocation support)
-    let token_hash = verify_session_with_timeouts(&state, &token)
+    let session_uuid = verify_session_with_timeouts(&state, &token, &claims)
         .await
         .ok_or_else(|| AppError::Auth("Session revoked or expired".to_string()))?;
 
     let user = AuthUser {
-        uuid: claims.sub,
-        username: claims.username,
+        uuid: claims.sub.clone(),
+        username: claims.username.clone(),
         mfa_verified: claims.mfa_verified,
         is_superuser: claims.is_superuser,
         is_staff: claims.is_staff,
@@ -320,10 +428,19 @@ pub async fn require_auth(
     let mut request = request;
     request.extensions_mut().insert(user);
 
-    // Update last_activity in the background
-    update_last_activity(&state, &token_hash).await;
+    update_last_activity(&state, session_uuid).await;
 
-    Ok(next.run(request).await)
+    let mut response = next.run(request).await;
+    maybe_rotate_access_cookie(
+        &state,
+        &claims,
+        session_uuid,
+        &source,
+        &mut response,
+    )
+    .await;
+
+    Ok(response)
 }
 
 /// Require MFA verification.
@@ -335,7 +452,7 @@ pub async fn require_mfa(
     request: Request,
     next: Next,
 ) -> Result<Response, AppError> {
-    let token = extract_token(&jar, &request)?
+    let (source, token) = extract_token_with_source(&jar, &request)?
         .ok_or_else(|| AppError::Auth("Authentication required".to_string()))?;
 
     let claims = state.auth_service.verify_token(&token)?;
@@ -346,14 +463,13 @@ pub async fn require_mfa(
         ));
     }
 
-    // Verify session exists in database and check timeouts (revocation support)
-    let token_hash = verify_session_with_timeouts(&state, &token)
+    let session_uuid = verify_session_with_timeouts(&state, &token, &claims)
         .await
         .ok_or_else(|| AppError::Auth("Session revoked or expired".to_string()))?;
 
     let user = AuthUser {
-        uuid: claims.sub,
-        username: claims.username,
+        uuid: claims.sub.clone(),
+        username: claims.username.clone(),
         mfa_verified: true,
         is_superuser: claims.is_superuser,
         is_staff: claims.is_staff,
@@ -362,10 +478,19 @@ pub async fn require_mfa(
     let mut request = request;
     request.extensions_mut().insert(user);
 
-    // Update last_activity in the background
-    update_last_activity(&state, &token_hash).await;
+    update_last_activity(&state, session_uuid).await;
 
-    Ok(next.run(request).await)
+    let mut response = next.run(request).await;
+    maybe_rotate_access_cookie(
+        &state,
+        &claims,
+        session_uuid,
+        &source,
+        &mut response,
+    )
+    .await;
+
+    Ok(response)
 }
 
 #[cfg(test)]
@@ -464,7 +589,7 @@ mod tests {
         );
 
         let jar = CookieJar::new();
-        let result = unwrap_ok!(extract_token(&jar, &request));
+        let result = unwrap_ok!(extract_token_with_source(&jar, &request).map(|o| o.map(|(_, t)| t)));
 
         assert_eq!(result, Some("my-jwt-token-123".to_string()));
     }
@@ -480,7 +605,7 @@ mod tests {
             );
 
             let jar = CookieJar::new();
-            let result = unwrap_ok!(extract_token(&jar, &request));
+            let result = unwrap_ok!(extract_token_with_source(&jar, &request).map(|o| o.map(|(_, t)| t)));
 
             assert_eq!(
                 result,
@@ -496,7 +621,7 @@ mod tests {
         let request = unwrap_ok!(HttpRequest::builder().body(axum::body::Body::empty()));
 
         let jar = CookieJar::new();
-        let result = unwrap_ok!(extract_token(&jar, &request));
+        let result = unwrap_ok!(extract_token_with_source(&jar, &request).map(|o| o.map(|(_, t)| t)));
 
         assert!(result.is_none());
     }
@@ -510,7 +635,7 @@ mod tests {
         );
 
         let jar = CookieJar::new();
-        let result = unwrap_ok!(extract_token(&jar, &request));
+        let result = unwrap_ok!(extract_token_with_source(&jar, &request).map(|o| o.map(|(_, t)| t)));
 
         // Basic auth should not be extracted
         assert!(result.is_none());
@@ -525,7 +650,7 @@ mod tests {
         );
 
         let jar = CookieJar::new();
-        let result = unwrap_ok!(extract_token(&jar, &request));
+        let result = unwrap_ok!(extract_token_with_source(&jar, &request).map(|o| o.map(|(_, t)| t)));
 
         // Should return empty string (the code after "Bearer ")
         assert_eq!(result, Some("".to_string()));
@@ -632,7 +757,7 @@ mod tests {
         );
 
         let jar = CookieJar::new();
-        let result = unwrap_ok!(extract_token(&jar, &request));
+        let result = unwrap_ok!(extract_token_with_source(&jar, &request).map(|o| o.map(|(_, t)| t)));
 
         assert_eq!(result, Some(long_token));
     }
@@ -647,7 +772,7 @@ mod tests {
         );
 
         let jar = CookieJar::new();
-        let result = unwrap_ok!(extract_token(&jar, &request));
+        let result = unwrap_ok!(extract_token_with_source(&jar, &request).map(|o| o.map(|(_, t)| t)));
 
         assert_eq!(result, Some(token.to_string()));
     }
@@ -661,7 +786,7 @@ mod tests {
         );
 
         let jar = CookieJar::new();
-        let result = unwrap_ok!(extract_token(&jar, &request));
+        let result = unwrap_ok!(extract_token_with_source(&jar, &request).map(|o| o.map(|(_, t)| t)));
 
         assert!(result.is_none());
     }

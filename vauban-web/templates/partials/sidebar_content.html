@@ -150,6 +150,16 @@
                                 <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 21h19.5M3 21V12l3-4v4l3-4v4l3-4v4l3-4v4l3-4v4l3-4v4V21L13.5 21V16H10.5V21H3M4.75 10.25V4.75H7.25V10.25H4.75Z"/>
                             </svg>
                             IACS
+                            {# Experimental marker: IACS is a preview surface and
+                               its UX, schema and audit shape may still shift
+                               between minor releases. The tag stays adjacent to
+                               the entry label (and BEFORE the pending-count badge,
+                               which is `ml-auto` and floats right) so an operator
+                               cannot miss it on a glance. #}
+                            <span class="inline-flex items-center rounded bg-amber-50 dark:bg-amber-900/30 px-1 py-0 text-[10px] leading-tight font-medium uppercase tracking-wide text-amber-700 dark:text-amber-300 ring-1 ring-inset ring-amber-700/10 dark:ring-amber-300/20"
+                                  title="IACS is an experimental preview surface; UX, schema and audit shape may change between releases.">
+                                Experimental
+                            </span>
                             <span id="sidebar-iacs-badge" {% if sc.pending_iacs_count > 0 %}class="ml-auto inline-flex items-center rounded-full bg-vauban-600 px-2 py-0.5 text-xs font-medium text-white"{% endif %}>{% if sc.pending_iacs_count > 0 %}{{ sc.pending_iacs_count }}{% endif %}</span>
                         </a>
                     </li>

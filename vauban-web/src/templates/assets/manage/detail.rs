@@ -32,6 +32,23 @@ pub struct ManageAssetDetail {
     pub hostname: String,
     pub port: i32,
     pub asset_type: String,
+    /// Compact label for the square asset-type tile next to the
+    /// asset name (operator-reported overflow 2026-05-08:
+    /// `IACS_MODBUS` does not fit a `h-10 w-10` square and crashed
+    /// into the title). Source of truth: `AssetType::badge_label`.
+    pub badge_label: String,
+    /// Human-readable type label used in the Connection Details
+    /// "Type" pill. The pill is flexible-width so it can carry the
+    /// long form ("IACS - Modbus", "SSH", "RDP") -- the raw
+    /// `asset_type` ("iacs_modbus") leaks an internal token that
+    /// confuses operators. Source of truth: `AssetType::label`.
+    pub type_label: String,
+    /// Whether the asset belongs to the IACS family. The detail
+    /// template uses this to drive the badge tint and the host-key
+    /// affordance gate -- IACS rows have no SSH host key.
+    pub is_iacs: bool,
+    /// Short industrial protocol name for the purple IACS pill next to status.
+    pub iacs_protocol_label: String,
     pub status: String,
     pub group_name: Option<String>,
     pub group_uuid: Option<String>,

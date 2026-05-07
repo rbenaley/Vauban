@@ -150,6 +150,7 @@ async fn check_rbac_user_grants_only_self_serve_set() {
     // `handlers::api::sessions::list_sessions`.
     let user_allowed: &[(&str, &str)] = &[
         ("assets", "read"),
+        ("assets", "connect_iacs"),
         ("profile", "read"),
         ("profile", "write"),
         ("sessions", "read"),
@@ -606,6 +607,7 @@ const TRACKED_PERMS: &[(&str, &str)] = &[
     ("iacs", "request"),
     ("iacs", "read"),
     ("iacs", "manage"),
+    ("assets", "connect_iacs"),
 ];
 
 async fn manual_load(state: &vauban_web::AppState, user: &AuthUser) -> PermissionContext {
@@ -634,6 +636,7 @@ async fn manual_load(state: &vauban_web::AppState, user: &AuthUser) -> Permissio
         iacs_request: check_rbac(state, user, "iacs", "request").await,
         iacs_read: check_rbac(state, user, "iacs", "read").await,
         iacs_manage: check_rbac(state, user, "iacs", "manage").await,
+        assets_connect_iacs: check_rbac(state, user, "assets", "connect_iacs").await,
     }
 }
 
@@ -679,6 +682,7 @@ fn build_state_from(app: &TestApp) -> vauban_web::AppState {
                 std::sync::Arc::new(vauban_web::services::system_health::HttpRateTracker::new()),
             ),
         ),
+        iacs_tunnel_registry: vauban_web::services::iacs_tunnel::TunnelRegistry::new(),
     }
 }
 

@@ -707,6 +707,15 @@ pub fn parse_meta(session_type: SessionType, buf: &str) -> Result<IntegrityBundl
                 codec: Some(first.codec_string.clone()),
             })
         }
+        SessionType::IacsTunnel => {
+            // IACS tunnels are raw TCP forwards: no PTY, no commands,
+            // no recording. The hydrator should never be invoked on an
+            // `iacs_tunnel` row in the first place (such rows have
+            // `is_recorded = false` and never produce a meta.json),
+            // but the explicit branch is kept so the compiler
+            // exhaustiveness check stays our safety net.
+            Err("IACS tunnel sessions are not recorded; meta.json must not exist".to_string())
+        }
     }
 }
 

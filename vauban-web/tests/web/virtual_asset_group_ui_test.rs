@@ -488,6 +488,116 @@ async fn u42_access_rule_create_on_virtual_group_succeeds() {
 }
 
 // =====================================================================
+// U42b — IACS master checkbox expands to every iacs_* protocol on save
+// =====================================================================
+
+/// When an admin creates an access rule on the virtual "All assets"
+/// group with the `allowed_iacs` master checkbox ticked, the
+/// persisted `allowed_protocols` Vec must carry every `iacs_*`
+/// asset_type so the rule effectively covers every IACS asset (the
+/// user-zone /assets list expansion in
+/// `services::access::list_accessible_asset_ids` filters by
+/// `asset_type IN allowed_protocols`).
+///
+/// This is the persistence-side pin for the user-facing requirement
+/// "les actifs IACS doivent faire parti de Virtual 'All assets'
+/// group". The unit-test pin lives in
+/// `vauban_web::handlers::web::access_rules::tests::build_protocols_with_iacs_master_expands_to_every_iacs_variant`.
+#[tokio::test]
+#[serial]
+async fn u42b_iacs_master_checkbox_expands_to_every_iacs_protocol() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let admin =
+        create_admin_user(&mut conn, &app.auth_service, &unique_name("u42b_adm")).await;
+    let csrf = app.generate_csrf_token();
+
+    let ug = create_test_vauban_group(&mut conn, &unique_name("u42b_ug")).await;
+    use vauban_web::schema::vauban_groups;
+    let ug_id: i32 = vauban_groups::table
+        .filter(vauban_groups::uuid.eq(ug))
+        .select(vauban_groups::id)
+        .first(&mut conn)
+        .await
+        .unwrap();
+    let virtual_id = virtual_internal_id(&mut conn).await;
+
+    let response = app
+        .server
+        .post("/assets/access")
+        .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
+        .form(&serde_json::json!({
+            "csrf_token": csrf,
+            "name": "u42b-iacs-rule",
+            "description": "covers every IACS asset via the All assets virtual group",
+            "user_group_id": ug_id,
+            "asset_group_id": virtual_id,
+            "allowed_ssh": "true",
+            "allowed_rdp": "true",
+            "allowed_iacs": "true",
+            "is_active": "true",
+            "priority": "5",
+        }))
+        .await;
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 303 || status == 302,
+        "creation must redirect (PRG), got {status}"
+    );
+
+    use vauban_web::schema::access_rules;
+    let persisted: Vec<Option<String>> = access_rules::table
+        .filter(access_rules::name.eq("u42b-iacs-rule"))
+        .filter(access_rules::asset_group_id.eq(virtual_id))
+        .select(access_rules::allowed_protocols)
+        .first(&mut conn)
+        .await
+        .unwrap();
+    let persisted: std::collections::BTreeSet<String> =
+        persisted.into_iter().flatten().collect();
+
+    for required in [
+        "ssh",
+        "rdp",
+        "iacs_modbus",
+        "iacs_opcua",
+        "iacs_profinet",
+        "iacs_iec104",
+        "iacs_tcp",
+    ] {
+        assert!(
+            persisted.contains(required),
+            "the persisted rule on the virtual 'All assets' group must carry {required}, got {:?}",
+            persisted
+        );
+    }
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// The form template MUST surface the IACS master checkbox; without
+/// it the admin has no way to opt IACS into a virtual "All assets"
+/// rule (the L4 expansion path is hardwired on
+/// `asset_type IN allowed_protocols`). Pin the markup so a future
+/// template refactor cannot silently drop the checkbox.
+#[test]
+fn u42c_create_form_template_carries_iacs_master_checkbox() {
+    let create_html = include_str!("../../templates/assets/access_rule_create.html");
+    let edit_html = include_str!("../../templates/assets/access_rule_edit.html");
+
+    for (label, html) in [("create", create_html), ("edit", edit_html)] {
+        assert!(
+            html.contains("name=\"allowed_iacs\""),
+            "{label} template must carry the IACS master checkbox (name=\"allowed_iacs\")"
+        );
+        assert!(
+            html.contains("all industrial protocols"),
+            "{label} template must surface the IACS master checkbox helper text"
+        );
+    }
+}
+
+// =====================================================================
 // U43 — Listing / detail handlers do not crash when a rule references
 //        the virtual group
 // =====================================================================

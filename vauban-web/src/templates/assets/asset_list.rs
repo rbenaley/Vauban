@@ -20,7 +20,7 @@ pub struct AssetListItem {
     pub name: String,
     pub hostname: String,
     pub port: i32,
-    pub asset_type: String, // "ssh", "rdp"
+    pub asset_type: String, // "ssh", "rdp", "iacs_modbus", ...
     pub status: String,     // "online", "offline", "maintenance"
     pub group_name: Option<String>,
     pub requires_request: bool,
@@ -28,6 +28,16 @@ pub struct AssetListItem {
     /// asset for the current caller has `require_mfa = true`. Drives
     /// the TOTP field of the inlined Request Access modal.
     pub require_mfa: bool,
+    /// Pre-resolved `AssetType::is_iacs()`. Cheap to recompute in the
+    /// template, but pulled into a boolean field so the Askama branch
+    /// `{% if asset.is_iacs %}` stays fast and unambiguous (string
+    /// `startsWith` on the wire form is fragile against future
+    /// asset_type vocabulary changes).
+    pub is_iacs: bool,
+    /// Pre-resolved label for the industrial protocol family
+    /// (Modbus, OPC-UA, ...). Empty string for non-IACS rows. Drives
+    /// the small grey badge displayed on every IACS row.
+    pub iacs_protocol_label: String,
 }
 
 #[derive(Template)]
@@ -59,6 +69,19 @@ pub struct AssetListTemplate {
     /// `permission_context_middleware` already collapses to `false`
     /// when `[industrial].enabled = false`.
     pub iacs_request_allowed: bool,
+    /// IACS Connect button gating. Mirrors `perms.assets_connect_iacs`
+    /// (already collapsed to `false` by the kill-switch). When `true`,
+    /// IACS rows render a blue Connect button targetting
+    /// `/assets/{uuid}/connect-iacs`; when `false`, the button is
+    /// suppressed and the row falls back to the no-op disabled state.
+    pub iacs_connect_allowed: bool,
+    /// Whether the current user has at least one ACTIVE EWS (no
+    /// `disabled_at`, no `offboarded_at`). Pre-resolved by the
+    /// handler so the template can show the IACS Connect button only
+    /// when the user actually owns a working EWS; otherwise the
+    /// button collapses to a small "no active EWS" tooltip pointing
+    /// to `/iacs/onboard`.
+    pub user_has_active_ews: bool,
 }
 
 #[cfg(test)]
@@ -77,6 +100,8 @@ mod tests {
             group_name: Some("Production".to_string()),
             requires_request: false,
             require_mfa: false,
+            is_iacs: false,
+            iacs_protocol_label: String::new(),
         }
     }
 
@@ -169,6 +194,8 @@ mod tests {
             statuses: vec![],
             require_justification: true,
             iacs_request_allowed: false,
+            iacs_connect_allowed: false,
+            user_has_active_ews: false,
         };
 
         let result = template.render();
@@ -230,6 +257,8 @@ mod tests {
             statuses: vec![],
             require_justification: true,
             iacs_request_allowed: false,
+            iacs_connect_allowed: false,
+            user_has_active_ews: false,
         }
     }
 
@@ -461,6 +490,8 @@ mod tests {
             statuses: vec![],
             require_justification: true,
             iacs_request_allowed: false,
+            iacs_connect_allowed: false,
+            user_has_active_ews: false,
         };
         let html = template.render().expect("should render");
         assert!(html.contains("Request"), "should show Request label");
@@ -512,6 +543,8 @@ mod tests {
             statuses: vec![],
             require_justification: false,
             iacs_request_allowed: false,
+            iacs_connect_allowed: false,
+            user_has_active_ews: false,
         };
         let html = template.render().expect("should render");
         assert!(html.contains("Connect"), "should show Connect label");
@@ -552,6 +585,8 @@ mod tests {
             statuses: vec![],
             require_justification: true,
             iacs_request_allowed: false,
+            iacs_connect_allowed: false,
+            user_has_active_ews: false,
         };
         let html = template.render().expect("should render");
         assert!(html.contains("Connect"), "should show Connect label");
@@ -610,6 +645,8 @@ mod tests {
             statuses: vec![],
             require_justification: false,
             iacs_request_allowed: false,
+            iacs_connect_allowed: false,
+            user_has_active_ews: false,
         };
         let html = template.render().expect("should render");
         assert!(html.contains("Request"), "should contain Request label");

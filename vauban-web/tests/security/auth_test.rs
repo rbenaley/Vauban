@@ -229,7 +229,8 @@ async fn test_mfa_setup_page_success() {
         &username,
         false,
         false,
-        false
+        false,
+        None,
     ));
 
     // Execute: GET /mfa/setup with cookie auth

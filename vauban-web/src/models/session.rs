@@ -13,7 +13,19 @@ use crate::schema::proxy_sessions;
 // Diesel's network-address feature provides FromSql for IpAddr with Inet
 // We use deserialize_as to convert automatically
 
-/// Session type (protocol).
+/// Session type / transport.
+///
+/// Three values today:
+///   - `Ssh`: classical SSH session opened from a browser tab via the
+///     vauban-proxy-ssh client. Recorded as asciicast.
+///   - `Rdp`: classical RDP session opened from a browser tab via
+///     vauban-proxy-rdp. Recorded as Vauban-RDP cast.
+///   - `IacsTunnel`: TCP tunnel opened from an onboarded EWS via the
+///     in-process IACS sshd (`services::iacs_tunnel`). Not recorded
+///     (raw TCP forwarding, no PTY, no command parsing). Persisted on
+///     `proxy_sessions` exactly the same shape, with `industrial_protocol`
+///     and `ews_uuid` columns set (CHECK constraint enforces the
+///     consistency at the DB layer).
 #[derive(
     Debug,
     Clone,
@@ -25,11 +37,12 @@ use crate::schema::proxy_sessions;
     diesel::expression::AsExpression,
     diesel::deserialize::FromSqlRow,
 )]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 #[diesel(sql_type = diesel::sql_types::Varchar)]
 pub enum SessionType {
     Ssh,
     Rdp,
+    IacsTunnel,
 }
 
 impl SessionType {
@@ -37,12 +50,17 @@ impl SessionType {
         match self {
             Self::Ssh => "ssh",
             Self::Rdp => "rdp",
+            Self::IacsTunnel => "iacs_tunnel",
         }
     }
 
+    /// Lossy parse: unknown values fall back to `Ssh`. Callers that
+    /// need strict parsing should use `try_parse` and handle the
+    /// `None` branch explicitly.
     pub fn parse(s: &str) -> Self {
         match s {
             "rdp" => Self::Rdp,
+            "iacs_tunnel" => Self::IacsTunnel,
             _ => Self::Ssh,
         }
     }
@@ -54,9 +72,19 @@ impl SessionType {
         match s {
             "ssh" => Some(Self::Ssh),
             "rdp" => Some(Self::Rdp),
+            "iacs_tunnel" => Some(Self::IacsTunnel),
             _ => None,
         }
     }
+
+    /// Whether this session is an IACS tunnel.
+    pub fn is_iacs_tunnel(&self) -> bool {
+        matches!(self, Self::IacsTunnel)
+    }
+
+    /// Exhaustive enumeration of every variant.
+    pub const ALL: &'static [SessionType] =
+        &[SessionType::Ssh, SessionType::Rdp, SessionType::IacsTunnel];
 }
 
 impl std::fmt::Display for SessionType {
@@ -89,7 +117,13 @@ impl diesel::deserialize::FromSql<diesel::sql_types::Varchar, diesel::pg::Pg> fo
     }
 }
 
-/// Session status.
+/// Session status. The first 9 variants apply to every session type;
+/// the last two (`WaitingClient`, `TunnelActive`) are introduced for
+/// IACS tunnels but stay represented as plain strings on the row to
+/// avoid an enum-typed schema column. `Active` from the SSH/RDP world
+/// roughly corresponds to `TunnelActive` from the IACS world; we keep
+/// them distinct so a viewer template can render an IACS-specific
+/// state badge without ambiguity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionStatus {
     Pending,
@@ -101,6 +135,14 @@ pub enum SessionStatus {
     Disconnected,
     Terminated,
     Failed,
+    /// IACS-only: the session was created server-side but the EWS has
+    /// not yet completed the SSH handshake. Reaped after
+    /// `[industrial.iacs_tunnel].waiting_client_ttl_seconds` if no EWS
+    /// connects (then transitions to `Expired`).
+    WaitingClient,
+    /// IACS-only: the EWS handshake has succeeded and a `direct-tcpip`
+    /// channel is forwarding bytes to the configured target.
+    TunnelActive,
 }
 
 impl SessionStatus {
@@ -115,6 +157,8 @@ impl SessionStatus {
             Self::Disconnected => "disconnected",
             Self::Terminated => "terminated",
             Self::Failed => "failed",
+            Self::WaitingClient => "waiting_client",
+            Self::TunnelActive => "tunnel_active",
         }
     }
 
@@ -128,8 +172,19 @@ impl SessionStatus {
             "disconnected" => Self::Disconnected,
             "terminated" => Self::Terminated,
             "failed" => Self::Failed,
+            "waiting_client" => Self::WaitingClient,
+            "tunnel_active" => Self::TunnelActive,
             _ => Self::Pending,
         }
+    }
+
+    /// Statuses representing a session that is "live" enough to hold
+    /// resources (broadcast targets, registry entries, etc.).
+    pub fn is_live(&self) -> bool {
+        matches!(
+            self,
+            Self::Connecting | Self::Active | Self::WaitingClient | Self::TunnelActive
+        )
     }
 }
 
@@ -183,6 +238,18 @@ pub struct ProxySession {
     pub recording_segment_count: Option<i32>,
     pub recording_codec: Option<String>,
     pub recording_finalized_at: Option<DateTime<Utc>>,
+    /// IACS-specific. NULL for SSH / RDP rows; pinned by the SQL CHECK
+    /// constraint `proxy_sessions_iacs_consistency`.
+    pub industrial_protocol: Option<String>,
+    /// IACS-specific. NULL for SSH / RDP rows. References `ews.uuid`
+    /// (`ON DELETE SET NULL` so an offboard hard-delete preserves the
+    /// audit row).
+    pub ews_uuid: Option<Uuid>,
+    /// IACS-specific. The actual address the in-process IACS proxy
+    /// connected to; today always `127.0.0.1:4321` (config), tomorrow
+    /// derived from `asset.hostname:asset.port` once bastion->asset
+    /// routing lands.
+    pub tunnel_target_addr: Option<String>,
 }
 
 /// New session for insertion.
@@ -203,6 +270,15 @@ pub struct NewProxySession {
     pub is_recorded: bool,
     pub metadata: serde_json::Value,
     pub max_session_duration: Option<i32>,
+    /// IACS-only. Must be `Some(_)` when `session_type =
+    /// SessionType::IacsTunnel`, otherwise `None` (DB CHECK).
+    pub industrial_protocol: Option<String>,
+    /// IACS-only. Must be `Some(_)` when `session_type =
+    /// SessionType::IacsTunnel`, otherwise `None` (DB CHECK).
+    pub ews_uuid: Option<Uuid>,
+    /// IACS-only. May be `None` while in `waiting_client`; filled on
+    /// transition to `tunnel_active`.
+    pub tunnel_target_addr: Option<String>,
 }
 
 impl ProxySession {
@@ -283,6 +359,9 @@ mod tests {
             recording_segment_count: None,
             recording_codec: None,
             recording_finalized_at: None,
+            industrial_protocol: None,
+            ews_uuid: None,
+            tunnel_target_addr: None,
         }
     }
 
@@ -296,6 +375,47 @@ mod tests {
     #[test]
     fn test_session_type_from_str_rdp() {
         assert_eq!(SessionType::parse("rdp"), SessionType::Rdp);
+    }
+
+    #[test]
+    fn test_session_type_from_str_iacs_tunnel() {
+        assert_eq!(SessionType::parse("iacs_tunnel"), SessionType::IacsTunnel);
+        assert_eq!(
+            SessionType::try_parse("iacs_tunnel"),
+            Some(SessionType::IacsTunnel)
+        );
+        assert_eq!(SessionType::IacsTunnel.as_str(), "iacs_tunnel");
+        assert!(SessionType::IacsTunnel.is_iacs_tunnel());
+        assert!(!SessionType::Ssh.is_iacs_tunnel());
+        assert!(!SessionType::Rdp.is_iacs_tunnel());
+    }
+
+    #[test]
+    fn test_session_type_all_is_exhaustive() {
+        for variant in SessionType::ALL {
+            match *variant {
+                SessionType::Ssh | SessionType::Rdp | SessionType::IacsTunnel => {}
+            }
+        }
+        assert_eq!(SessionType::ALL.len(), 3);
+    }
+
+    #[test]
+    fn test_session_status_iacs_variants() {
+        assert_eq!(
+            SessionStatus::parse("waiting_client"),
+            SessionStatus::WaitingClient
+        );
+        assert_eq!(
+            SessionStatus::parse("tunnel_active"),
+            SessionStatus::TunnelActive
+        );
+        assert_eq!(SessionStatus::WaitingClient.as_str(), "waiting_client");
+        assert_eq!(SessionStatus::TunnelActive.as_str(), "tunnel_active");
+        assert!(SessionStatus::WaitingClient.is_live());
+        assert!(SessionStatus::TunnelActive.is_live());
+        assert!(!SessionStatus::Terminated.is_live());
+        assert!(SessionStatus::Active.is_live());
     }
 
     #[test]
@@ -628,6 +748,9 @@ mod tests {
             is_recorded: true,
             metadata: serde_json::json!({}),
             max_session_duration: None,
+            industrial_protocol: None,
+            ews_uuid: None,
+            tunnel_target_addr: None,
         };
 
         let debug_str = format!("{:?}", new_session);
@@ -651,6 +774,9 @@ mod tests {
             is_recorded: false,
             metadata: serde_json::json!({"key": "value"}),
             max_session_duration: Some(3600),
+            industrial_protocol: None,
+            ews_uuid: None,
+            tunnel_target_addr: None,
         };
 
         let cloned = new_session.clone();

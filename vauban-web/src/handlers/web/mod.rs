@@ -70,6 +70,7 @@ mod audit;
 mod dashboard;
 mod groups;
 pub mod iacs;
+mod iacs_tunnel;
 mod manage_assets;
 mod rdp;
 mod sessions;
@@ -83,6 +84,7 @@ pub use audit::*;
 pub use dashboard::*;
 pub use groups::*;
 pub use iacs::*;
+pub use iacs_tunnel::*;
 pub use manage_assets::*;
 pub use rdp::*;
 pub use sessions::*;
@@ -249,6 +251,34 @@ pub(crate) fn validate_auth_inputs(
         }
     }
 
+    // IACS assets carry NO per-asset credentials (auth lives on EWS
+    // public keys). Reject any tampered submission that smuggles
+    // `private_key`, `passphrase`, or a non-default `auth_type` so
+    // the form cannot be used to seed credentials on an IACS row.
+    if asset_type.is_iacs() {
+        if auth_type.is_some_and(|s| !s.trim().is_empty()) {
+            return Err(
+                "Authentication type must not be set on IACS assets. \
+                 Authentication is handled by EWS public keys."
+                    .to_string(),
+            );
+        }
+        if private_key.is_some_and(|s| !s.is_empty()) {
+            return Err(
+                "Private key is not allowed on IACS assets. \
+                 Authentication is handled by EWS public keys."
+                    .to_string(),
+            );
+        }
+        if passphrase.is_some_and(|s| !s.is_empty()) {
+            return Err(
+                "Passphrase is not allowed on IACS assets. \
+                 Authentication is handled by EWS public keys."
+                    .to_string(),
+            );
+        }
+    }
+
     Ok(())
 }
 
@@ -322,6 +352,16 @@ pub(crate) fn validate_required_credentials(
                 }
             }
         }
+        // IACS assets do NOT require any credentials on the asset row
+        // (the EWS holds the SSH key pair; Vauban only stores the
+        // public half on `ews.public_key`). The `validate_auth_inputs`
+        // counterpart already rejects tampered credential fields, so
+        // this branch is intentionally a no-op.
+        AssetType::IacsModbus
+        | AssetType::IacsOpcua
+        | AssetType::IacsProfinet
+        | AssetType::IacsIec104
+        | AssetType::IacsTcp => {}
     }
 
     Ok(())
@@ -421,6 +461,15 @@ pub(crate) fn build_connection_config(
                 );
             }
         }
+        // IACS assets carry NO per-asset credentials -- authentication
+        // is handled by EWS public keys (see `ews` table). Any
+        // password / private_key / domain field on a tampered request
+        // is silently dropped here.
+        AssetType::IacsModbus
+        | AssetType::IacsOpcua
+        | AssetType::IacsProfinet
+        | AssetType::IacsIec104
+        | AssetType::IacsTcp => {}
     }
 
     serde_json::Value::Object(config)
@@ -571,6 +620,23 @@ pub(crate) fn compute_updated_connection_config(
                     );
                 }
             }
+        }
+        // IACS assets carry no per-asset credentials at this stage
+        // (auth lives on `ews.public_key` and the EWS owns its private
+        // half). Strip every credential / domain field that may have
+        // sneaked in via a tampered form, and leave the rest of
+        // `connection_config` (free-form metadata, host-key pinning if
+        // ever introduced) untouched.
+        AssetType::IacsModbus
+        | AssetType::IacsOpcua
+        | AssetType::IacsProfinet
+        | AssetType::IacsIec104
+        | AssetType::IacsTcp => {
+            obj.remove("auth_type");
+            obj.remove("password");
+            obj.remove("private_key");
+            obj.remove("passphrase");
+            obj.remove("domain");
         }
     }
 

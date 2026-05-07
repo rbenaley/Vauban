@@ -18,11 +18,21 @@ use vauban_web::services::auth::AuthService;
 use crate::common::{unwrap_ok, unwrap_some};
 
 /// Helper to create an auth session for a token in the database.
-pub async fn create_session_for_token_pub(conn: &mut AsyncPgConnection, user_id: i32, token: &str) {
-    create_session_for_token(conn, user_id, token).await;
+pub async fn create_session_for_token_pub(
+    conn: &mut AsyncPgConnection,
+    user_id: i32,
+    session_uuid: Uuid,
+    token: &str,
+) {
+    create_session_for_token(conn, user_id, session_uuid, token).await;
 }
 
-async fn create_session_for_token(conn: &mut AsyncPgConnection, user_id: i32, token: &str) {
+async fn create_session_for_token(
+    conn: &mut AsyncPgConnection,
+    user_id: i32,
+    session_uuid: Uuid,
+    token: &str,
+) {
     // Hash the token using SHA3-256
     let mut hasher = Sha3_256::new();
     hasher.update(token.as_bytes());
@@ -35,7 +45,7 @@ async fn create_session_for_token(conn: &mut AsyncPgConnection, user_id: i32, to
     // `device_info` from the token hash to keep each fixture row
     // distinct.
     let new_session = NewAuthSession {
-        uuid: Uuid::new_v4(),
+        uuid: session_uuid,
         user_id,
         token_hash: token_hash.clone(),
         ip_address: ip,
@@ -96,16 +106,18 @@ pub async fn create_test_user(
             .await
     );
 
+    let session_uuid = Uuid::new_v4();
     let token = unwrap_ok!(auth_service.generate_access_token(
         &user.uuid.to_string(),
         &user.username,
         true,
         false,
-        false
+        false,
+        Some(session_uuid),
     ));
 
     // Create session in database for middleware validation
-    create_session_for_token(conn, user.id, &token).await;
+    create_session_for_token(conn, user.id, session_uuid, &token).await;
 
     TestUser {
         user,
@@ -151,16 +163,18 @@ pub async fn create_admin_user(
             .await
     );
 
+    let session_uuid = Uuid::new_v4();
     let token = unwrap_ok!(auth_service.generate_access_token(
         &user.uuid.to_string(),
         &user.username,
         true,
         true,
-        true
+        true,
+        Some(session_uuid),
     ));
 
     // Create session in database for middleware validation
-    create_session_for_token(conn, user.id, &token).await;
+    create_session_for_token(conn, user.id, session_uuid, &token).await;
 
     TestUser {
         user,
@@ -209,15 +223,17 @@ pub async fn create_staff_only_user(
             .await
     );
 
+    let session_uuid = Uuid::new_v4();
     let token = unwrap_ok!(auth_service.generate_access_token(
         &user.uuid.to_string(),
         &user.username,
         true,
         false,
         true,
+        Some(session_uuid),
     ));
 
-    create_session_for_token(conn, user.id, &token).await;
+    create_session_for_token(conn, user.id, session_uuid, &token).await;
 
     TestUser {
         user,
@@ -265,16 +281,18 @@ pub async fn create_mfa_user(
     );
 
     // Token without MFA verified
+    let session_uuid = Uuid::new_v4();
     let token = unwrap_ok!(auth_service.generate_access_token(
         &user.uuid.to_string(),
         &user.username,
         false,
         false,
-        false
+        false,
+        Some(session_uuid),
     ));
 
     // Create session in database for middleware validation
-    create_session_for_token(conn, user.id, &token).await;
+    create_session_for_token(conn, user.id, session_uuid, &token).await;
 
     TestUser {
         user,
@@ -359,14 +377,16 @@ async fn create_user_with_mfa_internal(
 
     // Token with MFA verified -- mirrors what the login endpoint mints
     // after a successful TOTP check.
+    let session_uuid = Uuid::new_v4();
     let token = unwrap_ok!(auth_service.generate_access_token(
         &user.uuid.to_string(),
         &user.username,
         true,
         is_staff,
         is_superuser,
+        Some(session_uuid),
     ));
-    create_session_for_token(conn, user.id, &token).await;
+    create_session_for_token(conn, user.id, session_uuid, &token).await;
 
     TestUserWithMfa {
         user,
@@ -1241,13 +1261,17 @@ pub async fn create_test_asset_in_group_with_type(
 
     let asset_uuid = Uuid::new_v4();
     let unique_hostname = format!("{}-{}.test.local", name, &asset_uuid.to_string()[..8]);
-    let port = match asset_type {
-        AssetType::Ssh => 22,
-        AssetType::Rdp => 3389,
-    };
+    // Default port comes from the enum's `default_port()` so adding a
+    // new variant (e.g. an IACS protocol) does not require touching
+    // every fixture; `iacs_tcp` has no default and lands on 4321 to
+    // match the L1 IACS tunnel target convention.
+    let port = asset_type.default_port().unwrap_or(4321);
 
     let default_user = match asset_type {
         AssetType::Rdp => "Administrator",
+        // SSH default; IACS variants don't authenticate via username on
+        // the asset row but the column is NOT NULL in the DB schema so
+        // we still need a placeholder.
         _ => "root",
     };
 

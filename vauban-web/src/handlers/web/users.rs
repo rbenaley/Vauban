@@ -2651,6 +2651,8 @@ pub async fn deactivate_user(state: &AppState, user_id: i32, user_uuid: &str) {
         let is_recording = match session.session_type {
             SessionType::Ssh => state.config.recording.enabled && state.config.recording.ssh,
             SessionType::Rdp => state.config.recording.enabled,
+            // IACS tunnels are never recorded.
+            SessionType::IacsTunnel => false,
         };
 
         // Set recording_path + is_recorded in the same UPDATE that sets "terminated",
@@ -2705,6 +2707,12 @@ pub async fn deactivate_user(state: &AppState, user_id: i32, user_uuid: &str) {
                     proxy.unsubscribe_session(&session_uuid_str).await;
                 }
             }
+            // IACS tunnels are closed via the in-process registry once
+            // L3 lands (`services::iacs_tunnel::Registry::close`). The
+            // L1 stub just relies on the status update above; the
+            // watchdog (L4) and the running tunnel task will then
+            // observe the row transition.
+            SessionType::IacsTunnel => {}
         }
     }
 

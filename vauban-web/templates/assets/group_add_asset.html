@@ -131,7 +131,7 @@
                                                 {% if asset.asset_type == "ssh" %}text-green-600 dark:text-green-400
                                                 {% else if asset.asset_type == "rdp" %}text-blue-600 dark:text-blue-400
                                                 {% else %}text-purple-600 dark:text-purple-400{% endif %}">
-                                                {{ asset.asset_type|upper }}
+                                                {{ asset.badge_label() }}
                                             </span>
                                         </span>
                                         <span class="flex items-center gap-1">
@@ -163,7 +163,7 @@
                                     <span class="flex items-center">
                                         <span class="inline-flex h-8 w-8 items-center justify-center rounded-full mr-2 bg-gray-200 dark:bg-gray-700">
                                             <span class="text-xs font-medium text-gray-500 dark:text-gray-400">
-                                                {{ asset.asset_type|upper }}
+                                                {{ asset.badge_label() }}
                                             </span>
                                         </span>
                                         <span class="block text-sm font-medium text-gray-500 dark:text-gray-400">{{ asset.name }}</span>

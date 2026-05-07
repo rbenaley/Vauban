@@ -46,19 +46,32 @@
                     </li>
                 </ol>
             </nav>
-            <div class="mt-2 flex items-center">
-                <span class="inline-flex h-10 w-10 items-center justify-center rounded-lg mr-3
+            {# Badge layout (operator-reported overflow 2026-05-08).
+               The square is fixed `h-10 w-10` (40 px). The pre-IACS
+               template rendered the FULL `asset_type` upper-cased
+               inside it, which overflowed for any IACS variant
+               (`IACS_MODBUS`, `IACS_OPCUA`, ... 8-11 chars) and
+               crashed into the title `<h2>`. The fix renders the
+               compact `badge_label` ("MB", "OPC", "PN", "104",
+               "TCP", "SSH", "RDP") from `AssetType::badge_label`
+               (single source of truth, see vauban-web/src/models/
+               asset.rs). The outer flex carries `flex-wrap` and
+               `min-w-0` so a long asset name still wraps cleanly
+               without pushing the badge off-screen on narrow
+               viewports. #}
+            <div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 min-w-0">
+                <span class="inline-flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg
                     {% if asset.asset_type == "ssh" %}bg-green-100 dark:bg-green-900/50
                     {% else if asset.asset_type == "rdp" %}bg-blue-100 dark:bg-blue-900/50
                     {% else %}bg-purple-100 dark:bg-purple-900/50{% endif %}">
-                    <span class="text-sm font-bold
+                    <span class="text-xs font-bold tracking-tight
                         {% if asset.asset_type == "ssh" %}text-green-600 dark:text-green-400
                         {% else if asset.asset_type == "rdp" %}text-blue-600 dark:text-blue-400
                         {% else %}text-purple-600 dark:text-purple-400{% endif %}">
-                        {{ asset.asset_type|upper }}
+                        {{ asset.badge_label }}
                     </span>
                 </span>
-                <h2 class="text-xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-2xl lg:text-3xl sm:tracking-tight">
+                <h2 class="text-xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-2xl lg:text-3xl sm:tracking-tight min-w-0">
                     {{ asset.name }}
                 </h2>
                 <span class="ml-3 inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium
@@ -68,6 +81,11 @@
                     {% else %}bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300{% endif %}">
                     {{ asset.status|capitalize }}
                 </span>
+                {% if asset.is_iacs %}
+                <span class="inline-flex items-center rounded-md bg-purple-50 dark:bg-purple-900/30 px-1.5 py-0.5 text-xs font-medium text-purple-700 dark:text-purple-300 ring-1 ring-inset ring-purple-700/10 dark:ring-purple-300/20">
+                    IACS{% if !asset.iacs_protocol_label.is_empty() %} &middot; {{ asset.iacs_protocol_label }}{% endif %}
+                </span>
+                {% endif %}
             </div>
         </div>
         <div class="mt-4 flex flex-wrap gap-2 md:ml-4 md:mt-0 md:flex-nowrap md:space-x-3 md:gap-0">
@@ -136,7 +154,7 @@
                             {% if asset.asset_type == "ssh" %}bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300
                             {% else if asset.asset_type == "rdp" %}bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-300
                             {% else %}bg-purple-100 text-purple-800 dark:bg-purple-900/50 dark:text-purple-300{% endif %}">
-                            {{ asset.asset_type|upper }}
+                            {{ asset.type_label }}
                         </span>
                     </dd>
                 </div>

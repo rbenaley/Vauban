@@ -20,6 +20,7 @@ p, role:user, profile, write
 p, role:user, iacs, request
 p, role:user, iacs, read
 p, role:staff, iacs, manage
+p, role:user, assets, connect_iacs
 # SECURITY: read-only access to the sessions API is granted to every
 # authenticated user so they can list their own sessions and read their
 # own metadata. Cross-user visibility is enforced at the instance

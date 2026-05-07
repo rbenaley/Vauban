@@ -6540,16 +6540,23 @@ async fn test_mfa_bypass_pre_mfa_jwt_redirects_to_mfa_verify() {
     let username = unique_name("mfa_bypass");
     let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
 
+    let session_uuid = uuid::Uuid::new_v4();
     // Generate a JWT with mfa_verified=false (simulating post-login, pre-MFA state)
     let pre_mfa_token = unwrap_ok!(app.auth_service.generate_access_token(
         &test_user.user.uuid.to_string(),
         &username,
         false,
         false,
-        false
+        false,
+        Some(session_uuid),
     ));
-    crate::fixtures::create_session_for_token_pub(&mut conn, test_user.user.id, &pre_mfa_token)
-        .await;
+    crate::fixtures::create_session_for_token_pub(
+        &mut conn,
+        test_user.user.id,
+        session_uuid,
+        &pre_mfa_token,
+    )
+    .await;
 
     // Attempt to access /assets with the pre-MFA cookie (simulates URL manipulation)
     let response = app
@@ -6610,15 +6617,22 @@ async fn test_pre_mfa_jwt_can_access_mfa_setup() {
     let username = unique_name("mfa_setup_access");
     let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
 
+    let session_uuid = uuid::Uuid::new_v4();
     let pre_mfa_token = unwrap_ok!(app.auth_service.generate_access_token(
         &test_user.user.uuid.to_string(),
         &username,
         false,
         false,
-        false
+        false,
+        Some(session_uuid),
     ));
-    crate::fixtures::create_session_for_token_pub(&mut conn, test_user.user.id, &pre_mfa_token)
-        .await;
+    crate::fixtures::create_session_for_token_pub(
+        &mut conn,
+        test_user.user.id,
+        session_uuid,
+        &pre_mfa_token,
+    )
+    .await;
 
     let response = app
         .server
@@ -6646,15 +6660,22 @@ async fn test_mfa_verify_redirects_to_setup_when_mfa_not_configured() {
     let username = unique_name("mfa_verify_access");
     let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
 
+    let session_uuid = uuid::Uuid::new_v4();
     let pre_mfa_token = unwrap_ok!(app.auth_service.generate_access_token(
         &test_user.user.uuid.to_string(),
         &username,
         false,
         false,
-        false
+        false,
+        Some(session_uuid),
     ));
-    crate::fixtures::create_session_for_token_pub(&mut conn, test_user.user.id, &pre_mfa_token)
-        .await;
+    crate::fixtures::create_session_for_token_pub(
+        &mut conn,
+        test_user.user.id,
+        session_uuid,
+        &pre_mfa_token,
+    )
+    .await;
 
     let response = app
         .server

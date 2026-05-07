@@ -117,6 +117,7 @@ mod tests {
             iacs_request: true,
             iacs_read: true,
             iacs_manage: true,
+            assets_connect_iacs: true,
         }
     }
 

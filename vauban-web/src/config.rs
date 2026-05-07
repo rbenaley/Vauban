@@ -944,6 +944,13 @@ pub struct IndustrialConfig {
     /// `vauban-access` `SubmitEwsOnboarding` transaction.
     #[serde(default = "IndustrialConfig::default_max_ews_per_user")]
     pub max_ews_per_user: u32,
+
+    /// IACS tunnel sub-module (russh server in-process within
+    /// `vauban-web`). Optional `[industrial.iacs_tunnel]` TOML
+    /// section; when omitted, defaults are used and the sub-module
+    /// is enabled iff `industrial.enabled` is also true.
+    #[serde(default)]
+    pub iacs_tunnel: IacsTunnelConfig,
 }
 
 impl IndustrialConfig {
@@ -961,6 +968,129 @@ impl Default for IndustrialConfig {
         Self {
             enabled: Self::default_enabled(),
             max_ews_per_user: Self::default_max_ews_per_user(),
+            iacs_tunnel: IacsTunnelConfig::default(),
+        }
+    }
+}
+
+/// Configuration for the in-process IACS tunnel sshd, exposed under
+/// `[industrial.iacs_tunnel]` in TOML. Lives in `vauban-web` (no new
+/// service / no new IPC -- the sshd is a `tokio::spawn` task driven
+/// by `russh`).
+///
+/// Two booleans gate the boot:
+///
+///   * `industrial.enabled` (parent) -- master kill-switch for the
+///     IACS module. When `false` the tunnel server never binds,
+///     regardless of this struct.
+///   * `industrial.iacs_tunnel.enabled` (this struct) -- per-feature
+///     opt-out so an operator can disable IACS tunnels while keeping
+///     the rest of the IACS UI alive.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct IacsTunnelConfig {
+    /// Per-feature switch. Default `true`.
+    #[serde(default = "IacsTunnelConfig::default_enabled")]
+    pub enabled: bool,
+
+    /// `host:port` the sshd listens on. Default `0.0.0.0:22322`. The
+    /// canonical `22` is reserved for the regular VAUBAN proxy on
+    /// the same host.
+    #[serde(default = "IacsTunnelConfig::default_bind_addr")]
+    pub bind_addr: String,
+
+    /// Public hostname advertised to operators on the status page
+    /// (`ssh -L ... user@<advertise_hostname> -p ...`). Defaults to
+    /// `localhost`; production deployments should set this to the
+    /// bastion FQDN reachable from EWS hosts.
+    #[serde(default = "IacsTunnelConfig::default_advertise_hostname")]
+    pub advertise_hostname: String,
+
+    /// Target `host:port` the bastion will tunnel each accepted
+    /// `direct-tcpip` channel to. Default `127.0.0.1:4321` (the MVP
+    /// fixed target until L6 wires the per-asset hostname:port).
+    #[serde(default = "IacsTunnelConfig::default_target_addr")]
+    pub target_addr: String,
+
+    /// Filesystem path of the ed25519 host key. Generated on first
+    /// boot if absent; created with mode 0600.
+    #[serde(default = "IacsTunnelConfig::default_host_key_path")]
+    pub host_key_path: String,
+
+    /// Maximum number of concurrent IACS tunnels per user. `0`
+    /// disables the cap. Default `4`.
+    #[serde(default = "IacsTunnelConfig::default_max_concurrent_per_user")]
+    pub max_concurrent_per_user: u32,
+
+    /// Maximum number of concurrent IACS tunnels per EWS. `0`
+    /// disables the cap. Default `2`.
+    #[serde(default = "IacsTunnelConfig::default_max_concurrent_per_ews")]
+    pub max_concurrent_per_ews: u32,
+
+    /// Time-to-live in seconds of a `waiting_client` row before the
+    /// watchdog flips it to `expired`. Default `300` (5 min).
+    #[serde(default = "IacsTunnelConfig::default_waiting_client_ttl_seconds")]
+    pub waiting_client_ttl_seconds: u32,
+
+    /// Polling interval in seconds for the revocation watchdog.
+    /// Default `2`. The watchdog SELECTs IACS rows with disabled /
+    /// offboarded EWS or deactivated users and force-closes them.
+    #[serde(default = "IacsTunnelConfig::default_revocation_poll_interval_seconds")]
+    pub revocation_poll_interval_seconds: u32,
+}
+
+impl IacsTunnelConfig {
+    fn default_enabled() -> bool {
+        true
+    }
+    fn default_bind_addr() -> String {
+        "0.0.0.0:22322".to_string()
+    }
+    fn default_advertise_hostname() -> String {
+        "localhost".to_string()
+    }
+    fn default_target_addr() -> String {
+        "127.0.0.1:4321".to_string()
+    }
+    fn default_host_key_path() -> String {
+        "/var/lib/vauban/iacs_tunnel_host_ed25519".to_string()
+    }
+    fn default_max_concurrent_per_user() -> u32 {
+        4
+    }
+    fn default_max_concurrent_per_ews() -> u32 {
+        2
+    }
+    fn default_waiting_client_ttl_seconds() -> u32 {
+        300
+    }
+    fn default_revocation_poll_interval_seconds() -> u32 {
+        2
+    }
+
+    /// Parse `bind_addr` into `(host, port)`, defaulting on parse
+    /// errors so a malformed config still surfaces a *displayed*
+    /// port on the status page (the boot-time validation happens
+    /// in L3).
+    pub fn bind_port(&self) -> u16 {
+        self.bind_addr
+            .rsplit_once(':')
+            .and_then(|(_, p)| p.parse().ok())
+            .unwrap_or(22322)
+    }
+}
+
+impl Default for IacsTunnelConfig {
+    fn default() -> Self {
+        Self {
+            enabled: Self::default_enabled(),
+            bind_addr: Self::default_bind_addr(),
+            advertise_hostname: Self::default_advertise_hostname(),
+            target_addr: Self::default_target_addr(),
+            host_key_path: Self::default_host_key_path(),
+            max_concurrent_per_user: Self::default_max_concurrent_per_user(),
+            max_concurrent_per_ews: Self::default_max_concurrent_per_ews(),
+            waiting_client_ttl_seconds: Self::default_waiting_client_ttl_seconds(),
+            revocation_poll_interval_seconds: Self::default_revocation_poll_interval_seconds(),
         }
     }
 }

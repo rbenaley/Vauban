@@ -307,6 +307,9 @@ pub async fn create_session(
         is_recorded: true,
         metadata: serde_json::json!({}),
         max_session_duration: None,
+        industrial_protocol: None,
+        ews_uuid: None,
+        tunnel_target_addr: None,
     };
 
     let session: ProxySession = diesel::insert_into(proxy_sessions)
@@ -376,6 +379,9 @@ pub async fn terminate_session(
     let is_recording = match session_for_recording.session_type {
         SessionType::Ssh => state.config.recording.enabled && state.config.recording.ssh,
         SessionType::Rdp => state.config.recording.enabled,
+        // IACS tunnels are raw TCP forwards: no PTY, no commands,
+        // never recorded.
+        SessionType::IacsTunnel => false,
     };
 
     let updated_session = if is_recording {
@@ -431,6 +437,31 @@ pub async fn terminate_session(
                 let _ = proxy.close_session(&session_uuid_str);
                 proxy.unsubscribe_session(&session_uuid_str).await;
             }
+        }
+        // L5: IACS tunnels are owned by the in-process russh server.
+        // Closing the registry handle drains both relay tasks and
+        // disconnects the EWS within milliseconds. The status row
+        // is already updated to `terminated`; pushing a WS event so
+        // the status page can flip its pill without a reload.
+        SessionType::IacsTunnel => {
+            if let Some(handle) = state.iacs_tunnel_registry.close_and_remove(&session_uuid) {
+                tracing::info!(
+                    session_uuid = %session_uuid_str,
+                    ews_uuid = %handle.ews_uuid,
+                    "iacs_tunnel: tunnel closed by /terminate"
+                );
+            }
+            let channel =
+                crate::services::broadcast::WsChannel::SessionLive(session_uuid_str.clone());
+            let payload = serde_json::json!({
+                "type": "tunnel_closed",
+                "reason": "user_terminated",
+            });
+            let channel_name = channel.as_str();
+            let _ = state
+                .broadcast
+                .send_raw(&channel_name, payload.to_string())
+                .await;
         }
     }
 

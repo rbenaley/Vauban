@@ -10,6 +10,7 @@ use axum::{
 use axum_extra::extract::CookieJar;
 use chrono::{Duration, Utc};
 use diesel::prelude::*;
+use diesel::OptionalExtension;
 use diesel_async::RunQueryDsl;
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
@@ -27,7 +28,7 @@ use crate::models::auth_session::{AuthSession, NewAuthSession};
 use crate::models::user::AuthSource;
 use crate::models::user::User;
 use crate::schema::{auth_sessions, users::dsl::*};
-use crate::services::auth::{AuthService, is_encrypted_mfa_secret};
+use crate::services::auth::{AuthService, Claims, is_encrypted_mfa_secret};
 use crate::templates::accounts::{MfaSetupTemplate, MfaVerifyTemplate};
 use crate::templates::base::BaseTemplate;
 
@@ -179,6 +180,7 @@ pub async fn login(
             .await
             .map_err(AppError::Database)?;
 
+        let session_uuid = ::uuid::Uuid::new_v4();
         // Generate temporary token with mfa_verified = false
         let temp_token = state.auth_service.generate_access_token(
             &user.uuid.to_string(),
@@ -188,6 +190,7 @@ pub async fn login(
             user.is_superuser,
             // allow-role-gate: passed as JWT claim so the request-scoped Casbin subject mapping works on subsequent requests.
             user.is_staff,
+            Some(session_uuid),
         )?;
 
         // Create auth session with temporary token
@@ -212,7 +215,7 @@ pub async fn login(
         // and `insert_session_with_purge`. expires_at is set to
         // session_max_duration_secs from config (absolute max lifetime).
         let new_session = NewAuthSession {
-            uuid: ::uuid::Uuid::new_v4(),
+            uuid: session_uuid,
             user_id: user.id,
             token_hash,
             ip_address: client_ip,
@@ -367,6 +370,7 @@ pub async fn login(
         .into_response());
     };
 
+    let session_uuid = ::uuid::Uuid::new_v4();
     // Generate tokens (API flow with MFA verified)
     let access_token = state.auth_service.generate_access_token(
         &user.uuid.to_string(),
@@ -376,6 +380,7 @@ pub async fn login(
         user.is_superuser,
         // allow-role-gate: passed as JWT claim so the request-scoped Casbin subject mapping works on subsequent requests.
         user.is_staff,
+        Some(session_uuid),
     )?;
 
     // Reset failed attempts and update last_login
@@ -408,7 +413,7 @@ pub async fn login(
     // `insert_session_with_purge`. expires_at is set to
     // session_max_duration_secs from config (absolute max lifetime).
     let new_session = NewAuthSession {
-        uuid: ::uuid::Uuid::new_v4(),
+        uuid: session_uuid,
         user_id: user.id,
         token_hash,
         ip_address: client_ip,
@@ -548,6 +553,25 @@ fn hash_token(token: &str) -> String {
     let mut hasher = Sha3_256::new();
     hasher.update(token.as_bytes());
     format!("{:x}", hasher.finalize())
+}
+
+async fn resolve_auth_session_uuid(
+    conn: &mut diesel_async::AsyncPgConnection,
+    claims: &Claims,
+    current_token: &str,
+) -> Result<Option<::uuid::Uuid>, diesel::result::Error> {
+    if let Some(ref jti) = claims.jti
+        && let Ok(u) = ::uuid::Uuid::parse_str(jti)
+    {
+        return Ok(Some(u));
+    }
+    let old_hash = hash_token(current_token);
+    auth_sessions::table
+        .filter(auth_sessions::token_hash.eq(old_hash))
+        .select(auth_sessions::uuid)
+        .first(conn)
+        .await
+        .optional()
 }
 
 /// Issue #8: enforce at most one live `auth_sessions` row per
@@ -1036,6 +1060,10 @@ pub async fn mfa_setup_submit(
         .await
         .map_err(AppError::Database)?;
 
+    let session_uuid = resolve_auth_session_uuid(&mut conn, &claims, &token)
+        .await
+        .map_err(AppError::Database)?;
+
     // Generate new JWT with mfa_verified = true
     let new_token = state.auth_service.generate_access_token(
         &claims.sub,
@@ -1043,18 +1071,25 @@ pub async fn mfa_setup_submit(
         true, // mfa_verified
         is_super,
         is_staff_user,
+        session_uuid,
     )?;
 
     // Update the session in database with new token hash
-    // The old token hash won't work anymore, we need to update to the new one
-    let old_token_hash = hash_token(&token);
     let new_token_hash = hash_token(&new_token);
-
-    diesel::update(auth_sessions::table.filter(auth_sessions::token_hash.eq(&old_token_hash)))
-        .set(auth_sessions::token_hash.eq(&new_token_hash))
-        .execute(&mut conn)
-        .await
-        .ok(); // Ignore errors - session will be recreated on next login if needed
+    if let Some(sid) = session_uuid {
+        diesel::update(auth_sessions::table.filter(auth_sessions::uuid.eq(sid)))
+            .set(auth_sessions::token_hash.eq(new_token_hash))
+            .execute(&mut conn)
+            .await
+            .ok();
+    } else {
+        let old_token_hash = hash_token(&token);
+        diesel::update(auth_sessions::table.filter(auth_sessions::token_hash.eq(&old_token_hash)))
+            .set(auth_sessions::token_hash.eq(new_token_hash))
+            .execute(&mut conn)
+            .await
+            .ok();
+    }
 
     // Set new cookie
     use axum_extra::extract::cookie::{Cookie, SameSite};
@@ -1252,6 +1287,10 @@ pub async fn mfa_verify_submit(
         );
     }
 
+    let session_uuid = resolve_auth_session_uuid(&mut conn, &claims, &token)
+        .await
+        .map_err(AppError::Database)?;
+
     // Generate new JWT with mfa_verified = true
     let new_token = state.auth_service.generate_access_token(
         &claims.sub,
@@ -1259,18 +1298,25 @@ pub async fn mfa_verify_submit(
         true, // mfa_verified
         is_super,
         is_staff_user,
+        session_uuid,
     )?;
 
     // Update the session in database with new token hash
-    // The old token hash won't work anymore, we need to update to the new one
-    let old_token_hash = hash_token(&token);
     let new_token_hash = hash_token(&new_token);
-
-    diesel::update(auth_sessions::table.filter(auth_sessions::token_hash.eq(&old_token_hash)))
-        .set(auth_sessions::token_hash.eq(&new_token_hash))
-        .execute(&mut conn)
-        .await
-        .ok(); // Ignore errors - session will be recreated on next login if needed
+    if let Some(sid) = session_uuid {
+        diesel::update(auth_sessions::table.filter(auth_sessions::uuid.eq(sid)))
+            .set(auth_sessions::token_hash.eq(new_token_hash))
+            .execute(&mut conn)
+            .await
+            .ok();
+    } else {
+        let old_token_hash = hash_token(&token);
+        diesel::update(auth_sessions::table.filter(auth_sessions::token_hash.eq(&old_token_hash)))
+            .set(auth_sessions::token_hash.eq(new_token_hash))
+            .execute(&mut conn)
+            .await
+            .ok();
+    }
 
     // Set new cookie
     use axum_extra::extract::cookie::{Cookie, SameSite};

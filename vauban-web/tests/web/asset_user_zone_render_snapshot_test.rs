@@ -61,6 +61,8 @@ fn sample_user_item() -> AssetListItem {
         group_name: Some("Production".to_string()),
         requires_request: false,
         require_mfa: false,
+        is_iacs: false,
+        iacs_protocol_label: String::new(),
     }
 }
 
@@ -86,6 +88,8 @@ fn user_zone_list_renders_connect_only_no_admin_buttons() {
         statuses: vec![],
         require_justification: false,
         iacs_request_allowed: false,
+        iacs_connect_allowed: false,
+        user_has_active_ews: false,
     };
 
     let html = template.render().expect("AssetListTemplate must render");
@@ -140,6 +144,8 @@ fn user_zone_list_inlines_request_modal_no_detail_page_link() {
         statuses: vec![],
         require_justification: false,
         iacs_request_allowed: false,
+        iacs_connect_allowed: false,
+        user_has_active_ews: false,
     };
 
     let html = template.render().expect("AssetListTemplate must render");
@@ -175,5 +181,81 @@ fn user_zone_list_inlines_request_modal_no_detail_page_link() {
     assert!(
         html.contains("'ssh'"),
         "Request button must pass the asset_type literal to the modal store"
+    );
+}
+
+/// Visual pin: an IACS asset row MUST surface its protocol tag
+/// ("IACS · modbus" for Modbus, etc.) AND it MUST sit on the same
+/// horizontal flex container as the ONLINE / OFFLINE status badge,
+/// not on the secondary hostname line. The user-reported regression
+/// 2026-05-08 had the tag rendering on the line below the asset
+/// name; this test pins the new layout (status row carries both
+/// status and protocol, so the operator sees both at a glance).
+#[test]
+fn user_zone_iacs_asset_renders_protocol_tag_inline_with_status_badge() {
+    let mut item = sample_user_item();
+    item.name = "Modbus-01".to_string();
+    item.hostname = "127.0.0.1".to_string();
+    item.port = 502;
+    item.asset_type = "iacs_modbus".to_string();
+    item.status = "online".to_string();
+    item.is_iacs = true;
+    item.iacs_protocol_label = "modbus".to_string();
+
+    let template = AssetListTemplate {
+        title: "Assets".to_string(),
+        user: Some(regular_user()),
+        vauban: vauban_cfg(),
+        messages: Vec::new(),
+        language_code: "en".to_string(),
+        sidebar_content: None,
+        header_user: None,
+        assets: vec![item],
+        pagination: None,
+        search: None,
+        type_filter: None,
+        status_filter: None,
+        asset_types: vec![],
+        statuses: vec![],
+        require_justification: false,
+        iacs_request_allowed: true,
+        iacs_connect_allowed: true,
+        user_has_active_ews: true,
+    };
+
+    let html = template.render().expect("AssetListTemplate must render");
+
+    // The protocol tag itself MUST be on the page.
+    assert!(
+        html.contains("IACS"),
+        "user-zone IACS asset row must render the IACS industrial tag"
+    );
+    assert!(
+        html.contains("modbus"),
+        "user-zone IACS asset row must render the IACS protocol label (modbus)"
+    );
+
+    // Layout pin: ONLINE badge and the IACS tag must share the
+    // same horizontal flex container so they sit on the same row
+    // (rather than the IACS tag being demoted to the second
+    // hostname line). We check that "ONLINE" appears BEFORE the
+    // IACS tag in the source AND that no `</div>` closes the
+    // status flex row between them.
+    // The ONLINE badge appears first, then the IACS purple span
+    // (`bg-purple-50` -- same family as the factory icon circle).
+    let online_pos = html.find("ONLINE").expect("ONLINE badge must render");
+    let iacs_pill_pos = html
+        .find("bg-purple-50")
+        .expect("IACS protocol pill must render with bg-purple-50");
+    assert!(
+        online_pos < iacs_pill_pos,
+        "ONLINE badge must appear BEFORE the IACS protocol pill in the source"
+    );
+    let between = &html[online_pos..iacs_pill_pos];
+    assert!(
+        !between.contains("</div>"),
+        "no `</div>` may close the status row between ONLINE and the \
+         IACS tag -- both must live in the same horizontal flex \
+         container; got snippet between them: {between:?}"
     );
 }

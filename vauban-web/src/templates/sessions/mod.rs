@@ -1,6 +1,7 @@
 pub mod active_list;
 pub mod approval_detail;
 pub mod approval_list;
+pub mod iacs_tunnel_status;
 pub mod my_requests;
 pub mod recording_detail;
 pub mod recording_list;
@@ -39,6 +40,7 @@ pub use active_list::{
 };
 pub use approval_detail::ApprovalDetailTemplate;
 pub use approval_list::ApprovalListTemplate;
+pub use iacs_tunnel_status::IacsTunnelStatusTemplate;
 pub use my_requests::MyRequestsTemplate;
 pub use recording_detail::{
     ApprovalNarrative, IntegrityViewModel, RecordingDetailTemplate, RecordingDetailViewModel,

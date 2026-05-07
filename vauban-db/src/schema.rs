@@ -112,7 +112,7 @@ diesel::table! {
         #[max_length = 255]
         hostname -> Varchar,
         port -> Int4,
-        #[max_length = 10]
+        #[max_length = 20]
         asset_type -> Varchar,
         #[max_length = 15]
         status -> Varchar,
@@ -144,6 +144,31 @@ diesel::table! {
         expires_at -> Timestamptz,
         is_current -> Bool,
         created_at -> Timestamptz,
+    }
+}
+
+diesel::table! {
+    email_outbox (id) {
+        id -> Int8,
+        event_id -> Uuid,
+        #[max_length = 64]
+        event_kind -> Varchar,
+        #[max_length = 320]
+        recipient -> Varchar,
+        #[max_length = 255]
+        recipient_name -> Varchar,
+        #[max_length = 200]
+        subject -> Varchar,
+        body_text -> Text,
+        body_html -> Nullable<Text>,
+        #[max_length = 16]
+        status -> Varchar,
+        attempts -> Int4,
+        max_attempts -> Int4,
+        next_retry_at -> Nullable<Timestamptz>,
+        last_error -> Nullable<Text>,
+        created_at -> Timestamptz,
+        sent_at -> Nullable<Timestamptz>,
     }
 }
 
@@ -219,31 +244,6 @@ diesel::table! {
 }
 
 diesel::table! {
-    email_outbox (id) {
-        id -> Int8,
-        event_id -> Uuid,
-        #[max_length = 64]
-        event_kind -> Varchar,
-        #[max_length = 320]
-        recipient -> Varchar,
-        #[max_length = 255]
-        recipient_name -> Varchar,
-        #[max_length = 200]
-        subject -> Varchar,
-        body_text -> Text,
-        body_html -> Nullable<Text>,
-        #[max_length = 16]
-        status -> Varchar,
-        attempts -> Int4,
-        max_attempts -> Int4,
-        next_retry_at -> Nullable<Timestamptz>,
-        last_error -> Nullable<Text>,
-        created_at -> Timestamptz,
-        sent_at -> Nullable<Timestamptz>,
-    }
-}
-
-diesel::table! {
     proxy_sessions (id) {
         id -> Int4,
         uuid -> Uuid,
@@ -253,7 +253,7 @@ diesel::table! {
         credential_id -> Varchar,
         #[max_length = 100]
         credential_username -> Varchar,
-        #[max_length = 10]
+        #[max_length = 20]
         session_type -> Varchar,
         #[max_length = 15]
         status -> Varchar,
@@ -293,6 +293,11 @@ diesel::table! {
         #[max_length = 64]
         recording_codec -> Nullable<Varchar>,
         recording_finalized_at -> Nullable<Timestamptz>,
+        #[max_length = 20]
+        industrial_protocol -> Nullable<Varchar>,
+        ews_uuid -> Nullable<Uuid>,
+        #[max_length = 255]
+        tunnel_target_addr -> Nullable<Varchar>,
     }
 }
 

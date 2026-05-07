@@ -190,12 +190,18 @@ pub async fn asset_group_detail(
 
         let assets: Vec<crate::templates::assets::group_detail::GroupAssetItem> = assets_data
             .into_iter()
-            .map(|a| crate::templates::assets::group_detail::GroupAssetItem {
-                uuid: a.uuid.to_string(),
-                name: a.name,
-                hostname: a.hostname,
-                asset_type: a.asset_type,
-                status: a.status,
+            .map(|a| {
+                let badge_label = crate::models::asset::AssetType::parse_or_ssh(&a.asset_type)
+                    .badge_label()
+                    .to_string();
+                crate::templates::assets::group_detail::GroupAssetItem {
+                    uuid: a.uuid.to_string(),
+                    name: a.name,
+                    hostname: a.hostname,
+                    asset_type: a.asset_type,
+                    badge_label,
+                    status: a.status,
+                }
             })
             .collect();
 

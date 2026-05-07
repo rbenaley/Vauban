@@ -113,6 +113,13 @@ pub struct AppState {
     /// dashboard. Re-uses `db_pool` and the supervisor's broker
     /// latency tracker, so this struct is lightweight to clone.
     pub system_health_cache: Arc<SystemHealthCache>,
+    /// In-memory registry of live IACS tunnels (`session_uuid` ->
+    /// handle). Threaded through every consumer (axum terminate
+    /// route, watchdog, WS pusher, in-process russh handler) so
+    /// the lifecycle of a tunnel is owned in exactly one place.
+    /// Empty by default; populated by the russh server task when
+    /// `[industrial.iacs_tunnel].enabled` is `true`.
+    pub iacs_tunnel_registry: services::iacs_tunnel::TunnelRegistry,
 }
 
 #[cfg(test)]

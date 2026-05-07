@@ -305,6 +305,9 @@ pub async fn connect_rdp(
             is_recorded: true,
             metadata: serde_json::json!({}),
             max_session_duration: jit_max_duration,
+            industrial_protocol: None,
+            ews_uuid: None,
+            tunnel_target_addr: None,
         };
 
         if let Err(e) = diesel::insert_into(proxy_sessions::table)

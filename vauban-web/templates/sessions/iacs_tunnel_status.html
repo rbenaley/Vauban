@@ -1,0 +1,232 @@
+{% extends "base.html" %}
+
+{% block title %}{{ title }} - {{ vauban.brand_name }}{% endblock %}
+
+{% block content %}
+<div class="space-y-4 max-w-4xl">
+    {# ----------------------------------------------------------------
+       Page header: back arrow + title + protocol badge.
+       The Disconnect button lives in the right column (form POST).
+       L5 will replace the static status pill with a live one driven
+       by a `WsChannel::SessionLive(uuid)` subscription; the markup
+       is already wrapped in an Alpine container so adding the
+       subscription is a one-line change.
+       ----------------------------------------------------------------#}
+    <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div class="flex items-center gap-3 sm:gap-4 min-w-0">
+            <a href="/assets" class="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 flex-shrink-0" aria-label="Back to assets">
+                <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/>
+                </svg>
+            </a>
+            <h1 class="text-lg sm:text-xl lg:text-2xl font-semibold text-gray-900 dark:text-white break-words min-w-0">
+                IACS tunnel &mdash; {{ asset_name }}
+            </h1>
+            {% if !industrial_protocol.is_empty() %}
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-semibold bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300 flex-shrink-0">
+                IACS &middot; {{ industrial_protocol }}
+            </span>
+            {% endif %}
+        </div>
+        <div class="flex items-center gap-2 sm:flex-shrink-0">
+            {# Disconnect form posts to the existing terminate endpoint;
+               L5 augments it with a confirm dialog and an in-flight
+               disabled state. #}
+            <form method="post" action="/sessions/{{ session_uuid }}/terminate" x-data="csrf">
+                <input type="hidden" name="csrf_token" x-model="token" />
+                <button type="submit"
+                        data-testid="iacs-tunnel-disconnect"
+                        class="px-3 py-1.5 text-sm bg-red-600 hover:bg-red-700 text-white rounded-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-500">
+                    Disconnect
+                </button>
+            </form>
+        </div>
+    </div>
+
+    {# ----------------------------------------------------------------
+       Status pill. L2 ships the *server-rendered* initial value. L5
+       wires `<span x-text="status">` so a WS push mutates it in
+       place without a full page reload. We seed Alpine state with the
+       same value so L5 can simply add `x-text` and remove the literal.
+       ----------------------------------------------------------------#}
+    <div class="bg-white dark:bg-gray-800 shadow rounded-lg p-4 sm:p-6"
+         data-testid="iacs-tunnel-status-card"
+         x-data="iacsTunnelStatus({
+                    initialStatus: '{{ session_status }}',
+                    sessionUuid: '{{ session_uuid }}',
+                 })"
+         x-init="init()">
+        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div class="flex items-center gap-3">
+                <span class="relative flex h-3 w-3">
+                    <template x-if="status === 'waiting_client'">
+                        <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-yellow-400 opacity-75"></span>
+                    </template>
+                    <span class="relative inline-flex rounded-full h-3 w-3"
+                          :class="{
+                              'bg-yellow-500': status === 'waiting_client',
+                              'bg-green-500': status === 'tunnel_active',
+                              'bg-gray-400': status !== 'waiting_client' && status !== 'tunnel_active'
+                          }"></span>
+                </span>
+                <div>
+                    <p class="text-sm font-semibold text-gray-900 dark:text-white" data-testid="iacs-tunnel-status">
+                        <span x-show="status === 'waiting_client'">Waiting for EWS connection&hellip;</span>
+                        <span x-show="status === 'tunnel_active'">Tunnel active</span>
+                        <span x-show="status === 'terminated'">Tunnel terminated</span>
+                        <span x-show="status === 'expired'">Tunnel expired</span>
+                        <span x-show="!['waiting_client','tunnel_active','terminated','expired'].includes(status)" x-text="status"></span>
+                    </p>
+                    <p class="text-xs text-gray-500 dark:text-gray-400">
+                        Session ID:
+                        <code class="font-mono" data-testid="iacs-tunnel-session-uuid">{{ session_uuid }}</code>
+                    </p>
+                    <p class="text-xs text-gray-500 dark:text-gray-400" x-show="peerIp">
+                        Peer IP: <code class="font-mono" x-text="peerIp" data-testid="iacs-tunnel-peer-ip"></code>
+                        <span x-show="duration" class="ml-2">&middot; Duration: <span x-text="duration"></span></span>
+                    </p>
+                </div>
+            </div>
+            <dl class="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-gray-600 dark:text-gray-300">
+                <dt class="font-medium">Bytes in</dt>
+                <dd class="text-right font-mono" data-testid="iacs-tunnel-bytes-in" x-text="formatBytes(bytesIn)">&mdash;</dd>
+                <dt class="font-medium">Bytes out</dt>
+                <dd class="text-right font-mono" data-testid="iacs-tunnel-bytes-out" x-text="formatBytes(bytesOut)">&mdash;</dd>
+            </dl>
+        </div>
+    </div>
+
+    {# L5: WS subscription to /ws/session/{uuid}. The broadcast
+       layer pushes JSON payloads (`tunnel_active`, `tunnel_stats`,
+       `tunnel_closed`); the Alpine component below dispatches on
+       `payload.type` and updates the panel in place. #}
+    <script>
+    document.addEventListener('alpine:init', () => {
+      Alpine.data('iacsTunnelStatus', (opts) => ({
+        status: opts.initialStatus,
+        sessionUuid: opts.sessionUuid,
+        peerIp: '',
+        bytesIn: 0,
+        bytesOut: 0,
+        startedAt: null,
+        duration: '',
+        ws: null,
+        durationTimer: null,
+        init() {
+          if (this.status === 'tunnel_active') {
+            this.startedAt = Date.now();
+            this.startDurationTimer();
+          }
+          const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+          const url = proto + '//' + window.location.host + '/ws/session/' + this.sessionUuid;
+          try {
+            this.ws = new WebSocket(url);
+            this.ws.onmessage = (ev) => this.handle(ev.data);
+            this.ws.onerror = () => {};
+          } catch (e) { /* swallow: status page still useful without WS */ }
+        },
+        handle(raw) {
+          let msg;
+          try { msg = JSON.parse(raw); } catch (e) { return; }
+          if (!msg || !msg.type) return;
+          if (msg.type === 'tunnel_active') {
+            this.status = 'tunnel_active';
+            if (msg.peer_ip) this.peerIp = msg.peer_ip;
+            this.startedAt = Date.now();
+            this.startDurationTimer();
+          } else if (msg.type === 'tunnel_stats') {
+            if (typeof msg.bytes_in === 'number') this.bytesIn = msg.bytes_in;
+            if (typeof msg.bytes_out === 'number') this.bytesOut = msg.bytes_out;
+          } else if (msg.type === 'tunnel_closed') {
+            this.status = 'terminated';
+            if (typeof msg.bytes_in === 'number') this.bytesIn = msg.bytes_in;
+            if (typeof msg.bytes_out === 'number') this.bytesOut = msg.bytes_out;
+            this.stopDurationTimer();
+          }
+        },
+        startDurationTimer() {
+          if (this.durationTimer) return;
+          const tick = () => {
+            if (!this.startedAt) return;
+            const s = Math.floor((Date.now() - this.startedAt) / 1000);
+            const h = Math.floor(s / 3600);
+            const m = Math.floor((s % 3600) / 60);
+            const sec = s % 60;
+            this.duration = (h > 0 ? h + 'h ' : '') + (m > 0 || h > 0 ? m + 'm ' : '') + sec + 's';
+          };
+          tick();
+          this.durationTimer = setInterval(tick, 1000);
+        },
+        stopDurationTimer() {
+          if (this.durationTimer) { clearInterval(this.durationTimer); this.durationTimer = null; }
+        },
+        formatBytes(n) {
+          if (!n) return '0 B';
+          const u = ['B','KiB','MiB','GiB','TiB'];
+          let v = n, i = 0;
+          while (v >= 1024 && i < u.length - 1) { v /= 1024; i += 1; }
+          return v.toFixed(i === 0 ? 0 : 1) + ' ' + u[i];
+        },
+      }));
+    });
+    </script>
+
+    {# ----------------------------------------------------------------
+       The ssh -L command: copy block. The Alpine `cmd` is hydrated
+       from the server-rendered string so a single source of truth
+       stays in `IacsTunnelStatusTemplate::ssh_command`. The copy
+       button matches the iacs/onboard double-square pattern and the
+       hidden-textarea fallback covers HTTP / older browsers.
+       ----------------------------------------------------------------#}
+    <div class="bg-white dark:bg-gray-800 shadow rounded-lg p-4 sm:p-6 space-y-3">
+        <h2 class="text-sm font-semibold text-gray-900 dark:text-white">
+            Run this command on your EWS
+        </h2>
+        <p class="text-xs text-gray-500 dark:text-gray-400">
+            The bastion will accept exactly one inbound SSH connection from your EWS public key
+            on this session. Run the command on the workstation you onboarded;
+            the local port forward will tunnel
+            <code class="font-mono">{{ tunnel_target_addr }}</code>
+            through the bastion.
+        </p>
+        <div x-data="{ cmd: '{{ self.ssh_command()|escape }}', copied: false,
+                       copy() {
+                         const restore = () => { this.copied = true; setTimeout(() => this.copied = false, 1500); };
+                         if (navigator.clipboard && window.isSecureContext) {
+                           navigator.clipboard.writeText(this.cmd).then(restore).catch(() => restore());
+                         } else {
+                           const ta = document.createElement('textarea');
+                           ta.value = this.cmd; document.body.appendChild(ta);
+                           ta.select(); document.execCommand('copy');
+                           document.body.removeChild(ta); restore();
+                         }
+                       } }">
+            <div class="relative">
+                <pre class="rounded-md bg-gray-900 text-gray-100 text-xs sm:text-sm p-3 pr-12 overflow-x-auto"><code data-testid="iacs-tunnel-ssh-command">{{ self.ssh_command() }}</code></pre>
+                <button type="button"
+                        @click="copy()"
+                        :title="copied ? 'Copied!' : 'Copy command'"
+                        :aria-label="copied ? 'Copied' : 'Copy command to clipboard'"
+                        data-testid="iacs-tunnel-ssh-command-copy"
+                        class="absolute top-2 right-2 inline-flex items-center justify-center rounded-md hover:bg-gray-800 text-gray-300 hover:text-white p-1.5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-500">
+                    <svg x-show="!copied" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 8.25V6a2.25 2.25 0 0 0-2.25-2.25H6A2.25 2.25 0 0 0 3.75 6v8.25A2.25 2.25 0 0 0 6 16.5h2.25m8.25-8.25H18a2.25 2.25 0 0 1 2.25 2.25V18A2.25 2.25 0 0 1 18 20.25h-7.5A2.25 2.25 0 0 1 8.25 18v-1.5m8.25-8.25h-6a2.25 2.25 0 0 0-2.25 2.25v6"/>
+                    </svg>
+                    <svg x-show="copied" x-cloak class="h-4 w-4 text-green-400" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
+                    </svg>
+                </button>
+            </div>
+        </div>
+        <details class="text-xs text-gray-500 dark:text-gray-400">
+            <summary class="cursor-pointer">What does this command do?</summary>
+            <div class="mt-2 space-y-1">
+                <p><code class="font-mono">-L {{ local_forward_port }}:127.0.0.1:{{ local_forward_port }}</code> &mdash; bind a local TCP listener on your EWS that forwards through the bastion.</p>
+                <p><code class="font-mono">{{ session_uuid }}@{{ bastion_hostname }}</code> &mdash; the SSH username is the one-shot session UUID issued by VAUBAN.</p>
+                <p><code class="font-mono">-p {{ bastion_port }}</code> &mdash; the IACS sshd port (separate from the regular VAUBAN proxy).</p>
+                <p><code class="font-mono">-N</code> &mdash; do not request a shell; only the port forward is allowed.</p>
+            </div>
+        </details>
+    </div>
+</div>
+{% endblock %}

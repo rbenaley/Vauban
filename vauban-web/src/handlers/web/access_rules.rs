@@ -77,6 +77,11 @@ pub struct CreateAccessRuleWebForm {
     pub asset_group_id: i32,
     pub allowed_ssh: Option<String>,
     pub allowed_rdp: Option<String>,
+    /// Master "IACS (all industrial protocols)" checkbox -- expanded
+    /// at save time to every `iacs_*` asset_type so the admin does
+    /// not have to tick five protocols separately. See
+    /// [`build_protocols`].
+    pub allowed_iacs: Option<String>,
     pub valid_from: Option<String>,
     pub valid_until: Option<String>,
     pub require_mfa: Option<String>,
@@ -96,6 +101,8 @@ pub struct UpdateAccessRuleWebForm {
     pub asset_group_id: i32,
     pub allowed_ssh: Option<String>,
     pub allowed_rdp: Option<String>,
+    /// Master IACS checkbox; see [`CreateAccessRuleWebForm::allowed_iacs`].
+    pub allowed_iacs: Option<String>,
     pub valid_from: Option<String>,
     pub valid_until: Option<String>,
     pub require_mfa: Option<String>,
@@ -115,7 +122,31 @@ pub struct DeleteAccessRuleWebForm {
 // Helpers
 // ============================================================================
 
-fn build_protocols(ssh: &Option<String>, rdp: &Option<String>) -> Vec<String> {
+/// All 5 IACS asset_type values listed at once. Source of truth lives
+/// on `AssetType::ALL` filtered through `is_iacs()` so a future variant
+/// added in `models/asset.rs` automatically lands in any rule the
+/// admin marked with the "IACS (all industrial protocols)" master
+/// checkbox -- no second place to remember to update.
+fn iacs_protocols() -> Vec<String> {
+    crate::models::asset::AssetType::ALL
+        .iter()
+        .filter(|t| t.is_iacs())
+        .map(|t| t.as_str().to_string())
+        .collect()
+}
+
+/// Build the `allowed_protocols` Vec from the access-rule form
+/// checkboxes. The `iacs` master checkbox is a UX shortcut that
+/// expands to every `iacs_*` value at save time -- it never lands
+/// on the persisted row as a single token. Admins who want a
+/// partial subset (e.g. Modbus only) must still go through the
+/// IPC layer; the web form is intentionally all-or-nothing on
+/// IACS to keep the operator surface focused.
+fn build_protocols(
+    ssh: &Option<String>,
+    rdp: &Option<String>,
+    iacs: &Option<String>,
+) -> Vec<String> {
     let mut protocols = Vec::new();
     if ssh.is_some() {
         protocols.push("ssh".to_string());
@@ -123,7 +154,22 @@ fn build_protocols(ssh: &Option<String>, rdp: &Option<String>) -> Vec<String> {
     if rdp.is_some() {
         protocols.push("rdp".to_string());
     }
+    if iacs.is_some() {
+        protocols.extend(iacs_protocols());
+    }
     protocols
+}
+
+/// Whether any `iacs_*` protocol appears in the rule's persisted
+/// `allowed_protocols` Vec. Used to pre-fill the IACS master
+/// checkbox on edit. Note the asymmetry: a rule with even ONE
+/// `iacs_*` protocol pre-checks the master; a subsequent save then
+/// expands it to every `iacs_*`. That one-way upgrade is the
+/// trade-off for the simplified UX -- partial IACS rules created
+/// via IPC stay accessible read-only and a banner could later
+/// surface this if it becomes a pain point.
+fn any_iacs_protocol(allowed_protocols: &[String]) -> bool {
+    allowed_protocols.iter().any(|p| p.starts_with("iacs_"))
 }
 
 fn parse_datetime(s: &Option<String>) -> Option<chrono::DateTime<chrono::Utc>> {
@@ -420,6 +466,7 @@ pub async fn access_rule_create_form(
             is_active: true,
             allowed_ssh: true,
             allowed_rdp: true,
+            allowed_iacs: false,
             ..Default::default()
         },
         user_groups,
@@ -469,7 +516,7 @@ pub async fn create_access_rule_web(
         return flash_redirect(flash.error("Rule name is required"), "/assets/access/new");
     }
 
-    let protocols = build_protocols(&form.allowed_ssh, &form.allowed_rdp);
+    let protocols = build_protocols(&form.allowed_ssh, &form.allowed_rdp, &form.allowed_iacs);
     if protocols.is_empty() {
         return flash_redirect(
             flash.error("At least one protocol must be selected"),
@@ -605,6 +652,7 @@ pub async fn access_rule_edit(
             asset_group_id: info.asset_group_id,
             allowed_ssh: info.allowed_protocols.iter().any(|p| p == "ssh"),
             allowed_rdp: info.allowed_protocols.iter().any(|p| p == "rdp"),
+            allowed_iacs: any_iacs_protocol(&info.allowed_protocols),
             valid_from: format_rfc3339_to_local(&info.valid_from),
             valid_until: format_rfc3339_to_local(&info.valid_until),
             require_mfa: info.require_mfa,
@@ -692,7 +740,7 @@ pub async fn update_access_rule_web(
         );
     }
 
-    let protocols = build_protocols(&form.allowed_ssh, &form.allowed_rdp);
+    let protocols = build_protocols(&form.allowed_ssh, &form.allowed_rdp, &form.allowed_iacs);
     if protocols.is_empty() {
         return flash_redirect(
             flash.error("At least one protocol must be selected"),
@@ -815,5 +863,78 @@ pub async fn delete_access_rule_web(
             tracing::error!("Failed to delete access rule: {}", e);
             flash_redirect(flash.error("Failed to delete access rule"), &detail_url)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `iacs_protocols()` is the source of truth for the master IACS
+    /// checkbox expansion. It MUST cover every `iacs_*` variant
+    /// declared on `AssetType` -- otherwise a virtual "All assets"
+    /// rule would still silently exclude the missing protocol.
+    #[test]
+    fn iacs_protocols_covers_every_iacs_variant() {
+        let from_helper: std::collections::BTreeSet<String> =
+            iacs_protocols().into_iter().collect();
+        let from_enum: std::collections::BTreeSet<String> =
+            crate::models::asset::AssetType::ALL
+                .iter()
+                .filter(|t| t.is_iacs())
+                .map(|t| t.as_str().to_string())
+                .collect();
+        assert_eq!(
+            from_helper, from_enum,
+            "iacs_protocols() must enumerate every AssetType::is_iacs variant"
+        );
+        assert_eq!(
+            from_helper.len(),
+            5,
+            "today the closed vocabulary has exactly five IACS protocols (Modbus, OPC UA, PROFINET, IEC-104, generic TCP)"
+        );
+    }
+
+    #[test]
+    fn build_protocols_with_iacs_master_expands_to_every_iacs_variant() {
+        let protos = build_protocols(
+            &Some("true".to_string()),
+            &None,
+            &Some("true".to_string()),
+        );
+        assert!(protos.contains(&"ssh".to_string()));
+        assert!(!protos.contains(&"rdp".to_string()));
+        assert!(protos.contains(&"iacs_modbus".to_string()));
+        assert!(protos.contains(&"iacs_opcua".to_string()));
+        assert!(protos.contains(&"iacs_profinet".to_string()));
+        assert!(protos.contains(&"iacs_iec104".to_string()));
+        assert!(protos.contains(&"iacs_tcp".to_string()));
+    }
+
+    #[test]
+    fn build_protocols_without_iacs_master_yields_no_iacs_protocols() {
+        let protos = build_protocols(
+            &Some("true".to_string()),
+            &Some("true".to_string()),
+            &None,
+        );
+        assert_eq!(protos, vec!["ssh".to_string(), "rdp".to_string()]);
+        assert!(!protos.iter().any(|p| p.starts_with("iacs_")));
+    }
+
+    /// Pre-fill semantics on edit: the master IACS checkbox must
+    /// surface AS SOON AS at least one `iacs_*` protocol is on the
+    /// rule. The intentional asymmetry (any -> checked, save ->
+    /// expand to all) is documented on
+    /// [`AccessRuleCreateForm::allowed_iacs`].
+    #[test]
+    fn any_iacs_protocol_detects_partial_iacs_rule() {
+        assert!(any_iacs_protocol(&["iacs_modbus".to_string()]));
+        assert!(any_iacs_protocol(&[
+            "ssh".to_string(),
+            "iacs_opcua".to_string()
+        ]));
+        assert!(!any_iacs_protocol(&["ssh".to_string(), "rdp".to_string()]));
+        assert!(!any_iacs_protocol(&[]));
     }
 }

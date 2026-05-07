@@ -49,6 +49,7 @@ async fn test_mfa_setup_page_renders() {
             false,
             false,
             false,
+            None,
         )
         .unwrap();
 
@@ -97,6 +98,7 @@ async fn test_mfa_setup_page_shows_qr_code() {
             false,
             false,
             false,
+            None,
         )
         .unwrap();
 
@@ -161,6 +163,7 @@ async fn test_mfa_verify_page_renders() {
             false,
             false,
             false,
+            None,
         )
         .unwrap();
 
@@ -206,6 +209,7 @@ async fn test_mfa_verify_page_has_code_input() {
             false,
             false,
             false,
+            None,
         )
         .unwrap();
 
@@ -254,6 +258,7 @@ async fn test_mfa_setup_submit_invalid_code() {
             false,
             false,
             false,
+            None,
         )
         .unwrap();
 
@@ -310,6 +315,7 @@ async fn test_mfa_verify_submit_invalid_code() {
             false,
             false,
             false,
+            None,
         )
         .unwrap();
 

@@ -60,3 +60,12 @@ require_justification = false
 memory_size_kb = 1024
 iterations = 1
 parallelism = 1
+
+# IACS sshd disabled in the test profile: the integration tests that
+# need a sshd build their own (`spawn_iacs_tunnel_server` on
+# `127.0.0.1:0` with a per-test temp host key path), and leaving the
+# global instance disabled prevents two parallel test runs from
+# fighting over the same host key file.
+[industrial.iacs_tunnel]
+enabled = false
+host_key_path = "vauban-web/certs/iacs_tunnel_host_ed25519.test"

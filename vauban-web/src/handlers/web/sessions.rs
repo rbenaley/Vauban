@@ -1544,6 +1544,9 @@ pub async fn submit_access_request(
         is_recorded: true,
         metadata: serde_json::json!({}),
         max_session_duration: access_result.max_session_duration,
+        industrial_protocol: None,
+        ews_uuid: None,
+        tunnel_target_addr: None,
     };
 
     if let Err(e) = diesel::insert_into(proxy_sessions::table)
@@ -2974,6 +2977,7 @@ pub async fn recording_detail(
     let session_type_label = match s_type {
         SessionType::Ssh => "SSH (port 22)",
         SessionType::Rdp => "RDP (port 3389)",
+        SessionType::IacsTunnel => "IACS tunnel",
     };
 
     let (status_label, status_pill_class) = status_pill(&s_status);
@@ -3209,6 +3213,13 @@ pub async fn download_recording(
                 .map_err(|e| AppError::Internal(anyhow::anyhow!("Response build error: {}", e)))
         }
         SessionType::Rdp => stream_rdp_zip(&state, &session_uuid_db, base_dir).await,
+        // IACS tunnels are never recorded -- no asciicast, no fmp4
+        // segment archive. Reject the download with 404 so an
+        // operator who navigates to the route by accident gets a
+        // sensible error instead of a stuck stream.
+        SessionType::IacsTunnel => Err(AppError::NotFound(
+            "IACS tunnel sessions are not recorded".to_string(),
+        )),
     }
 }
 

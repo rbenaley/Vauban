@@ -150,6 +150,10 @@ async fn iacs_kill_switch_off_collapses_every_subject_to_no_access() {
         !user_perms.iacs_manage,
         "kill-switch must drop iacs_manage to false"
     );
+    assert!(
+        !user_perms.assets_connect_iacs,
+        "kill-switch must drop assets_connect_iacs to false"
+    );
 
     // Non-IACS permissions stay untouched -- the kill-switch is
     // surgical, never collateral.

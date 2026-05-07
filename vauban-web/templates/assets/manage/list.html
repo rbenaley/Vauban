@@ -154,6 +154,15 @@
                 <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div class="flex items-start space-x-3 sm:space-x-4 min-w-0">
                         <div class="flex-shrink-0">
+                            {# Pictogram-per-family. Pre-IACS the `else`
+                               arm fell through to the RDP-monitor SVG,
+                               which mislabeled every IACS row visually
+                               (operator-reported 2026-05-08). The IACS
+                               arm now renders the same sawtooth-roof
+                               factory glyph used by the IACS sidebar
+                               entry (templates/partials/sidebar_content.html)
+                               so the visual identity stays consistent
+                               across the surface. #}
                             <span class="inline-flex h-10 w-10 items-center justify-center rounded-full
                                 {% if asset.asset_type == "ssh" %}bg-green-100 text-green-600 dark:bg-green-900/50 dark:text-green-400
                                 {% elif asset.asset_type == "rdp" %}bg-blue-100 text-blue-600 dark:bg-blue-900/50 dark:text-blue-400
@@ -166,9 +175,13 @@
                                 <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17.25v1.007a3 3 0 01-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0115 18.257V17.25m6-12V15a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 15V5.25m18 0A2.25 2.25 0 0018.75 3H5.25A2.25 2.25 0 003 5.25m18 0V12a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 12V5.25"/>
                                 </svg>
+                                {% elif asset.is_iacs %}
+                                <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 21h19.5M3 21V12l3-4v4l3-4v4l3-4v4l3-4v4l3-4v4l3-4v4V21L13.5 21V16H10.5V21H3M4.75 10.25V4.75H7.25V10.25H4.75Z"/>
+                                </svg>
                                 {% else %}
                                 <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17.25v1.007a3 3 0 01-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0115 18.257V17.25m6-12V15a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 15V5.25m18 0A2.25 2.25 0 0018.75 3H5.25A2.25 2.25 0 003 5.25m18 0V12a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 12V5.25"/>
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5.25 14.25h13.5m-13.5 0a3 3 0 01-3-3m3 3a3 3 0 100 6h13.5a3 3 0 100-6m-16.5-3a3 3 0 013-3h13.5a3 3 0 013 3m-19.5 0a4.5 4.5 0 01.9-2.7L5.737 5.1a3.375 3.375 0 012.7-1.35h7.126c1.062 0 2.062.5 2.7 1.35l2.587 3.45a4.5 4.5 0 01.9 2.7m0 0a3 3 0 01-3 3m0 3h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008zm-3 6h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008z"/>
                                 </svg>
                                 {% endif %}
                             </span>
@@ -185,6 +198,13 @@
                                     {% else %}bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300{% endif %}">
                                     {{ asset.status|upper }}
                                 </span>
+                                {# Same industrial protocol pill as user zone `/assets`
+                                   (purple = factory icon family; distinct from MAINTENANCE). #}
+                                {% if asset.is_iacs %}
+                                <span class="inline-flex items-center rounded-md bg-purple-50 dark:bg-purple-900/30 px-1.5 py-0.5 text-xs font-medium text-purple-700 dark:text-purple-300 ring-1 ring-inset ring-purple-700/10 dark:ring-purple-300/20">
+                                    IACS{% if !asset.iacs_protocol_label.is_empty() %} &middot; {{ asset.iacs_protocol_label }}{% endif %}
+                                </span>
+                                {% endif %}
                             </div>
                             <p class="text-sm text-gray-500 dark:text-gray-400 break-all">
                                 {{ asset.hostname }}:{{ asset.port }}

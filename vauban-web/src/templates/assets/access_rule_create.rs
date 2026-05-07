@@ -28,6 +28,12 @@ pub struct AccessRuleCreateForm {
     pub asset_group_id: String,
     pub allowed_ssh: bool,
     pub allowed_rdp: bool,
+    /// Master "IACS (all industrial protocols)" toggle. When true,
+    /// the persisted `allowed_protocols` carries every `iacs_*`
+    /// value in lockstep so a rule on the virtual "All assets"
+    /// group really covers every asset including IACS without the
+    /// admin having to tick five separate boxes.
+    pub allowed_iacs: bool,
     pub valid_from: String,
     pub valid_until: String,
     pub require_mfa: bool,
@@ -49,6 +55,7 @@ impl Default for AccessRuleCreateForm {
             asset_group_id: String::new(),
             allowed_ssh: false,
             allowed_rdp: false,
+            allowed_iacs: false,
             valid_from: String::new(),
             valid_until: String::new(),
             require_mfa: false,

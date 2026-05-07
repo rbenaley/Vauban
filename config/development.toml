@@ -12,7 +12,7 @@ secret_key = "CHANGE-ME-IN-PRODUCTION-32-CHARS!"
 bin_path = "./target/debug"
 
 [product.brand]
-name = "BAŞKESEN"
+name = "VAUBAN"
 
 [supervisor]
 privsep = false
@@ -41,3 +41,18 @@ require_justification = false
 # ACME disabled in development (self-signed certs used)
 [server.tls.acme]
 enabled = false
+
+# ==============================================================================
+# IACS TUNNEL OVERRIDES (vauban-web in-process sshd)
+# ==============================================================================
+#
+# Production stores the ed25519 host key under /var/lib/vauban/ (root-
+# owned, mode 0700). The development binary runs as the dev user and
+# does not have write access there, so we redirect the host key to
+# `vauban-web/certs/` -- the same gitignored directory that already
+# holds the dev TLS material (`dev-server.crt`, `dev-server.key`).
+# Persistent across `cargo clean` so EWS `known_hosts` entries
+# survive a rebuild; gitignored so the private key never lands in
+# git.
+[industrial.iacs_tunnel]
+host_key_path = "vauban-web/certs/iacs_tunnel_host_ed25519"

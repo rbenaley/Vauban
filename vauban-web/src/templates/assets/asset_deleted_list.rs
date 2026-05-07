@@ -42,6 +42,13 @@ pub struct DeletedAssetItem {
     pub port: i32,
     pub connection_username: String,
     pub asset_type: String,
+    /// Whether the tombstoned row was an IACS asset. Drives the
+    /// row icon (factory pictogram) and the readable type label.
+    pub is_iacs: bool,
+    /// Friendly type label for the small tombstone pill (e.g.
+    /// "IACS - Modbus") so the row reads naturally instead of the
+    /// raw `iacs_modbus` token. Source: `AssetType::label`.
+    pub type_label: String,
     pub deleted_at: Option<chrono::DateTime<chrono::Utc>>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub deleted_by: Option<AuthorRef>,
@@ -74,6 +81,8 @@ mod tests {
             port: 22,
             connection_username: "root".to_string(),
             asset_type: "ssh".to_string(),
+            is_iacs: false,
+            type_label: "SSH".to_string(),
             deleted_at: Some(chrono::Utc::now()),
             created_at: chrono::Utc::now() - chrono::Duration::days(7),
             deleted_by: Some(AuthorRef {

@@ -76,10 +76,7 @@ pub async fn asset_create_form(
         header_user,
         form,
         csrf_token,
-        asset_types: vec![
-            ("ssh".to_string(), "SSH".to_string()),
-            ("rdp".to_string(), "RDP".to_string()),
-        ],
+        asset_types: AssetType::select_options(),
     };
 
     let html = template
@@ -151,7 +148,19 @@ pub async fn create_asset_web(
         );
     }
 
-    let parsed_asset_type = AssetType::parse(&form.asset_type);
+    let parsed_asset_type = match AssetType::parse(&form.asset_type) {
+        Ok(t) => t,
+        Err(_) => {
+            return flash_redirect(
+                flash.error(format!(
+                    "Unknown asset type: {:?}. Must be one of {:?}",
+                    form.asset_type,
+                    AssetType::ALL.iter().map(|a| a.as_str()).collect::<Vec<_>>()
+                )),
+                "/assets/manage/new",
+            );
+        }
+    };
     if let Err(msg) = validate_auth_inputs(
         parsed_asset_type,
         form.ssh_auth_type.as_deref(),
@@ -334,10 +343,17 @@ pub async fn manage_asset_list(
     if let Some(ref asset_type) = type_filter
         && !asset_type.is_empty()
     {
-        if let Some(parsed) = AssetType::try_parse(asset_type) {
-            count_query = count_query.filter(schema_assets::asset_type.eq(parsed));
-        } else {
-            count_query = count_query.filter(schema_assets::id.eq(-1));
+        match AssetType::parse_filter(asset_type) {
+            crate::models::asset::AssetTypeFilter::One(parsed) => {
+                count_query = count_query.filter(schema_assets::asset_type.eq(parsed));
+            }
+            crate::models::asset::AssetTypeFilter::IacsAll => {
+                count_query = count_query
+                    .filter(schema_assets::asset_type.eq_any(AssetType::iacs_variants()));
+            }
+            crate::models::asset::AssetTypeFilter::Unknown => {
+                count_query = count_query.filter(schema_assets::id.eq(-1));
+            }
         }
     }
     if let Some(ref status_val) = status_filter
@@ -370,10 +386,17 @@ pub async fn manage_asset_list(
     if let Some(ref asset_type) = type_filter
         && !asset_type.is_empty()
     {
-        if let Some(parsed) = AssetType::try_parse(asset_type) {
-            query = query.filter(schema_assets::asset_type.eq(parsed));
-        } else {
-            query = query.filter(schema_assets::id.eq(-1));
+        match AssetType::parse_filter(asset_type) {
+            crate::models::asset::AssetTypeFilter::One(parsed) => {
+                query = query.filter(schema_assets::asset_type.eq(parsed));
+            }
+            crate::models::asset::AssetTypeFilter::IacsAll => {
+                query =
+                    query.filter(schema_assets::asset_type.eq_any(AssetType::iacs_variants()));
+            }
+            crate::models::asset::AssetTypeFilter::Unknown => {
+                query = query.filter(schema_assets::id.eq(-1));
+            }
         }
     }
     if let Some(ref status_val) = status_filter
@@ -401,14 +424,22 @@ pub async fn manage_asset_list(
     let assets: Vec<ManageAssetItem> = db_assets
         .into_iter()
         .map(
-            |(uuid, name, hostname, port, asset_type, status)| ManageAssetItem {
-                uuid,
-                name,
-                hostname,
-                port,
-                asset_type: asset_type.to_string(),
-                status,
-                group_name: None,
+            |(uuid, name, hostname, port, asset_type, status)| {
+                let iacs_protocol_label = asset_type
+                    .iacs_protocol()
+                    .map(|p| p.as_str().to_string())
+                    .unwrap_or_default();
+                ManageAssetItem {
+                    uuid,
+                    name,
+                    hostname,
+                    port,
+                    is_iacs: asset_type.is_iacs(),
+                    iacs_protocol_label,
+                    asset_type: asset_type.to_string(),
+                    status,
+                    group_name: None,
+                }
             },
         )
         .collect();
@@ -444,10 +475,7 @@ pub async fn manage_asset_list(
         search: search_filter,
         type_filter,
         status_filter,
-        asset_types: vec![
-            ("ssh".to_string(), "SSH".to_string()),
-            ("rdp".to_string(), "RDP".to_string()),
-        ],
+        asset_types: AssetType::filter_options(),
         statuses: vec![
             ("online".to_string(), "Online".to_string()),
             ("offline".to_string(), "Offline".to_string()),
@@ -576,6 +604,8 @@ pub async fn asset_deleted_list(
                     hostname,
                     port,
                     connection_username,
+                    is_iacs: asset_type.is_iacs(),
+                    type_label: asset_type.label().to_string(),
                     asset_type: asset_type.to_string(),
                     deleted_at,
                     created_at,
@@ -815,12 +845,22 @@ pub async fn asset_detail(
     )
     .await;
 
+    let iacs_protocol_label = asset_model
+        .asset_type
+        .iacs_protocol()
+        .map(|p| p.as_str().to_string())
+        .unwrap_or_default();
+
     let asset = crate::templates::assets::manage::ManageAssetDetail {
         uuid: asset_model.uuid.to_string(),
         name: asset_name.clone(),
         hostname: asset_model.hostname.clone(),
         port: asset_model.port,
         asset_type: asset_model.asset_type.to_string(),
+        badge_label: asset_model.asset_type.badge_label().to_string(),
+        type_label: asset_model.asset_type.label().to_string(),
+        is_iacs: asset_model.asset_type.is_iacs(),
+        iacs_protocol_label,
         status: asset_model.status.clone(),
         group_name,
         group_uuid,
@@ -995,6 +1035,7 @@ pub async fn asset_edit(
         hostname: asset_hostname,
         port: asset_port,
         asset_type: asset_type_val.to_string(),
+        badge_label: asset_type_val.badge_label().to_string(),
         status: asset_status,
         description: asset_description,
         ssh_username,

@@ -189,15 +189,15 @@
                 <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div class="flex items-start space-x-3 sm:space-x-4 min-w-0">
                         <div class="flex-shrink-0">
-                            <span class="inline-flex h-10 w-10 items-center justify-center rounded-full
+                            <span class="inline-flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full
                                 {% if asset.asset_type == "ssh" %}bg-green-100 dark:bg-green-900/50
                                 {% else if asset.asset_type == "rdp" %}bg-blue-100 dark:bg-blue-900/50
                                 {% else %}bg-purple-100 dark:bg-purple-900/50{% endif %}">
-                                <span class="text-sm font-medium
+                                <span class="text-xs font-bold tracking-tight
                                     {% if asset.asset_type == "ssh" %}text-green-600 dark:text-green-400
                                     {% else if asset.asset_type == "rdp" %}text-blue-600 dark:text-blue-400
                                     {% else %}text-purple-600 dark:text-purple-400{% endif %}">
-                                    {{ asset.asset_type|upper }}
+                                    {{ asset.badge_label }}
                                 </span>
                             </span>
                         </div>

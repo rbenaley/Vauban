@@ -34,6 +34,14 @@ impl AvailableAsset {
         self.allow_multiple_groups_per_asset && !self.other_group_names.is_empty()
     }
 
+    /// Compact 3-char label for the small asset-type tile next to
+    /// the asset name. Falls back to `AssetType::badge_label` so the
+    /// add-asset card stays in lockstep with the manage detail /
+    /// list / edit views and IACS variants do not overflow.
+    pub fn badge_label(&self) -> &'static str {
+        crate::models::asset::AssetType::parse_or_ssh(&self.asset_type).badge_label()
+    }
+
     /// Returns CSS classes for the asset status badge.
     pub fn status_class(&self) -> &str {
         match self.status.as_str() {

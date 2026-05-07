@@ -10,6 +10,10 @@ pub struct GroupAssetItem {
     pub name: String,
     pub hostname: String,
     pub asset_type: String,
+    /// Compact 3-char label for the square asset-type tile (see
+    /// `AssetType::badge_label`). Avoids the IACS overflow that hit
+    /// the manage detail page (operator-reported 2026-05-08).
+    pub badge_label: String,
     pub status: String,
 }
 
@@ -74,6 +78,7 @@ mod tests {
             name: "Test Asset".to_string(),
             hostname: "test.example.com".to_string(),
             asset_type: "ssh".to_string(),
+            badge_label: "SSH".to_string(),
             status: status.to_string(),
         }
     }

@@ -11,6 +11,10 @@ pub struct AssetEdit {
     pub hostname: String,
     pub port: i32,
     pub asset_type: String,
+    /// Compact 3-char label used by the square header tile so the
+    /// long IACS variants ("iacs_modbus", ...) do not overflow the
+    /// `h-10 w-10` square (see `AssetType::badge_label`).
+    pub badge_label: String,
     pub status: String,
     pub description: Option<String>,
     // SSH credentials extracted from connection_config.
@@ -59,6 +63,7 @@ mod tests {
             hostname: "prod-01.example.com".to_string(),
             port: 22,
             asset_type: "ssh".to_string(),
+            badge_label: "SSH".to_string(),
             status: "online".to_string(),
             description: Some("Main production server".to_string()),
             ssh_username: "root".to_string(),

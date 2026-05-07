@@ -11,6 +11,7 @@ use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode}
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use shared::totp::{TOTP_DIGITS, TOTP_SKEW, TOTP_STEP};
+use uuid::Uuid;
 use totp_rs::{Algorithm as TotpAlgorithm, Secret as TotpSecret, TOTP};
 
 use crate::config::Config;
@@ -79,6 +80,13 @@ pub struct Claims {
     pub is_superuser: bool,
     #[serde(default)]
     pub is_staff: bool,
+    /// RFC 7519 `jti` -- Vauban stores `auth_sessions.uuid` here so the
+    /// web session can rotate JWTs (cookie sliding) without losing the DB
+    /// row: verification keys off `(jti, sub)` instead of only
+    /// `token_hash`, which would break under concurrent requests after a
+    /// rotation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jti: Option<String>,
 }
 
 /// Authentication service.
@@ -148,6 +156,13 @@ impl AuthService {
     }
 
     /// Generate JWT access token.
+    ///
+    /// `session_uuid` is the `auth_sessions.uuid` row backing this login.
+    /// When `Some`, it is embedded as the standard JWT `jti` claim so
+    /// [`crate::middleware::auth::auth_middleware`] can rotate the cookie
+    /// without orphaning the DB session row. Pass `None` only for legacy /
+    /// test call sites that still key verification solely off `token_hash`
+    /// (back-compat until every flow embeds `jti`).
     pub fn generate_access_token(
         &self,
         user_uuid: &str,
@@ -155,6 +170,7 @@ impl AuthService {
         mfa_verified: bool,
         is_superuser: bool,
         is_staff: bool,
+        session_uuid: Option<Uuid>,
     ) -> AppResult<String> {
         let now = Utc::now();
         let exp = now + Duration::minutes(self.config.jwt.access_token_lifetime_minutes as i64);
@@ -167,10 +183,21 @@ impl AuthService {
             mfa_verified,
             is_superuser,
             is_staff,
+            jti: session_uuid.map(|u| u.to_string()),
         };
 
         encode(&Header::default(), &claims, &self.encoding_key)
             .map_err(|e| AppError::Auth(format!("Token generation failed: {}", e)))
+    }
+
+    /// Remaining lifetime of the access token (from `exp` claim) below which
+    /// [`crate::middleware::auth`] will mint a fresh JWT for cookie-based
+    /// web sessions. Uses max(60s, 25% of configured lifetime) so operators
+    /// get a full new [`access_token_lifetime_minutes`] window without
+    /// rewriting the cookie on literally every HTTP request.
+    pub fn access_token_renew_if_expires_within_seconds(&self) -> i64 {
+        let lifetime_secs = self.config.jwt.access_token_lifetime_minutes as i64 * 60;
+        (lifetime_secs / 4).max(60)
     }
 
     /// Verify and decode JWT token.
@@ -419,6 +446,7 @@ mod tests {
             true,
             false,
             false,
+            None,
         ));
 
         // Token should not be empty
@@ -436,7 +464,7 @@ mod tests {
         let username = "testuser";
 
         let token =
-            unwrap_ok!(auth_service.generate_access_token(user_uuid, username, true, true, true));
+            unwrap_ok!(auth_service.generate_access_token(user_uuid, username, true, true, true, None));
 
         let claims = unwrap_ok!(auth_service.verify_token(&token));
 
@@ -467,6 +495,7 @@ mod tests {
             true,
             false,
             false,
+            None,
         ));
 
         // Create another service with a different secret
@@ -489,6 +518,7 @@ mod tests {
             false, // mfa_verified
             true,  // is_superuser
             false, // is_staff
+            None,
         ));
 
         let claims = unwrap_ok!(auth_service.verify_token(&token));
@@ -591,7 +621,7 @@ mod tests {
 
         // Both should work identically
         let token =
-            unwrap_ok!(auth_service.generate_access_token("user-1", "test", false, false, false));
+            unwrap_ok!(auth_service.generate_access_token("user-1", "test", false, false, false, None));
         let claims = unwrap_ok!(cloned.verify_token(&token));
         assert_eq!(claims.sub, "user-1");
     }
@@ -617,6 +647,7 @@ mod tests {
             mfa_verified: true,
             is_superuser: false,
             is_staff: true,
+            jti: None,
         };
 
         let json = unwrap_ok!(serde_json::to_string(&claims));
@@ -629,6 +660,7 @@ mod tests {
         assert_eq!(parsed.mfa_verified, claims.mfa_verified);
         assert_eq!(parsed.is_superuser, claims.is_superuser);
         assert_eq!(parsed.is_staff, claims.is_staff);
+        assert_eq!(parsed.jti, claims.jti);
     }
 
     #[test]
@@ -641,6 +673,7 @@ mod tests {
             mfa_verified: false,
             is_superuser: false,
             is_staff: false,
+            jti: None,
         };
 
         let debug_str = format!("{:?}", claims);
@@ -730,7 +763,7 @@ mod tests {
         let config = load_test_config();
         let auth_service = unwrap_ok!(AuthService::new(config));
 
-        let token = unwrap_ok!(auth_service.generate_access_token("uuid", "", false, false, false));
+        let token = unwrap_ok!(auth_service.generate_access_token("uuid", "", false, false, false, None));
         let claims = unwrap_ok!(auth_service.verify_token(&token));
 
         assert_eq!(claims.username, "");
@@ -743,7 +776,7 @@ mod tests {
 
         let username = "用户名";
         let token =
-            unwrap_ok!(auth_service.generate_access_token("uuid", username, false, false, false));
+            unwrap_ok!(auth_service.generate_access_token("uuid", username, false, false, false, None));
         let claims = unwrap_ok!(auth_service.verify_token(&token));
 
         assert_eq!(claims.username, username);
@@ -784,7 +817,7 @@ mod tests {
         let auth_service = unwrap_ok!(AuthService::new(config));
 
         let token =
-            unwrap_ok!(auth_service.generate_access_token("uuid", "user", false, false, false));
+            unwrap_ok!(auth_service.generate_access_token("uuid", "user", false, false, false, None));
         let claims = unwrap_ok!(auth_service.verify_token(&token));
 
         let now = Utc::now().timestamp();
@@ -810,7 +843,7 @@ mod tests {
 
         for (mfa, superuser, staff) in combinations {
             let token = unwrap_ok!(
-                auth_service.generate_access_token("uuid", "user", mfa, superuser, staff)
+                auth_service.generate_access_token("uuid", "user", mfa, superuser, staff, None)
             );
             let claims = unwrap_ok!(auth_service.verify_token(&token));
 

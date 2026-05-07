@@ -366,7 +366,7 @@ async fn test_session_list_filter_by_all_types() {
     );
 
     // Test all valid types
-    let types = ["ssh", "rdp"];
+    let types = ["ssh", "rdp", "iacs_tunnel"];
 
     for session_type in &types {
         let response = app
@@ -389,6 +389,56 @@ async fn test_session_list_filter_by_all_types() {
             session_type
         );
     }
+}
+
+/// Operator request 2026-05-08: the /sessions Type filter must
+/// expose the IACS Tunnel option so an operator can pivot the
+/// session log on industrial tunnels separately from SSH/RDP. The
+/// option must surface even on an empty session list (the dropdown
+/// is server-rendered regardless of seeded rows).
+#[tokio::test]
+async fn test_session_list_dropdown_carries_iacs_tunnel_option() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_username = unique_name("sess_iacs_filter_adm");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_username).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_username, true, true)
+        .await;
+
+    let response = app
+        .server
+        .get("/sessions")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+    assert_eq!(response.status_code().as_u16(), 200);
+    let body = response.text();
+
+    assert!(
+        body.contains("value=\"iacs_tunnel\""),
+        "session list Type dropdown must expose value=\"iacs_tunnel\""
+    );
+    assert!(
+        body.contains(">IACS Tunnel<"),
+        "session list Type dropdown must label the option 'IACS Tunnel'"
+    );
+
+    // Selected-state pin: ?type=iacs_tunnel must mark the option
+    // as selected in the rendered HTML so the page reload keeps
+    // the operator's filter visible in the dropdown.
+    let selected = app
+        .server
+        .get("/sessions?type=iacs_tunnel")
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+    assert_eq!(selected.status_code().as_u16(), 200);
+    let selected_body = selected.text();
+    assert!(
+        selected_body.contains("value=\"iacs_tunnel\"") && selected_body.contains("selected"),
+        "?type=iacs_tunnel must mark the IACS Tunnel option as selected on reload"
+    );
 }
 
 #[tokio::test]

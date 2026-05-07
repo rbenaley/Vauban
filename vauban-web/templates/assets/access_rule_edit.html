@@ -94,7 +94,7 @@
 
                 <fieldset>
                     <legend class="text-sm font-medium text-gray-700 dark:text-gray-300">Allowed Protocols *</legend>
-                    <div class="mt-2 flex space-x-6">
+                    <div class="mt-2 flex flex-wrap gap-x-6 gap-y-2">
                         <label class="flex items-center">
                             <input type="checkbox" name="allowed_ssh" value="true" {% if rule.allowed_ssh %}checked{% endif %}
                                    class="rounded border-gray-300 text-vauban-600 focus:ring-vauban-500 dark:border-gray-600 dark:bg-gray-700">
@@ -105,7 +105,13 @@
                                    class="rounded border-gray-300 text-vauban-600 focus:ring-vauban-500 dark:border-gray-600 dark:bg-gray-700">
                             <span class="ml-2 text-sm text-gray-700 dark:text-gray-300">RDP</span>
                         </label>
+                        <label class="flex items-center" title="Includes Modbus, OPC UA, PROFINET, IEC-104 and generic IACS TCP">
+                            <input type="checkbox" name="allowed_iacs" value="true" {% if rule.allowed_iacs %}checked{% endif %}
+                                   class="rounded border-gray-300 text-vauban-600 focus:ring-vauban-500 dark:border-gray-600 dark:bg-gray-700">
+                            <span class="ml-2 text-sm text-gray-700 dark:text-gray-300">IACS <span class="text-xs text-gray-500 dark:text-gray-400">(all industrial protocols)</span></span>
+                        </label>
                     </div>
+                    <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">Ticking <strong>IACS</strong> covers Modbus, OPC UA, PROFINET, IEC-104 and generic IACS TCP in one shot. The virtual <em>All assets</em> group then literally includes every IACS asset.</p>
                 </fieldset>
 
                 <div class="grid grid-cols-1 gap-6 sm:grid-cols-2">

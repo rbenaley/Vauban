@@ -175,6 +175,8 @@ fn make_asset_list(
         ],
         require_justification: true,
         iacs_request_allowed: false,
+        iacs_connect_allowed: false,
+        user_has_active_ews: false,
     }
 }
 
@@ -190,6 +192,8 @@ fn one_asset() -> AssetListItem {
         group_name: Some("Production".to_string()),
         requires_request: false,
         require_mfa: false,
+        is_iacs: false,
+        iacs_protocol_label: String::new(),
     }
 }
 
@@ -267,6 +271,8 @@ fn one_manage_asset() -> ManageAssetItem {
         hostname: "db-prod-01.example.com".to_string(),
         port: 22,
         asset_type: "ssh".to_string(),
+        is_iacs: false,
+        iacs_protocol_label: String::new(),
         status: "online".to_string(),
         group_name: Some("DB".to_string()),
     }

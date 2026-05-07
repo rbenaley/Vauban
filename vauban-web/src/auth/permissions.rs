@@ -97,6 +97,14 @@ pub struct PermissionContext {
     /// `role:staff` and `role:superuser` (via wildcard). Subject to
     /// the same kill-switch as `iacs_request`.
     pub iacs_manage: bool,
+    /// Open an IACS tunnel session against an asset (`POST
+    /// /assets/{uuid}/connect-iacs`). Granted to `role:user` by
+    /// default; gated by the in-process `services::iacs_tunnel`
+    /// pipeline AND the `assets:read` + access-rule chain just like
+    /// SSH/RDP `Connect`. Subject to the global kill-switch:
+    /// `[industrial].enabled = false` forces the flag to `false`,
+    /// regardless of the policy decision.
+    pub assets_connect_iacs: bool,
 }
 
 impl PermissionContext {
@@ -130,6 +138,7 @@ impl PermissionContext {
             iacs_request,
             iacs_read,
             iacs_manage,
+            assets_connect_iacs,
         ) = tokio::join!(
             check_rbac(state, user, "users", "read"),
             check_rbac(state, user, "users", "write"),
@@ -154,6 +163,7 @@ impl PermissionContext {
             check_rbac(state, user, "iacs", "request"),
             check_rbac(state, user, "iacs", "read"),
             check_rbac(state, user, "iacs", "manage"),
+            check_rbac(state, user, "assets", "connect_iacs"),
         );
 
         // Kill-switch precedence: `[industrial].enabled = false` forces
@@ -187,6 +197,12 @@ impl PermissionContext {
             iacs_request: iacs_request && industrial_enabled,
             iacs_read: iacs_read && industrial_enabled,
             iacs_manage: iacs_manage && industrial_enabled,
+            // The IACS tunnel pipeline (handler + sshd) refuses to
+            // operate when the kill-switch is off, so collapsing the
+            // permission to `false` mirrors the fail-closed posture
+            // of the other `iacs_*` flags. The user-zone Connect
+            // button is hidden in that mode (see asset_list.html).
+            assets_connect_iacs: assets_connect_iacs && industrial_enabled,
         }
     }
 }
@@ -285,6 +301,7 @@ mod tests {
         assert!(!ctx.iacs_request);
         assert!(!ctx.iacs_read);
         assert!(!ctx.iacs_manage);
+        assert!(!ctx.assets_connect_iacs);
     }
 
     #[test]

@@ -548,6 +548,121 @@ async fn test_web_access_rule_detail_loads() {
 // Edit Form
 // =============================================================================
 
+/// Operator request 2026-05-08: when the operator opens the edit
+/// form on a rule whose `allowed_protocols` carries at least one
+/// `iacs_*` value, the master "IACS (all industrial protocols)"
+/// checkbox MUST surface PRE-CHECKED. The asymmetry "any iacs_* -> 
+/// checked, save -> expand to all" is intentional and documented
+/// on `AccessRuleCreateForm::allowed_iacs`. This pin guards the
+/// pre-fill side of the contract; the expansion side is pinned by
+/// `u42b_iacs_master_checkbox_expands_to_every_iacs_protocol`.
+#[tokio::test]
+#[serial]
+async fn test_web_access_rule_edit_form_iacs_master_checkbox_prefills_when_partial_iacs_rule() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("w_ar_edit_iacs_adm");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+
+    let ug = create_test_vauban_group(&mut conn, &unique_name("w-ar-edit-iacs-ug")).await;
+    let ag = create_test_asset_group(&mut conn, &unique_name("w-ar-edit-iacs-ag")).await;
+    // Partial IACS rule: only iacs_modbus. The master checkbox
+    // MUST still come back checked (any iacs_* triggers it).
+    let rule_uuid = create_test_access_rule(&mut conn, &ug, &ag, &["ssh", "iacs_modbus"]).await;
+
+    let response = app
+        .server
+        .get(&format!("/assets/access/{}/edit", rule_uuid))
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+
+    // The IACS master checkbox must be present AND checked.
+    let checkbox_idx = body
+        .find("name=\"allowed_iacs\"")
+        .expect("edit form must carry the IACS master checkbox");
+    let after_checkbox = &body[checkbox_idx..];
+    let next_close = after_checkbox
+        .find('>')
+        .expect("the checkbox tag must close");
+    let checkbox_tag = &after_checkbox[..=next_close];
+    assert!(
+        checkbox_tag.contains("checked"),
+        "the IACS master checkbox MUST be pre-checked when allowed_protocols carries at least one iacs_* value, got: {checkbox_tag:?}"
+    );
+
+    // SSH must also stay checked (it was in allowed_protocols).
+    let ssh_idx = body
+        .find("name=\"allowed_ssh\"")
+        .expect("edit form must carry the SSH checkbox");
+    let ssh_tag_end = body[ssh_idx..]
+        .find('>')
+        .expect("ssh checkbox must close");
+    assert!(
+        body[ssh_idx..ssh_idx + ssh_tag_end].contains("checked"),
+        "SSH checkbox must stay checked when allowed_protocols carries 'ssh'"
+    );
+
+    // RDP must NOT be checked (it was NOT in allowed_protocols).
+    let rdp_idx = body
+        .find("name=\"allowed_rdp\"")
+        .expect("edit form must carry the RDP checkbox");
+    let rdp_tag_end = body[rdp_idx..]
+        .find('>')
+        .expect("rdp checkbox must close");
+    assert!(
+        !body[rdp_idx..rdp_idx + rdp_tag_end].contains("checked"),
+        "RDP checkbox must NOT be checked when allowed_protocols does not carry 'rdp'"
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Symmetric to the prefill test above: a rule that carries NO
+/// `iacs_*` protocols must surface the master IACS checkbox
+/// UN-checked. Catches a future regression where `any_iacs_protocol`
+/// returns true on a non-IACS rule (false-positive prefill that
+/// would silently expand the rule on next save).
+#[tokio::test]
+#[serial]
+async fn test_web_access_rule_edit_form_iacs_master_checkbox_unchecked_for_non_iacs_rule() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("w_ar_edit_no_iacs_adm");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+
+    let ug = create_test_vauban_group(&mut conn, &unique_name("w-ar-edit-no-iacs-ug")).await;
+    let ag = create_test_asset_group(&mut conn, &unique_name("w-ar-edit-no-iacs-ag")).await;
+    let rule_uuid = create_test_access_rule(&mut conn, &ug, &ag, &["ssh", "rdp"]).await;
+
+    let response = app
+        .server
+        .get(&format!("/assets/access/{}/edit", rule_uuid))
+        .add_header(header::AUTHORIZATION, app.auth_header(&admin.token))
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+
+    let checkbox_idx = body
+        .find("name=\"allowed_iacs\"")
+        .expect("edit form must carry the IACS master checkbox");
+    let next_close = body[checkbox_idx..]
+        .find('>')
+        .expect("the checkbox tag must close");
+    let checkbox_tag = &body[checkbox_idx..checkbox_idx + next_close];
+    assert!(
+        !checkbox_tag.contains("checked"),
+        "the IACS master checkbox MUST stay un-checked on a rule that carries no iacs_* protocols, got: {checkbox_tag:?}"
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
 /// Edit form loads with pre-populated data.
 #[tokio::test]
 #[serial]

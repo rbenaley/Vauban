@@ -65,15 +65,39 @@
        synchronously inside the submit event, before the default action,
        so the POST payload still uses ssh_username / ssh_password /
        ssh_passphrase and the backend is unaware of the renaming. #}
+    {# `defaults` keeps the same `(asset_type) -> default port` shape
+       it had pre-IACS; the new IACS variants reuse the IANA-assigned
+       ports for known industrial protocols and intentionally OMIT
+       `iacs_tcp` so the operator is forced to enter a port.
+
+       `isIacs` and `iacsTcp` are derived helpers used by the auth
+       block (IACS assets carry no per-asset credentials -- auth is
+       handled by EWS public keys, see ews table). #}
     <form action="/assets/manage/new" method="POST" class="space-y-6"
-          @submit="$el.querySelectorAll('[data-real-name]').forEach(function (el) { el.name = el.dataset.realName })"
+          @submit="
+              if (isIacs) {
+                  /* IACS assets carry NO per-asset credentials. Strip every
+                     auth-related field from the submission BEFORE the swap
+                     below so neither `ssh_auth_type=password` nor a stray
+                     `ssh_username` lands on the backend (validate_auth_inputs
+                     would otherwise refuse the IACS asset row). */
+                  $el.querySelectorAll('[data-iacs-strip]').forEach(function (el) {
+                      el.disabled = true;
+                  });
+              }
+              $el.querySelectorAll('[data-real-name]').forEach(function (el) {
+                  if (!el.disabled) { el.name = el.dataset.realName; }
+              });
+          "
           x-data="{
-              defaults: { ssh: 22, rdp: 3389 },
+              defaults: { ssh: 22, rdp: 3389, iacs_modbus: 502, iacs_opcua: 4840, iacs_profinet: 34962, iacs_iec104: 2404 },
               usernameDefaults: { ssh: 'root', rdp: 'Administrator' },
               port: {{ form.port }},
               assetType: '{{ form.asset_type }}',
               authType: '{{ form.ssh_auth_type.as_deref().unwrap_or("password") }}',
-              username: '{{ form.ssh_username.as_deref().unwrap_or("root") }}'
+              username: '{{ form.ssh_username.as_deref().unwrap_or("root") }}',
+              get isIacs() { return this.assetType.startsWith('iacs_'); },
+              get isIacsTcp() { return this.assetType === 'iacs_tcp'; }
           }"
           x-effect="if (assetType === 'rdp' && authType !== 'password') { authType = 'password' }">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
@@ -99,7 +123,8 @@
                                 required
                                 x-model="assetType"
                                 x-on:change="
-                                    if (defaults[$event.target.value] && Object.values(defaults).includes(port)) { port = defaults[$event.target.value] }
+                                    if (defaults[$event.target.value] && (Object.values(defaults).includes(port) || port === 0 || port === null)) { port = defaults[$event.target.value] }
+                                    else if ($event.target.value === 'iacs_tcp' && Object.values(defaults).includes(port)) { port = null }
                                     if (usernameDefaults[$event.target.value] && Object.values(usernameDefaults).includes(username)) { username = usernameDefaults[$event.target.value] }
                                 ">
                             {% for (value, label) in asset_types %}
@@ -139,8 +164,30 @@
             </div>
         </div>
 
+        {# IACS assets carry NO per-asset credentials: authentication
+           is handled by Engineering Workstation public keys (see `ews`
+           table), so the entire Authentication card is hidden when an
+           IACS variant is selected. A short explanatory note replaces
+           it so an admin who picked the wrong type does not wonder
+           where the credential inputs went. #}
+        <div x-show="isIacs" x-cloak class="rounded-md bg-blue-50 dark:bg-blue-900/30 p-4">
+            <div class="flex">
+                <div class="flex-shrink-0">
+                    <svg class="h-5 w-5 text-blue-400" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
+                        <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h.01a1 1 0 100-2H10V9z" clip-rule="evenodd"/>
+                    </svg>
+                </div>
+                <div class="ml-3">
+                    <h3 class="text-sm font-medium text-blue-800 dark:text-blue-200">No credentials needed for IACS assets</h3>
+                    <p class="mt-1 text-sm text-blue-700 dark:text-blue-300">
+                        Authentication is handled by the operator's onboarded Engineering Workstation (EWS) SSH public key. Vauban relays the EWS-side TCP tunnel to this asset; no password or private key is stored on the asset row.
+                    </p>
+                </div>
+            </div>
+        </div>
+
         <!-- Authentication Settings (protocol-aware) -->
-        <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+        <div x-show="!isIacs" x-cloak class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
             <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
                 <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Authentication</h3>
                 <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">Configure credentials for connecting to this asset.</p>
@@ -156,6 +203,7 @@
                         <label for="vbn_account" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Account Name</label>
                         <input type="text" name="vbn_account" id="vbn_account"
                                data-real-name="ssh_username"
+                               data-iacs-strip
                                x-model="username"
                                :placeholder="usernameDefaults[assetType] || 'root'"
                                class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
@@ -167,6 +215,7 @@
                     <div x-show="assetType === 'ssh'" x-cloak>
                         <label for="ssh_auth_type" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Authentication Type</label>
                         <select name="ssh_auth_type" id="ssh_auth_type" x-model="authType"
+                                data-iacs-strip
                                 class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
                             <option value="password">Password</option>
                             <option value="private_key">Private Key</option>
@@ -187,9 +236,10 @@
                     </label>
                     <input type="text" name="vbn_secret" id="vbn_secret"
                            data-real-name="ssh_password"
+                           data-iacs-strip
                            class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
                            autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
-                           :required="assetType === 'rdp' || authType === 'password'"
+                           :required="!isIacs && (assetType === 'rdp' || authType === 'password')"
                            placeholder="Enter secret">
                     <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Secret used to authenticate against the target system. Required for RDP and for SSH password authentication.</p>
                 </div>
@@ -201,8 +251,9 @@
                             Private Key <span class="text-red-500">*</span>
                         </label>
                         <textarea name="ssh_private_key" id="ssh_private_key" rows="6"
+                                  data-iacs-strip
                                   class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm font-mono text-xs"
-                                  :required="assetType === 'ssh' && authType === 'private_key'"
+                                  :required="!isIacs && assetType === 'ssh' && authType === 'private_key'"
                                   placeholder="-----BEGIN OPENSSH PRIVATE KEY-----
 ...
 -----END OPENSSH PRIVATE KEY-----"></textarea>
@@ -214,6 +265,7 @@
                         <label for="vbn_secret_phrase" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Key Passphrase (optional)</label>
                         <input type="text" name="vbn_secret_phrase" id="vbn_secret_phrase"
                                data-real-name="ssh_passphrase"
+                               data-iacs-strip
                                class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
                                autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
                                placeholder="Key passphrase (if encrypted)">
@@ -225,6 +277,7 @@
                 <div x-show="assetType === 'rdp'" x-cloak>
                     <label for="rdp_domain" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Domain (optional)</label>
                     <input type="text" name="rdp_domain" id="rdp_domain"
+                           data-iacs-strip
                            value="{{ form.rdp_domain.as_deref().unwrap_or_default() }}"
                            class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
                            maxlength="255" placeholder="CORP">

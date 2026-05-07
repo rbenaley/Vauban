@@ -37,7 +37,28 @@ where
     }
 }
 
-/// Asset type (protocol).
+/// Asset type / connection protocol.
+///
+/// Two families coexist:
+///   - Classical IT transports: `Ssh`, `Rdp`. Browser-driven, recorded.
+///   - IACS / ISA-62443 transports: `Iacs*` variants. EWS-driven, opened
+///     via the in-process IACS sshd (`services::iacs_tunnel`) and routed
+///     as a TCP tunnel; never recorded as text/PTY.
+///
+/// IACS variants encode the industrial protocol family (Modbus, OPC-UA,
+/// Profinet, IEC-60870-5-104) plus a generic catch-all (`IacsTcp`) for
+/// industrial protocols not yet profiled. The catch-all has NO default
+/// port: the asset form requires the operator to enter one explicitly.
+///
+/// Wire vocabulary is closed: the `assets_asset_type_chk` SQL CHECK
+/// constraint enforces the exact 7 strings below at insert time, and
+/// the `iacs_drift_test` test extracts that constraint via
+/// `pg_get_constraintdef` and asserts it lists every variant declared
+/// here. The Rust `parse` function ALSO refuses unknown values
+/// (returns `Err` instead of silently falling back to `Ssh` like the
+/// pre-IACS implementation did) so the call site is forced to handle
+/// the error path -- a misnamed asset_type can no longer get treated
+/// as SSH by accident.
 #[derive(
     Debug,
     Clone,
@@ -49,43 +70,332 @@ where
     diesel::expression::AsExpression,
     diesel::deserialize::FromSqlRow,
 )]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 #[diesel(sql_type = diesel::sql_types::Varchar)]
 pub enum AssetType {
     Ssh,
     Rdp,
+    IacsModbus,
+    IacsOpcua,
+    IacsProfinet,
+    IacsIec104,
+    /// Catch-all for industrial protocols not yet profiled by Vauban
+    /// (DNP3, BACnet, S7, EtherNet/IP, ...). No default port, the
+    /// admin must set one explicitly when creating the asset.
+    IacsTcp,
 }
+
+/// Asset family: orthogonal to the underlying protocol, used to drive
+/// UI grouping (filters, badges) and Casbin gate `assets:connect_iacs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssetFamily {
+    /// Classical IT transports (SSH, RDP).
+    It,
+    /// Industrial Automation and Control Systems (ISA/IEC 62443).
+    Iacs,
+}
+
+/// Sub-classification of an IACS asset's industrial protocol. `None`
+/// for IT assets (`Ssh`, `Rdp`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IacsProtocol {
+    Modbus,
+    OpcUa,
+    Profinet,
+    Iec104,
+    /// Generic TCP catch-all (`IacsTcp`); see `AssetType::IacsTcp` doc.
+    Tcp,
+}
+
+impl IacsProtocol {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Modbus => "modbus",
+            Self::OpcUa => "opcua",
+            Self::Profinet => "profinet",
+            Self::Iec104 => "iec104",
+            Self::Tcp => "tcp",
+        }
+    }
+}
+
+impl std::fmt::Display for IacsProtocol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Error returned when a string cannot be parsed into an `AssetType`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssetTypeParseError(pub String);
+
+impl std::fmt::Display for AssetTypeParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unknown asset_type value: {:?}", self.0)
+    }
+}
+
+impl std::error::Error for AssetTypeParseError {}
 
 impl AssetType {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Ssh => "ssh",
             Self::Rdp => "rdp",
+            Self::IacsModbus => "iacs_modbus",
+            Self::IacsOpcua => "iacs_opcua",
+            Self::IacsProfinet => "iacs_profinet",
+            Self::IacsIec104 => "iacs_iec104",
+            Self::IacsTcp => "iacs_tcp",
         }
     }
 
-    pub fn parse(s: &str) -> Self {
+    /// Strict parse. Returns `Err` for any unknown value -- in
+    /// particular, NEVER falls back to `Ssh`. Use this for any code
+    /// path that handles persisted data (form submissions, DB reads
+    /// via `FromSql`, IPC payloads).
+    pub fn parse(s: &str) -> Result<Self, AssetTypeParseError> {
         match s {
-            "rdp" => Self::Rdp,
-            _ => Self::Ssh,
+            "ssh" => Ok(Self::Ssh),
+            "rdp" => Ok(Self::Rdp),
+            "iacs_modbus" => Ok(Self::IacsModbus),
+            "iacs_opcua" => Ok(Self::IacsOpcua),
+            "iacs_profinet" => Ok(Self::IacsProfinet),
+            "iacs_iec104" => Ok(Self::IacsIec104),
+            "iacs_tcp" => Ok(Self::IacsTcp),
+            other => Err(AssetTypeParseError(other.to_string())),
         }
+    }
+
+    /// Lossy parse for legacy code paths that need to keep the
+    /// pre-IACS infallible signature. New code MUST prefer `parse`.
+    /// The fallback is `Ssh` (matches historical behaviour) but the
+    /// presence of a CHECK constraint at the DB layer means an
+    /// unknown value can only ever appear here for transient form
+    /// input that is going to be rejected by the validator anyway.
+    pub fn parse_or_ssh(s: &str) -> Self {
+        Self::parse(s).unwrap_or(Self::Ssh)
     }
 
     /// Try to parse a string into an AssetType, returning None for unknown values.
     pub fn try_parse(s: &str) -> Option<Self> {
-        match s {
-            "ssh" => Some(Self::Ssh),
-            "rdp" => Some(Self::Rdp),
-            _ => None,
+        Self::parse(s).ok()
+    }
+
+    /// Default TCP port suggested by the protocol. `None` for
+    /// `IacsTcp` (the operator must enter the port explicitly).
+    pub fn default_port(&self) -> Option<i32> {
+        match self {
+            Self::Ssh => Some(22),
+            Self::Rdp => Some(3389),
+            // Modbus TCP / IANA 502.
+            Self::IacsModbus => Some(502),
+            // OPC UA Binary / IANA 4840.
+            Self::IacsOpcua => Some(4840),
+            // PROFINET cyclic real-time / IANA 34962-34964 (lowest).
+            Self::IacsProfinet => Some(34962),
+            // IEC 60870-5-104 / IANA 2404.
+            Self::IacsIec104 => Some(2404),
+            // No default for the generic catch-all.
+            Self::IacsTcp => None,
         }
     }
 
-    pub fn default_port(&self) -> i32 {
-        match self {
-            Self::Ssh => 22,
-            Self::Rdp => 3389,
+    /// Whether this asset_type belongs to the IACS family.
+    pub fn is_iacs(&self) -> bool {
+        matches!(
+            self,
+            Self::IacsModbus
+                | Self::IacsOpcua
+                | Self::IacsProfinet
+                | Self::IacsIec104
+                | Self::IacsTcp
+        )
+    }
+
+    /// Whether this asset_type belongs to the classical IT family
+    /// (SSH, RDP).
+    pub fn is_it(&self) -> bool {
+        matches!(self, Self::Ssh | Self::Rdp)
+    }
+
+    pub fn family(&self) -> AssetFamily {
+        if self.is_iacs() {
+            AssetFamily::Iacs
+        } else {
+            AssetFamily::It
         }
     }
+
+    /// Industrial protocol sub-classification, `None` for IT assets.
+    pub fn iacs_protocol(&self) -> Option<IacsProtocol> {
+        match self {
+            Self::IacsModbus => Some(IacsProtocol::Modbus),
+            Self::IacsOpcua => Some(IacsProtocol::OpcUa),
+            Self::IacsProfinet => Some(IacsProtocol::Profinet),
+            Self::IacsIec104 => Some(IacsProtocol::Iec104),
+            Self::IacsTcp => Some(IacsProtocol::Tcp),
+            Self::Ssh | Self::Rdp => None,
+        }
+    }
+
+    /// Exhaustive enumeration of every variant. Used by drift tests
+    /// and form construction.
+    pub const ALL: &'static [AssetType] = &[
+        AssetType::Ssh,
+        AssetType::Rdp,
+        AssetType::IacsModbus,
+        AssetType::IacsOpcua,
+        AssetType::IacsProfinet,
+        AssetType::IacsIec104,
+        AssetType::IacsTcp,
+    ];
+
+    /// Human-readable label suitable for `<select>` options. Kept on
+    /// the enum (rather than scattered across templates) so the form
+    /// list and the badge captions never drift.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Ssh => "SSH",
+            Self::Rdp => "RDP",
+            Self::IacsModbus => "IACS - Modbus",
+            Self::IacsOpcua => "IACS - OPC UA",
+            Self::IacsProfinet => "IACS - PROFINET",
+            Self::IacsIec104 => "IACS - IEC 60870-5-104",
+            Self::IacsTcp => "IACS - Generic TCP",
+        }
+    }
+
+    /// Compact 3-4 character label suitable for the square asset-type
+    /// badge that sits next to the asset name on the detail and list
+    /// pages. The square is fixed at `h-10 w-10` (40 px) so the
+    /// long-form `IACS_MODBUS` overflowed and crashed into the title
+    /// (operator-reported issue 2026-05-08). Each variant gets a
+    /// pictogram-style abbreviation that fits the tile and matches
+    /// industry conventions:
+    ///
+    /// - SSH / RDP  -- unchanged.
+    /// - IACS Modbus -> `MB`  (Modbus Bus).
+    /// - IACS OPC UA -> `OPC` (matches the spec name).
+    /// - IACS PROFINET -> `PN` (matches PI/PROFINET conventions).
+    /// - IACS IEC 60870-5-104 -> `104` (the protocol's common name).
+    /// - IACS generic TCP -> `TCP` (no default port -- matches the
+    ///   "raw TCP fallback" semantics).
+    pub fn badge_label(&self) -> &'static str {
+        match self {
+            Self::Ssh => "SSH",
+            Self::Rdp => "RDP",
+            Self::IacsModbus => "MB",
+            Self::IacsOpcua => "OPC",
+            Self::IacsProfinet => "PN",
+            Self::IacsIec104 => "104",
+            Self::IacsTcp => "TCP",
+        }
+    }
+
+    /// Compact label for the **access rule** "Allowed protocols" row (detail
+    /// / list). Shorter than [`Self::label`] which prefixes IACS variants
+    /// with "IACS - …" for asset creation forms.
+    pub fn access_rule_protocol_display_label(self) -> &'static str {
+        match self {
+            Self::Ssh => "SSH",
+            Self::Rdp => "RDP",
+            Self::IacsModbus => "Modbus",
+            Self::IacsOpcua => "OPC UA",
+            Self::IacsProfinet => "PROFINET",
+            Self::IacsIec104 => "IEC-104",
+            Self::IacsTcp => "IACS (TCP)",
+        }
+    }
+
+    /// Map a persisted `allowed_protocols` wire token to the operator-facing
+    /// string shown on access-rule pages.
+    pub fn format_access_rule_protocol(wire: &str) -> String {
+        Self::parse(wire)
+            .map(|t| t.access_rule_protocol_display_label().to_string())
+            .unwrap_or_else(|_| wire.to_uppercase())
+    }
+
+    /// `(value, label)` tuples suitable for the asset_type `<select>`
+    /// element in the admin asset form. Single source of truth so the
+    /// 7 entries cannot drift between create / edit / list templates.
+    pub fn select_options() -> Vec<(String, String)> {
+        Self::ALL
+            .iter()
+            .map(|t| (t.as_str().to_string(), t.label().to_string()))
+            .collect()
+    }
+
+    /// `(value, label)` tuples suitable for the asset_type `<select>`
+    /// element in **filter dropdowns** (the user-zone /assets, the
+    /// admin /assets/manage list, etc.). Returns the same seven
+    /// entries as [`Self::select_options`] PLUS the synthetic
+    /// `("iacs", "IACS - All Industrial Protocols")` row that lets
+    /// the operator filter on EVERY `iacs_*` asset_type at once
+    /// without ticking five entries.
+    ///
+    /// The synthetic token is intentionally NOT a member of the
+    /// `AssetType` enum: filter dropdowns may carry virtual entries
+    /// that the create/edit form must NEVER expose (creating an
+    /// asset with `asset_type='iacs'` would violate the DB
+    /// `assets_asset_type_chk` CHECK constraint). Persistence paths
+    /// keep using [`Self::select_options`] / [`Self::try_parse`];
+    /// filter paths plug the synthetic row in via [`Self::parse_filter`].
+    pub fn filter_options() -> Vec<(String, String)> {
+        let mut out = Self::select_options();
+        out.push((
+            IACS_ALL_FILTER_TOKEN.to_string(),
+            "IACS - All Industrial Protocols".to_string(),
+        ));
+        out
+    }
+
+    /// Parse a `?type=` URL parameter into a structured filter
+    /// decision. The synthetic `IACS_ALL_FILTER_TOKEN` token expands
+    /// to "every variant whose `is_iacs()` is true"; every other
+    /// token routes through [`Self::try_parse`].
+    pub fn parse_filter(token: &str) -> AssetTypeFilter {
+        if token == IACS_ALL_FILTER_TOKEN {
+            return AssetTypeFilter::IacsAll;
+        }
+        match Self::try_parse(token) {
+            Some(t) => AssetTypeFilter::One(t),
+            None => AssetTypeFilter::Unknown,
+        }
+    }
+
+    /// Every `iacs_*` variant. Used by callers expanding the synthetic
+    /// `IacsAll` filter into a Diesel `eq_any(...)` clause. Centralised
+    /// here so a future variant added to [`Self::ALL`] flows through
+    /// every filter site automatically.
+    pub fn iacs_variants() -> Vec<AssetType> {
+        Self::ALL.iter().copied().filter(|t| t.is_iacs()).collect()
+    }
+}
+
+/// Synthetic `?type=` token meaning "every IACS protocol at once".
+/// Surfaces in [`AssetType::filter_options`] alongside the seven
+/// concrete variants but is never persisted on `assets.asset_type`
+/// (the column's CHECK constraint would refuse it).
+pub const IACS_ALL_FILTER_TOKEN: &str = "iacs";
+
+/// Decision returned by [`AssetType::parse_filter`] for a `?type=`
+/// URL parameter. Pattern-matched at every list-handler filter site
+/// to either pin the query to a single variant, expand to every
+/// IACS variant via `eq_any(...)`, or collapse to "no rows match"
+/// when the token is unrecognised.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AssetTypeFilter {
+    /// One of the seven concrete `AssetType` variants.
+    One(AssetType),
+    /// Synthetic "every `iacs_*` variant" virtual filter.
+    IacsAll,
+    /// Token did not parse; caller MUST collapse to a `id = -1`
+    /// empty-result filter (anti-enumeration: a hand-crafted
+    /// `?type=garbage` request must not leak the full asset list).
+    Unknown,
 }
 
 impl std::fmt::Display for AssetType {
@@ -114,7 +424,10 @@ impl diesel::deserialize::FromSql<diesel::sql_types::Varchar, diesel::pg::Pg> fo
             diesel::sql_types::Varchar,
             diesel::pg::Pg,
         >>::from_sql(bytes)?;
-        Ok(Self::parse(&s))
+        // The DB CHECK constraint guarantees `s` matches one of the 7
+        // canonical values; an Err here means schema drift and we
+        // bubble it up rather than silently coerce to `Ssh`.
+        Self::parse(&s).map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
     }
 }
 
@@ -310,45 +623,314 @@ mod tests {
 
     #[test]
     fn test_asset_type_from_str_ssh() {
-        assert_eq!(AssetType::parse("ssh"), AssetType::Ssh);
+        assert_eq!(AssetType::parse("ssh"), Ok(AssetType::Ssh));
     }
 
     #[test]
     fn test_asset_type_from_str_rdp() {
-        assert_eq!(AssetType::parse("rdp"), AssetType::Rdp);
+        assert_eq!(AssetType::parse("rdp"), Ok(AssetType::Rdp));
     }
 
     #[test]
-    fn test_asset_type_from_str_unknown() {
-        // Unknown values default to SSH
-        assert_eq!(AssetType::parse("unknown"), AssetType::Ssh);
-        assert_eq!(AssetType::parse(""), AssetType::Ssh);
-        assert_eq!(AssetType::parse("SSH"), AssetType::Ssh); // Case sensitive, defaults to SSH
+    fn test_asset_type_parse_strict_rejects_unknown() {
+        // Strict parse: NEVER falls back to SSH.
+        assert!(AssetType::parse("unknown").is_err());
+        assert!(AssetType::parse("").is_err());
+        assert!(AssetType::parse("SSH").is_err()); // case-sensitive
+        assert!(AssetType::parse("iacs").is_err()); // family name alone
+    }
+
+    #[test]
+    fn test_asset_type_parse_or_ssh_legacy_fallback() {
+        assert_eq!(AssetType::parse_or_ssh("unknown"), AssetType::Ssh);
+        assert_eq!(AssetType::parse_or_ssh("rdp"), AssetType::Rdp);
+        assert_eq!(AssetType::parse_or_ssh("iacs_modbus"), AssetType::IacsModbus);
     }
 
     #[test]
     fn test_asset_type_as_str() {
         assert_eq!(AssetType::Ssh.as_str(), "ssh");
         assert_eq!(AssetType::Rdp.as_str(), "rdp");
+        assert_eq!(AssetType::IacsModbus.as_str(), "iacs_modbus");
+        assert_eq!(AssetType::IacsOpcua.as_str(), "iacs_opcua");
+        assert_eq!(AssetType::IacsProfinet.as_str(), "iacs_profinet");
+        assert_eq!(AssetType::IacsIec104.as_str(), "iacs_iec104");
+        assert_eq!(AssetType::IacsTcp.as_str(), "iacs_tcp");
+    }
+
+    #[test]
+    fn test_format_access_rule_protocol() {
+        assert_eq!(AssetType::format_access_rule_protocol("ssh"), "SSH");
+        assert_eq!(AssetType::format_access_rule_protocol("rdp"), "RDP");
+        assert_eq!(AssetType::format_access_rule_protocol("iacs_modbus"), "Modbus");
+        assert_eq!(AssetType::format_access_rule_protocol("iacs_opcua"), "OPC UA");
+        assert_eq!(
+            AssetType::format_access_rule_protocol("iacs_profinet"),
+            "PROFINET"
+        );
+        assert_eq!(AssetType::format_access_rule_protocol("iacs_iec104"), "IEC-104");
+        assert_eq!(AssetType::format_access_rule_protocol("iacs_tcp"), "IACS (TCP)");
+        assert_eq!(AssetType::format_access_rule_protocol("weird"), "WEIRD");
     }
 
     #[test]
     fn test_asset_type_default_port_ssh() {
-        assert_eq!(AssetType::Ssh.default_port(), 22);
+        assert_eq!(AssetType::Ssh.default_port(), Some(22));
     }
 
     #[test]
     fn test_asset_type_default_port_rdp() {
-        assert_eq!(AssetType::Rdp.default_port(), 3389);
+        assert_eq!(AssetType::Rdp.default_port(), Some(3389));
     }
 
     #[test]
-    fn test_asset_type_roundtrip() {
-        for asset_type in [AssetType::Ssh, AssetType::Rdp] {
+    fn test_asset_type_default_port_iacs_known_protocols() {
+        assert_eq!(AssetType::IacsModbus.default_port(), Some(502));
+        assert_eq!(AssetType::IacsOpcua.default_port(), Some(4840));
+        assert_eq!(AssetType::IacsProfinet.default_port(), Some(34962));
+        assert_eq!(AssetType::IacsIec104.default_port(), Some(2404));
+    }
+
+    #[test]
+    fn test_asset_type_default_port_iacs_tcp_is_none() {
+        assert_eq!(
+            AssetType::IacsTcp.default_port(),
+            None,
+            "the catch-all has no default; the operator must enter a port explicitly"
+        );
+    }
+
+    #[test]
+    fn test_asset_type_roundtrip_all_variants() {
+        for asset_type in AssetType::ALL {
             let str_val = asset_type.as_str();
-            let parsed = AssetType::parse(str_val);
-            assert_eq!(asset_type, parsed);
+            let parsed = unwrap_ok!(AssetType::parse(str_val));
+            assert_eq!(*asset_type, parsed);
         }
+    }
+
+    #[test]
+    fn test_asset_type_is_iacs() {
+        assert!(!AssetType::Ssh.is_iacs());
+        assert!(!AssetType::Rdp.is_iacs());
+        assert!(AssetType::IacsModbus.is_iacs());
+        assert!(AssetType::IacsOpcua.is_iacs());
+        assert!(AssetType::IacsProfinet.is_iacs());
+        assert!(AssetType::IacsIec104.is_iacs());
+        assert!(AssetType::IacsTcp.is_iacs());
+    }
+
+    #[test]
+    fn test_asset_type_is_it_disjoint_from_iacs() {
+        for variant in AssetType::ALL {
+            assert_ne!(
+                variant.is_iacs(),
+                variant.is_it(),
+                "is_iacs() and is_it() must partition the enum (variant: {:?})",
+                variant
+            );
+        }
+    }
+
+    #[test]
+    fn test_asset_type_family() {
+        assert_eq!(AssetType::Ssh.family(), AssetFamily::It);
+        assert_eq!(AssetType::Rdp.family(), AssetFamily::It);
+        assert_eq!(AssetType::IacsTcp.family(), AssetFamily::Iacs);
+    }
+
+    #[test]
+    fn test_asset_type_iacs_protocol() {
+        assert_eq!(AssetType::Ssh.iacs_protocol(), None);
+        assert_eq!(AssetType::Rdp.iacs_protocol(), None);
+        assert_eq!(
+            AssetType::IacsModbus.iacs_protocol(),
+            Some(IacsProtocol::Modbus)
+        );
+        assert_eq!(
+            AssetType::IacsOpcua.iacs_protocol(),
+            Some(IacsProtocol::OpcUa)
+        );
+        assert_eq!(
+            AssetType::IacsProfinet.iacs_protocol(),
+            Some(IacsProtocol::Profinet)
+        );
+        assert_eq!(
+            AssetType::IacsIec104.iacs_protocol(),
+            Some(IacsProtocol::Iec104)
+        );
+        assert_eq!(AssetType::IacsTcp.iacs_protocol(), Some(IacsProtocol::Tcp));
+    }
+
+    #[test]
+    fn test_iacs_protocol_as_str_and_display() {
+        assert_eq!(IacsProtocol::Modbus.as_str(), "modbus");
+        assert_eq!(IacsProtocol::OpcUa.as_str(), "opcua");
+        assert_eq!(IacsProtocol::Profinet.as_str(), "profinet");
+        assert_eq!(IacsProtocol::Iec104.as_str(), "iec104");
+        assert_eq!(IacsProtocol::Tcp.as_str(), "tcp");
+        assert_eq!(format!("{}", IacsProtocol::Modbus), "modbus");
+    }
+
+    #[test]
+    fn test_asset_type_label_present_for_every_variant() {
+        for variant in AssetType::ALL {
+            let label = variant.label();
+            assert!(!label.is_empty(), "label must be set for {:?}", variant);
+        }
+    }
+
+    /// `badge_label` MUST stay short enough to fit the fixed-width
+    /// (`h-10 w-10` = 40 px) square asset-type tile on the detail
+    /// page. The pre-fix `IACS_MODBUS` (11 chars) overflowed and
+    /// crashed into the asset name title (operator-reported
+    /// 2026-05-08). 4 chars at `text-xs font-bold` fits comfortably
+    /// in the tile; we cap at 3 with `104` as the longest entry to
+    /// leave a safety margin for the future.
+    #[test]
+    fn test_asset_type_badge_label_fits_the_square_tile() {
+        for variant in AssetType::ALL {
+            let badge = variant.badge_label();
+            assert!(!badge.is_empty(), "badge_label must be set for {:?}", variant);
+            assert!(
+                badge.len() <= 3,
+                "badge_label '{}' for {:?} is too long for the h-10 w-10 tile (max 3 chars)",
+                badge,
+                variant
+            );
+            assert!(
+                badge.chars().all(|c| c.is_ascii() && !c.is_whitespace()),
+                "badge_label '{}' for {:?} must be ASCII without whitespace",
+                badge,
+                variant
+            );
+        }
+    }
+
+    /// Pin the exact mapping so a future maintainer cannot silently
+    /// rename "MB" -> "MOD" or "104" -> "IEC" without touching this
+    /// test. The wire-form labels show up in the rendered HTML and
+    /// in operator screenshots; a drift would surprise people.
+    #[test]
+    fn test_asset_type_badge_label_canonical_mapping() {
+        assert_eq!(AssetType::Ssh.badge_label(), "SSH");
+        assert_eq!(AssetType::Rdp.badge_label(), "RDP");
+        assert_eq!(AssetType::IacsModbus.badge_label(), "MB");
+        assert_eq!(AssetType::IacsOpcua.badge_label(), "OPC");
+        assert_eq!(AssetType::IacsProfinet.badge_label(), "PN");
+        assert_eq!(AssetType::IacsIec104.badge_label(), "104");
+        assert_eq!(AssetType::IacsTcp.badge_label(), "TCP");
+    }
+
+    /// Operator-reported 2026-05-08: the IACS-TCP variant must
+    /// render as "Generic TCP" with a capital G, not "generic TCP".
+    /// Pin both the exact label and the case so a future maintainer
+    /// cannot silently regress to lowercase.
+    #[test]
+    fn test_iacs_tcp_label_is_capitalised() {
+        assert_eq!(AssetType::IacsTcp.label(), "IACS - Generic TCP");
+        assert!(
+            !AssetType::IacsTcp.label().contains("generic"),
+            "label must use 'Generic' (capital G), not 'generic'"
+        );
+    }
+
+    /// `filter_options` must surface the synthetic `iacs` filter
+    /// row right after the seven concrete variants returned by
+    /// `select_options`. Pinned so the dropdown order stays
+    /// predictable and the create-form path NEVER inherits the
+    /// synthetic row by mistake.
+    #[test]
+    fn test_filter_options_carries_synthetic_iacs_all() {
+        let opts = AssetType::filter_options();
+        assert_eq!(
+            opts.len(),
+            AssetType::ALL.len() + 1,
+            "filter_options = select_options + 1 synthetic 'iacs' entry"
+        );
+        let last = opts.last().unwrap();
+        assert_eq!(last.0, IACS_ALL_FILTER_TOKEN);
+        assert_eq!(last.1, "IACS - All Industrial Protocols");
+        // First N rows must match select_options (no reordering).
+        for (i, sel) in AssetType::select_options().iter().enumerate() {
+            assert_eq!(&opts[i], sel, "filter_options must keep select_options order at index {i}");
+        }
+    }
+
+    /// `select_options` MUST NOT carry the synthetic IACS filter
+    /// token: persistence paths (create/edit forms) would then
+    /// submit `asset_type='iacs'` and the DB
+    /// `assets_asset_type_chk` CHECK constraint would refuse it.
+    #[test]
+    fn test_select_options_does_not_carry_synthetic_iacs_filter() {
+        let opts = AssetType::select_options();
+        assert!(
+            !opts.iter().any(|(v, _)| v == IACS_ALL_FILTER_TOKEN),
+            "select_options must not expose the synthetic 'iacs' filter token; \
+             it would land on the create/edit form and violate the DB CHECK"
+        );
+    }
+
+    #[test]
+    fn test_parse_filter_routes_token_correctly() {
+        assert_eq!(
+            AssetType::parse_filter("ssh"),
+            AssetTypeFilter::One(AssetType::Ssh)
+        );
+        assert_eq!(
+            AssetType::parse_filter("iacs_modbus"),
+            AssetTypeFilter::One(AssetType::IacsModbus)
+        );
+        assert_eq!(
+            AssetType::parse_filter(IACS_ALL_FILTER_TOKEN),
+            AssetTypeFilter::IacsAll
+        );
+        assert_eq!(AssetType::parse_filter("garbage"), AssetTypeFilter::Unknown);
+        assert_eq!(AssetType::parse_filter(""), AssetTypeFilter::Unknown);
+    }
+
+    #[test]
+    fn test_iacs_variants_covers_every_iacs_member() {
+        let v = AssetType::iacs_variants();
+        assert_eq!(v.len(), 5);
+        for variant in v {
+            assert!(
+                variant.is_iacs(),
+                "iacs_variants() must only return is_iacs() variants"
+            );
+        }
+        for variant in AssetType::ALL {
+            if variant.is_iacs() {
+                assert!(
+                    AssetType::iacs_variants().contains(variant),
+                    "iacs_variants() must include {:?}",
+                    variant
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_asset_type_all_is_exhaustive() {
+        // If a new variant is added without updating ALL, this will
+        // fail at compile time on the match below (exhaustiveness
+        // check via `_` arm intentionally absent).
+        for variant in AssetType::ALL {
+            match *variant {
+                AssetType::Ssh
+                | AssetType::Rdp
+                | AssetType::IacsModbus
+                | AssetType::IacsOpcua
+                | AssetType::IacsProfinet
+                | AssetType::IacsIec104
+                | AssetType::IacsTcp => {}
+            }
+        }
+        assert_eq!(
+            AssetType::ALL.len(),
+            7,
+            "ALL must list exactly 7 canonical variants"
+        );
     }
 
     // ==================== AssetStatus Tests ====================

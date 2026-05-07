@@ -747,7 +747,61 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         http_rate,
         live_session_history,
         system_health_cache,
+        iacs_tunnel_registry: vauban_web::services::iacs_tunnel::TunnelRegistry::new(),
     };
+
+    // Boot the in-process IACS tunnel sshd if both the global
+    // industrial kill-switch AND the dedicated `[industrial.iacs_tunnel]`
+    // sub-toggle are on. A failure to bind logs an `error!` and is
+    // non-fatal: vauban-web stays up so the rest of the platform
+    // (web UI, IT sessions) keeps working while operators fix the
+    // IACS configuration.
+    if config.industrial.enabled && config.industrial.iacs_tunnel.enabled {
+        let registry = app_state.iacs_tunnel_registry.clone();
+        let pool = app_state.db_pool.clone();
+        let tunnel_cfg = config.industrial.iacs_tunnel.clone();
+        let server_registry = registry.clone();
+        let server_pool = pool.clone();
+        let server_cfg = tunnel_cfg.clone();
+        let server_broadcast = app_state.broadcast.clone();
+        tokio::spawn(async move {
+            match vauban_web::services::iacs_tunnel::spawn_iacs_tunnel_server_with_broadcast(
+                server_registry,
+                server_pool,
+                server_cfg,
+                Some(server_broadcast),
+            )
+            .await
+            {
+                Ok((addr, join)) => {
+                    tracing::info!(bind_addr = %addr, "iacs_tunnel: sshd boot OK");
+                    if let Err(e) = join.await {
+                        tracing::error!(error = ?e, "iacs_tunnel: sshd task ended unexpectedly");
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        "iacs_tunnel: sshd boot FAILED -- IACS tunnels disabled \
+                         until restart, web UI and other features keep running"
+                    );
+                }
+            }
+        });
+        // L4: revocation + TTL watchdog. Runs forever; intentionally
+        // de-coupled from the sshd task so a sshd panic does not
+        // also stop revocation.
+        let _watchdog = vauban_web::services::iacs_tunnel::spawn_watchdog(
+            registry, pool, tunnel_cfg,
+        );
+        tracing::info!("iacs_tunnel: revocation watchdog spawned");
+    } else {
+        tracing::info!(
+            industrial_enabled = config.industrial.enabled,
+            iacs_tunnel_enabled = config.industrial.iacs_tunnel.enabled,
+            "iacs_tunnel: sshd not started (kill-switch off)"
+        );
+    }
 
     // Start background tasks for WebSocket updates
     start_dashboard_tasks(broadcast, db_pool.clone()).await;
@@ -1474,6 +1528,20 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
             post(handlers::web::iacs::iacs_offboard_self),
         )
         .route("/sessions/active", get(handlers::web::active_sessions))
+        // IACS tunnel session endpoints (user zone). Both gates are
+        // re-checked inside the handlers; the route layer just makes
+        // them addressable. The status page is intentionally NOT
+        // gated by `assets:read` -- once a session is created, the
+        // owner must always be able to see the connection details
+        // even if their `assets:read` was revoked between sessions.
+        .route(
+            "/assets/{uuid}/connect-iacs",
+            post(handlers::web::connect_iacs),
+        )
+        .route(
+            "/sessions/{uuid}/iacs/status",
+            get(handlers::web::iacs_tunnel_status_page),
+        )
         // SSH connection endpoints (user zone: opening sessions)
         .route("/assets/{uuid}/connect", post(handlers::web::connect_ssh))
         // SSH host key verification stays in the user zone because it

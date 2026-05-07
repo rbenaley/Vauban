@@ -59,8 +59,16 @@ async fn create_staff_user(
         .expect("Failed to create staff user");
 
     use sha3::{Digest, Sha3_256};
+    let session_uuid = Uuid::new_v4();
     let token = auth_service
-        .generate_access_token(&user.uuid.to_string(), &user.username, true, false, true)
+        .generate_access_token(
+            &user.uuid.to_string(),
+            &user.username,
+            true,
+            false,
+            true,
+            Some(session_uuid),
+        )
         .expect("Failed to generate token");
 
     let mut hasher = Sha3_256::new();
@@ -71,7 +79,7 @@ async fn create_staff_user(
     use vauban_web::models::auth_session::NewAuthSession;
     use vauban_web::schema::auth_sessions;
     let new_session = NewAuthSession {
-        uuid: Uuid::new_v4(),
+        uuid: session_uuid,
         user_id: user.id,
         token_hash: token_hash.clone(),
         ip_address: ip,
@@ -133,8 +141,16 @@ async fn create_superuser_only(
         .expect("Failed to create superuser");
 
     use sha3::{Digest, Sha3_256};
+    let session_uuid = Uuid::new_v4();
     let token = auth_service
-        .generate_access_token(&user.uuid.to_string(), &user.username, true, true, false)
+        .generate_access_token(
+            &user.uuid.to_string(),
+            &user.username,
+            true,
+            true,
+            false,
+            Some(session_uuid),
+        )
         .expect("Failed to generate token");
 
     let mut hasher = Sha3_256::new();
@@ -145,7 +161,7 @@ async fn create_superuser_only(
     use vauban_web::models::auth_session::NewAuthSession;
     use vauban_web::schema::auth_sessions;
     let new_session = NewAuthSession {
-        uuid: Uuid::new_v4(),
+        uuid: session_uuid,
         user_id: user.id,
         token_hash: token_hash.clone(),
         ip_address: ip,

@@ -25,6 +25,13 @@ pub struct ManageAssetItem {
     pub hostname: String,
     pub port: i32,
     pub asset_type: String,
+    /// Whether the asset belongs to the IACS family. Drives the row
+    /// icon (factory pictogram) and tint -- without this, the
+    /// pre-IACS template fell through to the RDP-monitor SVG for
+    /// every IACS variant, mislabeling industrial assets visually.
+    pub is_iacs: bool,
+    /// Modbus / OPC-UA / … short label for the industrial pill (user-zone parity).
+    pub iacs_protocol_label: String,
     pub status: String,
     pub group_name: Option<String>,
 }

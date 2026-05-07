@@ -1,6 +1,7 @@
 /// VAUBAN Web - Access rule detail template.
 use askama::Template;
 
+use crate::models::AssetType;
 use crate::services::audit_authors::AuthorRef;
 use crate::templates::base::{FlashMessage, UserContext, VaubanConfig};
 
@@ -45,7 +46,7 @@ impl AccessRuleDetailData {
     pub fn protocols_display(&self) -> String {
         self.allowed_protocols
             .iter()
-            .map(|p| p.to_uppercase())
+            .map(|p| AssetType::format_access_rule_protocol(p))
             .collect::<Vec<_>>()
             .join(", ")
     }
@@ -113,6 +114,26 @@ mod tests {
     fn test_protocols_display() {
         let rule = create_test_rule();
         assert_eq!(rule.protocols_display(), "SSH, RDP");
+    }
+
+    #[test]
+    fn test_protocols_display_iacs_family() {
+        let rule = AccessRuleDetailData {
+            allowed_protocols: vec![
+                "ssh".to_string(),
+                "rdp".to_string(),
+                "iacs_modbus".to_string(),
+                "iacs_opcua".to_string(),
+                "iacs_profinet".to_string(),
+                "iacs_iec104".to_string(),
+                "iacs_tcp".to_string(),
+            ],
+            ..create_test_rule()
+        };
+        assert_eq!(
+            rule.protocols_display(),
+            "SSH, RDP, Modbus, OPC UA, PROFINET, IEC-104, IACS (TCP)"
+        );
     }
 
     #[test]

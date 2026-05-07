@@ -103,10 +103,17 @@ pub async fn asset_list(
     if let Some(ref asset_type) = type_filter
         && !asset_type.is_empty()
     {
-        if let Some(parsed) = AssetType::try_parse(asset_type) {
-            count_query = count_query.filter(schema_assets::asset_type.eq(parsed));
-        } else {
-            count_query = count_query.filter(schema_assets::id.eq(-1));
+        match AssetType::parse_filter(asset_type) {
+            crate::models::asset::AssetTypeFilter::One(parsed) => {
+                count_query = count_query.filter(schema_assets::asset_type.eq(parsed));
+            }
+            crate::models::asset::AssetTypeFilter::IacsAll => {
+                count_query = count_query
+                    .filter(schema_assets::asset_type.eq_any(AssetType::iacs_variants()));
+            }
+            crate::models::asset::AssetTypeFilter::Unknown => {
+                count_query = count_query.filter(schema_assets::id.eq(-1));
+            }
         }
     }
     if let Some(ref status_val) = status_filter
@@ -140,10 +147,17 @@ pub async fn asset_list(
     if let Some(ref asset_type) = type_filter
         && !asset_type.is_empty()
     {
-        if let Some(parsed) = AssetType::try_parse(asset_type) {
-            query = query.filter(schema_assets::asset_type.eq(parsed));
-        } else {
-            query = query.filter(schema_assets::id.eq(-1));
+        match AssetType::parse_filter(asset_type) {
+            crate::models::asset::AssetTypeFilter::One(parsed) => {
+                query = query.filter(schema_assets::asset_type.eq(parsed));
+            }
+            crate::models::asset::AssetTypeFilter::IacsAll => {
+                query =
+                    query.filter(schema_assets::asset_type.eq_any(AssetType::iacs_variants()));
+            }
+            crate::models::asset::AssetTypeFilter::Unknown => {
+                query = query.filter(schema_assets::id.eq(-1));
+            }
         }
     }
     if let Some(ref status_val) = status_filter
@@ -289,17 +303,32 @@ pub async fn asset_list(
     let asset_items: Vec<AssetListItem> = db_assets
         .into_iter()
         .map(
-            |(id, uuid, name, hostname, port, asset_type, status)| AssetListItem {
-                requires_request: approval_set.contains(&id) && !approved_set.contains(&id),
-                require_mfa: mfa_set.contains(&id),
-                id,
-                uuid,
-                name,
-                hostname,
-                port,
-                asset_type: asset_type.to_string(),
-                status,
-                group_name: None,
+            |(id, uuid, name, hostname, port, asset_type, status)| {
+                // The `asset_type` column is decoded into the strict
+                // `AssetType` enum at the Diesel layer (see
+                // `models::asset::AssetType::FromSql`), so we already
+                // hold the typed value here. The DB CHECK constraint
+                // (`assets_asset_type_chk`) ensures no unknown
+                // variant can ever reach this path.
+                let is_iacs = asset_type.is_iacs();
+                let iacs_protocol_label = asset_type
+                    .iacs_protocol()
+                    .map(|p| p.as_str().to_string())
+                    .unwrap_or_default();
+                AssetListItem {
+                    requires_request: approval_set.contains(&id) && !approved_set.contains(&id),
+                    require_mfa: mfa_set.contains(&id),
+                    id,
+                    uuid,
+                    name,
+                    hostname,
+                    port,
+                    asset_type: asset_type.to_string(),
+                    status,
+                    group_name: None,
+                    is_iacs,
+                    iacs_protocol_label,
+                }
             },
         )
         .collect();
@@ -324,6 +353,25 @@ pub async fn asset_list(
         None
     };
 
+    // Pre-resolve `user_has_active_ews` once for the entire page so
+    // the template branch on the IACS Connect button stays a pure
+    // boolean read (no Askama-side DB call). "Active" = neither
+    // disabled (`disabled_at IS NULL`) nor offboarded (`offboarded_at
+    // IS NULL`); the partial unique index `ews_active_fingerprint_uniq`
+    // already enforces the exclusivity at the DB layer.
+    let user_has_active_ews: bool = {
+        use crate::schema::ews;
+        let count: i64 = ews::table
+            .filter(ews::user_id.eq(user_internal_id))
+            .filter(ews::disabled_at.is_null())
+            .filter(ews::offboarded_at.is_null())
+            .select(diesel::dsl::count_star())
+            .first(&mut conn)
+            .await
+            .unwrap_or(0);
+        count > 0
+    };
+
     let template = AssetListTemplate {
         title,
         user: user_ctx,
@@ -337,10 +385,7 @@ pub async fn asset_list(
         search: search_filter,
         type_filter,
         status_filter,
-        asset_types: vec![
-            ("ssh".to_string(), "SSH".to_string()),
-            ("rdp".to_string(), "RDP".to_string()),
-        ],
+        asset_types: AssetType::filter_options(),
         statuses: vec![
             ("online".to_string(), "Online".to_string()),
             ("offline".to_string(), "Offline".to_string()),
@@ -348,6 +393,8 @@ pub async fn asset_list(
         ],
         require_justification: state.config.security.require_justification,
         iacs_request_allowed: perms.iacs_request,
+        iacs_connect_allowed: perms.assets_connect_iacs,
+        user_has_active_ews,
     };
 
     let html = template
