@@ -43,16 +43,43 @@ require_justification = false
 enabled = false
 
 # ==============================================================================
-# IACS TUNNEL OVERRIDES (vauban-web in-process sshd)
+# IACS / INDUSTRIAL
 # ==============================================================================
 #
-# Production stores the ed25519 host key under /var/lib/vauban/ (root-
-# owned, mode 0700). The development binary runs as the dev user and
-# does not have write access there, so we redirect the host key to
-# `vauban-web/certs/` -- the same gitignored directory that already
-# holds the dev TLS material (`dev-server.crt`, `dev-server.key`).
-# Persistent across `cargo clean` so EWS `known_hosts` entries
-# survive a rebuild; gitignored so the private key never lands in
-# git.
+# Engineering Workstation (EWS) onboarding -- preliminary scaffolding for
+# future IACS asset support. The module exposes the "IACS" sidebar entry
+# (Administration zone), the "Onboard EWS" button on /assets, and the
+# /iacs/* routes (user-zone form + admin-zone CRUD).
+#
+# When `enabled = false`, the entire surface is killed: routes return 404,
+# sidebar entries are hidden, and `PermissionContext::iacs_*` is forced to
+# false even if the Casbin policy grants the action. Existing rows in
+# `ews_*` tables are kept; re-enabling exposes them again.
+[industrial]
+enabled = true            # set to false to fully hide the IACS surface
+max_ews_per_user = 0      # 0 = no cap; otherwise a per-user EWS quota
+
+# IACS tunnel sub-module: in-process sshd (russh) inside `vauban-web`.
+# Onboarded EWS connect to `bind_addr` with their VAUBAN id_VAUBAN
+# private key, the SSH username is the one-shot session UUID, and the
+# server only accepts a single `direct-tcpip` channel forwarded to
+# `target_addr`. All other SSH channels (shell, exec, subsystem,
+# tcpip-forward) are rejected.
+#
+# Boot precondition: industrial.enabled = true AND iacs_tunnel.enabled
+# = true. Either of those false, the sshd never binds.
+#
+# Production stores the ed25519 host key under /var/lib/vauban/. The
+# development binary runs as the dev user without write access there, so
+# host_key_path points at vauban-web/certs/ (gitignored, persists across
+# cargo clean).
 [industrial.iacs_tunnel]
+enabled = true
+bind_addr = "0.0.0.0:22322"
+advertise_hostname = "localhost"
+target_addr = "127.0.0.1:4321"
 host_key_path = "vauban-web/certs/iacs_tunnel_host_ed25519"
+max_concurrent_per_user = 4
+max_concurrent_per_ews = 2
+waiting_client_ttl_seconds = 300
+revocation_poll_interval_seconds = 2
