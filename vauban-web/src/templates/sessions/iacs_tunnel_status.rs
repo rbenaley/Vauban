@@ -66,12 +66,23 @@ pub struct IacsTunnelStatusTemplate {
 }
 
 impl IacsTunnelStatusTemplate {
-    /// Build the canonical `ssh -L LP:127.0.0.1:LP <session_uuid>@<bastion> -p <port> -N`
-    /// command line as a String. The format is consumed both by the
-    /// template (rendered as `<code>`) and by the unit tests below.
+    /// Build the canonical
+    /// `ssh -i ~/.ssh/id_VAUBAN -L LP:127.0.0.1:LP <session_uuid>@<bastion> -p <port> -N`
+    /// command line as a String.
+    ///
+    /// `-i ~/.ssh/id_VAUBAN` is required: without it OpenSSH offers
+    /// `~/.ssh/id_rsa` / `id_ed25519` / agent keys, none of which are
+    /// registered as an EWS, and the IACS sshd rejects with
+    /// "Permission denied (publickey)" -- see
+    /// `services::iacs_tunnel::auth::verify_pubkey` (`EwsNotFound`).
+    /// The path matches the canonical filename produced by the
+    /// onboarding flow (`templates/iacs/onboard_form.html`).
+    ///
+    /// The format is consumed both by the template (rendered as
+    /// `<code>`) and by the unit tests below.
     pub fn ssh_command(&self) -> String {
         format!(
-            "ssh -L {lp}:127.0.0.1:{lp} {sess}@{host} -p {port} -N",
+            "ssh -i ~/.ssh/id_VAUBAN -L {lp}:127.0.0.1:{lp} {sess}@{host} -p {port} -N",
             lp = self.local_forward_port,
             sess = self.session_uuid,
             host = self.bastion_hostname,
@@ -115,7 +126,24 @@ mod tests {
         let t = make_template();
         assert_eq!(
             t.ssh_command(),
-            "ssh -L 4321:127.0.0.1:4321 11111111-1111-1111-1111-111111111111@bastion.example.com -p 22322 -N"
+            "ssh -i ~/.ssh/id_VAUBAN -L 4321:127.0.0.1:4321 \
+             11111111-1111-1111-1111-111111111111@bastion.example.com -p 22322 -N"
+        );
+    }
+
+    /// Regression pin: the `-i ~/.ssh/id_VAUBAN` flag is mandatory.
+    /// Without it OpenSSH offers default keys (none are registered as
+    /// an EWS) and the IACS sshd rejects with "Permission denied
+    /// (publickey)". The path mirrors the onboarding flow
+    /// (`templates/iacs/onboard_form.html`).
+    #[test]
+    fn ssh_command_carries_explicit_identity_file() {
+        let t = make_template();
+        let cmd = t.ssh_command();
+        assert!(
+            cmd.contains("-i ~/.ssh/id_VAUBAN"),
+            "ssh command must explicitly point at the EWS private key -- got {}",
+            cmd
         );
     }
 
@@ -143,7 +171,7 @@ mod tests {
         let html = t.render().expect("render must succeed");
         assert!(html.contains("PLC-Modbus-A1"));
         assert!(html.contains("waiting_client"));
-        assert!(html.contains("ssh -L 4321:127.0.0.1:4321"));
+        assert!(html.contains("ssh -i ~/.ssh/id_VAUBAN -L 4321:127.0.0.1:4321"));
         assert!(html.contains("Disconnect"));
     }
 

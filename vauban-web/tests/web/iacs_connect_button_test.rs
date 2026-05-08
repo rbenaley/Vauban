@@ -479,11 +479,17 @@ async fn iacs_status_page_renders_canonical_ssh_command() {
     assert_status(&resp, 200);
     let body = resp.text();
 
-    // The exact `ssh -L 4321:127.0.0.1:4321 ... -p 22322 -N` command
-    // line must appear, composed from the [industrial.iacs_tunnel]
+    // The exact
+    // `ssh -i ~/.ssh/id_VAUBAN -L 4321:127.0.0.1:4321 ... -p 22322 -N`
+    // command line must appear, composed from the [industrial.iacs_tunnel]
     // defaults (port 22322, target_addr 127.0.0.1:4321,
-    // advertise_hostname localhost).
-    let expected_cmd_prefix = "ssh -L 4321:127.0.0.1:4321 ";
+    // advertise_hostname localhost). The `-i ~/.ssh/id_VAUBAN` segment
+    // mirrors the EWS onboarding flow (templates/iacs/onboard_form.html)
+    // and prevents the operator from hitting "Permission denied
+    // (publickey)" because OpenSSH otherwise offers default keys
+    // (~/.ssh/id_rsa / id_ed25519 / agent) that are not registered as an
+    // EWS.
+    let expected_cmd_prefix = "ssh -i ~/.ssh/id_VAUBAN -L 4321:127.0.0.1:4321 ";
     assert!(
         body.contains(expected_cmd_prefix),
         "status page must render the canonical ssh -L command (prefix '{}'). \

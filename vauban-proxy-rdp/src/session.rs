@@ -728,11 +728,10 @@ async fn active_session_loop(
             // Performance metrics reporting (every 5 seconds)
             _ = perf_interval.tick(), if video_mode => {
                 if perf_gfx_updates > 0 || perf_encoded_frames > 0 {
-                    let avg_encode_ms = if perf_encoded_frames > 0 {
-                        perf_encode_time_us / perf_encoded_frames / 1000
-                    } else {
-                        0
-                    };
+                    let avg_encode_ms = perf_encode_time_us
+                        .checked_div(perf_encoded_frames)
+                        .map(|us_per_frame| us_per_frame / 1000)
+                        .unwrap_or(0);
                     info!(
                         session_id = %session_id,
                         gfx_updates_5s = perf_gfx_updates,

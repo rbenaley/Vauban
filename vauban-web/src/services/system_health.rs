@@ -382,7 +382,7 @@ impl SystemHealthCache {
         let pg_pool = PoolHealth {
             max_size: pool_status.max_size as u32,
             size: pool_status.size as u32,
-            available: pool_status.available.max(0) as u32,
+            available: pool_status.available as u32,
             waiting: pool_status.waiting as u32,
         };
         let broker_latency = self.broker_latency.snapshot();

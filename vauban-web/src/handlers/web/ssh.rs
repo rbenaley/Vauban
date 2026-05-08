@@ -1350,6 +1350,7 @@ pub async fn terminal_page(
     incoming_flash: IncomingFlash,
     auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
+    browser_tz: BrowserTz,
     axum::extract::Path(session_id): axum::extract::Path<String>,
 ) -> Response {
     use crate::error::AppError;
@@ -1408,8 +1409,8 @@ pub async fn terminal_page(
     let user = Some(user_context_from_auth(&auth_user));
 
     // Build base template with sidebar
-    let base =
-        BaseTemplate::new("SSH Terminal".to_string(), user.clone()).with_current_path("/assets");
+    let base = BaseTemplate::new("SSH Terminal".to_string(), user.clone(), browser_tz.0)
+        .with_current_path("/assets");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
             .await

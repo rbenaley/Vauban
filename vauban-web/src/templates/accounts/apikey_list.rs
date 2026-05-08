@@ -4,6 +4,8 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::templates::base::{FlashMessage, UserContext, VaubanConfig};
+#[allow(unused_imports)]
+use crate::utils::filters;
 
 /// API key item for display in the template.
 #[derive(Debug, Clone)]

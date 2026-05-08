@@ -278,6 +278,24 @@ fn anomaly_catalogue_is_pinned() {
     );
 }
 
+/// Pin: severity badge has a fixed-width column so the title and
+/// detail of every anomaly row line up vertically regardless of the
+/// label length (`WARN` = 4 chars vs `CRITICAL` = 8 chars). Without
+/// `w-14 shrink-0`, the operator-reported misalignment of the title
+/// row resurfaces (2026-05-09). The width was tightened from `w-16`
+/// to `w-14` after a follow-up UX pass to reduce the visual gap
+/// between the badge and the detail text.
+#[test]
+fn anomalies_tile_severity_badge_has_fixed_width() {
+    let tile = include_str!("../../templates/dashboard/tiles/_anomalies.html");
+    assert!(
+        tile.contains("w-14 shrink-0"),
+        "anomalies tile severity badge MUST carry `w-14 shrink-0` so \
+         titles align across rows (WARN vs CRITICAL labels). Tile: \n{}",
+        tile
+    );
+}
+
 /// Pin: SVG widget primitives produce non-empty content.
 /// Smoke-tests that the tile partials embed valid SVG primitives.
 #[test]

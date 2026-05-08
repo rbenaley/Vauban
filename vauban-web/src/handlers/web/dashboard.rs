@@ -17,12 +17,14 @@ pub async fn dashboard_home(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
     perms: crate::auth::permissions::PermissionContext,
+    browser_tz: BrowserTz,
 ) -> Result<Response, AppError> {
     use crate::services::dashboard::{DashboardScope, DashboardSnapshot, snapshot};
     use crate::templates::dashboard::BastionWatchTemplate;
 
     let user = Some(user_context_from_auth(&auth_user));
-    let base = BaseTemplate::new("Bastion Watch".to_string(), user.clone()).with_current_path("/");
+    let base = BaseTemplate::new("Bastion Watch".to_string(), user.clone(), browser_tz.0)
+        .with_current_path("/");
 
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
@@ -82,6 +84,7 @@ pub async fn dashboard_home(
         snapshot,
         anomalies,
         perms,
+        tz: browser_tz.0,
     };
 
     let html = template
@@ -94,10 +97,11 @@ pub async fn dashboard_home(
 pub async fn dashboard_admin(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    browser_tz: BrowserTz,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
-    let base =
-        BaseTemplate::new("Admin Dashboard".to_string(), user.clone()).with_current_path("/admin");
+    let base = BaseTemplate::new("Admin Dashboard".to_string(), user.clone(), browser_tz.0)
+        .with_current_path("/admin");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
             .await
@@ -237,10 +241,12 @@ pub async fn dashboard_widget_active_sessions(
 pub async fn dashboard_widget_recent_activity(
     State(_state): State<AppState>,
     _auth_user: WebAuthUser,
+    browser_tz: BrowserTz,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::templates::dashboard::widgets::ActivityItem;
     let template = RecentActivityWidget {
         activities: Vec::<ActivityItem>::new(), // TODO: Load from database
+        tz: browser_tz.0,
     };
 
     let html = template

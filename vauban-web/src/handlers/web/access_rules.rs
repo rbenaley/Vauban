@@ -180,18 +180,19 @@ fn parse_datetime(s: &Option<String>) -> Option<chrono::DateTime<chrono::Utc>> {
     })
 }
 
-/// Convert RFC3339 string from IPC to display format "YYYY-MM-DD HH:MM UTC".
-fn format_rfc3339_to_display(s: &Option<String>) -> Option<String> {
+/// Convert RFC3339 string from IPC to display format "YYYY-MM-DD HH:MM <Z>"
+/// in the operator's browser timezone.
+fn format_rfc3339_to_display(s: &Option<String>, tz: chrono_tz::Tz) -> Option<String> {
     s.as_deref()
         .filter(|v| !v.is_empty())
         .and_then(|v| chrono::DateTime::parse_from_rfc3339(v).ok())
-        .map(|dt| dt.format("%Y-%m-%d %H:%M UTC").to_string())
+        .map(|dt| crate::utils::format_local(dt.with_timezone(&chrono::Utc), tz))
 }
 
-/// Convert required RFC3339 string to display format.
-fn format_rfc3339_str_to_display(s: &str) -> String {
+/// Convert required RFC3339 string to display format in `tz`.
+fn format_rfc3339_str_to_display(s: &str, tz: chrono_tz::Tz) -> String {
     chrono::DateTime::parse_from_rfc3339(s)
-        .map(|dt| dt.format("%Y-%m-%d %H:%M UTC").to_string())
+        .map(|dt| crate::utils::format_local(dt.with_timezone(&chrono::Utc), tz))
         .unwrap_or_else(|_| s.to_string())
 }
 
@@ -216,10 +217,11 @@ fn to_rfc3339_opt(dt: &Option<chrono::DateTime<chrono::Utc>>) -> Option<String> 
 pub async fn access_rules_list(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    browser_tz: BrowserTz,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
-    let base = BaseTemplate::new("Access Rules".to_string(), user.clone())
+    let base = BaseTemplate::new("Access Rules".to_string(), user.clone(), browser_tz.0)
         .with_current_path("/assets/access");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
@@ -310,6 +312,7 @@ pub async fn access_rule_detail(
     incoming_flash: IncomingFlash,
     auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
+    browser_tz: BrowserTz,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
 ) -> Response {
     let flash = incoming_flash.flash();
@@ -373,22 +376,26 @@ pub async fn access_rule_detail(
         user_group_name: info.user_group_name,
         asset_group_name: info.asset_group_name,
         allowed_protocols: info.allowed_protocols,
-        valid_from: format_rfc3339_to_display(&info.valid_from),
-        valid_until: format_rfc3339_to_display(&info.valid_until),
+        valid_from: format_rfc3339_to_display(&info.valid_from, browser_tz.0),
+        valid_until: format_rfc3339_to_display(&info.valid_until, browser_tz.0),
         require_mfa: info.require_mfa,
         require_approval: info.require_approval,
         max_session_duration: info.max_session_duration,
         is_active: info.is_active,
         priority: info.priority,
-        created_at: format_rfc3339_str_to_display(&info.created_at),
-        updated_at: format_rfc3339_str_to_display(&info.updated_at),
+        created_at: format_rfc3339_str_to_display(&info.created_at, browser_tz.0),
+        updated_at: format_rfc3339_str_to_display(&info.updated_at, browser_tz.0),
         created_by,
         updated_by,
     };
 
     let user = Some(user_context_from_auth(&auth_user));
-    let base = BaseTemplate::new(format!("{} - Access Rule", detail.name), user.clone())
-        .with_current_path("/assets/access");
+    let base = BaseTemplate::new(
+        format!("{} - Access Rule", detail.name),
+        user.clone(),
+        browser_tz.0,
+    )
+    .with_current_path("/assets/access");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
             .await
@@ -423,6 +430,7 @@ pub async fn access_rule_create_form(
     incoming_flash: IncomingFlash,
     auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
+    browser_tz: BrowserTz,
 ) -> Response {
     let flash = incoming_flash.flash();
 
@@ -447,7 +455,7 @@ pub async fn access_rule_create_form(
     };
 
     let user = Some(user_context_from_auth(&auth_user));
-    let base = BaseTemplate::new("New Access Rule".to_string(), user.clone())
+    let base = BaseTemplate::new("New Access Rule".to_string(), user.clone(), browser_tz.0)
         .with_current_path("/assets/access");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
@@ -597,6 +605,7 @@ pub async fn access_rule_edit(
     incoming_flash: IncomingFlash,
     auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
+    browser_tz: BrowserTz,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
 ) -> Response {
     let flash = incoming_flash.flash();
@@ -666,8 +675,12 @@ pub async fn access_rule_edit(
     };
 
     let user = Some(user_context_from_auth(&auth_user));
-    let base = BaseTemplate::new(format!("Edit {} - Access Rule", rule_name), user.clone())
-        .with_current_path("/assets/access");
+    let base = BaseTemplate::new(
+        format!("Edit {} - Access Rule", rule_name),
+        user.clone(),
+        browser_tz.0,
+    )
+    .with_current_path("/assets/access");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
             .await

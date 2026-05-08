@@ -34,10 +34,12 @@ pub async fn asset_list(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
+    browser_tz: BrowserTz,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
-    let base = BaseTemplate::new("Assets".to_string(), user.clone()).with_current_path("/assets");
+    let base = BaseTemplate::new("Assets".to_string(), user.clone(), browser_tz.0)
+        .with_current_path("/assets");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
             .await

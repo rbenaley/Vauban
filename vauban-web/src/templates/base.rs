@@ -47,12 +47,21 @@ pub fn brand_name() -> String {
 }
 
 /// Vauban configuration for templates.
+///
+/// `tz` carries the operator's browser-resolved IANA timezone (see
+/// [`crate::middleware::browser_tz`]). It is set by every handler
+/// through [`BaseTemplate::new`] and propagates automatically to
+/// every page template via [`BaseTemplate::into_fields`]. Templates
+/// then format `DateTime<Utc>` values via the
+/// `|local(vauban.tz) / |local_seconds(vauban.tz)` filters.
+/// `Tz::UTC` is the well-defined fallback (no cookie posted yet).
 #[derive(Debug, Clone)]
 pub struct VaubanConfig {
     pub brand_name: String,
     pub brand_logo: Option<String>,
     pub theme: String, // "light" or "dark"
     pub version: String,
+    pub tz: chrono_tz::Tz,
 }
 
 impl Default for VaubanConfig {
@@ -70,7 +79,21 @@ impl Default for VaubanConfig {
                 env!("CARGO_PKG_VERSION"),
                 env!("VAUBAN_GIT_HASH")
             ),
+            // Default to UTC: the per-request override comes through
+            // `BaseTemplate::new(title, user, browser_tz)` and through
+            // the `with_tz` builder on `VaubanConfig` itself.
+            tz: chrono_tz::Tz::UTC,
         }
+    }
+}
+
+impl VaubanConfig {
+    /// Override the timezone carried by this `VaubanConfig`.
+    /// Used by tests and by `BaseTemplate::new(...)` to seed the
+    /// browser-resolved Tz.
+    pub fn with_tz(mut self, tz: chrono_tz::Tz) -> Self {
+        self.tz = tz;
+        self
     }
 }
 
@@ -118,7 +141,16 @@ impl UserContext {
 }
 
 impl BaseTemplate {
-    pub fn new(title: String, user: Option<UserContext>) -> Self {
+    /// Construct a `BaseTemplate` carrying the operator's
+    /// browser-resolved timezone. Handlers extract a
+    /// [`crate::middleware::BrowserTz`] from the request and pass
+    /// `browser_tz.0` here so every page template renders dates in
+    /// the operator's local timezone (DB / logs / IPC remain UTC,
+    /// see `docs/runbooks/timezone_localization.md`).
+    ///
+    /// `Tz::UTC` is the safe fallback (no `vbn_tz` cookie posted
+    /// yet, e.g. first hit before the bootstrap script runs).
+    pub fn new(title: String, user: Option<UserContext>, tz: chrono_tz::Tz) -> Self {
         let header_user = user.clone();
         let sidebar_content = user.as_ref().map(|u| SidebarContentTemplate {
             user: u.clone(),
@@ -141,7 +173,7 @@ impl BaseTemplate {
         Self {
             title,
             user,
-            vauban: VaubanConfig::default(),
+            vauban: VaubanConfig::default().with_tz(tz),
             messages: Vec::new(),
             language_code: "en".to_string(),
             sidebar_content,
@@ -412,7 +444,7 @@ mod tests {
 
     #[test]
     fn test_base_template_new_without_user() {
-        let base = BaseTemplate::new("Login".to_string(), None);
+        let base = BaseTemplate::new("Login".to_string(), None, chrono_tz::Tz::UTC);
 
         assert_eq!(base.title, "Login");
         assert!(base.user.is_none());
@@ -420,12 +452,13 @@ mod tests {
         assert!(base.header_user.is_none());
         assert_eq!(base.vauban.brand_name, "VAUBAN");
         assert_eq!(base.language_code, "en");
+        assert_eq!(base.vauban.tz, chrono_tz::Tz::UTC);
     }
 
     #[test]
     fn test_base_template_new_with_user() {
         let user = create_test_user();
-        let base = BaseTemplate::new("Dashboard".to_string(), Some(user));
+        let base = BaseTemplate::new("Dashboard".to_string(), Some(user), chrono_tz::Tz::UTC);
 
         assert_eq!(base.title, "Dashboard");
         assert!(base.user.is_some());
@@ -433,18 +466,28 @@ mod tests {
         assert!(base.header_user.is_some());
     }
 
+    /// Browser-resolved Tz threads through to `vauban.tz` so every
+    /// page template can format dates via `|local(vauban.tz)`.
+    #[test]
+    fn test_base_template_propagates_browser_tz() {
+        let base = BaseTemplate::new("X".to_string(), None, chrono_tz::Tz::Europe__Paris);
+        assert_eq!(base.vauban.tz, chrono_tz::Tz::Europe__Paris);
+    }
+
     #[test]
     fn test_base_template_with_messages() {
-        let base = BaseTemplate::new("Test".to_string(), None).with_messages(vec![
-            FlashMessage {
-                level: "success".to_string(),
-                message: "Done".to_string(),
-            },
-            FlashMessage {
-                level: "error".to_string(),
-                message: "Failed".to_string(),
-            },
-        ]);
+        let base = BaseTemplate::new("Test".to_string(), None, chrono_tz::Tz::UTC).with_messages(
+            vec![
+                FlashMessage {
+                    level: "success".to_string(),
+                    message: "Done".to_string(),
+                },
+                FlashMessage {
+                    level: "error".to_string(),
+                    message: "Failed".to_string(),
+                },
+            ],
+        );
 
         assert_eq!(base.messages.len(), 2);
         assert_eq!(base.messages[0].level, "success");
@@ -454,7 +497,8 @@ mod tests {
     #[test]
     fn test_base_template_with_current_path_dashboard() {
         let user = create_test_user();
-        let base = BaseTemplate::new("Dashboard".to_string(), Some(user)).with_current_path("/");
+        let base = BaseTemplate::new("Dashboard".to_string(), Some(user), chrono_tz::Tz::UTC)
+            .with_current_path("/");
 
         let sidebar = unwrap_some!(base.sidebar_content);
         assert!(sidebar.is_dashboard);
@@ -465,7 +509,8 @@ mod tests {
     #[test]
     fn test_base_template_with_current_path_assets() {
         let user = create_test_user();
-        let base = BaseTemplate::new("Assets".to_string(), Some(user)).with_current_path("/assets");
+        let base = BaseTemplate::new("Assets".to_string(), Some(user), chrono_tz::Tz::UTC)
+            .with_current_path("/assets");
 
         let sidebar = unwrap_some!(base.sidebar_content);
         assert!(!sidebar.is_dashboard);
@@ -475,8 +520,8 @@ mod tests {
     #[test]
     fn test_base_template_with_current_path_sessions() {
         let user = create_test_user();
-        let base =
-            BaseTemplate::new("Sessions".to_string(), Some(user)).with_current_path("/sessions");
+        let base = BaseTemplate::new("Sessions".to_string(), Some(user), chrono_tz::Tz::UTC)
+            .with_current_path("/sessions");
 
         let sidebar = unwrap_some!(base.sidebar_content);
         assert!(sidebar.is_sessions);
@@ -486,7 +531,7 @@ mod tests {
     #[test]
     fn test_base_template_with_current_path_recordings() {
         let user = create_test_user();
-        let base = BaseTemplate::new("Recordings".to_string(), Some(user))
+        let base = BaseTemplate::new("Recordings".to_string(), Some(user), chrono_tz::Tz::UTC)
             .with_current_path("/sessions/recordings");
 
         let sidebar = unwrap_some!(base.sidebar_content);
@@ -502,7 +547,7 @@ mod tests {
             is_superuser: true,
             is_staff: true,
         };
-        let base = BaseTemplate::new("Admin".to_string(), Some(user));
+        let base = BaseTemplate::new("Admin".to_string(), Some(user), chrono_tz::Tz::UTC);
 
         let sidebar = unwrap_some!(base.sidebar_content);
         assert!(
@@ -520,7 +565,8 @@ mod tests {
             access_rules_read: true,
             ..PermissionContext::default()
         };
-        let base = BaseTemplate::new("Admin".to_string(), Some(user)).with_perms(perms);
+        let base = BaseTemplate::new("Admin".to_string(), Some(user), chrono_tz::Tz::UTC)
+            .with_perms(perms);
 
         let sidebar = unwrap_some!(base.sidebar_content);
         assert!(sidebar.perms.admin_view);
@@ -535,7 +581,7 @@ mod tests {
             admin_view: true,
             ..PermissionContext::default()
         };
-        let base = BaseTemplate::new("Admin".to_string(), Some(user))
+        let base = BaseTemplate::new("Admin".to_string(), Some(user), chrono_tz::Tz::UTC)
             .with_perms(perms)
             .with_current_path("/sessions");
 
@@ -549,7 +595,7 @@ mod tests {
     #[test]
     fn test_base_template_into_fields() {
         let user = create_test_user();
-        let base = BaseTemplate::new("Test".to_string(), Some(user));
+        let base = BaseTemplate::new("Test".to_string(), Some(user), chrono_tz::Tz::UTC);
         let (title, user_ctx, vauban, messages, lang, sidebar, header) = base.into_fields();
 
         assert_eq!(title, "Test");
@@ -563,7 +609,7 @@ mod tests {
 
     #[test]
     fn test_base_template_renders() {
-        let base = BaseTemplate::new("Test Page".to_string(), None);
+        let base = BaseTemplate::new("Test Page".to_string(), None, chrono_tz::Tz::UTC);
         let result = base.render();
         assert!(result.is_ok(), "BaseTemplate should render successfully");
         let html = unwrap_ok!(result);
@@ -574,7 +620,7 @@ mod tests {
     #[test]
     fn test_base_template_renders_with_user() {
         let user = create_test_user();
-        let base = BaseTemplate::new("Dashboard".to_string(), Some(user));
+        let base = BaseTemplate::new("Dashboard".to_string(), Some(user), chrono_tz::Tz::UTC);
         let result = base.render();
         assert!(result.is_ok(), "BaseTemplate with user should render");
     }
@@ -593,7 +639,7 @@ mod tests {
     #[test]
     fn brand_default_vauban_renders_wordmark_in_sidebar() {
         let user = create_test_user();
-        let base = BaseTemplate::new("Dashboard".to_string(), Some(user));
+        let base = BaseTemplate::new("Dashboard".to_string(), Some(user), chrono_tz::Tz::UTC);
         let html = unwrap_ok!(base.render());
         assert!(
             html.contains(">VAUBAN<"),
@@ -615,7 +661,7 @@ mod tests {
     #[test]
     fn brand_baskesen_renders_turkish_flag_svg_in_sidebar() {
         let user = create_test_user();
-        let mut base = BaseTemplate::new("Dashboard".to_string(), Some(user));
+        let mut base = BaseTemplate::new("Dashboard".to_string(), Some(user), chrono_tz::Tz::UTC);
         // The OnceLock cache may not be initialised in this test
         // process, so we set the field directly on the struct --
         // exercising the same code path the production renderer hits
@@ -659,7 +705,7 @@ mod tests {
         // This protects operators from a typo in their config -- the
         // sidebar never ends up visually broken.
         let user = create_test_user();
-        let mut base = BaseTemplate::new("Dashboard".to_string(), Some(user));
+        let mut base = BaseTemplate::new("Dashboard".to_string(), Some(user), chrono_tz::Tz::UTC);
         base.vauban.brand_name = "Acme Corp".to_string();
         let html = unwrap_ok!(base.render());
         assert!(

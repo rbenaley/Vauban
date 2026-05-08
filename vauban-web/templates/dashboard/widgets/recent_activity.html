@@ -20,7 +20,7 @@
                     {% endif %}
                 </p>
                 <p class="text-xs text-gray-500 dark:text-gray-400">
-                    {{ activity.timestamp.format("%H:%M") }}
+                    {{ activity.timestamp|local(tz) }}
                 </p>
             </div>
         </div>

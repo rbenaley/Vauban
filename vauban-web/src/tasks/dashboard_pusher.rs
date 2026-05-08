@@ -370,6 +370,7 @@ async fn push_medium(
             TILE_USER_LENS,
             render_or_empty(&UserLensTile {
                 snapshot: snapshot.clone(),
+                tz: chrono_tz::Tz::UTC,
             }),
         ),
     ];

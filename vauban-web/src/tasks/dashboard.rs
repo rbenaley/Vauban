@@ -169,7 +169,10 @@ async fn sessions_pass(broadcast: Arc<BroadcastService>, db_pool: Arc<DbPool>) {
 async fn activity_pass(broadcast: Arc<BroadcastService>, db_pool: Arc<DbPool>) {
     match fetch_recent_activity(&db_pool).await {
         Ok(activities) => {
-            let template = RecentActivityWidget { activities };
+            let template = RecentActivityWidget {
+                activities,
+                tz: chrono_tz::Tz::UTC,
+            };
             match template.render() {
                 Ok(html) => {
                     let msg = WsMessage::new("ws-recent-activity", html);

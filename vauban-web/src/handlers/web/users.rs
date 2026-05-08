@@ -22,14 +22,15 @@ pub(crate) fn validate_password_length(pwd: &str, min_len: usize) -> Result<(), 
 pub async fn user_list(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    browser_tz: BrowserTz,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::schema::users;
     use crate::templates::accounts::user_list::UserListItem;
 
     let user = Some(user_context_from_auth(&auth_user));
-    let base =
-        BaseTemplate::new("Users".to_string(), user.clone()).with_current_path("/accounts/users");
+    let base = BaseTemplate::new("Users".to_string(), user.clone(), browser_tz.0)
+        .with_current_path("/accounts/users");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
             .await
@@ -177,7 +178,8 @@ pub async fn user_list(
                     is_active,
                     is_staff,
                     is_superuser,
-                    last_login: last_login.map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
+                    last_login: last_login
+                        .map(|dt| crate::utils::format_local(dt, browser_tz.0)),
                 }
             },
         )
@@ -229,6 +231,7 @@ pub async fn user_detail(
     incoming_flash: IncomingFlash,
     auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
+    browser_tz: BrowserTz,
     axum::extract::Path(user_uuid): axum::extract::Path<String>,
 ) -> Response {
     use crate::schema::users;
@@ -251,7 +254,7 @@ pub async fn user_detail(
         })
         .collect();
 
-    let base = BaseTemplate::new("User Details".to_string(), user)
+    let base = BaseTemplate::new("User Details".to_string(), user, browser_tz.0)
         .with_current_path("/accounts/users")
         .with_messages(flash_messages);
 
@@ -362,8 +365,8 @@ pub async fn user_detail(
         is_superuser,
         mfa_enabled,
         auth_source: auth_source.to_string(),
-        last_login: last_login.map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
-        created_at: created_at.format("%b %d, %Y").to_string(),
+        last_login: last_login.map(|dt| crate::utils::format_local(dt, browser_tz.0)),
+        created_at: crate::utils::format_local(created_at, browser_tz.0),
     };
 
     // Sourced from the request-scoped PermissionContext (Casbin via middleware)
@@ -438,6 +441,7 @@ pub async fn user_create_form(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
+    browser_tz: BrowserTz,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::templates::accounts::UserCreateTemplate;
 
@@ -448,7 +452,8 @@ pub async fn user_create_form(
     }
 
     let user = Some(user_context_from_auth(&auth_user));
-    let base = BaseTemplate::new("New User".to_string(), user).with_current_path("/accounts/users");
+    let base = BaseTemplate::new("New User".to_string(), user, browser_tz.0)
+        .with_current_path("/accounts/users");
 
     let password_min_length = state.config.security.password_min_length;
     let can_manage_superusers = perms.users_manage_admins;
@@ -635,6 +640,7 @@ pub async fn user_edit_form(
     auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
+    browser_tz: BrowserTz,
     axum::extract::Path(user_uuid): axum::extract::Path<String>,
 ) -> Response {
     use crate::schema::users;
@@ -768,7 +774,7 @@ pub async fn user_edit_form(
         })
         .collect();
 
-    let base = BaseTemplate::new("Edit User".to_string(), user)
+    let base = BaseTemplate::new("Edit User".to_string(), user, browser_tz.0)
         .with_current_path("/accounts/users")
         .with_messages(flash_messages);
 
@@ -1694,6 +1700,7 @@ pub async fn profile(
     auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
+    browser_tz: BrowserTz,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::models::auth_session::AuthSession;
     use crate::models::user::User;
@@ -1746,15 +1753,9 @@ pub async fn profile(
         auth_source: db_user.auth_source.to_string(),
         last_login: db_user
             .last_login
-            .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string()),
-        created_at: db_user
-            .created_at
-            .format("%Y-%m-%d %H:%M:%S UTC")
-            .to_string(),
-        updated_at: db_user
-            .updated_at
-            .format("%Y-%m-%d %H:%M:%S UTC")
-            .to_string(),
+            .map(|dt| crate::utils::format_local_with_seconds(dt, browser_tz.0)),
+        created_at: crate::utils::format_local_with_seconds(db_user.created_at, browser_tz.0),
+        updated_at: crate::utils::format_local_with_seconds(db_user.updated_at, browser_tz.0),
     };
 
     // Get the current token hash from cookie for session detection
@@ -1811,7 +1812,7 @@ pub async fn profile(
         })
         .collect();
 
-    let base = BaseTemplate::new("My Profile".to_string(), user.clone())
+    let base = BaseTemplate::new("My Profile".to_string(), user.clone(), browser_tz.0)
         .with_current_path("/accounts/profile")
         .with_messages(flash_messages);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
@@ -1844,13 +1845,14 @@ pub async fn profile(
 pub async fn mfa_setup(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    browser_tz: BrowserTz,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::services::auth::AuthService;
     use ::uuid::Uuid as UuidType;
 
     let user = Some(user_context_from_auth(&auth_user));
-    let base =
-        BaseTemplate::new("MFA Setup".to_string(), user.clone()).with_current_path("/accounts/mfa");
+    let base = BaseTemplate::new("MFA Setup".to_string(), user.clone(), browser_tz.0)
+        .with_current_path("/accounts/mfa");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
             .await
@@ -1987,12 +1989,13 @@ pub async fn user_sessions(
     State(state): State<AppState>,
     jar: axum_extra::extract::CookieJar,
     auth_user: WebAuthUser,
+    browser_tz: BrowserTz,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::models::AuthSession;
     use sha3::{Digest, Sha3_256};
 
     let user = Some(user_context_from_auth(&auth_user));
-    let base = BaseTemplate::new("My Login Sessions".to_string(), user.clone())
+    let base = BaseTemplate::new("My Login Sessions".to_string(), user.clone(), browser_tz.0)
         .with_current_path("/accounts/login-sessions");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
@@ -2088,11 +2091,12 @@ pub async fn user_sessions(
 pub async fn api_keys(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    browser_tz: BrowserTz,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::models::ApiKey;
 
     let user = Some(user_context_from_auth(&auth_user));
-    let base = BaseTemplate::new("API Keys".to_string(), user.clone())
+    let base = BaseTemplate::new("API Keys".to_string(), user.clone(), browser_tz.0)
         .with_current_path("/accounts/apikeys");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
@@ -2531,6 +2535,7 @@ pub async fn admin_user_sessions(
     jar: CookieJar,
     auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
+    browser_tz: BrowserTz,
 ) -> Result<impl IntoResponse, AppError> {
     if !perms.auth_sessions_read {
         return Err(AppError::Authorization(
@@ -2543,7 +2548,7 @@ pub async fn admin_user_sessions(
     use sha3::{Digest, Sha3_256};
 
     let user = Some(user_context_from_auth(&auth_user));
-    let base = BaseTemplate::new("All Login Sessions".to_string(), user.clone())
+    let base = BaseTemplate::new("All Login Sessions".to_string(), user.clone(), browser_tz.0)
         .with_current_path("/accounts/all-login-sessions");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)

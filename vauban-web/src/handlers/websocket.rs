@@ -661,7 +661,10 @@ async fn send_initial_dashboard_data(
 
     // Fetch and send recent activity
     let activities = fetch_initial_activity(state).await?;
-    let activity_widget = RecentActivityWidget { activities };
+    let activity_widget = RecentActivityWidget {
+        activities,
+        tz: chrono_tz::Tz::UTC,
+    };
     if let Ok(html) = activity_widget.render() {
         let msg = WsMessage::new("ws-recent-activity", html);
         sender

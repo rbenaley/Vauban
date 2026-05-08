@@ -7,6 +7,9 @@
 
 use askama::Template;
 
+#[allow(unused_imports)]
+use crate::utils::filters;
+
 use crate::services::anomalies::Anomaly;
 use crate::services::dashboard::DashboardSnapshot;
 
@@ -76,6 +79,7 @@ pub struct AnomaliesTile {
 #[template(path = "dashboard/tiles/_user_lens.html")]
 pub struct UserLensTile {
     pub snapshot: DashboardSnapshot,
+    pub tz: chrono_tz::Tz,
 }
 
 #[derive(Template, Clone)]

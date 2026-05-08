@@ -6,6 +6,9 @@
 
 use askama::Template;
 
+#[allow(unused_imports)]
+use crate::utils::filters;
+
 use crate::auth::permissions::PermissionContext;
 use crate::services::anomalies::Anomaly;
 use crate::services::dashboard::DashboardSnapshot;
@@ -31,4 +34,10 @@ pub struct BastionWatchTemplate {
     /// Casbin-derived permission flags. The template reads
     /// `perms.admin_view` to gate the admin-only tiles.
     pub perms: PermissionContext,
+    /// Browser timezone propagated to every included tile partial
+    /// that renders timestamps. Mirrors `vauban.tz` -- duplicated
+    /// at the top level so partials can use the same `|local(tz)`
+    /// filter regardless of whether they are rendered inline (here)
+    /// or standalone via the pusher.
+    pub tz: chrono_tz::Tz,
 }

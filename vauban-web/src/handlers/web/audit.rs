@@ -29,6 +29,7 @@ pub async fn approval_audit_list(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
+    browser_tz: BrowserTz,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
     if !perms.admin_view {
@@ -38,7 +39,7 @@ pub async fn approval_audit_list(
     }
 
     let user = Some(user_context_from_auth(&auth_user));
-    let base = BaseTemplate::new("Approval Audit Log".to_string(), user)
+    let base = BaseTemplate::new("Approval Audit Log".to_string(), user, browser_tz.0)
         .with_current_path("/audit/approvals");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
@@ -157,7 +158,7 @@ pub async fn approval_audit_list(
                 decision_ip: decision_ip.map(|ip| ip.ip().to_string()),
                 decision_user_agent,
                 request_id,
-                created_at: created_at.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+                created_at: crate::utils::format_local_with_seconds(created_at, browser_tz.0),
             },
         )
         .collect();

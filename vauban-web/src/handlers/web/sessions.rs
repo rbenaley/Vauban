@@ -12,6 +12,7 @@ pub async fn session_list(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
+    browser_tz: BrowserTz,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
     if !perms.admin_view {
@@ -23,8 +24,8 @@ pub async fn session_list(
     use crate::templates::sessions::session_list::SessionListItem;
 
     let user = Some(user_context_from_auth(&auth_user));
-    let base =
-        BaseTemplate::new("Sessions".to_string(), user.clone()).with_current_path("/sessions");
+    let base = BaseTemplate::new("Sessions".to_string(), user.clone(), browser_tz.0)
+        .with_current_path("/sessions");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
             .await
@@ -164,7 +165,8 @@ pub async fn session_list(
                     session_type: session_type.to_string(),
                     status,
                     credential_username,
-                    connected_at: connected_at.map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
+                    connected_at: connected_at
+                        .map(|dt| crate::utils::format_local(dt, browser_tz.0)),
                     duration_seconds,
                     is_recorded,
                 }
@@ -218,13 +220,29 @@ pub async fn session_list(
     Ok(Html(html))
 }
 
-/// Terminate a session (web HTMX).
+/// Terminate a session from the web UI.
+///
+/// Two callers share this endpoint:
+///
+/// 1. The HTMX `<form hx-post="/sessions/{uuid}/terminate">` button on
+///    `/sessions/active` -- the API helper returns an HTML fragment
+///    that swaps the session row in place. We pass it through
+///    unchanged.
+/// 2. The plain `<form method="post">` Disconnect button on the IACS
+///    tunnel status page (`/sessions/{uuid}/iacs/status`). A regular
+///    form submit makes the browser navigate to the response, so
+///    returning the API JSON would dump raw `{ "id": ..., "uuid":
+///    ..., ... }` into the address bar (the user-reported bug). For
+///    that flow we translate the API outcome into a flash + 303
+///    redirect to `/sessions` (POST-Redirect-GET).
+#[allow(clippy::too_many_arguments)]
 pub async fn terminate_session_web(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     jar: CookieJar,
+    incoming_flash: IncomingFlash,
     axum::extract::Path(session_uuid_str): axum::extract::Path<String>,
     Form(form): Form<CsrfOnlyForm>,
 ) -> AppResult<Response> {
@@ -238,18 +256,49 @@ pub async fn terminate_session_web(
         return Ok((axum::http::StatusCode::BAD_REQUEST, "Invalid CSRF token").into_response());
     }
 
+    let is_htmx = headers.get("HX-Request").is_some();
+    let flash = incoming_flash.flash();
+
     if ::uuid::Uuid::parse_str(&session_uuid_str).is_err() {
-        return Ok(Redirect::to("/sessions/active").into_response());
+        if is_htmx {
+            return Ok(Redirect::to("/sessions/active").into_response());
+        }
+        return Ok(flash_redirect(
+            flash.error("Invalid session identifier"),
+            "/sessions/active",
+        ));
     }
 
-    crate::handlers::api::sessions::terminate_session(
+    let api_result = crate::handlers::api::sessions::terminate_session(
         State(state),
         headers,
         auth_user.0,
         perms,
         axum::extract::Path(session_uuid_str),
     )
-    .await
+    .await;
+
+    if is_htmx {
+        return api_result;
+    }
+
+    // Browser flow (non-HTMX): a regular `<form method="post">` would
+    // otherwise navigate to the API JSON body. Translate the outcome
+    // into a flash + redirect so the user lands back on a real page.
+    match api_result {
+        Ok(_) => Ok(flash_redirect(
+            flash.success("Session terminated"),
+            "/sessions",
+        )),
+        Err(AppError::NotFound(_)) => Ok(flash_redirect(
+            flash.error("Session not found"),
+            "/sessions",
+        )),
+        Err(AppError::Validation(msg)) => {
+            Ok(flash_redirect(flash.error(&msg), "/sessions"))
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// Session detail page.
@@ -258,6 +307,7 @@ pub async fn session_detail(
     incoming_flash: IncomingFlash,
     auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
+    browser_tz: BrowserTz,
     axum::extract::Path(id_str): axum::extract::Path<String>,
 ) -> Response {
     use crate::templates::sessions::session_detail::SessionDetail;
@@ -457,8 +507,10 @@ pub async fn session_detail(
         client_ip: s_client_ip.ip().to_string(),
         client_user_agent: s_client_user_agent,
         proxy_instance: s_proxy_instance,
-        connected_at: s_connected_at.map(|dt| dt.format("%b %d, %Y %H:%M:%S").to_string()),
-        disconnected_at: s_disconnected_at.map(|dt| dt.format("%b %d, %Y %H:%M:%S").to_string()),
+        connected_at: s_connected_at
+            .map(|dt| crate::utils::format_local_with_seconds(dt, browser_tz.0)),
+        disconnected_at: s_disconnected_at
+            .map(|dt| crate::utils::format_local_with_seconds(dt, browser_tz.0)),
         duration,
         justification: s_justification,
         is_recorded: s_is_recorded,
@@ -466,11 +518,12 @@ pub async fn session_detail(
         bytes_sent: s_bytes_sent,
         bytes_received: s_bytes_received,
         commands_count: s_commands_count,
-        created_at: s_created_at.format("%b %d, %Y %H:%M:%S").to_string(),
+        created_at: crate::utils::format_local_with_seconds(s_created_at, browser_tz.0),
     };
 
     let base =
-        BaseTemplate::new(format!("Session #{}", id), user.clone()).with_current_path("/sessions");
+        BaseTemplate::new(format!("Session #{}", id), user.clone(), browser_tz.0)
+            .with_current_path("/sessions");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
             .await
@@ -499,6 +552,7 @@ pub async fn recording_list(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
+    browser_tz: BrowserTz,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::templates::sessions::recording_list::RecordingListItem;
@@ -511,7 +565,7 @@ pub async fn recording_list(
     }
 
     let user = Some(user_context_from_auth(&auth_user));
-    let base = BaseTemplate::new("Recordings".to_string(), user.clone())
+    let base = BaseTemplate::new("Recordings".to_string(), user.clone(), browser_tz.0)
         .with_current_path("/sessions/recordings");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
@@ -627,7 +681,8 @@ pub async fn recording_list(
                     asset_name,
                     session_type: session_type.to_string(),
                     credential_username,
-                    connected_at: connected_at.map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
+                    connected_at: connected_at
+                        .map(|dt| crate::utils::format_local(dt, browser_tz.0)),
                     duration_seconds,
                     recording_path: recording_path.unwrap_or_default(),
                     status: "ready".to_string(),
@@ -682,6 +737,7 @@ pub async fn recording_play(
     incoming_flash: IncomingFlash,
     auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
+    browser_tz: BrowserTz,
     axum::extract::Path(id_str): axum::extract::Path<String>,
 ) -> Response {
     use crate::templates::sessions::recording_play::RecordingData;
@@ -806,8 +862,10 @@ pub async fn recording_play(
         asset_name: r_asset_name,
         asset_hostname: r_asset_hostname,
         session_type: r_session_type,
-        connected_at: r_connected_at.map(|dt| dt.format("%b %d, %Y %H:%M:%S").to_string()),
-        disconnected_at: r_disconnected_at.map(|dt| dt.format("%b %d, %Y %H:%M:%S").to_string()),
+        connected_at: r_connected_at
+            .map(|dt| crate::utils::format_local_with_seconds(dt, browser_tz.0)),
+        disconnected_at: r_disconnected_at
+            .map(|dt| crate::utils::format_local_with_seconds(dt, browser_tz.0)),
         duration,
         recording_path: r_recording_path,
         bytes_sent: r_bytes_sent,
@@ -818,6 +876,7 @@ pub async fn recording_play(
     let base = BaseTemplate::new(
         format!("Play Recording - {}", recording.asset_name),
         user.clone(),
+        browser_tz.0,
     )
     .with_current_path("/sessions/recordings");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
@@ -847,6 +906,7 @@ pub async fn approval_list(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
+    browser_tz: BrowserTz,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
     // Only admin users (superuser or staff) can view approvals
@@ -857,7 +917,7 @@ pub async fn approval_list(
     }
 
     let user = Some(user_context_from_auth(&auth_user));
-    let base = BaseTemplate::new("Approvals".to_string(), user.clone())
+    let base = BaseTemplate::new("Approvals".to_string(), user.clone(), browser_tz.0)
         .with_current_path("/sessions/approvals");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
@@ -989,7 +1049,7 @@ pub async fn approval_list(
                         session_type,
                         justification,
                         client_ip: client_ip.ip().to_string(),
-                        created_at: created_at.format("%b %d, %Y %H:%M").to_string(),
+                        created_at: crate::utils::format_local(created_at, browser_tz.0),
                         status,
                         max_session_duration,
                         is_own: false,
@@ -1061,7 +1121,7 @@ pub async fn approval_list(
                             session_type,
                             justification,
                             client_ip: client_ip.ip().to_string(),
-                            created_at: created_at.format("%b %d, %Y %H:%M").to_string(),
+                            created_at: crate::utils::format_local(created_at, browser_tz.0),
                             status,
                             max_session_duration,
                             is_own: true,
@@ -1111,6 +1171,7 @@ pub async fn approval_detail(
     incoming_flash: IncomingFlash,
     auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
+    browser_tz: BrowserTz,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
 ) -> Response {
     let flash = incoming_flash.flash();
@@ -1262,7 +1323,7 @@ pub async fn approval_detail(
 
             (
                 actor_name,
-                actor_at.map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
+                actor_at.map(|dt| crate::utils::format_local(dt, browser_tz.0)),
                 reason,
             )
         } else {
@@ -1282,7 +1343,7 @@ pub async fn approval_detail(
         justification,
         client_ip: client_ip.ip().to_string(),
         credential_username,
-        created_at: created_at.format("%b %d, %Y %H:%M").to_string(),
+        created_at: crate::utils::format_local(created_at, browser_tz.0),
         is_recorded,
         max_session_duration,
         is_own,
@@ -1300,7 +1361,7 @@ pub async fn approval_detail(
         })
         .collect();
 
-    let base = BaseTemplate::new("Approval Request".to_string(), user.clone())
+    let base = BaseTemplate::new("Approval Request".to_string(), user.clone(), browser_tz.0)
         .with_current_path("/sessions/approvals")
         .with_messages(flash_messages);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
@@ -2260,10 +2321,11 @@ pub async fn my_requests(
     auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     jar: CookieJar,
+    browser_tz: BrowserTz,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
-    let base = BaseTemplate::new("My Requests".to_string(), user.clone())
+    let base = BaseTemplate::new("My Requests".to_string(), user.clone(), browser_tz.0)
         .with_current_path("/sessions/my-requests");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
@@ -2383,8 +2445,9 @@ pub async fn my_requests(
                     session_type,
                     status,
                     justification,
-                    created_at: created_at.format("%b %d, %Y %H:%M").to_string(),
-                    approved_at: approved_at.map(|dt| dt.format("%b %d, %Y %H:%M").to_string()),
+                    created_at: crate::utils::format_local(created_at, browser_tz.0),
+                    approved_at: approved_at
+                        .map(|dt| crate::utils::format_local(dt, browser_tz.0)),
                     approved_by,
                     max_session_duration,
                 }
@@ -2421,7 +2484,7 @@ pub async fn my_requests(
     let iacs_visible = perms.iacs_read;
     let iacs_request_allowed = perms.iacs_request;
     let ews_items = if iacs_visible {
-        crate::handlers::web::iacs::load_my_ews_items(&state, user_id)
+        crate::handlers::web::iacs::load_my_ews_items(&state, user_id, browser_tz.0)
             .await
             .unwrap_or_else(|e| {
                 tracing::warn!(error = %e, "load_my_ews_items failed; rendering empty");
@@ -2462,6 +2525,7 @@ pub async fn active_sessions(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
+    browser_tz: BrowserTz,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
     // Only admin users (superuser or staff) can view active sessions
@@ -2472,7 +2536,7 @@ pub async fn active_sessions(
     }
 
     let user = Some(user_context_from_auth(&auth_user));
-    let base = BaseTemplate::new("Active Sessions".to_string(), user.clone())
+    let base = BaseTemplate::new("Active Sessions".to_string(), user.clone(), browser_tz.0)
         .with_current_path("/sessions/active");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
@@ -2578,7 +2642,10 @@ pub async fn active_sessions(
                     asset_hostname,
                     session_type,
                     client_ip: client_ip.ip().to_string(),
-                    connected_at: connected.format("%H:%M:%S").to_string(),
+                    connected_at: connected
+                        .with_timezone(&browser_tz.0)
+                        .format("%H:%M:%S")
+                        .to_string(),
                     duration: duration_str,
                 })
             },
@@ -2825,6 +2892,7 @@ pub async fn recording_detail(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
+    browser_tz: BrowserTz,
     axum::extract::Path(session_uuid): axum::extract::Path<::uuid::Uuid>,
 ) -> Result<axum::response::Response, AppError> {
     use crate::templates::sessions::recording_detail::{
@@ -2998,23 +3066,31 @@ pub async fn recording_detail(
     ) {
         (Some(au), Some(at), _, _) => ApprovalNarrative::Approved {
             approver_username: au,
-            approved_at_utc: at.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+            approved_at_utc: crate::utils::format_local_with_seconds(at, browser_tz.0),
         },
         (_, _, Some(ru), Some(rt)) => ApprovalNarrative::Rejected {
             rejecter_username: ru,
-            rejected_at_utc: rt.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+            rejected_at_utc: crate::utils::format_local_with_seconds(rt, browser_tz.0),
             reason: s_decision_reason.clone(),
         },
         _ => ApprovalNarrative::Awaiting,
     };
 
     let approver_line = if let (Some(au), Some(at)) = (approver_username, s_approved_at) {
-        Some(format!("{} at {}", au, at.format("%Y-%m-%d %H:%M:%S UTC")))
+        Some(format!(
+            "{} at {}",
+            au,
+            crate::utils::format_local_with_seconds(at, browser_tz.0)
+        ))
     } else {
         None
     };
     let rejecter_line = if let (Some(ru), Some(rt)) = (rejecter_username, s_rejected_at) {
-        Some(format!("{} at {}", ru, rt.format("%Y-%m-%d %H:%M:%S UTC")))
+        Some(format!(
+            "{} at {}",
+            ru,
+            crate::utils::format_local_with_seconds(rt, browser_tz.0)
+        ))
     } else {
         None
     };
@@ -3035,7 +3111,7 @@ pub async fn recording_detail(
         let size_human = s_size_bytes.map(format_bytes_human).unwrap_or_default();
         let dur_human = s_duration_ms.map(format_duration_human).unwrap_or_default();
         let finalized_at_utc = s_finalized_at
-            .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+            .map(|dt| crate::utils::format_local_with_seconds(dt, browser_tz.0))
             .unwrap_or_default();
         let bundle = IntegrityViewModel {
             blake3_hex,
@@ -3073,9 +3149,10 @@ pub async fn recording_detail(
         source_ip: s_client_ip.ip().to_string(),
         credential_username: s_cred_username,
         requester_username,
-        connected_at_utc: s_connected_at.map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string()),
+        connected_at_utc: s_connected_at
+            .map(|dt| crate::utils::format_local_with_seconds(dt, browser_tz.0)),
         disconnected_at_utc: s_disconnected_at
-            .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string()),
+            .map(|dt| crate::utils::format_local_with_seconds(dt, browser_tz.0)),
         duration_human,
         justification: s_justification,
         approval,
@@ -3090,7 +3167,11 @@ pub async fn recording_detail(
         list_url: "/sessions/recordings".to_string(),
     };
 
-    let base = BaseTemplate::new(format!("Recording Details - {}", asset_name), user.clone())
+    let base = BaseTemplate::new(
+        format!("Recording Details - {}", asset_name),
+        user.clone(),
+        browser_tz.0,
+    )
         .with_current_path("/sessions/recordings");
     let perms_for_template = perms.clone();
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =

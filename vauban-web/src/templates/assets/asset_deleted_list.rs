@@ -25,6 +25,8 @@
 use crate::services::audit_authors::AuthorRef;
 use crate::templates::accounts::user_list::Pagination;
 use crate::templates::base::{FlashMessage, UserContext, VaubanConfig};
+#[allow(unused_imports)]
+use crate::utils::filters;
 use askama::Template;
 
 /// One row in the deleted-assets audit list. Mirrors the audit-relevant

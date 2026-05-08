@@ -39,7 +39,7 @@
       <p class="text-xs text-gray-500 dark:text-gray-400 font-mono truncate">{{ s.asset_hostname }}</p>
     </div>
     <span class="font-mono text-xs text-gray-500 dark:text-gray-400">
-      {{ s.started_at.format("%m/%d %H:%M") }}
+      {{ s.started_at|local(tz) }}
     </span>
   </li>
   {% endfor %}

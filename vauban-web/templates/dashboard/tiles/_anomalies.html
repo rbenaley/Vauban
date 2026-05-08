@@ -15,8 +15,14 @@
 {% else %}
 <ul class="space-y-2">
   {% for a in anomalies %}
-  <li class="flex items-start gap-2 p-2 rounded {{ a.severity.css_class() }}">
-    <span class="font-mono text-[10px] uppercase tracking-wide mt-0.5">
+  <li class="flex items-start gap-1.5 p-2 rounded {{ a.severity.css_class() }}">
+    {# Fixed-width badge column so the title / detail of every row line
+       up vertically regardless of severity label length (`WARN` vs
+       `CRITICAL`). `w-14` is the tightest fit that still clears
+       `CRITICAL` (8 chars at text-[10px] mono ~= 50 px). Pinned by
+       `bastion_watch_test::anomalies_tile_*`. #}
+    <span class="font-mono text-[10px] uppercase tracking-wide mt-0.5
+                 w-14 shrink-0 text-left">
       {{ a.severity.label() }}
     </span>
     <div class="flex-1 min-w-0">

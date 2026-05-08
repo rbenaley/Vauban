@@ -481,6 +481,7 @@ pub async fn iacs_tunnel_status_page(
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
+    browser_tz: BrowserTz,
     axum::extract::Path(session_uuid_str): axum::extract::Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     if !perms.assets_connect_iacs {
@@ -565,6 +566,7 @@ pub async fn iacs_tunnel_status_page(
     let base = BaseTemplate::new(
         format!("IACS tunnel - {}", asset_name),
         user_ctx.clone(),
+        browser_tz.0,
     )
     .with_current_path("/assets")
     .with_messages(

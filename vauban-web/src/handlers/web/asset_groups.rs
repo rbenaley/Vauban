@@ -36,10 +36,11 @@ fn is_virtual_asset_group_uuid(uuid_str: &str) -> bool {
 pub async fn asset_group_list(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    browser_tz: BrowserTz,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
-    let base = BaseTemplate::new("Asset Groups".to_string(), user.clone())
+    let base = BaseTemplate::new("Asset Groups".to_string(), user.clone(), browser_tz.0)
         .with_current_path("/assets/groups");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
@@ -91,7 +92,7 @@ pub async fn asset_group_list(
                 created_at: format_rfc3339_date(&g.created_at, "%b %d, %Y"),
             })
             .collect();
-        groups.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        groups.sort_by_key(|g| g.name.to_lowercase());
         groups
     };
 
@@ -128,6 +129,7 @@ pub async fn asset_group_detail(
     incoming_flash: IncomingFlash,
     auth_user: WebAuthUser,
     jar: CookieJar,
+    browser_tz: BrowserTz,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
 ) -> Response {
     let flash = incoming_flash.flash();
@@ -247,8 +249,12 @@ pub async fn asset_group_detail(
         (group, group_info.name)
     };
 
-    let base = BaseTemplate::new(format!("{} - Asset Group", group_name), user.clone())
-        .with_current_path("/assets/groups");
+    let base = BaseTemplate::new(
+        format!("{} - Asset Group", group_name),
+        user.clone(),
+        browser_tz.0,
+    )
+    .with_current_path("/assets/groups");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
             .await
@@ -294,6 +300,7 @@ pub async fn asset_group_add_asset_form(
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
+    browser_tz: BrowserTz,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::templates::assets::group_add_asset::{
@@ -425,6 +432,7 @@ pub async fn asset_group_add_asset_form(
     let base = BaseTemplate::new(
         format!("Add Asset to {} - Asset Group", group.name),
         user.clone(),
+        browser_tz.0,
     )
     .with_current_path("/assets/groups")
     .with_messages(flash_messages);
@@ -872,6 +880,7 @@ pub async fn asset_group_edit(
     auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
+    browser_tz: BrowserTz,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
 ) -> Response {
     let flash = incoming_flash.flash();
@@ -921,8 +930,12 @@ pub async fn asset_group_edit(
         }
     };
 
-    let base = BaseTemplate::new(format!("Edit {} - Asset Group", group.name), user.clone())
-        .with_current_path("/assets/groups")
+    let base = BaseTemplate::new(
+        format!("Edit {} - Asset Group", group.name),
+        user.clone(),
+        browser_tz.0,
+    )
+    .with_current_path("/assets/groups")
         .with_messages(flash_messages);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
@@ -1067,6 +1080,7 @@ pub async fn asset_group_create_form(
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
+    browser_tz: BrowserTz,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::templates::assets::group_create::{AssetGroupCreateForm, AssetGroupCreateTemplate};
 
@@ -1087,7 +1101,7 @@ pub async fn asset_group_create_form(
         .collect();
 
     let user = Some(user_context_from_auth(&auth_user));
-    let base = BaseTemplate::new("New Asset Group".to_string(), user.clone())
+    let base = BaseTemplate::new("New Asset Group".to_string(), user.clone(), browser_tz.0)
         .with_current_path("/assets/groups")
         .with_messages(flash_messages);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =

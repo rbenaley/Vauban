@@ -2,6 +2,136 @@
 //!
 //! Common utilities shared across the application.
 
+use chrono::{DateTime, Utc};
+use chrono_tz::Tz;
+
+// ============================================================================
+// Browser timezone formatting
+// ============================================================================
+//
+// The web UI renders every operator-facing date/time in the browser
+// timezone resolved from the `vbn_tz` cookie (see
+// `crate::middleware::browser_tz`). The DB / IPC / logs / audit
+// surfaces stay UTC; only the rendered HTML changes.
+//
+// Two formats live side by side:
+//
+// - `format_local`        -> "2026-05-08 22:14 CEST" (minute precision,
+//                             list views, lozenges).
+// - `format_local_with_seconds` -> "2026-05-08 22:14:33 CEST"
+//                             (detail views, audit timelines, session
+//                             connect/disconnect logs where second-level
+//                             precision matters).
+//
+// Both are exposed to Askama templates via the `local` /
+// `local_seconds` filters defined right below the helpers.
+//
+// `%Z` is chrono_tz's abbreviation: it returns `CEST` / `EST` /
+// `IST` / `+0530` for half-hour offsets that have no human name.
+// The fallback to a numeric offset is acceptable for every IANA
+// identifier and keeps the format width-bounded.
+
+/// Format a `DateTime<Utc>` in the browser timezone with minute
+/// precision: `"2026-05-08 22:14 CEST"`.
+///
+/// The `tz` argument is sourced from
+/// [`crate::middleware::BrowserTz`]; the caller has already validated
+/// it. `Tz::UTC` yields `"2026-05-08 22:14 UTC"` -- the canonical
+/// "no cookie posted yet" rendering.
+pub fn format_local(dt: DateTime<Utc>, tz: Tz) -> String {
+    dt.with_timezone(&tz).format("%Y-%m-%d %H:%M %Z").to_string()
+}
+
+/// Same shape as [`format_local`] with second precision:
+/// `"2026-05-08 22:14:33 CEST"`. Used on detail pages and audit
+/// timelines where second-level resolution matters.
+pub fn format_local_with_seconds(dt: DateTime<Utc>, tz: Tz) -> String {
+    dt.with_timezone(&tz)
+        .format("%Y-%m-%d %H:%M:%S %Z")
+        .to_string()
+}
+
+/// Convenience wrapper for `Option<DateTime<Utc>>`. Returns the
+/// `none` literal as-is if the timestamp is absent. Used by handlers
+/// that historically pre-formatted optional dates as `String` --
+/// see `services::audit_authors` and `handlers::web::sessions`.
+pub fn format_local_opt(dt: Option<DateTime<Utc>>, tz: Tz, none: &str) -> String {
+    match dt {
+        Some(d) => format_local(d, tz),
+        None => none.to_string(),
+    }
+}
+
+/// Same shape as [`format_local_opt`] with seconds.
+pub fn format_local_with_seconds_opt(dt: Option<DateTime<Utc>>, tz: Tz, none: &str) -> String {
+    match dt {
+        Some(d) => format_local_with_seconds(d, tz),
+        None => none.to_string(),
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Askama filters
+//
+// Askama 0.15 picks up filters from a `pub mod filters {}` declared
+// at the top level of any module visible to the template
+// (`use askama::Template;` is enough). We declare ours next to the
+// helpers so the wire (helper) and the template-facing surface
+// (filter) cannot drift.
+// ----------------------------------------------------------------------------
+
+/// Custom Askama filters. Templates call them as `{{ dt|local(tz) }}`
+/// and `{{ dt|local_seconds(tz) }}`.
+///
+/// Askama 0.15 requires custom filter functions to be marked with
+/// `#[askama::filter_fn]` and to take `&dyn askama::Values` as their
+/// second argument (the rendering environment). All extra args
+/// (the `Tz`, the `none` placeholder) follow.
+pub mod filters {
+    use super::*;
+    use askama::Values;
+
+    /// `{{ dt|local(tz) }}` -> `"2026-05-08 22:14 CEST"`.
+    ///
+    /// `Tz` is passed by value (it implements `Copy`), so the
+    /// invocation site reads `{{ rule.created_at|local(tz) }}`
+    /// where `tz` is the template field of type [`Tz`] propagated
+    /// from the handler.
+    #[askama::filter_fn]
+    pub fn local(dt: &DateTime<Utc>, _: &dyn Values, tz: &Tz) -> askama::Result<String> {
+        Ok(format_local(*dt, *tz))
+    }
+
+    /// `{{ dt|local_seconds(tz) }}` -> `"2026-05-08 22:14:33 CEST"`.
+    #[askama::filter_fn]
+    pub fn local_seconds(dt: &DateTime<Utc>, _: &dyn Values, tz: &Tz) -> askama::Result<String> {
+        Ok(format_local_with_seconds(*dt, *tz))
+    }
+
+    /// `{{ dt|local_opt(tz, "—") }}` -> `"2026-05-08 22:14 CEST"`
+    /// or the literal placeholder when `dt` is `None`.
+    #[askama::filter_fn]
+    pub fn local_opt(
+        dt: &Option<DateTime<Utc>>,
+        _: &dyn Values,
+        tz: &Tz,
+        none: &str,
+    ) -> askama::Result<String> {
+        Ok(format_local_opt(*dt, *tz, none))
+    }
+
+    /// `{{ dt|local_seconds_opt(tz, "—") }}`.
+    #[askama::filter_fn]
+    pub fn local_seconds_opt(
+        dt: &Option<DateTime<Utc>>,
+        _: &dyn Values,
+        tz: &Tz,
+        none: &str,
+    ) -> askama::Result<String> {
+        Ok(format_local_with_seconds_opt(*dt, *tz, none))
+    }
+}
+
 /// Format duration in seconds to human-readable string.
 ///
 /// Uses a progressive format showing only relevant time units:
@@ -117,6 +247,203 @@ pub fn duration_to_value_unit(secs: Option<i32>) -> (Option<i32>, &'static str) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
+
+    // ==================== Browser timezone formatting Tests ====================
+    //
+    // The chrono_tz database is embedded so the tests work
+    // identically on every host (the CI box may itself run UTC).
+
+    fn dt(year: i32, m: u32, d: u32, h: u32, mi: u32, s: u32) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(year, m, d, h, mi, s).unwrap()
+    }
+
+    #[test]
+    fn format_local_paris_summer_yields_cest() {
+        // 2026-07-15 12:00 UTC = 14:00 in Paris (CEST = UTC+2).
+        let out = format_local(dt(2026, 7, 15, 12, 0, 0), Tz::Europe__Paris);
+        assert_eq!(out, "2026-07-15 14:00 CEST");
+    }
+
+    #[test]
+    fn format_local_paris_winter_yields_cet() {
+        // 2026-01-15 12:00 UTC = 13:00 in Paris (CET = UTC+1).
+        let out = format_local(dt(2026, 1, 15, 12, 0, 0), Tz::Europe__Paris);
+        assert_eq!(out, "2026-01-15 13:00 CET");
+    }
+
+    #[test]
+    fn format_local_new_york_summer_yields_edt() {
+        // 2026-07-15 12:00 UTC = 08:00 EDT (UTC-4).
+        let out = format_local(dt(2026, 7, 15, 12, 0, 0), Tz::America__New_York);
+        assert_eq!(out, "2026-07-15 08:00 EDT");
+    }
+
+    #[test]
+    fn format_local_new_york_winter_yields_est() {
+        // 2026-01-15 12:00 UTC = 07:00 EST (UTC-5).
+        let out = format_local(dt(2026, 1, 15, 12, 0, 0), Tz::America__New_York);
+        assert_eq!(out, "2026-01-15 07:00 EST");
+    }
+
+    #[test]
+    fn format_local_calcutta_half_hour_offset() {
+        // Asia/Calcutta = UTC+5:30 year-round.
+        // 12:00 UTC -> 17:30 IST.
+        let out = format_local(dt(2026, 6, 1, 12, 0, 0), Tz::Asia__Calcutta);
+        assert_eq!(out, "2026-06-01 17:30 IST");
+    }
+
+    #[test]
+    fn format_local_kathmandu_quarter_hour_offset() {
+        // Asia/Kathmandu = UTC+5:45.
+        let out = format_local(dt(2026, 6, 1, 12, 0, 0), Tz::Asia__Kathmandu);
+        // chrono_tz emits the abbreviation `+0545` for fixed-offset
+        // names that have no IATA shortcode.
+        assert!(
+            out.starts_with("2026-06-01 17:45 "),
+            "kathmandu offset reflects in HH:MM, got `{}`",
+            out
+        );
+    }
+
+    #[test]
+    fn format_local_utc_keeps_z_zone_label() {
+        let out = format_local(dt(2026, 5, 8, 22, 14, 0), Tz::UTC);
+        assert_eq!(out, "2026-05-08 22:14 UTC");
+    }
+
+    #[test]
+    fn format_local_with_seconds_paris_summer() {
+        let out = format_local_with_seconds(dt(2026, 7, 15, 12, 0, 33), Tz::Europe__Paris);
+        assert_eq!(out, "2026-07-15 14:00:33 CEST");
+    }
+
+    #[test]
+    fn format_local_with_seconds_utc() {
+        let out = format_local_with_seconds(dt(2026, 5, 8, 22, 14, 5), Tz::UTC);
+        assert_eq!(out, "2026-05-08 22:14:05 UTC");
+    }
+
+    /// DST spring-forward: 2026-03-29 02:30 Paris does not exist
+    /// (clock jumps to 03:00). The closest UTC instant emits 03:30.
+    #[test]
+    fn format_local_handles_dst_spring_forward_paris() {
+        // 02:30 UTC on 2026-03-29 = 04:30 CEST (already on summer
+        // time -- DST kicked in at 01:00 UTC).
+        let out = format_local(dt(2026, 3, 29, 2, 30, 0), Tz::Europe__Paris);
+        assert_eq!(out, "2026-03-29 04:30 CEST");
+    }
+
+    /// DST fall-back: 2026-10-25 01:30 UTC = 02:30 CEST -> 02:30 CET
+    /// at 01:00 UTC the clock falls back. Both sides are well-defined
+    /// when expressed from UTC.
+    #[test]
+    fn format_local_handles_dst_fall_back_paris() {
+        // 00:30 UTC = 02:30 CEST (still summer time).
+        let out_pre = format_local(dt(2026, 10, 25, 0, 30, 0), Tz::Europe__Paris);
+        assert_eq!(out_pre, "2026-10-25 02:30 CEST");
+        // 01:30 UTC = 02:30 CET (after fall-back).
+        let out_post = format_local(dt(2026, 10, 25, 1, 30, 0), Tz::Europe__Paris);
+        assert_eq!(out_post, "2026-10-25 02:30 CET");
+    }
+
+    #[test]
+    fn format_local_opt_present_yields_local() {
+        let some = Some(dt(2026, 7, 15, 12, 0, 0));
+        assert_eq!(
+            format_local_opt(some, Tz::Europe__Paris, "—"),
+            "2026-07-15 14:00 CEST"
+        );
+    }
+
+    #[test]
+    fn format_local_opt_none_yields_placeholder() {
+        assert_eq!(format_local_opt(None, Tz::Europe__Paris, "—"), "—");
+        assert_eq!(format_local_opt(None, Tz::UTC, "(none)"), "(none)");
+    }
+
+    #[test]
+    fn format_local_with_seconds_opt_present_and_absent() {
+        let some = Some(dt(2026, 7, 15, 12, 0, 33));
+        assert_eq!(
+            format_local_with_seconds_opt(some, Tz::Europe__Paris, "—"),
+            "2026-07-15 14:00:33 CEST"
+        );
+        assert_eq!(
+            format_local_with_seconds_opt(None, Tz::Europe__Paris, "—"),
+            "—"
+        );
+    }
+
+    /// Round-trip: format-then-parse keeps the wall-clock minute even
+    /// across edge timezones. We don't try to parse `%Z` back (it is
+    /// inherently lossy for half-hour zones) -- we only check the
+    /// numeric prefix is unambiguous.
+    #[test]
+    fn format_local_numeric_prefix_is_unambiguous_per_tz() {
+        let when = dt(2026, 5, 8, 22, 14, 0);
+        for tz in [
+            Tz::UTC,
+            Tz::Europe__Paris,
+            Tz::Europe__London,
+            Tz::America__New_York,
+            Tz::America__Los_Angeles,
+            Tz::Asia__Calcutta,
+            Tz::Asia__Tokyo,
+            Tz::Australia__Sydney,
+        ] {
+            let out = format_local(when, tz);
+            assert!(
+                out.len() >= 16,
+                "format must emit at least YYYY-MM-DD HH:MM (16 chars) -- got `{}`",
+                out
+            );
+            let prefix = &out[..16]; // YYYY-MM-DD HH:MM
+            assert_eq!(prefix.as_bytes()[10], b' ');
+            assert_eq!(prefix.as_bytes()[13], b':');
+        }
+    }
+
+    /// End-to-end via Askama: a tiny fixture template renders the
+    /// `local` filter so a future drift in askama 0.15's filter
+    /// signature is caught at the unit-test level.
+    #[test]
+    fn local_filter_renders_in_askama_template() {
+        use askama::Template;
+        #[derive(Template)]
+        #[template(
+            ext = "txt",
+            source = "{{ when|local(tz) }} | {{ when|local_seconds(tz) }} | {{ maybe|local_opt(tz, \"-\") }} | {{ maybe|local_seconds_opt(tz, \"-\") }}"
+        )]
+        struct Fixture {
+            when: DateTime<Utc>,
+            tz: Tz,
+            maybe: Option<DateTime<Utc>>,
+        }
+        let when = dt(2026, 7, 15, 12, 0, 33);
+        let tpl = Fixture {
+            when,
+            tz: Tz::Europe__Paris,
+            maybe: Some(when),
+        };
+        let out = tpl.render().expect("render");
+        assert_eq!(
+            out,
+            "2026-07-15 14:00 CEST | 2026-07-15 14:00:33 CEST | 2026-07-15 14:00 CEST | 2026-07-15 14:00:33 CEST"
+        );
+
+        let tpl_none = Fixture {
+            when,
+            tz: Tz::Europe__Paris,
+            maybe: None,
+        };
+        let out = tpl_none.render().expect("render");
+        assert_eq!(
+            out,
+            "2026-07-15 14:00 CEST | 2026-07-15 14:00:33 CEST | - | -"
+        );
+    }
 
     // ==================== Seconds Format Tests ====================
 

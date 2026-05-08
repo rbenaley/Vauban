@@ -1,6 +1,8 @@
 /// VAUBAN Web - Recent activity widget template.
 use askama::Template;
 use chrono::{DateTime, Utc};
+#[allow(unused_imports)]
+use crate::utils::filters;
 
 #[derive(Debug, Clone)]
 pub struct ActivityItem {
@@ -14,6 +16,7 @@ pub struct ActivityItem {
 #[template(path = "dashboard/widgets/recent_activity.html")]
 pub struct RecentActivityWidget {
     pub activities: Vec<ActivityItem>,
+    pub tz: chrono_tz::Tz,
 }
 
 #[cfg(test)]
@@ -55,6 +58,7 @@ mod tests {
     fn test_recent_activity_widget_creation() {
         let widget = RecentActivityWidget {
             activities: vec![create_test_activity_item()],
+            tz: chrono_tz::Tz::UTC,
         };
         assert_eq!(widget.activities.len(), 1);
     }
@@ -63,6 +67,7 @@ mod tests {
     fn test_recent_activity_widget_empty() {
         let widget = RecentActivityWidget {
             activities: Vec::new(),
+            tz: chrono_tz::Tz::UTC,
         };
         assert!(widget.activities.is_empty());
     }
@@ -71,6 +76,7 @@ mod tests {
     fn test_recent_activity_widget_renders() {
         let widget = RecentActivityWidget {
             activities: vec![create_test_activity_item()],
+            tz: chrono_tz::Tz::UTC,
         };
         let result = widget.render();
         assert!(result.is_ok());

@@ -222,6 +222,7 @@ pub async fn iacs_onboard_form(
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
+    browser_tz: BrowserTz,
 ) -> Result<impl IntoResponse, AppError> {
     if !perms.iacs_request {
         return Err(AppError::NotFound("Not Found".to_string()));
@@ -229,7 +230,7 @@ pub async fn iacs_onboard_form(
 
     let flash_messages = flash_messages_for_template(&incoming_flash);
     let user = Some(user_context_from_auth(&auth_user));
-    let base = BaseTemplate::new("Onboard EWS".to_string(), user.clone())
+    let base = BaseTemplate::new("Onboard EWS".to_string(), user.clone(), browser_tz.0)
         .with_current_path("/iacs/onboard")
         .with_messages(flash_messages);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
@@ -363,6 +364,7 @@ pub async fn iacs_edit_form(
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
+    browser_tz: BrowserTz,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     if !perms.iacs_request {
@@ -406,7 +408,7 @@ pub async fn iacs_edit_form(
 
     let flash_messages = flash_messages_for_template(&incoming_flash);
     let user = Some(user_context_from_auth(&auth_user));
-    let base = BaseTemplate::new("Edit EWS request".to_string(), user.clone())
+    let base = BaseTemplate::new("Edit EWS request".to_string(), user.clone(), browser_tz.0)
         .with_current_path("/iacs/onboard")
         .with_messages(flash_messages);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
@@ -719,7 +721,11 @@ async fn queue_iacs_onboard_submitted_emails(
 /// duplicate the column list in three places (DB schema, Rust
 /// QueryableByName, template). Capping at 50 keeps the page small
 /// even for power-users with a large EWS history.
-pub async fn load_my_ews_items(state: &AppState, user_id: i32) -> Result<Vec<MyEwsItem>, AppError> {
+pub async fn load_my_ews_items(
+    state: &AppState,
+    user_id: i32,
+    tz: chrono_tz::Tz,
+) -> Result<Vec<MyEwsItem>, AppError> {
     use crate::schema::{ews, ews_onboarding_requests as r};
 
     let mut conn = state
@@ -808,7 +814,7 @@ pub async fn load_my_ews_items(state: &AppState, user_id: i32) -> Result<Vec<MyE
         .map_err(AppError::Database)?;
 
     let mut items: Vec<MyEwsItem> = Vec::with_capacity(req_rows.len() + ews_rows.len());
-    let fmt = |dt: DateTime<Utc>| dt.format("%b %d, %Y %H:%M").to_string();
+    let fmt = move |dt: DateTime<Utc>| crate::utils::format_local(dt, tz);
     let short_fp = |fp: &str| -> String { fp.chars().take(16).collect::<String>() };
 
     for (uuid, name, fp, algo, status, just, reason, created, decided) in req_rows {
@@ -906,6 +912,7 @@ pub async fn iacs_admin_list(
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
+    browser_tz: BrowserTz,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
     if !perms.iacs_manage {
@@ -1062,7 +1069,7 @@ pub async fn iacs_admin_list(
         .map_err(AppError::Database)?;
     drop(conn);
 
-    let fmt = |dt: DateTime<Utc>| dt.format("%b %d, %Y %H:%M").to_string();
+    let fmt = move |dt: DateTime<Utc>| crate::utils::format_local(dt, browser_tz.0);
     let short_fp = |fp: &str| -> String { fp.chars().take(16).collect::<String>() };
 
     let pending_requests: Vec<AdminPendingRequest> = pending_rows
@@ -1144,7 +1151,7 @@ pub async fn iacs_admin_list(
 
     let flash_messages = flash_messages_for_template(&incoming_flash);
     let user = Some(user_context_from_auth(&auth_user));
-    let base = BaseTemplate::new("IACS".to_string(), user.clone())
+    let base = BaseTemplate::new("IACS".to_string(), user.clone(), browser_tz.0)
         .with_current_path("/iacs/admin")
         .with_messages(flash_messages);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
@@ -1186,6 +1193,7 @@ pub async fn iacs_admin_request_detail(
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
+    browser_tz: BrowserTz,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     if !perms.iacs_manage {
@@ -1283,7 +1291,7 @@ pub async fn iacs_admin_request_detail(
     };
     drop(conn);
 
-    let fmt = |dt: DateTime<Utc>| dt.format("%b %d, %Y %H:%M").to_string();
+    let fmt = move |dt: DateTime<Utc>| crate::utils::format_local(dt, browser_tz.0);
     let short_fp = |s: &str| -> String { s.chars().take(16).collect::<String>() };
 
     let detail = RequestDetail {
@@ -1305,7 +1313,7 @@ pub async fn iacs_admin_request_detail(
 
     let flash_messages = flash_messages_for_template(&incoming_flash);
     let user = Some(user_context_from_auth(&auth_user));
-    let base = BaseTemplate::new("IACS request".to_string(), user.clone())
+    let base = BaseTemplate::new("IACS request".to_string(), user.clone(), browser_tz.0)
         .with_current_path("/iacs/admin")
         .with_messages(flash_messages);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
@@ -1343,6 +1351,7 @@ pub async fn iacs_admin_ews_detail(
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
+    browser_tz: BrowserTz,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     if !perms.iacs_manage {
@@ -1441,7 +1450,7 @@ pub async fn iacs_admin_ews_detail(
     let offboarded_by_username = resolve_user(&mut conn, offboarded_by_id).await;
     drop(conn);
 
-    let fmt = |dt: DateTime<Utc>| dt.format("%b %d, %Y %H:%M").to_string();
+    let fmt = move |dt: DateTime<Utc>| crate::utils::format_local(dt, browser_tz.0);
     let short_fp = |s: &str| -> String { s.chars().take(16).collect::<String>() };
 
     let state_str = if offboarded_at.is_some() {
@@ -1471,7 +1480,7 @@ pub async fn iacs_admin_ews_detail(
 
     let flash_messages = flash_messages_for_template(&incoming_flash);
     let user = Some(user_context_from_auth(&auth_user));
-    let base = BaseTemplate::new("IACS EWS".to_string(), user.clone())
+    let base = BaseTemplate::new("IACS EWS".to_string(), user.clone(), browser_tz.0)
         .with_current_path("/iacs/admin")
         .with_messages(flash_messages);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =

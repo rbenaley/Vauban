@@ -6,6 +6,12 @@
     <meta name="description" content="VAUBAN - Security Bastion">
     <meta name="htmx-config" content='{"defaultSwapStyle":"innerHTML"}'>
 
+    {# Browser timezone bootstrap. MUST run synchronously before paint
+       so the optional first-hit reload happens silently. The server
+       keys every date/time format on the `vbn_tz` cookie this script
+       posts -- see docs/runbooks/timezone_localization.md. #}
+    <script src="/static/js/vbn-tz.js"></script>
+
     <title>{% block title %}{{ vauban.brand_name }}{% endblock %}</title>
 
     <!-- Favicon -->

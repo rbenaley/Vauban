@@ -166,8 +166,8 @@
                             <span class="text-gray-700 dark:text-gray-300 font-medium">Deleted</span>
                             {% if let Some(d) = asset.deleted_at %}
                             <time datetime="{{ d.format("%Y-%m-%dT%H:%M:%SZ") }}"
-                                  title="{{ d.format("%Y-%m-%d %H:%M UTC") }}">
-                                {{ d.format("%b %d, %Y") }}
+                                  title="{{ d|local(vauban.tz) }}">
+                                {{ d|local(vauban.tz) }}
                             </time>
                             {% else %}
                             <span class="italic text-gray-400">unknown</span>
@@ -195,8 +195,8 @@
                             </svg>
                             <span>Created</span>
                             <time datetime="{{ asset.created_at.format("%Y-%m-%dT%H:%M:%SZ") }}"
-                                  title="{{ asset.created_at.format("%Y-%m-%d %H:%M UTC") }}">
-                                {{ asset.created_at.format("%b %d, %Y") }}
+                                  title="{{ asset.created_at|local(vauban.tz) }}">
+                                {{ asset.created_at|local(vauban.tz) }}
                             </time>
                         </div>
                     </div>

@@ -449,6 +449,7 @@ pub async fn rdp_page(
     incoming_flash: IncomingFlash,
     auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
+    browser_tz: BrowserTz,
     axum::extract::Path(session_id): axum::extract::Path<String>,
 ) -> Response {
     use crate::error::AppError;
@@ -487,8 +488,8 @@ pub async fn rdp_page(
     }
 
     let user = Some(user_context_from_auth(&auth_user));
-    let base =
-        BaseTemplate::new("RDP Session".to_string(), user.clone()).with_current_path("/assets");
+    let base = BaseTemplate::new("RDP Session".to_string(), user.clone(), browser_tz.0)
+        .with_current_path("/assets");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
             .await

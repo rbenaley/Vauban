@@ -22,6 +22,7 @@ use askama::Template;
 
 use crate::AppState;
 use crate::error::{AppError, AppResult};
+use crate::middleware::browser_tz::BrowserTz;
 use crate::middleware::flash::{IncomingFlash, flash_redirect};
 use crate::models::auth_session::{AuthSession, NewAuthSession};
 #[cfg(test)]
@@ -793,6 +794,7 @@ pub async fn mfa_setup_page(
     State(state): State<AppState>,
     jar: CookieJar,
     incoming_flash: IncomingFlash,
+    browser_tz: BrowserTz,
 ) -> AppResult<Response> {
     // Verify user is authenticated (via cookie)
     let token = jar
@@ -913,7 +915,8 @@ pub async fn mfa_setup_page(
             message: m.message.clone(),
         })
         .collect();
-    let base = BaseTemplate::new("MFA Setup".to_string(), None).with_messages(flash_messages);
+    let base = BaseTemplate::new("MFA Setup".to_string(), None, browser_tz.0)
+        .with_messages(flash_messages);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         base.into_fields();
 
@@ -1117,6 +1120,7 @@ pub async fn mfa_verify_page(
     State(state): State<AppState>,
     jar: CookieJar,
     incoming_flash: IncomingFlash,
+    browser_tz: BrowserTz,
 ) -> AppResult<Response> {
     // Verify user is authenticated (via cookie)
     let token = jar
@@ -1155,7 +1159,8 @@ pub async fn mfa_verify_page(
             message: m.message.clone(),
         })
         .collect();
-    let base = BaseTemplate::new("Verify Identity".to_string(), None).with_messages(flash_messages);
+    let base = BaseTemplate::new("Verify Identity".to_string(), None, browser_tz.0)
+        .with_messages(flash_messages);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         base.into_fields();
 

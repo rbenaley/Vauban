@@ -2,30 +2,31 @@
 use super::*;
 use shared::messages::VaubanGroupInfo as IpcVaubanGroupInfo;
 
-/// Format RFC3339 date string to display format.
-fn format_rfc3339_date(s: &str) -> String {
+/// Format RFC3339 date string to display format in the caller's timezone.
+fn format_rfc3339_date(s: &str, tz: chrono_tz::Tz) -> String {
     chrono::DateTime::parse_from_rfc3339(s)
         .ok()
-        .map(|d| d.format("%b %d, %Y").to_string())
+        .map(|d| crate::utils::format_local(d.with_timezone(&chrono::Utc), tz))
         .unwrap_or_else(|| s.to_string())
 }
 
-/// Format RFC3339 date string to display format with time.
-fn format_rfc3339_datetime(s: &str) -> String {
+/// Format RFC3339 date string to display format with time in the caller's timezone.
+fn format_rfc3339_datetime(s: &str, tz: chrono_tz::Tz) -> String {
     chrono::DateTime::parse_from_rfc3339(s)
         .ok()
-        .map(|d| d.format("%b %d, %Y %H:%M").to_string())
+        .map(|d| crate::utils::format_local(d.with_timezone(&chrono::Utc), tz))
         .unwrap_or_else(|| s.to_string())
 }
 
 pub async fn group_list(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
+    browser_tz: BrowserTz,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
-    let base =
-        BaseTemplate::new("Groups".to_string(), user.clone()).with_current_path("/accounts/groups");
+    let base = BaseTemplate::new("Groups".to_string(), user.clone(), browser_tz.0)
+        .with_current_path("/accounts/groups");
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
             .await
@@ -49,7 +50,7 @@ pub async fn group_list(
                     description: g.description,
                     source: g.source,
                     member_count: g.member_count,
-                    created_at: format_rfc3339_date(&g.created_at),
+                    created_at: format_rfc3339_date(&g.created_at, browser_tz.0),
                 },
             )
             .collect();
@@ -133,6 +134,7 @@ pub async fn group_detail(
     auth_user: WebAuthUser,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
+    browser_tz: BrowserTz,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
 ) -> Response {
     let flash = incoming_flash.flash();
@@ -244,17 +246,17 @@ pub async fn group_detail(
             description: group_info.description,
             source: group_info.source,
             external_id: group_info.external_id,
-            created_at: format_rfc3339_datetime(&group_info.created_at),
-            updated_at: format_rfc3339_datetime(&group_info.updated_at),
+            created_at: format_rfc3339_datetime(&group_info.created_at, browser_tz.0),
+            updated_at: format_rfc3339_datetime(&group_info.updated_at, browser_tz.0),
             last_synced: group_info
                 .last_synced
                 .as_ref()
-                .map(|s| format_rfc3339_datetime(s)),
+                .map(|s| format_rfc3339_datetime(s, browser_tz.0)),
             members,
         }
     };
 
-    let base = BaseTemplate::new(format!("{} - Group", group.name), user.clone())
+    let base = BaseTemplate::new(format!("{} - Group", group.name), user.clone(), browser_tz.0)
         .with_current_path("/accounts/groups")
         .with_messages(flash_messages);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
@@ -317,6 +319,7 @@ pub async fn vauban_group_create_form(
     auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     jar: CookieJar,
+    browser_tz: BrowserTz,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::templates::accounts::GroupCreateTemplate;
 
@@ -332,7 +335,8 @@ pub async fn vauban_group_create_form(
 
     let user = Some(user_context_from_auth(&auth_user));
     let base =
-        BaseTemplate::new("Create Group".to_string(), user).with_current_path("/accounts/groups");
+        BaseTemplate::new("Create Group".to_string(), user, browser_tz.0)
+            .with_current_path("/accounts/groups");
 
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
@@ -431,6 +435,7 @@ pub async fn vauban_group_edit_form(
     auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     jar: CookieJar,
+    browser_tz: BrowserTz,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::templates::accounts::{GroupEditData, GroupEditTemplate};
@@ -458,7 +463,7 @@ pub async fn vauban_group_edit_form(
     };
 
     let user = Some(user_context_from_auth(&auth_user));
-    let base = BaseTemplate::new(format!("Edit {} - Group", group.name), user)
+    let base = BaseTemplate::new(format!("Edit {} - Group", group.name), user, browser_tz.0)
         .with_current_path("/accounts/groups");
 
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
@@ -551,6 +556,7 @@ pub async fn group_add_member_form(
     State(state): State<AppState>,
     auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
+    browser_tz: BrowserTz,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::templates::accounts::{AvailableUser, GroupAddMemberTemplate, GroupInfo};
@@ -604,7 +610,7 @@ pub async fn group_add_member_form(
     };
 
     let user = Some(user_context_from_auth(&auth_user));
-    let base = BaseTemplate::new(format!("Add Member - {}", group.name), user)
+    let base = BaseTemplate::new(format!("Add Member - {}", group.name), user, browser_tz.0)
         .with_current_path("/accounts/groups");
 
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =

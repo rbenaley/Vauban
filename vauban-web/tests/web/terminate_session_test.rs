@@ -406,3 +406,155 @@ async fn test_api_terminate_does_not_panic_when_supervisor_absent() {
         "recording_finalized_at stays NULL in dev mode (no supervisor)"
     );
 }
+
+// =============================================================================
+// Bug fix -- non-HTMX <form method="post"> from the IACS tunnel status
+// page (and any other plain form Disconnect button) must NOT dump the
+// raw API JSON into the browser address bar. The web wrapper has to
+// translate the API outcome into a flash + 303 redirect so the user
+// lands back on `/sessions`.
+//
+// Repro: GET-after-POST showed
+//   `{"id":535,"uuid":"…","status":"terminated", … }` in the browser.
+// =============================================================================
+
+/// A non-HTMX terminate (no `HX-Request: true`) MUST 303-redirect to
+/// `/sessions` on success, NOT return JSON.
+#[tokio::test]
+async fn test_non_htmx_terminate_redirects_to_sessions_list() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let owner_name = unique_name("term_form_owner");
+    let owner_id = create_simple_user(&mut conn, &owner_name).await;
+    let owner_uuid = get_user_uuid(&mut conn, owner_id).await;
+
+    let admin_id = create_simple_admin_user(&mut conn, &unique_name("term_form_adm")).await;
+    let asset_id =
+        create_simple_ssh_asset(&mut conn, &unique_name("term_form_ast"), admin_id).await;
+    let _ = grant_user_access_to_asset(
+        &mut conn,
+        owner_id,
+        asset_id,
+        &unique_name("term_form_grant"),
+        &["ssh"],
+    )
+    .await;
+    let (session_id, session_uuid) =
+        create_test_session_with_uuid(&mut conn, owner_id, asset_id, "ssh", "active").await;
+
+    let token = app
+        .generate_test_token(&owner_uuid.to_string(), &owner_name, false, false)
+        .await;
+    let csrf_token = app.generate_csrf_token();
+
+    let response = app
+        .server
+        .post(&format!("/sessions/{}/terminate", session_uuid))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        // INTENTIONALLY no `HX-Request: true` -- this mirrors the
+        // plain `<form method="post">` Disconnect button on
+        // `/sessions/{uuid}/iacs/status`.
+        .form(&[("csrf_token", csrf_token.as_str())])
+        .await;
+
+    // axum's `Redirect::to` returns 303 See Other; the location header
+    // points at the session list.
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 303 || status == 302,
+        "non-HTMX terminate must 3xx-redirect, got {} (body={:?})",
+        status,
+        response.text()
+    );
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        location.starts_with("/sessions"),
+        "redirect must land on the session list, got `{}`",
+        location
+    );
+
+    // Critical regression assertion: the response body MUST NOT carry
+    // the JSON shape that used to leak (id, uuid, session_type, ...)
+    // into the user's browser when the form was submitted plain.
+    let body = response.text();
+    assert!(
+        !body.contains("\"session_type\""),
+        "non-HTMX terminate response must not echo the API JSON body, got: {}",
+        body
+    );
+    assert!(
+        !body.contains("\"client_user_agent\""),
+        "non-HTMX terminate response must not echo the API JSON body, got: {}",
+        body
+    );
+
+    // Side-effect check: the row IS terminated even though we returned
+    // a redirect to the user.
+    assert_eq!(
+        db_status(&mut conn, session_id).await,
+        "terminated",
+        "non-HTMX terminate must still flip the session row"
+    );
+}
+
+/// The HTMX path keeps returning the in-place HTML fragment so the
+/// `/sessions/active` swap continues to work.
+#[tokio::test]
+async fn test_htmx_terminate_returns_html_fragment_not_redirect() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let owner_name = unique_name("term_htmx_owner");
+    let owner_id = create_simple_user(&mut conn, &owner_name).await;
+    let owner_uuid = get_user_uuid(&mut conn, owner_id).await;
+
+    let admin_id = create_simple_admin_user(&mut conn, &unique_name("term_htmx_adm")).await;
+    let asset_id =
+        create_simple_ssh_asset(&mut conn, &unique_name("term_htmx_ast"), admin_id).await;
+    let _ = grant_user_access_to_asset(
+        &mut conn,
+        owner_id,
+        asset_id,
+        &unique_name("term_htmx_grant"),
+        &["ssh"],
+    )
+    .await;
+    let (_, session_uuid) =
+        create_test_session_with_uuid(&mut conn, owner_id, asset_id, "ssh", "active").await;
+
+    let token = app
+        .generate_test_token(&owner_uuid.to_string(), &owner_name, false, false)
+        .await;
+    let csrf_token = app.generate_csrf_token();
+
+    let response = app
+        .server
+        .post(&format!("/sessions/{}/terminate", session_uuid))
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf_token),
+        )
+        .add_header("HX-Request", "true")
+        .form(&[("csrf_token", csrf_token.as_str())])
+        .await;
+
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains("Session terminated") || body.contains("terminated"),
+        "HTMX response must carry the in-place HTML fragment"
+    );
+    assert!(
+        !body.starts_with("{\""),
+        "HTMX response must NOT be a JSON body"
+    );
+}

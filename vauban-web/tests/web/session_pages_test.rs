@@ -1604,6 +1604,7 @@ async fn test_terminate_active_rdp_session() {
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
         )
+        .add_header("HX-Request", "true")
         .form(&[("csrf_token", csrf_token.as_str())])
         .await;
 
@@ -1652,12 +1653,19 @@ async fn test_terminate_non_staff_rejected() {
         .await;
 
     // The new session_access gate collapses NotOwner to a generic 404
-    // (anti-enumeration), so a non-owner without `sessions:write` now
-    // sees 404 instead of the historical 403/302. The DB invariant
-    // (status must remain "active") is what we really care about.
+    // (anti-enumeration). The web wrapper additionally translates that
+    // 404 into a 303 redirect to `/sessions` carrying a flash error
+    // (so a plain `<form method="post">` lands back on a real page
+    // instead of leaking the API JSON body). Either status -- the raw
+    // 404 from the API endpoint or the 303 PRG from the web wrapper --
+    // satisfies the contract; the DB invariant (status stays "active")
+    // is what we really care about.
     let status_code = response.status_code().as_u16();
     assert!(
-        status_code == 403 || status_code == 302 || status_code == 404,
+        status_code == 303
+            || status_code == 403
+            || status_code == 302
+            || status_code == 404,
         "Non-staff user must be rejected (got {})",
         status_code
     );
@@ -1701,6 +1709,7 @@ async fn test_terminate_already_terminated_session() {
             COOKIE,
             format!("access_token={}; __vauban_csrf={}", token, csrf_token),
         )
+        .add_header("HX-Request", "true")
         .form(&[("csrf_token", csrf_token.as_str())])
         .await;
 
@@ -1732,9 +1741,12 @@ async fn test_terminate_nonexistent_session() {
         .form(&[("csrf_token", csrf_token.as_str())])
         .await;
 
+    // The web wrapper translates the API NotFound into a 303 redirect
+    // to `/sessions` (PRG with a flash error). The raw 404 / 500 from
+    // the API endpoint stays accepted for the legacy test path.
     let status_code = response.status_code().as_u16();
     assert!(
-        status_code == 404 || status_code == 302 || status_code == 500,
+        status_code == 303 || status_code == 404 || status_code == 302 || status_code == 500,
         "Nonexistent session must return error (got {})",
         status_code
     );

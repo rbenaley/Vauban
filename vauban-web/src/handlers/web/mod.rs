@@ -35,6 +35,7 @@ pub(crate) use zeroize::Zeroize;
 pub(crate) use crate::AppState;
 pub(crate) use crate::error::{AppError, AppResult};
 pub(crate) use crate::middleware::auth::{AuthUser, WebAuthUser};
+pub(crate) use crate::middleware::browser_tz::BrowserTz;
 pub(crate) use crate::middleware::flash::{IncomingFlash, flash_redirect, htmx_or_flash_redirect};
 pub(crate) use crate::schema::{api_keys, assets as schema_assets, auth_sessions, proxy_sessions};
 pub(crate) use crate::templates::accounts::{
@@ -705,8 +706,9 @@ pub async fn fallback_handler() -> Redirect {
 pub async fn login_page(
     State(state): State<AppState>,
     jar: CookieJar,
+    browser_tz: BrowserTz,
 ) -> Result<impl IntoResponse, AppError> {
-    let base = BaseTemplate::new("Login".to_string(), None);
+    let base = BaseTemplate::new("Login".to_string(), None, browser_tz.0);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         base.into_fields();
 
