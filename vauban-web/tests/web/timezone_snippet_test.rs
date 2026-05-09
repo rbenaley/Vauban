@@ -152,6 +152,35 @@ fn base_html_does_not_inline_snippet_body() {
     );
 }
 
+/// REGRESSION (v0.7.7): the snippet was created under
+/// `vauban-web/static/js/vbn-tz.js` and referenced from `base.html`,
+/// but never registered in [`vauban_web::static_assets::STATIC_FILES`].
+/// `STATIC_FILES` is an EXHAUSTIVE whitelist (Capsicum-compatible),
+/// so the binary returned 404 on `/static/js/vbn-tz.js` and the
+/// browser silently failed to set the cookie. The whole UI then fell
+/// back to UTC.
+///
+/// This test pins the wiring: the path the template references MUST
+/// also be served by `serve_static`.
+#[test]
+fn vbn_tz_js_is_served_under_static() {
+    let asset = vauban_web::static_assets::lookup("js/vbn-tz.js")
+        .expect("`/static/js/vbn-tz.js` must be registered in STATIC_FILES \
+                 (otherwise the browser timezone bootstrap silently 404s \
+                 and the UI collapses to UTC)");
+    assert_eq!(asset.path, "js/vbn-tz.js");
+    assert!(
+        asset.content_type.starts_with("application/javascript"),
+        "vbn-tz.js must be served as JavaScript, got `{}`",
+        asset.content_type
+    );
+    let body = std::str::from_utf8(asset.content).expect("vbn-tz.js must be valid UTF-8");
+    assert!(
+        body.contains("Intl.DateTimeFormat"),
+        "the embedded asset must be the actual snippet (not a stub)"
+    );
+}
+
 #[test]
 fn extractor_constants_match_snippet() {
     use vauban_web::middleware::browser_tz::{VBN_TZ_COOKIE_MAX_LEN, VBN_TZ_COOKIE_NAME};

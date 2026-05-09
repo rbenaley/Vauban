@@ -59,6 +59,17 @@ pub static STATIC_FILES: &[StaticAsset] = &[
         content: include_bytes!("../static/js/vauban-components.js"),
         content_type: "application/javascript; charset=utf-8",
     },
+    // Browser timezone bootstrap - sets the `vbn_tz` cookie before
+    // first paint so the server can render every DateTime<Utc> in the
+    // operator's local zone. MUST be loaded synchronously from
+    // base.html <head>; a 404 here silently collapses the entire UI
+    // to UTC (regression observed in v0.7.7). Pinned by
+    // `tests/web/timezone_snippet_test::vbn_tz_js_is_served_under_static`.
+    StaticAsset {
+        path: "js/vbn-tz.js",
+        content: include_bytes!("../static/js/vbn-tz.js"),
+        content_type: "application/javascript; charset=utf-8",
+    },
     StaticAsset {
         path: "js/shaka-player.compiled.js",
         content: include_bytes!("../static/js/shaka-player.compiled.js"),
